@@ -47,6 +47,7 @@ class CuePreviewPlan:
     play_range_ms: tuple[int, int]
     layers: list = field(default_factory=list)
     clock: str = "timeline"
+    recognition_identity: dict = field(default_factory=dict)
 
     def diagnostic(self):
         a, b = self.play_range_ms
@@ -153,7 +154,8 @@ def plan_cue_preview(project, cue_id, *, pre_roll_ms=PRE_ROLL_MS, post_roll_ms=P
         if not Path(layer["source_path"]).is_file():
             raise PreviewUnavailable(f"找不到素材文件：{layer['source_path']}")
     return CuePreviewPlan(request, str(project.project_id), revision, cue.id, cue.text, domain,
-                          (start, end), (a, b), layers)
+                          (start, end), (a, b), layers,
+                          recognition_identity=copy.deepcopy(project.generation_metadata.get("media_identity") or {}))
 
 
 LANE_PREVIEW_MS = 8000
@@ -245,6 +247,7 @@ def preview_cache_key(plan):
             raise PreviewUnavailable(f"找不到或无法读取素材文件：{path}") from exc
     value = {"project": plan.project_id, "cue": plan.cue_id, "clock": plan.clock,
              "range": plan.play_range_ms, "layers": plan.layers, "files": files,
+             "recognition_identity": plan.recognition_identity,
              "format": [SAMPLE_RATE, CHANNELS, "s16le"]}
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 

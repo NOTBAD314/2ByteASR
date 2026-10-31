@@ -58,6 +58,17 @@ class StudioVideoFlowMixin:
     def _razor_video_clip_at(self, track_id, clip_id, milliseconds):
         self._commit_clip_edit(track_id, 'split', clip_id=clip_id, time_ms=milliseconds)
 
+    def _razor_audio_clip_at(self, track_id, clip_id, milliseconds):
+        if self.project is None:
+            return
+        from ..timeline.studio_clip_edit import split_audio_command
+        try:
+            command = split_audio_command(self.project, track_id, clip_id, milliseconds, page=self)
+        except (ValueError, KeyError, StopIteration) as exc:
+            self.save_state.setText(str(exc))
+            return
+        self.undo_stack.push(command)
+
     def _split_video_at_playhead(self) -> None:
         self._commit_playhead_edit('split')
 

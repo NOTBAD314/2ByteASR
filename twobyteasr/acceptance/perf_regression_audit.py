@@ -1405,4 +1405,7 @@ def start(window, out: Path):
                 yield 3.0
                 self.snapshot(f"reopened-{i}")
 
+    if os.environ.get('PERF_ITALIAN') == '1':
+        from .italian_long_audit import install
+        install(Audit, window, out)
     Audit()

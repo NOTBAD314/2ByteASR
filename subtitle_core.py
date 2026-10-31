@@ -1874,6 +1874,9 @@ def runtime_settings_snapshot():
     return {
         "config_file": RUNTIME_SETTINGS_PATH,
         "config_warnings": list(RUNTIME_SETTINGS_WARNINGS),
+        "subtitle_language": {"requested_language": context.requested_language,
+                              "subtitle_output": context.subtitle_output,
+                              "translation_target": context.translation_script},
         "models": {
             "primary_asr_backend": PRIMARY_ASR_BACKEND,
             "qwen_asr_backend": QWEN_ASR_BACKEND,
@@ -2095,7 +2098,7 @@ CACHE_STAGE_VERSIONS = {
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
 GROUP_LOGIC_VERSION = "group-v59-word-safe-comfort-length"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
-TIMING_LOGIC_VERSION = "timing-v12-ja-two-line-sentences"
+TIMING_LOGIC_VERSION = "timing-v13-overlapping-source-turns"
 
 
 # 复核清单只打印在运行窗口，不增加第三个输出文件。
@@ -2361,12 +2364,19 @@ def deserialize_segments(items):
 
 
 def serialize_cues(cues):
-    return [asdict(cue) for cue in cues]
+    rows=[]
+    for cue in cues:
+        row=asdict(cue)
+        for key in ('source_spans','timing_basis','segmentation_language'):
+            if hasattr(cue,key):row[key]=copy.deepcopy(getattr(cue,key))
+        rows.append(row)
+    return rows
 
 
 def deserialize_cues(items):
-    return [
-        SubtitleCue(
+    result=[]
+    for item in (items or []):
+        cue=SubtitleCue(
             cue_id=int(item["cue_id"]),
             start=float(item["start"]),
             end=float(item["end"]),
@@ -2374,8 +2384,10 @@ def deserialize_cues(items):
             timing_locked=bool(item.get("timing_locked", False)),
             speaker=str(item.get("speaker", "S00")),
         )
-        for item in (items or [])
-    ]
+        for key in ('source_spans','timing_basis','segmentation_language'):
+            if key in item:setattr(cue,key,copy.deepcopy(item[key]))
+        result.append(cue)
+    return result
 
 
 from twobyteasr.recognition.cache import *  # noqa: F401,F403

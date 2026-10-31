@@ -8,7 +8,7 @@ from ..diagnostics.playback_probe import measured
 from collections.abc import Iterable
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QTextLayout
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QTextLayout, QPalette
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem, QStyledItemDelegate
 
 from .studio_helpers import _format_ms
@@ -64,11 +64,26 @@ def _source_key(cue: StudioCue) -> str:
     return source_cue_id_of(str(cue.id))
 
 
+def _review_key(project, cue):
+    # Independent captions can retain a legacy-looking ID as their actual
+    # persistent identity. Only a legacy display projection uses the fallback.
+    if project and project.render_settings.get('_cue_domain') == 'timeline':
+        return str(cue.id)
+    return _source_key(cue)
+
+
 def _cue_status(project: SubtitleProject | None, cue: StudioCue) -> str:
+    if project and _cue_review_level(project, cue) != 'confident':
+        return 'issue'
+    if project:
+        from ..subtitle_rules.current_issues import DECISIONS, reviewed_version
+        reviewed = project.studio_state.get(DECISIONS, {}).get('reviewed:'+cue.id, {})
+        if reviewed and reviewed.get('input_version') == reviewed_version(project, cue):
+            return 'done'
     statuses = project.studio_state.get("cue_statuses", {}) if project else {}
     if isinstance(statuses, dict):
-        value = str(statuses.get(_source_key(cue), "") or "").strip().lower()
-        if value in {"pending", "issue", "done"}:
+        value = str(statuses.get(_review_key(project, cue), "") or "").strip().lower()
+        if value in {"pending", "done"}:
             return value
     if not cue.text.strip() or cue.end_ms <= cue.start_ms:
         return "issue"
@@ -79,13 +94,13 @@ def _cue_review_level(project: SubtitleProject | None, cue: StudioCue, risks: di
     # Loops over every cue pass ``risks`` once: building it copies the whole
     # risk table, so a per-cue call made a full-list pass O(n^2).
     risks = cached_review_risks(project) if risks is None else risks
-    row = risks.get(_source_key(cue), {}) if isinstance(risks, dict) else {}
+    row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
     return str(row.get("level", "confident")) if isinstance(row, dict) else "confident"
 
 
 def _cue_review_score(project: SubtitleProject | None, cue: StudioCue, risks: dict | None = None) -> int:
     risks = cached_review_risks(project) if risks is None else risks
-    row = risks.get(_source_key(cue), {}) if isinstance(risks, dict) else {}
+    row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
     try:
         return int(row.get("score", 0)) if isinstance(row, dict) else 0
     except (TypeError, ValueError):
@@ -94,7 +109,14 @@ def _cue_review_score(project: SubtitleProject | None, cue: StudioCue, risks: di
 
 def _cue_explicitly_confirmed(project: SubtitleProject | None, cue: StudioCue) -> bool:
     statuses = project.studio_state.get("cue_statuses", {}) if project else {}
-    return isinstance(statuses, dict) and str(statuses.get(_source_key(cue), "")).lower() == "done"
+    return isinstance(statuses, dict) and str(statuses.get(_review_key(project, cue), "")).lower() == "done"
+
+
+def _cue_status_label(project, cue):
+    level = _cue_review_level(project, cue)
+    if level != 'confident':
+        return tr('需要检查' if level == 'high' else '建议确认')
+    return tr({'pending': '未审核', 'issue': '有问题', 'done': '已处理'}[_cue_status(project, cue)])
 
 
 class CueTableModel(QAbstractTableModel):
@@ -110,6 +132,7 @@ class CueTableModel(QAbstractTableModel):
         self._rows: list[int] = []
         self._cue_row_lookup: dict[str, int] = {}
         self.scope_ids: tuple[str, ...] | None = None
+        self.review_anchor_id = ''
         self.active_cue_ids: frozenset[str] = frozenset()
         self._rebuild_rows()
 
@@ -128,23 +151,21 @@ class CueTableModel(QAbstractTableModel):
         self._view_cues = view
         needle = self.query.casefold().strip()
         scope = set(self.scope_ids) if self.scope_ids is not None else None
-        risks = cached_review_risks(self.project) if self.filter_status == "priority" else None
+        risks = cached_review_risks(self.project) if self.filter_status in {"priority", "critical"} else None
         for row, cue in enumerate(view):
             if scope is not None:
                 if cue.id not in scope:
                     continue
-                self._rows.append(row)
-                continue
             status = _cue_status(self.project, cue)
             speaker = _speaker_name(self.project, cue.speaker_id)
+            if cue.id == self.review_anchor_id:
+                self._rows.append(row)
+                continue
             if self.filter_status == "priority":
-                if _cue_explicitly_confirmed(self.project, cue) or _cue_review_level(self.project, cue, risks) == "confident":
+                if _cue_review_level(self.project, cue, risks) != "suggested":
                     continue
             elif self.filter_status == "critical":
-                issues = cached_qc_result(self.project).for_cue(_source_key(cue))
-                if _cue_explicitly_confirmed(self.project, cue) or not any(
-                    issue.severity == QCSeverity.CRITICAL for issue in issues
-                ):
+                if _cue_review_level(self.project, cue, risks) != "high":
                     continue
             elif self.filter_status != "all" and status != self.filter_status:
                 continue
@@ -198,6 +219,7 @@ class CueTableModel(QAbstractTableModel):
     def set_project(self, project: SubtitleProject | None) -> None:
         self.beginResetModel()
         self.project = project
+        self.review_anchor_id = ''
         self.active_cue_ids = frozenset()
         self._rebuild_rows()
         self.endResetModel()
@@ -223,7 +245,7 @@ class CueTableModel(QAbstractTableModel):
             self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 4))
 
     def refresh_cue(self, cue_id: str, columns: tuple[int, ...] | None = None) -> None:
-        if self.scope_ids is None and (self.filter_status != "all" or self.query.strip()):
+        if (self.filter_status != "all" or self.query.strip()):
             self.refresh()
             return
         row = self.row_for_cue_id(cue_id)
@@ -235,7 +257,7 @@ class CueTableModel(QAbstractTableModel):
 
     def refresh_cues(self, cue_ids, columns: tuple[int, ...] | None = None, *, recheck_filter=True) -> None:
         """One model notification per contiguous row span, one filter rebuild."""
-        if recheck_filter and self.scope_ids is None and (self.filter_status != 'all' or self.query.strip()):
+        if recheck_filter and (self.filter_status != 'all' or self.query.strip()):
             self.refresh()
             return
         rows = sorted({row for cue_id in cue_ids if (row := self.row_for_cue_id(cue_id)) >= 0})
@@ -277,9 +299,9 @@ class CueTableModel(QAbstractTableModel):
                 _format_ms(cue.start_ms),
                 _speaker_name(self.project, cue.speaker_id),
                 cue.text,
-                tr({"pending": "待确认", "issue": "有问题", "done": "已完成"}[status]),
+                _cue_status_label(self.project, cue),
             )
-            if index.column() == 4 and self.filter_status in {"priority", "critical"}:
+            if index.column() == 4 and _cue_review_level(self.project, cue) != 'confident':
                 return tr({"high": "需要检查", "suggested": "建议确认"}.get(
                     _cue_review_level(self.project, cue), "待确认"
                 ))
@@ -363,7 +385,7 @@ class CueBadgeDelegate(QStyledItemDelegate):
         else:
             cue = index.model().cue_at(index.row())
             status_colors = studio_status_colors()
-            if index.model().filter_status in {"priority", "critical"}:
+            if _cue_review_level(index.model().project, cue) != "confident":
                 high = _cue_review_level(index.model().project, cue) == "high"
                 fill_color, text_color = status_colors["issue" if high else "pending"]
                 fill, foreground = QColor(fill_color), QColor(text_color)
@@ -371,6 +393,8 @@ class CueBadgeDelegate(QStyledItemDelegate):
                 status = _cue_status(index.model().project, cue)
                 fill_color, text_color = status_colors[status]
                 fill, foreground = QColor(fill_color), QColor(text_color)
+                if status == 'pending':
+                    fill, foreground = QColor(Qt.GlobalColor.transparent), option.palette.color(QPalette.ColorRole.PlaceholderText)
             width = min(option.rect.width() - 8, 58)
         badge = QRectF(
             option.rect.left() + (option.rect.width() - width) / 2,
@@ -531,14 +555,17 @@ class CueReadingDelegate(QStyledItemDelegate):
         x += chip_w + 8
         # status (or review level in the priority filters)
         status_colors = studio_status_colors()
-        if model.filter_status in {"priority", "critical"}:
+        if _cue_review_level(project, cue) != "confident":
             high = _cue_review_level(project, cue) == "high"
             fill_color, status_color = status_colors["issue" if high else "pending"]
             label = tr({"high": "需要检查", "suggested": "建议确认"}.get(_cue_review_level(project, cue), "待确认"))
         else:
             status = _cue_status(project, cue)
             fill_color, status_color = status_colors[status]
-            label = tr({"pending": "待确认", "issue": "有问题", "done": "已完成"}[status])
+            label = _cue_status_label(project, cue)
+            if status == 'pending':
+                fill_color = 'transparent'
+                status_color = option.palette.color(QPalette.ColorRole.PlaceholderText)
         status_w = meta_metrics.horizontalAdvance(label) + 14
         badge = QRectF(x, top + 2, status_w, line_h - 4)
         painter.setPen(Qt.PenStyle.NoPen)

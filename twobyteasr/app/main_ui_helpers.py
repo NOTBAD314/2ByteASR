@@ -51,7 +51,10 @@ def polishing_completion_details(report):
     language = current_language()
     lines = list(outcome.localized_detail_lines(language))
     polish = report.get('polishing_summary') or {}
-    if polish:
+    if polish.get('count_scope') == 'current_processing_task':
+        lines.insert(0, translate('AI文字校对：{success} 条处理记录完成；{pending} 条未完成并保留原文。原始批次另见运行日志。', language).format(
+            success=outcome.success_records,pending=outcome.fallback_records))
+    elif polish:
         lines.insert(0, translate("AI文字校对：{success_batches} 批 / {success_records} 条处理记录完成；原文回退 {fallback_batches} 批 / {fallback_records} 条处理记录", language).format(
             success_batches=polish.get('success_batches', 0), success_records=outcome.success_records,
             fallback_batches=polish.get('fallback_batches', 0), fallback_records=outcome.fallback_records))

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from ..subtitle_rules.segmentation_profiles import prompt_languages,canonical_prompt_values
 
 
 SETTINGS_FILENAME = "2byteasr_settings.json"
@@ -112,11 +113,7 @@ DEFAULT_SETTINGS = {
     # 2026-10-18: the user's own line-breaking guidance for the AI grouping
     # prompt, per subtitle language; empty = the built-in guidance. The prompt's
     # protocol and hard limits are not part of it (grouping_request).
-    "grouping_prompts": {
-        "zh": "",
-        "ja": "",
-        "en": "",
-    },
+    "grouping_prompts": {code: '' for code,_label in prompt_languages()},
     "performance": {
         "parallel_cloud_batches": True,
         "cloud_batch_workers": 4,
@@ -223,6 +220,11 @@ def _merge_known_settings(defaults, payload):
         if not isinstance(supplied, dict):
             warnings.append(f"{section} must be a JSON object; defaults were used")
             continue
+        if section == 'grouping_prompts':
+            supplied=canonical_prompt_values(supplied)
+            for key,value in supplied.items():
+                if key not in values and isinstance(key,str) and isinstance(value,str):
+                    result[section][key] = value.strip()[:4000]
         for key, default in values.items():
             value = supplied.get(key, default)
             if isinstance(default, bool):
@@ -335,10 +337,16 @@ def _merge_known_settings(defaults, payload):
             warnings.append(
                 f"models.{key} must be one of {sorted(allowed)}; default was used"
             )
-    allowed_language = {"recognition_language": {"auto", "zh", "ja", "en", "ko", "es", "de", "fr", "pt", "it", "ru"},
+    from ..subtitle_rules.language_rules import SUPPORTED_REQUESTS,normalize_language
+    from ..subtitle_rules.segmentation_profiles import language_tag
+    from ..subtitle_rules.subtitle_translation import TARGETS
+    raw_language=result['subtitle_language'].get('recognition_language','auto')
+    if raw_language not in SUPPORTED_REQUESTS and normalize_language(raw_language) in SUPPORTED_REQUESTS:
+        tag=language_tag(raw_language)
+        result['subtitle_language']['recognition_language']=tag if tag in SUPPORTED_REQUESTS else normalize_language(raw_language)
+    allowed_language = {"recognition_language": set(SUPPORTED_REQUESTS),
                         "output": {"original", "translation", "bilingual"},
-                        "translation_script": {"zh-Hans", "zh-Hant", "en", "ja", "ko", "es", "de", "fr", "pt", "it",
-                                               "ru"},
+                        "translation_script": set(TARGETS),
                         "chinese_script": {"zh-Hans", "zh-Hant"}}
     for key, allowed in allowed_language.items():
         if result["subtitle_language"].get(key) not in allowed:

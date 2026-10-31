@@ -73,7 +73,7 @@ def test_success_then_startup_failure_does_not_restore_previous_counts_or_direct
     assert not shell.export_result_button.isEnabled() and not shell.open_studio_result_button.isEnabled()
     assert shell.result_return_button.isEnabled()
     assert 'new worker failed to start' in shell.result_exception_summary.text()
-    assert not shell.result_files_toggle.isChecked() and not shell.result_log_toggle.isChecked()
+    assert shell.result_files_toggle.isChecked() and shell.result_log_toggle.isChecked()
 
 
 @pytest.mark.parametrize('exists', [True, False])
@@ -94,7 +94,7 @@ def test_unavailable_result_project_keeps_actionable_reason_outside_folded_detai
     assert shell._last_recognition_report == str(report_path)
     assert not shell.export_result_button.isEnabled() and not shell.open_studio_result_button.isEnabled()
     assert shell.result_return_button.isEnabled()
-    assert not shell.result_files_toggle.isChecked() and not shell.result_log_toggle.isChecked()
+    assert shell.result_files_toggle.isChecked() and shell.result_log_toggle.isChecked()
 
 
 def test_empty_queue_clears_previous_subtitle_directory_action(completion_shell):

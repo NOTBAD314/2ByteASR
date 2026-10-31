@@ -52,13 +52,17 @@ class StudioEditAssemblyMixin:
         here = int(self.timeline.playhead_ms)
         cleared = points[index] is not None and abs(points[index] - here) <= RANGE_TOGGLE_MS
         points[index] = None if cleared else here
+        if not cleared:
+            from ..timeline.media_edit_time import range_point
+            from ..timeline.studio_edit_sequence import timeline_duration_ms
+            points = range_point(points, index, here, timeline_duration_ms(project))
         set_range(project, points[0], points[1], self.undo_stack)
         name = '入点' if index == 0 else '出点'
         key = 'I' if index == 0 else 'O'
         if cleared:
             bind_text(self.save_state, '已取消{name}', name=tr(name))
         else:
-            bind_text(self.save_state, '{name} {time} · 同一位置再按 {key} 取消', name=tr(name), time=clock_text(here), key=key)
+            bind_text(self.save_state, '{name} {time} · 同一位置再按 {key} 取消', name=tr(name), time=clock_text(points[index]), key=key)
         self.timeline.update()
 
     def _clear_range(self) -> None:

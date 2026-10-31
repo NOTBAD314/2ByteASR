@@ -48,14 +48,15 @@ def run(request: dict) -> list:
 
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
-                        'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing'}:
+                        'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing', 'asr_language_request'}:
             return
         if kind == 'api_usage' and payload.get('stage') == 'asr':
             payload = dict(payload, stage=usage_stage)
         with lock:
             print('[2BYTEASR_API] ' + json.dumps(dict(kind=kind, payload=payload), ensure_ascii=False), flush=True)
 
-    context = RuntimeContext(job_id=request['job_id'], speaker_source=request.get('speaker_source', 'single'))
+    context = RuntimeContext(job_id=request['job_id'], speaker_source=request.get('speaker_source', 'single'),
+                             requested_language=request.get('requested_language', 'auto'))
     with activate_runtime_context(context), run_event_observer(event):
         if not request.get('native_job'):
             return asr._transcribe_qwen_api(request['source_path'], chunks, publish_primary=request['publish_primary'],

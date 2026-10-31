@@ -577,6 +577,7 @@ class StudioPlaybackFlowMixin:
     @measured('active_cues')
     def _update_active_cues(self, milliseconds: int) -> None:
         from ..projects.studio_runtime_state import state_for
+        self._follow_caption_editor(milliseconds)
         self.cue_controller.sync_playhead_target(milliseconds, rule=self._playhead_target_rule())
         sample=getattr(self,'_caption_sample_ms',None)
         if callable(sample):milliseconds=sample(milliseconds)
@@ -627,6 +628,8 @@ class StudioPlaybackFlowMixin:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
         timeline_ms = round(seconds * 1000)
+        if not getattr(self.timeline,'_viewport_manipulated',lambda:False)():
+            self.timeline._manual_view_hold = False
         if not getattr(self, '_highlight_seeking', False):
             self._highlight_preview = None
         self._invalidate_audio_tail()
@@ -927,6 +930,8 @@ class StudioPlaybackFlowMixin:
 
     @observed('player.state')
     def _playback_state_changed(self, paused: bool) -> None:
+        if not paused and hasattr(self, 'timeline'):
+            self.timeline._manual_view_hold = False
         if getattr(self.video, '_seek_hold_active', False):
             # A seek during playback holds the picture until its audio is
             # ready. The user is still playing: no Q/W retarget, full GC,

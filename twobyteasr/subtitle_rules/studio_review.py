@@ -117,7 +117,7 @@ class ReviewSession:
         if str(cue_id) in self.scope.visible_cue_ids:
             self.resolved_ids.add(str(cue_id))
 
-    def next_id(self, current_id: str, *, include_resolved: bool = False) -> str:
+    def next_id(self, current_id: str, *, include_resolved: bool = False, eligible_ids=None) -> str:
         ids = self.scope.visible_cue_ids
         if not ids:
             return ""
@@ -125,7 +125,9 @@ class ReviewSession:
             start = ids.index(str(current_id)) + 1
         except ValueError:
             start = 0
-        ordered = ids[start:] + ids[:start]
+        ordered = ids[start:]
+        if eligible_ids is not None:
+            eligible=set(eligible_ids);ordered=tuple(key for key in ordered if key in eligible)
         if include_resolved:
             return ordered[0] if ordered else ""
         return next((cue_id for cue_id in ordered if cue_id not in self.resolved_ids), "")
@@ -424,10 +426,11 @@ class ReviewEvidenceAggregator:
             timing_delta = max(max(starts) - min(starts), max(ends) - min(ends))
         risk_types: list[str] = []
         reasons: list[str] = []
+        projection_only = source_coverage.get('current_text_supported') is False and not source_coverage['conflict']
         boundary_only = bool(not models_agree_boundary and models_agree_text)
         speaker_only = bool(not models_agree_speaker and models_agree_text)
         timing_only = bool(timing_delta > self.timing_tolerance_ms and models_agree_text)
-        if not models_agree_text:
+        if not models_agree_text and not projection_only:
             risk_types.append(ReviewRiskType.LEXICAL.value)
             reasons.append('当前全文与局部投影不一致／缺少完整字词范围证据'
                 if source_coverage.get('current_text_supported') is False and not source_coverage['conflict']
@@ -459,12 +462,15 @@ class ReviewEvidenceAggregator:
             or bool(boundary_flags.intersection({"1", "true", "yes", "high"}))
             or short_or_long_segment and len({len(item["boundaries"]) for name, item in streams.items() if name != "Current"}) > 1
         )
-        lexical_risk = not models_agree_text
+        coverage_only = source_coverage['partial'] or source_coverage['coverage_unknown'] or source_coverage['missing']
+        explicit_boundary = bool(boundary_flags.intersection({'1','true','yes','high'}))
+        if coverage_only and not explicit_boundary:
+            material_boundary = False
+        lexical_risk = not models_agree_text and not projection_only
         speaker_risk = speaker_only and len(speakers) > 1
-        timing_risk = timing_only and timing_delta > self.material_timing_ms
+        timing_risk = timing_only and timing_delta > self.material_timing_ms and (not coverage_only or explicit_boundary)
         requires_review = bool(lexical_risk or speaker_risk or material_boundary or timing_risk)
         if source_coverage['missing'] or source_coverage['partial'] or source_coverage['coverage_unknown']:
-            requires_review = True
             reasons.append('来源信息缺失／待恢复' if source_coverage['missing'] else
                 '原始来源已保留，字级覆盖待核验' if source_coverage['coverage_unknown'] else '部分范围缺少独立来源覆盖')
         score = 0
@@ -803,21 +809,21 @@ def store_review_risks(project: SubtitleProject) -> dict[str, CueReviewRisk]:
 def cached_review_risks(project: SubtitleProject | None) -> dict[str, Any]:
     if project is None:
         return {}
+    if hasattr(project, '_qc_result'):
+        from .current_issues import current_issue_view
+        view = current_issue_view(project)
+        result = getattr(view, '_legacy_risks', None)
+        if result is None:
+            result = {cue_id: {'level': level, 'score': 100 if level == 'high' else 25,
+                               'reasons': [r.detail for r in view.for_cue(cue_id)]}
+                      for cue_id, level in view.levels.items()}
+            view._legacy_risks = result
+        return result
     cache = getattr(project, "_review_risks_cache", None)
     # Historical serialized QC metrics predate the current coverage contract.
     # Keep their stored dictionary intact, but only use freshly computed
     # runtime statistics (normal Studio startup runs its chunked QC scan).
     result = dict(cache) if isinstance(cache, dict) else {}
-    from ..timeline.studio_edit_sequence import source_cue_id_of
-    receipts = project.studio_state.get('caption_timeline', {}).get('instances', {})
-    current = {c.id for c in project.cues}
-    for cue_id, receipt in receipts.items():
-        if cue_id in current and receipt.get('needs_review'):
-            key = source_cue_id_of(cue_id)
-            row = dict(result.get(key, {}))
-            row.update(level='high', score=max(100, int(row.get('score', 0))))
-            row['reasons'] = list(dict.fromkeys([*row.get('reasons', ()), '波纹边界缺少完整字词映射，请检查保留文字']))
-            result[key] = row
     return result
 
 

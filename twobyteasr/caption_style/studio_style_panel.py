@@ -445,12 +445,6 @@ class StudioStylePanelMixin:
     def _open_motion_browser(self) -> None:
         return self.style_controller._open_motion_browser()
 
-    def _open_style_library(self) -> None:
-        return self.style_controller._open_style_library()
-
-    def _apply_style_library_preset(self, style_id: str) -> None:
-        return self.style_controller._apply_style_library_preset(style_id)
-
     def _current_motion_for_library(self) -> tuple[dict[str, object], str]:
         return self.style_controller._current_motion_for_library()
 

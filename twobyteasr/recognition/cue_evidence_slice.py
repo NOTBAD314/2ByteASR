@@ -106,7 +106,7 @@ def _slice_spaced(value, base, low, high, entity_char, caption=None):
     return value[start:end]
 
 
-def slice_evidence(row, cue, field, *, caption=None):
+def slice_evidence(row, cue, field, *, caption=None, text_range=None):
     """``caption``: the cue's current text; spaced transcripts snap their edge words to it."""
     value = str(row.get(field) or '')
     if not usable_transcript(value):
@@ -126,9 +126,16 @@ def slice_evidence(row, cue, field, *, caption=None):
         midpoint = (float(word.get('start_ms', a))+float(word.get('end_ms', b)))/2
         if start <= midpoint < end:
             selected.append((left, len(base)))
-    if not selected or not base:
+    if text_range is not None and base:
+        # A proven, untrimmed caption receipt owns an exact source character
+        # range. Do not slice it again using another model's word midpoints.
+        low, high = text_range
+        if not (0 <= low < high <= len(base)):
+            return ''
+    elif selected and base:
+        low, high = selected[0][0], selected[-1][1]
+    else:
         return ''
-    low, high = selected[0][0], selected[-1][1]
     entity_char = lambda c: c.isascii() and (c.isalnum() or c == '_')
     if _spaced_words(value):
         return _slice_spaced(value, base, low, high, entity_char, caption)

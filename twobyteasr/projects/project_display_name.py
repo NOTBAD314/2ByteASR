@@ -100,4 +100,7 @@ def display_project_name(record=None, *, path=None, project=None, read=True):
     if origin.get('kind')=='recognition_result':
         parent=origin.get('parent')
         return tr('{name} · 识别结果',name=parent) if parent else tr('识别结果')
+    if path.stem=='project' and re.fullmatch(r'(?:p|media)-[0-9a-f]{32}',path.parent.name):
+        media=(vars(project.media) if project is not None else payload.get('media')) or {}
+        name=Path(str(media.get('display_name') or media.get('path') or name)).stem
     return str(state.get('project_name') or name)

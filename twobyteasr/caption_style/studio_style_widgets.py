@@ -19,10 +19,12 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPainterPath,
+    QPalette,
     QPen,
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
+    QStyle, QStyleOptionComboBox, QStylePainter,
     QButtonGroup,
     QFrame,
     QGridLayout,
@@ -43,6 +45,29 @@ from ..studio.studio_helpers import _preview_color, render_style_sample
 from ..design.studio_theme import STYLE_FIELD_HEIGHT, StudioComboBox
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_definition
+
+
+class CompactLayerComboBox(StudioComboBox):
+    """A full-hit-area language picker sized from the current UI font."""
+    def sizeHint(self):
+        result=super().sizeHint()
+        width=max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())),default=0)
+        # Keep label padding and the themed arrow separate, including the
+        # larger UI-font modes. This remains compact beside the preset.
+        result.setWidth(width+56)
+        return result
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self,event):
+        option=QStyleOptionComboBox();self.initStyleOption(option)
+        text=option.currentText;option.currentText=''
+        painter=QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox,option)
+        rect=self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox,option,
+                                        QStyle.SubControl.SC_ComboBoxEditField,self)
+        painter.drawText(rect,Qt.AlignmentFlag.AlignCenter,text)
 
 from ..i18n import bind_text, tr
 
@@ -227,6 +252,21 @@ class ElidedComboBox(StudioComboBox):
     """Combo box whose current item ends in "…" when narrow; Qt clips it
     mid-glyph. The popup list still shows every full name."""
 
+    def set_display_label(self,text,modified=False):
+        self._display_key=(self.currentData(),self.currentText())
+        self._display_label=str(text);self._display_modified=bool(modified)
+        self.setProperty('presetModified',bool(modified))
+        self.setAccessibleDescription(str(text)+(' · 已修改'if modified else ''))
+        self.update()
+
+    def _display_parts(self):
+        if getattr(self,'_display_key',None)==(self.currentData(),self.currentText()):
+            return self._display_label,self._display_modified
+        return self.currentText(),False
+
+    def display_text_source(self):
+        return self._display_parts()[0]
+
     def displayed_text(self) -> str:
         from PySide6.QtWidgets import QStyle, QStyleOptionComboBox
 
@@ -235,8 +275,9 @@ class ElidedComboBox(StudioComboBox):
         field = self.style().subControlRect(
             QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, self)
         icon = option.iconSize.width() + 4 if not option.currentIcon.isNull() else 0
+        text,modified=self._display_parts()
         return self.fontMetrics().elidedText(
-            option.currentText, Qt.TextElideMode.ElideRight, max(0, field.width() - icon - 4))
+            text, Qt.TextElideMode.ElideRight, max(0, field.width() - icon - 4 - (12 if modified else 0)))
 
     def paintEvent(self, event) -> None:
         from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
@@ -244,9 +285,16 @@ class ElidedComboBox(StudioComboBox):
         painter = QStylePainter(self)
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
+        option.currentText=''
         painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
         option.currentText = self.displayed_text()
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+        if self._display_parts()[1]:
+            field=self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox,option,
+                                              QStyle.SubControl.SC_ComboBoxEditField,self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(self.palette().color(QPalette.ColorRole.Link))
+            painter.drawEllipse(QPointF(field.right()-4,field.center().y()),2.5,2.5)
 
 
 class StylePropertyRow(QFrame):
@@ -451,10 +499,16 @@ class StylePropertyRow(QFrame):
         super().mousePressEvent(event)
 
 
+class _ScopeButton(QRadioButton):
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+
 class StyleScopeSelector(QWidget):
     """Compact radio selector with the QComboBox API used by style persistence."""
 
     currentIndexChanged = Signal(int)
+    activated = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -467,6 +521,7 @@ class StyleScopeSelector(QWidget):
         self._layout.setHorizontalSpacing(8)
         self._layout.setVerticalSpacing(2)
         self._short: dict[str, str] = {}
+        self._activating = False
         self.setMinimumHeight(76)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -501,7 +556,7 @@ class StyleScopeSelector(QWidget):
     def addItem(self, label: str, data: str) -> None:
         index = len(self._items)
         self._items.append((label, data))
-        button = bind_text(QRadioButton(), self._short.get(data, label))
+        button = bind_text(_ScopeButton(), self._short.get(data, label))
         button.setObjectName("scopeOption")
         button.setFixedHeight(STYLE_FIELD_HEIGHT - 2)
         button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -509,6 +564,9 @@ class StyleScopeSelector(QWidget):
         button.toggled.connect(
             lambda checked, value=index: checked and self.currentIndexChanged.emit(value)
         )
+        button.clicked.connect(lambda _checked=False, value=index: self.activated.emit(value))
+        button.pressed.connect(lambda: setattr(self, '_activating', True))
+        button.released.connect(lambda: setattr(self, '_activating', False))
         self._group.addButton(button, index)
         self._buttons.append(button)
         self._layout.addWidget(button, index // 2, index % 2)
@@ -583,6 +641,16 @@ class StyleColorButton(QToolButton):
         )
         self._label = str(label or ("白色" if self._color.lightness() > 180 else "黑色"))
         self._enabled_state = bool(enabled)
+        self._mixed_colors = ()
+        self.setToolTip(self._color.name(QColor.NameFormat.HexArgb).upper() if color.isValid() else '无效颜色')
+        self.setAccessibleName(label or self.toolTip())
+        self.update()
+
+    def set_mixed_colors(self, values) -> None:
+        self._mixed_colors = tuple(sorted(values))
+        self._label = '混合'
+        self.setToolTip('混合描边/颜色：' + ' / '.join(self._mixed_colors))
+        self.setAccessibleName('混合颜色')
         self.update()
 
     def set_fill_value(self, fill: FillSpec | Mapping[str, object] | str) -> None:
@@ -595,6 +663,7 @@ class StyleColorButton(QToolButton):
             self._color = QColor(str(first.get("color") or "#FFFFFFFF"))
             self._label = "径向渐变" if self._fill_spec.kind == "radial-gradient" else "线性渐变"
         self._enabled_state = True
+        self._mixed_colors = ()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -611,7 +680,15 @@ class StyleColorButton(QToolButton):
         clip = QPainterPath()
         clip.addRoundedRect(rect, radius, radius)
         painter.setClipPath(clip)
-        if self._fill_spec.kind != "solid":
+        if getattr(self, '_mixed_colors', ()):
+            colors = self._mixed_colors
+            for i, color in enumerate(colors):
+                painter.fillRect(QRectF(rect.left()+rect.width()*i/len(colors), rect.top(),
+                    rect.width()/len(colors)+1, rect.height()), QColor(color))
+            painter.fillRect(rect, QColor(0, 0, 0, 70))
+            painter.setPen(QColor('white'))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, '混合')
+        elif self._fill_spec.kind != "solid":
             if self._fill_spec.kind == "radial-gradient":
                 gradient = QRadialGradient(rect.center(), max(1.0, max(rect.width(), rect.height()) / 2))
             else:

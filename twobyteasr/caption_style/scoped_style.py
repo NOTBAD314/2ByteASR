@@ -29,6 +29,7 @@ def property_patch(before, after):
 
 
 def effective_layer_style(project, cue, layer='original'):
+    if layer=='group':layer='original'
     from .bilingual_layout import settings_from_state, _translation_font
     settings = settings_from_state(project.studio_state)
     from .caption_layer_transform import layer_values,materialize_layer
@@ -52,7 +53,25 @@ def effective_layer_style(project, cue, layer='original'):
     return style
 
 
-def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='original', changed=None):
+def effective_layer_recipe(project,cue,layer='original',*,style=None):
+    """Inspector and renderer share the same resolved recipe appearance."""
+    from .caption_layer_transform import materialize_layer
+    from .bilingual_layout import _translation_appearance
+    from .style_resolution import recipe_for_cue
+    from .style_recipe import StyleRecipe
+    from .visual_snapshot import _materialize_recipe_appearance
+    language='original' if layer=='group' else layer
+    shown=deepcopy(cue)
+    if language=='translation':shown=_translation_appearance(cue,shown)
+    shown=materialize_layer(shown,language)
+    payload=recipe_for_cue(project.style_recipes,shown)
+    face=style or effective_layer_style(project,cue,language)
+    recipe=StyleRecipe.from_dict(payload) if payload else StyleRecipe(name=face.name,motion={})
+    return _materialize_recipe_appearance(recipe,face,shown.appearance_override)
+
+
+def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='original', changed=None, allow_paint=True,
+                        replace_recipe=False,cancel_check=None):
     """Copy nested recipe data on write and retain every other cue property."""
     chosen = frozenset(cue_ids)
     cues = [cue for cue in project.cues if cue.id in chosen]
@@ -60,6 +79,9 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
         return None
     if layer not in ('original', 'translation', 'group'):
         raise ValueError('Unknown subtitle layer')
+    from .paint_patch import paint_only,paint_command,redundant_solid_fill
+    if allow_paint and (paint_only(fields,recipe_patch) or redundant_solid_fill(project,cues,fields,recipe_patch,layer)):
+        return paint_command(project,cue_ids,fields,layer=layer,changed=changed)
     if layer != 'group' and GEOMETRY.intersection(fields) and any(project.generation_metadata.get('translations', {}).get(c.id) for c in cues):
         from ..i18n import tr
         raise ValueError(tr('双语字幕的位置与缩放请选择整组后调整'))
@@ -75,6 +97,7 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
     overrides, transforms, style_ids, effect_ids = {}, {}, {}, {}
     materialized = {}  # Transaction-local; complete cue presentation is the key.
     for cue in cues:
+        if cancel_check is not None and cancel_check():return None
         cache_key=json.dumps((cue.style_id,cue.base_preset_id,cue.speaker_id,
             cue.appearance_override,cue.transform,
             project.generation_metadata.get('translations',{}).get(cue.id,'')),
@@ -150,7 +173,7 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
                         outline={'color': current_style.outline_color, 'width': current_style.outline_width,
                                  'shadow': current_style.shadow})
                     base_recipe = _materialize_recipe_appearance(native, current_style, appearance).to_dict()
-                payload = merge_patch(base_recipe, effective_patch)
+                payload = deepcopy(effective_patch) if replace_recipe else merge_patch(base_recipe, effective_patch)
                 payload.setdefault('name', '局部样式')
                 mirror = deepcopy(styles.get(cue.style_id, project.styles[0]))
                 signature = {'recipe': payload, 'native': {k:v for k,v in asdict(mirror).items() if k != 'id'}}
@@ -162,9 +185,13 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
             translation['style'] = merge_patch(translation.get('style', {}),
                 {k: v for k, v in fields.items() if k in APPEARANCE_FIELDS or (layer == 'translation' and k in GEOMETRY)})
             if recipe_patch:
-                translation['recipe'] = merge_patch(translation.get('recipe', {}), recipe_patch)
+                translation['recipe'] = (deepcopy(recipe_patch) if replace_recipe else
+                                         merge_patch(translation.get('recipe', {}), recipe_patch))
+                if replace_recipe:translation['recipe_base']={}
+            if shadow_in_recipe:translation.get('style',{}).pop('shadow',None)
         overrides[cue.id], transforms[cue.id] = appearance, transform
         materialized[cache_key]=(appearance,transform,style_ids[cue.id])
+    if cancel_check is not None and cancel_check():return None
     return SetCuesPresentationCommand(project, [c.id for c in cues], style_id=cues[0].style_id,
         effect_id=cues[0].effect_id, style_ids=style_ids, effect_ids=effect_ids,
         appearance_overrides=overrides, transform_overrides=transforms,

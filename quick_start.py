@@ -201,6 +201,12 @@ def main() -> int:
         return playback_diagnostic(sys.argv[2:])
     from twobyteasr.acceptance.offline_audit_io import install as install_offline_audit_io
     install_offline_audit_io()
+    if len(sys.argv)==3 and sys.argv[1]=='--runtime-recovery-audit':
+        from twobyteasr.acceptance.runtime_recovery_audit import main as runtime_recovery_audit
+        return runtime_recovery_audit(sys.argv[2])
+    if len(sys.argv)==3 and sys.argv[1]=='--fidelity-report-audit':
+        from twobyteasr.acceptance.fidelity_report_audit import main as fidelity_report_audit
+        return fidelity_report_audit(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--cover-font-self-test':
         from twobyteasr.acceptance.cover_font_selftest import main as cover_font_self_test
         return cover_font_self_test(sys.argv[2])

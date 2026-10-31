@@ -25,3 +25,18 @@ def test_compact_save_roundtrips_the_same_values_and_retains_previous_backup(tmp
     assert loaded.cues[0].text == "中文 日本語 😀"
     assert loaded.generation_metadata["translations"]["stable"] == "訳文"
     assert loaded.studio_state["glossary_proofread_decisions"]["stable"][0]["state"] == "ignored"
+
+
+def test_detached_cooperative_save_keeps_the_same_values_and_backup(tmp_path):
+    p = SubtitleProject(StudioMedia('',duration_ms=10000),
+        cues=[StudioCue(str(i),i*10,i*10+8,'组合重音 e\u0301 与中文') for i in range(900)],
+        generation_metadata={'details': [{'id':i,'words':['l’auto','𠀀','😀']} for i in range(1000)]})
+    target=tmp_path/'cooperative.2byteproj'
+    save_project(p,target,compact=True)
+    original=target.read_bytes()
+    owned=load_project(target)
+    save_project(owned,target,compact=True,owned=True)
+    before,after=json.loads(original),json.loads(target.read_bytes())
+    before.pop('updated_at');after.pop('updated_at')
+    assert before==after
+    assert project_backup_path(target).read_bytes()==original

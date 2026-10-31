@@ -43,11 +43,12 @@ RECORDS_VERSION = 1
 PROMPT_VERSION = "ja-zh-subtitle-v1"
 EN_PROMPT_VERSION = "en-zh-subtitle-v1"   # 2026-10-14: English sources
 KO_PROMPT_VERSION = "ko-zh-subtitle-v1"   # 2026-10-19: Korean sources
+VALIDATION_VERSION = 'translation-language-quantities-repair-v3'
 DEFAULT_TARGET = "zh-Hans"
 # 2026-10-19: Spanish, German, French, Portuguese, Italian and Russian as both
 # targets and (recognized) sources.
 EUROPEAN = ("es", "de", "fr", "pt", "it", "ru")
-TARGETS = ("zh-Hans", "zh-Hant", "en", "ja", "ko", *EUROPEAN)
+TARGETS = ("zh-Hans", "zh-Hant", "en", "ja", "ko", *EUROPEAN,'pt-BR','pt-PT')
 # Native names: shown as they are in every UI language, like the UI language menu.
 TARGET_LABELS = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文", "en": "English", "ja": "日本語", "ko": "한국어",
                  "es": "Español", "de": "Deutsch", "fr": "Français", "pt": "Português", "it": "Italiano",
@@ -60,11 +61,17 @@ LANGUAGE_NAMES = {"zh": "Chinese", "ja": "Japanese", "en": "English", "ko": "Kor
 # File-name suffix of a translation layer (``stem.<suffix>.srt``).
 TARGET_SUFFIX = {"zh-Hans": "zh", "zh-Hant": "zh-Hant", "en": "en", "ja": "ja", "ko": "ko",
                  **{code: code for code in EUROPEAN}}
+TARGET_LABELS.update({'pt-BR':'Português (Brasil)','pt-PT':'Português (Portugal)'})
+TARGET_LANGUAGE.update({'pt-BR':'pt','pt-PT':'pt'})
+TARGET_SUFFIX.update({'pt-BR':'pt-BR','pt-PT':'pt-PT'})
+LANGUAGE_NAMES.update({'ar':'Arabic','hi':'Hindi','vi':'Vietnamese','th':'Thai','und':'the declared source language'})
 
 
 def source_language_of(language: str = "") -> str:
     """The translation source language; projects without a record count as Japanese (the first pair)."""
-    return language if language in SOURCE_LANGUAGES else "ja"
+    if not language:return 'ja'
+    from .segmentation_profiles import profile_for
+    return profile_for(language).code
 
 
 def targets_for(language: str = "") -> tuple[str, ...]:
@@ -138,7 +145,7 @@ _TARGET_ALIASES = {
     "es": "es", "es-es": "es", "es-mx": "es", "spanish": "es", "español": "es", "西班牙语": "es",
     "de": "de", "de-de": "de", "german": "de", "deutsch": "de", "德语": "de",
     "fr": "fr", "fr-fr": "fr", "french": "fr", "français": "fr", "法语": "fr",
-    "pt": "pt", "pt-br": "pt", "pt-pt": "pt", "portuguese": "pt", "português": "pt", "葡萄牙语": "pt",
+    "pt": "pt", "pt-br": "pt-BR", "pt-pt": "pt-PT", "portuguese": "pt", "português": "pt", "葡萄牙语": "pt",
     "it": "it", "it-it": "it", "italian": "it", "italiano": "it", "意大利语": "it",
     "ru": "ru", "ru-ru": "ru", "russian": "ru", "русский": "ru", "俄语": "ru",
 }
@@ -1277,6 +1284,8 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
     from .math_text import FORMULA_RULE, has_placeholders, mask_formulas
     shown = (lambda text: mask_formulas(text)[0]) if math else (lambda text: text)
     target = normalize_target(target)
+    source_tag=source_language
+    source_language=source_language_of(source_language)
     label = TARGET_LABELS[target]
     pairs = normalize_glossary(glossary_pairs)
     names = {str(k): str(v) for k, v in (speaker_names or {}).items() if str(v or "").strip()}
@@ -1317,6 +1326,14 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
         payload["glossary"] = glossary
     payload["lines"] = lines
     payload["output_ids"] = list(batch.target_ids)
+    from .segmentation_profiles import profile_for,language_tag,VERSION
+    source_profile=profile_for(source_tag or source_language)
+    target_profile=profile_for(target)
+    payload['language_policies']={
+        'version':VERSION,
+        'source':{'language':language_tag(source_tag or source_language),'rules':source_profile.fingerprint,'unit':source_profile.unit},
+        'target':{'language':language_tag(target),'rules':target_profile.fingerprint,'unit':target_profile.unit,
+                  'line_max':target_profile.line_max,'max_lines':target_profile.lines,'display_only':True}}
     if chinese_target:
         if european_label:
             system = _WORD_SYSTEM_PROMPT.format(source_label=european_label, label=label,
@@ -1329,6 +1346,11 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
                                                target_rule=_TARGET_RULES[TARGET_LANGUAGE[target]])
     if math and any(has_placeholders(row["text"]) for row in lines):
         system += "\n" + FORMULA_RULE
+    system += ('\nKeep exactly the supplied output IDs and one translation record per ID. '
+        'Never resegment or retime the source, pair by array position, or truncate meaning to meet a line width. '
+        f'Target display wrapping uses {target_profile.unit}, at most {target_profile.lines} lines of {target_profile.line_max:g} units; '
+        'the application handles display wrapping separately from timed-cue segmentation.')
+    if target in ('pt-BR','pt-PT'):system+='\nUse the selected Portuguese locale '+target+' without changing source spelling.'
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -1366,6 +1388,8 @@ def _source_technical_latin_tokens(text: str) -> tuple[set[str], bool]:
             'we', 'to', 'of', 'in', 'is', 'it', 'do', 'get', 'need', 'ready', 'be',
             'as', 'an', 'or', 'on', 'at', 'up', 'by', 'my', 'me', 'he', 'she', 'next',
             'grab', 'first', 'make', 'choose', 'select', 'want', 'go', 'know', 'about'}
+    stop.update('ciao grazie buongiorno buonasera salve ragazzi il lo gli le la un una non sono che per con al del della quindi poi di da se'
+                ' je tu nous vous les des et est pas une der die das und ist nicht ich du ein eine de que não para'.split())
     proper = [len(word) > 1 and word[0].isupper() and any(c.islower() for c in word[1:])
               and word.casefold() not in stop for word in words]
     intrinsic = [any(c.isdigit() for c in word) or
@@ -1381,7 +1405,7 @@ def _source_technical_latin_tokens(text: str) -> tuple[set[str], bool]:
                     left, right = sorted((index, other))
                     gap = text[matches[left].end():matches[right].start()]
                     adjacent_name |= bool(re.fullmatch(r'[\s-]+', gap))
-        if intrinsic[index] or adjacent_name:
+        if intrinsic[index] or adjacent_name or proper[index]:
             allowed.add(word.casefold())
     return allowed, any(intrinsic)
 
@@ -1404,6 +1428,15 @@ def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARG
         return "timestamp"
     source = normalize_source(source_text)
     target_language = TARGET_LANGUAGE.get(normalize_target(target), "zh")
+    if (target_language=='zh' and source.casefold().strip(' .!?') in {'no','not','never','non','mai'}
+            and script_counts(output)['han'] and not re.search(r'不|没|否|无|未|非|别|勿|假|错',output)):
+        return 'negation_mismatch'
+    if target_language == 'zh':
+        # Source proofreading's literal edit gates are not translation gates.
+        # Check explicit quantities across numeral scripts, with IDs exempted.
+        from .translation_fidelity import quantity_mismatch
+        if quantity_mismatch(source,output,source_language,target_language):
+            return 'number_mismatch'
     if target_language != "zh":
         return _validate_foreign(source, output, target_language, source_language_of(source_language))
     if len(output) > 4 * len(source) + 20:
@@ -1425,6 +1458,18 @@ def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARG
         letters = _letters(source)
         latin = letters["latin"] + letters["cyrillic"]
         if latin < 12 or len(source.split()) < 3:
+            technical, _ = _source_technical_latin_tokens(source)
+            if _content(output)==_content(source) and latin:
+                tokens=re.findall(r'[^\W\d_]+',source,re.UNICODE)
+                ordinary={'ciao','grazie','buongiorno','buonasera','salve','ragazzi','non','si','sì',
+                          'hello','thanks','thank','you','yes','no','please','bueno','bonjour','merci'}
+                if any(word.casefold() in ordinary for word in tokens) and not all(
+                        word.casefold() in technical for word in tokens):
+                    return 'echo_source'
+            name=lambda value:bool(re.fullmatch(r'[A-Z][a-z]{3,}',value.strip(' .!?')))
+            if (name(source) and name(output) and source.casefold()!=output.casefold()
+                    and source.casefold() not in {'hello','thanks','grazie','buongiorno','buonasera'}):
+                return 'entity_mismatch'
             return None
         out = script_counts(output)
         technical, has_identifier = _source_technical_latin_tokens(source)
@@ -1570,8 +1615,12 @@ def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAU
         if not isinstance(raw, Mapping):
             notes.append("malformed_item")
             continue
-        cue_id = str(raw.get("id") or "").strip()
+        identifier=raw.get('id')
+        cue_id=str(identifier).strip() if identifier is not None and not isinstance(identifier,bool) else ''
         value = raw.get("translation", raw.get("text"))
+        if isinstance(value,(dict,list,bool)):
+            problems[cue_id]='malformed_translation_type'
+            continue
         text = "" if value is None else str(value)
         if cue_id not in expected_set:
             problems[cue_id or "?"] = "unknown_id"
@@ -1588,7 +1637,7 @@ def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAU
         if cue_id in conflicts:
             problems[cue_id] = "duplicate_id"
         elif cue_id not in seen:
-            problems[cue_id] = "missing"
+            problems.setdefault(cue_id, "missing")
         else:
             reason = validate_translation(batch.source_text(cue_id), seen[cue_id], target, source_language)
             if reason:
@@ -1607,7 +1656,8 @@ def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAU
 
 
 def cache_key(source_text: str, context_texts: Sequence[str], *, target: str, model: str, provider: str,
-              glossary_digest: str = "", prompt_version: str = PROMPT_VERSION, extra: str = "") -> str:
+              glossary_digest: str = "", prompt_version: str = PROMPT_VERSION, extra: str = "",
+              validation_version: str | None = None) -> str:
     """sha256 over every input that can change a translation."""
     parts = {
         "source": normalize_source(source_text),
@@ -1616,6 +1666,7 @@ def cache_key(source_text: str, context_texts: Sequence[str], *, target: str, mo
         "model": str(model or ""),
         "provider": str(provider or ""),
         "prompt_version": str(prompt_version or ""),
+        "validation_version": VALIDATION_VERSION if validation_version is None else str(validation_version),
         "glossary": str(glossary_digest or ""),
         "extra": str(extra or ""),
     }
@@ -1676,6 +1727,7 @@ class TranslationResult:
     translations: dict[str, TranslatedItem] = field(default_factory=dict)
     suggestions: dict[str, TranslatedItem] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
+    rejected_responses: dict[str, dict] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
     skipped_manual: tuple[str, ...] = ()
     cache_hits: list[str] = field(default_factory=list)
@@ -1859,9 +1911,21 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     for cue_id in work:
         window = context_texts(source, cue_id, context_cues)
         contexts[cue_id] = _digest(window)
-        keys[cue_id] = cache_key(result.sources[cue_id], window, target=target, model=model,
-                                 provider=provider_id, glossary_digest=digest, prompt_version=prompt_version,
-                                 extra=_cache_extra(source, cue_id, game_context))
+        key_inputs=dict(target=target,model=model,provider=provider_id,glossary_digest=digest,
+                        prompt_version=prompt_version,extra=_cache_extra(source,cue_id,game_context))
+        keys[cue_id] = cache_key(result.sources[cue_id],window,**key_inputs)
+        previous=source.records.get(cue_id,{})
+        rejected=previous.get('rejected_response') or {}
+        candidate=rejected.get('rejected_translation')
+        if (rejected.get('validation_version')!=VALIDATION_VERSION and isinstance(candidate,str) and candidate
+                and rejected.get('source_sha')==source_sha(result.sources[cue_id])
+                and rejected.get('request_key')==cache_key(result.sources[cue_id],window,**key_inputs,
+                    validation_version=str(rejected.get('validation_version') or ''))
+                and validate_translation(result.sources[cue_id],candidate,target,source_language) is None):
+            succeed(cue_id,clean_translation(candidate),True)
+            emit('recovered_rejected_response',id=cue_id,previous_rule_version=rejected.get('validation_version'),
+                 rule_version=VALIDATION_VERSION)
+            continue
         hit = cache_lookup(cache, keys[cue_id])
         if hit and validate_translation(result.sources[cue_id], hit, target, source_language) is None:
             succeed(cue_id, clean_translation(hit), True)
@@ -1878,6 +1942,9 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 result.problems.append({"batch": batch_no, "id": cue_id, "reason": reason})
 
     batch_counter = [0]
+    validation_repairs = {cue_id:{'reason':str(source.records[cue_id].get('error') or 'previous_validation_failed'),
+        'rejected_translation':str((source.records[cue_id].get('rejected_response') or {}).get('rejected_translation') or '')}
+        for cue_id in work if source.records.get(cue_id,{}).get('status')==FAILED}
 
     def run(batch: TranslationBatch, retries_left: int, output_floor: int = 0) -> None:
         if result.cancelled or result.fatal_error:
@@ -1888,6 +1955,20 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         ids = list(batch.target_ids)
         messages = build_messages(batch, target=target, game_context=game_context, glossary_pairs=pairs,
                                   speaker_names=speaker_names, source_language=source_language, math=math)
+        with lock:
+            repair_hints=[{'id':cue_id,**validation_repairs[cue_id]} for cue_id in ids if cue_id in validation_repairs]
+        if repair_hints:
+            from .translation_fidelity import quantities
+            for hint in repair_hints:
+                if hint['reason']=='number_mismatch':
+                    hint['preserve_quantities']=[{'kind':kind,'value':str(value),'count':count}
+                        for (kind,value),count in quantities(result.sources[hint['id']],source_language,include_han=False).items()]
+            body=json.loads(messages[-1]['content'])
+            body['validation_repairs']={'instruction':'只修复这些ID的校验错误，保留原文归属；勿重复相同无效译文。',
+                                        'items':repair_hints}
+            if any('preserve_quantities' in hint for hint in repair_hints):
+                body['validation_repairs']['quantity_instruction']='原文中的夸张数字也须按相同数值保留，勿自行规整为常见百分比或分数；允许等值中文单位。'
+            messages=[*messages[:-1],{**messages[-1],'content':json.dumps(body,ensure_ascii=False,separators=(',',':'))}]
         max_tokens = max(_max_tokens(batch), min(8192, output_floor))
         try:
             prepare_input(messages, schema=RESPONSE_SCHEMA, max_tokens=max_tokens, operation=BUDGET_OPERATION)
@@ -1942,10 +2023,22 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 accepted, problems = _restore_formulas(source, accepted, problems)
             emit("validated", batch=batch_no, accepted=len(accepted), problems=problems,
                  validation_seconds=time.monotonic()-validation_started)
+            candidates={str(row.get('id')):str(row.get('translation',row.get('text',''))) for row in (_payload_items(payload) or ())
+                        if isinstance(row,Mapping)}
+            with lock:
+                for cue_id in ids:
+                    if cue_id not in problems:continue
+                    hint={'reason':problems[cue_id],'rejected_translation':candidates.get(cue_id,'')}
+                    result.rejected_responses[cue_id]={**hint,'source_sha':source_sha(result.sources[cue_id]),
+                        'validation_version':VALIDATION_VERSION,'request_key':keys[cue_id],
+                        'response_scope':'final_translation_only; no_private_reasoning'}
+                    if validation_repairs.get(cue_id)==hint:
+                        result.failed[cue_id]=problems[cue_id]
+                    else:validation_repairs[cue_id]=hint
         for cue_id, text in accepted.items():
             succeed(cue_id, text, False)
         note(batch_no, problems)
-        remaining = [cue_id for cue_id in ids if cue_id not in accepted]
+        remaining = [cue_id for cue_id in ids if cue_id not in accepted and cue_id not in result.failed]
         report(f"已完成 {len(result.translations) + len(result.suggestions)}/{total} 条")
         if not remaining:
             return
@@ -2139,6 +2232,9 @@ def apply_translation_result(project, result: TranslationResult, *, commit=True)
         else:
             records[cue_id] = _record("", source_text, origin=ORIGIN_AI, status=FAILED, error=reason,
                                       **meta_common)
+    for cue_id, candidate in result.rejected_responses.items():
+        if cue_id in result.failed and cue_id in records:
+            records[cue_id]['rejected_response']=copy.deepcopy(candidate)
     _append_history(container, {"kind": "ai", **result.summary(), "applied": applied})
     _rebuild_view(project)
     return before, snapshot(project)

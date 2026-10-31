@@ -81,12 +81,12 @@ def test_selected_scope_uses_canonical_scope_when_table_is_filtered(page):
     assert set(page._style_target_ids()) == {"a", "b"}
 
 
-def test_new_multiselection_updates_scope_without_applying_style(page):
+def test_new_multiselection_preserves_explicit_scope_without_applying_style(page):
     page.style_scope.setCurrentIndex(page.style_scope.findData("current"))
     before = visuals(page.project)
     count = page.undo_stack.count()
     page.cue_controller.apply_selection_scope(SelectionScope.explicit(["a", "b"], "a"))
-    assert page.style_scope.currentData() == "selected"
+    assert page.style_scope.currentData() == "current"
     assert page.undo_stack.count() == count
     assert visuals(page.project) == before
 

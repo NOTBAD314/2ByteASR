@@ -373,6 +373,8 @@ class PlaybackCaptionCache(QObject):
         self.worker_builds = 0
         self._materialized = None
         self._materialized_key = None
+        self._window_input = None
+        self._window_cues = {}
         if parent is not None:
             parent.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
         self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
@@ -436,6 +438,32 @@ class PlaybackCaptionCache(QObject):
             with self._lock:
                 self._running = False
 
+    def _window_revision(self, revision, cue_ids):
+        """Materialize the requested originals and their bilingual companions.
+
+        The immutable revision still owns every cue, translation and speaker.
+        A preview window only needs its requested cue geometry; preparing the
+        entire film before its first frame made long bilingual projects wait
+        for thousands of unrelated font/layout operations. Speaker-name layout
+        reads neighbouring cues, so keep its existing whole-project path.
+        """
+        from ..projects.studio_revisions import FrozenMap
+        from ..caption_style.bilingual_layout import COMPANION_SUFFIX
+        state = revision.studio_state
+        if isinstance(state, FrozenMap) and dict(state.items).get('show_speaker_names'):
+            return revision
+        cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
+        if cues is not self._window_input:
+            self._window_input = cues
+            self._window_cues = {cue.id: cue for cue in cues}
+        selected = set(cue_ids)
+        selected.update(key[:-len(COMPANION_SUFFIX)] for key in cue_ids if key.endswith(COMPANION_SUFFIX))
+        # Preserve source order for the incremental grouping contract. The
+        # lookup is rebuilt once per immutable cue collection, on this worker.
+        chosen = [self._window_cues[key] for key in selected if key in self._window_cues]
+        chosen.sort(key=lambda cue: (cue.start_ms, cue.end_ms, cue.id))
+        return replace(revision, cues=tuple(chosen), timeline_cues=None)
+
     def _prepare_loop(self):
         materialized = self._materialized
         current = self._materialized_key
@@ -451,11 +479,18 @@ class PlaybackCaptionCache(QObject):
                 if task is None: continue
             revision, ids, width, height = task
             key = revision_key(revision,width,height)
+            with self._lock:
+                if self._closed:
+                    return
+                window_revision = self._window_revision(revision, ids)
+            window_cues = (window_revision.timeline_cues if window_revision.timeline_cues is not None
+                           else window_revision.cues)
             ready_ids = []
             try:
-                if current != key:
+                if (current != key or materialized is None
+                        or any(id(cue) not in materialized.entries for cue in window_cues)):
                     materialized, reused, reason = materialize_captions(
-                        revision, materialized, full_builder=self._full_builder(revision),
+                        window_revision, materialized, full_builder=self._full_builder(window_revision),
                         cancel_check=self._stop_event.is_set)
                     with self._lock:
                         if self._closed:
@@ -577,6 +612,8 @@ class PlaybackCaptionCache(QObject):
             # The materialized copy is a whole project; release it with the session.
             self._materialized=None
             self._materialized_key=None
+            self._window_input=None
+            self._window_cues={}
             self._wake.set()
 
     def worker_thread(self):

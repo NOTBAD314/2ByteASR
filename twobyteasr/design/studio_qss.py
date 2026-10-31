@@ -212,6 +212,37 @@ QWidget#studioTimelineCommandBar QToolButton#rangeAction {{ background: transpar
     border: 1px solid {theme.border}; border-radius: 8px; min-height: 34px; max-height: 34px; min-width: 34px;
     padding: 0 6px; font-size: {t.label_size}px; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; color: {theme.text}; }}
+/* 2026-10-30 (user, draft B): editing / zoom / display / output are pills like the
+   transport; inside them every control is a flat icon, an "on" switch takes the accent tint. */
+QWidget#studioTimelineCommandBar QWidget[commandGroup="editing"],
+QWidget#studioTimelineCommandBar QWidget[commandGroup="view"],
+QWidget#studioTimelineCommandBar QWidget[commandGroup="display"],
+QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] {{
+    background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 12px; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="editing"] QLabel {{ background: transparent; border: 0; padding-left: 6px; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="display"] QCheckBox#timelineToggleChip[iconOnly="true"] {{
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    min-width: 18px; min-height: 32px; max-height: 32px; padding: 0 7px; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="display"] QCheckBox#timelineToggleChip[iconOnly="true"]:hover {{
+    background: {theme.selected}; border-color: transparent; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="display"] QCheckBox#timelineToggleChip[iconOnly="true"]:checked {{
+    background: {theme.accent_tint}; border-color: transparent; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="display"] QCheckBox#timelineToggleChip[iconOnly="true"]:focus {{
+    border-color: {theme.focus}; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] QToolButton#rangeAction {{
+    background: transparent; border: 1px solid transparent; min-height: 32px; max-height: 32px; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] QToolButton#rangeAction:hover {{
+    background: {theme.selected}; border-color: transparent; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="view"] QToolButton#studioTool,
+QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] QToolButton#studioTool,
+QWidget#studioTimelineCommandBar QWidget[commandGroup="editing"] QToolButton#studioTool {{
+    min-height: 32px; max-height: 32px; }}
+QSlider#timelineZoomSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {theme.border_strong}; }}
+QSlider#timelineZoomSlider::sub-page:horizontal {{ height: 4px; border-radius: 2px; background: {theme.text_muted}; }}
+QSlider#timelineZoomSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -5px 0; border-radius: 7px;
+    background: {theme.surface_elevated}; border: 1.5px solid {theme.text_secondary}; }}
+QSlider#timelineZoomSlider::handle:horizontal:hover {{ border-color: {theme.accent}; }}
+QSlider#timelineZoomSlider:disabled::handle:horizontal {{ border-color: {theme.disabled}; }}
 /* 2026-10-18 (user): no divider inside 保存当前帧; the cover button beside it has none. */
 QWidget#studioTimelineCommandBar QToolButton#rangeAction::menu-button {{ border: 0; width: 16px; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction[menuOnly="true"] {{ padding-right: 18px; }}
@@ -271,10 +302,6 @@ QCheckBox#styleSwitch::indicator:checked {{ background: {theme.accent}; border-c
 QToolButton#stylePreviewSample {{ background: rgba(0,0,0,0.28); color: #f4f0ea; border: 1px solid rgba(255,255,255,0.28);
     border-radius: 6px; font-size: 11px; font-weight: 700; padding: 0; }}
 QToolButton#stylePreviewSample:checked {{ background: {theme.accent}; border-color: {theme.accent}; color: {theme.text_on_accent}; }}
-QPushButton#styleLibraryButton {{ background: {theme.accent_tint}; color: {theme.accent_text}; border: 1px solid transparent;
-    border-radius: {t.control_radius}px; min-height: {t.field_height}px; padding: 0 12px; font-weight: 600; }}
-QPushButton#styleLibraryButton:hover {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
-QPushButton#styleLibraryButton:focus {{ border-color: {theme.focus}; }}
 QToolButton#styleEmphasis:checked, QToolButton#styleAnchor:checked {{
     background: {theme.accent_tint}; color: {theme.accent_text}; border-color: {theme.accent_text}; }}
 /* The compact button role's side padding made B/I/U 41 px instead of the

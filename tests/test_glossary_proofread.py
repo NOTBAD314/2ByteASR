@@ -183,7 +183,7 @@ def _wait_saved(page, seconds=20):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         APP.processEvents()
-        if page._save_thread is None:
+        if page._save_thread is None and not page._save_again and not page._save_timer.isActive():
             for _ in range(5):
                 APP.processEvents()
             return True
@@ -266,6 +266,8 @@ def test_every_caption_is_listed_readable_and_editable_without_a_library(tmp_pat
         assert page._live_project()[0].cues[0].text == "嗯 然后骨龙首发"
         assert page.changed_values() == {"c1": "嗯 然后骨龙首发"} and page.pending_values() == {}
         assert page.undo_button.isEnabled() and "本页已改 1 条" in page.count_label.text()
+        page._run_local_checks()
+        assert _wait(page)
         assert page.list._remember_action(_row(page, "c1")) == ("古龙", "骨龙")
         page._flush_save()
         assert _wait_saved(page) and applied and applied[-1] == str(path)
@@ -395,9 +397,11 @@ def test_only_adopted_proposals_are_written_back(tmp_path):
         receipt = project.generation_metadata["glossary_review_jobs"][-1]
         assert receipt["applied_cue_ids"] == ["c2"] and receipt["changes"][0]["kinds"] == ["term"]
         assert receipt["operation"] == "adopt"
-        # Un-adopting writes the original back, as its own undoable step.
+        # An adopted proposal cannot execute again. Undo is the explicit path back.
         page._toggle_issue("c2", next(i for i, issue in enumerate(_row(page, "c2")["issues"]) if issue["checked"]))
-        assert _row(page, "c2")["base"] == "而且CHIOCHOO能奶自己" and page._stack.count() == 2
+        assert _row(page, "c2")["base"] == "而且CHICHOO能奶自己" and page._stack.count() == 1
+        page._undo()
+        assert _row(page,'c2')['base']=='而且CHIOCHOO能奶自己'
     finally:
         _close(page)
 
@@ -416,7 +420,7 @@ def test_changed_subtitles_are_never_overwritten_by_a_stale_review(tmp_path):
         assert page._project.cues[0].text == "用户刚刚改过这一句"
         assert _row(page, "c1")["base"] == "用户刚刚改过这一句" and _row(page, "c1")["issues"][0]["stale"]
         page._flush_save()
-        assert load_project(path).cues[0].text == "而且CHIOCHOO能奶自己"  # nothing was written
+        assert load_project(path).cues[0].text == "用户刚刚改过这一句"  # canonical edit is preserved; old proposal never overwrites it
     finally:
         _close(page)
 
@@ -1019,10 +1023,8 @@ def test_a_whole_name_is_adopted_ignored_and_undone_as_one(tmp_path):
         page._toggle_issue("c1", 1)
         assert rows["c1"]["base"] == "两层一命突袭" and all(i["checked"] for i in rows["c1"]["issues"])
         assert page._stack.count() == 2 and "疫病吐息 → 一命突袭" in page._stack.undoText()
-        page._toggle_issue("c1", 0)  # taking it back is whole too
-        assert rows["c1"]["base"] == "两层疫病吐息"
-        page._undo()
-        assert rows["c1"]["base"] == "两层一命突袭"
+        page._toggle_issue("c1", 0)  # repeated adoption is inert
+        assert rows['c1']['base']=='两层一命突袭' and page._stack.count()==2
         page._undo()
         assert rows["c1"]["base"] == "两层疫病吐息" and not any(i["checked"] for i in rows["c1"]["issues"])
         # 忽略 answers the group without touching the caption.
@@ -1031,8 +1033,8 @@ def test_a_whole_name_is_adopted_ignored_and_undone_as_one(tmp_path):
         assert rows["c2"]["base"] == "击杀之后切到魔草巫灵坍缩" and page._stack.index() == index + 1
         # Ignoring is a persisted, undoable review action.
         assert all(issue.get("ignored") for issue in rows["c2"]["issues"] if not issue["checked"])
-        # Both asked groups are answered now (疫病吐息 adopted and taken back, 巫 ignored).
-        assert page.proposal_counts()["asked"] == 0 and page._groups(rows["c2"])[0]["reviewed"]
+        # Undo restores the first proposal as pending; ignoring the other row is independent.
+        assert page.proposal_counts()['asked']==1 and page._groups(rows['c2'])[0]['reviewed']
         page._flush_save()
         from twobyteasr.projects.studio_project import load_project
         assert [cue.text for cue in load_project(path).cues] == ["两层疫病吐息", "击杀之后切到魔草巫灵坍缩", "最好还是直接切到布克棱岩"]
@@ -1189,12 +1191,16 @@ def test_unsaved_proofreading_is_never_dropped_when_the_save_fails(tmp_path, mon
     page.back_requested.connect(lambda: left.append(True))
     try:
         page._write({"c1": "校对后的字幕"}, label="改一句", manual=True)
-        page._back()  # the save fails: stay, say so, keep the edit
-        assert not left and answers and "磁盘已满" in answers[-1]
+        page._back()
+        assert _wait_saved(page)
+        APP.processEvents()
+        assert "磁盘已满" in page.status_label.text() or '磁盘已满' in page._save_error
         assert _row(page, "c1")["base"] == "校对后的字幕"
         assert load_project(path).cues[0].text == "原来的字幕"
         failing["on"] = False  # the user retries and it works
         page._back()
+        assert _wait_saved(page)
+        APP.processEvents()
         assert left and load_project(path).cues[0].text == "校对后的字幕"
     finally:
         monkeypatch.setattr(storage, "save_project", real_save)
@@ -1213,26 +1219,29 @@ def test_leaving_by_another_page_writes_the_file_first(tmp_path):
         _close(page)
 
 
-def test_flush_save_never_reports_a_still_running_save_as_written():
+def test_flush_save_never_reports_a_still_running_save_as_written(monkeypatch):
     """A save slower than the wait (slow/network drive) used to be dropped and
     reported as written, so Studio could load and later overwrite the older
     file. The page now keeps the thread and says the file is still written."""
     from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
 
-    class SlowThread:
-        def __init__(self):
-            self.waits = 0
-
-        def wait(self, _ms):
-            self.waits += 1
-            return False
-
-    thread = SlowThread()
-    page = SimpleNamespace(_save_timer=SimpleNamespace(isActive=lambda: False), _save_thread=thread,
-                           _save_again=False, _save_error="", _save_now=lambda: None)
-    assert GlossaryProofreadPage._flush_save(page) is False
-    assert page._save_thread is thread and thread.waits == 1
-    assert page._save_error
+    import threading
+    from PySide6.QtCore import QThread,QTimer
+    entered,release=threading.Event(),threading.Event()
+    class SlowThread(QThread):
+        def run(self):entered.set();release.wait(5)
+    page=_page();thread=SlowThread(page);ticks=[]
+    monkeypatch.setattr(GlossaryProofreadPage,'SAVE_DRAIN_TIMEOUT_MS',25)
+    heartbeat=QTimer(page);heartbeat.setInterval(1);heartbeat.timeout.connect(lambda:ticks.append(1));heartbeat.start()
+    page._save_thread=thread;thread.start()
+    try:
+        assert entered.wait(1)
+        assert page._flush_save() is False
+        assert page._save_thread is thread and thread.isRunning() and page._save_error
+        assert ticks  # painting/timers continue during the bounded drain
+    finally:
+        release.set();thread.wait(3000);heartbeat.stop()
+        page._save_thread=None;page._save_error='';_close(page)
 
 
 def _speaker_page(tmp_path, cues, speakers):

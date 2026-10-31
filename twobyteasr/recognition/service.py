@@ -100,8 +100,11 @@ class RunOptions:
             raise ValueError("overwrite_policy 只能是 overwrite、skip 或 error")
         if self.recognition_purpose not in {"final", "analysis"}:
             raise ValueError("recognition_purpose 只能是 final 或 analysis")
-        from ..subtitle_rules.language_rules import SUPPORTED_REQUESTS
-        if self.recognition_language not in SUPPORTED_REQUESTS:
+        from ..subtitle_rules.language_rules import SUPPORTED_REQUESTS,normalize_language
+        from ..subtitle_rules.segmentation_profiles import language_tag
+        if self.recognition_language not in SUPPORTED_REQUESTS and (
+                language_tag(self.recognition_language) == 'und'
+                or normalize_language(self.recognition_language) not in SUPPORTED_REQUESTS):
             raise ValueError("recognition_language 只能是 " + "、".join(SUPPORTED_REQUESTS))
         if self.subtitle_output not in {"original", "translation", "bilingual"}:
             raise ValueError("subtitle_output 只能是 original、translation 或 bilingual")

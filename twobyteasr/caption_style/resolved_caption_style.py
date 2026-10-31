@@ -6,6 +6,8 @@ Font metrics are measured before presentation and cached by font/text/width.
 from __future__ import annotations
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+from collections import OrderedDict
+import threading
 import hashlib
 import json
 import os
@@ -32,6 +34,30 @@ def font_face(family, bold):
 # caption preview walked the project in order and missed every time (an LRU
 # smaller than a cyclic pass never hits). Room for a 10,000-cue bilingual one.
 MEASURE_CACHE_SIZE = 32768
+_MEASUREMENT_FONTS = threading.local()
+
+
+def _measurement_font(filename, size, index=0):
+    """Four font faces per measurement thread, shared by texts at one size.
+
+    FreeType objects stay thread-local; the bounded cache holds no bitmaps.
+    Identity includes actual file metadata so replacing a font retires its face.
+    """
+    from PIL import ImageFont
+    stat = os.stat(filename)
+    key = (filename, int(size), int(index), stat.st_size, stat.st_mtime_ns)
+    fonts = getattr(_MEASUREMENT_FONTS, 'faces', None)
+    if fonts is None:
+        fonts = _MEASUREMENT_FONTS.faces = OrderedDict()
+    font = fonts.get(key)
+    if font is None:
+        font = ImageFont.truetype(filename, size, index=index)
+        fonts[key] = font
+        while len(fonts) > 4:
+            fonts.popitem(last=False)
+    else:
+        fonts.move_to_end(key)
+    return font
 
 
 @lru_cache(maxsize=MEASURE_CACHE_SIZE)
@@ -40,7 +66,7 @@ def fit_single_line(text, family, bold, size, spacing, max_width, scale_x,
     from PIL import ImageFont
     from .font_metadata import resolve_local_face
     face, reason = resolve_local_face(family, weight, style_name, bold, filename, face_index)
-    font = ImageFont.truetype(face.file, 1000, index=face.index)
+    font = _measurement_font(face.file, 1000, index=face.index)
     width = (font.getlength(text)/1000 * size + max(0, len(text)-1)*spacing)*scale_x
     # Measuring is read-only. Neither the authored size nor cue text/timing may
     # be rewritten by a presentation operation.
@@ -53,7 +79,7 @@ def layout_caption(text,family,bold,size,spacing,max_width,scale_x,weight=0,styl
     from .font_metadata import resolve_local_face
     from .caption_text_layout import wrap_caption_text
     face,reason=resolve_local_face(family,weight,style_name,bold,filename,face_index)
-    font=ImageFont.truetype(face.file,1000,index=face.index)
+    font=_measurement_font(face.file,1000,index=face.index)
     def measure(value):return (font.getlength(value)/1000*size+max(0,len(value)-1)*spacing)*scale_x
     result=wrap_caption_text(text,measure,max_width)
     return face.full_name,not reason,result,(sum(font.getmetrics())/1000*size)
@@ -62,7 +88,7 @@ def layout_caption(text,family,bold,size,spacing,max_width,scale_x,weight=0,styl
 @lru_cache(maxsize=1024)
 def _font_ascent(filename, face_index, size):
     from PIL import ImageFont
-    return ImageFont.truetype(filename, 1000, index=face_index).getmetrics()[0]/1000*size
+    return _measurement_font(filename, 1000, index=face_index).getmetrics()[0]/1000*size
 
 
 @lru_cache(maxsize=MEASURE_CACHE_SIZE)
@@ -75,7 +101,7 @@ def _caption_ink_bounds(text, filename, face_index, size, spacing, line_height, 
     """
     from PIL import ImageFont
     sample_size = max(16, min(128, round(size)))
-    font = ImageFont.truetype(filename, sample_size, index=face_index)
+    font = _measurement_font(filename, sample_size, index=face_index)
     scale = size/sample_size
     baseline_correction = ascent-font.getmetrics()[0]*scale
     widest = max(line_widths, default=0.)
@@ -113,7 +139,7 @@ def visible_glyph_size(text, family, bold, size, spacing, weight=0,
     from PIL import ImageFont
     from .font_metadata import resolve_local_face
     face, _ = resolve_local_face(family, weight, style_name, bold, filename, face_index)
-    font = ImageFont.truetype(face.file, 1000, index=face.index)
+    font = _measurement_font(face.file, 1000, index=face.index)
     advance = sum(font.getmetrics())
     boxes = []
     for index, line in enumerate(str(text).split('\n')):
@@ -164,6 +190,7 @@ def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920,play_res_y
     payload=recipe_for_cue(recipes,cue)
     recipe=StyleRecipe.from_dict(payload) if payload else StyleRecipe(name=style.name,motion={})
     max_width=max(1,float(play_res_x)-max(40,style.margin_l)-max(40,style.margin_r)-2*(max(style.outline_width,style.outline2_width)+style.shadow+4))
+    max_width/=max(1.,float(visual.transform.get('_motion_layout_scale',1.)))
     # A derived name-display cue can reserve space around its unchanged
     # anchor. This render-only width also survives immutable worker copies.
     name_width=visual.transform.get('_name_layout_width')

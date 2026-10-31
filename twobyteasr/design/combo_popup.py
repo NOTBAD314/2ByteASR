@@ -127,6 +127,8 @@ def below_rect(anchor: QWidget, width: int, height: int, min_height: int) -> QRe
 def content_width(combo: QComboBox, font_metrics) -> int:
     """Width that shows the longest item without eliding."""
     from ..app.ui_zoom import px
+    custom=getattr(combo,'popup_content_width',None)
+    if callable(custom):return round(custom(font_metrics))
     text = max((font_metrics.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())), default=0)
     icon = combo.iconSize().width() + px(6) if any(
         not combo.itemIcon(i).isNull() for i in range(min(combo.count(), 64))) else 0

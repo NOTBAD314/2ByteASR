@@ -61,10 +61,13 @@ def _commit_mutation(
     selection_after: str | None = None,
     snapshot_cues: bool = True,
     sync_caption_words: bool = True,
+    studio_state_keys: Iterable[str] | None = None,
 ) -> None:
     if project.render_settings.get('_cue_domain') == 'timeline' and dirty & DirtyDomain.CUE_TIMING:
         dirty |= DirtyDomain.PROJECT_METADATA
     state = state_for(project)
+    from ..subtitle_rules.current_issues import legacy_review_inputs, LEGACY_INPUTS
+    legacy_inputs=legacy_review_inputs(project)
     target_ids = tuple(str(item) for item in cue_ids if str(item))
     target_id_set = set(target_ids)
     before_ranges = {
@@ -79,7 +82,12 @@ def _commit_mutation(
         affected_cue_ids=target_ids,
         selection_after=selection_after,
         snapshot_cues=snapshot_cues,
+        studio_state_keys=(None if studio_state_keys is None else (*studio_state_keys,LEGACY_INPUTS)),
     ) as transaction:
+        if legacy_inputs and LEGACY_INPUTS not in project.studio_state:
+            # Preserve what old confirmations actually reviewed, before any
+            # edit updates the legacy manual-text map. History is not deleted.
+            project.studio_state[LEGACY_INPUTS]={key:list(value) for key,value in legacy_inputs.items()}
         mutate()
         after_ranges = {
             cue.id: (int(cue.start_ms), int(cue.end_ms))
@@ -152,9 +160,13 @@ class SetCueFieldsCommand(QUndoCommand):
         super().__init__(text)
         self.project = project
         self.cue_id = str(cue_id)
+        from ..subtitle_rules.current_issues import legacy_review_inputs
+        legacy_review_inputs(project)
         from .studio_edit_sequence import map_timing_to_source, source_cue_id_of
         self.source_cue_id = source_cue_id_of(self.cue_id)
         cue = cue_by_id(project, self.cue_id)
+        if project.render_settings.get('_cue_domain') == 'timeline':
+            self.source_cue_id = cue.id
         # 剪辑模式下 UI 提交的是序列域时间；映射回源域（裁边 cue 无法
         # 无损映射时忽略计时改动，其余字段照常）。identity 序列零变化。
         if {"start_ms", "end_ms"} & set(changes):
@@ -268,6 +280,7 @@ class AdoptReviewCandidateCommand(SetCueFieldsCommand):
         command_text: str = "采用审核候选",
         origin: MutationOrigin = MutationOrigin.MODEL_ADOPTION,
         text_applied: Callable[[str], None] | None = None,
+        resolve_review: bool = True,
     ) -> None:
         super().__init__(
             project,
@@ -279,6 +292,7 @@ class AdoptReviewCandidateCommand(SetCueFieldsCommand):
         )
         self._resolved_at = str(resolved_at)
         self._text_applied = text_applied
+        self._resolve_review = bool(resolve_review)
         statuses = project.studio_state.get("cue_statuses", {})
         confirmations = project.studio_state.get("review_confirmations", {})
         self._before_status = statuses.get(str(cue_id)) if isinstance(statuses, dict) else None
@@ -308,13 +322,15 @@ class AdoptReviewCandidateCommand(SetCueFieldsCommand):
                 confirmations.pop(self.cue_id, None)
 
     def redo(self) -> None:
-        self._set_resolved()
+        if self._resolve_review:
+            self._set_resolved()
         super().redo()
         if self._text_applied is not None:
             self._text_applied(str(self.after["text"]))
 
     def undo(self) -> None:
-        self._restore_review_state()
+        if self._resolve_review:
+            self._restore_review_state()
         super().undo()
         if self._text_applied is not None:
             self._text_applied(str(self.before["text"]))
@@ -944,6 +960,64 @@ class SpeakerStateCommand(QUndoCommand):
         self._apply(False)
 
 
+class SetCandidateRoleCommand(SpeakerStateCommand):
+    """One speaker role, with only its owned metadata in the undo record."""
+
+    KEYS = ("speaker_recovery", "speaker_organization", "speaker_names")
+
+    def __init__(self, project, recovered, changed=None, *, automatic=False, undo_stack=None):
+        super().__init__(project, recovered.speakers, recovered.cues, "设置说话人用途", changed)
+        from ..projects.studio_runtime_state import _json_snapshot
+        self.before = _json_snapshot({k: project.generation_metadata[k] for k in self.KEYS
+                                      if k in project.generation_metadata})
+        self.after = _json_snapshot({k: recovered.generation_metadata[k] for k in self.KEYS
+                                     if k in recovered.generation_metadata})
+        self.automatic, self.undo_stack = automatic, undo_stack
+        if automatic:
+            # Undoing the default is itself an explicit choice. Persist the
+            # opt-out so reopening/refreshing cannot immediately hide it again.
+            policy = self.after.get('speaker_organization', {}).get('low_share_policy') or {}
+            self.before.setdefault('speaker_organization', {})['low_share_policy'] = {
+                **policy, 'ignored': {}, 'reverted_by_user': True}
+        self.before_order = project.studio_state.get("speaker_track_order")
+        self.after_order = recovered.studio_state.get("speaker_track_order")
+        self.error = ""
+
+    def _restore(self, forward):
+        from ..projects.studio_runtime_state import _json_snapshot
+        project = self.project
+        backup = (project.generation_metadata, project.studio_state, project.speakers, project.cues)
+        metadata = dict(project.generation_metadata)
+        values = _json_snapshot(self.after if forward else self.before)
+        for key in self.KEYS:
+            metadata.pop(key, None)
+        metadata.update(values)
+        project.generation_metadata = metadata
+        project.studio_state = dict(project.studio_state)
+        order = self.after_order if forward else self.before_order
+        if order is None:
+            project.studio_state.pop("speaker_track_order", None)
+        else:
+            project.studio_state["speaker_track_order"] = list(order)
+        self.error = ""
+        try:
+            self._apply(forward)
+        except Exception as exc:
+            (project.generation_metadata, project.studio_state, project.speakers, project.cues) = backup
+            self.error = f"{type(exc).__name__}: {exc}"
+            if self.changed:
+                self.changed()
+
+    def redo(self):
+        self._restore(True)
+
+    def undo(self):
+        self._restore(False)
+        if self.automatic and self.undo_stack is not None and not self.error:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self.undo_stack, self.undo_stack.resetClean)
+
+
 class RecoverSpeakersCommand(SpeakerStateCommand):
     """Candidate evidence, track selection and cues form one undo transaction."""
 
@@ -1533,6 +1607,7 @@ class BatchReplaceTextCommand(QUndoCommand):
         learning_meta: Mapping[str, object] | None = None,
         glossary_ids: Iterable[str] | None = None,
         review_receipt: Mapping[str, object] | None = None,
+        proofread_records: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(f"批量替换“{needle}”" if needle else "Batch replace text")
         self.project = project
@@ -1545,6 +1620,9 @@ class BatchReplaceTextCommand(QUndoCommand):
         from ..caption_style.text_marks import remapped_override
         self.appearance_before = {c.id:copy.deepcopy(c.appearance_override) for c in project.cues if c.id in self.after}
         self.appearance_after = {c.id:remapped_override(c,self.after[c.id]) for c in project.cues if c.id in self.after}
+        for key,override in self.appearance_after.items():
+            if self.before[key] != self.after[key]:
+                override['text_alignment']={'text':self.after[key],'status':'needs_alignment'}
         self.changed = changed
         self.origin = MutationOrigin(origin)
         self.needle = str(needle or "")
@@ -1555,6 +1633,13 @@ class BatchReplaceTextCommand(QUndoCommand):
         from ..projects.studio_runtime_state import _json_snapshot
         self.review_before = _json_snapshot(project.generation_metadata.get('glossary_review_jobs')) if review_receipt is not None else None
         self.review_after = None
+        self.proofread_before = self.proofread_after = None
+        if proofread_records is not None:
+            from ..glossary.proofread_retention import review_state
+            saved = review_state(project)
+            self.proofread_round = saved['round_id']
+            self.proofread_before = {key: copy.deepcopy(saved['rows'].get(key)) for key in proofread_records}
+            self.proofread_after = copy.deepcopy(dict(proofread_records))
         self.manual_confirmations_before = copy.deepcopy(project.studio_state.get('manual_caption_text', {}))
         self.manual_confirmations_after = None
         if review_receipt is not None:
@@ -1564,7 +1649,12 @@ class BatchReplaceTextCommand(QUndoCommand):
             self.review_after = [*(self.review_before or []), receipt]
             if receipt.get('source') == 'user_confirmed':
                 self.manual_confirmations_after = {**self.manual_confirmations_before, **self.after}
-        self.word_overrides_before = copy.deepcopy(project.studio_state.get('term_word_overrides', {}))
+        # The undo command owns only its edited cues. A long recognition
+        # project can retain word evidence for thousands of other cues here.
+        # Copying/replacing that whole map for one text edit stalled the GUI
+        # and could overwrite unrelated later changes on undo.
+        overrides = project.studio_state.get('term_word_overrides', {})
+        self.word_overrides_before = {key: copy.deepcopy(overrides[key]) for key in self.after if key in overrides}
         self.word_overrides_after = copy.deepcopy(self.word_overrides_before)
         if self.glossary_after is not None:
             from ..glossary.terminology import remap_words
@@ -1637,6 +1727,10 @@ class BatchReplaceTextCommand(QUndoCommand):
 
     def _apply(self, values: Mapping[str, str]) -> None:
         def mutate() -> None:
+            if self.proofread_after is not None:
+                from ..glossary.proofread_retention import review_state, put_records
+                if review_state(self.project)['round_id'] == self.proofread_round:
+                    put_records(self.project, self.proofread_after if values is self.after else self.proofread_before)
             if self.manual_confirmations_after is not None:
                 self.project.studio_state['manual_caption_text'] = copy.deepcopy(
                     self.manual_confirmations_after if values is self.after else self.manual_confirmations_before)
@@ -1651,9 +1745,13 @@ class BatchReplaceTextCommand(QUndoCommand):
                 forward = values is self.after
                 self.project.glossary_ids = list(self.glossary_after if forward else self.glossary_before)
                 overrides = self.word_overrides_after if forward else self.word_overrides_before
-                if overrides:
-                    self.project.studio_state['term_word_overrides'] = copy.deepcopy(overrides)
-                else:
+                current = self.project.studio_state.setdefault('term_word_overrides', {})
+                for cue_id in self.after:
+                    if cue_id in overrides:
+                        current[cue_id] = copy.deepcopy(overrides[cue_id])
+                    else:
+                        current.pop(cue_id, None)
+                if not current:
                     self.project.studio_state.pop('term_word_overrides', None)
             for cue in self.project.cues:
                 if cue.id in values:

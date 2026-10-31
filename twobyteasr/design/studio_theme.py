@@ -224,7 +224,7 @@ QDialog#toolDialog QLabel#findFieldLabel {{ color: {theme.text_secondary}; }}
 QDialog#toolDialog QLabel#findKeyHint {{ color: {theme.text_muted}; font-size: 12px; }}
 QDialog#toolDialog QPushButton#findOptionChip {{
     background: transparent; color: {theme.text_secondary}; border: 1px solid {theme.border};
-    border-radius: 13px; min-height: 26px; max-height: 26px; padding: 0 12px; font-weight: 500;
+    border-radius: 13px; min-height: 26px; max-height: 26px; padding: 0 12px; font-size: 14px; font-weight: 500;
 }}
 QDialog#toolDialog QPushButton#findOptionChip:hover {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border_strong}; }}
 QDialog#toolDialog QPushButton#findOptionChip:checked {{ background: {theme.accent_soft}; color: {theme.text}; border-color: {theme.accent}; }}
@@ -233,6 +233,33 @@ QDialog#toolDialog QPushButton#findLinkButton {{
     background: transparent; color: {theme.accent_text}; border: 0; min-height: 22px; padding: 0 4px; font-weight: 500;
 }}
 QDialog#toolDialog QPushButton#findLinkButton:hover {{ background: transparent; color: {theme.text}; }}
+/* 2026-10-30 批量替换 draft C: big find/replace fields, round swap, tag row, result cards. */
+QDialog#toolDialog QLineEdit#findBigField {{
+    background: {theme.input_surface}; color: {theme.text}; border: 1px solid {theme.border};
+    border-radius: 10px; min-height: 42px; padding: 0 8px; font-size: 16px; }}
+QDialog#toolDialog QLineEdit#findBigField:focus {{ border-color: {theme.focus}; }}
+QDialog#toolDialog QPushButton#findSwapButton {{
+    background: {theme.surface_elevated}; border: 1px solid {theme.border}; border-radius: 18px; padding: 0; }}
+QDialog#toolDialog QPushButton#findSwapButton:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; }}
+QDialog#toolDialog QComboBox#findScopeTag {{
+    background: {theme.accent_soft}; color: {theme.text}; border: 1px solid {theme.accent};
+    border-radius: 13px; min-height: 26px; max-height: 26px; padding: 0 10px; font-size: 14px; font-weight: 500; }}
+QDialog#toolDialog QComboBox#findScopeTag::drop-down {{ border: 0; width: 16px; }}
+QDialog#toolDialog QPushButton#findMoreChip {{
+    background: transparent; color: {theme.text_muted}; border: 1px dashed {theme.border_strong};
+    border-radius: 13px; min-height: 26px; max-height: 26px; padding: 0 12px; font-size: 14px; font-weight: 500; }}
+QDialog#toolDialog QPushButton#findMoreChip:hover {{ color: {theme.text}; border-color: {theme.text_muted}; }}
+QDialog#toolDialog QListWidget#findResultCards {{ background: transparent; border: 0; font-size: 14px; }}
+QDialog#toolDialog QListWidget#findResultCards::item {{
+    background: {theme.input_surface}; color: {theme.text}; border: 1px solid {theme.border};
+    border-radius: 9px; padding: 8px 12px; margin: 0 2px; }}
+QDialog#toolDialog QListWidget#findResultCards::item:hover {{ border-color: {theme.border_strong}; }}
+QDialog#toolDialog QListWidget#findResultCards::item:selected {{
+    background: {theme.selected}; color: {theme.text}; border-color: {theme.accent}; }}
+QDialog#toolDialog QLabel#findEmptyHint {{ color: {theme.text_muted}; font-size: 13px; background: transparent; }}
+QDialog#toolDialog QPushButton#findQuietButton {{ background: transparent; border-color: transparent; color: {theme.text_secondary}; }}
+QDialog#toolDialog QPushButton#findQuietButton:hover {{ background: {theme.selected}; color: {theme.text}; }}
+QDialog#toolDialog QPushButton#findQuietButton:disabled {{ color: {theme.disabled}; }}
 QWidget#studioVideoEmptyHost {{ background: {theme.panel}; }}
 QFrame#studioVideoDropZone {{
     background: {theme.surface_muted}; border: 2px dashed {theme.border}; border-radius: 8px;

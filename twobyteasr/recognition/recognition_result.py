@@ -80,12 +80,15 @@ def media_identity_for_task(media_path, context=None, *, selection=None):
 
 
 def recognition_project_path(media_path, job_id, *, media_index=1):
-    from ..projects.studio_project import canonical_project_path
-    canonical = canonical_project_path(media_path)
+    from ..projects.studio_project import project_library_root, PROJECT_SUFFIX
+    from ..projects.project_paths import legacy_stem, internal_project_path
     job_id = validate_job_id(job_id)
-    # Full job IDs prevent basename collisions and same-second overwrites.
-    directory = canonical.parent.with_name(f"{canonical.parent.name}__{job_id}_{int(media_index)}")
-    return directory / canonical.name
+    safe_name=legacy_stem(Path(media_path).stem)
+    root=project_library_root()
+    legacy=root/f'{safe_name}__{job_id}_{int(media_index)}'/f'{safe_name}{PROJECT_SUFFIX}'
+    if legacy.is_file():
+        return legacy
+    return internal_project_path(root, f'{job_id}:{int(media_index)}')
 
 
 def cue_identity(project):
@@ -95,7 +98,16 @@ def cue_identity(project):
 
 def input_graph_identity(project):
     """Persistent source/geometry/mapping only; no previews or runtime metadata."""
-    data = project.to_dict()
+    from dataclasses import asdict,is_dataclass
+    from ..timeline.studio_edit_sequence import persist_sequence
+    persist_sequence(project)
+    # Captions, raw ASR evidence and translation history are not graph data.
+    # Serializing/deep-copying all of them here multiplied final save work.
+    plain=lambda value:asdict(value) if is_dataclass(value) else value
+    data={key:[plain(row) for row in getattr(project,key)] for key in
+          ('media_pool','video_tracks','audio_tracks','av_track_groups')}
+    data.update(media=plain(project.media),edit_sequence=project.edit_sequence,
+                studio_state={'media_time_mapping':project.studio_state.get('media_time_mapping')})
     def pick(row, fields):
         return {key: row.get(key) for key in fields if key in row}
     media = pick(data.get("media") or {}, ("path", "fingerprint", "duration_ms", "width", "height"))

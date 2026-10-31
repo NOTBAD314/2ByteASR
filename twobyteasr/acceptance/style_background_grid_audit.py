@@ -216,12 +216,13 @@ def start(window, output):
             self.check('outer_labels_end_with_section_labels',
                        {x(label) + label.width() for label in outer} == {x(label) + label.width() for label in inner[:1]},
                        [x(label) + label.width() for label in outer + inner[:1]])
-            controls = [page.style_scope, page.style_apply_geometry, page.style_preset, page.style_font,
-                        page.style_font_size, page.style_fill_swatch, page.style_outline_swatch,
-                        page.style_back_swatch, page.style_shadow_swatch, page.style_glow_swatch,
+            controls = [page.style_scope, page.style_apply_geometry, page.style_font,
+                        page.style_font_size, page.style_fill_button, page.style_outline_button,
+                        page.style_back_button, page.style_shadow_button, page.style_glow_button,
                         page.style_outline2, page.style_alignment, page.style_position_x]
-            starts = {x(item) for item in controls}
+            starts = {x(item) for item in controls if item.isVisibleTo(root)}
             self.check('controls_start_on_one_line', len(starts) == 1, sorted(starts))
+            self.check('preset_action_row_has_more_name_space',x(page.style_preset)<x(page.style_font))
             self.check('switches_share_trailing_slot',
                        x(page.style_shadow_switch) == x(page.style_glow) == x(page.style_background),
                        [x(page.style_background), x(page.style_shadow_switch), x(page.style_glow)])
@@ -245,11 +246,11 @@ def start(window, output):
             spans = [(x(item), x(item) + item.width()) for item in row]
             self.check('text_row_does_not_overlap', all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
                        and spans[-1][1] <= root.width(), spans)
-            preset = [page.style_preset, page.style_library_button]
+            preset = [page.style_preset, page.style_layer]
             pspans = [(x(item), x(item) + item.width()) for item in preset]
             self.check('preset_row_does_not_overlap', pspans[0][1] <= pspans[1][0], pspans)
             shown = page.style_preset.displayed_text()
-            full = page.style_preset.currentText()
+            full = page.style_preset.display_text_source()
             self.check('preset_name_whole_or_elided', shown == full or (shown.endswith('…') and len(shown) < len(full)),
                        [full, shown, page.style_preset.width()])
             summary = page._appearance_rows['shadow'].inline_summary

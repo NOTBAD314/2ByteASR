@@ -41,6 +41,16 @@ class _PreviewThread(QThread):
         started = time.perf_counter()
         row = {"event": "proofread_preview_prepare", **self.plan.diagnostic()}
         try:
+            from .recognition_audio_preview import cached_recognition_pcm
+            payload = cached_recognition_pcm(self.plan)
+            if self._cancelled:
+                raise InterruptedError("superseded")
+            if payload:
+                row.update(outcome="decoded", source="recognition_pcm_cache", pcm_bytes=len(payload),
+                           graph_ready_ms=0., elapsed_ms=round((time.perf_counter()-started)*1000, 2))
+                record_preview(row)
+                self.decoded.emit(self.request_id, payload)
+                return
             command, receipts = preview_command(self.plan, ffmpeg_executable(), cancelled=lambda: self._cancelled)
             row.update(layers=self.plan.diagnostic()["layers"],
                        source_clocks={k: {"kind": v.get("kind"), "path": v.get("path")} for k, v in receipts.items()},

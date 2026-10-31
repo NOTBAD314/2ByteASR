@@ -34,7 +34,90 @@ from ..i18n import tr
 
 
 class StudioReviewMixin:
+    def _show_current_issue_details(self):
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QToolButton
+        from ..subtitle_rules.current_issues import current_issue_view
+        view = current_issue_view(self.project)
+        rows = view.for_cue(self.selected_cue_id)
+        diagnostic = view.diagnostics.get(self.selected_cue_id, ())
+        dialog = QDialog(self)
+        dialog.setWindowTitle('当前字幕问题与诊断')
+        dialog.resize(700, 420)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        parts = ['<b>当前待办</b>']
+        for index, row in enumerate(rows):
+            parts.append(f"<p>{html.escape(row.layer + ' · ' + row.language + ' · ' + row.label)}<br>{html.escape(row.detail)}<br>"
+                f"<a href='locate:{index}'>定位试听</a> · <a href='edit:{index}'>编辑此语言层</a> · <a href='timing:{index}'>调整时间</a></p>")
+        if not rows:
+            parts.append('<p>当前没有需要处理的问题。</p>')
+        browser.setHtml(''.join(parts))
+        browser.setOpenLinks(False)
+        project = self.project
+        def action(url):
+            try:
+                kind, number = url.toString().split(':', 1)
+                row = rows[int(number)]
+            except (ValueError, IndexError):
+                return
+            if kind not in {'locate', 'edit', 'timing'}:
+                return
+            dialog.accept()
+            def perform():
+                if self.project is not project:
+                    return
+                cue = self._cue_lookup.get(row.cue_id)
+                if cue is None:
+                    return
+                self.select_cue(cue.id)
+                self._seek(cue.start_ms/1000)
+                if kind == 'edit':
+                    self._open_caption_editor(cue.id, row.layer)
+                elif kind == 'locate':
+                    self._play_review_context()
+                else:
+                    self._show_context_panel()
+                    self.start_ms.setFocus()
+            QTimer.singleShot(0, perform)
+        browser.anchorClicked.connect(action)
+        layout.addWidget(browser)
+        toggle = QToolButton(dialog)
+        toggle.setText(f'诊断说明（{len(diagnostic)}，不计入待办）')
+        toggle.setCheckable(True)
+        extra = QTextBrowser(dialog)
+        extra.setHtml(''.join(f'<p>{html.escape(r.label)}：{html.escape(r.detail)}</p>' for r in diagnostic))
+        extra.hide()
+        toggle.toggled.connect(extra.setVisible)
+        layout.addWidget(toggle)
+        layout.addWidget(extra)
+        dialog.exec()
+
+    def _adopt_highlighted_suggestion(self):
+        if getattr(self, '_caption_draft', None) is not None:
+            return self._apply_editor_suggestion()
+        target=self._resolve_caption_edit_target()
+        if target is None or target.layer!='original':
+            bind_text(self.save_state,'当前选中译文；按 E 查看这一层的建议')
+            return False
+        rows=getattr(self,'_review_suggestions',())
+        layout=getattr(self,'review_dock_candidate_layout',None)
+        if layout is not None:
+            for i in range(layout.count()):
+                widget=layout.itemAt(i).widget();label=getattr(widget,'text_label',None)
+                hit=getattr(label,'_hover',None)
+                if hit and hit[1]>=0:
+                    return self._apply_review_suggestion(hit[0],hit[1])
+        choices=[(i,j) for i,r in enumerate(rows) if r.kind!='pronoun' for j in range(len(r.options))]
+        if len(choices)==1:return self._apply_review_suggestion(*choices[0])
+        if choices:bind_text(self.save_state,'请先高亮一个具体候选，再按 Shift+R')
+        return False
+
     def _set_cue_filter(self, status: str) -> None:
+        restart_review = bool(self._review_mode)
+        if restart_review:
+            self._set_review_mode(False)
+        self._review_all_explicit = ((self.project.project_id, self.session.generation)
+                                     if status == 'all' and self.project else None)
         if status in {"priority", "critical"} and self.project:
             self._refresh_review_risks()
             self._show_teach_hint("priority_review")
@@ -46,6 +129,8 @@ class StudioReviewMixin:
         cue = self._cue_lookup.get(self.selected_cue_id)
         if cue is not None:
             self._refresh_current_review_context(cue)
+        if restart_review:
+            self._set_review_mode(True)
 
     def _toggle_review_dock(self, collapsed: bool) -> None:
         for widget in (
@@ -60,7 +145,7 @@ class StudioReviewMixin:
 
     def _show_filter_menu(self) -> None:
         menu = create_studio_menu(self)
-        for key, caption in (("all", "全部"), ("priority", "建议确认"), ("critical", "仅需要检查"), ("pending", "待确认"), ("issue", "有问题"), ("done", "已完成")):
+        for key, caption in (("all", "全部"), ("priority", "建议确认"), ("critical", "仅需要检查"), ("pending", "未审核"), ("issue", "有问题"), ("done", "已处理")):
             action = menu.addAction(caption)
             action.setCheckable(True)
             action.setChecked(self.cue_model.filter_status == key)
@@ -123,6 +208,8 @@ class StudioReviewMixin:
         spin.blockSignals(False)
 
     def _step_cue(self, delta: int) -> None:
+        if self._review_mode:
+            return self._step_priority(delta)
         if not self.project or not self.cue_model.rowCount():
             return
         index = self.cue_model.row_for_cue_id(self.selected_cue_id)
@@ -148,7 +235,7 @@ class StudioReviewMixin:
         if cue is None:
             return
         issues = cached_qc_result(self.project).for_cue(cue.id)
-        candidates = review_candidates(self.project, cue)
+        candidates = tuple(c for c in review_candidates(self.project, cue) if not c.context_only)
         self._review_candidates = candidates
         severity_order = {QCSeverity.CRITICAL: 0, QCSeverity.WARNING: 1, QCSeverity.INFO: 2}
         ordered_issues = sorted(issues, key=lambda issue: severity_order.get(issue.severity, 9))
@@ -200,17 +287,50 @@ class StudioReviewMixin:
         elif aggregate.speaker_only:
             reason = "文本一致，请确认说话人候选"
         elif aggregate.source_coverage.get('missing'):
-            reason = "来源范围信息缺失，现有记录需要恢复或结合音频确认"
+            reason = "来源范围信息未记录；仅作说明，当前字幕默认可用"
         elif aggregate.source_coverage.get('coverage_unknown'):
-            reason = "原始来源已保留，字级覆盖待核验；可对照下方原文与音频"
+            reason = "字级覆盖尚未完整记录；仅作说明，当前字幕默认可用"
         elif aggregate.source_coverage.get('partial'):
-            reason = "不同文本范围的独立来源覆盖不同，请检查缺少覆盖的部分"
+            reason = "局部范围缺少额外来源覆盖；仅作说明，当前字幕默认可用"
         elif len(candidates) > 1:
             reason = "模型输出存在文本差异，请选择更可信的文本"
         else:
             reason = "当前没有需要人工处理的问题"
+        from ..subtitle_rules.current_issues import current_issue_view
+        view = current_issue_view(self.project)
+        current = view.for_cue(cue.id)
+        if current:
+            self.review_summary_text.setText(' · '.join(dict.fromkeys(r.label for r in current)))
+            reason = '；'.join(f"{'译文' if r.layer == 'translation' else '原文'} · {r.language}：{r.detail}" for r in current)
+        else:
+            bind_text(self.review_summary_text, '当前字幕没有待处理建议')
+            reason = '来源、覆盖和格式记录可在“详情”展开；未人工看过仅表示审核进度。'
         self.review_reason_label.setText(reason)
+        self.review_reason_label.setToolTip(reason)
+        if self._review_mode and session is not None:
+            from ..subtitle_rules.current_issues import reviewed_version, DECISIONS
+            decisions = self.project.studio_state.get(DECISIONS, {})
+            if session.scope.filter_mode in {'priority', 'critical'}:
+                session.resolved_ids = {key for key in session.scope.visible_cue_ids if not view.for_cue(key)}
+            else:
+                session.resolved_ids = {key for key in session.scope.visible_cue_ids
+                    if decisions.get('reviewed:'+key) and decisions['reviewed:'+key].get('input_version') == reviewed_version(self.project, self._cue_lookup[key])}
+            remaining = session.total - session.completed
+            moved=0
+            if session.scope.filter_mode in {'priority','critical'}:
+                expected='high' if session.scope.filter_mode=='critical' else 'suggested'
+                moved=sum(bool(view.for_cue(key)) and view.level(key)!=expected for key in session.scope.visible_cue_ids)
+                remaining-=moved
+            self.review_queue_label.setText(f'本轮已处理 {session.completed} / {session.total} · 当前剩余 {remaining}'
+                                           +(f' · 已转其他分类 {moved}' if moved else ''))
         if hasattr(self, "review_dock_candidate_layout"):
+            text_types={'model_disagreement','suspected_word'}
+            if (not any(r.layer=='original' and r.kind in text_types for r in current)
+                    and any(r.cue_id==cue.id and r.layer=='original' and r.kind in text_types
+                            and r.disposition=='handled' for r in view.records)):
+                from ..subtitle_rules.studio_qc import QCCandidate
+                candidates=(next((c for c in candidates if c.text==cue.text),QCCandidate(cue.text,('Current',))),)
+                self._review_candidates=candidates
             speaker_only = bool(aggregate.speaker_only and aggregate.models_agree_text)
             card_mode = (not speaker_only and len(candidates) > 1
                          and not (aggregate.boundary_only and not aggregate.requires_review))
@@ -229,8 +349,10 @@ class StudioReviewMixin:
                          tuple(sorted(str(row.get("speaker_id") or row.get("speaker") or "")
                                       for row in aggregate.hypotheses)) if speaker_only else (),
                          format_model_evidence_coverage(aggregate.hypotheses)['display'] if not card_mode else "",
-                         tuple((row.start, row.end, row.original, tuple(option.text for option in row.options))
+                         tuple((row.kind, row.start, row.end, row.original, tuple(option.text for option in row.options))
                                for row in suggestions))
+            binding=(id(self.project),self.session.generation,cue.id,cue.text,cue.start_ms,cue.end_ms,signature)
+            self._review_suggestions_binding=binding
             if signature == getattr(self, "_review_cards_signature", None) and self.review_dock_candidate_layout.count():
                 # Same caption, same width bucket: keep the cards (resize events
                 # and repeated hydration of one caption used to rebuild them).
@@ -282,10 +404,10 @@ class StudioReviewMixin:
                         suggestions=suggestions if index == 0 else (),
                         key_text=self._shortcut_key_text,
                     )
-                    card.clicked.connect(lambda row=index: self._adopt_review_candidate(row))
+                    card.clicked.connect(lambda row=index, bound=binding: self._adopt_review_candidate(row,binding=bound))
                     if index == 0 and suggestions:
-                        card.suggestion_activated.connect(self._apply_review_suggestion)
-                        card.suggestion_menu_requested.connect(self._show_review_suggestion_menu)
+                        card.suggestion_activated.connect(lambda mark,option,bound=binding:self._apply_review_suggestion(mark,option,binding=bound))
+                        card.suggestion_menu_requested.connect(lambda mark,pos,bound=binding:self._show_review_suggestion_menu(mark,pos,binding=bound))
                     if candidate.context_only:
                         card.setEnabled(False)
                         card.setToolTip('原始段落上下文；缺少本条精确字词边界，请结合原音编辑，不能整段替换。')
@@ -299,14 +421,10 @@ class StudioReviewMixin:
             else:
                 # Consistent banner
                 coverage = format_model_evidence_coverage(aggregate.hypotheses)
-                banner = QLabel(
-                    f"{coverage['headline']} · 建议确认"
-                    if aggregate.requires_review or coverage['missing'] or coverage['partial']
-                    else f"{coverage['headline']} · 无冲突证据"
-                )
-                banner.setText(banner.text() + '\n' + coverage['display'])
+                banner = QLabel(reason)
+                banner.setToolTip(coverage['display'])
                 banner.setWordWrap(True)
-                banner.setObjectName("checkWarning" if aggregate.requires_review else "checkPass")
+                banner.setObjectName("checkWarning" if current else "checkPass")
                 if suggestions:
                     # Nothing to choose between, but the caption still has
                     # glossary fixes or 他/她 to flip: card 1 next to the banner.
@@ -314,22 +432,86 @@ class StudioReviewMixin:
                     card = ReviewCandidateCard(0, QCCandidate(cue.text, ("Current",)), is_current=True,
                                                current_text=cue.text, parent=self, suggestions=suggestions,
                                                key_text=self._shortcut_key_text)
-                    card.clicked.connect(lambda: self._adopt_review_candidate(0))
-                    card.suggestion_activated.connect(self._apply_review_suggestion)
-                    card.suggestion_menu_requested.connect(self._show_review_suggestion_menu)
+                    card.clicked.connect(lambda _=0,bound=binding: self._adopt_review_candidate(0,binding=bound))
+                    card.suggestion_activated.connect(lambda mark,option,bound=binding:self._apply_review_suggestion(mark,option,binding=bound))
+                    card.suggestion_menu_requested.connect(lambda mark,pos,bound=binding:self._show_review_suggestion_menu(mark,pos,binding=bound))
                     self.review_dock_candidate_layout.addWidget(card, 0, 0)
                     self.review_dock_candidate_layout.addWidget(banner, 0 if columns > 1 else 1, 1 if columns > 1 else 0)
                 else:
                     self.review_dock_candidate_layout.addWidget(banner, 0, 0, 1, columns)
 
+    def _review_entry_target(self):
+        """Capture explicit active identity before a filter resets selection."""
+        if self.project is None:
+            return None
+        timeline = self.timeline
+        cues = self._cue_lookup
+        explicit = str(timeline.explicit_subtitle_id or '')
+        layer = str(timeline.active_subtitle_layer or 'original')
+        scope = timeline.selection_scope
+        active = str(getattr(scope,'active_id','') or timeline.selected_id or '')
+        if explicit and active in cues and scope.contains(active):
+            return active, layer
+        hidden = self.project.hidden_speaker_ids() | frozenset(getattr(timeline,'hidden_speakers',()))
+        visibility = getattr(self,'_subtitle_track_visibility',{})
+        available = [cue for cue in cues.values() if cue.speaker_id not in hidden and visibility.get(cue.speaker_id,True)]
+        if not available:
+            return None
+        ms = int(timeline.playhead_ms)
+        preferred = str(getattr(self.session, 'preferred_subtitle_speaker', '') or '')
+        header=getattr(timeline,'selected_track_header',None)
+        if header and header[0]=='subtitle':preferred=str(header[1])
+        hits = [cue for cue in available if cue.start_ms <= ms < cue.end_ms]
+        if hits:
+            cue = min(hits, key=lambda c:(c.speaker_id != preferred, abs(ms-c.start_ms), c.start_ms, c.id))
+        else:
+            # Closest interval; ties prefer the current track, then the following subtitle.
+            cue = min(available, key=lambda c:(min(abs(ms-c.start_ms), abs(ms-c.end_ms)),
+                c.speaker_id != preferred, c.start_ms < ms, c.start_ms, c.id))
+        return cue.id, layer
+
     def _set_review_mode(self, enabled: bool) -> None:
         entering = bool(enabled) and not self._review_mode
         leaving = not bool(enabled) and self._review_mode
+        identity = (id(self.project), self.session.generation)
+        if entering and self.project:
+            saved = getattr(self, '_review_entry_anchor', None)
+            if saved is None or saved[:2] != identity or saved[2] not in self._cue_lookup:
+                target = self._review_entry_target()
+                self._review_entry_anchor = (*identity, *target) if target else None
+        if (entering and self.project and getattr(self, '_pending_review_start', None)
+                == (id(self.project), self.session.generation)):
+            self._pending_review_start = None
+            self._review_entry_anchor = None
+            bind_text(self.save_state, '已取消等待审核')
+            return
+        if not enabled:
+            self._pending_review_start = None
+            self._review_entry_anchor = None
+        if entering and self.project and not hasattr(self.project, '_qc_result'):
+            self._pending_review_start = (id(self.project), self.session.generation)
+            self.review_mode_button.blockSignals(True)
+            self.review_mode_button.setChecked(False)
+            self.review_mode_button.blockSignals(False)
+            bind_text(self.save_state, '正在核对当前问题，完成后开始审核…')
+            return
+        entry = getattr(self, '_review_entry_anchor', None)
+        if entering:
+            self.cue_model.review_anchor_id = entry[2] if entry and entry[:2] == identity else ''
+        if (entering and self.project and self.cue_model.filter_status == 'all'
+                and getattr(self, '_review_all_explicit', None) != (self.project.project_id, self.session.generation)):
+            # A fresh project displays All, but starting review defaults to
+            # actual issues. Whole-project review requires choosing All.
+            from ..subtitle_rules.current_issues import current_issue_view
+            mode = 'critical' if current_issue_view(self.project).counts()['critical'] else 'priority'
+            self.cue_model.set_filter(mode)
+            self.cue_filter_buttons[mode].setChecked(True)
+            self._refresh_cue_list_summary()
         if entering or leaving:
             self._release_review_playback()
         if entering:
             from ..subtitle_rules.studio_review import ReviewScopeSnapshot, ReviewSession
-
+            self.cue_model.refresh()
             visible_ids = tuple(
                 self.cue_model.cue_at(row).id
                 for row in range(self.cue_model.rowCount())
@@ -354,6 +536,7 @@ class StudioReviewMixin:
         self.review_summary_strip.setVisible(self._review_mode)
         if leaving:
             session = getattr(self, "_review_session", None)
+            self.cue_model.review_anchor_id = ''
             self.cue_model.set_scope_ids(None)
             if session is not None:
                 self.cue_model.set_filter(session.scope.filter_mode)
@@ -361,9 +544,11 @@ class StudioReviewMixin:
             self._review_session = None
         if not self._review_mode:
             return
+        if entering and entry and entry[:2] == identity:
+            self.select_cue(entry[2])
+            self.timeline.set_subtitle_layer(entry[3])
+            self._remember_canvas_edit_target(entry[2], entry[3])
         if self.cue_model.rowCount():
-            if self.cue_model.row_for_cue_id(self.selected_cue_id) < 0:
-                self.select_cue(self.cue_model.cue_at(0).id)
             cue = self._cue_lookup.get(self.selected_cue_id)
             if cue is not None:
                 self._seek(cue.start_ms / 1000.0)
@@ -557,11 +742,15 @@ class StudioReviewMixin:
         )
         if getattr(self.cue_model, "filter_status", "") in {"priority", "critical"}:
             self.cue_model.refresh()
+        self.cue_model.refresh_cues((c.id for c in project.cues), (4,), recheck_filter=False)
+        self._refresh_cue_list_summary()
         if self.selected_cue_id:
             cue = self._cue_lookup.get(self.selected_cue_id)
             if cue is not None:
                 self._refresh_current_review_context(cue)
-
+        if getattr(self, '_pending_review_start', None) == (id(project), self.session.generation):
+            self._pending_review_start = None
+            self._set_review_mode(True)
 
 
     def _set_continuous_review(self, enabled: bool) -> None:
@@ -714,51 +903,28 @@ class StudioReviewMixin:
         return review.cue_id if review is not None else ""
 
     def _confirm_current_review(self, play_next: bool = False) -> None:
+        if getattr(self, '_caption_draft', None) is not None:
+            return self._submit_caption_draft()
         if not self.project or not self.selected_cue_id:
             return
-        statuses = self.project.studio_state.setdefault("cue_statuses", {})
-        confirmations = self.project.studio_state.setdefault("review_confirmations", {})
-        if not isinstance(statuses, dict) or not isinstance(confirmations, dict):
+        from ..subtitle_rules.current_issues import current_issue_view, reviewed_version
+        from .caption_editor import IssueDecisionsCommand
+        cue_id = self.selected_cue_id
+        cue = self._cue_lookup.get(cue_id)
+        if cue is None:
             return
-        previous_row = self.cue_model.row_for_cue_id(self.selected_cue_id)
-        started=perf_counter()
-        current_id=self.selected_cue_id
-        statuses[self.selected_cue_id] = "done"
-        confirmations[self.selected_cue_id] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        self.project.studio_state.setdefault('manual_caption_text', {})[current_id]=self._cue_lookup[current_id].text
-        bind_text(self.save_state, '未保存')
-        self._schedule_autosave()
-        self.cue_model.refresh_cue(current_id, (4,))
-        bind_text(self.save_state, '✓ 已确认 · 下一条优先字幕')
-        # Preserve the established Enter behavior: confirming a priority
-        # review removes it from the queue and advances to the next item.
-        # Ctrl+Enter follows this same path and additionally requests playback.
-        session = getattr(self, "_review_session", None)
-        if self._review_mode and session is not None:
-            session.resolve(self.selected_cue_id)
-            next_id = session.next_id(self.selected_cue_id)
-            if next_id:
-                self._select_review_cue_immediately(next_id,play=play_next)
-            else:
-                bind_text(self.review_queue_label, '审核完成  {value0} / {value1}', value0=session.completed, value1=session.total)
-            profile=getattr(self,'_review_enter_profile',[])
-            profile.append({'cue_id':current_id,'next_id':next_id,'selection_ms':(perf_counter()-started)*1000,
-                'autosave':'debounced','ass':'unchanged','waveform':'unchanged','thumbnail':'unchanged'})
-            self._review_enter_profile=profile[-200:]
-            return
-        if self.cue_model.filter_status in {"priority", "critical"} and self.cue_model.rowCount():
-            def advance() -> None:
-                if self.cue_model.filter_status not in {"priority", "critical"} or not self.cue_model.rowCount():
-                    return
-                # The confirmed cue is removed from the filtered model. Its
-                # former row index therefore points at the next chronological
-                # visible item after refresh.
-                next_row = max(0, min(self.cue_model.rowCount() - 1, previous_row))
-                next_cue = self.cue_model.cue_at(next_row)
-                self.select_cue(next_cue.id)
-                if play_next or self.continuous_review_toggle.isChecked():
-                    self._play_review_context()
-            advance()
+        view = current_issue_view(self.project)
+        changes = {r.issue_id: {'input_version': r.input_version, 'status': 'resolved'}
+                   for r in view.for_cue(cue_id)}
+        changes['reviewed:'+cue_id] = {'input_version': reviewed_version(self.project, cue), 'status': 'resolved'}
+        session = getattr(self, '_review_session', None)
+        next_id = session.next_id(cue_id,eligible_ids=(self.cue_model.cue_at(i).id for i in range(self.cue_model.rowCount()))) if self._review_mode and session else ''
+        self.undo_stack.push(IssueDecisionsCommand(self.project, changes,
+            lambda: self._caption_issue_decisions_changed(cue_id)))
+        if next_id:
+            self._select_review_cue_immediately(next_id, play=play_next)
+        else:
+            self._refresh_review_summary_strip()
 
     def _select_review_cue_immediately(self,cue_id,*,play=False):
         """Commit selection now. Latest selection alone may seek/hydrate later."""
@@ -803,7 +969,8 @@ class StudioReviewMixin:
             return
         session = getattr(self, "_review_session", None)
         if self._review_mode and session is not None:
-            next_id = session.next_id(self.selected_cue_id, include_resolved=True)
+            next_id = session.next_id(self.selected_cue_id, include_resolved=True,
+                eligible_ids=(self.cue_model.cue_at(i).id for i in range(self.cue_model.rowCount())))
             if next_id:
                 self.select_cue(next_id)
             return
@@ -813,44 +980,52 @@ class StudioReviewMixin:
         if rows <= 1:
             return
         current = self.cue_model.row_for_cue_id(self.selected_cue_id)
-        next_row = (max(0, current) + 1) % rows
+        next_row = min(rows - 1, max(0, current) + 1)
         self.select_cue(self.cue_model.cue_at(next_row).id)
         if self.continuous_review_toggle.isChecked():
             self._play_review_context()
 
     def _adopt_model_text(self, value: str, label: str) -> bool:
+        from ..timeline.studio_commands import MutationOrigin
         if not self.project or not self.selected_cue_id:
             return False
-        cue_id = self.selected_cue_id
-        cue = self._cue_lookup.get(cue_id)
-        value = str(value or "").strip()
+        cue = self._cue_lookup.get(self.selected_cue_id)
+        value = str(value or '').strip()
         if cue is None or not value:
             return False
-        if value != cue.text:
-            self._commit_manual_term_learning(cue_id)
-
-        def changed() -> None:
-            current = self._cue_lookup.get(cue_id)
-            if current is not None:
-                self._manual_text_baselines[cue_id] = current.text
-            self._cue_changed(cue_id, columns=(3, 4))
-
-        self.undo_stack.push(
-            AdoptReviewCandidateCommand(
-                self.project,
-                cue_id,
-                value,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                changed,
-                text_applied=lambda text: self._manual_text_baselines.__setitem__(
-                    cue_id, text
-                ),
-            )
-        )
-        bind_text(self.save_state, '✓ 已采用 {label}', label=label)
+        draft = getattr(self, '_caption_draft', None)
+        if draft is not None:
+            if draft.target.cue_id != cue.id or draft.target.layer != 'original':
+                return False
+            self.subtitle_edit_input.setPlainText(value)
+            self._flush_caption_editor_preview()
+            return True
+        if value == cue.text:
+            self._confirm_current_review()
+            return False
+        from ..subtitle_rules.current_issues import current_issue_view
+        from .caption_editor import IssueDecisionsCommand
+        types={'model_disagreement','suspected_word'}
+        before={r.issue_id for r in current_issue_view(self.project).for_cue(cue.id,layer='original') if r.kind in types}
+        self.undo_stack.beginMacro('采用完整原文候选')
+        try:
+            self.undo_stack.push(AdoptReviewCandidateCommand(self.project, cue.id, value, '',
+                lambda: self._cue_changed(cue.id, columns=(3,4)), resolve_review=False,
+                text_applied=lambda text: self._manual_text_baselines.__setitem__(cue.id, text)))
+            changes={r.issue_id:dict(status='resolved',input_version=r.input_version)
+                     for r in current_issue_view(self.project).records if r.cue_id==cue.id and r.issue_id in before}
+            if changes:self.undo_stack.push(IssueDecisionsCommand(self.project,changes,
+                lambda:self._caption_issue_decisions_changed(cue.id)))
+        finally:self.undo_stack.endMacro()
         return True
 
-    def _adopt_review_candidate(self, index: int) -> None:
+
+    def _adopt_review_candidate(self, index: int, *, binding=None) -> None:
+        current=getattr(self,'_review_suggestions_binding',None)
+        if binding is not None and binding!=current:return
+        active=self._cue_lookup.get(self.selected_cue_id)
+        if current is None or active is None:return
+        if current[:6]!=(id(self.project),self.session.generation,active.id,active.text,active.start_ms,active.end_ms):return
         candidates = getattr(self, "_review_candidates", ())
         if not 0 <= int(index) < len(candidates):
             return
@@ -865,8 +1040,8 @@ class StudioReviewMixin:
             return
         previous_row = self.cue_model.row_for_cue_id(cue.id)
         if self._adopt_model_text(candidate.text, " · ".join(candidate.sources)):
-            bind_text(self.save_state, '✓ 已采用候选 {value0} · 下一条', value0=int(index) + 1)
-            self._advance_review_after_resolution(previous_row)
+            bind_text(self.save_state, '已采用候选 {value0}；其他问题保留', value0=int(index) + 1)
+            self._refresh_review_summary_strip()
 
     # click-to-fix marks on card 1 (2026-10-15) ------------------------------
     def _review_suggestions_for(self, cue: StudioCue, candidates) -> tuple:
@@ -881,8 +1056,12 @@ class StudioReviewMixin:
         others = [(candidate.text, tuple(candidate.sources or ())) for candidate in tuple(candidates)[1:]
                   if not candidate.context_only]
         try:
-            return tuple(review_suggestions(cue.text, others, resolver=self._review_term_resolver(),
-                                            pronouns=language in ("", "zh")))
+            rows = tuple(review_suggestions(cue.text, others, resolver=self._review_term_resolver(),
+                                             pronouns=language in ("", "zh")))
+            from ..subtitle_rules.current_issues import DECISIONS, suggestion_handled
+            target = self._resolve_caption_edit_target(cue.id, 'original')
+            decisions = self.project.studio_state.get(DECISIONS, {})
+            return tuple(row for row in rows if target is not None and not suggestion_handled(target.__dict__,row,cue.text,decisions))
         except Exception:  # marks are a convenience; review itself must keep working
             return ()
 
@@ -912,27 +1091,41 @@ class StudioReviewMixin:
         self._review_term_resolver_cache = ((ids, stamp, script), resolver)
         return resolver
 
-    def _apply_review_suggestion(self, mark: int, option: int = 0) -> bool:
+    def _apply_review_suggestion(self, mark: int, option: int = 0, *, binding=None) -> bool:
         """One mark's option written into the caption as a user edit (undoable);
         review stays on this caption so several marks can be fixed."""
         suggestions = getattr(self, "_review_suggestions", ())
         cue = self._cue_lookup.get(self.selected_cue_id) if self.project else None
+        current=getattr(self,'_review_suggestions_binding',None)
+        if (current is None or cue is None or current[:6]!=(id(self.project),self.session.generation,cue.id,cue.text,cue.start_ms,cue.end_ms)
+                or binding is not None and binding!=current):return False
         if cue is None or not 0 <= int(mark) < len(suggestions):
             return False
         row = suggestions[int(mark)]
+        draft = getattr(self, '_caption_draft', None)
+        if draft is not None:
+            if draft.target.cue_id != cue.id or draft.target.layer != 'original':
+                return False
+            matching = next((i for i, value in enumerate(draft.suggestions) if value == row), -1)
+            return self._apply_editor_suggestion(matching, option) if matching >= 0 else False
         if not 0 <= int(option) < len(row.options):
             return False
         value = row.apply(cue.text, int(option))
         if value == cue.text or not value.strip():
             return False
-        if not self.cue_controller.set_text(cue.id, value, command_text=tr("审核改字")):
+        target=self._resolve_caption_edit_target(cue.id,'original')
+        if not self._commit_target_text_patch(target,row.start,row.end,row.options[int(option)].text,
+                kind=row.kind,options={row.original,*(o.text for o in row.options)},label=tr('审核改字')):
             return False
+        self._remember_canvas_edit_target(cue.id,'original')
         bind_text(self.save_state, '已改为「{new}」· {key} 撤销', new=row.options[int(option)].text or "∅",
                   key=self._shortcut_key_text("undo"))
         self._refresh_review_summary_strip()
         return True
 
-    def _show_review_suggestion_menu(self, mark: int, global_pos) -> None:
+    def _show_review_suggestion_menu(self, mark: int, global_pos, *, binding=None) -> None:
+        current=getattr(self,'_review_suggestions_binding',None)
+        if binding is not None and binding!=current:return
         suggestions = getattr(self, "_review_suggestions", ())
         if not 0 <= int(mark) < len(suggestions):
             return
@@ -942,31 +1135,38 @@ class StudioReviewMixin:
             sources = " · ".join(option.sources)
             caption = f"「{row.original or '∅'}」→「{option.text or '∅'}」" + (f"  ({sources})" if sources else "")
             action = menu.addAction(caption)
-            action.triggered.connect(lambda _checked=False, value=index: self._apply_review_suggestion(mark, value))
+            action.triggered.connect(lambda _checked=False,value=index,bound=current:self._apply_review_suggestion(mark,value,binding=bound))
         menu.exec(global_pos)
 
     def _flip_review_pronouns(self) -> bool:
-        """Review key P: the caption's 他 → 她 (or 她 → 他, 它 → 他) as a whole."""
-        from ..subtitle_rules.pronouns import flip_pronouns
-        cue = self._cue_lookup.get(self.selected_cue_id) if self.project else None
-        if cue is None:
+        if getattr(self, '_caption_draft', None) is not None:
+            return self._flip_editor_pronoun()
+        target = self._resolve_caption_edit_target()
+        if target is None:
             return False
-        value = flip_pronouns(cue.text)
-        if value == cue.text:
-            bind_text(self.save_state, '这一条没有可切换的 他 / 她 / 它')
+        from ..subtitle_rules.pronouns import pronoun_positions, toggle_pronoun
+        text = target.read(self.project)
+        positions = pronoun_positions(text)
+        if len(positions) != 1:
+            self._open_caption_editor()
+            self.caption_editor_hint.setText('请选中一个人称，或将光标放到该人称旁，再按 Shift+P')
             return False
-        if not self.cue_controller.set_text(cue.id, value, command_text=tr("切换人称")):
+        at = positions[0]
+        value = text[:at] + toggle_pronoun(text[at]) + text[at+1:]
+        if target.track_id in self.timeline.locked_speakers:
             return False
-        bind_text(self.save_state, '人称已切换 · {key} 撤销', key=self._shortcut_key_text("undo"))
-        self._refresh_review_summary_strip()
-        return True
+        changed=self._commit_target_text_patch(target,at,at+1,toggle_pronoun(text[at]),
+            kind='pronoun',options=('他','她','它'),label='切换目标人称')
+        if changed:
+            bind_text(self.save_state, '人称已切换 · {key} 撤销', key=self._shortcut_key_text('undo'))
+        return changed
 
     def _advance_review_after_resolution(self, previous_row: int, *, play: bool = False) -> None:
         session = getattr(self, "_review_session", None)
         if self._review_mode and session is not None:
             current_id = self.selected_cue_id
             session.resolve(current_id)
-            next_id = session.next_id(current_id)
+            next_id = session.next_id(current_id,eligible_ids=(self.cue_model.cue_at(i).id for i in range(self.cue_model.rowCount())))
             if next_id:
                 self._select_review_cue_immediately(next_id,play=play)
             else:

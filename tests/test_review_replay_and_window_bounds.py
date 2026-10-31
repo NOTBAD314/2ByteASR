@@ -63,6 +63,9 @@ def _page(tmp_path, monkeypatch, cues):
     page.show()
     page.open_project(path)
     app.processEvents()
+    # These small unit fixtures exercise review itself. Normal-entry headed
+    # checks separately cover asynchronous first analysis / deferred entry.
+    page._refresh_review_risks(sync=True)
     return app, page
 
 

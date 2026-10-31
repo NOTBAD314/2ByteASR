@@ -40,29 +40,30 @@ def task(monkeypatch, tmp_path):
     return start
 
 
-def test_built_in_chinese_and_english_prompts_are_unchanged(task):
+def test_builtin_prompts_use_the_effective_language_policy(task):
     from twobyteasr.subtitle_rules.english_segmentation import ENGLISH_GROUPING_SYSTEM_PROMPT, build_ai_messages
     with task("zh"):
-        assert sha(gr.grouping_system_prompt(core.MAX_SUBTITLE_CHARS, core.MAX_SUBTITLE_SECONDS)) == CHINESE_BEFORE
-        assert gr.grouping_prompt_key("zh") == gr.GROUPING_PROMPT_VERSION
+        prompt=gr.grouping_system_prompt(core.MAX_SUBTITLE_CHARS,core.MAX_SUBTITLE_SECONDS)
+        assert 'cue maximum 16' in prompt and 'duration maximum 5s' in prompt and '"boundaries"' in prompt
+        assert gr.grouping_prompt_key('zh').startswith('subtitle-language-policy-v1:zh:')
     with task("en"):
-        assert sha(ENGLISH_GROUPING_SYSTEM_PROMPT) == ENGLISH_TWO_LINE
-        assert sha(build_ai_messages([("1", ["hi"])])[0]["content"]) == ENGLISH_TWO_LINE
-        assert gr.grouping_prompt_key("en") == gr.ENGLISH_GROUPING_PROMPT_VERSION
+        prompt=build_ai_messages([('1',['hi'])])[0]['content']
+        assert 'cue maximum 84' in prompt and 'duration maximum 7s' in prompt and '"breaks"' in prompt
+        assert gr.grouping_prompt_key('en').startswith('subtitle-language-policy-v1:en:')
 
 
-def test_english_on_the_boundary_protocol_keeps_the_chinese_prompt(task):
+def test_spaced_languages_never_select_the_chinese_prompt(task):
     """VibeVoice English reaches call_grouping_api (84 characters / 6 s): the
     boundary-offset prompt, never the English word-number prompt (port 2026-10-21)."""
     from twobyteasr.subtitle_rules.english_segmentation import grouping_prompt_version
     from twobyteasr.subtitle_rules.european_text import lexicon
     with task("en", {"en": "Break less often.", "zh": ""}):
-        assert gr.task_prompt_language() == "zh"
-        assert sha(gr.grouping_system_prompt(84, 6.0)) == CHINESE_84_BEFORE
+        assert gr.task_prompt_language() == "en"
+        assert 'English' in gr.grouping_system_prompt(16,5.) and 'cue maximum 84' in gr.grouping_system_prompt(16,5.)
         # The English word-break pass's cache key follows the user's English rules.
-        assert grouping_prompt_version() == f"{gr.ENGLISH_GROUPING_PROMPT_VERSION}+custom-{sha('Break less often.')[:12]}"
+        assert grouping_prompt_version().endswith('+custom-'+sha('Break less often.')[:12])
     with task("es", {"en": "Break less often."}):
-        assert grouping_prompt_version(lexicon("es")) == "es-word-breaks-v4"   # two-line subtitles (2026-10-21)
+        assert grouping_prompt_version(lexicon('es')).startswith('subtitle-language-policy-v1:es:')
 
 
 def test_user_guidance_replaces_only_the_guidance(task):
@@ -70,17 +71,17 @@ def test_user_guidance_replaces_only_the_guidance(task):
     with task("ja", {"ja": custom}):
         prompt = gr.grouping_system_prompt(16, 5.0)
         key = gr.grouping_prompt_key("ja")
-    head, built_in, tail = gr._japanese_parts(16, 5.0)
+    head, built_in, tail = gr._japanese_parts(26, 7.0)
     assert prompt.startswith(head) and prompt.endswith(tail)
     assert custom.strip() in prompt and built_in not in prompt
     # The program-owned protocol and the hard limits survive any guidance.
-    assert '"segmented_text"' in prompt and "绝对不超过16字或5.0秒" in prompt
-    assert key == f"{gr.JAPANESE_GROUPING_PROMPT_VERSION}+custom-{sha(custom.strip())[:12]}"
+    assert '"segmented_text"' in prompt and 'cue maximum 26' in prompt and 'duration maximum 7s' in prompt
+    assert key.endswith('+custom-'+sha(custom.strip())[:12])
     # Saving the built-in text unchanged, or nothing, is the built-in prompt.
     for same in ("", "   ", gr.default_grouping_guidance("ja") + "\n"):
         with task("ja", {"ja": same}):
-            assert gr.grouping_system_prompt(16, 5.0) == head + built_in + tail
-            assert gr.grouping_prompt_key("ja") == gr.JAPANESE_GROUPING_PROMPT_VERSION
+            assert built_in in gr.grouping_system_prompt(16,5.) and 'cue maximum 26' in gr.grouping_system_prompt(16,5.)
+            assert '+custom-' not in gr.grouping_prompt_key('ja')
     # Each language reads its own guidance; an overlong text is cut.
     with task("zh", {"ja": custom, "zh": "x" * (gr.CUSTOM_GUIDANCE_MAX_CHARS + 50)}):
         prompt = gr.grouping_system_prompt(16, 5.0)
@@ -91,20 +92,20 @@ def test_user_guidance_replaces_only_the_guidance(task):
 def test_grouped_cache_key_follows_the_prompt(task):
     import moss_firered_pipeline as pipeline
     with task("zh"):
-        assert pipeline._grouping_prompt_signature(True) == {}      # existing Chinese caches stay valid
+        assert pipeline._grouping_prompt_signature(True)['grouping_prompt'].startswith('subtitle-language-policy-v1:zh:')
     with task("ja"):
-        assert pipeline._grouping_prompt_signature(True) == {"grouping_prompt": gr.JAPANESE_GROUPING_PROMPT_VERSION}
+        assert pipeline._grouping_prompt_signature(True)['grouping_prompt'].startswith('subtitle-language-policy-v1:ja:')
         assert pipeline._grouping_prompt_signature(False) == {}     # local rules use no prompt
     with task("zh", {"zh": "少切一点"}):
-        assert pipeline._grouping_prompt_signature(True)["grouping_prompt"].startswith(
-            gr.GROUPING_PROMPT_VERSION + "+custom-")
+        assert '+custom-' in pipeline._grouping_prompt_signature(True)['grouping_prompt']
 
 
 def test_settings_keep_multi_line_guidance(tmp_path):
     from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings, load_runtime_settings, save_runtime_settings
     text = "第一行：句末换句。\n第二行：短句并入前后。"
     merged, warnings = _merge_known_settings(DEFAULT_SETTINGS, {"grouping_prompts": {"ja": f"  {text}\n", "zh": 3}})
-    assert merged["grouping_prompts"] == {"zh": "", "ja": text, "en": ""} and len(warnings) == 1
+    assert merged['grouping_prompts']['zh']=='' and merged['grouping_prompts']['ja']==text and len(warnings)==1
+    assert set(gr.GROUPING_PROMPT_LANGUAGES)<=set(merged['grouping_prompts'])
     save_runtime_settings({**merged}, project_root=tmp_path)
     loaded = load_runtime_settings(project_root=tmp_path)
     loaded = loaded[0] if isinstance(loaded, tuple) else loaded
@@ -137,11 +138,11 @@ def test_japanese_answer_cuts_at_the_copied_bars(task, monkeypatch):
     grouping, records = answer_with(monkeypatch, body)
     with task("ja"):
         result = call(grouping, [japanese_segment(text)])
-    assert result.validated and [cue.text for cue in result] == ["本当だよ", "本当に坂本が", "入れろって言ったから"]
-    trace = next(kw for event, kw in records if event == "grouping_trace")
-    assert trace["final_boundaries"] == [4, 10, 20] and trace["model_boundaries"] == [4, 10, 20]
-    assert next(kw for event, kw in records if event == "asr_provider_request")["prompt_version"] == \
-        gr.JAPANESE_GROUPING_PROMPT_VERSION
+    # This complete20-character sentence now fits26/7. Bars are parsed,
+    # then the shared local phrase rules can retain the whole sentence.
+    assert result.validated and [cue.text for cue in result] == [text]
+    trace=next(kw for event,kw in records if event=='grouping_trace')
+    assert trace['model_boundaries']==[4,10,20]
 
 
 def test_bars_win_only_for_the_japanese_prompt(task, monkeypatch):
@@ -158,7 +159,7 @@ def test_bars_win_only_for_the_japanese_prompt(task, monkeypatch):
     records.clear()
     with task("ja"):
         result = call(grouping, [japanese_segment("本当だよ本当に坂本が入れろって言ったから")])
-    assert result.validated and [cue.text for cue in result] == ["本当だよ", "本当に坂本が入れろって言ったから"]
+    assert result.validated and [cue.text for cue in result] == ['本当だよ本当に坂本が入れろって言ったから']
 
 
 def test_japanese_copy_that_changes_content_is_rejected(task, monkeypatch):
@@ -205,7 +206,7 @@ def test_editor_saves_only_changed_guidance(monkeypatch):
         dialog.save()
     finally:
         dialog.deleteLater()
-    assert saved and saved[-1]["grouping_prompts"] == {"zh": "", "ja": "句末和长停顿处换句。", "en": ""}
+    assert saved and saved[-1]['grouping_prompts']['zh']=='' and saved[-1]['grouping_prompts']['ja']=='句末和长停顿处换句。'
     assert settings["grouping_prompts"]["ja"] == "句末和长停顿处换句。"
     head, reminder, tail = gr.fixed_grouping_prompt_parts("ja")
-    assert "绝对不超过16字或5.0秒" in reminder and head.startswith("你负责日语")
+    assert 'cue maximum 26' in reminder and 'duration maximum 7s' in reminder and head.startswith('你负责日语')

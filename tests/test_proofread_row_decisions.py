@@ -58,7 +58,7 @@ def test_ignore_whole_row_counts_persists_and_undo_redo(workspace, tmp_path):
     assert {r["state"] for r in p.studio_state[DECISIONS_KEY]["stable-90"]} == {"ignored"}
     page.filter_buttons["changed"].setChecked(True)
     page._apply_filter()
-    assert [page._rows[i]["cue_id"] for i in page.list.visible] == ["stable-90"]
+    assert [page._rows[i]["cue_id"] for i in page.list.visible] == []  # ignoring alone never changes text
     path = tmp_path / "重开.2byteproj"
     save_project(p, path)
     reopened = load_project(path)
@@ -77,7 +77,7 @@ def test_ignore_whole_row_counts_persists_and_undo_redo(workspace, tmp_path):
     assert all(i["ignored"] for i in row["issues"])
 
 
-def test_ignore_keeps_applied_edit_and_different_later_proposal_is_not_ignored(workspace):
+def test_ignore_keeps_applied_edit_and_local_refresh_cannot_reopen_this_round(workspace):
     page, p = workspace
     page._toggle_issue("stable-90", 0)
     page._dismiss_group("stable-90", 1)
@@ -87,7 +87,7 @@ def test_ignore_keeps_applied_edit_and_different_later_proposal_is_not_ignored(w
     row = page._by_id["stable-90"]
     row["issues"].append(new)
     page._apply_decisions(row, {})
-    assert not new["reviewed"] and not new["ignored"]
+    assert new['reviewed'] and new['ignored']
 
 
 def test_same_word_proposal_does_not_resurface_when_its_local_or_ai_source_changes(workspace):
@@ -195,7 +195,7 @@ def test_reopened_page_does_not_resurrect_the_same_cached_suggestions(workspace,
         fresh._show_result(result, reopened, False, {cue.id: cue.text for cue in reopened.cues})
         row = fresh._by_id["stable-90"]
         assert len(row["issues"]) == 2 and all(i["ignored"] for i in row["issues"])
-        assert fresh._row_state(row) == (False, False, True)
+        assert fresh._row_state(row) == (False, False, False)  # ignore does not modify text
     finally:
         fresh.shutdown()
         fresh.deleteLater()

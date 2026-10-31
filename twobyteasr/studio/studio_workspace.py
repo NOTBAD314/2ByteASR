@@ -628,51 +628,25 @@ class StudioWorkspaceBuilder:
         page.advanced_cue_overlay = AdvancedLiveCanvas(page.video)
         page.advanced_cue_overlay.hide()
 
-        page.subtitle_edit_card = QFrame(overlay_host)
-        page.subtitle_edit_card.setObjectName("subtitleEditCard")
-        # Keep the editor as an ordinary child.  A native, initially parentless
-        # QFrame creates a transient top-level HWND during project open.
-        page.subtitle_edit_card.setAttribute(
-            Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True
-        )
-        page._apply_subtitle_edit_card_theme()
-        edit_card_layout = QVBoxLayout(page.subtitle_edit_card)
-        edit_card_layout.setContentsMargins(16, 6, 16, 8)
-        edit_card_layout.setSpacing(4)
-        edit_header = QHBoxLayout()
-        edit_title = QLabel("当前字幕")
-        edit_title.setObjectName("subtitleEditCardTitle")
-        edit_header.addWidget(edit_title)
-        edit_header.addStretch(1)
-        edit_shortcuts = QLabel("Enter 确认  ·  Shift+Enter 换行  ·  Esc 取消")
-        edit_shortcuts.setObjectName("subtitleEditCardHint")
-        edit_header.addWidget(edit_shortcuts)
-        edit_card_layout.addLayout(edit_header)
-        page.subtitle_edit_input = _SubtitleEditCardEditor()
-        page.subtitle_edit_input.setObjectName("subtitleEditCardInput")
-        page.subtitle_edit_input.setMinimumHeight(52)
-        page.subtitle_edit_input.setMaximumHeight(84)
-        bind_text(page.subtitle_edit_input, '选中时间轴上的字幕后，在这里直接改文字', property='placeholderText')
-        page.subtitle_edit_input.setTabChangesFocus(False)
-        option = page.subtitle_edit_input.document().defaultTextOption()
-        option.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        page.subtitle_edit_input.document().setDefaultTextOption(option)
+        # A separate native owned tool stays above mpv without resizing it.
+        from .caption_editor_panel import CaptionEditorPanel
+        from .caption_editor_window import CaptionEditorWindow
+        page.subtitle_edit_dock = CaptionEditorWindow(page)
+        page.subtitle_edit_card = CaptionEditorPanel(_SubtitleEditCardEditor, page.subtitle_edit_dock)
+        page.subtitle_edit_dock.set_panel(page.subtitle_edit_card)
+        page.subtitle_edit_title = page.subtitle_edit_card.title
+        page.subtitle_edit_input = page.subtitle_edit_card.editor
+        page.caption_close_button = page.subtitle_edit_card.close_button
+        page.caption_close_button.clicked.connect(lambda: page._end_caption_editor(keep_open=False))
         page.subtitle_edit_input.commit_requested.connect(
-            lambda advance=False: page._commit_canvas_inline_edit(advance=advance)
-        )
+            lambda advance=False: page._commit_canvas_inline_edit(advance=advance))
         page.subtitle_edit_input.cancel_requested.connect(page._cancel_canvas_inline_edit)
+        page.subtitle_edit_input.composition_changed.connect(
+            lambda active: setattr(page, '_studio_ime_composing', active))
         page.subtitle_edit_input.textChanged.connect(page._queue_edit_preview)
-        edit_card_layout.addWidget(page.subtitle_edit_input)
-        page.subtitle_edit_card.setMinimumWidth(680)
-        page.subtitle_edit_card.setMaximumHeight(108)
-        page.subtitle_edit_card.setMaximumWidth(1100)
-        video_stack.addWidget(
-            page.subtitle_edit_card, 0, 0,
-            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
-        )
-        page.subtitle_edit_card.hide()
-        page.subtitle_edit_card.raise_()
+        page._apply_subtitle_edit_card_theme()
         video_layout.addWidget(overlay_host, 1)
+        page.subtitle_edit_dock.hide()
         yield '视频承载区'
         page.review_summary_strip = QFrame()
         page.review_summary_strip.setObjectName("reviewSummaryStrip")
@@ -705,7 +679,7 @@ class StudioWorkspaceBuilder:
         strip_header.addWidget(review_replay)
         review_details = QPushButton("详情")
         review_details.setObjectName("studioButton")
-        review_details.clicked.connect(lambda: page._show_context_panel())
+        review_details.clicked.connect(page._show_current_issue_details)
         strip_header.addWidget(review_details)
         review_collapse = QToolButton()
         review_collapse.setObjectName("reviewCollapseButton")
@@ -731,7 +705,7 @@ class StudioWorkspaceBuilder:
         page.review_dock_scroll.setFixedHeight(REVIEW_DOCK_ROW_HEIGHT)
         page.review_dock_scroll.setWidget(page.review_dock_candidates)
         strip_layout.addWidget(page.review_dock_scroll)
-        page.review_legend = ElidedLabel("[1–4] 采用并下一条   [↑↓] 切换   [Space] 重听   [E] 编辑   [P] 他/她   [R] 退出审核   [Enter] 当前正确",
+        page.review_legend = ElidedLabel("[1–4] 采用并下一条   [W/D/↓] 下一条 [S/A/↑] 上一条   [Space] 重听   [E] 编辑   [Shift+R] 采纳建议 [P] 他/她   [R] 退出审核   [Enter] 当前正确",
                                          mode=Qt.TextElideMode.ElideRight, minimum=120)
         page.review_legend.setObjectName("reviewLegend")
         strip_layout.addWidget(page.review_legend)
@@ -748,7 +722,7 @@ class StudioWorkspaceBuilder:
         page.position_overlay.font_size_preview.connect(page._position_overlay_font_preview)
         page.position_overlay.font_size_committed.connect(page._position_overlay_font_committed)
         page.position_overlay.position_cancelled.connect(page._position_overlay_cancelled)
-        page.position_overlay.doubleClickRequested.connect(page._begin_canvas_inline_edit)
+        page.position_overlay.doubleClickRequested.connect(page._edit_caption_from_canvas)
         page.position_overlay.interaction_started.connect(
             page._position_overlay_interaction_started
         )
@@ -1190,6 +1164,10 @@ class StudioWorkspaceBuilder:
         timeline_toolbar.addWidget(page._toolbar_divider())
         view_start = page._tool_button("fa5s.search-minus", "缩小时间轴 (Ctrl+滚轮)", lambda: page._zoom_timeline(1.25))
         timeline_toolbar.addWidget(view_start)
+        # 2026-10-30 (user, draft B): a zoom slider between 缩小 and 放大.
+        from .timeline_zoom_slider import TimelineZoomSlider
+        page.timeline_zoom_slider = TimelineZoomSlider(page)
+        timeline_toolbar.addWidget(page.timeline_zoom_slider)
         zoom_in = page._tool_button("fa5s.search-plus", "放大时间轴 (Ctrl+滚轮)", lambda: page._zoom_timeline(0.8))
         timeline_toolbar.addWidget(zoom_in)
         fit_button = page._tool_button("fa5s.compress-arrows-alt", "时间轴适应窗口", page._fit_timeline)
@@ -1227,8 +1205,13 @@ class StudioWorkspaceBuilder:
         timeline_toolbar.addWidget(page.snap_toggle)
         for toggle, icon_name in ((page.waveform_toggle, 'fa5s.wave-square'), (page.filmstrip_toggle, 'fa5s.film'),
                                   (page.follow_playhead_toggle, 'fa5s.crosshairs'), (page.snap_toggle, 'fa5s.magnet')):
-            install_themed_icon(toggle, icon_name, 'secondary')
-            toggle.setIconSize(QSize(16, 16))
+            # 2026-10-30 (user, draft B): an "on" switch shows its icon in the accent,
+            # like the selected edit tool. The check box never asks its icon for the On state.
+            def tint(checked, toggle=toggle, icon_name=icon_name):
+                install_themed_icon(toggle, icon_name, 'accent' if checked else 'secondary')
+            tint(toggle.isChecked())
+            toggle.toggled.connect(tint)
+            toggle.setIconSize(QSize(18, 18))
             toggle.setProperty('iconOnly', True)
         from ..exports.frame_export_ui import install_frame_button
         install_frame_button(page, timeline_toolbar)
@@ -1366,6 +1349,7 @@ class StudioWorkspaceBuilder:
         page.timeline.seek_requested.connect(page._timeline_scrub.request)
         page.timeline.scrub_finished.connect(page._timeline_scrub.finish)
         page.timeline.snap_changed.connect(page.snap_toggle.setChecked)
+        page.timeline_zoom_slider.attach(page.timeline)
         from .studio_timing_preview import CueTimingPreview
         page._cue_timing_preview = CueTimingPreview(page)
         page.timeline.timing_edit_started.connect(page._cue_timing_preview.start)
@@ -1375,11 +1359,14 @@ class StudioWorkspaceBuilder:
         page.timeline.speaker_changed.connect(page._timeline_speaker_changed)
         page.timeline.context_menu_requested.connect(page._show_timeline_menu)
         from .studio_translation_edit import sync_editor_layer
-        page.timeline.subtitle_layer_changed.connect(lambda _layer: sync_editor_layer(page))
+        page.timeline.subtitle_layer_changed.connect(lambda _layer: sync_editor_layer(page, explicit=True))
         page.timeline.razor_split_requested.connect(page._split_at)
         page.timeline.merge_pair_requested.connect(page._merge_pair_clicked)
         page.timeline.video_razor_requested.connect(page._razor_video_at)
         page.timeline.video_clip_razor_requested.connect(page._razor_video_clip_at)
+        page.timeline.audio_clip_razor_requested.connect(page._razor_audio_clip_at)
+        from ..projects.project_range import set_range
+        page.timeline.range_edit_committed.connect(lambda start, end: set_range(page.project, start, end, page.undo_stack) if page.project else None)
         page.timeline.edit_blocked.connect(page.save_state.setText)
         page.timeline.video_lock_toggled.connect(page._toggle_video_lock)
         page.timeline.video_track_action_requested.connect(page._video_track_action)

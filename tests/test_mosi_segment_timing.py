@@ -60,7 +60,12 @@ def run(tmp_path, client, audio=None, monkeypatch=None):
     from twobyteasr.providers import mosi_asr
     events = []
     if monkeypatch is not None:
-        monkeypatch.setattr(mosi_asr, '_record_event', lambda kind, **kw: events.append((kind, kw)))
+        # This fixture asserts timing repair events; language provenance is
+        # independently checked in test_asr_language_provenance.
+        def capture_timing(kind, **kw):
+            if kind == 'cloud_asr_timing_repaired':
+                events.append((kind, kw))
+        monkeypatch.setattr(mosi_asr, '_record_event', capture_timing)
     audio = np.zeros(32000, np.float32) if audio is None else audio
     rows = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=tiny_sleep)
     return rows, events

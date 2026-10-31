@@ -89,6 +89,13 @@ def handle_message(window, message, wparam, lparam, *, hwnd=None):
     hwnd = existing_native_handle(window, hwnd=hwnd)
     if not hwnd:
         return None
+    if message in (0x0085, 0x0086) and not window.isMinimized() and not window.isFullScreen():
+        # NCCALCSIZE assigns the complete frame to our Qt-painted client.
+        # DefWindowProc must not paint a second native sizing frame when
+        # activation changes (including an editor confirmation). Keep the
+        # sizing/Snap style and allow activation to complete normally.
+        # WM_NCACTIVATE: https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-ncactivate
+        return 1 if message == 0x0086 else 0
     if message == 0x0083:  # WM_NCCALCSIZE: entire rect stays our Qt client area
         if wparam and lparam and not window.isFullScreen() and _api().IsZoomed(hwnd):
             # Native maximization includes an invisible sizing border beyond

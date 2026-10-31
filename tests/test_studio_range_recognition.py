@@ -161,9 +161,12 @@ def test_result_project_replaces_only_the_stretch(tmp_path):
     new = [by_id[cue_id] for cue_id in info["cue_ids"]]
     assert [(c.start_ms, c.end_ms, c.text) for c in new] == [
         (9700, 11000, "改好了一"), (11300, 12700, "改好了二"), (13500, 15500, "最后一句")]
-    # Anonymous speakers land on the tracks they overlap; no new tracks.
-    assert [c.speaker_id for c in new] == ["HOST", "GUEST", "HOST"]
-    assert [s.id for s in result.speakers] == ["HOST", "GUEST"]
+    # Task-local labels never infer old identities from temporal overlap.
+    mapping = info['speaker_map']
+    assert [c.speaker_id for c in new] == [mapping['S00'], mapping['S01'], mapping['S00']]
+    assert len(set(mapping.values())) == 2 and not set(mapping.values()) & {'HOST','GUEST'}
+    assert {s.id for s in result.speakers} == {'HOST','GUEST',*mapping.values()}
+    assert all('待确认' in s.name and not s.is_host for s in result.speakers if s.id in mapping.values())
     assert info["replaced_cue_ids"] == ["b", "c", "d"] and info["requested_ms"] == [10000, 14000]
     # Evidence keeps its own clock; receipts carry words on project time.
     receipt = result.studio_state[KEY]["instances"][new[0].id]
@@ -178,11 +181,48 @@ def test_result_project_replaces_only_the_stretch(tmp_path):
     from twobyteasr.recognition.cue_word_alignment import cue_words
     words, _reason = cue_words(result, new[1])
     assert [(w.text, w.start_ms) for w in words] == [("改好", 11300), ("了二", 12000)]
-    # A stretch without captions takes the speaker of the nearest caption
-    # (e, 4.5 s after it, not a, 6.5 s before).
+    # No old captions in the range: both new voices stay distinct, too.
     project.cues = [cue for cue in project.cues if cue.id in {"a", "e"}]
     lone = attach_timeline_result(_recognized(6000), capture_recognition_snapshot(project, range_ms=(9500, 15500)))
-    assert {c.speaker_id for c in lone.cues if c.id not in {"a", "e"}} == {"GUEST"}
+    assert len({c.speaker_id for c in lone.cues if c.id not in {"a", "e"}}) == 2
+
+
+def test_same_local_labels_do_not_collide_with_old_roster_or_another_task(tmp_path):
+    project = _project(tmp_path)
+    project.speakers += [StudioSpeaker('S00',name='已经确认的旧人'),StudioSpeaker('S01')]
+    # All old captions use one person: overlap cannot collapse two new voices.
+    for cue in project.cues:
+        cue.speaker_id = 'S00'
+    snapshot = capture_recognition_snapshot(project, range_ms=(9500,15500))
+    first, second = _recognized(6000), _recognized(6000)
+    first.generation_metadata['job_id']='job-a'
+    second.generation_metadata['job_id']='job-b'
+    delivered = [attach_timeline_result(r,snapshot) for r in (first,second)]
+    maps = [r.generation_metadata['timeline_recognition']['range']['speaker_map'] for r in delivered]
+    assert not set(maps[0].values()) & set(maps[1].values())
+    assert all(len(set(m.values()))==2 and not set(m.values()) & {'S00','S01'} for m in maps)
+    assert [c.speaker_id for c in project.cues] == ['S00']*5
+
+
+def test_roster_and_distinctions_survive_ui_splice_save_reopen_undo(tmp_path):
+    from PySide6.QtGui import QUndoStack
+    from PySide6.QtWidgets import QApplication
+    from twobyteasr.timeline.range_replace import ReplaceRangeCuesCommand
+    QApplication.instance() or QApplication([])
+    project=_project(tmp_path)
+    before=copy.deepcopy(project.to_dict())
+    _snapshot,result,plan=_plan_from_result(project,tmp_path)
+    mapping=result.generation_metadata['timeline_recognition']['range']['speaker_map']
+    assert {s.id for s in plan.extra_speakers}==set(mapping.values())
+    stack=QUndoStack();stack.push(ReplaceRangeCuesCommand(project,plan,rr.history_entry(plan)))
+    saved=load_project(save_project(project,tmp_path/'saved.2byteproj'))
+    assert {c.speaker_id for c in saved.cues if c.id in plan.inserted_ids}==set(mapping.values())
+    assert set(mapping.values()) <= {s.id for s in saved.speakers}
+    stack.undo()
+    for key in ('cues','speakers','studio_state','asr_evidence','generation_metadata'):
+        assert project.to_dict()[key]==before[key],key
+    stack.redo()
+    assert set(mapping.values()) <= {s.id for s in project.speakers}
 
 
 def test_delivery_writes_a_verified_result_and_skips_the_library(tmp_path, monkeypatch):
@@ -338,8 +378,15 @@ def test_finished_range_replaces_the_stretch_as_one_undo_step(tmp_path, monkeypa
     assert [cue.text for cue in page.project.cues] == ["前面不动", "改好了一", "改好了二", "最后一句", "后面不动"]
     assert page.undo_stack.count() == undo + 1
     assert page.cue_model.rowCount() == 5
+    names = {s.id:s.name for s in page.project.speakers}
+    page.save()
+    reopened = load_project(page.project_path)
+    assert {s.id:s.name for s in reopened.speakers} == names
+    assert [c.speaker_id for c in reopened.cues] == [c.speaker_id for c in page.project.cues]
     page.undo_stack.undo()
     assert [cue.text for cue in page.project.cues] == before
+    page.save()
+    assert {s.id for s in load_project(page.project_path).speakers} == {'HOST','GUEST'}
     page.close_page()
 
 

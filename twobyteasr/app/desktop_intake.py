@@ -49,8 +49,12 @@ class DesktopIntake(QObject):
                 if media:
                     self.requests.append(('media', media, replace, None))
                     media = []
-                self.requests.append((kind, [path], False,
-                    getattr(self.window, '_studio_navigation_cancel_generation', 0)))
+                generation = getattr(self.window, '_studio_navigation_cancel_generation', 0)
+                if (kind == 'subtitle' and self.requests and self.requests[-1][0] == 'subtitle'
+                        and self.requests[-1][3] == generation):
+                    self.requests[-1][1].append(path)
+                else:
+                    self.requests.append((kind, [path], False, generation))
         if media:
             self.requests.append(('media', media, replace, None))
         bind_text(self.window.header_status, '已收到文件，正在打开…')
@@ -88,7 +92,11 @@ class DesktopIntake(QObject):
                 self.requests.popleft()
             try:
                 self.window._switch_page(page)
-                page._import_subtitle_file(Path(request[1][0]))
+                paths = request[1]
+                if len(paths) == 1:
+                    page._import_subtitle_file(Path(paths[0]))
+                else:
+                    page._import_subtitle_files([Path(path) for path in paths])
             finally:
                 self.active = False
         try:
@@ -151,7 +159,10 @@ class DesktopIntake(QObject):
             try:
                 page = existing_page(self.window, 'studio')
                 self.window._switch_page(page)
-                page._import_subtitle_file(Path(paths[0]))
+                if len(paths) == 1:
+                    page._import_subtitle_file(Path(paths[0]))
+                else:
+                    page._import_subtitle_files([Path(path) for path in paths])
             finally:
                 self.active = False
             return

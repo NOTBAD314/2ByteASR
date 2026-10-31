@@ -1,6 +1,7 @@
 """Cloud polishing orchestration and post-correction boundary cleanup."""
 
 import copy
+import hashlib
 import json
 import re
 import threading
@@ -122,6 +123,12 @@ __all__ = [
 POLISH_OUTPUT_TOKENS = 4096
 POLISH_RETRY_OUTPUT_TOKENS = (8192, 16384)
 STRUCTURED_SPLIT_MAX_DEPTH = 3
+SPACED_STRUCTURED_SPLIT_MAX_DEPTH = 1
+
+
+def structured_split_limit():
+    from .language_rules import is_spaced
+    return SPACED_STRUCTURED_SPLIT_MAX_DEPTH if is_spaced() else STRUCTURED_SPLIT_MAX_DEPTH
 POLISH_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -266,6 +273,8 @@ class CueValidationFailures(dict):
     def __init__(self):
         super().__init__()
         self.details = {}
+        self.protected = {}
+        self.rejected_patches = {}
 
 
 def _validate_polish_response(value, segments, batch_index, quarantined=None):
@@ -289,8 +298,15 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
         try:
             validate(value, envelope)
         except ValidationError as envelope_error:
-            raise AIProviderError('校对返回的 JSON 字段不符合契约：' + envelope_error.message,
-                                  category='structured_schema_error') from envelope_error
+            error = AIProviderError('校对返回的 JSON 字段不符合契约：' + envelope_error.message,
+                                    category='structured_schema_error')
+            raw = json.dumps(value,ensure_ascii=False,default=str)
+            error.validation_failure = dict(reason='response_envelope_invalid',
+                field='.'.join(map(str,envelope_error.absolute_path)),
+                validator=envelope_error.validator,message=envelope_error.message[:300],
+                response_fields=list(value) if isinstance(value,dict) else [],
+                response_sha256=hashlib.sha256(raw.encode()).hexdigest(),response_excerpt=raw[:2000])
+            raise error from envelope_error
         expected = [segment.segment_id for segment in segments]
         checked = value.get('checked_ids', [])
         if checked != expected or any(type(item) is not int for item in checked):
@@ -305,13 +321,33 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
             try:
                 validate(row, cue_schema)
             except ValidationError as cue_error:
+                try:
+                    validate({**row, 'edits': []}, cue_schema)
+                    if not isinstance(row.get('edits'), list):
+                        raise ValueError('edits must be an array')
+                except (ValidationError, ValueError):
+                    pass
+                else:
+                    valid_edits = []
+                    for edit in row['edits']:
+                        try:
+                            validate(edit, cue_schema['properties']['edits']['items'])
+                        except ValidationError as patch_error:
+                            if hasattr(quarantined, 'rejected_patches'):
+                                quarantined.rejected_patches.setdefault(row['id'], []).append({
+                                    'edit': edit, 'reason': 'edit_schema_invalid', 'error': patch_error.message[:240]})
+                        else:
+                            valid_edits.append(edit)
+                    if valid_edits:
+                        good.append({**row, 'edits': valid_edits})
+                        continue
                 quarantined[row['id']] = 'structured_schema_error'
                 if hasattr(quarantined, 'details'):
                     quarantined.details[row['id']] = {'reason': 'cue_schema_invalid',
                         'field': '.'.join(map(str, cue_error.absolute_path)), 'message': cue_error.message[:240]}
             else:
                 good.append(row)
-        if not quarantined:
+        if not quarantined and not good:
             raise AIProviderError('校对返回的 JSON 字段不符合契约：' + exc.message,
                                   category='structured_schema_error') from exc
         value = {**value, 'cues': good}
@@ -346,17 +382,34 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
                             edit = {**edit, 'start': start, 'end': end}
                             repaired.append(dict(given=old_span, located=[start, end]))
                         else:
+                            if not positions and hasattr(quarantined, 'protected'):
+                                # The model checked this ID, but its proposed
+                                # source quote does not exist. Reject this
+                                # suggestion; independent valid edits survive.
+                                quarantined.protected.setdefault(row['id'], []).append({
+                                    **edit, 'rule_id': 'source_quote_not_found',
+                                    'rejected_at': 'source_span_validation',
+                                    'given_span': [start, end], 'quote_occurrences': 0})
+                                continue
                             invalid = True
                             failure = {'reason': 'ambiguous_source_quote' if positions else 'source_quote_not_found',
                                        'span': [start, end], 'quote_occurrences': len(positions)}
-                            break
+                            if hasattr(quarantined, 'rejected_patches'):
+                                quarantined.rejected_patches.setdefault(row['id'], []).append({'edit': edit, **failure})
+                            continue
                     spans.append((start, end))
                     edits.append(edit)
-                spans.sort()
-                if any(right[0] < left[1] for left, right in zip(spans, spans[1:])):
+                conflicting = {i for i, left in enumerate(edits) for j, right in enumerate(edits)
+                    if i != j and 'start' in left and 'end' in left and 'start' in right and 'end' in right
+                    and left['start'] < right['end'] and right['start'] < left['end']}
+                if conflicting:
                     invalid = True
                     failure = {'reason': 'overlapping_edits', 'spans': spans}
-                if invalid:
+                    if hasattr(quarantined, 'rejected_patches'):
+                        quarantined.rejected_patches.setdefault(row['id'], []).extend(
+                            {'edit': edit, **failure} for i, edit in enumerate(edits) if i in conflicting)
+                    edits = [edit for i, edit in enumerate(edits) if i not in conflicting]
+                if invalid and not edits:
                     quarantined[row['id']] = 'semantic_validation'
                     if hasattr(quarantined, 'details'):
                         quarantined.details[row['id']] = failure
@@ -431,11 +484,15 @@ class PolishBatchResult(dict):
 
 def _encode_polish_batch(value):
     return {'texts': dict(value), 'details': getattr(value, 'details', {}),
+            'succeeded': sorted(getattr(value, 'succeeded', set(value))),
+            'failures': getattr(value, 'failures', {}),
             'unassigned_new_suspects': getattr(value, 'unassigned_new_suspects', [])}
 
 
 def _decode_polish_batch(value):
     return PolishBatchResult({int(k): text for k, text in value['texts'].items()},
+        succeeded=value.get('succeeded', [int(k) for k in value['texts']]),
+        failures={int(k): category for k, category in value.get('failures', {}).items()},
         details={int(k): receipt for k, receipt in value.get('details', {}).items()},
         unassigned_new_suspects=value.get('unassigned_new_suspects', ()))
 
@@ -1221,6 +1278,7 @@ def call_correction_api(
                                    validated_text=baseline[segment.segment_id])
                     failure_detail = getattr(quarantined, 'details', {}).get(segment.segment_id, {})
                     receipt['validation_failure'] = failure_detail
+                    receipt['rejected_patches']=getattr(quarantined,'rejected_patches',{}).get(segment.segment_id,[])
                     validated[segment.segment_id] = baseline[segment.segment_id]
                     add_review_item(segment.start, '校对回退', '该条校对结果字段或编辑范围无效，已保留原文，可单独重试。',
                                     segment.text, priority=3, severity='warning', batch_index=batch_index,
@@ -1302,11 +1360,15 @@ def call_correction_api(
                     if any(m['cue_id'] == segment.segment_id for m in x['matches'])],
                     sent_candidates=sent_for_cue,
                     returned_edits=item.get('edits', []), accepted_edits=applied, validated_text=corrected,
+                    completed_no_change_edits=[x for x in edit_decisions if x.get('state') in ('completed_no_change','already_applied')],
+                    rejected_patches=getattr(quarantined, 'rejected_patches', {}).get(segment.segment_id, []),
                     rejected_edits=[{**edit, 'rejected_at': 'local_correction_safety',
                         **next(({'rule_id': x['rule_id'], 'evidence': x.get('evidence', {})}
                             for x in edit_decisions if x.get('from') == edit.get('from')
                             and x.get('to') == edit.get('to')), {'rule_id': 'invalid_or_no_effect'})}
                         for edit in item.get('edits', []) if isinstance(edit, dict)
+                        and not any(x.get('from') == edit.get('from') and x.get('to') == edit.get('to')
+                            and x.get('state') in ('completed_no_change','already_applied') for x in edit_decisions)
                         and not any(x.get('from') == edit.get('from') and
                             x.get('model_to', x.get('to')) == edit.get('to') for x in applied)],
                     snapshot_digest=term_snapshot.digest, retrieval=request_body['terminology_retrieval'],
@@ -1327,6 +1389,16 @@ def call_correction_api(
                         for row in receipt.get('suspect_results', ())):
                     receipt['quality_state'] = 'pending_suspect_adjudication'
                 receipt['rejected_edit_count'] = len(receipt['rejected_edits'])
+                protected = getattr(quarantined, 'protected', {}).get(segment.segment_id, [])
+                if protected:
+                    receipt['rejected_edits'].extend(protected)
+                    receipt['rejected_edit_count'] = len(receipt['rejected_edits'])
+                    record_run_event('polishing_proposal_rejected', batch_index=batch_index,
+                        batch_total=batch_total, cue_ids=[segment.segment_id],
+                        task_id=f'{runtime_context.job_id}:polish:{segment.segment_id}',
+                        category='protection_rejection', reason='source_quote_not_found',
+                        input_text_sha256=hashlib.sha256(segment.text.encode()).hexdigest(),
+                        rejected_edits=protected, original_retained=True)
                 if receipt['rejected_edit_count']:
                     receipt.update(quality_state='pending_rejected_edit_review',
                         review_reason='model_edits_rejected_by_local_safety; original retained; no acoustic verification')
@@ -1399,6 +1471,10 @@ def call_correction_api(
                     "本轮立即回退 ASR 原文，不再重复请求。"
                 )
                 break
+            if last_category in {'semantic_validation', 'coverage_mismatch'}:
+                # Deterministic ownership rejection is preserved for an
+                # explicit targeted repair, never an identical network loop.
+                break
             if last_category in {
                 "structured_empty_response",
                 "structured_output_truncated",
@@ -1446,7 +1522,7 @@ def call_correction_api(
             "structured_output_truncated_before_answer",
         }
         and len(segment_batch) > 1
-        and _split_depth < STRUCTURED_SPLIT_MAX_DEPTH
+        and _split_depth < structured_split_limit()
         and not _retry_budget.expired
     ):
         midpoint = len(segment_batch) // 2
@@ -1459,6 +1535,7 @@ def call_correction_api(
             source_cue_count=len(segment_batch),
             child_cue_counts=[midpoint, len(segment_batch) - midpoint],
             category=last_category,
+            policy='bounded_output_truncation_fanout_v1',
         )
         merged = PolishBatchResult(succeeded=(),batches=0)
         for child_index,child in enumerate((segment_batch[:midpoint], segment_batch[midpoint:]),1):
@@ -1507,6 +1584,10 @@ def call_correction_api(
         batch_total=batch_total,
         category=last_category,
         error=redact_runtime_secrets(last_error),
+        cue_ids=[segment.segment_id for segment in segment_batch],
+        task_ids=[f'{runtime_context.job_id}:polish:{segment.segment_id}' for segment in segment_batch],
+        input_versions={str(segment.segment_id):hashlib.sha256(baseline[segment.segment_id].encode()).hexdigest() for segment in segment_batch},
+        validation_failure=getattr(last_error,'validation_failure',{'reason':last_category}),
     )
     add_review_item(
         segment_batch[0].start,
@@ -1521,7 +1602,9 @@ def call_correction_api(
     for segment in segment_batch:
         segment.caption_arbitration['terminology_polish'].update(
             response_state='fallback', failure_category=last_category,
-            validated_text=baseline[segment.segment_id])
+            validated_text=baseline[segment.segment_id],
+            task_id=f'{runtime_context.job_id}:polish:{segment.segment_id}',
+            validation_failure=dict(getattr(last_error,'validation_failure',{'reason':last_category})))
     return PolishBatchResult(baseline,succeeded=(),failures={x:last_category for x in baseline},
         details={x.segment_id: x.caption_arbitration['terminology_polish'] for x in segment_batch})
 
@@ -1630,7 +1713,6 @@ _MODEL_FAMILY = {
     "firered": "firered",
     "qwen_local": "qwen3_asr",
     "local": "qwen3_asr",
-    "api": "dashscope_qwen_api",
     "whisper_turbo": "whisper",
     "sensevoice": "funasr_sensevoice",
     "funasr_nano": "funasr_nano",
@@ -1638,7 +1720,7 @@ _MODEL_FAMILY = {
 }
 
 
-def _reference_family(segment):
+def _reference_family(segment, reference=None):
     """推断 first_independent_reference 的模型来源家族。
 
     - MOSS 主稿路径（primary_source 以 moss-host 开头）：first_ref 是
@@ -1653,12 +1735,23 @@ def _reference_family(segment):
     source = source.split("+")[0]
     if source.startswith("moss-"):
         return "firered"
+    if (reference and not getattr(segment, 'moss_text', '')
+            and reference == getattr(segment, 'alternate_text', '')
+            and reference == getattr(segment, 'firered_text', '')):
+        return 'firered'
     if source.endswith("-primary"):
         backend = source[: -len("-primary")]
         if backend:
             # 未知 backend（未来新增格式）无映射 → None → fail-closed 0 票
-            return _MODEL_FAMILY.get(backend)
+            return _api_family() if backend == 'api' else _MODEL_FAMILY.get(backend)
     return None
+
+
+def _api_family():
+    import subtitle_core as core
+    model = str(getattr(core, 'QWEN_ASR_API_MODEL', '') or '').strip()
+    provider = str(getattr(core, 'QWEN_ASR_API_PROVIDER', '') or '').strip()
+    return 'asr-api:' + model if model else ('asr-api-provider:' + provider if provider else None)
 
 
 def _review_family():
@@ -1666,7 +1759,7 @@ def _review_family():
     import subtitle_core as _core
 
     backend = str(getattr(_core, "QWEN_ASR_BACKEND", "") or "").strip()
-    return _MODEL_FAMILY.get(backend, backend or "review")
+    return _api_family() if backend == 'api' else _MODEL_FAMILY.get(backend, backend or "review")
 
 
 def _independent_asr_sources(segment, first_independent_reference):
@@ -1682,7 +1775,7 @@ def _independent_asr_sources(segment, first_independent_reference):
     primary_source 格式。
     """
     sources = []
-    family = _reference_family(segment)
+    family = _reference_family(segment, first_independent_reference)
     if family is None:
         print(
             f"   [警告] 无法确认主稿证据来源（primary_source="
@@ -1691,7 +1784,9 @@ def _independent_asr_sources(segment, first_independent_reference):
         )
     else:
         sources.append((family, first_independent_reference))
-    sources.append((_review_family(), segment.qwen_asr_text))
+    review_family = _review_family()
+    if review_family and segment.qwen_asr_text:
+        sources.append((review_family, segment.qwen_asr_text))
     return sources
 
 
@@ -1895,6 +1990,8 @@ def polish_subtitles(segments, media_title, cache_context=None):
             from ..recognition.service import CancelledError
             raise CancelledError('校对任务已取消，结果不再写入。')
     require_current()
+    from .correction_risk import words
+    owner.correction_lexical_words = frozenset(word.casefold() for segment in segments for word in words(segment.text))
     for segment in segments:
         segment.caption_arbitration.setdefault('processing_identity', {}).setdefault('polish_record_id',segment.segment_id)
         segment.caption_arbitration.setdefault('terminology_polish', {}).update(original_text=segment.text)
@@ -1992,9 +2089,9 @@ def polish_subtitles(segments, media_title, cache_context=None):
                          batch_total=len(batches), cue_count=len(batch))
         started_at = time.perf_counter()
 
-        def run_polish_batch():
+        def run_polish_batch(subset=None):
             return call_correction_api(
-                batch,
+                batch if subset is None else subset,
                 glossary,
                 context_before,
                 context_after,
@@ -2010,6 +2107,28 @@ def polish_subtitles(segments, media_title, cache_context=None):
                 _cache_context=cache_context,
                 _retry_budget=retry_budget,
             )
+        def resume_polish_batch(previous):
+            # Reapply exact saved receipts to the current frozen input; a
+            # retry never runs successful cues or repeats deterministic rejects.
+            terminal = {'semantic_validation', 'structured_schema_error', 'coverage_mismatch',
+                        'structured_output_truncated', 'structured_output_truncated_before_answer',
+                        'configuration_error', 'authentication_required', 'permission_denied',
+                        'model_unavailable', 'unknown_model', 'request_too_large'}
+            subset = [row for row in batch if row.segment_id in previous.failures
+                      and previous.failures[row.segment_id] not in terminal]
+            if not subset:
+                return previous
+            updated = run_polish_batch(subset)
+            merged = PolishBatchResult(previous, succeeded=previous.succeeded,
+                failures=previous.failures, details=previous.details,
+                unassigned_new_suspects=previous.unassigned_new_suspects)
+            for row in subset:
+                merged.failures.pop(row.segment_id, None)
+            merged.update(updated)
+            merged.succeeded.update(updated.succeeded)
+            merged.failures.update(updated.failures)
+            merged.details.update(updated.details)
+            return merged
         with capture_review_items() as review_items:
             if cache_context is not None:
                 batch_result = run_cached_api_batch(
@@ -2019,6 +2138,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
                     run_polish_batch,
                     encoder=_encode_polish_batch, decoder=_decode_polish_batch,
                     fallback_categories=("校对回退",),
+                    resume=resume_polish_batch,
                 )
             else:
                 batch_result = run_polish_batch()
@@ -2100,7 +2220,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
         if unassigned:
             add_review_item(jobs[index-1][1][0].start, '新增疑似词待确认',
                 '新增待确认提示无法关联具体字幕，已保留待审，未应用到正文。',
-                severity='review', batch_index=index, review_scope='unassigned_batch_metadata',
+                severity='info', batch_index=index, review_scope='unassigned_batch_metadata',
                 unassigned_new_suspects=list(unassigned))
     if set(polished_by_id) != set(baseline_by_id):
         raise ValueError('校对合并返回缺失或未知字幕 ID。')
@@ -2216,7 +2336,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
         if gaps:
             add_review_item(segment.start, '术语召回缺口',
                 '名称表面形式没有对应的本批词库候选，不能推断规范 ID；请检查别名映射或人工确认。',
-                segment.text, severity='review', segment_id=segment.segment_id,
+                segment.text, severity='info', segment_id=segment.segment_id,
                 terminology_recall_gaps=list(gaps), snapshot_digest=term_snapshot.digest)
         record_run_event('terminology_polish_final', job_id=owner.job_id, cue_id=segment.segment_id,
             changed=receipt.get('original_text', baseline_by_id[segment.segment_id]) != segment.text,

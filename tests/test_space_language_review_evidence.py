@@ -17,6 +17,66 @@ from twobyteasr.subtitle_rules.studio_review import ReviewEvidenceAggregator
 SENTENCE = "you can see that it's naturally blue in color"
 
 
+def test_legacy_neighbor_is_context_only_with_full_same_source_receipt():
+    from twobyteasr.recognition.asr_source_evidence import _mark_neighbor_context
+    cue = SimpleNamespace(start_ms=2000, end_ms=4000)
+    rows = [dict(model='single-source', text='poco conosciuto', cue_text_start=None,
+                 cue_text_end=None, cue_text_length=10, original_start_ms=1000, original_end_ms=2250,
+                 projection_basis='frozen_caption_source_interval'),
+            dict(model='single-source', text='Va bene', cue_text_start=0, cue_text_end=10, cue_text_length=10)]
+    _mark_neighbor_context(rows, cue)
+    assert rows[0]['context_only'] and rows[0]['text']=='poco conosciuto'
+    # A genuinely different independent reading of the current interval is
+    # not discarded, nor is a same-source observation confined to this cue.
+    other = dict(rows[0], model='another-source', context_only=False)
+    confined = dict(rows[0], context_only=False, original_start_ms=2000, original_end_ms=4000)
+    _mark_neighbor_context([other, confined, rows[1]], cue)
+    assert not other['context_only'] and not confined['context_only']
+
+
+def test_neighbor_context_never_votes_against_an_exact_short_current_reading(monkeypatch):
+    import twobyteasr.recognition.asr_source_evidence as source
+    cue = StudioCue('c', 2000, 3000, 'Certo')
+    project = _project(cue, {})
+    rows = [dict(model='qwen', text='Certo', comparison_text='Certo', start_ms=2000, end_ms=3000,
+                 cue_start_ms=2000, cue_end_ms=3000, cue_text_start=0,cue_text_end=5,cue_text_length=5,
+                 context_only=False, reference='current'),
+            dict(model='qwen', text='Ag i ardi ha fatto perdere tre secondi', comparison_text='Ag i ardi',
+                 start_ms=2000,end_ms=3000,cue_start_ms=2000,cue_end_ms=3000,
+                 context_only=True, reference='next')]
+    monkeypatch.setattr(source, 'cue_source_hypotheses', lambda *args, **kwargs: rows)
+    evidence = model_evidence(project,cue)
+    assert evidence[0].text=='Certo' and not evidence[0].context_only
+    assert evidence[1].context_only
+    issues=SubtitleQCEngine().analyze(project).for_cue('c')
+    assert not any(r.issue_type in {'model_disagreement','suspected_word'} for r in issues)
+
+
+def test_independent_import_never_borrows_audio_by_time_and_uses_its_language():
+    cue=StudioCue('import-id',0,1500,'这是一条用来测试中文速度的导入字幕'*2,speaker_id='srt-track')
+    p=_project(cue,{'segment:1':_moss_segment('a completely different source sentence',0,1800,200)})
+    p.generation_metadata.update(language={'code':'it'},subtitle_imports={'tracks':{'srt-track':{'language':'zh','role':'independent'}}})
+    assert not cue_source_hypotheses(p,cue)
+    issues=SubtitleQCEngine().analyze(p).for_cue(cue.id)
+    assert not any(r.issue_type=='model_disagreement' for r in issues)
+    speed=next(r for r in issues if r.issue_type=='high_cps')
+    assert speed.severity.value=='critical'
+
+
+def test_exact_native_sentence_is_not_cut_by_another_aligners_last_word():
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions
+    sentence='皮尔波伊杜卡'
+    cue=StudioCue('7',0,1200,sentence,evidence_refs=['cue-align:7','segment:3'])
+    native={'start_ms':0,'end_ms':1000,'text':sentence,'moss_text':sentence,'primary_source':'moss-host',
+        'words':[dict(text=char,start_ms=i*150,end_ms=(i+1)*150)for i,char in enumerate(sentence)]}
+    p=_project(cue,{'cue-align:7':_alignment_row('7',sentence,23,743),'segment:3':native})
+    ensure_independent_captions(p)
+    reading=model_evidence(p,p.cues[0])
+    assert reading and reading[0].text==sentence
+    assert not any(r.issue_type=='current_projection_difference' for r in SubtitleQCEngine().analyze(p).for_cue('7'))
+    assert p.asr_evidence['segment:3']==native
+
+
 def _words(text, start_ms, step_ms):
     return [dict(text=word, start_ms=start_ms + index * step_ms, end_ms=start_ms + (index + 1) * step_ms)
             for index, word in enumerate(text.split())]

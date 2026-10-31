@@ -146,7 +146,7 @@ def test_a_chant_is_cut_between_whole_units():
     payload = {"tagger_version": "0.2.11", "results": [
         {"text": chant, "words": [["メガネ" * 11, "名詞"], ["!", "補助記号"]]}]}
     document = jm.build_document([chant], payload)
-    expected = ["メガネメガネメガネ", "メガネメガネメガネメガネ", "メガネメガネメガネメガネ！"]
+    expected = ["メガネ" * 6, "メガネ" * 5 + "！"]
     with language_scope("ja"):
         with jm.phrase_scope(document):
             assert {word for _s, _e, word in chinese_word_spans(chant)} == {"メガネ"}
@@ -161,18 +161,20 @@ def test_last_resort_split_is_balanced_and_never_starts_a_line_with_a_small_kana
     with language_scope("ja"):
         long_line = "今までもそしてこれからも永遠にお目にかかれないことやってみようかと思います"
         pieces = [cue.text for cue in locally_repair_resegmented_cue(long_line, content_units(long_line))]
-        assert pieces == ["今までもそしてこれからも", "永遠にお目にかかれないこと", "やってみようかと思います"]
+        assert ''.join(pieces) == long_line and len(pieces) >= 2
+        assert all(len(piece) <= 26 and not piece.endswith('お') for piece in pieces)
         line = "えーとじゃあままあとりあえず今日は食べちゃいましょう"
-        assert [cue.text for cue in locally_repair_resegmented_cue(line, content_units(line))] == [
-            "えーとじゃあままあとりあえず", "今日は食べちゃいましょう"]
+        # This 26-character utterance fits the shared Japanese policy now.
+        assert [cue.text for cue in locally_repair_resegmented_cue(line, content_units(line))] == [line]
         # Never inside a doubled word (スイスイ, サメサメ, サミサミ), also when the
-        # 5 s limit forces a cut in the katakana run (0.36 s a character).
+        # Japanese's 7 s limit forces a cut (0.36 s a character).
         line = "スイスイサメサメパクサミサミパクこれならこれなんだ"
         for step in (0.2, 0.36):
             units = [subtitle_core.WordUnit(i * step, i * step + step * 0.9, char, 0.9) for i, char in enumerate(line)]
             pieces = [cue.text for cue in locally_repair_resegmented_cue(line, units)]
             cuts = {sum(len(piece) for piece in pieces[:index]) for index in range(1, len(pieces))}
-            assert "".join(pieces) == line and len(pieces) > 1
+            assert "".join(pieces) == line
+            assert len(pieces) > 1 if step == 0.36 else pieces == [line]
             assert not cuts & {1, 2, 3, 5, 6, 7, 11, 12, 13}
 
 

@@ -63,17 +63,59 @@ def displayed_layer(project, cue, language):
     from dataclasses import replace
     settings = replace(settings, mode='bilingual')
     rows = display_cues([cue], translations=translations_of(project.generation_metadata), settings=settings,
-        styles=project.styles, speakers=project.speakers, style_recipes=project.style_recipes,
+        styles=project.styles, speakers=project.speakers, style_recipes=project.style_recipes,effects=project.effects,
         play_res_x=int(project.render_settings.get('play_res_x',1920)),
         play_res_y=int(project.render_settings.get('play_res_y',1080)))
     target = companion_id(cue.id) if language == 'translation' else cue.id
     return next((row for row in rows if row.id == target), None)
 
 
+def _geometry_original(project, cue):
+    """Exact geometry when the original is the group's anchored outer line.
+
+    A bottom original under a translation keeps the group anchor regardless
+    of either text's ink height. Measuring thousands of unrelated glyphs to
+    display that same anchor is unnecessary. Other layouts keep the measured
+    path, including group transforms and translation-owned themes.
+    """
+    from .bilingual_layout import (settings_from_state, translations_of, translation_for_cue,
+                                  theme_owns_translation, _anchor)
+    from .style_resolution import resolve_cue_visual
+    settings = settings_from_state(project.studio_state)
+    if settings.group_transform:
+        return None
+    from .bilingual_layout import automatic_group_layout
+    if automatic_group_layout(cue):
+        # A tall automatic pair may need the small viewport correction made
+        # by group_positions; the raw single-line anchor is not its position.
+        return None
+    translated = translation_for_cue(translations_of(project.generation_metadata), cue.id)
+    if not translated:
+        return materialize_layer(cue, 'original')
+    if settings.legacy or settings.layout != 'ink_v1' or theme_owns_translation(project.style_recipes, cue):
+        return None
+    style = resolve_cue_visual(project, cue).style
+    row = (style.alignment - 1) // 3
+    if not ((row == 0 and settings.order == 'translation_first')
+            or (row == 2 and settings.order == 'original_first')):
+        return None
+    width, height = (int(project.render_settings.get(k, d))
+                     for k, d in (('play_res_x', 1920), ('play_res_y', 1080)))
+    x, y = _anchor(style, width, height)
+    shown = copy.copy(cue)
+    shown.transform = dict(cue.transform or {},
+        font_size=cue.appearance_override.get('original', {}).get('font_size',
+                          round(style.font_size * settings.original_scale, 2)),
+        position_x=round(x), position_y=round(max(4., min(height - 4., y))))
+    return materialize_layer(shown, 'original')
+
+
 def resolved_values(project, cue, language, *, geometry_only=False):
     from .resolved_caption_style import resolve_caption_style
     from .visual_snapshot import _anchor
-    shown = displayed_layer(project, cue, language)
+    shown = _geometry_original(project, cue) if geometry_only and language == 'original' else None
+    if shown is None:
+        shown = displayed_layer(project, cue, language)
     if shown is None:
         return None
     width, height = (int(project.render_settings.get(k,d)) for k,d in (('play_res_x',1920),('play_res_y',1080)))
@@ -93,12 +135,33 @@ class GeometryBatch:
     """Operation-local geometry reuse; glyph measurement stays with visible ink."""
     def __init__(self,project):
         from .bilingual_layout import translations_of
-        self.project=project;self.cache={};self.translations=translations_of(project.generation_metadata)
+        self.project=project;self.cache={};self.pairs={};self.translations=translations_of(project.generation_metadata)
 
     def values(self,cue,language):
         import json
-        from .bilingual_layout import translation_for_cue
+        from .bilingual_layout import translation_for_cue,settings_from_state,theme_owns_translation
         translation=translation_for_cue(self.translations,cue.id)
+        explicit=layer_values(cue,language)
+        # A prior scoped application has already frozen these absolute
+        # anchors. Glyph layout cannot change any of these explicit fields.
+        # Shared group transforms and authored translation themes retain the
+        # measured path, whose coordinates belong to another space.
+        settings=settings_from_state(self.project.studio_state)
+        if ((GEOMETRY-{'font_size'})<=explicit.keys() and not settings.group_transform
+                and not theme_owns_translation(self.project.style_recipes,cue)):
+            if language=='translation' and not translation:return None
+            from .scoped_style import effective_layer_style
+            style=effective_layer_style(self.project,cue,language)
+            size=style.font_size
+            if language=='original' and settings.mode!='bilingual' and 'font_size' not in explicit:
+                size=cue.appearance_override.get('original',{}).get('font_size',round(size*settings.original_scale,2))
+            return dict({k:explicit[k] for k in GEOMETRY-{'font_size'}},
+                        font_size=explicit.get('font_size',size),scale_link=bool(explicit.get('scale_link',True)))
+        if translation:
+            from .bilingual_geometry import geometry_pair
+            if cue.id not in self.pairs:self.pairs[cue.id]=geometry_pair(self.project,cue,translation,settings)
+            pair=self.pairs[cue.id]
+            if pair is not None:return dict(pair[language])
         key=(language,cue.style_id,cue.base_preset_id,cue.speaker_id,
              json.dumps((cue.transform,cue.appearance_override),sort_keys=True,ensure_ascii=False),
              (cue.text,translation) if translation else None)
@@ -130,6 +193,23 @@ def presentation_command(project, targets, transforms, *, effects=None, effect_i
         effects=effects,changed=changed,text=text,merge_enabled=merge_token is not None)
     command.merge_token = merge_token
     return command
+
+
+def restore_automatic_layout_command(project,cue_ids,*,changed=None):
+    """Explicitly release old independent layer anchors, keeping the group pose."""
+    from .bilingual_layout import translations_of,translation_for_cue
+    wanted=target_ids(project,cue_ids);translations=translations_of(project.generation_metadata)
+    targets=[];transforms={}
+    for cue in project.cues:
+        if cue.id not in wanted or not translation_for_cue(translations,cue.id):continue
+        transform=copy.deepcopy(cue.transform or {});layers=transform.get(LAYER_KEY,{})
+        for language in ('original','translation'):
+            value=layers.get(language,{})
+            for key in ('position_x','position_y','anchor_x','anchor_y'):value.pop(key,None)
+            if not value:layers.pop(language,None)
+        if not layers:transform.pop(LAYER_KEY,None)
+        if transform!=cue.transform:targets.append(cue);transforms[cue.id]=transform
+    return presentation_command(project,targets,transforms,changed=changed,text='恢复双语自动排列')
 
 
 def transform_command(project, cue_ids, language, changes, *, reset=False, changed=None, merge_token=None):

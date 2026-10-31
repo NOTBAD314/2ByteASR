@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QApplication,
     QCheckBox,
     QDialog,
@@ -116,6 +117,11 @@ class SpeakerManagerDialog(QDialog):
         self._stats: dict[str, dict] = {}
         self._representatives: dict[str, tuple[int, int, str]] = {}
         self._applying = False
+        self._pending_roles = {}
+        self._role_project = page.project
+        self._role_timer = QTimer(self)
+        self._role_timer.setSingleShot(True)
+        self._role_timer.timeout.connect(self._drain_roles)
         self._preview_card: SpeakerCard | None = None
         self._preview_video = None
         self._preview_return_rate = 1.0
@@ -137,6 +143,14 @@ class SpeakerManagerDialog(QDialog):
         self._preview_timer.timeout.connect(self._stop_preview)
         self.finished.connect(self._stop_preview)
         self._build_ui()
+        from ..projects.low_share_speakers import apply_low_share_policy
+        grouped = apply_low_share_policy(page.project)
+        if grouped is not None and grouped.generation_metadata['speaker_organization']['low_share_policy']['ignored']:
+            from ..timeline.studio_commands import SetCandidateRoleCommand
+            command = SetCandidateRoleCommand(page.project, grouped, page._speaker_structure_changed,
+                                              automatic=True, undo_stack=page.undo_stack)
+            command.setText(tr('低占比说话人默认忽略'))
+            self._push(command)
         self._load_snapshot()
         if self._snapshot:
             report = self._snapshot.get('processing', {}).get('voiceprint_review')
@@ -214,6 +228,11 @@ class SpeakerManagerDialog(QDialog):
         self.summary_label = QLabel()
         self.summary_label.setObjectName("speakerMeta")
         toolbar.addWidget(self.summary_label, 1)
+        self.role_filter = QComboBox()
+        for label, value in (('活跃说话人', 'active'), ('已忽略', 'ignored'), ('全部标签', 'all')):
+            self.role_filter.addItem(tr(label), value)
+        self.role_filter.currentIndexChanged.connect(lambda: self._filter_rows(self.speaker_filter.text()))
+        toolbar.addWidget(self.role_filter)
         self.speaker_filter = QLineEdit()
         self.speaker_filter.setProperty("fieldWidth", "speakerFilter")
         self.speaker_filter.setMinimumWidth(200)
@@ -530,6 +549,9 @@ class SpeakerManagerDialog(QDialog):
             self.speaker_filter.setVisible(len(self.cards) > _FILTER_THRESHOLD or bool(self.speaker_filter.text()))
             self._refresh_banner()
             self._refresh_summary()
+            ignored = sum(role == 'ignore' for role in self._roles().values())
+            self.role_filter.setItemText(1, tr('已忽略 · {count}', count=ignored))
+            self.role_filter.setToolTip(tr('已忽略字幕保留在工程缓存中，不参与预览、字幕导出和压制；恢复后重新参与。'))
             self._update_selection_summary()
             self.candidate_note.setText(self._snapshot_error)
             self.candidate_note.setVisible(bool(self._snapshot_error))
@@ -539,6 +561,7 @@ class SpeakerManagerDialog(QDialog):
             self._refreshing = False
 
     def _rebuild_cards(self, keys: list[str]) -> None:
+        self._stop_preview()
         checked = self._selected_ids()
         for card in self.cards.values():
             self.card_grid.removeWidget(card)
@@ -628,7 +651,8 @@ class SpeakerManagerDialog(QDialog):
             if not present:
                 if role == "ignore":
                     cached = len((self._snapshot or {}).get("cue_cache", {}).get(key, []))
-                    data["status"] = tr("已忽略 · {count} 条字幕留在缓存里，选「主要」就能恢复。", count=cached)
+                    reason = (self._snapshot or {}).get('reasons', {}).get(key) or tr('用户手动忽略')
+                    data["status"] = tr("{reason} {count} 条字幕保留；不参与预览和输出，点「恢复」重新启用。", reason=reason, count=cached)
                 elif role == "game":
                     data["status"] = tr("已归入游戏背景声。")
                 elif str(role).startswith("merge:"):
@@ -740,6 +764,9 @@ class SpeakerManagerDialog(QDialog):
         return True
 
     def done(self, result):
+        self._role_timer.stop()
+        self._drain_roles()
+        self._stop_preview()
         for card in self.cards.values():
             if card.name_edit.isEnabled() and not self._finish_name_edit(card):
                 card.name_edit.setFocus()
@@ -843,6 +870,9 @@ class SpeakerManagerDialog(QDialog):
         threading.Thread(target=work,name='speaker-voiceprint-review',daemon=True).start()
 
     def _voiceprint_poll(self):
+        if not self.isVisible() or self.page.project is not self._role_project:
+            self._voiceprint_timer.stop()
+            return
         try:
             signature, report, error = self._voiceprint_mailbox.get_nowait()
         except queue.Empty:
@@ -1039,13 +1069,22 @@ class SpeakerManagerDialog(QDialog):
             self._batch("merge", target=target, ids={key})
 
     def _card_role_clicked(self, card: SpeakerCard, role: str) -> None:
-        current = self._roles().get(card.key, "unconfirmed")
+        current = self._pending_roles.get(card.key, self._roles().get(card.key, "unconfirmed"))
         if role == current:
-            if not self._anonymous():
-                card.roles.set_role(current)
-                return
-            role = "unconfirmed"
-        self._set_role(card.key, role)
+            card.roles.set_role(current)
+            return
+        # Leave the native button's input dispatch before changing its model
+        # and the selection/track widgets. Keep stable IDs, never card wrappers.
+        self._pending_roles[card.key] = role
+        self._set_status(tr("正在更新说话人用途…"))
+        self._role_timer.start(0)
+
+    def _drain_roles(self):
+        pending, self._pending_roles = self._pending_roles, {}
+        if self.page.project is not self._role_project:
+            return
+        for label, role in pending.items():
+            self._set_role(label, role)
 
     def _set_role(self, label: str, role: str) -> None:
         from ..recognition.speaker_recovery import apply_candidate_role
@@ -1060,6 +1099,7 @@ class SpeakerManagerDialog(QDialog):
             self.refresh(label)
             return
         project = self.page.project
+        self._stop_preview()
         try:
             result = apply_candidate_role(project, self._snapshot, label, role)
         except (ValueError, KeyError, TypeError) as exc:
@@ -1069,8 +1109,8 @@ class SpeakerManagerDialog(QDialog):
         if result is None:
             self.refresh(label)
             return
-        self._stop_preview()
-        command = RecoverSpeakersCommand(project, result, self.page._speaker_structure_changed)
+        from ..timeline.studio_commands import SetCandidateRoleCommand
+        command = SetCandidateRoleCommand(project, result, self.page._speaker_structure_changed)
         command.setText(tr("设置说话人用途"))
         self._applying = True
         try:
@@ -1151,10 +1191,9 @@ class SpeakerManagerDialog(QDialog):
         self._preview_timer.stop()
         card, self._preview_card = self._preview_card, None
         if card is not None:
-            try:
+            from shiboken6 import isValid
+            if isValid(card):
                 card.set_playing(False)
-            except RuntimeError:
-                pass  # The card was rebuilt while its preview ran.
         video = self._preview_video
         self._preview_video = None
         if video is not None and video.controller:
@@ -1190,9 +1229,13 @@ class SpeakerManagerDialog(QDialog):
 
     def _filter_rows(self, text: str) -> None:
         needle = str(text or "").casefold()
+        roles = self._roles()
+        mode = self.role_filter.currentData()
         for key, card in self.cards.items():
-            card.setHidden(bool(needle) and needle not in key.casefold()
-                           and needle not in str(card.data.get("name", "")).casefold())
+            matches = not needle or needle in key.casefold() or needle in str(card.data.get('name', '')).casefold()
+            included = mode == 'all' or ((roles.get(key) == 'ignore') if mode == 'ignored'
+                                        else roles.get(key) != 'ignore' and (card.data.get('present') or roles.get(key) == 'unconfirmed'))
+            card.setHidden(not (matches and included))
 
     def _fill_batch_merge_menu(self) -> None:
         menu = self.batch_merge_menu

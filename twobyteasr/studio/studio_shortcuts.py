@@ -48,7 +48,7 @@ from . import shortcut_registry as registry
 from ..design.presentation import button_role
 from ..i18n import bind_text, tr
 
-STUDIO_SCOPES = ('studio', 'studio.review')
+STUDIO_SCOPES = ('studio', 'studio.review', 'studio.editor')
 
 # id -> (label, default): historic shape kept for callers and tests.
 STUDIO_COMMANDS = {

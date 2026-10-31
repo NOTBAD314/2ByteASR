@@ -103,7 +103,7 @@ def edit_translation(page, cue_id=None):
         apply_display(page, mode="bilingual")
     timeline.select_translation(cue.id)
     text = page.project.generation_metadata.get("translations", {}).get(cue.id, "")
-    timeline._open_inline_editor(cue, True, text)
+    page._open_caption_editor(cue.id, "translation")
 
 
 def build_menu(page, menu, cue_id):
@@ -155,7 +155,9 @@ def handle_sequence(page, sequence):
     return handle_key(page, QKeyEvent(QEvent.Type.KeyPress, combination.key(), combination.keyboardModifiers()))
 
 
-def sync_editor_layer(page):
+def sync_editor_layer(page, *, explicit=False):
+    if explicit:
+        page._caption_canvas_edit_target=None
     timeline = page.timeline
     translation = timeline.active_subtitle_layer == "translation"
     target = container_target(page.project) if page.project else ""
@@ -212,7 +214,7 @@ class TranslationTextEdit(InputLatencyTextEdit):
         if same and (self.dirty or self.composing):
             return
         if not same:
-            self.commit()
+            if self.commit() is False:return False
         self.binding = key
         self.loading = True
         try:
@@ -246,7 +248,7 @@ class TranslationTextEdit(InputLatencyTextEdit):
         return mime
 
     def clear_binding(self):
-        self.commit()
+        if self.commit() is False:return False
         self.binding = None
         self.loading = True
         self.clear()
@@ -254,15 +256,25 @@ class TranslationTextEdit(InputLatencyTextEdit):
         self.dirty = False
 
     def commit(self):
-        if not self.dirty or not self.binding or self.composing:
+        if self.composing:
+            from PySide6.QtWidgets import QApplication
+            method=QApplication.inputMethod()
+            if method is not None:method.commit()
+            if self.composing:
+                self.page.save_state.setText(tr('输入法候选尚未确认，请先确认候选再提交'))
+                return False
+        if not self.dirty or not self.binding:
             return
         project, cue_id, target = self.binding
-        self.dirty = False
         if self.page.project is project:
             if container_target(project) != target:
                 self.page.save_state.setText(tr("译文语言已切换，请重新选择字幕后编辑"))
                 return
             tools = getattr(self, "_caption_tools", None)
+            desired=self.toPlainText()
+            if tools is not None and tools.mode.currentIndex():
+                from ..caption_style.text_marks import parse_markdown
+                desired=parse_markdown(desired)[0]
             if tools is not None:
                 before = self.page.undo_stack.index()
                 tools.commit()
@@ -271,7 +283,13 @@ class TranslationTextEdit(InputLatencyTextEdit):
                     self.page.cue_controller.set_translation(cue_id, tools.body(cue), target=target)
             else:
                 self.page.cue_controller.set_translation(cue_id, self.toPlainText(), target=target)
+            from ..caption_style.bilingual_layout import translations_of
+            if str(translations_of(project.generation_metadata).get(cue_id,'') or '') != desired:
+                self.page.save_state.setText(tr('译文未提交；草稿已保留，可重试'))
+                return False
+            self.dirty = False
             self._baseline = self.toPlainText()
+            return True
 
     def inputMethodEvent(self, event):
         self.composing = bool(event.preeditString())

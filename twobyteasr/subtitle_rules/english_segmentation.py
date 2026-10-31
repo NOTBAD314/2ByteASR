@@ -164,7 +164,7 @@ def break_scores(tokens: list[str], gaps: list[float] | None = None, lexicon=Non
 
 
 def split_tokens(tokens: list[str], gaps: list[float] | None = None, *, durations: list[float] | None = None,
-                 rules=None, lexicon=None) -> list[tuple[int, int]]:
+                 rules=None, lexicon=None, source_text=None) -> list[tuple[int, int]]:
     """Best split of ``tokens`` into (start, end) ranges, end exclusive."""
     lex = lexicon or ENGLISH
     rules = rules or lex.rules
@@ -172,13 +172,24 @@ def split_tokens(tokens: list[str], gaps: list[float] | None = None, *, duration
     count = len(tokens)
     if count == 0:
         return []
-    if length_of(" ".join(tokens)) <= rules.cue_max_chars and (durations is None or sum(durations) <= rules.max_seconds):
+    from .segmentation_profiles import profile_for,word_spans
+    forced=[i+1 for i,gap in enumerate(gaps or ()) if gap>=profile_for(lex.code).long_pause_seconds]
+    raw_spans=word_spans(source_text) if source_text is not None else []
+    def raw(first,last):
+        return source_text[raw_spans[first][0]:raw_spans[last-1][1]] if len(raw_spans)==count else ' '.join(tokens[first:last])
+    if forced:
+        edges=[0,*forced,count];pieces=[]
+        for a,b in zip(edges,edges[1:]):
+            pieces.extend((a+x,a+y) for x,y in split_tokens(tokens[a:b],(gaps or [])[a:b-1],
+                durations=durations[a:b] if durations is not None else None,rules=rules,lexicon=lex,source_text=raw(a,b)))
+        return pieces
+    if length_of(raw(0,count)) <= rules.cue_max_chars and (durations is None or sum(durations) <= rules.max_seconds):
         return [(0, count)]
     scores = break_scores(tokens, gaps, lex)
-    lengths = [len(token) for token in tokens]
+    lengths = [length_of(token) for token in tokens]
 
     def piece_cost(start, end):
-        length = sum(lengths[start:end]) + (end - start - 1)
+        length = length_of(raw(start,end))
         if length > rules.cue_max_chars and end - start > 1:
             return None
         seconds = sum(durations[start:end]) if durations else 0.0
@@ -286,13 +297,17 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None)
     cues: list[SubtitleCue] = []
     aligned = [row for row in (firered_tokens or ()) if isinstance(row, dict)]
     for segment in sorted(segments, key=lambda item: (item.start, item.end, item.segment_id)):
-        tokens = split_of(segment.text)
+        from .segmentation_profiles import word_spans,slice_word_pieces,task_language_tag
+        raw_spans=word_spans(segment.text)
+        tokens=[part[2] for part in raw_spans]
         if not tokens:
             continue
-        times = _fill_times(segment, tokens, _word_times(segment, tokens, aligned, core_of))
+        measured_times=_word_times(segment,tokens,aligned,core_of)
+        measured_mask=[t is not None for t in measured_times]
+        times = _fill_times(segment, tokens, measured_times)
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
-        pieces = split_tokens(tokens, gaps, durations=durations, lexicon=lex)
+        pieces = split_tokens(tokens, gaps, durations=durations, lexicon=lex,source_text=segment.text)
         if breaks_for is not None and length_of(segment.text) > lex.rules.cue_max_chars:
             try:
                 answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), lexicon=lex, gaps=gaps)
@@ -304,17 +319,28 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None)
                 pieces = answer
         locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
         own = []
-        for first, last in pieces:
+        source_pieces=slice_word_pieces(segment.text,pieces)
+        for (first,last),(char_start,char_end,raw_piece) in zip(pieces,source_pieces):
             cue_start = times[first][0] if first else float(segment.start)
             cue_end = times[last - 1][1] if last < len(tokens) else float(segment.end)
             own.append(SubtitleCue(0, round(cue_start, 3), round(max(cue_end, cue_start + 0.2), 3),
-                                   join_of(tokens[first:last]), locked, speaker))
+                                   raw_piece, locked, speaker))
+            own[-1].source_spans=[dict(source_id=segment.segment_id,char_start=char_start,char_end=char_end,
+                raw_text=raw_piece,index_unit='python_unicode_codepoint',source_time=[segment.start,segment.end])]
+            own[-1].timing_basis='matched_word_evidence' if all(measured_mask[first:last]) else 'estimated_within_source_sentence'
+            tag=task_language_tag(lex.code)
+            from .segmentation_profiles import profile_for
+            own[-1].segmentation_language=tag if profile_for(tag).code==lex.code else lex.code
         problem = _source_problem(segment, own)
         if problem:
             own = [SubtitleCue(0, round(float(segment.start), 3),
                                round(max(float(segment.end), float(segment.start) + 0.2), 3),
                                segment.text, locked, speaker)]
             _note_sentence_kept(segment, problem)
+            own[0].source_spans=[dict(source_id=segment.segment_id,char_start=0,char_end=len(segment.text),raw_text=segment.text,
+                index_unit='python_unicode_codepoint',source_time=[segment.start,segment.end])]
+            own[0].timing_basis='original_source_sentence'
+            own[0].segmentation_language=task_language_tag(lex.code)
         for cue in own:
             cue.cue_id = len(cues) + 1
             cues.append(cue)
@@ -359,19 +385,16 @@ def pieces_from_breaks(tokens: list[str], breaks, lexicon=None, gaps=None) -> li
     break comes after a word that must not end a line (2026-10-21, real Italian
     clip: "per un piano con | due fessure", "delle due non | osservandole").
     """
-    try:
-        cuts = sorted({int(value) for value in breaks})
-    except (TypeError, ValueError):
-        return None
-    if any(cut < 0 or cut >= len(tokens) - 1 for cut in cuts):
+    if not isinstance(breaks,(list,tuple)):
         return None
     lex = lexicon or ENGLISH
+    from .segmentation_profiles import profile_for
+    scores=break_scores(tokens,gaps,lex)
+    forced={i for i,gap in enumerate(gaps or ()) if gap>=profile_for(lex.code).long_pause_seconds}
+    cuts=sorted(forced | {v for v in breaks if type(v) is int and 0<=v<len(tokens)-1 and scores[v]>FORBIDDEN_BREAK})
     edges = [0] + [cut + 1 for cut in cuts] + [len(tokens)]
     pieces = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
     if any(_tools(lex)[1](" ".join(tokens[a:b])) > lex.rules.cue_max_chars and b - a > 1 for a, b in pieces):
-        return None
-    scores = break_scores(tokens, gaps, lex)
-    if any(scores[cut] <= FORBIDDEN_BREAK for cut in cuts):
         return None
     return pieces
 
@@ -391,8 +414,11 @@ def grouping_system_prompt(lexicon=None) -> str:
     """The English prompt (with the user's rules, 2026-10-18), or the same rules with
     another language's word lists (2026-10-19; not editable)."""
     lex = lexicon or ENGLISH
-    if lex.code == "en":
-        return english_grouping_system_prompt()
+    from .grouping_request import word_grouping_system_prompt
+    return word_grouping_system_prompt(lex.code)
+
+
+def _legacy_word_guidance(lex):
     return f"""You split {lex.name} game-stream subtitles into readable lines.
 You receive utterances as numbered words. Return ONLY JSON: {{"breaks": {{"<utterance id>": [word numbers]}}}}
 where each number n means "a new subtitle starts after word n". Never change, add or remove words.
@@ -411,21 +437,53 @@ def grouping_prompt_version(lexicon=None) -> str:
     # v2: squeezed aligner words are shared out; v3: number words never end a line (2026-10-19);
     # v4 (English v2): two-line subtitles, checked AI breaks, word times kept inside the utterance (2026-10-21).
     # English: the built-in prompt keeps its version; the user's rules add a digest (2026-10-18).
-    return grouping_prompt_key("en") if lex.code == "en" else f"{lex.code}-word-breaks-v4"
+    from .segmentation_profiles import task_language_tag,profile_for
+    tag=task_language_tag(lex.code)
+    if profile_for(tag).code!=lex.code:tag=lex.code
+    return grouping_prompt_key(tag)
 
 
 def build_ai_messages(batch: list[tuple[str, list[str]]], lexicon=None) -> list[dict]:
-    payload = [{"id": key, "words": {str(i): token for i, token in enumerate(tokens)}} for key, tokens in batch]
+    payload = [{"id": key, "words": {str(i): token for i, token in enumerate(tokens)},
+                'allowed_break_after':[i for i,score in enumerate(break_scores(tokens,lexicon=lexicon)) if score>FORBIDDEN_BREAK]}
+                for key, tokens in batch]
     return [{"role": "system", "content": grouping_system_prompt(lexicon)},
             {"role": "user", "content": json.dumps({"utterances": payload}, ensure_ascii=False)}]
+
+
+class BreakAnswers(dict):
+    partial = False
 
 
 def parse_ai_breaks(content: str) -> dict[str, list[int]]:
     text = str(content or "").strip()
     start, end = text.find("{"), text.rfind("}")
-    data = json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
+    partial=False
+    try:
+        if start<0 or end<=start:raise json.JSONDecodeError('Incomplete boundary envelope',text,0)
+        duplicates=[]
+        def unique_pairs(pairs):
+            counts={key:sum(k==key for k,v in pairs) for key,value in pairs}
+            duplicates.extend(key for key,count in counts.items() if count>1)
+            return {key:value for key,value in pairs if counts[key]==1}
+        data=json.loads(text[start:end+1],object_pairs_hook=unique_pairs)
+        partial=bool(duplicates)
+    except json.JSONDecodeError:
+        # Only fully closed integer arrays are recoverable from a truncated
+        # word-boundary response. Known utterance IDs are checked by the caller.
+        pairs=[]
+        for match in re.finditer(r'"([^"\\]+)"\s*:\s*(\[[^\[\]]*\])',text):
+            try:value=json.loads(match.group(2))
+            except json.JSONDecodeError:continue
+            if isinstance(value,list) and all(type(v) is int for v in value):
+                pairs.append((match.group(1),value))
+        counts={key:sum(k==key for k,v in pairs) for key,value in pairs}
+        data={'breaks':{key:value for key,value in pairs if counts[key]==1}}
+        partial=True
     breaks = data.get("breaks") if isinstance(data, dict) else None
-    return {str(key): list(value) for key, value in (breaks or {}).items() if isinstance(value, list)}
+    result=BreakAnswers({str(key):list(value) for key,value in breaks.items() if isinstance(value,list)}) if isinstance(breaks,dict) else BreakAnswers()
+    result.partial=partial or not isinstance(breaks,dict)
+    return result
 
 
 def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> dict:
@@ -447,13 +505,25 @@ def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> di
     lex = lexicon or ENGLISH
     _core, length_of, split_of, _join = _tools(lex)
     long = [(str(segment.segment_id), split_of(segment.text)) for segment in segments
-            if length_of(segment.text) > lex.rules.cue_max_chars]
+            if length_of(segment.text) > lex.rules.cue_max_chars and len(split_of(segment.text))>1
+            and any(s>FORBIDDEN_BREAK for s in break_scores(split_of(segment.text),lexicon=lex))]
     found: dict = {}
     for offset in range(0, len(long), 40):
         batch = long[offset:offset + 40]
         try:
-            found.update(parse_ai_breaks(complete(build_ai_messages(batch, lex))))
-        except Exception:
+            decoded=parse_ai_breaks(complete(build_ai_messages(batch,lex)))
+            expected={key for key,tokens in batch}
+            accepted={key:value for key,value in decoded.items() if key in expected}
+            found.update(accepted)
+            from ..recognition.cache import record_run_event
+            record_run_event('word_grouping_batch',language=lex.code,prompt_version=grouping_prompt_version(lex),
+                batch_index=offset//40+1,source_ids=sorted(expected),received_ids=sorted(accepted),
+                partial_response=bool(decoded.partial),local_fallback_ids=sorted(expected-set(accepted)))
+        except Exception as error:
+            from ..recognition.cache import record_run_event
+            record_run_event('word_grouping_batch_fallback',language=lex.code,batch_index=offset//40+1,
+                source_ids=[key for key,tokens in batch],reason=getattr(error,'category',type(error).__name__),
+                action='local_same_language_policy; no_repeat_request')
             continue
     return found
 
@@ -463,7 +533,7 @@ def group_english_with_ai(segments, firered_tokens=(), provider_snapshot=None, *
     answers = (ai_breaks(segments, provider_snapshot, complete=complete, lexicon=lexicon)
                if (provider_snapshot or complete) else {})
     return group_english(segments, firered_tokens, lexicon=lexicon,
-                         breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)) or None)
+                         breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)))
 
 
 def describe_rules() -> str:

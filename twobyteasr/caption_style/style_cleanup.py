@@ -11,7 +11,8 @@ that nothing references are removed; base presets and ``default`` always stay.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any
+from collections.abc import Iterable, Mapping
 
 DERIVED_TOKENS = ("-fill-", "-scope-", "-cue-", "-canvas-")
 

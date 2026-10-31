@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
+
+SIDECAR_FORMAT = "2byteasr-subtitles"
+
+
+def sidecar_path(path: Path) -> Path:
+    return path.with_name(path.name + ".2byte.json")
 
 
 def normalize_srt_text(text: str) -> str:

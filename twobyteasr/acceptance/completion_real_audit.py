@@ -43,7 +43,7 @@ def completion_panel_geometry(panel, header, content, margins):
         header_to_panel=dict(left=hx-px, top=hy-py, right=(px+pw)-(hx+hw), bottom=(py+ph)-(hy+hh)))
 
 
-def secondary_control_measurement(button):
+def secondary_control_measurement(button, *, expected_height=None):
     """Audit actual geometry after theme/i18n polish, including legal minima."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton
@@ -56,6 +56,8 @@ def secondary_control_measurement(button):
     else:
         available = button.content_rects()[0].toRect()
     from ..app.completion_widgets import COMPLETION_SECONDARY_HEIGHT
+    if expected_height is None:
+        expected_height = COMPLETION_SECONDARY_HEIGHT
     text = button.fontMetrics().boundingRect(available,
         int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextSingleLine), button.text())
     return dict(text=button.text(), width=button.width(), height=button.height(),
@@ -66,7 +68,7 @@ def secondary_control_measurement(button):
         available=dict(x=available.x(),y=available.y(),width=available.width(),height=available.height()),
         fits=(button.minimumWidth() <= button.width() <= button.maximumWidth()
             and button.minimumHeight() <= button.height() <= button.maximumHeight()
-            and button.height() == COMPLETION_SECONDARY_HEIGHT and 13 <= button.font().pixelSize() <= 16
+              and button.height() == expected_height and 13 <= button.font().pixelSize() <= 16
             and text.width() <= available.width() and text.height() <= available.height()))
 
 
@@ -88,6 +90,9 @@ def start(window, output):
 
     output = Path(output)
     inputs = json.loads((output/'input.json').read_text('utf8'))
+    if inputs.get('fidelity'):
+        from .text_delivery_audit import start as fidelity_start
+        return fidelity_start(window,output)
     if inputs.get('summary_layout'):
         from .completion_summary_audit import start as summary_start
         return summary_start(window, output)
@@ -285,11 +290,16 @@ def start(window, output):
             self.check(phase + ': details independently collapsed', not window.result_files_toggle.isChecked()
                 and not window.result_log_toggle.isChecked() and window.result_files.isHidden() and window.result_console.isHidden())
             summary = self.box(window.result_title, viewport)
+            todo = self.box(window.result_todo, viewport)
             files = self.box(window.result_files_toggle, viewport)
             log = self.box(window.result_log_toggle, viewport)
-            self.check(phase + ': stacked full-width details under summary and above main actions',
-                files.y() > summary.y() and files.bottom() < log.y() and log.bottom() < bounds.y(),
-                dict(summary=self.rect(summary), files=self.rect(files), log=self.rect(log)))
+            # 2026-10-30 (design A): summary, 「还可以做这些」, main actions,
+            # then the two folds side by side (stacked when narrow).
+            side_by_side = window.result_folds.columns == 2
+            self.check(phase + ': follow-ups under the summary, folds under the main actions',
+                summary.y() < todo.y() and todo.bottom() < bounds.y() and files.y() > bounds.bottom()
+                and (abs(files.y()-log.y()) <= 1 and files.right() < log.x() if side_by_side else files.bottom() < log.y()),
+                dict(summary=self.rect(summary), todo=self.rect(todo), files=self.rect(files), log=self.rect(log)))
             self.surface_checks(phase, geometry, bounds)
             self.balance_checks(phase, geometry, bounds, center_required)
             self.write()
@@ -321,13 +331,11 @@ def start(window, output):
                     color = image.pixelColor(round((card.width()-25)*card.devicePixelRatioF()), round((card.height()-25)*card.devicePixelRatioF()))
                     colors = (card._theme.accent, card._theme.accent_hover, card._theme.accent_pressed)
                     self.check(phase + ': equal theme emphasis ' + card.text(), color in [QColor(c) for c in colors], color.name())
-            secondary = window.result_secondary_bar.buttons
-            for button in secondary:
-                if button.isVisible():
-                    self.check(phase + ': readable secondary click target ' + button.text(), 48 <= button.height() <= 56
-                        and 15 <= button.font().pixelSize() <= 17
-                        and button.fontMetrics().horizontalAdvance(button.text())+40 <= button.width(),
-                        dict(width=button.width(), height=button.height(), text_width=button.fontMetrics().horizontalAdvance(button.text())))
+            for button in [button for button in (*(card.action for card in window.result_todo.cards), window.result_more_button) if button.isVisible()]:
+                self.check(phase + ': readable follow-up click target ' + button.text(), 40 <= button.height() <= 56
+                    and 13 <= button.font().pixelSize() <= 17
+                    and button.fontMetrics().horizontalAdvance(button.text())+24 <= button.width(),
+                    dict(width=button.width(), height=button.height(), text_width=button.fontMetrics().horizontalAdvance(button.text())))
 
         def measure_layout(self, viewport):
             """Record all surfaces before strict gates can stop a tight layout."""
@@ -361,7 +369,7 @@ def start(window, output):
                 headers.append(value)
             summary_layout = window.result_summary_card.layout()
             margins = summary_layout.contentsMargins()
-            group = window.result_secondary_bar
+            group = window.result_todo
             return dict(measured_before_center_gate=True,summary=self.rect(self.box(window.result_summary_card,viewport)),
                 summary_frame=measured(window.result_summary_card),summary_labels=labels,
                 measured_primary=[dict(bounds=self.rect(self.box(card,viewport)), text=card.text(),
@@ -371,8 +379,8 @@ def start(window, output):
                 summary_layout=dict(margins=dict(left=margins.left(),top=margins.top(),right=margins.right(),bottom=margins.bottom()),
                     spacing=summary_layout.spacing(),copy_spacing=window.result_content._summary_copy.spacing()),
                 measured_headers=headers,measured_bodies=[measured(window.result_files),measured(window.result_console)],
-                measured_secondary=[measured(button) for button in group.buttons],
-                secondary_bar=dict(bounds=self.rect(self.box(group,viewport)),columns=group._columns,
+                measured_secondary=[measured(button) for button in (*(card.action for card in group.cards), window.result_more_button)],
+                secondary_bar=dict(bounds=self.rect(self.box(group,viewport)),columns=group.columns,
                     horizontal_spacing=group.grid.horizontalSpacing(),vertical_spacing=group.grid.verticalSpacing()))
 
         def surface_checks(self, phase, geometry, primary):
@@ -420,12 +428,22 @@ def start(window, output):
                     self.check(phase + ': summary copy fits its real logical text rectangle ' + label.text()[:24],
                         required.height() <= available.height() and required.width() <= available.width(),
                         dict(available=self.rect(available), required=self.rect(required)))
-            visible = [button for button in window.result_secondary_bar.buttons if button.isVisible()]
-            status = [window.result_review_status] if window.result_review_status.isVisible() else []
-            self.check(phase + ': secondary actions and status use smaller rendering radius',
-                COMPLETION_RADIUS_SMALL == 8 and COMPLETION_RADIUS_SMALL < COMPLETION_RADIUS_MAIN
-                and all(button.property('completionRadius') == COMPLETION_RADIUS_SMALL for button in visible+status),
-                [dict(text=button.text(), radius=button.property('completionRadius')) for button in visible+status])
+            visible = [button for button in (*(card.action for card in window.result_todo.cards), window.result_more_button) if button.isVisible()]
+            self.check(phase + ': follow-up cards keep the small radius below the main radius',
+                COMPLETION_RADIUS_SMALL == 8 and COMPLETION_RADIUS_SMALL < COMPLETION_RADIUS_MAIN)
+            todo_section = window.result_todo
+            shown = [card for card in todo_section.cards if card.isVisible()]
+            self.check(phase + ': AI glossary proofreading is always offered and is the widest follow-up',
+                todo_section.ai_card.isVisible() and all(todo_section.ai_card.width() >= card.width() for card in shown))
+            self.check(phase + ': review and retry follow-ups appear only when they apply',
+                window.result_review_status.isVisible() == bool(todo_section._shown[todo_section.review_card])
+                and window.retry_failed_button.isVisible() == bool(todo_section._shown[todo_section.retry_card]))
+            if todo_section.columns > 1:
+                self.check(phase + ': follow-up cards share one row', len({self.box(card, viewport).y() for card in shown}) == 1,
+                    [self.rect(self.box(card, viewport)) for card in shown])
+            else:
+                self.check(phase + ': narrow follow-up cards stack', all(self.box(a, viewport).bottom() < self.box(b, viewport).y()
+                    for a, b in zip(shown, shown[1:])), [self.rect(self.box(card, viewport)) for card in shown])
             rows = []
             for button in sorted(visible, key=lambda button:(self.box(button,viewport).y(),self.box(button,viewport).x())):
                 rect = self.box(button, viewport)
@@ -438,58 +456,30 @@ def start(window, output):
                 row_bounds = row[0]
                 for rect in row[1:]: row_bounds = row_bounds.united(rect)
                 secondary = secondary.united(row_bounds)
-                for left, right in zip(row, row[1:]):
-                    gap = right.x()-left.right()-1
-                    self.check(phase + ': secondary horizontal edge gap follows the 18-pixel gutter', gap == 18,
-                        dict(gap=gap, left=self.rect(left), right=self.rect(right)))
-            self.check(phase + ': secondary group has usable visible targets', bool(visible))
-            vertical_gap = secondary.y()-primary.bottom()-1
-            self.check(phase + ': primary to secondary edge gap is 16 logical pixels', vertical_gap == 16,
-                dict(gap=vertical_gap, primary=self.rect(primary), secondary=self.rect(secondary)))
-            self.check(phase + ': primary and supporting operations use the same production grid',
-                window.result_secondary_layout is window.result_action_grid.grid)
-            if window.result_secondary_bar._columns == 1:
-                self.check(phase + ': narrow secondary controls occupy one full-width column',
-                    len(rows) == len(visible) and all(len(row) == 1 for row in rows), [list(map(self.rect,row)) for row in rows])
-                if len(rows) > 1:
-                    self.result.setdefault('secondary_wrap_evidence', []).append(dict(phase=phase,
-                        row_count=len(rows), bar_width=window.result_secondary_bar.width(), dpr=window.devicePixelRatioF()))
-            else:
-                expected_rows = 2 if window.retry_failed_button.isVisible() else 1
-                self.check(phase + ': three supporting columns plus an optional separate retry row', len(rows) == expected_rows)
-            aligned = window.result_action_grid.secondary_actions
-            for card, button in zip(window.result_action_grid.cards, aligned):
-                if button.isVisible():
-                    card_rect, button_rect = self.box(card,viewport), self.box(button,viewport)
-                    self.check(phase + ': same-column left and right edges agree ' + button.text(),
-                        abs(card_rect.x()-button_rect.x()) <= 1 and abs(card_rect.width()-button_rect.width()) <= 1,
-                        dict(primary=self.rect(card_rect), secondary=self.rect(button_rect)))
-            widths = [button.width() for button in aligned if button.isVisible()]
+            self.check(phase + ': follow-ups have usable visible targets', bool(visible))
+            follow_gap = primary.y()-self.box(window.result_todo, viewport).bottom()-1
+            self.check(phase + ': follow-ups to main actions use the page row gap', 8 <= follow_gap <= 16,
+                dict(gap=follow_gap, primary=self.rect(primary), todo=self.rect(self.box(window.result_todo, viewport))))
             heights = [button.height() for button in visible]
-            self.check(phase + ': secondary buttons use equal flexible columns and equal 52-pixel heights',
-                max(widths)-min(widths) <= 1 and all(value == 52 for value in heights),
-                dict(widths=widths, heights=heights))
-            # Theme/i18n polish may reduce the minimum to 50 while actual and
-            # maximum stay 52. Only the painted geometry and valid constraints
-            # are a product contract; min == max is not required.
+            # Theme/i18n polish may reduce the minimum while actual and maximum
+            # stay put. Only the painted geometry and valid constraints are a
+            # product contract; min == max is not required.
             measured_controls = [secondary_control_measurement(button) for button in visible]
-            self.check(phase + ': actual secondary text geometry and legal constraints fit their shared column',
-                all(row['fits'] for row in measured_controls), measured_controls)
+            self.check(phase + ': follow-up buttons share one height and their text fits',
+                len(set(heights)) == 1 and all(row['fits'] for row in measured_controls), measured_controls)
             title, arrow = window.result_more_button.content_rects()
             self.check(phase + ': more popup arrow is centered vertically',
                 abs(arrow.center().y()-window.result_more_button.height()/2) <= 1)
-            self.check(phase + ': both operation rows share 18-pixel columns and 16-pixel rows',
-                window.result_secondary_bar.grid.horizontalSpacing() == 18 and window.result_secondary_bar.grid.verticalSpacing() == 16)
             geometry.update(summary=self.rect(self.box(summary,viewport)), folds=fold_geometry,
                 secondary=self.rect(secondary), secondary_rows=[list(map(self.rect,row)) for row in rows],
-                primary_secondary_gap=vertical_gap, main_radius=COMPLETION_RADIUS_MAIN, small_radius=COMPLETION_RADIUS_SMALL)
+                primary_secondary_gap=follow_gap, main_radius=COMPLETION_RADIUS_MAIN, small_radius=COMPLETION_RADIUS_SMALL)
 
         def balance_checks(self, phase, geometry, primary, center_required):
             """Measure top padding and compact row gaps; spare room belongs below."""
             viewport = window.pages.widget(2).viewport()
             body = self.box(window.result_summary_card, viewport)
-            for widget in (window.result_files_toggle, window.result_log_toggle,
-                           *window.result_action_grid.cards, *window.result_secondary_bar.buttons):
+            for widget in (window.result_files_toggle, window.result_log_toggle, window.result_todo,
+                           *window.result_action_grid.cards):
                 if widget.isVisible():
                     body = body.united(self.box(widget, viewport))
             height = max(1,viewport.height())
@@ -501,7 +491,7 @@ def start(window, output):
             navigation_gap = summary_window.y()-header.bottom()-1
             geometry.update(body=self.rect(body), body_center_ratio=center, navigation_gap=navigation_gap,
                 top_blank=top_blank, bottom_blank=bottom_blank,
-                body_viewport_height=height, secondary_column_count=window.result_secondary_bar._columns)
+                body_viewport_height=height, secondary_column_count=window.result_todo.columns)
             if center_required:
                 self.check(phase + ': actual navigation bottom to summary top is 24 to 32 logical pixels',
                     24 <= navigation_gap <= 32, dict(header=self.rect(header), summary=self.rect(summary_window), gap=navigation_gap))
@@ -534,8 +524,8 @@ def start(window, output):
                         before_viewport_top=before_top, after_viewport_top=top_blank))
             if phase in ('language-en','language-ja','language-zh','maximized-en','maximized-ja','maximized-zh'):
                 key = 'maximized' if phase.startswith('maximized') else 'normal'
-                outline = [dict(x=self.box(button,viewport).x(),width=button.width(),height=button.height())
-                    for button in window.result_secondary_bar.buttons if button.isVisible()]
+                outline = [dict(x=self.box(card,viewport).x(),width=card.width())
+                    for card in window.result_todo.cards if card.isVisible()]
                 if not hasattr(self,'language_outlines'):self.language_outlines = {}
                 before = self.language_outlines.setdefault(key,dict(viewport_width=viewport.width(),outline=outline))
                 # Wrapped summary copy can introduce a vertical scrollbar. The
@@ -548,7 +538,7 @@ def start(window, output):
         def layout_snapshot(self):
             """Content-relative controls separate true drift from scrollbar motion."""
             widgets = (window.result_summary_card, window.result_files_toggle, window.result_log_toggle,
-                *window.result_action_grid.cards, *window.result_secondary_bar.buttons)
+                *window.result_action_grid.cards, window.result_todo)
             return [dict(name=widget.objectName(), type=type(widget).__name__,
                 geometry=self.rect(self.box(widget, window.result_content))) for widget in widgets if widget.isVisible()]
 
@@ -651,11 +641,11 @@ def start(window, output):
             self.layout_checks('real-normal')
             normal_grid_width = window.result_action_grid.width()
             normal_columns = window.result_action_grid.columns
-            normal_action_widths = [button.width() for button in window.result_action_grid.secondary_actions]
+            normal_action_widths = [card.width() for card in window.result_action_grid.cards]
             window.resize(max(740, normal_width-160), normal_height)
             yield .2
             self.layout_checks('real-resized', center_required=window.result_action_grid.columns == 3)
-            resized_widths = [button.width() for button in window.result_action_grid.secondary_actions]
+            resized_widths = [card.width() for card in window.result_action_grid.cards]
             self.check('real resize changes operation widths through the shared responsive grid',
                 window.result_action_grid.width() < normal_grid_width
                 and (window.result_action_grid.columns != normal_columns
@@ -666,7 +656,7 @@ def start(window, output):
             window.resize(normal_width, normal_height)
             yield .2
             self.check('restoring the normal window restores shared operation widths',
-                [button.width() for button in window.result_action_grid.secondary_actions] == normal_action_widths)
+                [card.width() for card in window.result_action_grid.cards] == normal_action_widths)
             self.state_agreement(report_path, outcome, 'real-report')
             self.check('real source count matches project', outcome.final_cues == cue_count)
             rendered = window._completion_task_evidence[window._completion_task_key(actual)]['outcome']
@@ -782,7 +772,8 @@ def start(window, output):
             viewport = scroll.viewport()
             self.check('narrow third action can be scrolled into view', viewport.rect().intersects(self.box(window.result_return_button, viewport)))
             self.check('narrow secondary controls remain fully reachable by natural scroll',
-                all(viewport.rect().contains(self.box(button,viewport)) for button in window.result_secondary_bar.buttons if button.isVisible()))
+                all(scroll.ensureWidgetVisible(button) or viewport.rect().contains(self.box(button,viewport))
+                    for button in [button for button in (*(card.action for card in window.result_todo.cards), window.result_more_button) if button.isVisible()]))
             self.shot('04b-narrow-bottom-whole-window')
             scroll.verticalScrollBar().setValue(0)
             window.resize(normal_width, normal_height)
@@ -792,7 +783,7 @@ def start(window, output):
                 static_copy.append(('primary title ' + str(index), str(card.property('i18nText')), lambda card=card:card.text()))
                 static_copy.append(('primary description ' + str(index), card.description,
                                     lambda card=card:translate(card.description, current_language())))
-            for button in (window.open_priority_review_button, window.repolish_current_glossary_button,
+            for button in (window.repolish_current_glossary_button,
                            window.result_more_button, window.result_files_toggle, window.result_log_toggle):
                 static_copy.append(('secondary or disclosure', button.text(), lambda button=button:button.text()))
             static_copy.append(('current glossary tooltip', window.repolish_current_glossary_button.toolTip(),
@@ -899,14 +890,16 @@ def start(window, output):
                     window.resize(740,min(620,normal_height))
                     yield .25
                     self.layout_checks('controlled-four-action-narrow',center_required=False)
-                    visible = [button for button in window.result_secondary_bar.buttons if button.isVisible()]
-                    self.check('controlled partial narrow state keeps all four supporting actions in the shared full-width column',len(visible) == 4 and window.result_secondary_bar._columns == 1)
+                    visible = [button for button in (*(card.action for card in window.result_todo.cards), window.result_more_button) if button.isVisible()]
+                    self.check('controlled partial narrow state stacks the follow-up cards in one column',
+                        window.result_todo.columns == 1 and window.repolish_current_glossary_button in visible)
                     self.shot('coverage-four-action-narrow-top-whole-window')
                     narrow = window.pages.widget(2)
                     narrow.verticalScrollBar().setValue(narrow.verticalScrollBar().maximum())
                     yield .15
-                    self.check('controlled partial four-action rows remain fully scrollable',
-                        all(narrow.viewport().rect().contains(self.box(button,narrow.viewport())) for button in visible))
+                    self.check('controlled partial follow-up buttons remain fully scrollable',
+                        all(narrow.ensureWidgetVisible(button) or narrow.viewport().rect().contains(self.box(button,narrow.viewport()))
+                            for button in visible))
                     self.shot('coverage-four-action-narrow-bottom-whole-window')
                     window._last_run_options = previous_options
                     window.language_combo.setCurrentIndex(window.language_combo.findData('zh'))

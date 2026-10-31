@@ -29,7 +29,7 @@ AUTO, ZH, JA, EN, KO = "auto", "zh", "ja", "en", "ko"
 # 2026-10-19: the six other languages Qwen3-ForcedAligner times.
 ES, DE, FR, PT, IT, RU = "es", "de", "fr", "pt", "it", "ru"
 EUROPEAN = (ES, DE, FR, PT, IT, RU)
-SUPPORTED_REQUESTS = (AUTO, ZH, JA, EN, KO, *EUROPEAN)
+SUPPORTED_REQUESTS = (AUTO, ZH, JA, EN, KO, *EUROPEAN,'pt-BR','pt-PT')
 TASK_LANGUAGES = (ZH, JA, EN, KO, *EUROPEAN)
 QWEN_LANGUAGE_NAMES = {ZH: "Chinese", JA: "Japanese", EN: "English", KO: "Korean", ES: "Spanish", DE: "German",
                        FR: "French", PT: "Portuguese", IT: "Italian", RU: "Russian"}
@@ -101,12 +101,16 @@ MODEL_LANGUAGE_ROLES = {
 
 
 def supports(model: str, role: str, language: str) -> bool:
-    return language in MODEL_LANGUAGE_ROLES.get(model, {}).get(role, set())
+    return normalize_language(language) in MODEL_LANGUAGE_ROLES.get(model, {}).get(role, set())
 
 
 def normalize_language(value) -> str:
     text = str(value or "").strip().lower().replace("_", "-")
-    return _ALIASES.get(text, AUTO)
+    known=_ALIASES.get(text)
+    if known is not None:return known
+    from .segmentation_profiles import language_tag
+    tag=language_tag(text)
+    return tag.split('-')[0] if tag!='und' else AUTO
 
 
 def qwen_language_name(language: str):
@@ -191,24 +195,45 @@ def resolve_task_language(requested, texts, *, asr_detected=None) -> tuple[str, 
     """The language one task runs with, plus how it was decided.
 
     A manual choice wins. ``auto`` uses the transcript's scripts, then the
-    recognizer's own language identification; an undecidable transcript keeps
-    the established Chinese behaviour.
+    recognizer's own language identification. Undecidable non-empty foreign
+    text uses the conservative Unicode policy; empty legacy input stays Chinese.
     """
+    from .segmentation_profiles import language_tag,PROFILES
+    texts=tuple(texts)
+    raw_requested=requested
     requested = normalize_language(requested)
     detected, evidence = detect_language(texts)
-    evidence = dict(evidence, requested=requested, asr_detected=asr_detected or "")
-    if requested in TASK_LANGUAGES:
+    evidence = dict(evidence, requested=requested, asr_detected=asr_detected or "",requested_locale=language_tag(raw_requested))
+    if requested in PROFILES and requested!='und':
         evidence["decided_by"] = "manual"
+        evidence['locale']=language_tag(raw_requested)
         if detected and detected != requested:
             evidence["disagrees_with_transcript"] = detected
         return requested, evidence
+    from_asr = language_from_qwen_name(asr_detected) or normalize_language(asr_detected)
+    # Script evidence is strong for kana/Hangul/Han/Cyrillic. Latin names
+    # alone are not a reason to override a recognizer's declared language.
+    if from_asr in PROFILES and from_asr!='und' and detected not in (ZH,JA,KO,RU):
+        evidence.update(decided_by='asr_language_id',locale=language_tag(asr_detected))
+        return from_asr,evidence
     if detected:
         evidence["decided_by"] = "transcript_scripts"
+        evidence['locale']=detected
         return detected, evidence
-    from_asr = language_from_qwen_name(asr_detected) or normalize_language(asr_detected)
-    if from_asr in TASK_LANGUAGES:
+    if from_asr in PROFILES and from_asr!='und':
         evidence["decided_by"] = "asr_language_id"
+        evidence['locale']=language_tag(asr_detected)
         return from_asr, evidence
+    joined=''.join(str(t) for t in texts)
+    for code,low,high in (('ar',0x600,0x6ff),('hi',0x900,0x97f),('th',0xe00,0xe7f)):
+        letters=sum(ch.isalpha() for ch in joined)
+        count=sum(low<=ord(ch)<=high and ch.isalpha() for ch in joined)
+        if count>=6 and count>=letters*.5:
+            evidence.update(decided_by='script_generic_policy',locale=code)
+            return code,evidence
+    if any(ch.isalpha() for ch in joined):
+        evidence.update(decided_by='unknown_conservative_policy',locale='und')
+        return 'und',evidence
     evidence["decided_by"] = "default_chinese"
     return ZH, evidence
 
@@ -220,15 +245,21 @@ _SCOPE = threading.local()
 def language_scope(language):
     """Run text rules for one project's language on this thread (Studio work)."""
     previous = getattr(_SCOPE, "language", None)
+    previous_tag = getattr(_SCOPE,'language_tag',None)
+    from .segmentation_profiles import language_tag
+    _SCOPE.language_tag = language_tag(language) if language else None
     _SCOPE.language = normalize_language(language) if language else None
     try:
         yield
     finally:
         _SCOPE.language = previous
+        _SCOPE.language_tag = previous_tag
 
 
 def active_task_language() -> str:
     """Language for text rules: a scoped project language, else the running task's."""
+    tag=getattr(_SCOPE,'language_tag',None)
+    if tag is not None:return tag.split('-')[0]
     scoped = getattr(_SCOPE, "language", None)
     if scoped in TASK_LANGUAGES:
         return scoped
@@ -243,9 +274,12 @@ def project_language(project) -> str:
     """The spoken language recorded for a project ('' for older projects = Chinese rules)."""
     metadata = getattr(project, "generation_metadata", None) or {}
     value = (metadata.get("language") or {}) if isinstance(metadata, dict) else {}
-    code = value.get("code") if isinstance(value, dict) else value
-    code = normalize_language(code)
-    return code if code in TASK_LANGUAGES else ""
+    raw = value.get("code") if isinstance(value, dict) else value
+    code = normalize_language(raw)
+    from .segmentation_profiles import PROFILES
+    if code == AUTO and raw:
+        return 'und'
+    return code if code in PROFILES else ""
 
 
 def is_japanese(language=None) -> bool:
@@ -264,9 +298,9 @@ def finished_cue_limits(chinese_chars, chinese_seconds):
 
     Callers pass the Chinese limits they used before, so Chinese is unchanged.
     """
-    if is_japanese():
-        return JAPANESE_CUE_MAX_CHARS, JAPANESE_CUE_MAX_SECONDS
-    return chinese_chars, chinese_seconds
+    from .segmentation_profiles import current_profile
+    profile=current_profile()
+    return profile.hard_max, profile.max_seconds
 
 
 def is_english(language=None) -> bool:
@@ -279,7 +313,9 @@ def is_korean(language=None) -> bool:
 
 def is_spaced(language=None) -> bool:
     """English, Korean and the European languages: words separated by spaces, never cut inside a word."""
-    return (active_task_language() if language is None else normalize_language(language)) in (EN, KO, *EUROPEAN)
+    from .segmentation_profiles import profile_for
+    value=active_task_language() if language is None else language
+    return bool(value) and profile_for(value).strategy in ('space','eojeol')
 
 
 def is_european(language=None) -> bool:
@@ -314,7 +350,11 @@ JAPANESE_SEGMENTATION = SegmentationRules(JA, 16, 22, 24, 18, 30, "。！？!?",
 
 
 def segmentation_rules(language=None) -> SegmentationRules:
-    return JAPANESE_SEGMENTATION if is_japanese(language) else CHINESE_SEGMENTATION
+    from .segmentation_profiles import profile_for, task_language_tag
+    p=profile_for(language if language is not None else task_language_tag())
+    return SegmentationRules(p.code,int(p.preferred),int(p.soft_max),int(p.hard_max),
+        12 if p.code=='zh' else int(p.preferred),24 if p.code=='zh' else 30 if p.code=='ja' else int(p.hard_max),
+        '。！？!?' if p.strategy=='cjk' else '.!?…', '、，,;:' if p.strategy=='cjk' else ',;:—–')
 
 
 _ADNOMINALS = ("この", "その", "あの", "どの", "こんな", "そんな", "あんな", "どんな")
@@ -445,6 +485,13 @@ def heuristic_japanese_phrase_spans(text: str) -> list[tuple[int, int, str]]:
         start, end, kind = phrases[index]
         following = phrases[index + 1]
         if following[2] == "other" or following[0] != end:
+            continue
+        # Honourific prefixes introduce the following kanji word (お目,
+        # お金, ご飯); a script-run heuristic must not attach お to the
+        # preceding clause and leave it stranded at a cue edge.
+        if following[2] in ('kanji', 'phrase') and text[start:end].endswith(('お', 'ご')):
+            phrases[index][1] = end - 1
+            following[0] = end - 1
             continue
         for word in _ADNOMINALS:
             if text[start:end].endswith(word) and end - len(word) > start:

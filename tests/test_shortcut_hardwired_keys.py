@@ -267,7 +267,7 @@ def _card_one(page):
 
 def test_review_toasts_and_pronoun_tip_name_the_current_keys(qapp, store, tmp_path, monkeypatch):
     from twobyteasr.projects.studio_project import StudioCue
-    app, page = _review_page(tmp_path, monkeypatch, [StudioCue("a", 0, 2000, "他说他们马上到"),
+    app, page = _review_page(tmp_path, monkeypatch, [StudioCue("a", 0, 2000, "他说马上到"),
                                                      StudioCue("b", 3000, 5000, "下一句")])
     try:
         page._set_review_mode(True)
@@ -278,7 +278,7 @@ def test_review_toasts_and_pronoun_tip_name_the_current_keys(qapp, store, tmp_pa
         default_tip = card._mark_tip(0)
         assert page._flip_review_pronouns()
         flipped = page.save_state.text()
-        reg.save_values({"undo": "Ctrl+Alt+Z", "review_flip_pronoun": "Shift+P"})
+        reg.save_values({"undo": "Ctrl+Alt+Z", "review_flip_pronoun": "F4"})
         rebound_tip = card._mark_tip(0)  # the same card, hovered after the rebind
         assert page._flip_review_pronouns()
         flipped_again = page.save_state.text()
@@ -291,8 +291,8 @@ def test_review_toasts_and_pronoun_tip_name_the_current_keys(qapp, store, tmp_pa
         page.close_page()
         page.deleteLater()
     assert flipped == "人称已切换 · Ctrl+Z 撤销"
-    assert default_tip == "点一下：他 → 她；右键选择 他 / 她 / 它；按 P 切换整条的人称"
-    assert rebound_tip == "点一下：他 → 她；右键选择 他 / 她 / 它；按 Shift+P 切换整条的人称"
+    assert default_tip == "点一下：他 → 她；右键选择 他 / 她 / 它；按 Shift+P 切换整条的人称"
+    assert rebound_tip == "点一下：他 → 她；右键选择 他 / 她 / 它；按 F4 切换整条的人称"
     assert flipped_again == "人称已切换 · Ctrl+Alt+Z 撤销"
     assert changed.startswith("已改为「") and changed.endswith("」· Ctrl+Alt+Z 撤销")
     assert unbound == "人称已切换 · 未绑定 撤销"
@@ -306,7 +306,7 @@ def test_pronoun_tip_of_a_card_on_its_own_reads_the_store(qapp, store):
     card = ReviewCandidateCard(0, QCCandidate(text, ("Current",)), is_current=True, current_text=text,
                                suggestions=review_suggestions(text, ()))
     try:
-        assert "；按 P 切换整条的人称" in card._mark_tip(0)
+        assert "；按 Shift+P 切换整条的人称" in card._mark_tip(0)
         reg.save_values({"review_flip_pronoun": "F4"})
         assert "；按 F4 切换整条的人称" in card._mark_tip(0)
     finally:

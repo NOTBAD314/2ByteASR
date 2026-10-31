@@ -298,7 +298,7 @@ QLabel#resultStatCaption {{ color:{t.text_muted}; font-size:13px; font-weight:50
 QLabel#resultSummaryFile {{ color:{t.text_secondary}; font-size:14px; font-weight:500; background:transparent; }}
 QLabel#resultSummaryNote {{ color:{t.text_secondary}; font-size:13px; font-weight:500; background:transparent; }}
 QTextEdit#resultFiles, QTextEdit#resultConsole {{ background:transparent; color:{t.text}; border:0; border-radius:0; padding:16px 18px; }}
-QTextEdit#resultConsole {{ background:{t.log_background}; color:{t.log_text}; }}
+QTextEdit#resultConsole {{ background:{t.log_background}; color:{t.log_text}; font-family:{MONO_FONT_STACK}; font-size:12px; }}
 QPushButton[completionRole="secondary"], QToolButton[completionRole="secondary"] {{
  background:{t.surface}; color:{t.text}; border:1px solid {t.border_strong}; border-radius:{COMPLETION_RADIUS_SMALL}px;
  font-size:14px; font-weight:500; padding:6px 16px;
@@ -317,7 +317,8 @@ QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
 """)
 
     def bind_actions(self, layout, cards, *, viewport=None,
-                     summary_layout=None, summary_copy=None, page_layout=None, panels=(), action_grid=None):
+                     summary_layout=None, summary_copy=None, page_layout=None, panels=(), action_grid=None,
+                     extra_sections=(), preview=None, fold_row=None):
         self._action_layout = layout
         self._action_cards = tuple(cards)
         self._viewport = viewport
@@ -326,10 +327,17 @@ QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
         self._page_layout = page_layout
         self._panels = tuple(panels)
         self._action_grid = action_grid
+        self._preview = preview
+        self._fold_row = fold_row
         self._adapt_pending = False
+        self._adapting = False
         for panel in self._panels:
             panel.mode_changed.connect(self.request_adapt)
             panel.content_changed.connect(self.request_adapt)
+        for section in extra_sections:
+            section.content_changed.connect(self.request_adapt)
+        if preview is not None:
+            preview.content_changed.connect(self.request_adapt)
         if viewport is not None:
             viewport.installEventFilter(self)
         self._adapt_width()
@@ -344,8 +352,15 @@ QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
 
     def _adapt_width(self):
         self._adapt_pending = False
-        if not hasattr(self, '_action_layout'):
+        if not hasattr(self, '_action_layout') or self._adapting:
             return
+        self._adapting = True
+        try:
+            self._adapt_layout()
+        finally:
+            self._adapting = False
+
+    def _adapt_layout(self):
         if self._viewport is not None and self._page_layout is not None:
             # Width follows the actual scroll viewport. Short windows scroll;
             # they never shrink the font or cards to fit the viewport height.
@@ -359,35 +374,61 @@ QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
         for index, panel in enumerate(self._panels):
             panel.set_summary_limit((2 if compact else 4) if index == 0 else (4 if compact else 6))
             panel.set_extra_height(0)
+        if self._fold_row is not None:
+            self._fold_row.sync_heights()
         if self._action_grid is not None:
             self._action_grid.set_height_allowance(0)
         self._action_layout.invalidate()
         self._action_layout.activate()
         margins = self._page_layout.contentsMargins()
-        required = self._action_layout.sizeHint().height()
+        required = self._minimum_content_height()
         available = max(0, height - margins.top() - margins.bottom())
-        spare = max(0, available - required)
-        default_summary = all(panel.mode == 'summary' and panel.visible_summary_rows() for panel in self._panels)
-        if default_summary and not compact and spare:
-            # Spread extra room among real rows first. There is no empty spacer,
-            # tall one-line log shell or viewport-sized accent card.
-            action_extra = min(24, round(spare * .16))
-            if self._action_grid is not None:
-                self._action_grid.set_height_allowance(action_extra)
-            remaining = spare - action_extra
-            row_counts = [max(1, len(panel.visible_summary_rows())) for panel in self._panels]
-            total = sum(row_counts)
-            for index, panel in enumerate(self._panels):
-                extra = round(remaining * row_counts[index] / total)
-                panel.set_extra_height(extra)
+        filling = self._preview is not None and not self._preview.isHidden()
+        if filling:
+            self._preview.set_available_height(self._preview.minimum_content_height() + max(0, available - required))
         self._action_layout.invalidate()
-        self.setFixedHeight(self._action_layout.sizeHint().height())
-        self.updateGeometry()
+        target = max(required, available) if filling else required
+        if self.height() != target or self.minimumHeight() != target:
+            self.setFixedHeight(target)
+            self.updateGeometry()
+
+    def _minimum_content_height(self):
+        required = self._content_height()
+        if self._preview is not None and not self._preview.isHidden():
+            # Independent minimum: never feed the previously expanded list
+            # back into the page's required height on the next LayoutRequest.
+            required += self._preview.minimum_content_height() - self._preview.height()
+        return required
+
+    def _target_height(self):
+        required = self._minimum_content_height()
+        if self._preview is None or self._preview.isHidden() or self._viewport is None:
+            return required
+        margins = self._page_layout.contentsMargins()
+        return max(required, self._viewport.height() - margins.top() - margins.bottom())
+
+    def _content_height(self):
+        # Wrapped copy (follow-up cards, a long title) is as tall as the real
+        # width makes it; a width-free hint left gaps between the rows.
+        layout = self._action_layout
+        if layout.hasHeightForWidth() and self.width() > 0:
+            return layout.totalHeightForWidth(self.width())
+        return layout.sizeHint().height()
 
     def eventFilter(self, watched, event):
         if watched is getattr(self, '_viewport', None) and event.type() == QEvent.Type.Resize:
             self.request_adapt()
         return super().eventFilter(watched, event)
+
+    def event(self, event):
+        result = super().event(event)
+        # A child's size changed (another task's cards or preview). The page
+        # height is fixed, so re-measure it; a shorter result otherwise left
+        # its old height spread as gaps between the rows (2026-10-30).
+        if (event.type() == QEvent.Type.LayoutRequest and hasattr(self, '_action_layout')
+                and not self._adapting and self._target_height() != self.height()):
+            self.request_adapt()
+        return result
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -430,19 +471,20 @@ class CompletionAccordionHeader(QToolButton):
 
     def content_rects(self):
         left = self._mode_rect().left()-12 if hasattr(self, 'mode') else self.width()-56
+        detail = getattr(self, 'detail_button', None)
+        if detail is not None and not detail.isHidden():
+            left = min(left, detail.x()-12)
         return (QRectF(20, 0, max(0, left-20), self.height()),
                 QRectF(self.width()-38, (self.height()-16)/2, 16, 16))
 
     def _mode_text(self):
-        return completion_translate({'summary': '摘要 · 查看全部', 'full': '全部 · 返回摘要',
-            'collapsed': '展开'}[self.mode], current_language())
+        # 2026-10-30 (user): the header itself opens and closes the fold.
+        return completion_translate('展开' if self.mode == 'collapsed' else '收起', current_language())
 
     def _mode_rect(self):
         font = QFont(self.font()); font.setPixelSize(_zpx(13))
         width = QFontMetrics(font).horizontalAdvance(self._mode_text()) + 4
-        collapse_width = QFontMetrics(font).horizontalAdvance(completion_translate('收起', current_language())) + 12
-        right = self.width()-48-(collapse_width+8 if self.mode != 'collapsed' else 0)
-        return QRectF(max(20, right-width), 0, width, self.height())
+        return QRectF(max(20, self.width()-48-width), 0, width, self.height())
 
     def paintEvent(self, event):
         t = self._theme
@@ -503,10 +545,12 @@ class CompletionInfoPanel(QWidget):
     def __init__(self, header, detail, parent=None):
         super().__init__(parent)
         self.header, self.detail = header, detail
-        # 2026-10-07: both completion folds start collapsed (user contract).
-        self.mode = 'collapsed'
+        # 2026-10-30 design B: facts are open by default; later refreshes keep
+        # the user's mode. Only a new completion resets it in ui.py.
+        self.mode = 'summary'
         self._summary_limit = 6
         self._extra_height = 0
+        self._peer_summary_height = 0
         self._rows = []
         self.setObjectName('completionInfoPanel')
         self.setProperty("uiZoomOwnSize", True)  # rows are measured from their fonts
@@ -521,18 +565,20 @@ class CompletionInfoPanel(QWidget):
         self.summary_box = QVBoxLayout(self.summary)
         self.summary_box.setContentsMargins(18, 16, 18, 18)
         self.summary_box.setSpacing(5)
+        self.summary_box.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.layout_box.addWidget(self.summary)
         self.layout_box.addWidget(detail)
         detail.setMinimumHeight(170)
         detail.setFixedHeight(210)
-        self.collapse_button = QToolButton(header)
-        self.collapse_button.setText(completion_translate('收起', current_language()))
-        self.collapse_button.setProperty('i18nText', '收起')
-        self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.collapse_button.setStyleSheet('border:none; background:transparent; font-size:13px; padding:4px;')
-        self.collapse_button.clicked.connect(lambda: self.set_mode('collapsed'))
+        # 2026-10-30 (user): one click on the header opens the summary, the
+        # next closes it. Summary/full is this separate switch on the header.
+        self.detail_button = QToolButton(header)
+        self.detail_button.setObjectName('completionFoldDetail')
+        self.detail_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.detail_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.detail_button.clicked.connect(lambda: self.set_mode('summary' if self.mode == 'full' else 'full'))
+        header.detail_button = self.detail_button
         header.installEventFilter(self)
-        header.clicked.connect(self._header_clicked)
         header.toggled.connect(self._header_toggled)
         self._apply_mode()
 
@@ -545,22 +591,19 @@ class CompletionInfoPanel(QWidget):
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5),
                                 COMPLETION_RADIUS_MAIN, COMPLETION_RADIUS_MAIN)
 
-    def _header_clicked(self):
-        if self.mode == 'collapsed':
-            self.set_mode('summary')
-
     def _header_toggled(self, checked):
-        if self.mode != 'collapsed':
-            self.set_mode('full' if checked else 'summary')
+        # Checked means open; the header never needs a separate close button.
+        self.set_mode('summary' if checked else 'collapsed')
 
     def eventFilter(self, watched, event):
         if watched is self.header and event.type() == QEvent.Type.Resize:
-            self._place_collapse()
+            self._place_detail_button()
         return super().eventFilter(watched, event)
 
-    def _place_collapse(self):
-        width = self.collapse_button.fontMetrics().horizontalAdvance(self.collapse_button.text()) + 12
-        self.collapse_button.setGeometry(max(0, self.header.width()-48-width), 8, width, 32)
+    def _place_detail_button(self):
+        width = self.detail_button.fontMetrics().horizontalAdvance(self.detail_button.text()) + 20
+        right = self.header._mode_rect().left() - 12
+        self.detail_button.setGeometry(max(0, int(right) - width), 9, width, 30)
 
     def set_mode(self, mode):
         if mode not in {'summary', 'full', 'collapsed'}:
@@ -574,13 +617,13 @@ class CompletionInfoPanel(QWidget):
     def _apply_mode(self):
         self.header.mode = self.mode
         self.header.blockSignals(True)
-        self.header.setChecked(self.mode == 'full')
+        self.header.setChecked(self.mode != 'collapsed')
         self.header.blockSignals(False)
         self.header.setArrowType(Qt.ArrowType.RightArrow if self.mode == 'collapsed' else Qt.ArrowType.DownArrow)
-        self.collapse_button.setText(completion_translate('收起', current_language()))
-        self._place_collapse()
+        self.detail_button.setText(completion_translate('只看摘要' if self.mode == 'full' else '查看全部', current_language()))
+        self.detail_button.setVisible(self.mode != 'collapsed')
+        self._place_detail_button()
         self.header.setAccessibleDescription(completion_translate({'summary': '摘要 · 查看全部', 'full': '全部 · 返回摘要', 'collapsed': '已收起 · 展开摘要'}[self.mode], current_language()))
-        self.collapse_button.setVisible(self.mode != 'collapsed')
         self.summary.setVisible(self.mode == 'summary')
         self.detail.setVisible(self.mode == 'full')
         self._refresh_rows()
@@ -616,8 +659,22 @@ class CompletionInfoPanel(QWidget):
         return self._rows[:self._summary_limit]
 
     def set_extra_height(self, height):
-        self._extra_height = max(0, min(int(height), self.max_extra_height()))
-        self._refresh_rows()
+        extra = max(0, min(int(height), self.max_extra_height()))
+        if self._extra_height != extra:
+            self._extra_height = extra
+            self._refresh_rows()
+
+    def natural_summary_height(self):
+        rows = self.visible_summary_rows()
+        margins = self.summary_box.contentsMargins()
+        return max(150, margins.top() + margins.bottom()
+                   + sum(row.fontMetrics().height() + 3 for row in rows)
+                   + max(0, len(rows) - 1) * self.summary_box.spacing())
+
+    def set_peer_summary_height(self, height):
+        if self._peer_summary_height != height:
+            self._peer_summary_height = height
+            self._refresh_rows()
 
     def max_extra_height(self):
         # A very large controlled-DPI desktop is not permission to turn ten
@@ -638,9 +695,59 @@ class CompletionInfoPanel(QWidget):
         margins = self.summary_box.contentsMargins()
         height = margins.top() + margins.bottom() + sum(row.height() for row in visible)
         height += max(0, len(visible)-1) * self.summary_box.spacing()
+        height = max(height, self.natural_summary_height(), self._peer_summary_height)
         self.summary.setFixedHeight(height)
         self.setFixedHeight(2 + self.header.height() + (height if self.mode == 'summary' else self.detail.height() if self.mode == 'full' else 0))
         self.updateGeometry()
+
+
+class CompletionFoldRow(QWidget):
+    """任务与输出 and 运行日志 side by side; stacked on a narrow page (2026-10-30).
+
+    Two summaries share the taller natural body; full and collapsed modes keep
+    their own heights. Spare viewport height belongs to the subtitle preview.
+    """
+
+    def __init__(self, panels, parent=None):
+        super().__init__(parent)
+        self.panels = tuple(panels)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(COMPLETION_SECONDARY_HORIZONTAL_GAP)
+        self.grid.setVerticalSpacing(12)
+        self.columns = 0
+        for panel in self.panels:
+            panel.content_changed.connect(self.sync_heights)
+            panel.mode_changed.connect(self.sync_heights)
+        self._arrange(2)
+
+    def _arrange(self, columns):
+        if columns == self.columns:
+            return
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for index, panel in enumerate(self.panels):
+            self.grid.addWidget(panel, index // columns, index % columns, Qt.AlignmentFlag.AlignTop)
+        for column in range(2):
+            self.grid.setColumnStretch(column, 1 if column < columns else 0)
+        self.columns = columns
+        self.sync_heights()
+        self.updateGeometry()
+
+    def sync_heights(self):
+        shared = (max(panel.natural_summary_height() for panel in self.panels)
+                  if self.columns == 2 and all(panel.mode == 'summary' for panel in self.panels) else 0)
+        for panel in self.panels:
+            panel.set_peer_summary_height(shared)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        from .ui_zoom import logical
+        self._arrange(2 if logical(self.width()) >= 900 else 1)
+
+    def minimumSizeHint(self):
+        return QSize(0, self.grid.minimumSize().height())
 
 
 class CompletionActionCard(QPushButton):
@@ -888,11 +995,12 @@ class _PreviewList(QWidget):
 class CompletionPreview(QFrame):
     """The delivered subtitles (real project cues), all of them, scrollable.
 
-    2026-10-09 (M14, user): not only the first 8 lines — a fixed-height list
-    with its own scroll bar shows every cue; editing stays in Studio.
+    A minimum of six rows, then all the page's remaining height. Its internal
+    scrollbar still reaches every cue; editing stays in Studio.
     """
 
-    VISIBLE_ROWS = 12
+    MIN_VISIBLE_ROWS = 6
+    content_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -912,22 +1020,45 @@ class CompletionPreview(QFrame):
         header.addWidget(self.note)
         header.addStretch(1)
         layout.addLayout(header)
+        self.header_row = header
         self.list = _PreviewList(self)
+        self.list.setFixedHeight(_PreviewList.ROW * self.MIN_VISIBLE_ROWS)
         layout.addWidget(self.list)
         self._rows = []
+        self._total = 0
+        self.set_available_height(self.minimum_content_height())
         self.hide()
 
     def set_rows(self, rows, total):
         """rows: [(time_text, speaker_name, speaker_hex, text)] for every cue."""
         from ..i18n_widgets import bind_text
         self._rows = list(rows)
-        self.list.setFixedHeight(_PreviewList.ROW * max(1, min(self.VISIBLE_ROWS, len(self._rows))))
+        self._total = int(total)
         self.list.set_rows(self._rows)
-        if len(self._rows) > self.VISIBLE_ROWS:
-            bind_text(self.note, '共 {total} 条 · 滚动查看全部', total=int(total))
-        else:
-            bind_text(self.note, '共 {total} 条', total=int(total))
+        self._update_note()
         self.setVisible(bool(self._rows))
+        self.content_changed.emit()
+
+    def minimum_content_height(self):
+        margins = self.layout().contentsMargins()
+        return (margins.top() + margins.bottom() + self.header_row.sizeHint().height()
+                + self.layout().spacing() + _PreviewList.ROW * self.MIN_VISIBLE_ROWS
+                + self.frameWidth() * 2)
+
+    def set_available_height(self, height):
+        minimum = self.minimum_content_height()
+        target = max(minimum, int(height))
+        list_height = _PreviewList.ROW * self.MIN_VISIBLE_ROWS + target - minimum
+        if self.list.height() != list_height:
+            self.list.setFixedHeight(list_height)
+        if self.height() != target or self.minimumHeight() != target:
+            self.setFixedHeight(target)
+        self._update_note()
+
+    def _update_note(self):
+        from ..i18n_widgets import bind_text
+        source = '共 {total} 条 · 滚动查看全部' if len(self._rows) * _PreviewList.ROW > self.list.height() else '共 {total} 条'
+        bind_text(self.note, source, total=self._total)
 
     def rows(self):
         return list(self._rows)
@@ -938,7 +1069,27 @@ class CompletionPreview(QFrame):
 
 class CompletionMoreButton(QToolButton):
     """Native popup activation with a vertically centered disclosure arrow."""
+    def set_compact(self, compact):
+        self._compact = bool(compact)
+        self.setFont(_ui_font(self.font(), 13 if compact else 14, QFont.Weight.DemiBold))
+        self.setStyleSheet(f'font-size:{13 if compact else 14}px; font-weight:600;')
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self):
+        # Room for the painted label, its 20px inset and the arrow column.
+        compact = getattr(self, '_compact', False)
+        metrics = QFontMetrics(_ui_font(self.font(), 13 if compact else 14))
+        text_width = max(metrics.horizontalAdvance(self.text()), metrics.boundingRect(self.text()).width())
+        return QSize(text_width + (52 if compact else 72), 36 if compact else COMPLETION_SECONDARY_HEIGHT)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
     def content_rects(self):
+        if getattr(self, '_compact', False):
+            return (QRectF(14, 0, max(0, self.width()-48), self.height()),
+                    QRectF(self.width()-28, (self.height()-16)/2, 16, 16))
         return (QRectF(20, 0, max(0, self.width()-64), self.height()),
                 QRectF(self.width()-34, (self.height()-16)/2, 16, 16))
 
@@ -951,7 +1102,7 @@ class CompletionMoreButton(QToolButton):
         painter.setBrush(QColor(theme.selected if self.underMouse() or self.isDown() else theme.surface))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), COMPLETION_RADIUS_SMALL, COMPLETION_RADIUS_SMALL)
         title, arrow = self.content_rects()
-        painter.setFont(_ui_font(self.font(), 14))
+        painter.setFont(_ui_font(self.font(), 13 if getattr(self, '_compact', False) else 14))
         painter.setPen(QColor(theme.text if self.isEnabled() else theme.disabled))
         painter.drawText(title, Qt.AlignmentFlag.AlignCenter, self.text())
         x, y = arrow.left(), arrow.top()

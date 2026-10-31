@@ -46,7 +46,9 @@ def test_pan_both_directions_and_reverse(timeline, modifiers, axis):
     for delta in (120, 120, -120, -120):
         assert turn(delta).isAccepted()
         positions.append(timeline.visible_start_ms)
-    assert positions == [40_000, 38_800, 37_600, 38_800, 40_000]
+    shift=(round(120*10_000/max(1,timeline._content_right()-timeline.TRACK_HEADER_WIDTH))
+           if axis.startswith('pixel_') else 1200)
+    assert positions == [40_000, 40_000-shift, 40_000-2*shift, 40_000-shift, 40_000]
     assert timeline.visible_duration_ms == 10_000
     assert timeline.playhead_ms == 0
 
@@ -58,7 +60,10 @@ def test_zero_delta_does_nothing(timeline, modifiers):
 
 
 def test_pan_clamps_and_returns_from_both_ends(timeline):
-    for start, outward, inward, returned in [(0, 120, -120, 1200), (110_000, -120, 120, 108_800)]:
+    timeline.set_visible_window(999_999, 10_000)
+    tail = timeline.visible_start_ms
+    assert tail > 110_000  # view-only room after the real 120s project tail
+    for start, outward, inward, returned in [(0, 120, -120, 1200), (tail, -120, 120, tail-1200)]:
         timeline.set_visible_window(start, 10_000)
         wheel(timeline, angle=(outward, 0), modifiers=Qt.AltModifier)
         assert timeline.visible_start_ms == start

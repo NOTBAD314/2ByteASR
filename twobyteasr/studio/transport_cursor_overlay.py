@@ -30,6 +30,7 @@ class TransportCursorOverlay(QWidget):
         painter.setFont(timeline.font())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         timeline._paint_transport_cursor(painter, timeline._timeline_palette())
+        timeline._paint_coincident_razor(painter, timeline._timeline_palette())
         painter.end()
         if started:
             probe.EVENTS.append(dict(at=started, stage='playhead_paint',

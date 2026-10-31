@@ -99,7 +99,7 @@ def start(window, output):
                     extra_height=panel._extra_height, max_extra_height=panel.max_extra_height(),
                     detail_visible=panel.detail.isVisible(), summary_visible=panel.summary.isVisible()) for panel in panels],
                 cards=[self.rect(card, viewport) for card in grid.cards],
-                secondary=[self.rect(button, viewport) for button in grid.secondary_actions],
+                secondary=[self.rect(card, viewport) for card in window.result_todo.cards if card.isVisible()],
                 columns=grid.columns, scroll_maximum=scroll.verticalScrollBar().maximum())
             bottom = grid.mapTo(viewport, QPoint()).y()+grid.height()
             geometry['bottom_space'] = viewport.height()-bottom
@@ -107,13 +107,12 @@ def start(window, output):
             self.check(phase+': no horizontal scroll', scroll.horizontalScrollBar().maximum() == 0, geometry)
             self.check(phase+': top summary stays near navigation', window.result_summary_card.mapTo(viewport, QPoint()).y() == 28, geometry)
             if grid.columns == 3:
-                self.check(phase+': shared equal action columns', all(abs(card.x()-button.x()) <= 1 and abs(card.width()-button.width()) <= 1
-                    for card, button in zip(grid.cards, grid.secondary_actions)), geometry)
+                self.check(phase+': shared equal action columns', max(card.width() for card in grid.cards)-min(card.width() for card in grid.cards) <= 1, geometry)
             self.check(phase+': cards retain readable bounded height', all(COMPLETION_MAIN_HEIGHT <= card.height() <= card.desired_height(card.width())+24 for card in grid.cards), geometry)
             self.check(phase+': real summary row cadence remains font-bounded', all(
                 row.height() <= row.fontMetrics().height()+3+round(row.fontMetrics().height()*1.5)+1
                 for panel in panels for row in panel.visible_summary_rows()), geometry)
-            self.check(phase+': main/supporting rows keep common order', all(card.geometry().bottom() < button.geometry().top() for card, button in zip(grid.cards, grid.secondary_actions)), geometry)
+            self.check(phase+': follow-ups sit above the main actions', window.result_todo.geometry().bottom() < grid.geometry().top(), geometry)
             if all(panel.mode == 'summary' for panel in panels):
                 compact = viewport.height() < 760
                 self.check(phase+': actual task/log summary rows shown', len(panels[0].visible_summary_rows()) == (2 if compact else 4)
@@ -148,17 +147,18 @@ def start(window, output):
             self.measure('default-normal')
             self.shot('01-default-summary-whole-window')
             panels = (window.result_files_panel, window.result_log_panel)
-            QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton)
-            QTest.mouseClick(panels[1].header, Qt.MouseButton.LeftButton)
+            # 2026-10-30: the header opens the summary; 查看全部 shows everything.
+            QTest.mouseClick(panels[0].detail_button, Qt.MouseButton.LeftButton)
+            QTest.mouseClick(panels[1].detail_button, Qt.MouseButton.LeftButton)
             yield .5
             self.check('full details accessible and bounded', all(panel.mode == 'full' and panel.detail.isVisible()
                 and panel.detail.height() <= 230 for panel in panels), [panel.mode for panel in panels])
             self.check('full technical log is retained', bool(window.result_console.toPlainText()) and bool(window._completion_log_lines))
             self.measure('full-normal'); self.shot('02-full-details-whole-window')
             for panel in panels:
-                QTest.mouseClick(panel.collapse_button, Qt.MouseButton.LeftButton)
+                QTest.mouseClick(panel.header, Qt.MouseButton.LeftButton)
             yield .25
-            self.check('explicit manual collapse hides both bodies', all(panel.mode == 'collapsed' and panel.summary.isHidden() and panel.detail.isHidden() for panel in panels))
+            self.check('one header click closes what it opened', all(panel.mode == 'collapsed' and panel.summary.isHidden() and panel.detail.isHidden() for panel in panels))
             self.measure('manual-collapsed'); self.shot('03-manual-collapsed-whole-window')
             window.resize(max(740, normal[0]-180), max(520, normal[1]-160))
             yield .35

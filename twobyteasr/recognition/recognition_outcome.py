@@ -32,10 +32,28 @@ def _int(value: Any) -> int:
         return 0
 
 def review_severity(item: dict) -> str:
+    if item.get('category')=='术语召回缺口' and not item.get('confirmed_error'):
+        return 'info'  # no candidate is not evidence of a subtitle error
+    if (item.get('review_scope')=='unassigned_batch_metadata' and not item.get('text')
+            and item.get('unassigned_new_suspects')
+            and all(row.get('validation_state')=='invalid' for row in item['unassigned_new_suspects'])):
+        return 'info'  # malformed optional metadata owns no reliable cue
     explicit = str(item.get("severity") or "").lower()
     if explicit in SEVERITIES:
         return explicit
     return _SEVERITY_BY_CATEGORY.get(str(item.get("category") or ""), "review" if _int(item.get("priority", 2)) >= 2 else "info")
+
+
+def deduplicate_review_items(items):
+    output={}
+    for item in items:
+        if item.get('resolved') or item.get('status') in {'resolved','completed','applied'}:
+            continue
+        identity=('cue',str(item['cue_id'])) if item.get('cue_id') is not None else (
+            ('segment',str(item['segment_id'])) if item.get('segment_id') is not None else
+            ('unscoped',str(item.get('timestamp')),str(item.get('text') or '')))
+        output[(identity,str(item.get('category') or item.get('reason') or ''))]=item
+    return list(output.values())
 
 def _note(item: dict) -> str:
     return str(item.get("message") or item.get("detail") or item.get("category") or "").strip()
@@ -136,7 +154,7 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     outputs = _dict(result.get("outputs"))
     events = _rows(payload.get("events"))
     stages = _rows(payload.get("stages"))
-    items = _rows(payload.get("review_items"))
+    items = deduplicate_review_items(_rows(payload.get("review_items")))
     polish = _dict(payload.get("polishing_summary"))
     if not polish:
         polish = next((row for row in reversed(events) if row.get("event") == "polishing_summary"), {})
@@ -148,7 +166,8 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     # Content quality is not a count of optional operation errors.
     item_counts = Counter(review_severity(item) for item in items)
     stored = _dict(payload.get("review_severity_counts"))
-    counts = {key: max(item_counts[key], _int(stored.get(key))) for key in SEVERITIES}
+    counts = {key: item_counts[key] if isinstance(payload.get('review_items'),list)
+              else _int(stored.get(key)) for key in SEVERITIES}
     config_notes = [str(item) for item in (_dict(payload.get("settings")).get("config_warnings") or []) if str(item).strip()]
     if not stored:
         counts["warning"] += len(config_notes)
@@ -246,12 +265,17 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     elif raw_status == "failed" or core_errors:
         usable = False
         core_status, label, title = "failed", "失败", "识别未完成"
+        if final_cues > 0 and save_error:
+            label, title = '工程保存失败，可恢复', '字幕已生成 · 工程保存失败，可恢复'
     elif raw_status in _SUCCESS:
         usable = usable or ("cue_count" in result and final_cues == 0)
         if not usable:
             core_status, label, title = "unknown", "状态待确认", "任务状态待确认"
         elif polish_status == "partial":
-            core_status, label, title = "partial", "部分完成", "字幕已生成 · 部分AI校对未完成"
+            if _dict(payload.get('_current_review')).get('result_complete'):
+                core_status, label, title = 'completed', '完成 · 有警告', '识别完成'
+            else:
+                core_status, label, title = "partial", "部分完成", "字幕已生成 · 部分AI校对未完成"
         else:
             core_status = "completed"
             label = "已完成 · 有待检查项" if sum(counts[key] for key in ("error", "warning", "review")) else "完成"
@@ -274,8 +298,8 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         problems=_unique(problems), review_notes=_unique(review_notes), core_errors=_unique(core_errors),
         processed_records=processed_records, final_cues=final_cues, success_records=success_records,
         fallback_records=fallback_records, accepted_edits=accepted_edits,
-        review_issue_count=sum(counts[key] for key in ("error", "warning", "review")),
-        review_affected_cues=len(affected_cues) if affected_cues else None,
+        review_issue_count=len(payload['_current_review']['items']) if '_current_review' in payload else sum(counts[key] for key in ("error", "warning", "review")),
+        review_affected_cues=payload['_current_review']['affected_cues'] if '_current_review' in payload else len(affected_cues) if affected_cues else None,
         review_affected_records=len(affected_records) if affected_records else None,
         search_verified_records=_int(search.get("verified_count")) if evidence_verified else 0,
         search_unverified_records=max(_int(search.get("candidate_count")), _int(search.get("unverified_count"))) if unproved_search else _int(search.get("unverified_count")),

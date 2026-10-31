@@ -158,22 +158,21 @@ def test_save_worker_keeps_one_revision_during_edit_undo_and_resave(tmp_path, mo
     target = tmp_path / 'captions.2byteproj'
     worker = _SaveThread(project, target)
     captured, release = threading.Event(), threading.Event()
-    original = dataclasses._asdict_inner
-    worker_cues = worker.project.cues
+    from twobyteasr.projects import studio_project as project_module
+    original = project_module.save_project
     main_thread = threading.get_ident()
     held = False
 
-    def pause_after_cues(value, factory):
+    def pause_after_cues(value, *args, **kwargs):
         nonlocal held
-        result = original(value, factory)
-        if not held and value is worker_cues and threading.get_ident() != main_thread:
+        if not held and threading.get_ident() != main_thread:
             held = True
             captured.set()
             if not release.wait(5):
                 raise RuntimeError('save checkpoint timed out')
-        return result
+        return original(value, *args, **kwargs)
 
-    monkeypatch.setattr(dataclasses, '_asdict_inner', pause_after_cues)
+    monkeypatch.setattr(project_module, 'save_project', pause_after_cues)
     worker.start()
     try:
         assert captured.wait(5)
@@ -237,7 +236,7 @@ def test_save_snapshot_copies_json_values_and_falls_back_for_unknown_types(tmp_p
     shared = {'words': [{'text': '古龙', 'start_ms': 0, 'end_ms': 1000}], 'bounds': (0, 1000)}
     project = SubtitleProject(media=StudioMedia(path='', duration_ms=2000),
                               styles=[SubtitleStyle('default', 'fixture')],
-                              cues=[StudioCue('a', 0, 1000, '古龙')])
+                              cues=[StudioCue('a', 0, 1000, '古龙', original_text='古龙', base_preset_id='default')])
     project.asr_evidence = {'shared': shared}
     project.generation_metadata = {'shared': shared, 'flags': [True, None, 1, 1.5]}
     if unsupported:
@@ -245,9 +244,10 @@ def test_save_snapshot_copies_json_values_and_falls_back_for_unknown_types(tmp_p
     expected = copy.deepcopy(project)
     worker = _SaveThread(project, tmp_path / 'unused.2byteproj')
     try:
-        snapshot = worker.project
-        assert snapshot == expected
-        assert snapshot.asr_evidence['shared'] is snapshot.generation_metadata['shared']
+        snapshot = worker._materialize_snapshot()
+        assert snapshot.cues == expected.cues
+        assert snapshot.asr_evidence == expected.asr_evidence
+        assert {k: snapshot.generation_metadata[k] for k in expected.generation_metadata} == expected.generation_metadata
         snapshot.asr_evidence['shared']['words'][0]['text'] = '骨龙'
         snapshot.cues[0].text = '骨龙'
         assert project.asr_evidence['shared']['words'][0]['text'] == '古龙'

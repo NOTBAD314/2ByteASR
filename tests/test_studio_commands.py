@@ -27,6 +27,21 @@ def _project():
     )
 
 
+def test_batch_text_undo_only_restores_its_owned_word_overrides():
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    project = _project()
+    project.studio_state['term_word_overrides'] = {'b': {'text': 'unrelated', 'words': []}}
+    other = project.studio_state['term_word_overrides']['b']
+    command = BatchReplaceTextCommand(project, {'a': '新文字'}, glossary_ids=[])
+    command.redo()
+    assert project.studio_state['term_word_overrides']['b'] is other
+    other['text'] = 'later edit'
+    command.undo()
+    assert project.studio_state['term_word_overrides'] == {'b': other}
+    command.redo()
+    assert project.studio_state['term_word_overrides']['b']['text'] == 'later edit'
+
+
 def test_text_ai_style_and_timing_share_one_undo_stack():
     project = _project()
     stack = QUndoStack()

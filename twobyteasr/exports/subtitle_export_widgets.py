@@ -375,6 +375,8 @@ class ChipFlowLayout(QLayout):
     def _arrange(self, rect, apply):
         x, y, line = rect.x(), rect.y(), 0
         for item in self._items:
+            if item.isEmpty():  # a hidden chip takes no place and no gap
+                continue
             hint = item.sizeHint()
             if x + hint.width() > rect.right() + 1 and line:
                 x, y, line = rect.x(), y + line + self.spacing(), 0

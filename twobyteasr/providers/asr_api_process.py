@@ -83,6 +83,10 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
     from .qwen31_asr import is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL
     endpoint.update(cloud_request_hints(endpoint, settings, context.requested_language))
+    if endpoint.get('model') == MOSI_MODEL:
+        from .mosi_asr import language_policy
+        record_run_event('cloud_language_policy', provider=endpoint.get('provider'),
+                         **language_policy(context.requested_language))
     if endpoint.get('hint_counts'):
         record_run_event('cloud_request_hints', model=endpoint['model'], **endpoint['hint_counts'],
                          language=endpoint.get('filetrans_language') or '')
@@ -119,7 +123,8 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
             endpoint=endpoint,context=asr.build_qwen_asr_context(audio_path),settings=settings,
             native_job=native_job,speaker_source=endpoint['speaker_source'],
             cancel_file=str(root/'cancel'),
-            job_id=context.job_id,publish_primary=publish_primary,workers=max(1,min(6,int(asr.CLOUD_BATCH_WORKERS))))
+            job_id=context.job_id,requested_language=context.requested_language,
+            publish_primary=publish_primary,workers=max(1,min(6,int(asr.CLOUD_BATCH_WORKERS))))
         if storage_credentials: request['storage_credentials'] = storage_credentials
         # Set only for one run after the user confirmed resubmission (retry dialog).
         if (settings or {}).get('models', {}).get('cloud_resubmit_confirmed') is True:

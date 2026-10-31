@@ -1,10 +1,11 @@
-﻿"""segmentation stage implementation extracted from subtitle_core."""
+"""segmentation stage implementation extracted from subtitle_core."""
 
 import re
 import warnings
 
 # The core owns runtime configuration; these imports preserve the existing public contract.
 from subtitle_core import *  # noqa: F401,F403
+from .segmentation_profiles import current_profile as _current_language_profile
 from twobyteasr.recognition.run_context import get_runtime_context
 from twobyteasr.subtitle_rules.language_rules import CONTENT_CHAR_CLASS
 
@@ -324,8 +325,8 @@ def refine_resegmented_texts(segment_batch, proposed_texts, firered_tokens=()):
         }
         semantic_required_offsets.update(semantic)
         compact = (
-            segment_length <= MAX_SUBTITLE_CHARS
-            and segment.end - segment.start <= MAX_SUBTITLE_SECONDS + 0.05
+            segment_length <= _current_language_profile().hard_max
+            and segment.end - segment.start <= _current_language_profile().max_seconds + 0.05
         )
         if compact and semantic:
             for offset in internal:
@@ -364,7 +365,7 @@ def refine_resegmented_texts(segment_batch, proposed_texts, firered_tokens=()):
                 offset not in required_boundaries
                 and left_content in DANGLING_SHORT_FRAGMENTS
                 and len(left_content) <= 5
-                and right_end - local_edges[edge_index - 1] <= MAX_SUBTITLE_CHARS
+                and right_end - local_edges[edge_index - 1] <= _current_language_profile().hard_max
             ):
                 boundaries.discard(offset)
                 changed = True
@@ -594,8 +595,8 @@ def repair_compact_utterance_boundary_offsets(
         text = content_exact(segment.text)
         end = cursor + len(text)
         compact = (
-            len(text) <= COMPLETE_PHRASE_SOFT_MAX_CHARS
-            and segment.end - segment.start <= MAX_SUBTITLE_SECONDS + 0.05
+            len(text) <= _current_language_profile().hard_max
+            and segment.end - segment.start <= _current_language_profile().max_seconds + 0.05
         )
         atomic = bool(
             COMPACT_DATE_PATTERN.fullmatch(text)
@@ -648,7 +649,7 @@ def repair_dependent_prefix_boundary_offsets(
                 target > previous
                 and target not in blocked
                 and target - previous >= MIN_BALANCED_SEGMENT_CHARS
-                and following - target <= COMPLETE_PHRASE_SOFT_MAX_CHARS
+                and following - target <= _current_language_profile().hard_max
                 and following - boundary >= MIN_BALANCED_SEGMENT_CHARS
                 and not any(target < value <= boundary for value in blocked)
             ):
@@ -671,7 +672,7 @@ def repair_dependent_prefix_boundary_offsets(
                 target <= previous
                 or target in blocked
                 or target - previous < MIN_BALANCED_SEGMENT_CHARS
-                or following - target > MAX_SUBTITLE_CHARS
+                or following - target > _current_language_profile().hard_max
                 or any(target < value <= boundary for value in blocked)
             ):
                 continue
@@ -684,7 +685,7 @@ def repair_dependent_prefix_boundary_offsets(
         if (
             target >= following
             or target in blocked
-            or target - previous > COMPLETE_PHRASE_SOFT_MAX_CHARS
+            or target - previous > _current_language_profile().hard_max
             or following - target < MIN_BALANCED_SEGMENT_CHARS
             or any(boundary < value <= target for value in blocked)
         ):
@@ -702,7 +703,7 @@ def repair_dependent_prefix_boundary_offsets(
             boundary not in blocked
             and left.endswith("有")
             and re.match(r"\d+[个块处项条种位只台套]", right)
-            and following - previous <= MAX_SUBTITLE_CHARS
+            and following - previous <= _current_language_profile().hard_max
         ):
             repaired.pop(index)
             moved += 1
@@ -789,7 +790,7 @@ def repair_segmenter_word_boundary_offsets(
             else:
                 score -= 1
             # 左句更接近舒适字数时加分。
-            score -= abs(left_len - PREFERRED_MAX_SUBTITLE_CHARS) * 0.15
+            score -= abs(left_len - _current_language_profile().preferred) * 0.15
             score -= abs(target - boundary) * 0.1
             candidates.append((score, -abs(target - boundary), target))
         if not candidates:
@@ -881,17 +882,17 @@ def repair_lexical_boundary_offsets(
             )
             if target <= previous or target >= following:
                 continue
-            if target - previous > MAX_SUBTITLE_CHARS:
+            if target - previous > _current_language_profile().hard_max:
                 continue
-            if following - target > MAX_SUBTITLE_CHARS:
+            if following - target > _current_language_profile().hard_max:
                 # “你能想到｜我们能听到……”需把完整短语单独成条：既把
                 # 错误边界移到短语前，也在短语后补一个边界。
                 term_end = match + term_length
                 if (
                     term in BOUNDARY_MOVE_BEFORE_TERMS
                     and target < term_end < following
-                    and term_end - target <= MAX_SUBTITLE_CHARS
-                    and following - term_end <= MAX_SUBTITLE_CHARS
+                    and term_end - target <= _current_language_profile().hard_max
+                    and following - term_end <= _current_language_profile().hard_max
                     and term_end not in blocked
                 ):
                     extra_boundaries.add(term_end)
@@ -954,7 +955,7 @@ def repair_incomplete_boundary_offsets(
                 or target >= following
                 or target in blocked
                 or target - previous < MIN_BALANCED_SEGMENT_CHARS
-                or following - target > MAX_SUBTITLE_CHARS
+                or following - target > _current_language_profile().hard_max
             ):
                 continue
             repaired[index] = target
@@ -1007,7 +1008,7 @@ def repair_latin_predicate_boundary_offsets(
             or target >= following
             or target in blocked
             or target - previous < MIN_BALANCED_SEGMENT_CHARS
-            or following - target > MAX_SUBTITLE_CHARS
+            or following - target > _current_language_profile().hard_max
             or any(target < offset <= boundary for offset in blocked)
         ):
             continue
@@ -1091,7 +1092,7 @@ def right_is_short_completion(right_text):
 def should_merge_hanging_attribute(left_text, right_text, soft_max=None):
     """未完成定语/指量 + 短中心语：优先合成一句，允许略超常规 12 字。"""
     if soft_max is None:
-        soft_max = COMPLETE_PHRASE_SOFT_MAX_CHARS
+        soft_max = _current_language_profile().hard_max
     left = content_exact(left_text)
     right = content_exact(right_text)
     if not left_has_hanging_attribute(left) or not right_is_short_completion(right):
@@ -1147,7 +1148,7 @@ def repair_hanging_attribute_boundary_offsets(
 
         combined = following - previous
         # 1) 能完整合成一句就删竖线。
-        if combined <= COMPLETE_PHRASE_SOFT_MAX_CHARS and not any(
+        if combined <= _current_language_profile().hard_max and not any(
             previous < required < following for required in blocked
         ):
             repaired.pop(index)
@@ -1169,8 +1170,8 @@ def repair_hanging_attribute_boundary_offsets(
                 or target >= following
                 or target in blocked
                 or target - previous < MIN_BALANCED_SEGMENT_CHARS
-                or following - target > MAX_SUBTITLE_CHARS
-                or target - previous > MAX_SUBTITLE_CHARS
+                or following - target > _current_language_profile().hard_max
+                or target - previous > _current_language_profile().hard_max
                 or any(min(boundary, target) < required < max(boundary, target) for required in blocked)
             ):
                 continue
@@ -1187,9 +1188,9 @@ def repair_hanging_attribute_boundary_offsets(
             continue
 
         # 3) “…的｜短中心语”且无法合并：不把“的”甩到下一句开头；保持或略向右找词边界。
-        if left.endswith("的") and combined <= COMPLETE_PHRASE_SOFT_MAX_CHARS + 2:
+        if left.endswith("的") and combined <= _current_language_profile().hard_max + 2:
             # 再宽一点仍优先合并观感。
-            if combined <= COMPLETE_PHRASE_SOFT_MAX_CHARS + 2 and not any(
+            if combined <= _current_language_profile().hard_max + 2 and not any(
                 previous < required < following for required in blocked
             ):
                 # 超过 soft+2 就不动；这里 +2 已在条件中。对 15 字极端短语保留切开。
@@ -1247,8 +1248,8 @@ def repair_category_field_list_cues(cues):
             index += 1
             continue
         if (
-            display_length(new_left) > COMPLETE_PHRASE_SOFT_MAX_CHARS
-            or display_length(new_right) > COMPLETE_PHRASE_SOFT_MAX_CHARS
+            display_length(new_left) > _current_language_profile().hard_max
+            or display_length(new_right) > _current_language_profile().hard_max
         ):
             index += 1
             continue
@@ -1302,7 +1303,7 @@ def merge_hanging_attribute_cues(cues):
             index += 1
             continue
         duration = max(left.end, right.end) - min(left.start, right.start)
-        if duration > MAX_SUBTITLE_SECONDS + 0.05:
+        if duration > _current_language_profile().max_seconds + 0.05:
             index += 1
             continue
         left.text = clean_subtitle_text(left.text + right.text)
@@ -1421,8 +1422,8 @@ def repair_dependent_particle_boundary_offsets(
                 and target not in blocked
                 and target - previous >= MIN_BALANCED_SEGMENT_CHARS
                 and following - target >= MIN_BALANCED_SEGMENT_CHARS
-                and target - previous <= MAX_SUBTITLE_CHARS
-                and following - target <= MAX_SUBTITLE_CHARS
+                and target - previous <= _current_language_profile().hard_max
+                and following - target <= _current_language_profile().hard_max
                 and not any(
                     min(boundary, target) < required < max(boundary, target)
                     for required in blocked
@@ -1444,7 +1445,7 @@ def repair_dependent_particle_boundary_offsets(
             if (
                 target >= following
                 or target in blocked
-                or target - previous > MAX_SUBTITLE_CHARS
+                or target - previous > _current_language_profile().hard_max
                 or following - target < PROTECTED_SOURCE_SHORT_CHARS
                 or any(boundary < required <= target for required in blocked)
             ):
@@ -1464,7 +1465,7 @@ def repair_dependent_particle_boundary_offsets(
         if (
             boundary not in blocked
             and right in SHORT_REACTION_TAILS
-            and following - previous <= MAX_SUBTITLE_CHARS
+            and following - previous <= _current_language_profile().hard_max
         ):
             repaired.pop(index)
             print(f"   [短反应护栏] 合回依附前句的‘{right}’。")
@@ -1638,7 +1639,7 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
         # 主播插话的两句重新合并，最终制造出超过 5 秒的字幕并让整批任务失败。
         contiguous = (
             -0.20 <= gap <= PROTECTED_SOURCE_GAP_SECONDS
-            and combined_duration <= MAX_SUBTITLE_SECONDS + 0.05
+            and combined_duration <= _current_language_profile().max_seconds + 0.05
         )
         left_text = clean_subtitle_text(left.text)
         right_text = clean_subtitle_text(right.text)
@@ -1676,8 +1677,8 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
             if not new_left or not new_right:
                 continue
             if (
-                display_length(new_left) > MAX_SUBTITLE_CHARS
-                or display_length(new_right) > MAX_SUBTITLE_CHARS
+                display_length(new_left) > _current_language_profile().hard_max
+                or display_length(new_right) > _current_language_profile().hard_max
             ):
                 continue
             left_len = display_length(new_left)
@@ -1688,7 +1689,7 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
                 (
                     0 if target == end else 1,
                     balance,
-                    abs(left_len - PREFERRED_MAX_SUBTITLE_CHARS),
+                    abs(left_len - _current_language_profile().preferred),
                     -left_len,
                     target,
                     new_left,
@@ -1700,7 +1701,7 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
                 index += 1
                 continue
             merged_text = clean_subtitle_text(left_text + right_text)
-            if display_length(merged_text) <= MAX_SUBTITLE_CHARS + 2:
+            if display_length(merged_text) <= _current_language_profile().hard_max + 2:
                 left.text = merged_text
                 left.end = max(left.end, right.end)
                 left.start = min(left.start, right.start)
@@ -1742,7 +1743,7 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
             if split_at is None:
                 # A whole cue span is known; invented per-character timestamps
                 # are not. Preserve it by a bounded merge when that is readable.
-                if contiguous and display_length(joined) <= MAX_SUBTITLE_CHARS:
+                if contiguous and display_length(joined) <= _current_language_profile().hard_max:
                     left.text = clean_subtitle_text(left_text + right_text)
                     left.end = window_end
                     rows.pop(index + 1)
@@ -1754,8 +1755,8 @@ def repair_mid_word_adjacent_cues(cues, segments=(), firered_tokens=()):
             if not window_start < split_at < window_end:
                 continue
             if (
-                split_at - window_start > MAX_SUBTITLE_SECONDS + 0.05
-                or window_end - split_at > MAX_SUBTITLE_SECONDS + 0.05
+                split_at - window_start > _current_language_profile().max_seconds + 0.05
+                or window_end - split_at > _current_language_profile().max_seconds + 0.05
             ):
                 continue
             left.text = clean_subtitle_text(new_left)
@@ -1849,7 +1850,7 @@ def locally_repair_resegmented_cue(
             length = end_index - start_index
             duration = units[end_index - 1].end - units[start_index].start
             # 成片严格执行 16 字上限，同时避免切出“的｜启动资金”残尾。
-            if length > COMPLETE_PHRASE_SOFT_MAX_CHARS or duration > MAX_SUBTITLE_SECONDS + 0.05:
+            if length > _current_language_profile().hard_max or duration > _current_language_profile().max_seconds + 0.05:
                 break
             if any(start_index < boundary < end_index for boundary in forced_boundaries):
                 continue
@@ -1862,12 +1863,12 @@ def locally_repair_resegmented_cue(
             if not line_keeps_numbers(start_index, end_index):
                 continue
 
-            cost = 10.0 + 0.22 * (length - PREFERRED_MAX_SUBTITLE_CHARS) ** 2
+            cost = 10.0 + 0.22 * (length - _current_language_profile().preferred) ** 2
             if length < MIN_BALANCED_SEGMENT_CHARS:
                 cost += 16.0 * (MIN_BALANCED_SEGMENT_CHARS - length) ** 2
             # 超过常规 12 的完整短语略罚，但仍优于残尾两刀。
-            if length > MAX_SUBTITLE_CHARS:
-                cost += 6.0 * (length - MAX_SUBTITLE_CHARS) ** 2
+            if length > _current_language_profile().hard_max:
+                cost += 6.0 * (length - _current_language_profile().hard_max) ** 2
             # 回退舒适模式：超舒适长度的整段重罚，逼 DP 落到 ~8-12 字两刀。
             if comfort_max_chars is not None and length > comfort_max_chars:
                 cost += 30.0 * (length - comfort_max_chars)
@@ -1889,7 +1890,7 @@ def locally_repair_resegmented_cue(
                     cost += 80.0
                 # 左句明显偏短、右句更长时略惩罚，推动“直接进入｜一个…”而非“直接｜进入…”。
                 right_len = count - end_index
-                if length <= PREFERRED_MAX_SUBTITLE_CHARS - 2 and right_len >= length + 1:
+                if length <= _current_language_profile().preferred - 2 and right_len >= length + 1:
                     cost += 2.5
             if end_index in forced_boundaries:
                 cost -= 20.0
@@ -1904,7 +1905,7 @@ def locally_repair_resegmented_cue(
             total = cost + best_score[end_index][0]
             score = (
                 total,
-                abs(length - PREFERRED_MAX_SUBTITLE_CHARS),
+                abs(length - _current_language_profile().preferred),
                 -length,
             )
             if score < best_score[start_index]:
@@ -1926,15 +1927,15 @@ def locally_repair_resegmented_cue(
         start_index = 0
         while start_index < count:
             forced_after = min((b for b in forced_boundaries if b > start_index), default=count)
-            limit = min(count, forced_after, start_index + COMPLETE_PHRASE_SOFT_MAX_CHARS)
+            limit = min(count, forced_after, start_index + _current_language_profile().hard_max)
             end_index = start_index
             while end_index < limit:
                 candidate = end_index + 1
                 duration = units[candidate - 1].end - units[start_index].start
-                if candidate > start_index + 1 and duration > MAX_SUBTITLE_SECONDS + 0.05:
+                if candidate > start_index + 1 and duration > _current_language_profile().max_seconds + 0.05:
                     break
                 end_index = candidate
-                if duration > MAX_SUBTITLE_SECONDS + 0.05:
+                if duration > _current_language_profile().max_seconds + 0.05:
                     break
             end_index = max(end_index, min(count, start_index + 1))
             if end_index < count and end_index not in forced_boundaries and not any(
@@ -1958,7 +1959,7 @@ def locally_repair_resegmented_cue(
                 # a line with ー or a small kana when anything else fits; a
                 # shorter piece stays within both limits.
                 remaining = count - start_index
-                pieces = -(-remaining // COMPLETE_PHRASE_SOFT_MAX_CHARS)
+                pieces = -(-remaining // _current_language_profile().hard_max)
                 target = start_index + -(-remaining // max(1, pieces))
 
                 def cut_cost(cut):
@@ -1988,7 +1989,7 @@ def locally_repair_resegmented_cue(
         for part, (start_index, end_index) in zip(split_text_at_content_ranges(text, ranges), ranges):
             start = units[start_index].start
             acoustic_end = max(units[end_index - 1].end, start + MIN_SUBTITLE_SECONDS)
-            cues.append(SubtitleCue(0, start, min(acoustic_end, start + MAX_SUBTITLE_SECONDS), part))
+            cues.append(SubtitleCue(0, start, min(acoustic_end, start + _current_language_profile().max_seconds), part))
         print(f"   [硬切兜底] 常规词边界无法满足字幕上限，已保全文字并拆为 {len(cues)} 条。")
         record_run_event("local_hard_split_recovery", cue_count=len(cues), character_count=count)
         return cues

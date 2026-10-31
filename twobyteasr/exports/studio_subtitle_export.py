@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -16,6 +17,8 @@ from ..projects.studio_project import StudioCue, SubtitleProject
 from .srt_codec import _SRT_BLOCK, normalize_srt_text, parse_srt, parse_srt_time as _parse_srt_time
 from .export_consistency import require_consistent_view, SubtitleDataError
 from ..projects.subtitle_consistency import validate_export_view, ValidationResult
+from .subtitle_metadata import write_srt_metadata, track_language
+from ..projects.subtitle_import import sidecar_path
 
 
 SUPPORTED_SUBTITLE_FORMATS = frozenset({"srt", "ass", "txt", "json"})
@@ -407,6 +410,7 @@ def export_subtitle_artifacts(
     from .export_preferences import output_basename
     stem = output_basename(base_name or 'subtitles')
     artifacts: list[SubtitleExportArtifact] = []
+    export_id = uuid.uuid4().hex
     # 三十八轮：被隐藏的说话人轨不进成片/导出（编辑器内仍可见可改）。
     visible_cues = project.visible_cues()
     scopes: list[tuple[str, SubtitleProject, str]] = []
@@ -453,13 +457,20 @@ def export_subtitle_artifacts(
                 )
                 if not verification.valid or count_invalid:
                     raise SubtitleVerificationError(target, speaker_id, verification)
-                pending.append((candidate, SubtitleExportArtifact(target, format_name, speaker_id, len(expected.cues))))
-        for candidate, artifact in pending:
+                companion = write_srt_metadata(candidate, scoped_project, expected.cues,
+                    export_id=export_id, layer="display") if format_name == "srt" else None
+                pending.append((candidate, SubtitleExportArtifact(target, format_name, speaker_id, len(expected.cues)), companion))
+        for candidate, artifact, companion in pending:
             try:
                 os.replace(candidate, artifact.path)
             except OSError as exc:
                 raise SubtitlePublicationError(artifact.path, artifacts, exc) from exc
             artifacts.append(artifact)
+            if companion is not None:
+                try:
+                    os.replace(companion, sidecar_path(artifact.path))
+                except OSError as exc:
+                    raise SubtitlePublicationError(sidecar_path(artifact.path), artifacts, exc) from exc
     return tuple(artifacts)
 
 
@@ -761,10 +772,11 @@ def export_language_layers(
         translations = {key: (dict(value, text=style_translation(value.get("text", ""), mode, math=math))
                               if isinstance(value, dict) else value)
                         for key, value in translations.items()}
-    original_suffix = original_suffix or project_language(project) or "ja"
+    original_suffix = original_suffix or project_language(project) or "und"
     translation_suffix = _translation_suffix(resolved_target)
     base = output_basename(stem or "subtitles")
     target_dir = Path(directory).resolve()
+    export_id = uuid.uuid4().hex
     visible_cues = project.visible_cues()
     scopes: list[tuple[str, SubtitleProject, str]] = []
     if speaker_mode in {"combined", "both"}:
@@ -781,9 +793,12 @@ def export_language_layers(
             used_names.add(label.casefold())
             cues = [cue for cue in visible_cues if cue.speaker_id == speaker_id]
             scopes.append((speaker_id, _project_for_cues(project, cues), f"{base}_{label}"))
+    def source_suffix(sid):
+        return track_language(project, sid, original_suffix) or "und" if sid else original_suffix
     counter = 1
-    while any((target_dir / _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter)).exists()
-              for _sid, _scoped, scope_stem in scopes for layer in layers):
+    while any(path.exists() or sidecar_path(path).exists()
+              for sid, _scoped, scope_stem in scopes for layer in layers
+              for path in [target_dir / _layer_filename(scope_stem, layer, source_suffix(sid), translation_suffix, counter)]):
         counter += 1
     target_dir.mkdir(parents=True, exist_ok=True)
     published: list[LanguageLayerArtifact] = []
@@ -794,7 +809,7 @@ def export_language_layers(
         for speaker_id, scoped_project, scope_stem in scopes:
             view = _export_view_cues(scoped_project)
             for layer in layers:
-                name = _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter)
+                name = _layer_filename(scope_stem, layer, source_suffix(speaker_id), translation_suffix, counter)
                 candidate = Path(stage) / name
                 expected = copy.copy(scoped_project)
                 missing: tuple[str, ...] = ()
@@ -820,9 +835,11 @@ def export_language_layers(
                     raise SubtitleVerificationError(target_dir / name, speaker_id, verification)
                 all_missing.update(dict.fromkeys(missing))
                 all_stale.update(dict.fromkeys(stale))
+                companion = write_srt_metadata(candidate, scoped_project, expected.cues, export_id=export_id,
+                    layer=layer, source_language=original_suffix, target=resolved_target) if format_name == "srt" else None
                 pending.append((candidate, LanguageLayerArtifact(
-                    target_dir / name, layer, format_name, speaker_id, len(expected.cues), missing, stale)))
-        for candidate, artifact in pending:
+                    target_dir / name, layer, format_name, speaker_id, len(expected.cues), missing, stale), companion))
+        for candidate, artifact, companion in pending:
             final = artifact
             for _attempt in range(100):
                 try:
@@ -834,7 +851,7 @@ def export_language_layers(
                     final = LanguageLayerArtifact(
                         target_dir / _layer_filename(
                             next(name for sid, _p, name in scopes if sid == artifact.speaker_id),
-                            artifact.layer, original_suffix, translation_suffix, counter),
+                            artifact.layer, source_suffix(artifact.speaker_id), translation_suffix, counter),
                         artifact.layer, artifact.format, artifact.speaker_id, artifact.cue_count,
                         artifact.missing_translation_ids, artifact.needs_update_ids)
                 except OSError as exc:
@@ -842,6 +859,11 @@ def export_language_layers(
             else:
                 raise SubtitlePublicationError(final.path, published, FileExistsError(str(final.path)))
             published.append(final)
+            if companion is not None:
+                try:
+                    _publish_new(companion, sidecar_path(final.path))
+                except OSError as exc:
+                    raise SubtitlePublicationError(sidecar_path(final.path), published, exc) from exc
     return LanguageLayerExport(tuple(published), resolved_target, original_suffix, translation_suffix,
                                tuple(all_missing), tuple(all_stale))
 
@@ -903,17 +925,20 @@ def planned_subtitle_files(
         from ..subtitle_rules.language_rules import project_language
         from ..subtitle_rules.subtitle_translation import container_target
         layer_list = layers + (("json",) if "json" in formats else ())
-        original_suffix = project_language(project) or "ja"
+        original_suffix = project_language(project) or "und"
         translation_suffix = _translation_suffix(container_target(project))
+        def source_suffix(sid):
+            return track_language(project, sid, original_suffix) or "und" if sid else original_suffix
         counter = 1
         while target_dir is not None and any(
-                (target_dir / _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter)).exists()
-                for _sid, scope_stem in scopes for layer in layer_list):
+                path.exists() or sidecar_path(path).exists()
+                for sid, scope_stem in scopes for layer in layer_list
+                for path in [target_dir / _layer_filename(scope_stem, layer, source_suffix(sid), translation_suffix, counter)]):
             counter += 1
         for speaker_id, scope_stem in scopes:
             for layer in layer_list:
                 planned.append(PlannedSubtitleFile(
-                    _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter),
+                    _layer_filename(scope_stem, layer, source_suffix(speaker_id), translation_suffix, counter),
                     "json" if layer == "json" else "srt", speaker_id, "renamed" if counter > 1 else "new"))
         formats -= {"srt", "json"}
     for speaker_id, scope_stem in scopes:

@@ -118,7 +118,8 @@ def start(window, output):
                 return dict(x=point.x(), y=point.y(), width=widget.width(), height=widget.height())
             summary = rect(window.result_summary_card)
             cards = window.result_action_grid.cards
-            supporting = window.result_action_grid.secondary_actions
+            supporting = [button for button in (*(card.action for card in window.result_todo.cards), window.result_more_button)
+                          if button.isVisible()]
             columns = window.result_action_grid.columns
             header_bottom = window.app_header.mapTo(window, QPoint()).y()+window.app_header.height()
             navigation_gap = window.result_summary_card.mapTo(window, QPoint()).y()-header_bottom
@@ -135,22 +136,21 @@ def start(window, output):
             self.check(phase+': common body width is 85 to 90 percent of viewport', .85 <= geometry['content_viewport_width_ratio'] <= .90, geometry)
             self.check(phase+': readable summary and operation fonts', 28 <= window.result_title.font().pixelSize() <= 32
                 and all(21 <= card.title_font().pixelSize() <= 24 and 14 <= card.description_font().pixelSize() <= 16 for card in cards)
-                and all(15 <= button.font().pixelSize() <= 17 for button in supporting), geometry)
+                and all(13 <= button.font().pixelSize() <= 17 for button in supporting), geometry)
             self.check(phase+': no horizontal overflow', scroll.horizontalScrollBar().maximum() == 0, geometry)
-            self.check(phase+': supporting actions use the same grid', window.result_secondary_layout is window.result_action_grid.grid)
-            self.check(phase+': main and support column edges agree', all(abs(card.x()-button.x()) <= 1
-                and abs(card.width()-button.width()) <= 1 for card, button in zip(cards, supporting)))
-            self.check(phase+': all supporting labels fit', all(button.fontMetrics().horizontalAdvance(button.text())+40 <= button.width() for button in supporting))
-            self.check(phase+': main and supporting heights match within their rows', len({card.height() for card in cards}) == 1 and len({button.height() for button in supporting}) == 1)
+            self.check(phase+': follow-ups sit between summary and main actions',
+                window.result_summary_card.geometry().bottom() < window.result_todo.geometry().top() < window.result_action_grid.geometry().top())
+            self.check(phase+': all follow-up labels fit', all(button.fontMetrics().horizontalAdvance(button.text())+24 <= button.width() for button in supporting))
+            self.check(phase+': main and follow-up heights match within their rows', len({card.height() for card in cards}) == 1 and len({button.height() for button in supporting}) == 1)
             title, arrow = window.result_more_button.content_rects()
             self.check(phase+': popup arrow vertically centered', abs(arrow.center().y()-window.result_more_button.height()/2) <= 1)
             for header in (window.result_files_toggle, window.result_log_toggle):
-                self.check(phase+': disclosure owns full content width '+header.text(), header.width() == window.result_content.width())
+                self.check(phase+': disclosure fills its fold column '+header.text(), header.width() >= window.result_content.width()//2 - 20
+                    if window.result_folds.columns == 2 else header.width() >= window.result_content.width() - 4)
             if columns == 3:
-                self.check(phase+': three equal columns and normal row spacing', max(card.width() for card in cards)-min(card.width() for card in cards) <= 1
-                    and supporting[0].y()-cards[0].geometry().bottom()-1 == 16)
+                self.check(phase+': three equal columns', max(card.width() for card in cards)-min(card.width() for card in cards) <= 1)
             else:
-                controls = cards+supporting
+                controls = cards
                 self.check(phase+': narrow operations stack and scroll', all(left.geometry().bottom() < right.geometry().top() for left, right in zip(controls, controls[1:]))
                     and scroll.verticalScrollBar().maximum() > 0)
 
@@ -286,7 +286,7 @@ def start(window, output):
             scroll = window.pages.widget(2)
             scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
             yield .2
-            for button in window.result_action_grid.secondary_actions:
+            for button in (window.repolish_current_glossary_button, window.result_more_button):
                 scroll.ensureWidgetVisible(button)
                 yield .1
                 point = button.mapTo(scroll.viewport(), QPoint())

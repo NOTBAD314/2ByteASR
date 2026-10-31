@@ -16,7 +16,7 @@ from ..subtitle_rules.grouping_request import GROUPING_PROMPT_VERSION
 
 GROUP_PROMPT_VERSION = "numeric-boundaries-v5-shared-scene-compact-short-material:" + GROUPING_PROMPT_VERSION
 GROUP_CACHE_VERSION = "snapshot-validated-grouped-v6-source-contract"
-POLISH_PROMPT_VERSION = "correction-edits-v16-scoped-fallback"
+POLISH_PROMPT_VERSION = "correction-edits-v18-language-risk-locale-repair"
 
 
 def _numeric_rule_version():

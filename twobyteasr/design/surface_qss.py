@@ -68,9 +68,9 @@ QLabel#settingsRowTitle {{ color: {t.text}; font-size: 13px; font-weight: 500; }
 QLabel#buildIdentityLabel {{ background: {t.panel}; color: {t.text_secondary}; padding: 16px;
     border: 1px solid {t.border}; border-radius: {r['control']}px; font-size: 12px; font-weight: 400; }}
 QFrame#dialogSurface {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: {r['modal']}px; }}
-QFrame#dialogSurfaceHeader {{ background: {t.surface}; border: 0; border-bottom: 1px solid {t.border}; }}
+QFrame#dialogSurfaceHeader {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
 QLabel#dialogSurfaceTitle {{ color: {t.text}; font-family: {UI_FONT_STACK}; font-size: 16px; font-weight: {WEIGHT_SCALE['semibold']}; background: transparent; }}
-QWidget#dialogSurfaceBody, QFrame#dialogSurfaceFooter {{ background: {t.surface}; color: {t.text}; border: 0; }}
+QWidget#dialogSurfaceBody, QFrame#dialogSurfaceFooter {{ background: transparent; color: {t.text}; border: 0; }}
 QFrame#dialogSurfaceFooter {{ border-top: 1px solid {t.border}; }}
 QFrame#studioToolbar {{ background: {t.shell}; border: 0; border-bottom: 1px solid {t.shell_border}; }}
 QFrame#contextPanel, QFrame#cueListPanel {{ background: {t.panel}; border: 0; border-left: 1px solid {t.border}; }}

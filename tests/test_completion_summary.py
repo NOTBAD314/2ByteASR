@@ -38,8 +38,8 @@ def test_summary_preserves_distinct_execution_quality_and_name_counters():
     assert len(summary.task_lines) == 4 and len(summary.log_lines) <= 6
     assert '12.375' in summary.task_lines[0]
     assert '场景未记录' in summary.task_lines[2] and 'r9' in summary.task_lines[2]
-    assert '疑似术语未召回' in summary.log_lines[0]
-    assert 'name → NAME' in summary.log_lines[1]
+    assert not any('疑似术语未召回' in row for row in summary.log_lines)
+    assert 'name → NAME' in summary.log_lines[0]
     assert any('MOSS 13.200s' in row for row in summary.log_lines)
     assert any('AI校对 4.700s' in row for row in summary.log_lines)
     assert (summary.local_replacements, summary.ai_proposed, summary.ai_accepted, summary.ai_rejected) == (2, 1, 0, 1)
@@ -66,9 +66,8 @@ def shell_page():
     QWidget.__init__(shell)
     shell._completion_log_generation = 0
     page = shell._result_page()
-    shell.result_task_selector.hide(); shell.result_icon.hide(); shell.result_review_status.hide()
+    shell.result_task_selector.hide(); shell.result_icon.hide()
     shell.result_summary.setText('请求已完成；仍有待审核项')
-    shell.open_priority_review_button.show()
     data = report()
     summary = completion_summary(data, normalize_recognition_outcome(data), project_path='/saved.2byteproj', project_loaded=True)
     shell.result_files_panel.set_summary_lines(summary.task_lines)
@@ -86,27 +85,32 @@ def test_default_real_rows_use_viewport_height_and_manual_collapse_survives_resi
     page.resize(1440, 1040); page.show(); settle()
     viewport = page.viewport()
     panels = (shell.result_files_panel, shell.result_log_panel)
-    # 2026-10-07: both folds start collapsed; one header click opens the summary.
-    assert all(panel.mode == 'collapsed' and panel.summary.isHidden() and panel.detail.isHidden() for panel in panels)
-    for panel in panels:
-        QTest.mouseClick(panel.header, Qt.MouseButton.LeftButton)
-    settle()
+    # B: the completion starts open; later refreshes preserve the user's mode.
     assert all(panel.mode == 'summary' and panel.summary.isVisible() and panel.detail.isHidden() for panel in panels)
+    assert panels[0].height() == panels[1].height()
     assert len(panels[0].visible_summary_rows()) == 4
-    assert len(panels[1].visible_summary_rows()) == 6
-    bottom = shell.result_action_grid.mapTo(viewport, QPoint()).y() + shell.result_action_grid.height()
-    assert 24 <= viewport.height() - bottom <= 40, (viewport.height(), bottom)
+    assert len(panels[1].visible_summary_rows()) == 5
     assert all(card.height() <= 220 for card in shell.result_action_grid.cards)
-    QTest.mouseClick(panels[0].collapse_button, Qt.MouseButton.LeftButton); settle()
+    # 2026-10-30 (user): the header closes what it opened; no separate 收起.
+    assert not hasattr(panels[0], 'collapse_button')
+    QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton); settle()
+    assert panels[0].mode == 'collapsed' and panels[0].summary.isHidden()
+    shell._refresh_completion_summaries(); settle()
     assert panels[0].mode == 'collapsed'
     page.resize(1260, 800); settle()
     assert panels[0].mode == 'collapsed' and panels[0].summary.isHidden()
     QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton); settle()
-    assert panels[0].mode == 'summary'
-    QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton); settle()
+    assert panels[0].mode == 'summary' and panels[0].detail_button.isVisible()
+    QTest.mouseClick(panels[0].detail_button, Qt.MouseButton.LeftButton); settle()
     assert panels[0].mode == 'full' and panels[0].detail.isVisible() and panels[0].summary.isHidden()
-    QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton); settle()
+    QTest.mouseClick(panels[0].detail_button, Qt.MouseButton.LeftButton); settle()
     assert panels[0].mode == 'summary'
+    QTest.mouseClick(panels[0].detail_button, Qt.MouseButton.LeftButton); settle()
+    QTest.mouseClick(panels[0].header, Qt.MouseButton.LeftButton); settle()
+    assert panels[0].mode == 'collapsed' and panels[0].detail.isHidden()
+    shell.console_log = SimpleNamespace(toPlainText=lambda: '')
+    shell._prepare_completion_log(); settle()
+    assert all(panel.mode == 'summary' for panel in panels)
     page.close(); page.deleteLater(); shell.deleteLater(); settle()
 
 

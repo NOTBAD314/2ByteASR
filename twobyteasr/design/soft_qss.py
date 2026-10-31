@@ -237,8 +237,8 @@ def build_soft_studio_qss(t) -> str:
     background: {k.primary_disabled}; color: {t.text_on_accent};
 }}
 {panel} QFrame#highlightCandidateCard QPushButton#studioPrimary:focus {{ border: 2px solid {t.focus}; }}
-{panel} QPushButton[softRole="tint"], {panel} QPushButton#styleLibraryButton {{ background: {k.chip}; color: {t.accent_text}; }}
-{panel} QPushButton[softRole="tint"]:hover, {panel} QPushButton#styleLibraryButton:hover {{ background: {k.chip_hover}; color: {t.accent_text}; }}
+{panel} QPushButton[softRole="tint"] {{ background: {k.chip}; color: {t.accent_text}; }}
+{panel} QPushButton[softRole="tint"]:hover {{ background: {k.chip_hover}; color: {t.accent_text}; }}
 {panel} QPushButton[softRole="ghost"] {{ background: transparent; color: {t.text_secondary}; }}
 {panel} QPushButton[softRole="ghost"]:hover {{ background: {k.fill}; color: {t.text}; }}
 {panel} QPushButton[buttonRole="danger"] {{ background: {k.fill}; color: {t.danger}; }}

@@ -42,15 +42,16 @@ export type Recipe = {
 export type SubtitleProps = {
   schemaVersion: number; width: number; height: number; fps: number; durationInFrames: number;
   cues: Cue[]; recipes: Record<string, Recipe>;
+  fontFaces?: {family: string; weight: number; style: 'normal'|'italic'; source: string; sha256: string}[];
 };
 
-export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes}) => {
+export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes, fontFaces}) => {
   const [fontGate] = useState(()=>delayRender('caption font faces'));
   useEffect(()=>{
     Promise.all(cues.map(cue=>cue.visual ?? recipes[cue.styleId]).filter(Boolean).map(recipe=>
-      document.fonts.load(`${recipe.typography.fontWeight || (recipe.typography.bold?700:400)} 90px ${JSON.stringify(recipe.typography.fontFamily)}`, '字幕Aa')))
+      document.fonts.load(`${recipe.typography.italic?'italic ':''}${recipe.typography.fontWeight || (recipe.typography.bold?700:400)} 90px ${JSON.stringify(recipe.typography.fontFamily)}`, '字幕Aa')))
       .then(()=>document.fonts.ready).then(()=>continueRender(fontGate)).catch(cancelRender);
-  }, [fontGate, cues, recipes]);
+  }, [fontGate, cues, recipes, fontFaces]);
   const frame = useCurrentFrame();
   const {fps, width, height} = useVideoConfig();
   const nowMs = frame / fps * 1000;
@@ -61,6 +62,8 @@ export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes}) =>
     .find((theme) => theme);
   return <AbsoluteFill style={{backgroundColor: 'transparent'}}>
     <style>{[...new Set(cues.map(cue=>(cue.visual ?? recipes[cue.styleId])?.typography.fontFamily).filter(Boolean))].map(family=>bundledThemeFontCss(family)).join('\n')}</style>
+    <style>{(fontFaces??[]).filter(face=>/^data:font\/(ttf|otf);base64,[A-Za-z0-9+/]+=*$/.test(face.source))
+      .map(face=>`@font-face{font-family:${JSON.stringify(face.family)};src:url("${face.source}");font-weight:${Math.max(100,Math.min(900,face.weight))};font-style:${face.style==='italic'?'italic':'normal'};font-display:block;}`).join('\n')}</style>
     {activeStageTheme
       ? <WebThemeStage key="wt-stage" theme={activeStageTheme} nowMs={nowMs} width={width} height={height}/>
       : null}

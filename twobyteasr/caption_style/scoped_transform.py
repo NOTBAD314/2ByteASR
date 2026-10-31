@@ -38,7 +38,59 @@ def edit_values(before,changes,*,reference=None,owner=None,mode='absolute',linke
     return result
 
 
-def transform_command(project,cue_ids,language,changes,*,mode='absolute',reference_id=None,reset=False,changed=None):
+def position_only_plan(project, targets, language, changes, *, mode='absolute', reset=False):
+    """Exact absolute layer positions / linked horizontal shift, without glyphs.
+
+    For a single layer the planner writes the requested absolute coordinates;
+    its measured previous coordinates cancel algebraically. For linked X the
+    two lines share the unmeasured anchor unless an explicit layer overrides
+    it. Layouts without that established invariant retain the full planner.
+    """
+    if reset or mode != 'absolute' or not changes or not set(changes) <= {'position_x', 'position_y'}:
+        return None
+    if language not in {'original', 'translation', 'linked'}:
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in changes.values()):
+        raise ValueError('invalid transform field')
+    from .caption_group_transform import inverse_changes
+    from .caption_layer_transform import _geometry_original, layer_values
+    from .bilingual_layout import translations_of, translation_for_cue
+    translations = translations_of(project.generation_metadata)
+    if language == 'linked' and set(changes) != {'position_x'}:
+        return None
+    transforms = {}
+    for cue in targets:
+        transform = copy.deepcopy(cue.transform or {})
+        layers = transform.setdefault(LAYER_KEY, {})
+        translated = bool(translation_for_cue(translations, cue.id))
+        if language == 'linked':
+            shown = _geometry_original(project, cue)
+            if shown is None:
+                return None
+            # _geometry_original uses the same unmodified anchor as
+            # display_cues, and materialize_layer keeps that base separately.
+            base = shown.transform.get('_geometry_base', shown.transform)
+            from .style_resolution import resolve_cue_visual
+            from .visual_snapshot import _anchor
+            width = int(project.render_settings.get('play_res_x', 1920))
+            height = int(project.render_settings.get('play_res_y', 1080))
+            owner_x = _anchor(resolve_cue_visual(project, shown).style, width, height)[0]
+            base_x = float(base.get('position_x', owner_x))
+            delta = float(changes['position_x']) - owner_x
+            layers.setdefault('original', {}).update(inverse_changes(project, cue, changes))
+            if translated:
+                translation_x = float(layer_values(cue, 'translation').get('position_x', base_x))
+                layers.setdefault('translation', {}).update(inverse_changes(project, cue, {'position_x': translation_x+delta}))
+        elif language == 'original' or translated:
+            layers.setdefault(language, {}).update(inverse_changes(project, cue, changes))
+        if not layers:
+            transform.pop(LAYER_KEY, None)
+        transforms[cue.id] = transform
+    return transforms
+
+
+def transform_plan(project,cue_ids,language,changes,*,mode='absolute',reference_id=None,reset=False):
+    """Read-only geometry preparation, safe on a detached worker-owned project."""
     if language=='group':language='linked'
     if language not in {'original','translation','linked'}:raise ValueError('unknown language layer')
     if mode not in {'absolute','delta','ratio'}:raise ValueError('unknown transform semantics')
@@ -50,6 +102,8 @@ def transform_command(project,cue_ids,language,changes,*,mode='absolute',referen
         elif key in {'scale_x','scale_y','font_size'} and value<=0:raise ValueError('scale must be positive')
     wanted=target_ids(project,cue_ids);targets=[c for c in project.cues if c.id in wanted]
     if not targets:return None
+    quick=position_only_plan(project, targets, language, changes, mode=mode, reset=reset)
+    if quick is not None:return quick
     cache=GeometryBatch(project);ref=next((c for c in targets if c.id==reference_id),targets[0])
     primary='original' if language=='linked' else language;reference=cache.values(ref,primary)
     if reference is None:return None
@@ -71,4 +125,10 @@ def transform_command(project,cue_ids,language,changes,*,mode='absolute',referen
             if delta:layers.setdefault(layer,{}).update(inverse_changes(project,cue,delta))
         if not layers:transform.pop(LAYER_KEY,None)
         transforms[cue.id]=transform
-    return presentation_command(project,targets,transforms,changed=changed)
+    return transforms
+
+
+def transform_command(project,cue_ids,language,changes,*,mode='absolute',reference_id=None,reset=False,changed=None):
+    transforms=transform_plan(project,cue_ids,language,changes,mode=mode,reference_id=reference_id,reset=reset)
+    targets=[c for c in project.cues if c.id in (transforms or {})]
+    return presentation_command(project,targets,transforms or {},changed=changed)

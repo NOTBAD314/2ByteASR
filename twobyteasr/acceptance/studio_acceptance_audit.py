@@ -76,6 +76,18 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('studio-surface','font-picker','style-bilingual-motion','editor-bilingual','daily-regressions','home-timeline-float','timeline-operations','editor-runtime-tail'):
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'language-range-recovery':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'subtitle-import':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'controls-timeline':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -84,11 +96,11 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('proofread-repair', 'editor-wheel-selection','scope-stage-retry'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('manual-translation', 'review-translate'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('manual-translation', 'review-translate', 'review-editor', 'studio-followup', 'studio-interaction', 'caption-editor-a', 'studio-performance'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -215,7 +227,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading', 'caption-first-display'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -454,6 +466,29 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-surface':
+        from .studio_surface_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'font-picker','style-bilingual-motion'}:
+        if os.environ['TWOBYTEASR_ACCEPTANCE_SCENARIO']=='font-picker':
+            from .font_picker_audit import start
+        else:
+            from .style_bilingual_motion_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-bilingual':
+        from .editor_bilingual_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'language-range-recovery':
+        from .language_range_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'scope-stage-retry':
         from .scope_stage_retry_audit import start
         output=audit_directory()
@@ -556,6 +591,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'subtitle-import':
+        from .subtitle_import_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-export':
         from .speaker_export_audit import start
         output = audit_directory()
@@ -581,6 +621,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'caption-first-display':
+        from .caption_first_display_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-pages':
         from .perf_pages_audit import start
         output = audit_directory()
@@ -600,6 +645,16 @@ def start_acceptance(window) -> None:
         from .razor_split_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-operations':
+        from .timeline_operations_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-runtime-tail':
+        from .editor_runtime_tail_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'link-word-razor':
         from .link_word_razor_audit import start
@@ -623,6 +678,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-ai':
         from .math_ai_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-speaker-stability':
+        from .review_speaker_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -998,6 +1058,12 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
 
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'completion-todo':
+        from .completion_todo_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-translate':
         from .review_translate_audit import start
         output = audit_directory()
@@ -1147,6 +1213,41 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None:
             start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-performance':
+        from .studio_performance_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-interaction':
+        from .studio_interaction_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'caption-editor-a':
+        from .caption_editor_a_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-timeline-float':
+        from .home_timeline_float_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'daily-regressions':
+        from .daily_regressions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-followup':
+        from .studio_followup_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-editor':
+        from .review_editor_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-click-fix':
         from .review_click_fix_audit import start

@@ -322,8 +322,8 @@ QToolButton#endpointAdvancedToggle:hover {{ color: {t.text}; }}
 QFrame#homeFactDivider {{ background: {edge['ai']}; border: 0; }}
 QLabel#homeFactCaption {{ color: {t.text_secondary}; font-size: 13px; font-weight: 600; background: transparent; }}
 QFrame#studioEntryCard QPushButton#studioEntryPrimary {{ background: {chip['studio']}; color: {t.text};
-    border: 1px solid transparent; border-radius: 12px; min-height: 46px; max-height: 46px;
-    padding: 0 18px; font-size: 15px; font-weight: 600; }}
+    border: 1px solid transparent; border-radius: 10px; min-height: 38px; max-height: 38px;
+    padding: 0 16px; font-size: 14px; font-weight: 600; }}
 QFrame#studioEntryCard QPushButton#studioEntryPrimary:hover {{ background: {blend_hex(t.surface, zones['studio'], chip_amount + 0.1)};
     border-color: transparent; }}
 QFrame#studioEntryCard QPushButton#studioEntryPrimary:focus {{ border-color: {t.focus}; }}

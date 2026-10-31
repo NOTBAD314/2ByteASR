@@ -338,7 +338,7 @@ def candidate_destination(roles, label, anonymous, _seen=frozenset()):
     return label
 
 
-def apply_candidate_role(project, snapshot, label, role):
+def apply_candidate_role(project, snapshot, label, role, *, decision_source='manual'):
     """One label's new role, applied to the current project in place.
 
     Unlike ``rebuild_selected_speakers`` nothing else is rebuilt from the
@@ -375,7 +375,16 @@ def apply_candidate_role(project, snapshot, label, role):
     old_destination = candidate_destination(roles, label, anonymous)
     new_destination = candidate_destination(new_roles, label, anonymous)
 
-    result = SubtitleProject.from_dict(project.to_dict())
+    # A role edit owns speaker assignments, not media or alignment evidence.
+    # Do not serialize the live document from inside a button's input slot.
+    result = copy.copy(project)
+    result.cues = [copy.copy(cue) for cue in project.cues]
+    result.speakers = copy.deepcopy(project.speakers)
+    result.generation_metadata = dict(project.generation_metadata)
+    for key in ("speaker_organization", "speaker_names"):
+        if key in result.generation_metadata:
+            result.generation_metadata[key] = copy.deepcopy(result.generation_metadata[key])
+    result.studio_state = dict(project.studio_state)
     saved = state.setdefault("cue_cache", {})
     cached = {row["id"]: row for row in saved.get(label, []) if isinstance(row, dict) and row.get("id")}
     following = [cue for cue in result.cues if cue.speaker_id == label or (
@@ -444,9 +453,18 @@ def apply_candidate_role(project, snapshot, label, role):
     order += [speaker.id for speaker in result.speakers if speaker.id not in order]
     result.studio_state["speaker_track_order"] = order
     display.update(ensure_speaker_names(result))
-    pending = [item for item in labels if new_roles[item] == "unconfirmed"] if anonymous else []
-    state.update(roles=new_roles, needs_confirmation=bool(pending), confirmed_by="user",
+    active_labels = {cue.speaker_id for cue in result.cues}
+    pending = [item for item in labels if new_roles[item] == "unconfirmed" and item in active_labels] if anonymous else []
+    state.update(roles=new_roles, needs_confirmation=bool(pending), confirmed_by="system_low_share" if decision_source == 'low_share' else "user",
                  unconfirmed_candidates=pending)
+    state.setdefault('role_decisions', {})[label] = decision_source
+    if decision_source == 'manual':
+        state.setdefault('reasons', {})[label] = '用户手动选择；不会再按低占比自动忽略。'
+    state['ignored_cue_count'] = sum(len(rows) for key, rows in saved.items() if new_roles.get(key) == 'ignore')
     result.generation_metadata["speaker_recovery"] = state
-    result.validate()
+    speaker_ids = {speaker.id for speaker in result.speakers}
+    if len({cue.id for cue in result.cues}) != len(result.cues):
+        raise ValueError("恢复的字幕身份重复。")
+    if any(cue.speaker_id not in speaker_ids or cue.end_ms <= cue.start_ms for cue in result.cues):
+        raise ValueError("说话人用途产生了无效的字幕引用或时间。")
     return result

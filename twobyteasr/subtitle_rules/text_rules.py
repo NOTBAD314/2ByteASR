@@ -50,6 +50,9 @@ __all__ = [
 
 def clean_subtitle_text(text):
     """保留问号、叹号、数字分隔符和省略号，去掉普通句读。"""
+    from .segmentation_profiles import current_profile
+    if current_profile().code in ('ar','hi','vi','th','und'):
+        return str(text or '').strip()
     from twobyteasr.subtitle_rules.language_rules import is_english, is_korean
     if is_english():
         # 2026-10-14: English keeps commas, periods, apostrophes (don't) and one

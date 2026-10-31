@@ -135,6 +135,8 @@ def validate_grouping_result(source, cues, *, minimum_seconds=.35,
     to its existing minimum duration; arbitrary other-source times fail.
     """
     from ..providers.asr_provider_snapshot import strip_boundary_space, _boundary_space
+    from .segmentation_profiles import current_profile
+    long_pause=current_profile().source_contiguity_max_gap
     snapshot = source if isinstance(source, GroupingSourceSnapshot) else capture_grouping_source(source)
     groups = {}
     positions = {row.source_id: index for index, row in enumerate(snapshot.rows)}
@@ -175,7 +177,7 @@ def validate_grouping_result(source, cues, *, minimum_seconds=.35,
             for left_owner, right_owner in zip(owners, owners[1:]):
                 if (protect_all_source_boundaries or left_owner.source_id in protected
                         or positions[right_owner.source_id] != positions[left_owner.source_id] + 1
-                        or right_owner.start - left_owner.end > 2.0):
+                        or right_owner.start - left_owner.end > long_pause):
                     raise GroupingContractError("断句跨过了受保护的来源或说话人交接边界。",
                                                 category="protected_boundary")
             # Raw word evidence can itself be stale or in another time domain.
@@ -190,6 +192,47 @@ def validate_grouping_result(source, cues, *, minimum_seconds=.35,
         if cursor != len(text):
             raise GroupingContractError("断句未覆盖完整来源正文。", category="text_mutation_rejected")
     return True
+
+
+def attach_grouping_spans(source,cues):
+    """Persist exact source slices after validation; never fuzzy-compare spaces."""
+    from ..providers.asr_provider_snapshot import strip_boundary_space,_boundary_space
+    from .segmentation_profiles import task_language_tag,graphemes
+    snapshot=source if isinstance(source,GroupingSourceSnapshot) else capture_grouping_source(source)
+    validate_grouping_result(snapshot,cues)
+    speakers={row.speaker for row in snapshot.rows}
+    for speaker in speakers:
+        rows=[row for row in snapshot.rows if row.speaker==speaker]
+        output=[cue for cue in cues if _field(cue,'speaker','S00')==speaker]
+        text=''.join(row.text for row in rows)
+        offsets=[];position=0
+        for row in rows:
+            offsets.append((position,position+len(row.text),row));position+=len(row.text)
+        cursor=0
+        allowed={0,*[b for a,b,g in graphemes(text)]}
+        for cue in output:
+            begin=cursor
+            while cursor<len(text) and _boundary_space(text[cursor]):cursor+=1
+            core=strip_boundary_space(_field(cue,'text',''))
+            if not text.startswith(core,cursor):raise GroupingContractError('原文跨度不匹配。',category='source_span_mismatch')
+            end=cursor+len(core)
+            while end<len(text) and _boundary_space(text[end]):end+=1
+            if begin not in allowed or end not in allowed:
+                raise GroupingContractError('断句切入字符簇内部。',category='grapheme_boundary')
+            parts=[]
+            for a,b,row in offsets:
+                lo,hi=max(begin,a),min(end,b)
+                if lo<hi:
+                    raw=row.text[lo-a:hi-a]
+                    parts.append(dict(source_id=row.source_id,char_start=lo-a,char_end=hi-a,
+                        raw_text=raw,index_unit='python_unicode_codepoint',source_time=[row.start,row.end],
+                        audible=bool(strip_boundary_space(raw))))
+            cue.source_spans=parts
+            cue.segmentation_language=task_language_tag()
+            cue.timing_basis=getattr(cue,'timing_basis','source_envelope_and_existing_word_evidence')
+            cursor=end
+        if cursor!=len(text):raise GroupingContractError('原文跨度没有完整覆盖输入。',category='source_span_coverage')
+    return cues
 
 
 def grouped_result_is_valid(source, cues, **kwargs):

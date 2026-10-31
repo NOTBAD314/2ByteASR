@@ -173,7 +173,7 @@ def test_studio_reading_checks_merges_and_refine_prompt():
     text = "Bueno chicos, hoy vamos a derrotar al jefe"
     with language_scope("es"):
         assert validate_action(text, {"cue_id": "1", "action": "split", "split_after_chars": [text.index(",")]})
-        assert validate_action(text, {"cue_id": "1", "action": "split", "split_after_chars": [2]}) is None
+        assert validate_action(text, {"cue_id": "1", "action": "split", "split_after_chars": [2]}).action=='keep'
 
 
 @pytest.fixture
@@ -204,7 +204,7 @@ def home(monkeypatch):
 
 def test_home_menu_offers_the_six_languages(home):
     combo = home.recognition_language
-    assert [combo.itemData(i) for i in range(combo.count())] == ["auto", "zh", "zh-Hant", "ja", "en", "ko", *EUROPEAN]
+    assert [combo.itemData(i) for i in range(combo.count())] == ["auto", "zh", "zh-Hant", "ja", "en", "ko", "es", "de", "fr", "pt", "pt-BR", "pt-PT", "it", "ru"]
     assert [combo.itemText(combo.findData(code)) for code in EUROPEAN] == [eu.LABELS[code] for code in EUROPEAN]
     combo.setCurrentIndex(combo.findData("es"))
     assert subtitle_core.RUNTIME_SETTINGS["subtitle_language"]["recognition_language"] == "es"
@@ -279,10 +279,10 @@ def test_a_sentence_whose_pieces_fail_the_source_check_stays_whole_with_a_review
     events = []
     with capture_review_items() as items, run_event_observer(lambda event, payload: events.append((event, payload))):
         cues = seg.group_english([segment(4, 10.0, 18.0, text)], (), lexicon=eu.lexicon("es"))
-    assert [(cue.start, cue.end, cue.text) for cue in cues] == [(10.0, 18.0, text)]
-    assert [item["category"] for item in items] == ["断句回退"] and items[0]["text"]
-    assert any(event == "word_grouping_sentence_kept" and payload["reason"] == "text_mutation_rejected"
-               for event, payload in events)
+    assert ''.join(cue.text for cue in cues)==text
+    assert ''.join(part['raw_text'] for cue in cues for part in cue.source_spans)==text
+    assert not items  # exact source slicing no longer needs whole-sentence fallback
+    assert not any(event == 'word_grouping_sentence_kept' for event,payload in events)
 
 
 def test_italian_sentences_stay_whole_and_ai_breaks_are_checked():
@@ -298,5 +298,5 @@ def test_italian_sentences_stay_whole_and_ai_breaks_are_checked():
     assert seg.pieces_from_breaks(tokens, [non], lexicon=lex) is None
     cues = seg.group_english_with_ai([segment(1, 0.68, 7.28, text)], lexicon=lex,
                                      complete=lambda _m: '{"breaks": {"1": [%d, %d]}}' % (con, non))
-    assert len(cues) == 2 and " ".join(cue.text for cue in cues) == text
+    assert len(cues) == 2 and ''.join(cue.text for cue in cues) == text
     assert not any(cue.text.endswith((" con", " non")) for cue in cues[:-1]), [cue.text for cue in cues]

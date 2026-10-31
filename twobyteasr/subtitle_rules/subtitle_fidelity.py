@@ -40,27 +40,47 @@ def aligned_boundary_time(left, right, target, segments, firered_tokens):
 
 
 def _spread_on_source(cues, source):
-    """Character-proportional times inside each source segment (rebuild order kept).
+    """Spread rebuilt pieces over source spans without reversing their order.
 
     The local rebuild cuts each segment separately, so its pieces follow the
     segments in order; ``None`` when they do not line up.
+
+    Contained/overlapping utterances share one span. Spreading each separately
+    would put a short response inside the preceding sentence and reorder its
+    text when exported chronologically. This is estimated display timing, not
+    new acoustic word evidence. Non-overlapping segments keep their own spans.
     """
     from .text_rules import content_exact
-    queue = list(cues)
+    cursor, groups = 0, []
     for segment in sorted(source, key=lambda s: (s.start, s.end, s.segment_id)):
         need, mine, have = len(content_exact(segment.text)), [], 0
-        while queue and have < need:
-            cue = queue.pop(0)
+        while cursor < len(cues) and have < need:
+            cue = cues[cursor]
+            cursor += 1
             mine.append(cue)
             have += len(content_exact(cue.text))
-        if have != need or not need:
+        if have != need or not need or segment.end <= segment.start:
             return None
-        done, span = 0, float(segment.end) - float(segment.start)
-        for cue in mine:
-            cue.start = float(segment.start) + span * done / need
+        if (groups and groups[-1]['speaker'] == segment.speaker
+                and segment.start < groups[-1]['end']):
+            group = groups[-1]
+            group['end'] = max(group['end'], float(segment.end))
+        else:
+            group = dict(start=float(segment.start), end=float(segment.end),
+                         speaker=segment.speaker, cues=[], characters=0)
+            groups.append(group)
+        group['cues'].extend(mine)
+        group['characters'] += need
+    if cursor != len(cues):
+        return None
+    # Validate all partitions before changing any cue times.
+    for group in groups:
+        done, span, need = 0, group['end'] - group['start'], group['characters']
+        for cue in group['cues']:
+            cue.start = group['start'] + span * done / need
             done += len(content_exact(cue.text))
-            cue.end = float(segment.start) + span * done / need
-    return None if queue else cues
+            cue.end = group['start'] + span * done / need
+    return cues
 
 
 def _shorten_rebuilt_times(cues, high, max_seconds):
@@ -157,17 +177,21 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy, omitted=
     from .text_rules import content_exact
     from ..providers.asr_provider_snapshot import restore_source_text
     turns=[]
+    turn_bounds=[]
     for segment in sorted(segments,key=lambda s:(s.start,s.end,s.segment_id)):
-        if not turns or turns[-1][-1].speaker!=segment.speaker or segment.start-turns[-1][-1].end>2:
+        if not turns or turns[-1][-1].speaker!=segment.speaker or segment.start-turn_bounds[-1][1]>2:
             turns.append([])
+            turn_bounds.append((segment.start,segment.end))
         turns[-1].append(segment)
+        turn_bounds[-1]=(turn_bounds[-1][0],max(turn_bounds[-1][1],segment.end))
     by_speaker={}
     for index,turn in enumerate(turns):
         by_speaker.setdefault(turn[0].speaker,[]).append(index)
     def turn_of(cue):
         best=None
         for index in by_speaker.get(cue.speaker,()):
-            low,high=turns[index][0].start-.15,turns[index][-1].end
+            start,high=turn_bounds[index]
+            low=start-.15
             overlap=min(cue.end,high)-max(cue.start,low)
             key=(overlap<=0,max(low-cue.end,cue.start-high,0.0),-overlap)
             if best is None or key<best[0]:
@@ -182,6 +206,7 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy, omitted=
     omitted_owners=[turn_of(c) for c in omitted]
     rebuilt={}
     for index,source in enumerate(turns):
+        source_end=turn_bounds[index][1]
         rows=[c for c,owner in zip(finalized,owners) if owner==index]
         expected=signature(source)
         def same_content(cues):
@@ -192,21 +217,21 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy, omitted=
         if actual==expected:continue
         if same_content(rows):
             legacy.record_run_event('final_content_number_context_only',speaker=source[0].speaker,
-                start=source[0].start,end=source[-1].end,expected_numbers=expected[1],actual_numbers=actual[1])
+                start=source[0].start,end=source_end,expected_numbers=expected[1],actual_numbers=actual[1])
             continue
         dropped=[c for c,owner in zip(omitted,omitted_owners) if owner==index]
         if dropped and _restores_recorded_omissions(rows,dropped,expected):
             legacy.record_run_event('final_content_recorded_omissions',speaker=source[0].speaker,
-                start=source[0].start,end=source[-1].end,omitted=[c.text for c in dropped])
+                start=source[0].start,end=source_end,omitted=[c.text for c in dropped])
             continue
         split=[expected[0][a:cut]+'|'+expected[0][cut:b] for a,b,cut in cuts_inside_numbers(source,rows)] \
             if actual[0]==expected[0] else []
         legacy.record_run_event('final_content_conservation_recovery',speaker=source[0].speaker,
-            start=source[0].start,end=source[-1].end,expected_numbers=expected[1],actual_numbers=actual[1],
+            start=source[0].start,end=source_end,expected_numbers=expected[1],actual_numbers=actual[1],
             split_numbers=split[:5])
         from .language_rules import finished_cue_limits   # Japanese: two lines (2026-10-21)
         max_chars,max_seconds=finished_cue_limits(legacy.COMPLETE_PHRASE_SOFT_MAX_CHARS,legacy.MAX_SUBTITLE_SECONDS)
-        low,high=source[0].start-.15,source[-1].end+.05
+        low,high=source[0].start-.15,source_end+.05
         def valid(cues):
             ordered=sorted(cues,key=lambda c:(c.start,c.end))
             return (same_content(cues) and all(0<c.end-c.start<=max_seconds+.05
@@ -218,7 +243,12 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy, omitted=
             safe=legacy.build_local_source_cues(source,tokens)
             restore_source_text(source,safe)
             if not valid(safe) and not valid(_shorten_rebuilt_times(safe,high,max_seconds)):
-                safe=_spread_on_source(safe,source) or safe
+                spread=_spread_on_source(safe,source)
+                if spread is not None:
+                    safe=spread
+                    legacy.record_run_event('final_content_source_span_retime',speaker=source[0].speaker,
+                        start=source[0].start,end=source_end,cues=len(safe),
+                        timing_basis='estimated_character_share_in_source_overlap_components')
                 if not valid(safe):
                     _shorten_rebuilt_times(safe,high,max_seconds)
         if not valid(safe):

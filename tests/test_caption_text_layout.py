@@ -27,4 +27,13 @@ def test_combining_and_zwj_sequences_are_not_split():
 
 def test_overwide_grapheme_is_reported_in_full_instead_of_clipped():
     result=wrap_caption_text('AB',lambda value:len(value)*200,100)
-    assert result.lines==('A','B') and result.overflow
+    assert result.lines==('AB',) and result.overflow
+
+
+def test_long_compound_and_combined_characters_wrap_without_new_timed_cues():
+    text="L'e\u0301quipe dell'America\nDonaudampfschifffahrtsgesellschaftskapitän\n🇮🇹 👨‍👩‍👧‍👦"
+    result=wrap_caption_text(text,lambda value:len(value)*10,70)
+    assert 'Donaudampfschifffahrtsgesellschaftskapitän' in result.lines
+    assert ''.join(result.lines)==text.replace('\n','')
+    assert not any(line.startswith('\u0301') or line.startswith('\u200d') for line in result.lines)
+    assert result.overflow

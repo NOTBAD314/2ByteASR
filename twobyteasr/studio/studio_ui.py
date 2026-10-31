@@ -383,11 +383,31 @@ class SubtitleStudioPage(
             recovery.project_changed()
 
     @observed('view.refresh', view=True)
-    def _consume_state_delta(self, delta) -> None:
+    def _consume_state_delta(self, delta, *, _from_hidden=False) -> None:
         from ..diagnostics.editor_diagnostics import measure
+        from ..projects.studio_runtime_state import DirtyDomain
+        hidden_text = (not _from_hidden and getattr(self, '_presentation_hidden', False)
+                       and delta.touches(DirtyDomain.CUE_CONTENT))
         with measure("REVISION_CAPTURE"):
             if self._revision_store is not None:
-                self._revision_store.consume(delta)
+                if _from_hidden:
+                    self._revision_store.materialize_render()
+                else:
+                    self._revision_store.consume(delta, prepare_render=not hidden_text)
+        if hidden_text:
+            from dataclasses import replace
+            identity = (id(self.project), self.session.generation)
+            previous = getattr(self, '_hidden_state_delta', None)
+            if previous is not None and getattr(self, '_hidden_state_identity', None) == identity:
+                delta = replace(delta, dirty=previous.dirty | delta.dirty,
+                    affected_cue_ids=previous.affected_cue_ids | delta.affected_cue_ids,
+                    affected_sequence_ids=previous.affected_sequence_ids | delta.affected_sequence_ids,
+                    affected_ranges=tuple(dict.fromkeys((*previous.affected_ranges,*delta.affected_ranges))),
+                    selection_before=previous.selection_before)
+            self._hidden_state_delta, self._hidden_state_identity = delta, identity
+            if delta.touches(DirtyDomain.AUTOSAVE):
+                self._schedule_autosave()
+            return
         with measure("MODEL_TIMELINE_PREVIEW"):
             self.cue_controller.consume_state_delta(delta)
         from ..projects.studio_runtime_state import DirtyDomain
@@ -752,6 +772,12 @@ class SubtitleStudioPage(
             self._workspace_steps.close()
             self._workspace_steps = None
         self._close_requested = True
+        self._qc_scan_token = getattr(self, '_qc_scan_token', 0) + 1
+        qc_worker = getattr(self, '_qc_worker', None)
+        if qc_worker is not None:
+            qc_worker.close()
+        if getattr(self, '_caption_draft', None) is not None:
+            self._cancel_canvas_inline_edit()
         self._construction_close_callback = callback
         audio = getattr(self, 'audio_engine', None)
         if audio is not None and audio._thread.isRunning():
@@ -796,7 +822,7 @@ class SubtitleStudioPage(
         # and its editor without promoting the surrounding workspace panels.
         from ..design.native_surfaces import cover_native_video
         cover_native_video(self.video_overlay_host)
-        cover_native_video(self.subtitle_edit_card)
+        # The editor paints in its own sibling layout row, below video.
         import weakref
         from . import shortcut_registry
         page_ref = weakref.ref(self)
@@ -1172,6 +1198,8 @@ class SubtitleStudioPage(
             "review_adopt_3": lambda: self._adopt_review_candidate(2),
             "review_adopt_4": lambda: self._adopt_review_candidate(3),
             "review_flip_pronoun": self._flip_review_pronouns,
+            "adopt_suggestion": self._adopt_highlighted_suggestion,
+            "editor_flip_pronoun": self._flip_editor_pronoun,
         }
         # 2026-10-17: jump, zoom, nudge, export, panels... (one module, same registry).
         from .studio_shortcut_actions import extra_command_callbacks
@@ -1261,6 +1289,16 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        consumed = getattr(self, '_caption_consumed_commit_key', None)
+        if (consumed is not None and isinstance(event,QKeyEvent) and event.key()==consumed
+                and event_type in {QEvent.KeyPress,QEvent.KeyRelease,QEvent.ShortcutOverride}):
+            if event_type == QEvent.KeyRelease and not event.isAutoRepeat():
+                self._caption_consumed_commit_key = None
+            event.accept()
+            return True
+        if (getattr(self, '_caption_following', False)
+                and event_type in {QEvent.Type.FocusIn, QEvent.Type.InputMethod}):
+            self._caption_float_event(watched, event)
         if event_type == QEvent.Type.FocusIn and watched is getattr(self, "cue_text", None):
             self.timeline.set_subtitle_layer("original")
         if event_type == QEvent.Type.InputMethod:
@@ -1273,7 +1311,9 @@ class SubtitleStudioPage(
         if event_type not in self._FILTERED_EVENT_TYPES:
             return False
         if (event_type in _GEOMETRY_EVENT_TYPES and watched is not getattr(self, "video", None)
-                and watched is not getattr(self, "context_drawer", None) and watched is not self.window()):
+                and watched is not getattr(self, "context_drawer", None)
+                and watched is not getattr(self, 'video_overlay_host', None)
+                and watched is not self and watched is not self.window()):
             # 2026-10-22: a panel-divider step moves/resizes ~200 widgets;
             # only these three use the geometry events below.
             return False
@@ -1295,11 +1335,40 @@ class SubtitleStudioPage(
                                      global_pos.y()-window.frameGeometry().top(), source=watched)
                     event.accept()
                     return True
+        if getattr(self, '_caption_following', False):
+            self._caption_float_event(watched, event)
+        float_window = getattr(self, 'subtitle_edit_dock', None)
+        if (float_window is not None and float_window.isVisible()
+                and event_type in {QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.DevicePixelRatioChange}
+                and watched in {self, self.window(), getattr(self, 'video_overlay_host', None)}):
+            float_window.schedule_fit()
         canvas_editor = (
             getattr(self, "_canvas_editor", None)
             if event_type in (QEvent.Type.InputMethodQuery, QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress)
             else None
         )
+        follow_confirm = (getattr(self,'_caption_following',False) and isinstance(event,QKeyEvent) and (
+            event.key() in {Qt.Key_Return,Qt.Key_Enter} and not event.modifiers() & Qt.ShiftModifier
+            or event.key() in {Qt.Key_R,Qt.Key_W,Qt.Key_A,Qt.Key_D,Qt.Key_P}
+                and event.modifiers()==Qt.ShiftModifier))
+        follow_context = (follow_confirm and isinstance(watched,QWidget) and (
+            watched in {self,self.timeline,self.cue_table,self.cue_table.viewport()}
+            or self.timeline.isAncestorOf(watched)))
+        if (getattr(self, '_caption_following', False) and isinstance(watched, QWidget)
+                and (self._caption_window_owns(watched) or follow_confirm and follow_context)
+                and event_type in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
+                and isinstance(event, QKeyEvent)):
+            # E intentionally leaves playback input on the timeline. Its
+            # confirmation keys still belong to this open editor session,
+            # before review QShortcuts or a main-window default can run.
+            if event_type == QEvent.Type.ShortcutOverride:
+                event.accept()
+                return True
+            text_focus = watched is self.subtitle_edit_input or self.subtitle_edit_input.isAncestorOf(watched)
+            if self._caption_editor_key(event, text_focus=text_focus):
+                event.accept()
+                return True
+            return False
         if canvas_editor is not None and watched is canvas_editor:
             if (
                 event.type() == QEvent.Type.InputMethodQuery
@@ -1346,8 +1415,8 @@ class SubtitleStudioPage(
         # PySide built that message by stat-ing every loaded module (about
         # 2 s per click in report-eb10). Decide on the widget's own press.
         pressed_widget = event_type == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget)
-        if canvas_editor is not None and pressed_widget and watched is not canvas_editor and not canvas_editor.isAncestorOf(watched):
-            self._commit_canvas_inline_edit()
+        # The float already committed the external press above, without
+        # swallowing it; the independent timeline inline editor keeps its route.
         editor = getattr(getattr(self, "timeline", None), "_inline_editor", None)
         if (
             editor is not None
@@ -1528,21 +1597,19 @@ class SubtitleStudioPage(
     def _shortcut_edit_at_playhead(self):
         if not self.project:
             return False
-        if self.timeline.active_subtitle_layer == "translation":
-            from .studio_translation_edit import edit_translation
-            edit_translation(self)
-            return True
-        self._studio_trace(
-            "KEY_E",
-            key="E",
-            focus_widget=type(QApplication.focusWidget()).__name__ if QApplication.focusWidget() else "None",
-            active_window=QApplication.activeWindow() is self.window(),
-            selected_cue=self.selected_cue_id,
-            review_mode=self._review_mode,
-        )
-        if self._edit_selected_translation():
-            return True
-        self._edit_subtitle_at_playhead()
+        focus = QApplication.focusWidget()
+        on_timeline = focus is self.timeline or (focus is not None and self.timeline.isAncestorOf(focus))
+        remembered = getattr(self, '_caption_canvas_edit_target', None)
+        if (not on_timeline and remembered is not None
+                and remembered[:2] == (id(self.project), self.session.generation)
+                and remembered[2].read(self.project) is not None):
+            # A video-canvas edit explicitly chose a language layer; timeline
+            # E instead always resolves the current project clock, even gaps.
+            if self._studio_preferences().get('caption_pause_on_edit', True) is not False:
+                self.video.set_paused(True)
+            self._open_caption_editor()
+        else:
+            self._edit_subtitle_at_playhead()
         return True
 
     def _edit_selected_translation(self) -> bool:
@@ -1639,16 +1706,24 @@ class SubtitleStudioPage(
         rows = self.cue_model.rowCount()
         if rows <= 0:
             return
+        session = getattr(self, '_review_session', None)
+        if self._review_mode and session is not None and self.selected_cue_id in session.scope.visible_cue_ids:
+            order = session.scope.visible_cue_ids
+            current = order.index(self.selected_cue_id)
+            eligible = {self.cue_model.cue_at(row).id for row in range(rows)}
+            indices = range(current+1, len(order)) if delta > 0 else range(current-1, -1, -1)
+            target = next((order[i] for i in indices if order[i] in eligible), None)
+            if target is not None:
+                self._select_review_cue_immediately(target)
+            return
         current = self.cue_model.row_for_cue_id(self.selected_cue_id)
         if current < 0:
             target_row = 0 if delta >= 0 else rows - 1
         else:
             target_row = max(0, min(rows - 1, current + int(delta)))
         cue = self.cue_model.cue_at(target_row)
-        self.select_cue(cue.id)
         if cue is not None:
-            self._seek(cue.start_ms / 1000.0)
-        self._warm_review_neighbors(target_row)
+            self._select_review_cue_immediately(cue.id)
 
     def _warm_review_neighbors(self, row: int) -> None:
         """Rasterise the next/previous review items' captions before Up/Down."""
@@ -1675,18 +1750,23 @@ class SubtitleStudioPage(
     def _editing_has_focus(self) -> bool:
         # Do not rely solely on QApplication.focusWidget(): native child
         # editors have a short None-focus window while Windows IME starts.
-        # Presence of the visible canvas editor is the authoritative editing
-        # state and disables every global/native Studio shortcut.
+        # The floating follower does not claim the keyboard. Actual editor
+        # ownership (including native IME's transient null focus) does.
         canvas_editor = getattr(self, "_canvas_editor", None)
         shortcuts = getattr(self, "_shortcut_settings_panel", None)
         if shortcuts is not None and shortcuts.isVisible():
             return True
-        if canvas_editor is not None and canvas_editor.isVisible():
+        if (canvas_editor is not None and canvas_editor.isVisible()
+                and not getattr(self, '_caption_following', False)):
+            return True
+        if getattr(self, '_studio_ime_composing', False) and getattr(self, '_caption_edit_locked', False):
             return True
         timeline_editor = getattr(getattr(self, "timeline", None), "_inline_editor", None)
         if timeline_editor is not None and timeline_editor.isVisible():
             return True
         focus = QApplication.focusWidget()
+        if focus is not None and getattr(self, '_caption_following', False) and self._caption_window_owns(focus):
+            return True
         if focus is None:
             return False
         # 任何本应用窗口（含模态对话框）里的可编辑控件都算"编辑中"：焦点
@@ -1715,10 +1795,19 @@ class SubtitleStudioPage(
         )
 
     def _restore_edit_card_focus(self, _previous, current) -> None:
+        if getattr(self, '_caption_following', False):
+            return
         editor = getattr(self, "_canvas_editor", None)
         app = QApplication.instance()
+        closed_popup=False
+        if _previous is not None:
+            try:
+                previous_window=_previous.window()
+                closed_popup=previous_window is not self.window() and not previous_window.isVisible()
+            except RuntimeError:
+                pass
         if (
-            current is not None
+            current is not None and not closed_popup
             or editor is None
             or not editor.isVisible()
             or app is None
@@ -2049,7 +2138,8 @@ class SubtitleStudioPage(
         if not self.project:
             studio_message_box(self, QMessageBox.Icon.Information, tr('说话人管理'), tr('请先打开字幕工程。'))
             return
-        if not self.project.speakers:
+        recovery = self.project.generation_metadata.get('speaker_recovery') or {}
+        if not self.project.speakers and not any(role == 'ignore' for role in recovery.get('roles', {}).values()):
             studio_message_box(self, QMessageBox.Icon.Information, tr('说话人管理'), tr('当前工程没有可管理的说话人。'))
             return
         dialog = SpeakerManagerDialog(self)
@@ -2076,6 +2166,9 @@ class SubtitleStudioPage(
         return self.cue_controller.speaker_structure_changed()
 
     def select_cue(self, cue_id: str, *, hydrate: bool = True) -> None:
+        if self._review_mode and self.cue_model.review_anchor_id != str(cue_id or ''):
+            self.cue_model.review_anchor_id = str(cue_id or '')
+            self.cue_model.refresh()
         return self.cue_controller.select_cue(cue_id, hydrate=hydrate)
 
     def _changed(self) -> None:
@@ -2305,13 +2398,17 @@ class SubtitleStudioPage(
     def _flush_deferred_updates(self) -> None:
         if not self.project:
             return
+        summary_pending = bool(getattr(self, '_cue_summary_pending', False)
+                              or self._qc_full_scan_pending or self._pending_qc_cue_ids)
         if self._qc_full_scan_pending:
             self._refresh_review_risks()
         elif self._pending_qc_cue_ids:
             self._refresh_review_risks(cue_ids=set(self._pending_qc_cue_ids))
-        if self.cue_model.filter_status in {"priority", "critical"}:
+        if summary_pending and self.cue_model.filter_status in {"priority", "critical"}:
             self.cue_model.refresh()
-        self._refresh_cue_list_summary()
+        if summary_pending:
+            self._cue_summary_pending = False
+            self._refresh_cue_list_summary()
 
     def _text_changed(self) -> None:
         return self.cue_controller.text_changed()
@@ -2653,7 +2750,7 @@ class SubtitleStudioPage(
         from .studio_context_tabs import context_tab_state
         if not self.project:
             return
-        duration = self.project.media.duration_ms or max(
+        duration = timeline_duration_ms(self.project) or max(
             (cue.end_ms for cue in self.project.cues), default=1
         )
         visible = max(1, self.timeline.visible_duration_ms)
@@ -2661,7 +2758,8 @@ class SubtitleStudioPage(
             {
                 "last_selected_cue": self.selected_cue_id,
                 "playhead_ms": self.timeline.playhead_ms,
-                "zoom": max(1.0, duration / visible),
+                "zoom": max(.01, duration / visible),
+                "timeline_view": {"mode": self.timeline._view_mode, "duration_ms": visible},
                 "scroll_ms": self.timeline.visible_start_ms,
                 "bilingual_mode": self.bilingual_button.isChecked(),
                 "follow_playhead": self.follow_playhead_toggle.isChecked(),
@@ -2950,14 +3048,11 @@ class SubtitleStudioPage(
         for cue in view_cues:
             status = _cue_status(self.project, cue)
             counts[status] += 1
-            if not _cue_explicitly_confirmed(self.project, cue) and _cue_review_level(self.project, cue, risks) == "suggested":
+            if _cue_review_level(self.project, cue, risks) == "suggested":
                 counts["priority"] += 1
-            if not _cue_explicitly_confirmed(self.project, cue) and any(
-                issue.severity == QCSeverity.CRITICAL
-                for issue in qc_result.for_cue(_source_key(cue))
-            ):
+            if _cue_review_level(self.project, cue, risks) == "high":
                 counts["critical"] += 1
-        captions = {"all": "全部", "priority": "建议确认", "critical": "需要检查", "pending": "待确认", "issue": "有问题", "done": "已完成"}
+        captions = {"all": "全部", "priority": "建议确认", "critical": "需要检查", "pending": "未审核", "issue": "有问题", "done": "已处理"}
         for key, button in self.cue_filter_buttons.items():
             if key in {"priority", "critical"} and not hasattr(self.project, "_qc_result"):
                 button.setText(f"{tr(captions[key])} --")
@@ -3162,16 +3257,18 @@ class SubtitleStudioPage(
     def _zoom_timeline(self, factor: float) -> None:
         if not self.project:
             return
+        self.timeline.hold_manual_view()
         duration = timeline_duration_ms(self.project) or max((cue.end_ms for cue in self.project.cues), default=60_000)
-        visible = min(duration, max(1000, round(self.timeline.visible_duration_ms * factor)))
+        visible = min(max(1000, round(duration * 1.5)), max(1000, round(self.timeline.visible_duration_ms * factor)))
         center = self.timeline.visible_start_ms + self.timeline.visible_duration_ms // 2
         self.timeline.set_visible_window(center - visible // 2, visible)
 
     def _fit_timeline(self) -> None:
         if not self.project:
             return
+        self.timeline.hold_manual_view()
         duration = timeline_duration_ms(self.project) or max((cue.end_ms for cue in self.project.cues), default=60_000)
-        self.timeline.set_visible_window(0, duration)
+        self.timeline.fit_all_time()
 
     def timeline_update(self) -> None:
         self.timeline.update()
@@ -3182,6 +3279,12 @@ class SubtitleStudioPage(
     def _open_render_dialog(self) -> None:
         if not self.project or not self._preview_path:
             return
+        style = getattr(self, 'style_controller', None)
+        if style is not None and not style.flush_pending_application():
+            return
+        timing = getattr(self, '_cue_timing_preview', None)
+        if timing is not None:
+            timing.suspend_warm()
         if getattr(self, "_canvas_editor", None) is not None:
             self._commit_canvas_inline_edit()
         self._cancel_scrub()
@@ -3273,7 +3376,13 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
+        if getattr(self, '_caption_following', False):
+            self.subtitle_edit_dock.hide()
+        self._presentation_hidden = True
         self._gui_thread_handoff.release()
+        timing = getattr(self, '_cue_timing_preview', None)
+        if timing is not None:
+            timing.suspend_warm()
         self._playback_gc_budget.close()
         publish = getattr(self, '_advanced_preview_publish_timer', None)
         if publish is not None and publish.isActive():
@@ -3325,8 +3434,17 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.show')
     def showEvent(self, event) -> None:
+        self._presentation_hidden = False
         self._gui_thread_handoff.acquire()
         super().showEvent(event)
+        if getattr(self, '_caption_following', False):
+            self._set_subtitle_editor_visible(True)
+        pending, self._hidden_state_delta = getattr(self, '_hidden_state_delta', None), None
+        if pending is not None and getattr(self, '_hidden_state_identity', None) == (id(self.project), self.session.generation):
+            self._consume_state_delta(pending, _from_hidden=True)
+        timing = getattr(self, '_cue_timing_preview', None)
+        if timing is not None:
+            timing.request_warm()
         video = getattr(self, 'video', None)
         if video is not None:
             video.set_navigation_visible(getattr(self, '_project_view_state', '') == 'open')

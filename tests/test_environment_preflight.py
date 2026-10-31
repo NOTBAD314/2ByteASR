@@ -148,7 +148,10 @@ FIRERED_CHAIN = ["kaldiio==2.18.1", "kaldi-native-fbank==1.22.3",
                  "soundfile==0.14.0", "sentencepiece==0.2.2",
                  "textgrid==1.6.1"]
 MAIN_RUNTIME = MAIN_CONTRACT + FIRERED_CHAIN + [
-    "torch==2.11.0+cpu", "torchaudio==2.11.0+cpu"]
+    "torch==2.11.0+cpu", "torchaudio==2.11.0+cpu",
+    # Both are part of the current shared main contract. A fixture omitting
+    # them cannot demonstrate a healthy environment or cache invalidation.
+    "speechbrain==1.0.3", "psutil==7.2.2"]
 
 
 def _probe_with(monkeypatch, role, python_executable):

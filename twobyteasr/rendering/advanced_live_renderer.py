@@ -22,7 +22,7 @@ from ..caption_design.visual_design_graph import (
 from ..caption_style.visual_snapshot import VisualCueSnapshot
 
 
-LIVE_RENDERER_VERSION = "qt-live-v6-static-glyph-anchor"
+LIVE_RENDERER_VERSION = "qt-live-v7-affine-line-loop"
 
 
 class LiveLayerImages(dict[str, QImage]):
@@ -866,6 +866,8 @@ def render_live_snapshot(
     highlight_path = QPainterPath()
     animated_pieces = []
     word_plan = getattr(snapshot, 'word_animation', None) or {}
+    from ..caption_style.word_animation import uniform_line_unit
+    uniform_unit=uniform_line_unit(word_plan)
     if word_time_ms is not None and word_plan.get('units'):
         char_offset = 0
         for line_index, line in enumerate(lines):
@@ -887,6 +889,10 @@ def render_live_snapshot(
                     unit = dict(unit, _marked_colours=colours)
                 animated_pieces.append((part,unit,word_time_ms))
             char_offset += len(line)+1
+        if uniform_unit is not None:
+            # line_motion owns the complete wrapped block, including line
+            # spacing. This is also the unit used by export's text span.
+            animated_pieces=[(path,uniform_unit,word_time_ms)]
     elif word_time_ms is not None and word_plan.get('spans'):
         from ..caption_style.word_animation import word_state
         states = word_state(word_plan, word_time_ms)
@@ -921,6 +927,10 @@ def render_live_snapshot(
         else:
             highlight_path = partial
 
+    # Static layer compilation keeps the exact glyph-local pivot measured
+    # above. Its loop later transforms cached pixels in the same coordinate
+    # system as paint_units, without shaping or rebuilding glyph paths.
+    image._caption_local_center=QPointF(local_bounds.center())
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -1080,7 +1090,12 @@ def render_live_layers(
             device_pixel_ratio=device_pixel_ratio, layers=frozenset({"text"}), word_time_ms=word_time_ms,
         )
     source = next((image for image in result.values() if not image.isNull()), QImage())
-    return LiveLayerImages(result, canvas_size=source.size(), snapshot=snapshot)
+    compiled=LiveLayerImages(result, canvas_size=source.size(), snapshot=snapshot)
+    compiled.glyph_center=getattr(result[graph.text_layer.id],'_caption_local_center',None)
+    if word_time_ms is None:
+        from ..caption_style.word_animation import uniform_line_unit
+        compiled.uniform_unit=uniform_line_unit(getattr(snapshot,'word_animation',None) or {})
+    return compiled
 
 
 def _blurred_layer(image: QImage, radius_px: float) -> QImage:
@@ -1135,6 +1150,12 @@ def composite_live_scene_layers(
     group_rotation = float(group.get("rotation", 0.0) or 0.0)
     group_opacity = float(group.get("opacity", 1.0))
     text_id = scene.graph.text_layer.id
+    uniform=getattr(layers,'uniform_unit',None)
+    center=getattr(layers,'glyph_center',None)
+    uniform_state=None
+    if uniform is not None and center is not None:
+        from ..caption_style.letter_motion import sample as sample_unit
+        uniform_state=sample_unit(uniform,relative_ms)
     # Animated tracking (letter-spacing) redraws the text raster; a static
     # per-layer cache cannot express it. The snapshot rides on LiveLayerImages.
     snapshot = getattr(layers, "snapshot", None)
@@ -1199,6 +1220,21 @@ def composite_live_scene_layers(
             painter.rotate(rotation)
         painter.scale(scale_x, scale_y)
         painter.translate(-pivot)
+        if uniform_state is not None and target==text_id:
+            # Conjugate the glyph-local loop by its saved canvas transform;
+            # native entry/exit and graph layers keep their existing order.
+            snap=layers.snapshot
+            px=float(snap.position_x)*source.width()/max(1.,float(snap.playres_x))/dpr
+            py=float(snap.position_y)*source.height()/max(1.,float(snap.playres_y))/dpr
+            em=float(snap.font_size)*source.width()/max(1.,float(snap.playres_x))/dpr
+            painter.translate(px,py);painter.rotate(float(snap.rotation))
+            painter.scale(float(snap.scale_x),float(snap.scale_y))
+            painter.translate(center.x()+uniform_state['x']*em,center.y()+uniform_state['y']*em)
+            painter.rotate(uniform_state['rotation'])
+            painter.scale(uniform_state['scale']*uniform_state['sx'],uniform_state['scale']*uniform_state['sy'])
+            painter.translate(-center)
+            painter.scale(1./float(snap.scale_x),1./float(snap.scale_y))
+            painter.rotate(-float(snap.rotation));painter.translate(-px,-py)
         if mask_reveal < 0.999:
             # Directional wipe: clip any layer raster by the revealed width.
             painter.setClipRect(QRectF(

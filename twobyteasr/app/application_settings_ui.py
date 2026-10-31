@@ -25,7 +25,7 @@ from ..i18n import tr
 # reading one builds its category first (without showing it).
 _SECTION_CONTROLS = {
     '工程与保存': ('startup_page', 'root_edit', 'frame_directory', 'auto_save', 'interval', 'recovery_policy'),
-    'Studio 与维护': ('cover', 'restore_layout_box', 'speaker_tracks'),
+    'Studio 与维护': ('cover', 'restore_layout_box', 'speaker_tracks', 'caption_pause_on_edit', 'caption_default_layer'),
     '存储与缓存': ('model_root_edit', 'model_root_browse', 'storage_panel'),
     '外观': ('theme_gallery', 'theme_preview_hint', 'reduce_motion_box'),
     '高级设置': ('advanced_controls',),
@@ -159,6 +159,15 @@ class ApplicationSettingsDialog(SpringDialog):
 
         def build_studio():
             studio=page('Studio 与维护','让工作区记住你的习惯。维护操作不会删除工程文件。')
+            editing=section(studio)
+            self.caption_pause_on_edit=toggle(preferences.get('caption_pause_on_edit',True))
+            bind_text(self.caption_pause_on_edit, '按 E 编辑时暂停播放', property='accessibleName')
+            row(editing,'按 E 时暂停播放',self.caption_pause_on_edit,'关闭后可边播边改；开始输入后仍锁定当前字幕')
+            self.caption_default_layer=field_width(StudioComboBox(),'preferred')
+            self.caption_default_layer.addItem(tr('译文优先'),'translation')
+            self.caption_default_layer.addItem(tr('原文优先'),'original')
+            self.caption_default_layer.setCurrentIndex(max(0,self.caption_default_layer.findData(str(preferences.get('caption_default_layer','translation')))))
+            row(editing,'E 默认编辑内容',self.caption_default_layer,'双语时优先使用所选内容；没有译文时打开原文，直接选定某层仍编辑该层')
             layout=section(studio)
             self.cover=toggle(preferences.get('auto_cover',True));bind_text(self.cover, '自动生成工程封面', property='accessibleName')
             row(layout,'生成工程封面',self.cover,'从素材中生成工程库缩略图')

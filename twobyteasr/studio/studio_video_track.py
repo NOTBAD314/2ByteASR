@@ -19,6 +19,7 @@ from ..projects.studio_project import MediaAsset, SubtitleProject, VideoTrack, s
 from ..design.timeline_theme import TimelinePalette, mix, rgba_color
 from ..design.themed_icons import paint_cached_icon
 from .studio_track_header import ACTIONS, action_at, button_rect, paint_button, CONTROL_LEFT
+from .media_clip_shape import media_clip_shape
 
 
 VIDEO_TRACK_HEIGHT = 58
@@ -291,10 +292,8 @@ def paint_video_track(
 ) -> None:
     video_fill = QColor(getattr(palette, "video_clip", "") or mix(palette.track_background, palette.clip_selected_border, 0.35))
     video_border = QColor(getattr(palette, "video_clip_border", "") or palette.clip_selected_border)
-    painter.fillRect(
-        QRectF(header_width, track.top(), max(0.0, content_right - header_width), track.height()),
-        mix(palette.track_background, video_fill, 0.18),
-    )
+    # The timeline already painted the empty canvas and time grid. Only the
+    # actual clip shapes below may cover it.
     paint_video_track_header(
         painter,
         palette,
@@ -325,21 +324,23 @@ def paint_video_track(
         for segment in visible_segments:
             if segment.id in selected_set:
                 continue
-            left = max(round(header_width), round(time_to_x(segment.timeline_in_ms)))
-            right = min(round(content_right), max(left + 1, round(time_to_x(segment.timeline_out_ms))))
+            left = time_to_x(segment.timeline_in_ms)
+            right = time_to_x(segment.timeline_out_ms)
+            if right <= header_width or left >= content_right:
+                continue
             spans = offline_spans if (segment.source_path or sequence.source_path) in offline_sources else occupied
             spans.append((left, right))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(video_fill)
-        for left, right in _merged_pixel_spans(occupied):
+        for left, right in occupied:
             if paint_stats is not None and track.top()+8 < paint_stats.get('viewport_height', float('inf')):
                 paint_stats['dense_video_spans'] = paint_stats.get('dense_video_spans', 0) + 1
-            painter.drawRect(
-                QRectF(left, track.top() + 8, right - left + 1, track.height() - 16)
-            )
+            _, shape = media_clip_shape(left, right, track.top() + 4, track.height() - 8, header_width, content_right)
+            painter.drawPath(shape)
         painter.setBrush(QColor(palette.playhead))
-        for left, right in _merged_pixel_spans(offline_spans):
-            painter.drawRect(QRectF(left, track.top() + 8, right - left + 1, track.height() - 16))
+        for left, right in offline_spans:
+            _, shape = media_clip_shape(left, right, track.top() + 4, track.height() - 8, header_width, content_right)
+            painter.drawPath(shape)
         visible_segments = tuple(
             item for item in visible_segments if item.id in selected_set
         )
@@ -350,31 +351,29 @@ def paint_video_track(
             continue
         if paint_stats is not None and track.top()+8 < paint_stats.get('viewport_height', float('inf')):
             paint_stats['video_items'] = paint_stats.get('video_items', 0) + 1
-        block = QRectF(
-            max(header_width, left),
-            track.top() + 8,
-            max(4.0, min(content_right, right) - max(header_width, left)),
-            track.height() - 16,
-        )
+        # Bound raster coordinates even at one-second zoom on hour-long clips.
+        # The shared silhouette puts artificial rounded ends fully outside
+        # the viewport. Sampling still uses the true left/right time mapping.
+        block, silhouette = media_clip_shape(left, right, track.top() + 4,
+                                            track.height() - 8, header_width, content_right)
+        painter.save()
+        painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
         selected = segment.id == selected_id or segment.id in (selected_ids or set())
         source = segment.source_path or sequence.source_path
         offline = source in offline_sources
         border = QColor(palette.playhead) if offline else video_border
         painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2.0 if selected else 1.2))
         painter.setBrush(video_fill.lighter(108 if index % 2 == 0 else 96))
-        painter.drawRoundedRect(block, 5, 5)
-        if selected:
-            painter.setPen(QPen(QColor(palette.clip_selected_border), 2))
-            painter.setBrush(rgba_color(palette.clip_selected_glow))
-            painter.drawRoundedRect(block.adjusted(-1, -1, 1, 1), 6, 6)
+        painter.drawPath(silhouette)
         thumb_width = 0 if offline else min(88, max(0, int(block.width()) - 18))
         filmstrip = thumbnails is not None and hasattr(thumbnails, 'paint') and not offline
         if filmstrip:
-            thumbnails.paint(painter,block.adjusted(1,1,-1,-1),segment.source_path or sequence.source_path,
+            thumbnails.paint(painter,block.adjusted(1,1,-1,-1).intersected(
+                QRectF(header_width, block.top(), content_right-header_width, block.height())),segment.source_path or sequence.source_path,
                 left,right,segment.source_in_ms,segment.source_out_ms)
             thumb_width=0
             painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else video_border,2 if selected else 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawRoundedRect(block,5,5)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         if thumbnails is not None and not filmstrip and thumb_width >= 40:
             mid = segment.source_in_ms + segment.duration_ms // 2
             pixmap = thumbnails.get(
@@ -394,13 +393,13 @@ def paint_video_track(
         name_text = Path(source).name or "源视频"
         if offline:
             name_text = f"媒体脱机 · {name_text}"
-        text_left = block.left() + (86 if thumb_width >= 40 else 10)
+        text_left = max(header_width, block.left()) + (86 if thumb_width >= 40 else 10)
         if filmstrip:
             label_width=min(block.width()-16,painter.fontMetrics().horizontalAdvance(name_text)+12)
             painter.fillRect(QRectF(text_left-3,block.top()+2,max(4,label_width),19),QColor(18,18,22,195))
             painter.setPen(QColor('#FFFDF7'))
         painter.drawText(
-            QRectF(text_left, block.top() + 4, max(8, block.right() - text_left - 8), 18),
+            QRectF(text_left, block.top() + 4, max(8, min(content_right, block.right()) - text_left - 8), 18),
             Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
             name_text,
         )
@@ -409,13 +408,14 @@ def paint_video_track(
         painter.setFont(font)
         painter.setPen(QColor(palette.header_letter))
         painter.drawText(
-            QRectF(text_left, block.top() + 22, max(8, block.right() - text_left - 8), 16),
+            QRectF(text_left, block.top() + 22, max(8, min(content_right, block.right()) - text_left - 8), 16),
             Qt.AlignmentFlag.AlignVCenter,
             '' if filmstrip else _format_duration(segment.duration_ms),
         )
-        # Clip boundary ticks.
-        painter.setPen(QPen(video_border, 2))
-        painter.drawLine(round(left), round(track.top() + 4), round(left), round(track.bottom() - 4))
+        painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2 if selected else 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(silhouette)
+        painter.restore()
     painter.restore()
 
 
@@ -439,15 +439,6 @@ def paint_project_video_track(
 ) -> None:
     accent = video_track_accent(palette, video_track.id)
     fill = mix(palette.track_background, accent, 0.13)
-    painter.fillRect(
-        QRectF(
-            header_width,
-            track.top(),
-            max(0.0, content_right - header_width),
-            track.height(),
-        ),
-        fill if video_track.enabled else mix(fill, palette.background, 0.62),
-    )
     paint_video_track_header(
         painter,
         palette,
@@ -480,12 +471,10 @@ def paint_project_video_track(
             continue
         if paint_stats is not None and track.top()+7 < paint_stats.get('viewport_height', float('inf')):
             paint_stats['video_items'] = paint_stats.get('video_items', 0) + 1
-        block = QRectF(
-            max(header_width, left),
-            track.top() + 7,
-            max(4.0, min(content_right, right) - max(header_width, left)),
-            track.height() - 14,
-        )
+        block, silhouette = media_clip_shape(left, right, track.top() + 4,
+                                            track.height() - 8, header_width, content_right)
+        painter.save()
+        painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
         asset = assets.get(clip.asset_id)
         offline = asset is None or asset.offline
         selected = clip.id == selected_clip_id
@@ -499,13 +488,14 @@ def paint_project_video_track(
         painter.setBrush(
             mix(palette.track_background, accent, 0.46 if not palette.dark else 0.42)
         )
-        painter.drawRoundedRect(block, 4, 4)
+        painter.drawPath(silhouette)
         source = asset.canonical_source if asset else ""
         filmstrip = thumbnails is not None and hasattr(thumbnails, 'paint') and source and not offline
         if filmstrip:
-            thumbnails.paint(painter,block.adjusted(1,1,-1,-1),source,left,right,clip.source_in_ms,clip.source_out_ms)
+            thumbnails.paint(painter,block.adjusted(1,1,-1,-1).intersected(
+                QRectF(header_width, block.top(), content_right-header_width, block.height())),source,left,right,clip.source_in_ms,clip.source_out_ms)
             painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border,2.2 if selected else 1.2))
-            painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawRoundedRect(block,4,4)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         if (
             thumbnails is not None
             and not filmstrip
@@ -536,8 +526,8 @@ def paint_project_video_track(
         label = asset.display_name if asset else clip.asset_id
         if offline:
             label = f"离线 · {label}"
-        text_left = block.left() + (68 if block.width() >= 92 and not filmstrip else 7)
-        available = max(4, round(block.right() - text_left - 5))
+        text_left = max(header_width, block.left()) + (68 if block.width() >= 92 and not filmstrip else 7)
+        available = max(4, round(min(content_right, block.right()) - text_left - 5))
         label_rect=QRectF(text_left, block.top(), available, block.height())
         if filmstrip:
             available=min(available,240,painter.fontMetrics().horizontalAdvance(label)+8)
@@ -551,6 +541,10 @@ def paint_project_video_track(
                 label, Qt.TextElideMode.ElideRight, available
             ),
         )
+        painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2 if selected else 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(silhouette)
+        painter.restore()
     painter.restore()
 
 

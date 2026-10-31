@@ -163,15 +163,22 @@ def test_explicit_search_retry_uses_only_previous_failed_scope_without_asr_text_
     assert [(r.segment_id, r.text) for r in rows] == [(r.segment_id, r.text) for r in original]
 
 
-def test_real_text_fallback_is_not_stored_even_without_review_marker(context):
+def test_per_unit_fallback_is_persisted_without_claiming_success(context):
     _, owner, cache = context
     owner.polishing_summary = {'success_cues': 0, 'fallback_cues': 1}
     cache_module.run_cached_stage('polished', cache, lambda: {'usable': '原文'})
     assert not (Path(cache['cache_dir']) / 'polished.json').exists()
     value = polishing.PolishBatchResult({1: '原文'}, succeeded=set(), failures={1: 'total_timeout'})
+    calls=[]
+    def run():calls.append('request');return value
     for _ in range(2):
-        cache_module.run_cached_api_batch('polished', cache, {'original': '原文'}, lambda: value)
-    assert not list((Path(cache['cache_dir']) / 'api_batches' / 'polished').glob('*.json'))
+        result=cache_module.run_cached_api_batch('polished',cache,{'original':'原文'},run,
+            encoder=polishing._encode_polish_batch,decoder=polishing._decode_polish_batch)
+        assert result.failures=={1:'total_timeout'} and result.succeeded==set()
+    files=list((Path(cache['cache_dir'])/'api_batches'/'polished').glob('*.json'))
+    assert len(files)==1 and calls==['request']
+    stored=json.loads(files[0].read_text('utf8'))
+    assert stored['result_state']=='partial' and stored['retained_ids']==[1] and stored['succeeded_ids']==[]
 
 
 def test_structured_output_or_advertised_capability_is_not_a_search_executor(context):

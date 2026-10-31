@@ -81,7 +81,7 @@ def test_mai_response_rows_have_word_times_two_speakers_and_spaced_english():
         dict(id=1, start=8.0, end=9.8, text='Hello everyone, I am here.', speaker=1),
         dict(id=2, start=14.8, end=15.1, text='好的', speaker=0)])
     rows = _api_transcription_rows(result, dict(start=0.0, end=20.0))
-    assert [row['text'] for row in rows] == ['大家好', 'Hello everyone I am here', '好的']
+    assert [row['text'] for row in rows] == ['大家好', 'Hello everyone, I am here.', '好的']
     assert rows[0]['speaker'] == rows[2]['speaker'] != rows[1]['speaker']
     assert all(row.get('timing_precision') == 'word' for row in rows)
     assert abs(float(rows[1]['start']) - 8.0) < 0.05

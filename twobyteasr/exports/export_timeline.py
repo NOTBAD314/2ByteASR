@@ -60,10 +60,13 @@ def output_canvas(snapshot, width=None, height=None):
 
 def export_project_snapshot(project, *, start_ms=None, end_ms=None, width=None, height=None):
     from ..timeline.studio_edit_sequence import projected_cues
-    snapshot = deepcopy(project)
+    from ..projects.project_snapshot import document_snapshot
+    runtime = getattr(project, '_studio_state_runtime', None)
+    if runtime is not None and runtime._active is not None:
+        raise RuntimeError('不能在编辑事务提交前创建导出快照')
     hidden = project.hidden_speaker_ids()
     visibility = project.studio_state.get('subtitle_track_visibility', {})
-    snapshot.cues = deepcopy([c for c in projected_cues(project, domain="timeline")
+    snapshot = document_snapshot(project, cues=[c for c in projected_cues(project, domain="timeline")
                              if c.speaker_id not in hidden and visibility.get(c.speaker_id, True)
                              and (start_ms is None or c.end_ms > start_ms)
                              and (end_ms is None or c.start_ms < end_ms)])

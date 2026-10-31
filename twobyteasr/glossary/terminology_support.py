@@ -182,6 +182,17 @@ def recall_gaps(segments, candidates, snapshot=None):
     if snapshot is not None and not snapshot.libraries:
         return []
     output = []
+    from ..subtitle_rules.language_rules import active_task_language
+    from ..subtitle_rules.correction_risk import SPACED_LANGUAGES
+    natural_spaced_language = active_task_language() in SPACED_LANGUAGES
+    exact_index = {}
+    for library in getattr(snapshot, 'libraries', ()):
+        for term in library.terms:
+            for spelling in (term.canonical, *term.aliases):
+                exact_index.setdefault(spelling.casefold(), []).append({
+                    'library_id': library.id, 'revision': library.revision,
+                    'canonical': term.canonical, 'confirmed': term.confirmed,
+                    'matched_alias': spelling != term.canonical})
     # Proper names can be ordinary Chinese spellings rather than Latin IDs or
     # repeated characters. POS tagging supplies review signals only; it never
     # guesses a canonical ID or authorizes a replacement.
@@ -192,7 +203,7 @@ def recall_gaps(segments, candidates, snapshot=None):
     from ..subtitle_rules.stutter_cleanup import (ORDINARY_WORD_FREQ, ordinary_reduplication,
                                                   reduplication_names_nothing, word_frequency)
     proper = {}
-    if snapshot is not None and snapshot.libraries:
+    if snapshot is not None and snapshot.libraries and not natural_spaced_language:
         from jieba.posseg import cut
         proper = {segment.segment_id: {token.word for token in cut(str(segment.text), HMM=False)
             if token.flag in {'nr', 'nrfg', 'nrt'} and 2 <= len(token.word) <= 12
@@ -214,11 +225,12 @@ def recall_gaps(segments, candidates, snapshot=None):
                     or any(m.get('cue_id') == segment.segment_id and m.get('heard') == surface.casefold()
                            for m in r.get('matches', ())) for r in candidates):
                 continue
-            exact = [{'library_id': library.id, 'revision': library.revision, 'canonical': term.canonical,
-                      'confirmed': term.confirmed, 'matched_alias': surface in term.aliases}
-                     for library in getattr(snapshot, 'libraries', ()) for term in library.terms
-                     if surface.casefold() == term.canonical.casefold()
-                     or any(surface.casefold() == alias.casefold() for alias in term.aliases)]
+            exact = exact_index.get(surface.casefold(), [])
+            # A glossary is not a dictionary of a whole spoken language.
+            # Missing ordinary Latin words are retrieval diagnostics, never
+            # thousands of suspects demanding one model receipt per word.
+            if natural_spaced_language and not exact:
+                continue
             output.append({'cue_id': segment.segment_id, 'surface': surface,
                 'state': 'no_recalled_candidate', 'reason': 'missing_alias_or_enabled_term; no canonical inferred',
                 'in_snapshot': bool(exact), 'exact_snapshot_entries': exact,

@@ -14,7 +14,10 @@ def processing_records(project):
     """Restore the persisted segment:N records, never the projected cue IDs."""
     from ..recognition.transcript_data import SpeechSegment, WordUnit
     records = []
+    superseded = set(project.generation_metadata.get('superseded_asr_evidence') or [])
     for reference, original in project.asr_evidence.items():
+        if reference in superseded:
+            continue
         if not str(reference).startswith('segment:') or not isinstance(original, dict):
             continue
         suffix = str(reference).partition(':')[2]
@@ -66,6 +69,12 @@ def _retry_options(project, report, options):
             if key not in polish:
                 raise ValueError('原任务文字服务身份信息不完整，不能猜测请求配置。')
             existing = models.get(prefix + '_' + key) if complete_role else None
+            if key == 'protocol' and existing == 'auto':
+                # The saved receipt contains the resolved wire protocol, while
+                # settings legitimately retain "auto". Compare its resolution
+                # before freezing the receipt, not the settings placeholder.
+                from ..providers.asr_provider_snapshot import resolve_provider_snapshot
+                existing = resolve_provider_snapshot(settings, stage='polish').protocol
             if existing and str(existing) != str(polish[key]):
                 raise ValueError('工程与原任务的文字服务身份不一致，请从正确任务重新打开。')
             models[prefix + '_' + key] = polish[key]
@@ -80,12 +89,14 @@ def _retry_options(project, report, options):
     if not complete_role and not explicit_profile:
         raise ValueError('原任务未保留完整文字服务快照；请使用当前词库创建新的校对预览。')
     saved_glossary = project.generation_metadata.get('terminology_snapshot') or {}
+    profile = report.get('settings', {}).get('content_profile') or {}
     if options is None:
-        profile = report.get('settings', {}).get('content_profile') or {}
         options = RunOptions(content_name=str(profile.get('game') or ''),
             enable_domain_terms=bool(profile.get('domain_terms')), enabled_glossary_ids=tuple(project.glossary_ids))
     return replace(options, settings_snapshot_json=json.dumps(settings, ensure_ascii=False),
         glossary_snapshot_json=json.dumps(saved_glossary, ensure_ascii=False),
+        **({'content_name':str(profile.get('game') or ''),'enable_domain_terms':bool(profile.get('domain_terms')),
+            'enabled_glossary_ids':tuple(project.glossary_ids)} if 'domain_terms' in profile else {}),
         force_refresh_polish=False, force_refresh_group=False)
 
 

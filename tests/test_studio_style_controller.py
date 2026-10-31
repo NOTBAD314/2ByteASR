@@ -355,13 +355,14 @@ def test_multi_scope_and_copy_paste_preserve_non_style_fields(tmp_path, monkeypa
         )
     page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
     assert set(page._style_target_ids()) == {"a", "b"}
-    # Scope selection applies its current preset as a separate transaction.
-    # Selecting the new preset itself applies it once; do not also simulate an
-    # unrelated manual inspector commit.
+    # Reading a combo index is passive. A real user activation applies once.
     page.undo_stack.clear()
     page.style_preset.setCurrentIndex(page.style_preset.findData("game"))
+    page.style_preset.activated.emit(page.style_preset.currentIndex())
     assert page.undo_stack.count() == 1
-    assert all(page.session._cue_lookup[cue_id].style_id.startswith("game") for cue_id in ("a", "b"))
+    expected_size=StylePresetStore().load_patch('game')['font_size']
+    from twobyteasr.caption_style.scoped_style import effective_layer_style
+    assert all(effective_layer_style(page.project,page.session._cue_lookup[cue_id],'original').font_size==expected_size for cue_id in ('a','b'))
     assert page.session._cue_lookup["c"].style_id == "default"
     page.undo_stack.undo()
 
@@ -405,33 +406,37 @@ def test_missing_font_warning_is_visible_without_persisting_fallback(tmp_path, m
     _finish(page)
 
 
-def test_scope_switch_to_speaker_only_changes_future_edit_targets(tmp_path, monkeypatch):
-    """2026-10-24: selecting a scope is not itself a style mutation."""
+def test_user_scope_click_expands_last_preset_and_later_properties(tmp_path, monkeypatch):
+    """Passive refresh remains read-only; an explicit scope click applies now."""
     app, page = _page(tmp_path, monkeypatch)
     try:
         page.select_cue("a")
         index = page.style_preset.findData("game")
         assert index >= 0
         page.style_preset.setCurrentIndex(index)
+        page.style_preset.activated.emit(index)
         app.processEvents()
         # The effective selection contains only a.
-        assert str(page.session._cue_lookup["a"].style_id).startswith("game")
+        expected_size=StylePresetStore().load_patch('game')['font_size']
+        from twobyteasr.caption_style.scoped_style import effective_layer_style
+        face=lambda key:effective_layer_style(page.project,page.session._cue_lookup[key],'original')
+        assert face('a').font_size==expected_size
         assert page.session._cue_lookup["c"].style_id == "default"
-        # Changing the scope must preserve the other cue until an explicit edit.
-        page.style_scope.setCurrentIndex(page.style_scope.findData("speaker"))
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        QTest.mouseClick(page.style_scope._buttons[page.style_scope.findData('speaker')],Qt.MouseButton.LeftButton)
         app.processEvents()
-        assert page.session._cue_lookup["c"].style_id == "default"
+        assert face('c').font_size==expected_size
         page.style_font_size.setValue(66)
         page._commit_style_now()
         from twobyteasr.caption_style.style_resolution import resolve_cue_visual
         assert all(resolve_cue_visual(page.project, page.session._cue_lookup[key]).style.font_size == 66
                    for key in ("a", "c"))
-        assert page.session._cue_lookup["c"].base_preset_id == "default"
         # Picking a whole preset explicitly still applies it to the range.
         page._preset_activated(index)
         app.processEvents()
-        assert str(page.session._cue_lookup["c"].style_id).startswith("game")
-        assert str(page.session._cue_lookup["a"].style_id).startswith("game")
+        assert face('c').font_size==expected_size
+        assert face('a').font_size==expected_size
     finally:
         _finish(page)
 

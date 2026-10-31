@@ -143,7 +143,52 @@ def ink_block(caption) -> tuple[float, float, float, float]:
             float(style.outline_width) + float(style.outline2_width), max(0.0, float(style.shadow)))
 
 
-def group_positions(anchor_y: float, row: int, top_block, bottom_block, gap_px: float) -> tuple[float, float]:
+def motion_ink_block(caption, cue, language, effects):
+    """Reserve the breathing envelope once, while preparing the cue pair."""
+    return reserve_motion_block(ink_block(caption),cue,language,effects)
+
+
+def breathing_scale(effect):
+    loop=(effect or {}).get('loop') or {}
+    if loop.get('type')!='loop_breathe':return 1.
+    from .motion_catalog import STRENGTH
+    return 1.+.065*STRENGTH.get(loop.get('strength','medium'),1.)
+
+
+def motion_layout_cue(cue,effect):
+    """Render-only wrap allowance, independent of the current motion phase."""
+    scale=breathing_scale(effect)
+    if scale==1. and '_motion_layout_scale' not in cue.transform:return cue
+    shown=copy.copy(cue);shown.transform=dict(cue.transform or {})
+    if scale>1.:shown.transform['_motion_layout_scale']=scale
+    else:shown.transform.pop('_motion_layout_scale',None)
+    return shown
+
+
+def motion_layout_layer(cue,language,effects):
+    effects=effects or {}
+    effect_id=cue.transform.get('language_motion',{}).get('translation_effect_id','none') if language=='translation' else cue.effect_id
+    return motion_layout_cue(cue,effects.get(effect_id))
+
+
+def reserve_motion_block(block,cue,language,effects):
+    if not effects:return block
+    effect_id=(cue.transform or {}).get('language_motion',{}).get('translation_effect_id','none') if language=='translation' else cue.effect_id
+    expansion=breathing_scale(effects.get(effect_id))-1.
+    if not expansion:return block
+    height,width,outline,shadow=block
+    # The affine loop pivots at the ink center, so half its additional
+    # height reaches either edge. Outline/shadow scale with the same tile.
+    return height,width,outline+(height*.5+outline+shadow)*expansion,shadow
+
+
+def automatic_group_layout(cue):
+    transform=cue.transform or {}
+    return not ({'position_x','position_y'} & transform.keys() or any(
+        {'position_x','position_y'} & set(fields) for fields in transform.get('language_layers',{}).values()))
+
+
+def group_positions(anchor_y: float, row: int, top_block, bottom_block, gap_px: float, canvas_height=None) -> tuple[float, float]:
     """Anchor y of the top and bottom block of a two-line group anchored at ``anchor_y``.
 
     ``row`` is the alignment row (0 bottom, 1 middle, 2 top); blocks are
@@ -157,6 +202,15 @@ def group_positions(anchor_y: float, row: int, top_block, bottom_block, gap_px: 
     group_top = anchor_y - fraction * (h_top + inner + h_bottom)
     top_y = group_top + fraction * h_top
     bottom_y = group_top + h_top + inner + fraction * h_bottom
+    if canvas_height is not None:
+        visible_top=group_top-o_top
+        visible_bottom=group_top+h_top+inner+h_bottom+o_bottom+bottom_block[3]
+        # If the complete automatic group fits, move it only as far as its
+        # visual envelope requires. Explicit authored anchors stay untouched.
+        # An oversized group keeps its requested type size/overflow semantics.
+        if visible_bottom-visible_top<=canvas_height-8:
+            shift=max(4-visible_top,min(0.,canvas_height-4-visible_bottom))
+            top_y+=shift;bottom_y+=shift
     return top_y, bottom_y
 
 
@@ -237,9 +291,24 @@ def _check_preparation_cancelled(cancel_check):
         raise CaptionPreparationCancelled()
 
 
+def layout_layer(cue, language):
+    """Apply the layer's measured face/size/scale before automatic arrangement.
+
+    Absolute layer anchors remain a final manual override; they never become
+    the shared group anchor or the other language's position.
+    """
+    from .caption_layer_transform import layer_values
+    values=layer_values(cue,language)
+    if not values:return cue
+    shown=copy.copy(cue);shown.transform=dict(cue.transform or {})
+    shown.transform.update({k:v for k,v in values.items() if k in {'font_size','scale_x','scale_y','rotation'}})
+    if values.get('style_id'):shown.style_id=str(values['style_id'])
+    return shown
+
+
 def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
                  styles, speakers, style_recipes, play_res_x: int = 1920, play_res_y: int = 1080,
-                  show_speaker_names: bool = False, cancel_check=None) -> list:
+                  show_speaker_names: bool = False, cancel_check=None, effects=None) -> list:
     """Cues to draw for ``settings`` (originals possibly adjusted, plus companions)."""
     cues = list(cues)
     from .caption_layer_transform import materialize_layer
@@ -250,6 +319,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         out = []
         for cue in cues:
             _check_preparation_cancelled(cancel_check)
+            cue=motion_layout_layer(cue,'original',effects)
             out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue, 'original'))
         return out
     from .resolved_caption_style import resolve_caption_style
@@ -260,6 +330,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         group = cue.appearance_override.get('translation_group', {})
         if group: text = str(group.get('text') or text)
         if not text:
+            cue=motion_layout_layer(cue,'original',effects)
             out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original'))
             continue
         if settings.mode == 'bilingual' and theme_owns_translation(style_recipes, cue):
@@ -281,10 +352,12 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
             if font:
                 shown.appearance_override = dict(shown.appearance_override or {}, font_family=font)
             _translation_appearance(cue, shown)
+            shown=motion_layout_layer(shown,'translation',effects)
             out.append(materialize_layer(shown,'translation'))
             continue
         original = cue if settings.legacy else _with_transform(
             cue, font_size=cue.appearance_override.get('original', {}).get('font_size', round(base.font_size * settings.original_scale, 2)))
+        original=motion_layout_layer(layout_layer(original,'original'),'original',effects)
         original_caption = caption if settings.legacy else resolve_caption_style(
             styles, speakers, original, style_recipes, play_res_x, play_res_y)
         companion = copy.deepcopy(cue)
@@ -304,16 +377,19 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         if font:
             companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
         _translation_appearance(cue, companion)
+        companion=motion_layout_layer(layout_layer(companion,'translation'),'translation',effects)
         companion_caption = resolve_caption_style(styles, speakers, companion, style_recipes, play_res_x, play_res_y)
         x, y = _anchor(original_caption.style, play_res_x, play_res_y)
         row = (int(base.alignment) - 1) // 3          # 0 bottom, 1 middle, 2 top
         if settings.layout == "ink_v1" and not settings.legacy:
             # One group: shared anchor and alignment, visible gap from real ink.
-            original_block, companion_block = ink_block(original_caption), ink_block(companion_caption)
+            original_block=motion_ink_block(original_caption,cue,'original',effects)
+            companion_block=motion_ink_block(companion_caption,cue,'translation',effects)
             em = max(float(original_caption.style.font_size), float(companion_caption.style.font_size))
             translation_on_top = settings.order == "translation_first"
             top, bottom = ((companion_block, original_block) if translation_on_top else (original_block, companion_block))
-            top_y, bottom_y = group_positions(y, row, top, bottom, settings.gap_ratio * em)
+            top_y, bottom_y = group_positions(y, row, top, bottom, settings.gap_ratio * em,
+                play_res_y if automatic_group_layout(cue) else None)
             companion_y, original_y = (top_y, bottom_y) if translation_on_top else (bottom_y, top_y)
             clamp = lambda value: round(max(4.0, min(play_res_y - 4.0, value)))
             companion.transform.update(position_x=round(x), position_y=clamp(companion_y))
@@ -344,7 +420,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
 
 
 def display_cues(cues, *, translations, settings, styles, speakers, style_recipes,
-                 play_res_x=1920, play_res_y=1080, show_speaker_names=False, cancel_check=None):
+                 play_res_x=1920, play_res_y=1080, show_speaker_names=False, cancel_check=None,effects=None):
     source=list(cues)
     defaults=settings.group_transform.get('defaults',{})
     if defaults:
@@ -360,7 +436,7 @@ def display_cues(cues, *, translations, settings, styles, speakers, style_recipe
         source=updated
     rows=_display_cues(source,translations=translations,settings=settings,styles=styles,
         speakers=speakers,style_recipes=style_recipes,play_res_x=play_res_x,play_res_y=play_res_y,
-        show_speaker_names=show_speaker_names,cancel_check=cancel_check)
+        show_speaker_names=show_speaker_names,cancel_check=cancel_check,effects=effects)
     _check_preparation_cancelled(cancel_check)
     from .caption_group_transform import apply_display
     return apply_display(rows,source,settings.group_transform,styles,speakers,style_recipes,play_res_x,play_res_y)
@@ -383,7 +459,7 @@ def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
                                                         translations_of(project.generation_metadata)),
                         settings=settings_from_state(project.studio_state), styles=project.styles,
                         show_speaker_names=enabled(project.studio_state),
-                        speakers=project.speakers, style_recipes=project.style_recipes,
+                        speakers=project.speakers, style_recipes=project.style_recipes,effects=project.effects,
                         play_res_x=int(project.render_settings.get("play_res_x", 1920)),
                         play_res_y=int(project.render_settings.get("play_res_y", 1080)), cancel_check=cancel_check)
 

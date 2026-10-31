@@ -271,13 +271,14 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         cues = visual_cues(cues, snapshot_active(SimpleNamespace(glossary_ids=revision.glossary_ids, generation_metadata=metadata)))
     from ..caption_style.speaker_names import enabled
     if (settings.group_transform or (settings.mode != "original" and translations_of(metadata)) or enabled(state)
+            or any((effects.get(c.effect_id) or {}).get('loop',{}).get('type')=='loop_breathe' for c in cues)
             or any('language_layers' in (thaw_json(c.transform) or {}) for c in cues)):
         from ..projects.studio_project import StudioCue
         cues = display_cues([StudioCue(**cue.to_dict()) if hasattr(cue, "to_dict") else cue for cue in cues],
                             translations=style_translations(state, translations_of(metadata)),
                             settings=settings, styles=revision.styles, speakers=revision.speakers,
                             show_speaker_names=enabled(state),
-                            style_recipes=recipes if isinstance(recipes, Mapping) else {},
+                            style_recipes=recipes if isinstance(recipes, Mapping) else {},effects=effects,
                             play_res_x=revision.play_res_x, play_res_y=revision.play_res_y)
     return _compile_ass_records(
         cues=cues,

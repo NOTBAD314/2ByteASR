@@ -813,6 +813,9 @@ def run_diagnosis_action(window, action: str, *, reopen=None) -> bool:
         return call("_open_model_picker", pickers[action])
     if action == "choose_plan":
         return call("_next_step_action", "choose_plan")
+    if action.startswith('repair_runtime_'):
+        from .runtime_repair_dialog import open_runtime_repair
+        return open_runtime_repair(window,action[len('repair_runtime_'):])
     targets = {
         "cloud_asr_setup": "_open_api_setup_guide", "model_workshop": "_open_model_workshop",
         "retry": "_retry_failed_items", "recover": "_recover_recognition_output",

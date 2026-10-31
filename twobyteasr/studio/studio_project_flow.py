@@ -80,6 +80,8 @@ class StudioProjectFlowMixin:
         if readiness is not None and readiness.active and reason != "project_switch":
             readiness.cancel(navigate=False)
         previous_path = str(self.project_path or "")
+        style_controller=getattr(self,'style_controller',None)
+        if style_controller is not None:style_controller.cancel_pending_application()
         if getattr(self, '_canvas_editor', None) is not None:
             self._cancel_canvas_inline_edit()
         from .studio_source_monitor import close_source_monitor
@@ -89,6 +91,7 @@ class StudioProjectFlowMixin:
             if dialog is not None and self._widget_alive(dialog):
                 dialog.close()
         self._review_edit_lock = None
+        self._caption_canvas_edit_target=None
         release_review = getattr(self, '_release_review_playback', None)
         if callable(release_review):
             release_review()
@@ -389,24 +392,27 @@ class StudioProjectFlowMixin:
         if danmaku and not media and not projects and self.project is not None:
             self._import_danmaku_xml(str(danmaku[0]))
         if projects:
-            self.open_project(projects[0])
+            self.open_project(projects[0], on_ready=(lambda: self._import_subtitle_files(subtitles)) if subtitles else None)
         elif media:
             if self.project is not None:
                 if self._timeline_is_blank_for_first_media():
                     # 空工程的第一次主媒体：无论拖到窗口哪里都从 0 开始（用户
                     # 只是"把文件丢进来"，落点 x 换算成 4.4s/8.6s 起点是误伤，
                     # 2026-09-20 未命名工程17 实录 REBIND project_ms=4457）。
-                    self._begin_media_drop(media, 0)
+                    self._begin_media_drop(media, 0, subtitle_paths=subtitles)
                 else:
                     point = self.timeline.mapFrom(self, event.position().toPoint())
                     inside = self.timeline.rect().contains(point) and point.x() >= self.timeline.TRACK_HEADER_WIDTH
                     position = self.timeline._x_to_time(point.x()) if inside else self.timeline.playhead_ms
                     track = self.timeline._video_track_at(point) if inside else ""
-                    self._begin_media_drop(media, max(0, position), track or "")
+                    self._begin_media_drop(media, max(0, position), track or "", subtitle_paths=subtitles)
             else:
-                self.project_controller.create_blank_project(on_ready=lambda: self._begin_media_drop(media, 0))
-        if subtitles and not media:
-            self._import_subtitle_file(subtitles[0])
+                self.project_controller.create_blank_project(on_ready=lambda: self._begin_media_drop(media, 0, subtitle_paths=subtitles))
+        if subtitles and not media and not projects:
+            if self.project is None:
+                self.project_controller.create_blank_project(on_ready=lambda: self._import_subtitle_files(subtitles))
+            else:
+                self._import_subtitle_files(subtitles)
         event.acceptProposedAction()
 
     def _timeline_is_blank_for_first_media(self) -> bool:

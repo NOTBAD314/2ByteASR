@@ -27,6 +27,9 @@ _LETTERS = re.compile(r"[A-Za-z]")
 _WORD_CORE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z]+)*")
 
 
+from .segmentation_profiles import profile_for as _profile_for
+_PROFILE=_profile_for('en')
+
 @dataclass(frozen=True)
 class EnglishLineRules:
     """Limits for one English subtitle (characters include spaces).
@@ -34,17 +37,17 @@ class EnglishLineRules:
     ``max_chars``/``preferred_chars`` are one line; ``cue_*`` are one subtitle
     of up to ``max_lines`` lines, which is what the line breaker fills.
     """
-    preferred_chars: int = 32
-    max_chars: int = 42
-    min_chars: int = 8
-    max_lines: int = 2
-    cue_preferred_chars: int = 60
-    cue_max_chars: int = 84
-    max_seconds: float = 7.0
-    min_seconds: float = 0.8
-    comfortable_cps: float = 17.0      # characters per second a viewer reads comfortably
-    warning_cps: float = 20.0
-    critical_cps: float = 25.0
+    preferred_chars: int = int(_PROFILE.line_preferred)
+    max_chars: int = int(_PROFILE.line_max)
+    min_chars: int = int(_PROFILE.minimum_units)
+    max_lines: int = _PROFILE.lines
+    cue_preferred_chars: int = _PROFILE.preferred
+    cue_max_chars: int = _PROFILE.hard_max
+    max_seconds: float = _PROFILE.max_seconds
+    min_seconds: float = _PROFILE.min_seconds
+    comfortable_cps: float = _PROFILE.comfortable_cps
+    warning_cps: float = _PROFILE.warning_cps
+    critical_cps: float = _PROFILE.critical_cps
 
 
 RULES = EnglishLineRules()
@@ -74,7 +77,8 @@ def word_core(word: str) -> str:
 
 
 def display_length(text: str) -> int:
-    return len(normalize_spaces(text))
+    from .segmentation_profiles import measure
+    return int(measure(text,'en'))
 
 
 def letters(text: str) -> int:

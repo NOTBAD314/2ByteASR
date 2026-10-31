@@ -14,18 +14,17 @@ worker (which writes the range result project):
   project clock, while the evidence rows keep their own clock
   (``evidence_clock_offset_ms`` = the window start);
 * ``splice_range``: the project's captions with the stretch replaced, plus
-  what moves with them (evidence, receipts, archive rows). New captions land
-  on the existing speaker tracks: each recognized speaker goes to the old
-  speaker it overlaps most, else to the speaker of the nearest caption.
+  what moves with them (evidence, receipts, archive rows). Anonymous labels
+  receive task-scoped, distinguishable unconfirmed identities. Overlapping
+  or nearby old captions are not evidence that two voices are the same.
 
-Captions outside the window, styles, the edit and the speaker roster stay
-as they were.
+Captions outside the window, styles, the edit and the existing roster stay
+as they were; new identities accompany the inserted captions and undo.
 """
 
 from __future__ import annotations
 
 import copy
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 
 MIN_RANGE_MS = 1000
@@ -41,6 +40,10 @@ class RangePayload:
     evidence: dict = field(default_factory=dict)
     receipts: dict = field(default_factory=dict)
     archive: list = field(default_factory=list)
+    translation_records: dict = field(default_factory=dict)
+    acceptance: dict = field(default_factory=dict)
+    speakers: list = field(default_factory=list)
+    speaker_scope: str = ""
 
 
 @dataclass
@@ -53,6 +56,11 @@ class SplicePlan:
     receipts: dict
     archive: list
     speaker_map: dict
+    translation_records: dict = field(default_factory=dict)
+    replaced_snapshot: list = field(default_factory=list)
+    acceptance: dict = field(default_factory=dict)
+    replaced_translations: dict = field(default_factory=dict)
+    extra_speakers: list = field(default_factory=list)
 
 
 def _overlaps(cue, start_ms: int, end_ms: int) -> bool:
@@ -172,7 +180,7 @@ def range_payload(result, start_ms: int, end_ms: int, *, prefix: str, span_proje
             evidence_map[key] = CUE_ALIGNMENT_PREFIX + cue_map[key[len(CUE_ALIGNMENT_PREFIX):]]
         else:
             evidence_map[key] = f"{prefix}:{key}"
-    payload = RangePayload(start_ms, end_ms)
+    payload = RangePayload(start_ms, end_ms, speakers=copy.deepcopy(result.speakers), speaker_scope=prefix)
     used_refs = set()
     for cue in sorted(result.cues, key=lambda c: (c.start_ms, c.end_ms, c.id)):
         shifted = copy.deepcopy(cue)
@@ -199,6 +207,14 @@ def range_payload(result, start_ms: int, end_ms: int, *, prefix: str, span_proje
     reverse = {value: key for key, value in evidence_map.items()}
     payload.evidence = {ref: copy.deepcopy(result.asr_evidence[reverse[ref]])
                         for ref in sorted(used_refs) if ref in reverse}
+    from ..subtitle_rules.subtitle_translation import source_sha
+    records = (result.generation_metadata.get('translation_records') or {}).get('records', {})
+    for cue in result.cues:
+        record = records.get(cue.id)
+        if record and record.get('source_sha') == source_sha(cue.text):
+            payload.translation_records[cue_map[cue.id]] = copy.deepcopy(record)
+    state = result.generation_metadata.get('transcript_acceptance') or {}
+    payload.acceptance = copy.deepcopy(state) if state.get('ranges') else {}
     return payload
 
 
@@ -211,47 +227,51 @@ def _span(cue, project) -> dict:
     return source_span(cue, project)
 
 
-def _speaker_targets(project, window, replaced, new_cues, foreign: bool) -> dict:
-    roster = [speaker.id for speaker in project.speakers]
-    known = set(roster)
-    overlap = defaultdict(lambda: defaultdict(int))
-    for new in new_cues:
-        for old in replaced:
-            amount = min(new.end_ms, old.end_ms) - max(new.start_ms, old.start_ms)
-            if amount > 0:
-                overlap[new.speaker_id][old.speaker_id] += amount
-    totals = defaultdict(int)
-    for old in replaced:
-        totals[old.speaker_id] += old.end_ms - old.start_ms
-    fallback = max(sorted(totals), key=lambda sid: totals[sid]) if totals else ""
-    if not fallback:
-        start, end = window
-        outside = [cue for cue in project.cues if not _overlaps(cue, start, end)]
-        if outside:
-            nearest = min(outside, key=lambda c: (max(start - c.end_ms, c.start_ms - end, 0), c.start_ms))
-            fallback = nearest.speaker_id
-    if not fallback:
-        fallback = roster[0] if roster else "S00"
-    mapping = {}
-    for new in new_cues:
-        sid = new.speaker_id
+def _speaker_targets(project, payload, foreign: bool):
+    """Task labels are distinct identities; temporal overlap is not a voice match.
+
+    Worker delivery namespaces anonymous labels once. Studio delivery reads
+    those already-scoped ids and copies their roster, without guessing from
+    the selected/collapsed lane, same spelling or nearby old captions.
+    """
+    from .audio_lane_results import _unique
+    from ..projects.studio_project import StudioSpeaker
+    known = {speaker.id for speaker in project.speakers}
+    used = set(known)
+    incoming = {speaker.id: speaker for speaker in payload.speakers}
+    styles = {style.id for style in project.styles}
+    mapping, extras = {}, []
+    for cue in payload.cues:
+        sid = cue.speaker_id
         if sid in mapping:
             continue
-        if not foreign and (sid in known or not roster):
-            mapping[sid] = sid
+        if sid == 'RECOVERY_UNCONFIRMED' and payload.acceptance:
+            target = sid
+        elif foreign:
+            target = _unique(f'{payload.speaker_scope or "range"}-{sid}', used)
+        else:
+            target = sid
+        mapping[sid] = target
+        if target in known:
             continue
-        scores = overlap.get(sid) or {}
-        best = max(sorted(scores), key=lambda key: scores[key]) if scores else ""
-        mapping[sid] = best or fallback
-    return mapping
+        speaker = copy.deepcopy(incoming.get(sid) or StudioSpeaker(sid))
+        speaker.id = target
+        if foreign:
+            speaker.name = f'局部识别 · {speaker.name or sid}（待确认）'
+            speaker.is_host = speaker.hidden = False
+        if speaker.style_id not in styles:
+            speaker.style_id = 'default'
+        extras.append(speaker)
+        known.add(target)
+        used.add(target)
+    return mapping, extras
 
 
 def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bool) -> SplicePlan:
     """The cue list with ``window`` replaced by ``payload`` (``project`` is not changed).
 
-    ``foreign_speakers``: the payload's speaker ids belong to the result run
-    (anonymous), so every one is mapped onto this project's tracks; otherwise
-    only ids missing from this project are.
+    ``foreign_speakers`` namespaces the result task's anonymous identities.
+    Otherwise the worker already scoped them; copy missing roster entries.
     """
     from .audio_lane_results import _rename, _unique
     from ..timeline.studio_caption_timeline import KEY
@@ -269,7 +289,7 @@ def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bo
             evidence_map[key] = _unique(CUE_ALIGNMENT_PREFIX + cue_map[key[len(CUE_ALIGNMENT_PREFIX):]], used_evidence)
         else:
             evidence_map[key] = _unique(key, used_evidence)
-    speaker_map = _speaker_targets(project, (start, end), replaced, payload.cues, foreign_speakers)
+    speaker_map, extras = _speaker_targets(project, payload, foreign_speakers)
     inserted = []
     for cue in payload.cues:
         clone = copy.deepcopy(cue)
@@ -296,8 +316,13 @@ def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bo
     evidence = {evidence_map[key]: copy.deepcopy(value) for key, value in payload.evidence.items()}
     kept = [cue for cue in project.cues if cue.id not in set(removed_ids)]
     cues = sorted([*copy.deepcopy(kept), *inserted], key=lambda c: (c.start_ms, c.end_ms, c.id))
+    translated = {cue_map[cid]: copy.deepcopy(record) for cid, record in payload.translation_records.items()
+                  if cid in cue_map and cue_map[cid] in kept_ids}
     return SplicePlan((start, end), cues, removed_ids, [cue.id for cue in inserted], evidence,
-                      receipts, archive, speaker_map)
+                      receipts, archive, speaker_map, translated, [asdict(c) for c in replaced],
+                      copy.deepcopy(payload.acceptance),
+                      {cid:copy.deepcopy(row) for cid,row in (project.generation_metadata.get('translation_records') or {}).get('records',{}).items()
+                       if cid in set(removed_ids)}, extras)
 
 
 def payload_from_result(result, info: dict) -> RangePayload:
@@ -316,13 +341,20 @@ def payload_from_result(result, info: dict) -> RangePayload:
     evidence = {ref: copy.deepcopy(result.asr_evidence[ref]) for ref in sorted(refs) if ref in result.asr_evidence}
     archive = [copy.deepcopy(row) for row in state.get("source_archive") or ()
                if isinstance(row, dict) and row.get("id") in chosen]
-    return RangePayload(start, end, cues, evidence, receipts, archive)
+    records = (result.generation_metadata.get('translation_records') or {}).get('records', {})
+    return RangePayload(start, end, cues, evidence, receipts, archive,
+                        {cid: copy.deepcopy(records[cid]) for cid in chosen if cid in records},
+                        copy.deepcopy(result.generation_metadata.get('transcript_acceptance') or {}),
+                        copy.deepcopy(result.speakers))
 
 
 def history_entry(plan: SplicePlan, requested=None, **extra) -> dict:
     """One line of ``generation_metadata["range_recognitions"]``."""
     return {"window_ms": list(plan.window), "requested_ms": list(requested or plan.window),
-            "replaced_cue_ids": list(plan.removed_ids), "cue_ids": list(plan.inserted_ids), **extra}
+            "speaker_map": dict(plan.speaker_map),
+            "replaced_cue_ids": list(plan.removed_ids), "cue_ids": list(plan.inserted_ids),
+            "replaced_snapshot": copy.deepcopy(plan.replaced_snapshot),
+            "replaced_translation_records": copy.deepcopy(plan.replaced_translations), **extra}
 
 
 def apply_plan(project, plan: SplicePlan, entry: dict | None = None) -> None:
@@ -330,6 +362,7 @@ def apply_plan(project, plan: SplicePlan, entry: dict | None = None) -> None:
     from ..timeline.studio_caption_timeline import KEY
     removed = set(plan.removed_ids)
     project.cues = copy.deepcopy(plan.cues)
+    project.speakers.extend(copy.deepcopy(plan.extra_speakers))
     project.asr_evidence.update(copy.deepcopy(plan.evidence))
     state = project.studio_state.setdefault(KEY, {"version": 1, "instances": {}})
     instances = state.setdefault("instances", {})
@@ -341,5 +374,17 @@ def apply_plan(project, plan: SplicePlan, entry: dict | None = None) -> None:
     if isinstance(view, dict):
         for cue_id in removed:
             view.pop(cue_id, None)
+    records = (project.generation_metadata.get('translation_records') or {}).get('records')
+    if isinstance(records, dict):
+        for cue_id in removed:
+            records.pop(cue_id, None)
+    if plan.translation_records:
+        records = project.generation_metadata.setdefault('translation_records', {'version':1, 'records':{}})['records']
+        records.update(copy.deepcopy(plan.translation_records))
+        project.generation_metadata.setdefault('translations', {}).update(
+            {cid: row['text'] for cid, row in plan.translation_records.items()})
+    if plan.acceptance:
+        from .language_recovery_project import merge_acceptance
+        merge_acceptance(project, plan)
     if entry is not None:
         project.generation_metadata.setdefault(HISTORY_KEY, []).append(copy.deepcopy(entry))

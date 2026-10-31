@@ -571,12 +571,26 @@ class SubtitlePositionOverlay(QWidget):
             if self._hover_handle
             else Qt.CursorShape.SizeAllCursor
         )
+        if event.position().toPoint() == self._drag_origin:
+            self.position_x,self.position_y=self._origin_position
+            self.font_size=self._origin_font_size
+            self.position_cancelled.emit()
+            self.update()
+            return
         if self._resize_handle:
+            if self.font_size == self._origin_font_size:
+                self.position_cancelled.emit()
+                self.update()
+                return
             self.font_size_committed.emit(self.font_size)
         else:
             self.position_x, self.position_y = self._dragged_video_position(
                 event.position().toPoint()
             )
+            if (self.position_x,self.position_y) == self._origin_position:
+                self.position_cancelled.emit()
+                self.update()
+                return
             self.position_moved.emit(self.position_x, self.position_y)
             self.position_committed.emit(self.position_x, self.position_y)
         self.update()

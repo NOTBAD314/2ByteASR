@@ -423,7 +423,7 @@ class StudioCue:
             setattr(clone, name, copy.deepcopy(value, memo))
         return clone
 
-    def validate(self) -> None:
+    def validate(self, *, owned: bool = False) -> None:
         self.id = _clean_id(self.id, "cue.id")
         self.start_ms = int(self.start_ms)
         self.end_ms = int(self.end_ms)
@@ -441,9 +441,9 @@ class StudioCue:
         self.original_text = str(self.original_text or self.text)
         self.evidence_refs = _string_list(self.evidence_refs)
         self.raw_ass_override = str(self.raw_ass_override or "")
-        self.appearance_override = _mapping(self.appearance_override)
+        self.appearance_override = _mapping(self.appearance_override, owned=owned)
         self.appearance_generation = max(0, int(self.appearance_generation or 0))
-        self.transform = _mapping(self.transform)
+        self.transform = _mapping(self.transform, owned=owned)
 
 
 _ATOMIC_CUE_VALUES = (str, int, float, bool)
@@ -1197,7 +1197,7 @@ class SubtitleProject:
 
         seen_cues: set[str] = set()
         for cue in self.cues:
-            cue.validate()
+            cue.validate(owned=owned)
             if cue.id in seen_cues:
                 raise ProjectValidationError(f"duplicate cue id {cue.id}")
             seen_cues.add(cue.id)
@@ -1464,8 +1464,12 @@ def project_library_root(base: str | os.PathLike[str] | None = None) -> Path:
 def canonical_project_path(media_path: str | os.PathLike[str]) -> Path:
     """Return the single project-library path for a source media file."""
     media = Path(media_path)
-    safe_name = "".join("_" if char in '<>:"/\\|?*' else char for char in media.stem).strip(" .") or "Subtitle Project"
-    return project_library_root() / safe_name / f"{safe_name}{PROJECT_SUFFIX}"
+    from .project_paths import legacy_stem, internal_project_path
+    safe_name = legacy_stem(media.stem)
+    legacy = project_library_root() / safe_name / f"{safe_name}{PROJECT_SUFFIX}"
+    if legacy.is_file():
+        return legacy
+    return internal_project_path(project_library_root(), os.path.normcase(str(media.resolve())), kind='media')
 
 
 def register_recent_project(
@@ -1485,7 +1489,7 @@ def register_recent_project(
     records = [item for item in records if isinstance(item, dict) and str(item.get("path", "")) != str(target)]
     records.insert(0, {
         "path": str(target),
-        "name": target.stem,
+        "name": Path(source_media).stem if source_media else target.stem,
         "cue_count": int(cue_count),
         "source_media": str(source_media or ""),
     })
@@ -1522,15 +1526,23 @@ def waveform_cache_root(base: str | os.PathLike[str] | None = None) -> Path:
     return studio_data_root(base) / "waveform-cache"
 
 
-def _atomic_json_write(path: Path, payload: Mapping[str, Any], *, compact: bool = False) -> None:
+def _atomic_json_write(path: Path, payload: Mapping[str, Any], *, compact: bool = False,
+                       cooperative: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        prefix=".2byte-", suffix=".tmp", dir=str(path.parent)
     )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            if compact:
+            if compact and cooperative:
+                # The detached proofreading writer must let the GUI run while
+                # large receipts are encoded. The one-shot C encoder holds
+                # the process GIL for the entire document.
+                encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                for piece in encoder.iterencode(payload):
+                    stream.write(piece)
+            elif compact:
                 # The C encoder avoids a long Python iterator competing with
                 # GUI actions during frequent proofreading saves. Same JSON
                 # values, atomic publication and fsync; whitespace only differs.
@@ -1559,7 +1571,7 @@ def _atomic_json_blob_write(path: Path, content: str | Iterable[str]) -> dict[st
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        prefix=".2byte-", suffix=".tmp", dir=str(path.parent)
     )
     temporary = Path(temporary_name)
     write_started = time.perf_counter()
@@ -1600,7 +1612,8 @@ from ..diagnostics.studio_events import project_io
 
 
 @project_io("save")
-def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, compact: bool = False) -> Path:
+def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, compact: bool = False,
+                 owned: bool = False) -> Path:
     runtime = getattr(project, "_studio_state_runtime", None)
     if runtime is not None and runtime._active is not None:
         raise RuntimeError("不能在媒体编辑事务提交前保存工程")
@@ -1608,12 +1621,22 @@ def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, comp
     if target.suffix.lower() != PROJECT_SUFFIX:
         target = target.with_suffix(PROJECT_SUFFIX)
     project.updated_at = _utc_now()
-    payload = project.to_dict()
+    if owned:
+        # A writer's detached snapshot already owns every JSON field. Keep
+        # validation and the normal backup/atomic write, without deep-copying
+        # all recognition evidence twice again during serialization.
+        from ..timeline.studio_edit_sequence import persist_sequence
+        persist_sequence(project)
+        project.validate(owned=True)
+        payload = _private_project_payload(project)
+        payload.get('studio_state', {}).pop('review_risks', None)
+    else:
+        payload = project.to_dict()
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
         backup = project_backup_path(target)
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{backup.name}.", suffix=".tmp", dir=str(target.parent)
+            prefix=".2byte-backup-", suffix=".tmp", dir=str(target.parent)
         )
         os.close(descriptor)
         temporary = Path(temporary_name)
@@ -1626,27 +1649,40 @@ def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, comp
             except OSError:
                 pass
     if compact:
-        _atomic_json_write(target, payload, compact=True)
+        if owned:
+            _atomic_json_write(target, payload, compact=True, cooperative=True)
+        else:
+            _atomic_json_write(target, payload, compact=True)
     else:
         _atomic_json_write(target, payload)
     return target
 
 
 def _private_project_payload(project: SubtitleProject) -> dict[str, Any]:
-    """``asdict(project)`` for a project nothing else holds.
+    """Record view for owned persistence or an immediate GUI-owned read.
 
     Records (media, tracks, cues, styles, speakers) are converted as asdict
     does; JSON fields are passed as they are instead of deep-copied (their
     content is the same; 2026-10-22: asdict copied 2.0 s on 2090 cues).
+    Borrowed JSON fields must never be mutated or sent to a worker unless the
+    caller owns the project. An immediate synchronous fingerprint may read
+    them at the GUI document boundary without cloning the evidence graph.
     """
     from dataclasses import fields, is_dataclass
+    def record(value):
+        if is_dataclass(value):
+            return {item.name: record(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, list) and any(is_dataclass(entry) for entry in value):
+            return [record(entry) for entry in value]
+        return value
+
     payload: dict[str, Any] = {}
     for item in fields(project):
         value = getattr(project, item.name)
         if is_dataclass(value):
-            payload[item.name] = asdict(value)
+            payload[item.name] = record(value)
         elif isinstance(value, list) and any(is_dataclass(entry) for entry in value):
-            payload[item.name] = [asdict(entry) if is_dataclass(entry) else copy.deepcopy(entry) for entry in value]
+            payload[item.name] = [record(entry) for entry in value]
         else:
             payload[item.name] = value
     payload["audio_tracks"] = [audio_track_payload(track) for track in project.audio_tracks]
@@ -1723,7 +1759,7 @@ def save_project_revision(
     if target.is_file():
         backup = project_backup_path(target)
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{backup.name}.", suffix=".tmp", dir=str(target.parent)
+            prefix=".2byte-backup-", suffix=".tmp", dir=str(target.parent)
         )
         os.close(descriptor)
         temporary = Path(temporary_name)
@@ -2522,7 +2558,14 @@ def _content_fingerprint_payload(payload: dict, *, parts: Mapping[str, str] | No
 
 def project_content_fingerprint(project: SubtitleProject) -> str:
     """Hash meaningful project content while ignoring runtime/recovery noise."""
-    return _content_fingerprint_payload(project.to_dict())
+    from ..timeline.studio_edit_sequence import persist_sequence
+    persist_sequence(project)
+    project.validate()
+    payload = _private_project_payload(project)
+    # Split the canonical encoding at bounded record boundaries. In the
+    # project reader this yields the GIL between evidence rows instead of one
+    # C encoder monopolizing it for the complete long bilingual document.
+    return _content_fingerprint_payload(payload, parts=_canonical_json_parts(payload))
 
 
 def _write_autosave_fingerprint_sidecar(
@@ -2605,6 +2648,7 @@ def project_from_runtime_cues(
     initialize_layout: bool = True,
 ) -> SubtitleProject:
     studio_cues: list[StudioCue] = []
+    segmentation_spans = {}
     speaker_ids: list[str] = []
     used_cue_ids: set[str] = set()
     for index, cue in enumerate(cues, 1):
@@ -2615,6 +2659,11 @@ def project_from_runtime_cues(
         if cue_id in used_cue_ids:
             cue_id = f"{cue_id}-{index}"
         used_cue_ids.add(cue_id)
+        spans=getattr(cue,'source_spans',None)
+        if spans:
+            segmentation_spans[cue_id] = {'parts':copy.deepcopy(spans),
+                'timing_basis':str(getattr(cue,'timing_basis','source_evidence')),
+                'language':str(getattr(cue,'segmentation_language',''))}
         text = str(getattr(cue, "text", "") or "")
         studio_cues.append(
             StudioCue(
@@ -2638,12 +2687,22 @@ def project_from_runtime_cues(
         original_outputs=_mapping(original_outputs),
     )
     from .speaker_names import initialize_speaker_names
+    if segmentation_spans:
+        from ..subtitle_rules.segmentation_profiles import VERSION, SPAN_VERSION
+        project.generation_metadata['segmentation_source_spans'] = {
+            'version':SPAN_VERSION,'policy_version':VERSION,'index_unit':'python_unicode_codepoint',
+            'cues':segmentation_spans}
     initialize_speaker_names(project)
     from .speaker_organization import apply_new_project_policy
     apply_new_project_policy(project)
     # Labels whose voiceprints agree strongly become one speaker (2026-10-28).
     from ..recognition.scoped_voiceprint import apply_automatic
     apply_automatic(project)
+    from .low_share_speakers import apply_low_share_policy
+    grouped = apply_low_share_policy(project)
+    if grouped is not None:
+        project.cues, project.speakers = grouped.cues, grouped.speakers
+        project.generation_metadata, project.studio_state = grouped.generation_metadata, grouped.studio_state
     identity = dict(media_identity or {})
     if not identity and Path(media_path).is_file():
         from ..studio.studio_helpers import probe_media_identity
@@ -2960,18 +3019,26 @@ def create_studio_outputs(
         from ..recognition.recognition_result import stamp_result
         stamp_result(project, project_path, job_id=job_id, media_identity=metadata.get("media_identity"))
     # Validate duplicate/conflicting delivery before touching committed files.
-    project_path.parent.mkdir(parents=True, exist_ok=True)
-    for child in ("subtitles", "reports", "source", "autosave", "cache", "preview", "backup", "renders", "exports"):
-        (project_path.parent / child).mkdir(parents=True, exist_ok=True)
-    subtitles_dir = project_path.parent / "subtitles"
-    reports_dir = project_path.parent / "reports"
-    if txt_path and Path(txt_path).is_file():
-        shutil.copy2(txt_path, subtitles_dir / ("analysis_transcript.txt" if analysis_transcript else "transcript.txt"))
-    if srt_path and Path(srt_path).is_file():
-        shutil.copy2(srt_path, subtitles_dir / ("analysis.srt" if analysis_transcript else "master.srt"))
-    if report_path and Path(report_path).is_file():
-        shutil.copy2(report_path, reports_dir / Path(report_path).name)
-    save_project(project, project_path)
+    try:
+        project_path.parent.mkdir(parents=True, exist_ok=True)
+        for child in ("subtitles", "reports", "source", "autosave", "cache", "preview", "backup", "renders", "exports"):
+            (project_path.parent / child).mkdir(parents=True, exist_ok=True)
+        subtitles_dir = project_path.parent / "subtitles"
+        reports_dir = project_path.parent / "reports"
+        if txt_path and Path(txt_path).is_file():
+            shutil.copy2(txt_path, subtitles_dir / ("analysis_transcript.txt" if analysis_transcript else "transcript.txt"))
+        if srt_path and Path(srt_path).is_file():
+            shutil.copy2(srt_path, subtitles_dir / ("analysis.srt" if analysis_transcript else "master.srt"))
+        if report_path and Path(report_path).is_file():
+            shutil.copy2(report_path, reports_dir / 'task-report.json')
+        save_project(project, project_path, compact=True)
+    except OSError as exc:
+        from ..recognition.recognition_recovery import checkpoint_failed_delivery
+        from .project_paths import save_error_details
+        recovery = checkpoint_failed_delivery(project, project_path, exc)
+        return {'project':'', 'project_error':str(exc), 'recovery_project':str(recovery),
+                'generated_cue_count':len(project.cues), 'project_save_diagnostic':save_error_details(exc, project_path),
+                'project_save_traceback':__import__('traceback').format_exc(), 'txt':str(txt_path)}
     reference = None
     if job_id:
         from ..recognition.recognition_result import committed_result_reference

@@ -82,7 +82,7 @@ def test_missing_artifact_does_not_rewrite_completed_task_as_save_failure(comple
     shell._handle_result(QueueResult((MediaResult(report['media']['path'], 'degraded_success',
         project_path=str(project_path), report_json_path=str(report_path)),), 1.0))
 
-    evidence = shell._completion_task_evidence[str(report_path)]
+    evidence = shell._completion_task_evidence[shell._completion_task_key(shell._completion_tasks[0][0])]
     assert evidence['outcome'].core_status == parse_recognition_report(report_path).status == 'completed'
     assert evidence['project_error'] and evidence['outcome'].core_errors == ()
     assert 'project_save_error' not in evidence['display_payload']['result']
@@ -115,7 +115,7 @@ def test_verified_recovery_rebinds_saved_export_target_without_rewriting_history
 
     item, project = shell._completion_tasks[0]
     recovered_path = Path(item.project_path)
-    evidence = shell._completion_task_evidence[str(report_path)]
+    evidence = shell._completion_task_evidence[shell._completion_task_key(item)]
     outcome = evidence['outcome']
     assert recovered_path.is_relative_to(tmp_path / 'recovered') and recovered_path != original
     assert shell._last_studio_project == str(recovered_path)

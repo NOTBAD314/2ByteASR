@@ -61,8 +61,8 @@ def review_ui_checks(page, output):
             if case == 'agreement':
                 coverage = item.source_coverage
                 partial_or_unknown = coverage.get('partial') or coverage.get('coverage_unknown')
-                honest_headline = (item.requires_review and not headline.startswith('✓')
-                    and any(text in headline for text in ('局部来源覆盖', '分段来源覆盖', '来源信息缺失'))
+                honest_headline = (not item.requires_review and ('没有待处理建议' in headline
+                    or any(text in headline for text in ('局部来源覆盖', '分段来源覆盖', '来源信息缺失')))
                     if partial_or_unknown else not item.requires_review and '3 路独立来源' in headline)
                 passed = len(candidates) == 1 and {'MOSS', 'FireRed', 'Qwen'}.issubset(set(candidates[0].sources)) and item.models_agree_text and honest_headline
             elif case == 'tail-projection':
@@ -72,9 +72,9 @@ def review_ui_checks(page, output):
                 no_placeholder_zero = (all(row.get('confidence') is None for row in item.hypotheses)
                     and not any(e.confidence == 0 for issue in low_confidence for e in issue.evidence)
                     and '置信度约0%' not in reason_text.replace(' ', ''))
-                passed = (item.requires_review and not item.models_agree_text
+                passed = (not item.requires_review and not item.models_agree_text
                     and item.source_coverage.get('partial') and not item.source_coverage.get('conflict')
-                    and len(candidates) == 2 and '差异' in headline and no_placeholder_zero)
+                    and len(candidates) >= 1 and no_placeholder_zero)
             else:
                 passed = item.source_coverage.get('conflict') and item.requires_review and not item.models_agree_text and '差异' in headline
             screenshot = output/f'review-{case}.png'

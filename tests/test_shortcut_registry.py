@@ -65,7 +65,7 @@ def test_stored_values_migrate_and_new_defaults_never_steal(qapp):
     stored = {"merge_tool": "M", "reasr_review": "R", "toggle_review": "Shift+R", "edit_review": "E",
               "confirm_next_review": "Ctrl+Enter", "track_gain": "Ctrl+A"}
     values, unbound = reg.load_values(stored, "win32")
-    assert values["merge_tool"] == "B" and values["reasr_review"] == "Shift+R" and values["toggle_review"] == "R"
+    assert values["merge_tool"] == "B" and values["reasr_review"] == "Ctrl+Shift+R" and values["toggle_review"] == "R"
     assert values["confirm_next_review"] == "Ctrl+Return"   # stored "Ctrl+Enter" now actually matches
     assert values["edit_at_playhead"] == "E" and "edit_review" not in values
     assert values["track_gain"] == "Ctrl+A" and values["select_all"] == "" and "select_all" in unbound

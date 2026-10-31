@@ -285,7 +285,12 @@ def normalize_spoken_text(value: Any) -> str:
     with the 简体 readings it was converted from (``chinese_script.fold``, one
     character for one, so normalized offsets stay valid)."""
     from .chinese_script import fold
-    text = fold(normalize_candidate_text(value, normalize_punctuation=False))
+    text = unicodedata.normalize('NFC',fold(normalize_candidate_text(value, normalize_punctuation=False)))
+    # A decimal point is speech content, before punctuation is discarded.
+    # Otherwise 4.7 became 四十七 and falsely conflicted with 四点七.
+    text = re.sub(r'\d+(?:\.\d+)+', lambda match: '点'.join(
+        _spoken_integer(part) if index == 0 else ''.join(_spoken_integer(char) for char in part)
+        for index, part in enumerate(match.group().split('.'))), text)
     text = re.sub(rf"[{re.escape(_PUNCTUATION)}…—~·'\"()（）【】\[\]]+", "", text)
     return re.sub(r"\d+", lambda match: _spoken_integer(match.group()), text)
 
@@ -457,20 +462,25 @@ def model_evidence(
     index: _EvidenceTimeIndex | None = None,
 ) -> tuple[QCEvidence, ...]:
     """Join independent cue-local observations, keeping their model identity."""
-    from ..recognition.asr_source_evidence import MODEL_LABELS, cue_source_hypotheses
+    from ..recognition.asr_source_evidence import MODEL_LABELS, cue_source_hypotheses, coverage_summary
     from ..recognition.cue_evidence_slice import join_pieces
     grouped = defaultdict(list)
     for row in cue_source_hypotheses(project, cue, index=index):
         grouped[row['model']].append(row)
     result = []
     for model, rows in grouped.items():
-        parts = [str(row['text']) for row in rows]
-        confidence = [row['confidence'] for row in rows if row.get('confidence') is not None]
-        result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=join_pieces(parts),
-            source=model, confidence=min(confidence) if confidence else None,
-            # A concatenation is cue-local only when every contributing row is.
-            # Otherwise a neighboring segment could become an adoptable suffix.
-            context_only=any(row.get('context_only', False) for row in rows)))
+        # Context remains a separate, read-only observation. Concatenating it
+        # with an exact current reading manufactured conflicts for short cues.
+        for contextual in (False, True):
+            selected = [r for r in rows if bool(r.get('context_only', False)) == contextual]
+            if not selected:continue
+            parts = [str(row['text']) for row in selected]
+            confidence = [row['confidence'] for row in selected if row.get('confidence') is not None]
+            coverage=coverage_summary(selected) if not contextual else {}
+            partial=(coverage.get('current_text_supported') is False and not coverage.get('conflict')
+                     and any(s.get('source_count',0)>0 for s in coverage.get('text_spans',())))
+            result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=join_pieces(parts),
+                source=model, confidence=min(confidence) if confidence else None, context_only=contextual or partial))
     return tuple(result)
 
 
@@ -573,9 +583,9 @@ class ASREvidenceRule:
         projection_difference = coverage.get('current_text_supported') is False and not coverage['conflict']
         if projection_difference:
             yield QCIssue(
-                'current_projection_difference', QCSeverity.WARNING, QCCategory.ASR,
-                cue.id, '当前全文缺少局部证据',
-                '原始模型文字一致，但按当前时间范围投影后缺少部分字词。请检查字幕边界；已确认文字保留。',
+                'current_projection_difference', QCSeverity.INFO, QCCategory.ASR,
+                cue.id, '局部证据覆盖说明',
+                '当前范围未覆盖全文的额外证据；没有具体文字冲突。字幕默认可用，原始证据保留供查看。',
                 evidence, source='asr_projection',
             )
         distinct: dict[str, QCEvidence] = {_compact(cue.text): QCEvidence("Current", cue.text, "project")}
@@ -584,6 +594,10 @@ class ASREvidenceRule:
         for item in evidence:
             normalized = _compact(item.text)
             if normalized:
+                if item.context_only:
+                    segmentation_rows.append(item)
+                    equivalent_to_current[item] = False
+                    continue
                 equivalent = (
                     normalize_spoken_text(cue.text) == normalize_spoken_text(item.text)
                     or item.context_only and (segmentation_equivalent(cue.text, item.text)
@@ -596,13 +610,14 @@ class ASREvidenceRule:
                 else:
                     distinct.setdefault(normalized, item)
         if segmentation_rows and len(distinct) == 1:
+            context_only = all(row.context_only for row in segmentation_rows)
             yield QCIssue(
                 "segmentation_difference",
                 QCSeverity.INFO,
                 QCCategory.ASR,
                 cue.id,
-                "分段方式不同",
-                "模型语音内容一致，仅原始分段、标点或数字写法不同。",
+                "邻条语音上下文" if context_only else "分段方式不同",
+                "只保留相邻原始语音上下文，不能据此修改本条。" if context_only else "本条语音内容一致；邻条上下文、分段、标点或数字写法记录不构成纠错任务。",
                 tuple(segmentation_rows),
                 source="asr_segmentation",
             )
@@ -691,7 +706,7 @@ class ASREvidenceRule:
         votes = Counter(
             _compact(item.text)
             for item in evidence
-            if _compact(item.text) and not equivalent_to_current.get(item, False)
+            if _compact(item.text) and not item.context_only and not equivalent_to_current.get(item, False)
         )
         if votes:
             majority, count = votes.most_common(1)[0]
@@ -792,6 +807,7 @@ class TerminologyRule:
                     "术语疑似错误",
                     f"词库标准写法为“{canonical}”，当前字幕出现“{wrong}”。",
                     (*model_support, QCEvidence("词库", canonical, entry.source)),
+                    fix_metadata={'surface':wrong,'canonical':canonical},
                     source=entry.source,
                 )
                 return
@@ -929,7 +945,8 @@ class ReadabilityRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
         duration = max(1, cue.end_ms - cue.start_ms)
         from .language_rules import project_language
-        language = project_language(context.project)
+        from ..projects.subtitle_import import imported_track
+        language = imported_track(context.project, cue.speaker_id).get('language') or project_language(context.project)
         if language == "en":
             # 2026-10-14: English reads in characters including spaces (~17/s comfortable, 42 per line).
             from .english_text import RULES as english_rules, display_length as english_length

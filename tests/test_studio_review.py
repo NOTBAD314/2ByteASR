@@ -101,7 +101,7 @@ def test_priority_review_confirmation_advances_and_persists_state(tmp_path, monk
     monkeypatch.setattr(page, "_generate_waveform", lambda *_args, **_kwargs: None)
     page.open_project(path)
     _drain_chunked_qc(page)
-    page._activate_filter("priority")
+    page._activate_filter("critical")
     page._set_review_mode(True)
 
     assert page.cue_model.rowCount() == 2
@@ -109,11 +109,12 @@ def test_priority_review_confirmation_advances_and_persists_state(tmp_path, monk
     page.select_cue("a")
     page._confirm_current_review()
 
-    assert page.project.studio_state["cue_statuses"]["a"] == "done"
-    assert "a" in page.project.studio_state["review_confirmations"]
-    # The review session freezes the two visible cue IDs instead of shrinking
-    # the queue when a cue becomes confirmed.
-    assert page.cue_model.rowCount() == 2
+    from twobyteasr.studio.studio_cue_table import _cue_status
+    assert _cue_status(page.project, page._cue_lookup["a"]) == "done"
+    assert page.project.studio_state["current_issue_decisions"]["reviewed:a"]["status"] == "resolved"
+    # Entry progress keeps its denominator, while the visible remaining list shrinks.
+    assert page._review_session.total == 2 and page._review_session.completed == 1
+    assert page.cue_model.rowCount() == 1
     assert page.selected_cue_id == "b"
     page.close_page()
     page.deleteLater()
@@ -135,7 +136,7 @@ def test_priority_review_keeps_chronological_order(tmp_path, monkeypatch):
     monkeypatch.setattr(page, "_generate_waveform", lambda *_args, **_kwargs: None)
     page.open_project(path)
     _drain_chunked_qc(page)
-    page._activate_filter("priority")
+    page._activate_filter("critical")
 
     assert [page.cue_model.cue_at(row).id for row in range(page.cue_model.rowCount())] == [
         "suggested",
@@ -183,7 +184,7 @@ def test_priority_review_real_key_events_and_editor_focus_safety(tmp_path, monke
     QTest.keyClick(page, Qt.Key.Key_R)
     assert not page._review_mode
     QTest.keyClick(page, Qt.Key.Key_R)
-    QTest.keyClick(page, Qt.Key.Key_R, Qt.KeyboardModifier.ShiftModifier)
+    QTest.keyClick(page, Qt.Key.Key_R, Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier)
     QTest.keyClick(page, Qt.Key.Key_E)
     app.processEvents()
     assert calls == {"space": 1, "r": 1}
@@ -198,7 +199,8 @@ def test_priority_review_real_key_events_and_editor_focus_safety(tmp_path, monke
     page.timeline.setFocus()
     QTest.keyClick(page, Qt.Key.Key_Return)
     app.processEvents()
-    assert page.project.studio_state["cue_statuses"]["a"] == "done"
+    from twobyteasr.studio.studio_cue_table import _cue_status
+    assert _cue_status(page.project, page._cue_lookup["a"]) == "done"
     assert page.selected_cue_id == "b"
     QTest.keyClick(page, Qt.Key.Key_Escape)
     assert page.cue_model.filter_status == "all"

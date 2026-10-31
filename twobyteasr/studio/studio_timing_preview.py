@@ -49,7 +49,8 @@ class CueTimingPreview(QObject):
 
     def request_warm(self):
         page = self.page
-        if (not self.active and not self._warm_timer.isActive()
+        if (getattr(page, 'isVisible', lambda: True)() and getattr(page,'export_workspace',None) is None
+                and not self.active and not self._warm_timer.isActive()
                 and not getattr(page.timeline, '_scrub_drag', False)
                 and not getattr(page.timeline, '_pan_drag', None)
                 and bool(getattr(page.video, '_paused', True))):
@@ -57,7 +58,8 @@ class CueTimingPreview(QObject):
 
     def _warm(self):
         page=self.page
-        if (self.active or not page.project or getattr(page,"_close_requested",False)
+        if (not getattr(page, 'isVisible', lambda: True)() or getattr(page,'export_workspace',None) is not None
+                or self.active or not page.project or getattr(page,"_close_requested",False)
                 or getattr(page.timeline, '_scrub_drag', False)
                 or getattr(page.timeline, '_pan_drag', None)
                 or not bool(getattr(page.video, '_paused', True))):return
@@ -76,7 +78,8 @@ class CueTimingPreview(QObject):
     def _warm_next(self):
         page=self.page
         if getattr(self,'_warm_busy',False):return
-        if (self.active or getattr(page,'_close_requested',False) or not page.project
+        if (not getattr(page, 'isVisible', lambda: True)() or getattr(page,'export_workspace',None) is not None
+                or self.active or getattr(page,'_close_requested',False) or not page.project
                 or getattr(page.timeline,'_scrub_drag',False) or getattr(page.timeline,'_pan_drag',None)
                 or not bool(getattr(page.video,'_paused',True))):
             self._warm_ids=[]
@@ -110,6 +113,12 @@ class CueTimingPreview(QObject):
             except Exception:
                 self.ready.emit(generation,snapshot.cue_id,None,snapshot)
         threading.Thread(target=prepare,daemon=True,name="timeline-live-warm").start()
+
+    def suspend_warm(self):
+        """Cancel hidden-page preparation while keeping already owned rasters."""
+        self._warm_timer.stop()
+        self._warm_generation += 1
+        self._warm_ids = []
 
     def release(self):
         """Drop the closed project's prepared rasters; late warm results are fenced."""

@@ -280,7 +280,19 @@ def _run_probe_process(role, contract, *, interpreter=None):
             ok=False,
             interpreter=python_executable,
             problems=[f"解释器缺失：{python_executable}"],
+            detail={"stage":"python_startup","runtime_trace":trace},
         )
+    from .python_startup import startup_probe
+    probe_cwd = project_root() if not getattr(sys, "frozen", False) else install_root()
+    startup = startup_probe(python_executable, cwd=probe_cwd)
+    print('[runtime-startup] ' + json.dumps(dict(role=role, **startup),ensure_ascii=False))
+    if not startup['ok']:
+        chain=startup['chain']
+        cause=(f"基础 Python 已不存在：{chain['base']}" if chain['base_exists'] is False
+               else startup.get('stderr') or startup.get('error') or '启动未返回有效结果')
+        return PreflightResult(role=role,ok=False,interpreter=python_executable,
+            problems=[f"{role} Python 无法启动：{cause}"],
+            detail=dict(stage='python_startup',startup=startup,runtime_trace=trace))
     payload = {
         "role": role,
         "expected": contract,
@@ -352,6 +364,9 @@ def _run_probe_process(role, contract, *, interpreter=None):
                     f"{role} 环境探测进程失败（退出码 {process.returncode}）："
                     + (stderr.decode("utf-8", errors="replace") or "")[-400:]
                 ],
+                detail=dict(stage='dependencies',startup=startup,command=command,cwd=probe_cwd,
+                    returncode=process.returncode,stdout=stdout.decode('utf8',errors='replace'),
+                    stderr=stderr.decode('utf8',errors='replace')),
             )
         try:
             payload_result = json.loads(stdout.decode("utf-8", errors="replace"))
@@ -364,6 +379,8 @@ def _run_probe_process(role, contract, *, interpreter=None):
             )
         problems = list(payload_result.get("errors") or [])
         payload_result["runtime_trace"] = trace
+        payload_result['startup'] = startup
+        payload_result['stage'] = 'ready' if payload_result.get('ok') else 'dependencies'
         return PreflightResult(
             role=role,
             ok=bool(payload_result.get("ok")),
@@ -388,8 +405,13 @@ def _cache_valid(role, current_hash):
     entry = _CACHE.get(role)
     if not entry:
         return False
-    cached_hash, _result = entry
-    return cached_hash == current_hash
+    cached_hash, result = entry
+    if cached_hash != current_hash:return False
+    identity=result.detail.get('startup',{}).get('chain',{}).get('identity')
+    if identity is not None:
+        from .python_startup import interpreter_chain
+        if interpreter_chain(environment_interpreter(role))['identity'] != identity:return False
+    return True
 
 
 def fast_preflight(role):
@@ -471,6 +493,12 @@ def human_message(result):
         result.role, result.role
     )
     problems = "；".join(result.problems[:4]) or "未知问题"
+    if result.detail.get('stage')=='python_startup':
+        return (f"{label}的 Python 无法启动：{problems}。"
+                f"请修复 {result.role} 运行环境；已下载模型和用户工程保留。")
+    if result.detail.get('stage')=='dependencies':
+        return (f"{label}的 Python 已启动，但依赖检查未通过：{problems}。"
+                f"请修复 {result.role} 运行环境；不需要重新下载已有模型。")
     return (
         f"{label}不完整或版本不匹配：{problems}。"
         "可点击“立即修复”自动重建该运行环境，无需手动删除环境或设置变量。"

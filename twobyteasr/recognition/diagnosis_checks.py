@@ -41,6 +41,8 @@ SPECIFIC_TEMPLATES = (
     "被拦下的时间：{ranges}。{why}",
     "所在的段：{ranges}。MOSS Pro 返回的 {segments} 句里，{clipped} 句结尾超出上传的音频、已截到音频结尾，"
     "{dropped} 句的时间不在这段音频里或起止颠倒、没有放进字幕。",
+    '校对已成功返回；{count} 处改字未满足保护条件，原字幕已保留，不是校对请求失败。',
+    '第 {batch}/{total} 批 AI 断句遗漏 {count} 个必须保留的停顿点，已使用本地断句，字幕文字与时间已保留。',
 )
 # Why a gap the cloud's content review left was not filled (cloud_gap_fill).
 GAP_FILL_REASONS = {
@@ -154,6 +156,24 @@ def _model_missing(facts: RunFacts):
         return found("model_missing", "certain", evidence)
 
 
+def _python_startup(facts,role,pattern):
+    startup=facts.error_matches(r'trampoline failed to spawn Python|Python 无法启动|基础 Python 已不存在')
+    if startup and re.search(pattern,str(startup),re.I):
+        return found('python_startup_'+role,'certain',[_error_line(startup)])
+
+
+@check('python_startup_main')
+def _python_startup_main(facts):return _python_startup(facts,'main',r'\bmain\b|主运行环境')
+
+
+@check('python_startup_moss')
+def _python_startup_moss(facts):return _python_startup(facts,'moss',r'\bmoss\b')
+
+
+@check('python_startup_firered_llm')
+def _python_startup_firered_llm(facts):return _python_startup(facts,'firered_llm',r'firered[_ ]llm')
+
+
 @check("runtime_broken")
 def _runtime_broken(facts: RunFacts):
     error = facts.error_matches(r"No module named|DLL load failed|ImportError|runtime missing|缺少新流水线组件|"
@@ -240,6 +260,8 @@ def _cloud_errors(facts: RunFacts) -> list[str]:
     errors = [str(row.get("error") or "") for row in facts.failed_stages
               if re.search(r"API|在线|云端 ?ASR", str(row.get("label") or "")) and row.get("error")]
     for error in facts.errors:
+        if re.search(r'工程保存|project_save|\.2byteproj|studio_project', error, re.I):
+            continue
         if ("[2BYTEASR_API_ERROR]" in error or _CLOUD_WORDS.search(error)
                 or (facts.primary == "api" and re.search(r"ASR|识别|filetrans|dashscope|transcri", error, re.I))):
             errors.append(error)
@@ -450,8 +472,15 @@ def ai_category_issue(category: str, error: str = "") -> str:
 
 
 def _ai_failures(facts: RunFacts) -> dict[str, list[dict]]:
+    resolved=facts.report.get('_stage_recovery')
+    if (isinstance(resolved,dict) and resolved.get('failed_tasks')==0
+            and facts.outcome is not None and facts.outcome.polish_status!='partial'):
+        return {}  # historical failed attempts remain in the immutable log
     grouped: dict[str, list[dict]] = {}
     for row in facts.events_named(*AI_FAILURE_EVENTS):
+        if (row.get('event') == 'grouping_api_fallback' and row.get('category') == 'format_mismatch'
+                and '强制停顿位置' in str(row.get('error') or '')):
+            continue  # precise batch-level explanation below, not failed proofreading
         issue = ai_category_issue(str(row.get("category") or ""), str(row.get("error") or ""))
         grouped.setdefault(issue, []).append(row)
     return grouped
@@ -480,6 +509,9 @@ def _ai_partial(facts: RunFacts):
     unexplained = failures.get("", [])
     partial = facts.outcome is not None and facts.outcome.polish_status == "partial"
     fallback_items = facts.review_categories.get("校对回退", 0) + facts.review_categories.get("断句回退", 0)
+    if (not failures and not partial and not facts.review_categories.get('校对回退', 0)
+            and facts.events_named('grouping_api_fallback')):
+        return None
     if not (unexplained or partial or fallback_items or failures):
         return None
     evidence = []
@@ -538,7 +570,16 @@ def _ai_edits_rejected(facts: RunFacts):
             evidence.append(f"polishing_summary.term_context.rejected_edits = {rejected}")
         if numeric:
             evidence.append(f"events[numeric_edit_rejected] × {numeric}")
-        return found("ai_edits_rejected", "certain", evidence)
+        return found("ai_edits_rejected", "certain", evidence,
+                     specific='校对已成功返回；{count} 处改字未满足保护条件，原字幕已保留，不是校对请求失败。', count=rejected or numeric)
+
+
+@check('ai_optional_metadata_ignored')
+def _optional_metadata(facts: RunFacts):
+    rows = facts.events_named('terminology_new_suspect_metadata_rejected')
+    if rows:
+        return found('ai_optional_metadata_ignored', 'certain',
+                     [_event_line(row, 'reason', 'error', 'count') for row in rows[:2]])
 
 
 @check("search_not_configured")
@@ -636,6 +677,20 @@ def _grouping_fallback(facts: RunFacts):
         if hard:
             evidence.append(f"events[local_hard_split_recovery] × {hard}")
         return found("grouping_local_fallback", "certain" if rows else "likely", evidence)
+
+
+@check('grouping_pause_fallback')
+def _grouping_pause_fallback(facts: RunFacts):
+    rows = [row for row in facts.events_named('grouping_api_fallback')
+            if row.get('category') == 'format_mismatch' and '强制停顿位置' in str(row.get('error') or '')]
+    if rows:
+        row = rows[0]
+        points = re.search(r'强制停顿位置\s*\[([^]]*)\]', str(row.get('error') or ''))
+        count = len([p for p in points.group(1).split(',') if p.strip()]) if points else 1
+        return found('grouping_pause_fallback', 'certain',
+            [_event_line(r, 'batch_index', 'batch_total', 'category', 'error') for r in rows],
+            specific='第 {batch}/{total} 批 AI 断句遗漏 {count} 个必须保留的停顿点，已使用本地断句，字幕文字与时间已保留。',
+            batch=row.get('batch_index', '?'), total=row.get('batch_total', '?'), count=count)
 
 
 # ---- 保存与输出 ------------------------------------------------------------------

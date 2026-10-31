@@ -155,8 +155,25 @@ LEXICONS = {
 }
 
 
+from dataclasses import replace as _replace
+from .segmentation_profiles import profile_for as _profile_for
+for _code,_lex in list(LEXICONS.items()):
+    _p=_profile_for(_code)
+    LEXICONS[_code]=_replace(_lex,rules=_replace(_lex.rules,
+        preferred_chars=_p.line_preferred,max_chars=_p.line_max,min_chars=_p.minimum_units,max_lines=_p.lines,
+        cue_preferred_chars=_p.preferred,cue_max_chars=_p.hard_max,max_seconds=_p.max_seconds,
+        min_seconds=_p.min_seconds,comfortable_cps=_p.comfortable_cps,warning_cps=_p.warning_cps,critical_cps=_p.critical_cps))
+
+
 def lexicon(language: str) -> Lexicon:
-    return LEXICONS[language]
+    from .segmentation_profiles import profile_for
+    profile=profile_for(language)
+    if profile.code in LEXICONS:return LEXICONS[profile.code]
+    from dataclasses import replace
+    return Lexicon(profile.code,profile.name,*([frozenset()]*6),
+        rules=replace(EnglishLineRules(),cue_preferred_chars=profile.preferred,
+            cue_max_chars=profile.hard_max,max_chars=profile.line_max,max_seconds=profile.max_seconds),
+        names_by_case=False)
 
 
 def normalize_spaces(text: str) -> str:
@@ -179,7 +196,8 @@ def word_core(word: str) -> str:
 
 
 def display_length(text: str) -> int:
-    return len(normalize_spaces(text))
+    from .segmentation_profiles import measure
+    return int(measure(text,'it'))  # shared grapheme unit; limits remain per lexicon
 
 
 def clean(text: str) -> str:

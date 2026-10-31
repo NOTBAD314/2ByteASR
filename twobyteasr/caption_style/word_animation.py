@@ -128,6 +128,23 @@ def word_state(plan, milliseconds):
                  for r in plan.get('spans', ()))
 
 
+def uniform_line_unit(plan):
+    """A whole-text affine loop can composite its static glyph raster.
+
+    Per-word, per-character, blur and authored construction effects retain
+    the per-unit renderer. This changes no effect selection or sampling.
+    """
+    if (not plan or plan.get('mode')!='line_motion' or plan.get('rich_entry') or plan.get('rich_exit')):
+        return None
+    units=plan.get('units') or ()
+    if len(units)!=1:return None
+    unit=units[0]
+    if (unit.get('char_start')!=0 or unit.get('char_end')!=len(plan.get('text',''))
+            or unit.get('loop',{}).get('type') not in {'loop_breathe','loop_float','loop_sway','loop_swing'}):
+        return None
+    return unit
+
+
 def compile_word_ass(plan, text, base_color, *, offset_ms=0, marks=None, style=None):
     from ..rendering.ass_compiler import escape_ass_text
     from .effect_dsl import _ass_color

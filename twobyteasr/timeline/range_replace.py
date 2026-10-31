@@ -22,10 +22,24 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
         # A re-recognized line gets no estimated piece of the old translation.
         from .caption_translation_splice import TranslationSplice
         self._translations = TranslationSplice(project, removed, [])
+        for cue in removed:
+            self._translations.after[cue.id] = None
+        for cue_id, record in plan.translation_records.items():
+            self._translations.ids.add(cue_id)
+            self._translations.before[cue_id] = None
+            self._translations.before_view[cue_id] = None
+            self._translations.after[cue_id] = copy.deepcopy(record)
+            self._translations.after_view[cue_id] = record['text']
+        self._translations.active = self._translations.active or bool(plan.translation_records)
+        self._acceptance_before = copy.deepcopy(project.generation_metadata.get('transcript_acceptance'))
+        self._speaker_names_before = copy.deepcopy(project.generation_metadata.get('speaker_names'))
+        self._recovery_metadata_before = {key:copy.deepcopy(project.generation_metadata.get(key))
+            for key in ('speaker_recovery','asr_cue_states','superseded_asr_evidence')}
         self._evidence = ({key: copy.deepcopy(project.asr_evidence.get(key)) for key in plan.evidence},
                           copy.deepcopy(plan.evidence))
         from .studio_caption_timeline import KEY, independent_captions
         self._caption_key = KEY
+        self._caption_state_present = KEY in project.studio_state
         self._archive_rows = copy.deepcopy(plan.archive)
         self._archive_ids = {str(row.get("id")) for row in plan.archive}
         self._archive_present = "source_archive" in (project.studio_state.get(KEY) or {})
@@ -43,6 +57,31 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
     def _mutate(self, cues) -> None:
         super()._mutate(cues)
         forward = cues is self.after
+        extra_ids = {s.id for s in self.plan.extra_speakers}
+        if forward:
+            known = {s.id for s in self.project.speakers}
+            self.project.speakers.extend(copy.deepcopy([s for s in self.plan.extra_speakers if s.id not in known]))
+        elif extra_ids:
+            self.project.speakers[:] = [s for s in self.project.speakers if s.id not in extra_ids]
+            # validate/save materializes the roster's display names. Undo
+            # removes those entries with the identities that introduced them.
+            if self._speaker_names_before is None:
+                self.project.generation_metadata.pop('speaker_names', None)
+            else:
+                self.project.generation_metadata['speaker_names'] = copy.deepcopy(self._speaker_names_before)
+        if forward and self.plan.acceptance:
+            from ..recognition.language_recovery_project import merge_acceptance
+            merge_acceptance(self.project, self.plan)
+        elif not forward:
+            if self._acceptance_before is None:
+                self.project.generation_metadata.pop('transcript_acceptance', None)
+            else:
+                self.project.generation_metadata['transcript_acceptance'] = copy.deepcopy(self._acceptance_before)
+                from ..recognition.language_recovery_project import persist_selection_state
+                persist_selection_state(self.project.generation_metadata['transcript_acceptance'])
+            for key,value in self._recovery_metadata_before.items():
+                if value is None:self.project.generation_metadata.pop(key,None)
+                else:self.project.generation_metadata[key]=copy.deepcopy(value)
         for key, value in self._evidence[1 if forward else 0].items():
             if value is None:
                 self.project.asr_evidence.pop(key, None)
@@ -68,3 +107,7 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
                 self.project.generation_metadata[HISTORY_KEY] = history
             else:
                 self.project.generation_metadata.pop(HISTORY_KEY, None)
+        if not forward and not self._caption_state_present:
+            state = self.project.studio_state.get(self._caption_key) or {}
+            if not state.get('instances') and not state.get('source_archive'):
+                self.project.studio_state.pop(self._caption_key, None)

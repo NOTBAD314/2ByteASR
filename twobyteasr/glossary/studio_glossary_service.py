@@ -32,7 +32,7 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     from ..recognition.transcript_data import SpeechSegment
     from concurrent.futures import ThreadPoolExecutor
     from ..subtitle_rules.polishing import call_correction_api, correction_batches, correction_task_budget, prepare_correction_request
-    from .terminology import TermResolver, GlossarySnapshot
+    from .terminology import prepared_resolver, GlossarySnapshot
     from ..studio.studio_text_tools import TextOccurrence, cue_locked
     from ..subtitle_rules.correction import split_items_for_api
     from ..recognition.cue_evidence_slice import cue_evidence
@@ -51,6 +51,10 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         enabled_glossary_ids=[x.id for x in snapshot.libraries], glossary_snapshot=snapshot,
         cancellation_token=token, asr_settings_snapshot=frozen,
         provider_snapshots={"polish": provider} if provider else {})
+    from ..subtitle_rules.language_rules import detect_language
+    saved_language=(project.generation_metadata.get('language') or {}).get('code','')
+    context.task_language=saved_language or detect_language([cue.text for cue in project.cues])[0]
+    context.requested_language=context.task_language
     from ..recognition.content_scene import resolve_content_scene
     previous_scene = (project.generation_metadata.get('runtime_profile') or {}).get('resolved_context') or {}
     if previous_scene.get('source') == 'user_selected':
@@ -63,7 +67,7 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     # the 简/繁 fold and proposals are written in 繁體; None keeps exact matching.
     from ..subtitle_rules.chinese_script import fold, for_project, glossary_script, to_simplified
     script = glossary_script(project)
-    resolver = TermResolver(snapshot, script=script)
+    resolver = prepared_resolver(snapshot, script=script)
     segments = []
     local_normalizations = {}
     # 2026-10-16 (ADR 0124): with the project's math switch on, the model sees

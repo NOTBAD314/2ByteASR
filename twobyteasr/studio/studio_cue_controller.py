@@ -253,6 +253,7 @@ class StudioCueController:
         sync_timeline: bool = True,
     ) -> None:
         page = self.page
+        page._caption_canvas_edit_target=None
         page.selection_model.set_scope(scope)
         page._manual_selection_hold = bool(scope.active_id)
         self.session.selected_cue_id = scope.active_id or ''
@@ -312,9 +313,6 @@ class StudioCueController:
         page._selection_latency.mark("T2_qitemselection_applied")
         page._selection_latency.mark("T3_selection_model_correct")
         if hasattr(page, "style_scope"):
-            blocker = QSignalBlocker(page.style_scope)
-            page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
-            del blocker
             selected_index = page.style_scope.findData("selected")
             if selected_index >= 0:
                 page.style_scope.setItemText(
@@ -326,6 +324,7 @@ class StudioCueController:
 
     def table_selection_changed(self) -> None:
         page = self.page
+        page._caption_canvas_edit_target=None
         page.timeline.set_subtitle_layer("original")
         rows = page.cue_table.selectionModel().selectedRows()
         selected = [
@@ -357,10 +356,6 @@ class StudioCueController:
             refresh_target()
         page.selection_model.set_scope(scope)
         page.timeline.set_selection_scope(scope)
-        if hasattr(page, "style_scope"):
-            blocker = QSignalBlocker(page.style_scope)
-            page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
-            del blocker
         page._load_style_inspector(selection_scope=scope)
 
     def smart_align_current(self) -> None:
@@ -427,6 +422,12 @@ class StudioCueController:
     def select_cue(
         self, cue_id: str, *, refresh_advanced: bool = False, hydrate: bool = True,
     ) -> None:
+        # Explicit selection has its own stable edit target. Clock-follow uses
+        # _mirror_clock_selection and cannot replace this last user choice.
+        remembered=getattr(self.page,'_caption_canvas_edit_target',None)
+        if remembered is not None and remembered[2].cue_id!=str(cue_id or ''):
+            self.page._caption_canvas_edit_target=None
+        self.page.timeline.explicit_subtitle_id = str(cue_id or '')
         self._select_cue_transaction(cue_id,refresh_advanced=refresh_advanced,hydrate=hydrate)
         # 2026-10-24 (user): a caption picked while 视频 is open stays there;
         # the tab swaps to the caption's 位置与变换 card (panel.refresh).
@@ -556,7 +557,8 @@ class StudioCueController:
                 page._manual_text_baselines.setdefault(cue.id, cue.text)
                 from .caption_text_tools import hydrate_editor
                 hydrate_editor(page.cue_text, cue, cue.text)
-                if hasattr(page, "subtitle_edit_input") and getattr(page, "_canvas_editor", None) is not page.subtitle_edit_input:
+                if (hasattr(page, "subtitle_edit_input") and not getattr(page, '_caption_following', False)
+                        and getattr(page, "_canvas_editor", None) is not page.subtitle_edit_input):
                     if page.subtitle_edit_input.toPlainText() != cue.text:
                         page.subtitle_edit_input.blockSignals(True)
                         page.subtitle_edit_input.setPlainText(cue.text)
@@ -698,6 +700,10 @@ class StudioCueController:
         page = self.page
         dirty = delta.dirty
         affected = set(delta.affected_cue_ids)
+        if dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
+                    | DirtyDomain.QC | DirtyDomain.CLIP_STATUS | DirtyDomain.PROJECT_METADATA
+                    | DirtyDomain.SEQUENCE_STRUCTURE):
+            page._cue_summary_pending = True
         if dirty & DirtyDomain.AUTOSAVE:
             bind_text(page.save_state, '未保存')
         if dirty & DirtyDomain.CUE_MODEL:
@@ -758,7 +764,9 @@ class StudioCueController:
             sequence_handled = True
 
         timing=getattr(page,"_cue_timing_preview",None)
-        if timing is not None:timing.request_warm()
+        if timing is not None and dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING
+                | DirtyDomain.CUE_MODEL | DirtyDomain.PROJECT_METADATA | DirtyDomain.SEQUENCE_STRUCTURE):
+            timing.request_warm()
 
         if dirty & DirtyDomain.TIMELINE_INDEX and not sequence_handled:
             page.timeline.reindex_project(repaint=False)
@@ -775,6 +783,8 @@ class StudioCueController:
                 page.timeline.update()
 
         if dirty & DirtyDomain.QC:
+            from ..subtitle_rules.current_issues import invalidate
+            invalidate(project)
             # Interactive razor/merge/delete/add edits touch a handful of cues.
             # The full QC rescan measured ~0.8-1.3s of GUI-thread time on a
             # real 976-cue project, which is exactly the post-edit freeze.
@@ -814,7 +824,9 @@ class StudioCueController:
         selected_id = self.session.selected_cue_id
         selected_affected = bool(selected_id and selected_id in affected)
         if (selected_affected and not getattr(page, '_text_input_in_progress', False)
-                and not getattr(page, '_review_fast_select', False)) and dirty & (
+                and not getattr(page, '_review_fast_select', False)
+                and not (getattr(page,'_style_publication_owned',False) and not dirty &
+                         (DirtyDomain.CUE_CONTENT|DirtyDomain.CUE_TIMING|DirtyDomain.CUE_MODEL))) and dirty & (
             DirtyDomain.CUE_CONTENT
             | DirtyDomain.CUE_TIMING
             | DirtyDomain.CUE_STYLE

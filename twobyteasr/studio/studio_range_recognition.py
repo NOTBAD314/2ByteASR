@@ -30,6 +30,8 @@ def range_state(page):
 
 def add_range_action(page, menu, icon=None):
     """The menu entry; disabled with its reason when the range cannot be recognized."""
+    from .language_recovery_ui import add_actions
+    add_actions(page, menu)
     problem, _points = range_state(page)
     if problem:
         action = menu.addAction(tr("只重新识别这一段字幕（{reason}）", reason=tr(problem)))
@@ -99,6 +101,10 @@ def apply_range_result(page, result_path, snapshot) -> bool:
         _note(page, tr("这一段的识别结果读取失败：{error}", error=str(exc)[:160]))
         return False
     info = (result.generation_metadata.get("timeline_recognition") or {}).get("range") or {}
+    from ..recognition.transcript_acceptance import pending_ranges
+    if pending_ranges(result.generation_metadata.get('transcript_acceptance')):
+        _note(page,tr('替代识别仍有未恢复范围；原工程和正常字幕保持，请检查模型或音轨后明确重试'))
+        return False
     if not info:
         _note(page, tr("这一段的识别结果不完整，没有替换"))
         return False
@@ -108,6 +114,9 @@ def apply_range_result(page, result_path, snapshot) -> bool:
         return False
     payload = payload_from_result(result, info)
     plan = splice_range(project, info["window_ms"], payload, foreign_speakers=False)
+    if payload.acceptance:
+        from ..recognition.language_recovery_project import inherit_range_appearance
+        inherit_range_appearance(project, plan)
     if cue_signature(project, plan.removed_ids) != (info.get("replaced_signature") or {}):
         if not ask_replace_edited(page):
             _note(page, tr("这一段识别完成；按你的选择保留了现在的字幕"))
@@ -115,7 +124,12 @@ def apply_range_result(page, result_path, snapshot) -> bool:
     reference = result.generation_metadata.get("recognition_result") or {}
     entry = history_entry(plan, info.get("requested_ms"), fingerprint=snapshot.get("fingerprint", ""),
                           job_id=str(reference.get("job_id") or ""))
-    page.undo_stack.push(ReplaceRangeCuesCommand(project, plan, entry, page._changed))
+    # A new task can introduce several distinct, unconfirmed identities.
+    # Refresh the roster as well as cue rows, including undo/redo.
+    def changed():
+        page._populate_speakers()
+        page._changed()
+    page.undo_stack.push(ReplaceRangeCuesCommand(project, plan, entry, changed))
     if plan.inserted_ids:
         page.select_cue(plan.inserted_ids[0])
     _note(page, tr("这一段识别完成 · {old} 条换成 {new} 条（可撤销）",

@@ -963,6 +963,8 @@ def studio_translation_choice(language_options: dict, studio_context: dict, ai_r
     run; the home choice stays as it is. Translating still needs a connected AI.
     """
     options = dict(language_options)
+    if (studio_context or {}).get('recognition_language'):
+        options['recognition_language'] = studio_context['recognition_language']
     output = str((studio_context or {}).get("subtitle_output") or "")
     if output:
         options["subtitle_output"] = output if ai_ready else "original"
@@ -1138,6 +1140,9 @@ class MainWindow(QWidget):
         self.pages.addWidget(self.term_library_page)
         self._studio_recognition_context = None
         content.addWidget(self.pages, 1)
+        if hasattr(self, 'studio_entry_open'):
+            from .home_studio_entry import StudioEntryPin
+            self.home_studio_pin = StudioEntryPin(self)
         # P1: 底部“取消 / 开始生成字幕”固定在主页面底部，不随中间内容滚动。
         # 无论窗口高度如何（1366x768 / 1920x1080 / 2560x1440），CTA 始终可见。
         # 只有在设置页（index 0）才显示该 bar；进度/结果页使用各自的控制。
@@ -1328,6 +1333,11 @@ class MainWindow(QWidget):
         self._recognition_page_deferred = False
         previous = self.settings_scroll.takeWidget()
         self.settings_scroll.setWidget(self._settings_page())
+        if hasattr(self, 'home_studio_pin'):
+            self.home_studio_pin.set_card()
+        else:
+            from .home_studio_entry import StudioEntryPin
+            self.home_studio_pin = StudioEntryPin(self)
         if previous is not None:
             previous.deleteLater()
         self._refresh_media_summary()
@@ -1751,6 +1761,8 @@ class MainWindow(QWidget):
         # Resident pages are translated once per language. Walking the entire
         # MainWindow tree on every switch caused a visible 50-140 ms stall.
         self._prepare_page_presentation(current)
+        if completion and self.__dict__.get('_completion_preview_dirty',False):
+            self._flush_pending_completion_preview(force=True)
         self._update_bottom_bar_visibility(index)
 
     def _prepare_page_presentation(self, current):
@@ -2576,6 +2588,9 @@ class MainWindow(QWidget):
                 snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()),
                                                         range_ms=range_ms)
                 snapshot["requested_range_ms"] = [int(v) for v in request_options.get("requested_range_ms") or range_ms]
+                if request_options.get('language_recovery_policy'):
+                    snapshot['language_recovery_policy'] = dict(request_options['language_recovery_policy'])
+                    self._studio_recognition_context['recognition_language'] = request_options['recognition_language']
             elif lanes and str(action) == "start_analysis":
                 snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()), lane=lanes[0])
             else:
@@ -3787,6 +3802,14 @@ class MainWindow(QWidget):
         for label in (entry_icon, entry_title, entry_hint):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         entry_head.addLayout(entry_text, 1)
+        # Keep the entrance in the card footer at every interface scale.
+        entry_open = AnimatedButton("进入字幕工作台")
+        entry_open.setObjectName("studioEntryPrimary")
+        install_themed_icon(entry_open, "fa5s.closed-captioning")
+        entry_open.clicked.connect(lambda: self.open_studio_project())
+        from ..design.presentation import button_role
+        button_role(entry_open, "secondary", size="default")
+        self.studio_entry_open = entry_open
         entry_head.setContentsMargins(0, 0, 0, 0)
         entry_layout.addLayout(entry_head)
 
@@ -3803,16 +3826,11 @@ class MainWindow(QWidget):
         self.studio_recent_list.open_requested.connect(open_recent)
         self.studio_recent_list.preview_requested.connect(self._preview_recent_project)
         entry_layout.addWidget(self.studio_recent_list)
-        # The cover caps at 16:10; any spare height stays above the button.
+        # The cover caps at 16:10; any spare height stays below the list.
         entry_layout.addStretch(0)
-        entry_open = AnimatedButton("进入字幕工作台")
-        entry_open.setObjectName("studioEntryPrimary")
-        install_themed_icon(entry_open, "fa5s.closed-captioning")
-        entry_open.clicked.connect(lambda: self.open_studio_project())
-        from ..design.presentation import button_role
-        button_role(entry_open, "secondary", size="default")
-        self.studio_entry_open = entry_open
         entry_layout.addWidget(entry_open)
+        studio_entry.set_recent_layout(entry_head, self.studio_recent_hero,
+                                      self.studio_recent_caption, self.studio_recent_list, entry_open)
         self.studio_entry_card = studio_entry
         studio_entry.refresh_requested.connect(self._refresh_studio_entry_card)
         self._refresh_studio_entry_card()
@@ -4148,7 +4166,13 @@ class MainWindow(QWidget):
         produce.addWidget(self.home_process_card)
         produce.addWidget(content_profile, 1)
         self.settings_right_column = produce
-        left.addWidget(studio_entry, 1)
+        # The slot preserves the original left-column width. The whole card
+        # stays inside the visible scroll viewport, including its own footer.
+        self.studio_entry_slot = QWidget()
+        self.studio_entry_slot.setObjectName('studioEntrySlot')
+        self.studio_entry_slot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        studio_entry.setParent(self.studio_entry_slot)
+        left.addWidget(self.studio_entry_slot, 1)
         surface_layout.addLayout(left, 1)
         surface_layout.addWidget(settings_card, 2)
         layout.addWidget(surface)
@@ -4694,7 +4718,7 @@ class MainWindow(QWidget):
             card.set_cover_path(cover_path)
         hero = getattr(self, "studio_recent_hero", None)
         if hero is not None:
-            entries = recent_studio_entries(records, limit=1 + self.studio_recent_list.limit)
+            entries = recent_studio_entries(records, limit=50)
             key = (entries, current_language())
             if key != getattr(self, "_studio_recent_key", None):
                 self._studio_recent_key = key
@@ -4712,15 +4736,12 @@ class MainWindow(QWidget):
         # A recovery button wrapped under the badges may need a little more.
         self.recognition_plan.setMinimumHeight(height)
         self.recognition_plan.setMaximumHeight(height + ui_zoom.px(48))
-        rows = 3 if tier == 2 else 2
         ai_card = getattr(self, "setting_tiles", {}).get("ai")
         if ai_card is not None:
             ai_card.set_compact(tier == 0)  # short windows: one row, no feature tags
-        recent = getattr(self, "studio_recent_list", None)
-        if recent is not None and recent.limit != rows:
-            recent.limit = rows
-            self._studio_recent_key = None
-            self._refresh_studio_entry_card()
+        card = getattr(self, "studio_entry_card", None)
+        if card is not None:
+            card.schedule_recent_fit()
 
     def _schedule_home_fit(self) -> None:
         timer = getattr(self, "_home_fit_timer", None)
@@ -6114,30 +6135,11 @@ class MainWindow(QWidget):
         self.result_review_summary.setWordWrap(True)
         self.result_review_summary.hide()
         summary_copy.addWidget(self.result_review_summary)
-        self.result_review_status = QToolButton()
-        self.result_review_status.setObjectName("completionReviewChip")
-        self.result_review_status.setProperty("completionRole", "chip")
-        self.result_review_status.setProperty("completionRadius", COMPLETION_RADIUS_SMALL)
-        self.result_review_status.setText('有待检查项')
-        self.result_review_status.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.result_review_status.setMinimumHeight(32)
-        self.result_review_status.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        install_themed_icon(self.result_review_status, 'fa5s.flag', 'warning')
-        self.result_review_status.clicked.connect(self._show_completion_review_details)
         summary_notices = QHBoxLayout()
         summary_notices.setContentsMargins(0, 4, 0, 0)
         summary_notices.setSpacing(10)
-        # Retry belongs beside the unfinished notice it resolves (2026-10-07);
-        # it only appears for retryable outcomes with known run options.
-        self.retry_failed_button = AnimatedButton('重试失败项')
-        self.retry_failed_button.setObjectName('completionRetry')
-        self.retry_failed_button.setProperty('completionRole', 'chip')
-        self.retry_failed_button.setProperty('completionRadius', COMPLETION_RADIUS_SMALL)
-        self.retry_failed_button.setMinimumHeight(32)
-        install_themed_icon(self.retry_failed_button, 'fa5s.redo', 'accent')
-        self.retry_failed_button.clicked.connect(self._retry_failed_items)
-        self.retry_failed_button.hide()
-        summary_notices.addWidget(self.retry_failed_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # 2026-10-30 (user, design A): retry and review items left the summary
+        # card for 「还可以做这些」 below; the card states the result only.
         self.result_exception_summary = QLabel('')
         self.result_exception_summary.setObjectName('resultSummaryNote')
         self.result_exception_summary.setWordWrap(True)
@@ -6178,10 +6180,28 @@ class MainWindow(QWidget):
             stats_layout.addLayout(block)
             self.result_stat_values[key] = value
             self.result_stat_captions[key] = label
-        stats_layout.addWidget(self.result_review_status, 0, Qt.AlignmentFlag.AlignVCenter)
         self.result_stats.hide()
         summary_layout.addWidget(self.result_stats, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(summary_card)
+        self.result_more_button = CompletionMoreButton()
+        self.result_more_button.setText('更多操作')
+        self.result_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        from .completion_todo import CompletionTodoSection
+        self.result_todo = CompletionTodoSection(self.result_more_button)
+        layout.addWidget(self.result_todo)
+        # AI glossary proofreading (2026-10-09, M14; the release highlight on
+        # the result since 2026-10-30): choose libraries, add terms, review
+        # and apply suggestions.
+        self.repolish_current_glossary_button = self.result_todo.ai_card.action
+        bind_text(self.repolish_current_glossary_button, '整理词库、对照原文与建议，勾选后才写回字幕；写回后可在字幕工作台撤销', property='toolTip')
+        self.repolish_current_glossary_button.clicked.connect(lambda: self._completion_action('repolish', self._open_glossary_proofread))
+        # Current review items, grouped by category; each group opens Studio there.
+        self.result_review_status = self.result_todo.review_card
+        self.result_todo.review_jump.connect(lambda row: self._completion_action('review', lambda: self._open_completion_review_row(row)))
+        self.result_todo.review_list.connect(lambda: self._completion_action('review', self._show_completion_review_details))
+        # Only for retryable outcomes; the card says what the retry covers.
+        self.retry_failed_button = self.result_todo.retry_card.action
+        self.retry_failed_button.clicked.connect(self._retry_failed_items)
         self.result_files_toggle = CompletionAccordionHeader('任务与输出')
         self.result_log_toggle = CompletionAccordionHeader('运行日志')
         self.result_files = QTextEdit()
@@ -6189,7 +6209,6 @@ class MainWindow(QWidget):
         self.result_files.setProperty('completionRadius', COMPLETION_RADIUS_MAIN)
         self.result_files.setReadOnly(True)
         self.result_files_panel = CompletionInfoPanel(self.result_files_toggle, self.result_files)
-        layout.addWidget(self.result_files_panel)
         self.result_console = QTextEdit()
         self.result_console.setObjectName('resultConsole')
         self.result_console.setProperty('completionRadius', COMPLETION_RADIUS_MAIN)
@@ -6197,7 +6216,8 @@ class MainWindow(QWidget):
         self.result_console.setWordWrapMode(QTextOption.WrapMode.NoWrap)
         self.result_log_panel = CompletionInfoPanel(self.result_log_toggle, self.result_console)
         self.result_log_panel.mode_changed.connect(lambda: self._toggle_completion_log(self.result_log_panel.mode == 'full'))
-        layout.addWidget(self.result_log_panel)
+        from .completion_widgets import CompletionFoldRow
+        self.result_folds = CompletionFoldRow((self.result_files_panel, self.result_log_panel))
         self.result_details_toggle = self.result_log_toggle
         self.result_detail_row = self.result_console
         self.export_result_button = CompletionActionCard('导出字幕', '保存 SRT、ASS、TXT 等字幕文件', 'fa5s.file-export', hue='primary')
@@ -6208,25 +6228,11 @@ class MainWindow(QWidget):
         self.result_return_button.clicked.connect(lambda: self._completion_action('return', self._return_to_main_menu))
         self.result_action_grid = CompletionActionGrid((self.export_result_button, self.open_studio_result_button, self.result_return_button))
         layout.addWidget(self.result_action_grid)
+        layout.addWidget(self.result_folds)
         # The delivered subtitles themselves, below the actions (2026-10-07).
         from .completion_widgets import CompletionPreview
         self.result_preview = CompletionPreview()
         layout.addWidget(self.result_preview)
-        self.open_priority_review_button = CompletionSecondaryButton('开始优先审核')
-        self.open_priority_review_button.setObjectName('softAction')
-        install_themed_icon(self.open_priority_review_button, 'fa5s.flag', 'secondary')
-        self.open_priority_review_button.clicked.connect(lambda: self._completion_action('review', self._open_priority_review_from_result))
-        self.open_priority_review_button.hide()
-        # 2026-10-09 (M14, user): a proofreading workspace on the result
-        # itself — choose libraries, add terms, review and apply suggestions.
-        self.repolish_current_glossary_button = CompletionSecondaryButton('AI 词库校对…')
-        self.repolish_current_glossary_button.setObjectName('softAction')
-        install_themed_icon(self.repolish_current_glossary_button, 'fa5s.book', 'secondary')
-        bind_text(self.repolish_current_glossary_button, '整理词库、对照原文与建议，勾选后才写回字幕；写回后可在字幕工作台撤销', property='toolTip')
-        self.repolish_current_glossary_button.clicked.connect(lambda: self._completion_action('repolish', self._open_glossary_proofread))
-        self.result_more_button = CompletionMoreButton()
-        self.result_more_button.setText('更多操作')
-        self.result_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.result_more_menu = QMenu(self.result_more_button)
         self.result_more_menu.setProperty("completionRole", "secondary")
         self.result_more_menu.setProperty("completionRadius", COMPLETION_RADIUS_SMALL)
@@ -6244,14 +6250,16 @@ class MainWindow(QWidget):
         self.result_more_menu.addSeparator()
         self.result_more_menu.addAction('AI 模型与密钥…', self._open_ai_provider_config)
         self.result_more_button.setMenu(self.result_more_menu)
-        self.result_action_grid.set_secondary_actions((self.open_priority_review_button,
-            self.repolish_current_glossary_button, self.result_more_button))
+        # 2026-10-30: 「开始优先审核」 is gone (the review card does it); AI
+        # proofreading and 更多操作 live in 「还可以做这些」.
+        self.result_action_grid.set_secondary_actions(())
         self.result_secondary_bar = self.result_action_grid
         self.result_secondary_layout = self.result_action_grid.grid
         self.result_content.bind_actions(layout,
             (self.export_result_button, self.open_studio_result_button, self.result_return_button),
             viewport=scroll.viewport(), summary_layout=summary_layout, summary_copy=summary_copy, page_layout=outer,
-            panels=(self.result_files_panel, self.result_log_panel), action_grid=self.result_action_grid)
+            panels=(self.result_files_panel, self.result_log_panel), action_grid=self.result_action_grid,
+            extra_sections=(self.result_todo,), preview=self.result_preview, fold_row=self.result_folds)
         return scroll
 
     def _open_completion_from_history(self, record):
@@ -6289,8 +6297,8 @@ class MainWindow(QWidget):
                            available_actions=set(ACTION_LABELS) - TASK_ACTIONS)
 
     def _show_completion_review_details(self):
-        self.result_files_panel.set_mode('full')
-        self.result_files.setFocus()
+        from .completion_review import open_current_review
+        open_current_review(self)
 
     @staticmethod
     def _completion_task_key(item):
@@ -6320,9 +6328,8 @@ class MainWindow(QWidget):
         if not task:
             self._last_srt_dir = ''
             self.open_subtitle_result_button.setEnabled(False)
-            self.open_priority_review_button.show()
-            self.open_priority_review_button.setEnabled(False)
-            self.result_review_status.hide()
+            self.result_todo.set_review(())
+            self.result_todo.set_retry(visible=False)
             self.result_stats.hide()
             self.result_summary_meta.hide()
             self.result_summary.show()
@@ -6357,9 +6364,7 @@ class MainWindow(QWidget):
         filename = Path(item.media_path).name
         self.result_single_filename.set_full_name(filename)
         self.result_task_selector.setToolTip(filename)
-        self.open_priority_review_button.show()
-        self.open_priority_review_button.setEnabled(bool(available and outcome and outcome.has_review))
-        self.result_review_status.setVisible(bool(outcome and outcome.has_review))
+        self.result_todo.set_review(self._completion_review_rows(evidence), enabled=available)
         if outcome:
             bind_text(self.result_title, outcome.title)
             # 2026-10-09 (M15, user): an unfinished AI check is a button to
@@ -6377,7 +6382,8 @@ class MainWindow(QWidget):
             duration = f'{minutes}:{seconds:02d}' if minutes else f'{seconds}s'
             qualified = ' · ' in outcome.title
             polish = '' if (qualified and outcome.polish_status == 'partial') else translate(
-                'AI文字检查已执行' if outcome.polish_status == 'completed' else outcome.polish_label,
+                '部分AI校对保留原字幕' if outcome.core_status == 'completed' and outcome.polish_status == 'partial'
+                else 'AI文字检查已执行' if outcome.polish_status == 'completed' else outcome.polish_label,
                 getattr(self, '_ui_language', 'zh'))
             bind_text(self.result_summary, '{count} 条字幕 · 采纳 {accepted} 处文字修改 · 本文件耗时 {elapsed}{polish}',
                       accepted=outcome.accepted_edits, count=outcome.final_cues, elapsed=duration,
@@ -6393,8 +6399,6 @@ class MainWindow(QWidget):
             self.result_summary.hide()
             self.result_summary_meta.show()
             self.result_stats.show()
-            bind_text(self.result_review_status, '有待检查项 · {count} 项', count=outcome.review_issue_count)
-            self.result_review_status.setToolTip('\n'.join(outcome.problems + outcome.review_notes))
             bind_text(self.result_review_summary, '待检查问题 {count} 项', count=outcome.review_issue_count)
             self.result_review_summary.hide()
             messages = []
@@ -6438,31 +6442,51 @@ class MainWindow(QWidget):
             bind_text(self.result_task_summary, '')
         self.result_task_summary.setVisible(bool(project_error))
         recovery=evidence.get('stage_recovery') or {}
+        from ..recognition.language_recovery_project import project_pending
+        language_pending = project_pending(task[1] if task else None)
         retryable = bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable or outcome.core_status == 'failed'))
-        self.retry_failed_button.setVisible(retryable)
+        retryable = retryable or bool(language_pending)
         optional_retry=bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable))
-        self.retry_failed_button.setEnabled(bool(retryable and (available or not optional_retry)))
-        if recovery.get('failed_tasks'):
-            bind_text(self.retry_failed_button,'重试失败任务 {count} 项',count=recovery['failed_tasks'])
-            bind_text(self.result_task_summary,'失败任务 {tasks} 项 · 影响当前字幕 {cues} 条 · 可执行重试 {retryable} 项；人工检查项另计。',
-                tasks=recovery['failed_tasks'],cues=recovery['affected_cues'],retryable=recovery['retryable_tasks'])
+        enabled = bool(retryable and (available or not optional_retry))
+        if language_pending:
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='语言待恢复',
+                label='仅恢复语言异常范围…', badge=len(language_pending),
+                body='有 {count} 段原文语言待核对；正常结果已保存。可选择已有模型只重新识别异常范围。',
+                body_arguments=dict(count=len(language_pending)))
+            bind_text(self.result_task_summary,'有 {count} 段原文语言待核对；正常结果已保存。可选择已有模型只重新识别异常范围。',count=len(language_pending))
             self.result_task_summary.show()
+        elif recovery.get('failed_tasks'):
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='重试', badge=recovery['retryable_tasks'],
+                note=tr('{count} 项没跑完', count=recovery['retryable_tasks']) if recovery['retryable_tasks'] else '',
+                body='有 {tasks} 个可选阶段没跑完（对应当前字幕 {cues} 条）。只重试这一部分，原字幕可以继续用。'
+                if recovery['affected_cues'] else '有 {tasks} 个可选阶段没跑完。只重试这一部分，原字幕可以继续用。',
+                body_arguments=dict(tasks=recovery['failed_tasks'], cues=recovery['affected_cues']))
         elif recovery.get('pending_proposals'):
-            bind_text(self.retry_failed_button,'查看重试校对建议')
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='重试的校对建议', label='查看建议',
+                body='上次重试已经算出校对建议，还没有确认写回字幕。')
         elif outcome and outcome.polish_retryable:
-            bind_text(self.retry_failed_button, '重试未完成 AI 校对')
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='重试', badge=outcome.fallback_records,
+                note=tr('{count} 段没跑完', count=outcome.fallback_records) if outcome.fallback_records else '',
+                body='AI 校对有一部分没完成，这些字幕保留了原文。只重试这一部分。')
         elif outcome and outcome.search_retryable:
-            bind_text(self.retry_failed_button, '重试联网核验')
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='重试联网核验',
+                body='联网核验没有完成，可以只重试这一步。')
         else:
-            bind_text(self.retry_failed_button, '重试失败项')
+            self.result_todo.set_retry(visible=retryable, enabled=enabled, title='重试失败项', note='',
+                body='识别没有完成。重试会按原来的设置重新识别失败的文件。')
+        self.result_todo.set_ai(enabled=available, unfinished=outcome.fallback_records
+                                if outcome and outcome.polish_status == 'partial' else 0)
         self.retry_term_action.setVisible(bool(outcome and outcome.search_retryable and getattr(self, '_last_run_options', None)))
         diagnosis = self._completion_diagnosis(item, evidence)
         self.diagnose_result_action.setEnabled(diagnosis is not None)
         self.result_diagnosis_hint.set_finding(
-            diagnosis.headline() if diagnosis is not None else None,
+            diagnosis.headline() if diagnosis is not None and not (outcome and outcome.core_status == 'completed') else None,
             failed=bool(outcome and outcome.core_status == 'failed'),
             others=[finding for finding in (diagnosis.findings if diagnosis is not None else ()) if finding.severity != 'tip'])
         self._refresh_completion_summaries()
+        # Another task's cards and preview have other heights; re-measure the
+        # page so a shorter result leaves no stretched gaps (2026-10-30).
+        self.result_content.request_adapt()
 
     def _completion_diagnosis(self, item, evidence):
         """The local check of one task's report, computed once per task (2026-10-23)."""
@@ -6557,13 +6581,48 @@ class MainWindow(QWidget):
         summary = completion_summary(evidence.get('display_payload'), outcome,
             media_path=item.media_path, project_path=item.project_path, project_loaded=project is not None,
             project_cues=len(project.cues) if project is not None else None,
-            project_error=evidence.get('project_error', ''), language=getattr(self, '_ui_language', 'zh'))
+            project_error=evidence.get('project_error', ''), language=getattr(self, '_ui_language', 'zh'),
+            save_state=(getattr(self, '_proofread_save_states', {}).get(str(item.project_path)) or {}).get('state', ''))
         self._completion_summary = summary
         self.result_files_panel.set_summary_lines(summary.task_lines)
         self.result_log_panel.set_summary_lines(summary.log_lines)
+        self._sync_completion_save_state()
+
+    def _proofread_saving_changed(self, pending, path, error):
+        states = getattr(self, '_proofread_save_states', {})
+        previous = states.get(str(path))
+        states[str(path)] = {'state': 'pending' if pending else 'error' if error else '', 'error': error}
+        self._proofread_save_states = states
+        if not pending:
+            tasks = getattr(self, '_completion_tasks', ())
+            index = self.result_task_selector.currentIndex()
+            if 0 <= index < len(tasks) and str(tasks[index][0].project_path) == str(path):
+                self._select_completion_task(index)
+        elif previous != states[str(path)]:
+            self._refresh_completion_summaries()
+        self._sync_completion_save_state()
+
+    def _sync_completion_save_state(self):
+        tasks = getattr(self, '_completion_tasks', ())
+        index = self.result_task_selector.currentIndex()
+        if not 0 <= index < len(tasks):
+            return
+        path = str(tasks[index][0].project_path)
+        state = (getattr(self, '_proofread_save_states', {}).get(path) or {}).get('state')
+        if state not in ('pending', 'error'):
+            return
+        for button in (self.export_result_button, self.open_studio_result_button,
+                       self.retry_failed_button, self.repolish_current_glossary_button, self.result_return_button):
+            button.setEnabled(False)
+        if state == 'error':
+            self.repolish_current_glossary_button.setEnabled(True)
+        bind_text(self.result_task_summary, '最新修改正在保存；完成后可打开工作台、导出和重试。' if state == 'pending'
+                  else '最新修改保存失败，仍在内存中；请返回 AI 校对重试保存。')
+        self.result_task_summary.show()
 
     def _refresh_completion_preview(self):
         """First cues of the selected task's saved project (re-read after Studio edits)."""
+        self._completion_preview_dirty=False
         preview = getattr(self, 'result_preview', None)
         if preview is None:
             return
@@ -6594,6 +6653,10 @@ class MainWindow(QWidget):
         from ..projects.speaker_names import display_speaker_name
         from ..studio.studio_cue_table import _speaker_color
         speakers = {speaker.id: speaker for speaker in project.speakers}
+        from ..design.timeline_theme import timeline_palette
+        palette = timeline_palette()
+        names = {key: display_speaker_name(project, speaker) for key, speaker in speakers.items()}
+        colors = {key: _speaker_color(project, key, palette).name() for key in speakers}
         cues = sorted(project.cues, key=lambda cue: (cue.start_ms, cue.end_ms))
         rows = []
         for cue in cues:
@@ -6603,8 +6666,8 @@ class MainWindow(QWidget):
             stamp_text = (f'{hours}:{minutes:02d}:{seconds:02d}.{millis // 100}' if hours
                           else f'{minutes:02d}:{seconds:02d}.{millis // 100}')
             speaker = speakers.get(cue.speaker_id)
-            name = display_speaker_name(project, speaker) if speaker is not None else cue.speaker_id
-            rows.append((stamp_text, name, _speaker_color(project, cue.speaker_id).name(),
+            name = names.get(cue.speaker_id, cue.speaker_id)
+            rows.append((stamp_text, name, colors.get(cue.speaker_id, '#888888'),
                          ' '.join(str(cue.text).split())))
         preview.set_rows(rows, len(cues))
         self._sync_completion_count(item, len(cues))
@@ -6717,6 +6780,11 @@ class MainWindow(QWidget):
         if not self._prepare_glossary_for_task():
             return
         item, project = tasks[index]
+        review = getattr(self, 'glossary_proofread_page', None)
+        if review is not None and str(getattr(review, '_project_path', '')) == str(item.project_path) and (
+                getattr(review, '_save_error', '') or getattr(review, '_return_save_pending', False)):
+            self._switch_page(review)
+            return
         outcome = self._completion_task_evidence.get(self._completion_task_key(item), {}).get('outcome')
         hint = ''
         if outcome is not None and outcome.polish_status == 'partial':
@@ -6751,6 +6819,7 @@ class MainWindow(QWidget):
             _startup_mark("PROOFREAD_PAGE_BUILT", duration_ms=round((time.perf_counter() - opening) * 1000, 1))
             page.back_requested.connect(lambda: self._switch_page(self._glossary_proofread_return))
             page.applied.connect(self._glossary_proofread_applied)
+            page.saving_changed.connect(self._proofread_saving_changed)
             QApplication.instance().aboutToQuit.connect(page.shutdown)
             self.glossary_proofread_page = page
             self.pages.addWidget(page)
@@ -6759,6 +6828,7 @@ class MainWindow(QWidget):
         # Bind after the page transition; text review also tolerates the
         # asynchronous source-duration probe from native playback.
         switched = time.perf_counter()
+        page._save_to_result = studio is None
         page.open_task(path, project, hint=hint, studio=studio)
         _startup_mark("PROOFREAD_TASK_OPENED", switch_ms=round((switched - opening) * 1000, 1),
                       open_task_ms=round((time.perf_counter() - switched) * 1000, 1))
@@ -6767,14 +6837,28 @@ class MainWindow(QWidget):
         """Applied changes reach the result page, its export and Studio."""
         from ..projects.studio_project import load_project
         tasks = getattr(self, '_completion_tasks', [])
+        review = getattr(self, 'glossary_proofread_page', None)
+        live = None
+        if review is not None and str(getattr(review, '_project_path', '')) == str(path):
+            live, _owner = review._live_project()
         for index, (item, _project) in enumerate(list(tasks)):
             if str(item.project_path) == str(path):
                 try:
-                    tasks[index] = (item, load_project(path))
+                    tasks[index] = (item, live if live is not None else load_project(path))
                 except (OSError, ValueError, TypeError):
                     continue
-        self._completion_preview_stamps = {}
-        self._refresh_completion_preview()
+        try:
+            self._completion_preview_stamps = {str(Path(path)): Path(path).stat().st_mtime_ns}
+        except OSError:
+            self._completion_preview_stamps = {}
+        self._completion_preview_dirty=True
+        self._flush_pending_completion_preview()
+
+    def _flush_pending_completion_preview(self, *, force=False):
+        preview=self.__dict__.get('result_preview')
+        if self.__dict__.get('_completion_preview_dirty',False) and preview is not None and (force or preview.isVisible()):
+            self._completion_preview_dirty=False
+            self._refresh_completion_preview()
 
     def _repolish_completion_with_current_glossary(self):
         project = getattr(self, '_last_studio_project', '')
@@ -6824,10 +6908,10 @@ class MainWindow(QWidget):
         self._completion_log_loaded = 0
         self._completion_log_generation = getattr(self, '_completion_log_generation', 0) + 1
         self.result_console.clear()
-        # 2026-10-07 contract: both folds start collapsed; their headers still
-        # show the first real facts, and the user's own choice is not overridden.
-        self.result_log_panel.set_mode('collapsed')
-        self.result_files_panel.set_mode('collapsed')
+        # A new completed run opens both summaries. Task selection, saved
+        # project refreshes and window resizing do not reset the user's mode.
+        self.result_log_panel.set_mode('summary')
+        self.result_files_panel.set_mode('summary')
         self._refresh_completion_summaries()
 
     def _toggle_completion_log(self, expanded):
@@ -6894,11 +6978,25 @@ class MainWindow(QWidget):
         self._refresh_media_summary()
         self._resolve_glossary_binding()
 
-    def _open_priority_review_from_result(self) -> None:
-        project = getattr(self, "_last_studio_project", "")
-        if not project:
-            return
-        self._open_completion_project(project, mode="review", source="completion_review")
+    def _open_completion_review_row(self, row) -> None:
+        tasks = getattr(self, '_completion_tasks', ())
+        index = self.result_task_selector.currentIndex()
+        if 0 <= index < len(tasks) and tasks[index][1] is not None:
+            from .completion_review import open_review_row
+            open_review_row(self, tasks[index][0], row)
+
+    @staticmethod
+    def _completion_review_rows(evidence):
+        """The current review items the page counts (each with its current
+        captions), or the report's own when the project could not be checked."""
+        payload = evidence.get('display_payload') or {}
+        current = payload.get('_current_review')
+        if isinstance(current, dict):
+            return list(current.get('items') or ())
+        from ..recognition.current_review import WARNINGS
+        from ..recognition.recognition_outcome import review_severity
+        return [row for row in payload.get('review_items') or () if isinstance(row, dict)
+                and review_severity(row) in {'error', 'warning', 'review'} and row.get('category') not in WARNINGS]
 
     def _open_subtitle_dir(self):
         target = getattr(self, "_last_srt_dir", "") or str(Path(self.legacy.SCRIPT_DIR))
@@ -6972,6 +7070,12 @@ class MainWindow(QWidget):
                 QMessageBox.information(self,tr('无法重试当前范围'),tr('原工程尚未载入或身份已改变。请先恢复已有识别结果；未重新提交整段转写。'))
                 return
         if 0 <= index < len(tasks) and tasks[index][1]:
+            from ..recognition.language_recovery_project import project_pending
+            if project_pending(tasks[index][1]):
+                from ..studio.language_recovery_ui import open_recovery
+                self._open_completion_project(tasks[index][0].project_path, mode='edit',
+                    source='completion-language-recovery', on_ready=open_recovery)
+                return
             evidence=self._completion_task_evidence.get(self._completion_task_key(tasks[index][0]), {})
             from ..recognition.processing_recovery import refresh_completion_evidence
             refresh_completion_evidence(tasks[index][1],evidence)
@@ -7313,7 +7417,7 @@ class MainWindow(QWidget):
                         from .window_constraints import native_windowpos
                         if native_windowpos(self, int(msg.lParam)):
                             return True, 0
-                if msg.message in (0x0083,0x0024):
+                if msg.message in (0x0083,0x0024,0x0085,0x0086):
                     from .window_native_frame import handle_message
                     result = handle_message(self,int(msg.message),int(msg.wParam),int(msg.lParam),hwnd=hwnd)
                     if result is not None:
@@ -8425,7 +8529,7 @@ class MainWindow(QWidget):
         # saved as recognition_language "zh" + chinese_script "zh-Hant".
         for text, value in (("自动识别语言", "auto"), ("简体中文", "zh"), ("繁体中文", "zh-Hant"),
                             ("日语", "ja"), ("英语", "en"), ("韩语", "ko"), ("西班牙语", "es"), ("德语", "de"),
-                            ("法语", "fr"), ("葡萄牙语", "pt"), ("意大利语", "it"), ("俄语", "ru")):
+                            ("法语", "fr"), ("葡萄牙语", "pt"),('葡萄牙语（巴西）','pt-BR'),('葡萄牙语（葡萄牙）','pt-PT'), ("意大利语", "it"), ("俄语", "ru")):
             self.recognition_language.addItem(tr(text), value)
         if saved.get("recognition_language") == "zh" and saved.get("chinese_script") == "zh-Hant":
             saved["recognition_language"] = "zh-Hant"
@@ -8556,6 +8660,12 @@ class MainWindow(QWidget):
                      "translation": tr("{value0}翻译", value0=target)}.get(options["subtitle_output"], spoken)
             summary.setText(tr("字幕会显示：{value0}", value0=shows))
         hints = []
+        primary = self.__dict__.get('primary_asr_backend')
+        models = (self.legacy.RUNTIME_SETTINGS or {}).get('models', {})
+        if ((str(primary.currentData()) if primary is not None else models.get('primary_asr_backend')) == 'api'
+                and models.get('qwen_asr_api_provider') == 'mosi_moss_pro'):
+            from ..providers.mosi_asr import LANGUAGE_NOTICE
+            hints.append(tr(LANGUAGE_NOTICE))
         aligner_missing = False
         timeline = self.__dict__.get("firered_asr_backend")
         timeline_enabled = timeline is None or str(timeline.currentData()) != "off"
@@ -11525,6 +11635,13 @@ class MainWindow(QWidget):
             self._append_feed('说话人区分',label,BLUE)
             if getattr(self,'_studio_recognition_context',None):self.studio_page.set_recognition_runtime_stage(label,'')
             self._update_progress_clock()
+        elif event.kind == 'language_recovery_progress':
+            value=event.payload
+            completed,total=int(value.get('completed') or 0),int(value.get('total') or 0)
+            label=tr('本地替代识别 · {done}/{total} 个窗口',done=completed,total=total) if total else tr('正在准备本地替代识别')
+            if getattr(self,'_studio_recognition_context',None):
+                self.studio_page.set_recognition_runtime_stage(label,'')
+            self._append_feed('范围恢复',label,BLUE)
         elif event.kind in {'asr_progress','asr_evidence_delta','asr_worker_progress','asr_wait'}:
             payload=event.payload; backend=str(payload.get('backend','asr'))
             label=recognition_event_text(event.kind,payload)
@@ -11985,7 +12102,6 @@ class MainWindow(QWidget):
         self._completion_batch_counts = dict(success=queue_outcome.completed_count, partial=queue_outcome.partial_count,
             failure=queue_outcome.failed_count, cancel=queue_outcome.cancelled_count, skipped=queue_outcome.skipped_count,
             unknown=queue_outcome.unknown_count, elapsed=f'{result.elapsed_seconds:.1f}')
-        self.result_files_toggle.setChecked(False)
         self._select_completion_task(0)
         if not outcomes:
             bind_text(self.result_title, '任务状态待确认')
@@ -12002,9 +12118,6 @@ class MainWindow(QWidget):
             self._switch_page(2)
         if hasattr(self, "open_studio_result_button"):
             self.open_studio_result_button.setVisible(True)
-        if hasattr(self, "open_priority_review_button"):
-            if not hasattr(self, 'result_task_selector'):
-                self.open_priority_review_button.setVisible(bool(self._last_studio_project and review_total))
         if not studio_context and not getattr(self, "_tutorial_demo_result", False):
             self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
         elif studio_context and (failure_count or cancel_count):
@@ -12062,9 +12175,7 @@ class MainWindow(QWidget):
             self.result_task_selector.clear()
             self._select_completion_task(-1)
             self.repolish_current_glossary_button.setEnabled(False)
-            self.open_priority_review_button.show()
-            self.open_priority_review_button.setEnabled(False)
-            self.retry_failed_button.hide()
+            self.result_todo.set_retry(visible=False)
             self.result_exception_summary.setText(message)
             self.result_exception_summary.show()
             self.result_review_summary.setProperty('i18nTemplate', None)
@@ -12075,8 +12186,6 @@ class MainWindow(QWidget):
             self.studio_page.fail_recognition_runtime(message)
             return
         self._switch_page(2)
-        if hasattr(self, "result_details_toggle"):
-            self.result_details_toggle.setChecked(False)
         apply_ui_language(self, getattr(self, "_ui_language", "zh"))
         self._show_task_notification(
             "字幕任务异常中止",
@@ -12385,6 +12494,8 @@ def run_desktop_app(
         open_studio = os.environ.get("TWOBYTEASR_STARTUP_OPEN_STUDIO") == "1"
         startup_theme = os.environ.get("TWOBYTEASR_STARTUP_THEME", "")
         startup_size = os.environ.get("TWOBYTEASR_STARTUP_SIZE", "")
+        preserve_audit_state = (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'daily-regressions'
+                                and os.environ.get('TWOBYTEASR_ACCEPTANCE_PRESERVE_WINDOW_STATE') == '1')
 
         def _open_studio_for_audit():
             if startup_theme:
@@ -12395,10 +12506,13 @@ def run_desktop_app(
                     window.setGeometry(120, 60, width, height)
                 except ValueError:
                     pass
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
-            if os.name == "nt":
+            if preserve_audit_state:
+                window.show()
+            else:
+                window.showNormal()
+                window.raise_()
+                window.activateWindow()
+            if os.name == "nt" and not preserve_audit_state:
                 # A background-started process has no foreground rights; the
                 # topmost flip reliably lifts the window above shell windows
                 # for real-desktop screenshot acceptance.

@@ -176,6 +176,22 @@ def normalize(name):
     return re.sub(r'[-_.]+', '-', name).lower()
 
 
+def create_pinned_venv(base, runtime, run):
+    """Bind to the verified patch interpreter, never uv's mutable minor link.
+
+    uv 0.11.7 rewrites even an explicit 3.10.19 path to cpython-3.10 when
+    that folder is its managed install directory. An interrupted refresh of
+    that link then leaves a surviving trampoline that cannot start Python.
+    The pinned base's stdlib creator avoids that extra lifetime dependency.
+    """
+    base=Path(base).resolve();runtime=Path(runtime)
+    run([base,'-I','-X','utf8','-m','venv','--without-pip',runtime], '创建运行环境')
+    cfg={key.strip():value.strip() for key,value in
+         (line.split('=',1) for line in (runtime/'pyvenv.cfg').read_text('utf8').splitlines() if '=' in line)}
+    if Path(cfg.get('home','').strip()).resolve()!=base.parent:
+        raise RuntimeError('新环境没有引用已验证的固定基础 Python；未登记此环境')
+
+
 def validate_runtime(python, root, identity, managed):
     from twobyteasr.system.deployment import run_command
     run_command([python, '-I', '-X', 'utf8', '-B', root/'scripts/validate_managed_runtime.py',
@@ -378,6 +394,13 @@ def main():
         run([args.uv, '--no-config', '--system-certs',
              *(['--no-cache'] if args.repair_roles else []), *arguments], uv_step(arguments))
     def install_python(version):
+        base=private_python/f'cpython-{version}-windows-x86_64-none/python.exe'
+        if base.is_file():
+            try:
+                run([base,'-I','-X','utf8','-c',f"import sys;assert '.'.join(map(str,sys.version_info[:3]))=={version!r}"], '检查基础 Python')
+                return
+            except (subprocess.CalledProcessError,RuntimeError,TimeoutError,OSError):
+                pass
         install = ('python', 'install', version, '--install-dir', private_python, '--no-bin', '--no-registry')
         # uv checks every Python archive against the SHA-256 built into uv.
         attempts = [(None, '默认来源')] + [(item['url'], item['label']) for item in mirror_list(root, 'python_mirrors')]
@@ -481,7 +504,7 @@ def main():
         base = private_python / f'cpython-{version}-windows-x86_64-none/python.exe'
         install_python(version)
         if not python.is_file():
-            uv('venv', '--no-project', '--python', base, '--managed-python', '--no-python-downloads', runtime)
+            create_pinned_venv(base,runtime,run)
         constraints=runtime/'constraints.txt'
         pins=role_pins(contract, role, models, tag)
         constraints.write_text('\n'.join(pins)+'\n','utf8')

@@ -100,6 +100,7 @@ def test_pending_cards_show_banner_role_buttons_and_representative_line(manager)
 
 def test_role_click_applies_at_once_and_one_undo_restores(manager):
     manager.cards["API_S02"].roles.buttons["game"].click()
+    APP.processEvents()
     assert speaker_ids(manager) == ["API_S01", "API_S03", "GAME_BACKGROUND"]
     assert manager.page.undo_stack.count() == 1
     assert list(manager.cards) == ["API_S01", "API_S02", "API_S03", "GAME_BACKGROUND"]
@@ -115,23 +116,28 @@ def test_role_click_applies_at_once_and_one_undo_restores(manager):
 
 def test_ignore_keeps_card_and_main_restores_as_host(manager):
     manager.cards["API_S03"].roles.buttons["ignore"].click()
+    APP.processEvents()
     card = manager.cards["API_S03"]
     assert "API_S03" not in speaker_ids(manager)
-    assert card.status_label.text().startswith("已忽略 · 2 条字幕")
+    assert '2 条字幕保留' in card.status_label.text()
+    manager.role_filter.setCurrentIndex(1)
     manager.cards["API_S03"].roles.buttons["main"].click()
+    APP.processEvents()
     restored = next(s for s in manager.page.project.speakers if s.id == "API_S03")
     assert restored.is_host
     assert [c.text for c in manager.page.project.cues if c.speaker_id == "API_S03"] == ["获得黄金种子", "圣杯瓶次数增加"]
     assert manager.cards["API_S03"].host_button.isChecked()
 
 
-def test_clicking_the_active_role_returns_to_pending(manager):
+def test_clicking_the_active_role_is_idempotent(manager):
     buttons = manager.cards["API_S01"].roles.buttons
     buttons["main"].click()
+    APP.processEvents()
     assert manager.cards["API_S01"].roles.role() == "main" and not manager.cards["API_S01"].pill.isVisible()
     buttons["main"].click()
-    assert manager.cards["API_S01"].roles.role() == "" and manager.cards["API_S01"].pill.text() == "待确认"
-    assert manager.page.undo_stack.count() == 2
+    APP.processEvents()
+    assert manager.cards["API_S01"].roles.role() == 'main'
+    assert manager.page.undo_stack.count() == 1
 
 
 def test_merge_menu_targets_and_merge_into_another_track(manager):
@@ -206,6 +212,7 @@ def test_legacy_cache_folder_stages_roles_until_rebuild(tmp_path):
     dialog.refresh()
     assert dialog.rebuild_button.isVisible() and list(dialog.cards) == ["S01", "S02"]
     dialog.cards["S02"].roles.buttons["ignore"].click()
+    APP.processEvents()
     assert page._speaker_roles_pending and page.undo_stack.count() == 0
     dialog.rebuild_button.click()
     assert page.undo_stack.count() == 1 and [s.id for s in project.speakers] == ["S01"]

@@ -1,6 +1,7 @@
 """Stable display-only wrapping; never rewrite cue text, timing, or font size."""
 from dataclasses import dataclass
 import unicodedata
+import re
 
 NO_BREAK_SPACES=frozenset('   ')
 
@@ -50,12 +51,8 @@ def line_source_ranges(source, lines):
 
 
 def graphemes(text):
-    clusters=[]
-    for char in text:
-        continuation=unicodedata.combining(char) or char in ('\ufe0e','\ufe0f','\u200d') or (clusters and clusters[-1].endswith('\u200d'))
-        if continuation and clusters:clusters[-1]+=char
-        else:clusters.append(char)
-    return clusters
+    from ..subtitle_rules.segmentation_profiles import graphemes as source_graphemes
+    return [cluster for a,b,cluster in source_graphemes(text)]
 
 
 @dataclass(frozen=True)
@@ -80,6 +77,15 @@ def wrap_caption_text(text,measure,max_width):
         if not paragraph or measure(paragraph)<=limit:
             lines.append(paragraph);continue
         chars=graphemes(paragraph);start=0
+        offsets=[0]
+        for cluster in chars:offsets.append(offsets[-1]+len(cluster))
+        cjk=any(0x3400<=ord(ch)<=0x9fff or 0x3040<=ord(ch)<=0x30ff for ch in paragraph)
+        # Spaced scripts keep entire words, apostrophe/hyphen forms and
+        # formula no-break spaces. CJK still protects embedded IDs/numbers
+        # and complete katakana runs without initializing a tokenizer in paint.
+        pattern=r'[A-Za-zÀ-ɏА-яЁё0-9]+(?:[\w\u0300-\u036f’\'._:/%+-]*[\w\u0300-\u036f])?|[ァ-ヿー]+' if cjk else r'[^ \t\r\n]+'
+        atoms=[(m.start(),m.end()) for m in re.finditer(pattern,paragraph)]
+        legal={i for i,p in enumerate(offsets) if not any(a<p<b for a,b in atoms)}
         while start<len(chars):
             end=start;last_break=None
             while end<len(chars):
@@ -87,11 +93,14 @@ def wrap_caption_text(text,measure,max_width):
                 if end>start and measure(candidate)>limit:break
                 end+=1
                 # No-break spaces (inside a converted math formula, ADR 0124) never break.
-                if (chars[end-1].isspace() and chars[end-1] not in NO_BREAK_SPACES) or chars[end-1][-1] in closing:last_break=end
+                if end in legal and ((chars[end-1].isspace() and chars[end-1] not in NO_BREAK_SPACES) or chars[end-1][-1] in closing):last_break=end
             if end<len(chars):
                 if last_break is not None and last_break>start:end=last_break
-                if end-start>1 and chars[end-1][-1] in opening:end-=1
-                if end-start>1 and chars[end][0] in closing:end-=1
+                if end-start>1 and chars[end-1][-1] in opening and end-1 in legal:end-=1
+                if end-start>1 and chars[end][0] in closing and end-1 in legal:end-=1
+            if end not in legal:
+                before=[p for p in legal if start<p<=end]
+                end=max(before) if before else min(p for p in legal if p>start)
             end=max(start+1,end)
             lines.append(''.join(chars[start:end]));start=end
     widths=tuple(float(measure(line)) if line else 0. for line in lines)

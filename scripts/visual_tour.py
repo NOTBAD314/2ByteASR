@@ -642,7 +642,7 @@ def inner(output: Path):
             panel.set_mode('summary')
         yield 0.5
         shot(f'completion-open_{tag}')
-        window.result_log_panel.set_mode('full')
+        window.result_log_panel.set_mode('full')  # 查看全部
         yield 0.6
         shot(f'completion-log_{tag}')
         for panel in (window.result_files_panel, window.result_log_panel):

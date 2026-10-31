@@ -275,7 +275,7 @@ def attach_timeline_result(result, snapshot):
 # describe its own anonymous result, so the captured project keeps its own.
 _RANGE_KEPT_METADATA = ("translations", "translation_records", "speaker_names", "asr_cue_states",
                         "asr_replacement_mapping", "cue_forced_alignment", "speaker_recovery",
-                        "speaker_recovery_error")
+                        "speaker_recovery_error", "transcript_acceptance")
 
 
 def _attach_range_result(captured, result, snapshot):
@@ -306,14 +306,23 @@ def _attach_range_result(captured, result, snapshot):
             "duration_ms": snapshot["duration_ms"], "sequence": snapshot["sequence"],
             "range_ms": [start, end]}
     captured.generation_metadata = {**metadata, "timeline_recognition": info}
-    prefix = "range-" + str(snapshot["fingerprint"])[:8]
+    # Input fingerprints repeat on a retry. Speaker labels belong to this
+    # result task, so use its persistent project identity as well.
+    import hashlib
+    task = str(result.generation_metadata.get('job_id') or result.project_id)
+    prefix = 'range-' + hashlib.sha256(task.encode('utf8')).hexdigest()[:12]
     payload = range_payload(result, start, end, prefix=prefix, span_project=captured)
     plan = splice_range(captured, (start, end), payload, foreign_speakers=True)
+    if result.generation_metadata.get('transcript_acceptance'):
+        from .language_recovery_project import inherit_range_appearance
+        inherit_range_appearance(captured, plan)
     info["cue_ids"] = list(plan.inserted_ids)
     info["range"] = {"window_ms": [start, end], "requested_ms": list(snapshot.get("requested_range_ms") or (start, end)),
                      "cue_ids": list(plan.inserted_ids), "replaced_cue_ids": list(plan.removed_ids),
                      "replaced_signature": cue_signature(captured, plan.removed_ids),
-                     "speaker_map": dict(plan.speaker_map)}
+                     "speaker_map": dict(plan.speaker_map),
+                     "speaker_identity_policy": "task-scoped-unconfirmed",
+                     "speaker_task_id": task}
     apply_plan(captured, plan, history_entry(plan, snapshot.get("requested_range_ms"),
                                              fingerprint=snapshot["fingerprint"]))
     if captured.studio_state.get('last_selected_cue') not in {c.id for c in captured.cues}:

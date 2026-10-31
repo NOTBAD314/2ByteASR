@@ -47,14 +47,14 @@ def review(tmp_path):
     w.shutdown();w.close();w.deleteLater();APP.processEvents()
 
 
-def test_disable_removes_repeats_from_every_effective_view_and_selection(review):
+def test_disable_removes_pending_repeats_but_keeps_round_rows_until_explicit_dismissal(review):
     w,p = review
     before = copy.deepcopy((p.cues,p.studio_state))
     w.filter_buttons['suggested'].setChecked(True);w._apply_filter();w._batch_select_all()
     assert w._batch_selected == {'you','it','then','mixed'}
     w.stutter_toggle.setChecked(False)
-    assert w._batch_selected == {'mixed'}
-    assert [w._rows[i]['cue_id'] for i in w.list.visible] == ['mixed']
+    assert w._batch_selected == {'you','it','then','mixed'}
+    assert [w._rows[i]['cue_id'] for i in w.list.visible] == ['you','it','then','mixed']
     assert len(w._groups(w._by_id['mixed'])) == 1
     assert w._unresolved(w._by_id['mixed'])[0]['kind'] == 'term'
     assert '1' in w.batch_count.text() and w.proposal_counts()['proposals'] == 1

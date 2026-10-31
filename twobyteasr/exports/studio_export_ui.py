@@ -2437,6 +2437,8 @@ class StudioExportWorkspace(QWidget):
         self._target_changed()
 
     def _target_changed(self, *_args) -> None:
+        if self._released or self._updating_export_controls:
+            return
         if not hasattr(self, "status"): return
         bind_text(self.status, '输出：{value0}', value0=self.export_target().full_path)
         duration = self.out_ms - self.in_ms if self.export_range.currentData() == "in_out" else self._duration_ms()
@@ -2766,6 +2768,8 @@ class StudioExportWorkspace(QWidget):
         def deliver(kind, payload=None):
             # Only the UI thread consumes run state. This worker owns its event
             # even if another export has started or its QWidget was destroyed.
+            if self._released or generation != self._run_generation:
+                return  # do not enter a Qt emitter after its page was retired
             try:
                 self.run_event.emit(generation, kind, payload)
             except RuntimeError:

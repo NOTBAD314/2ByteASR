@@ -17,6 +17,7 @@ class StudioQCWorker(QObject):
         super().__init__(parent)
         self._work=LatestWork('studio-qc-ipc')
         self._process=None
+        self._job=None
         self._closed=False
         self._lock=threading.Lock()
         self.submitted=self.completed=self.discarded=0
@@ -40,11 +41,22 @@ class StudioQCWorker(QObject):
                 command=([sys.executable,'--studio-qc-worker'] if getattr(sys,'frozen',False)
                          else [sys.executable,'-B',str(Path(__file__).resolve().parents[2]/'quick_start.py'),'--studio-qc-worker'])
                 process=popen_hidden_subprocess(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                    purpose='bounded Studio QC computation; no model/provider work')
+                    purpose='bounded Studio QC computation; no model/provider work',
+                    creationflags=4 if sys.platform == 'win32' else 0)
+                job=None
+                if sys.platform == 'win32':
+                    from ..system.process_job import RequestProcessJob
+                    try:job=RequestProcessJob(process)
+                    except OSError:
+                        process.terminate()
+                        raise
                 with self._lock:
                     if self._closed or serial!=self._serial:
-                        process.terminate();return
+                        process.terminate()
+                        if job is not None:job.close(timeout=0)
+                        return
                     self._process=process
+                    self._job=job
             begin=time.perf_counter()
             write_packet(process.stdin,(snapshot,config,terminology))
             reply=read_packet(process.stdout)
@@ -56,9 +68,13 @@ class StudioQCWorker(QObject):
         except Exception as error:
             with self._lock:
                 process,self._process=self._process,None
+                job,self._job=self._job,None
             if process is not None and process.poll() is None:
                 try:process.terminate()
                 except OSError:pass
+            if job is not None:
+                try:job.close(timeout=0)
+                except (OSError,TimeoutError):pass
             if not self._closed and serial==self._serial:self.failed.emit(token,str(error))
 
     def cancel(self):
@@ -66,9 +82,15 @@ class StudioQCWorker(QObject):
         with self._work.condition:self._work.pending=None
         with self._lock:
             process,self._process=self._process,None
+            job,self._job=self._job,None
         if process is not None and process.poll() is None:
             try:process.terminate()
             except OSError:pass
+        if job is not None:
+            # Closing the owned job handle also revokes descendants. No process
+            # names or unrelated sessions are inspected or terminated.
+            try:job.close(timeout=0)
+            except (OSError,TimeoutError):pass
         # No join/wait on the GUI thread. The actor's pipe read unwinds.
 
     def close(self):

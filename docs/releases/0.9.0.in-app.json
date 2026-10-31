@@ -1,0 +1,4 @@
+{
+  "zh": "· 全新停靠字幕编辑区：实时预览、候选采纳、快捷确认与人称切换。\n· SRT 追加/替换导入保留语言和说话人分轨。\n· 改进字体预览、双语排版、样式范围与时间轴响应。\n· 修订重叠讲座的文字/数字保真、局部说话人身份及保存恢复。\n· 偶发原生崩溃、冷缓存停顿和部分显示瞬态仍在跟进。",
+  "en": "Docked live caption editing, speaker/language-aware SRT import, font previews and bilingual layout, timeline performance, overlap fidelity and range-speaker corrections. Native crashes and cold-cache pauses remain under investigation."
+}

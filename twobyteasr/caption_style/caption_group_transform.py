@@ -90,7 +90,7 @@ class GroupTransformCommand(QUndoCommand):
         _commit_mutation(self.project,action_id=self.text(),
             dirty=(DirtyDomain.NATIVE_SUBTITLE|DirtyDomain.ADVANCED_PREVIEW|DirtyDomain.TRANSFORM|
                    DirtyDomain.TIMELINE_PIXELS|DirtyDomain.AUTOSAVE|DirtyDomain.PROJECT_METADATA),
-            cue_ids=tuple(transforms),mutate=mutate,changed=self.changed)
+            cue_ids=tuple(transforms),mutate=mutate,changed=self.changed,studio_state_keys=(KEY,))
 
     def redo(self):self.apply(self.after,self.after_cues)
     def undo(self):self.apply(self.before,self.before_cues)

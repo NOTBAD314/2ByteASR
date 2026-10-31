@@ -67,9 +67,11 @@ class DraftRecovery(QObject):
         if cue is None:return
         if self.lease is None:
             valid=threading.Event();valid.set()
+            draft=getattr(page, '_caption_draft', None)
             self.lease=dict(valid=valid,path=draft_root()/(uuid.uuid4().hex+".json"),
                 project_id=page.project.project_id,project_path=str(page.project_path or ""),
-                cue_id=cue_id,base_text=cue.text)
+                cue_id=cue_id,base_text=draft.before if draft else cue.text,
+                target=dict(draft.target.__dict__) if draft else None)
         self.revision+=1
         if not self.timer.isActive():self.timer.start()
 
@@ -85,7 +87,7 @@ class DraftRecovery(QObject):
         return dict(lease=lease,revision=self.revision,payload=dict(version=1,
             project_id=lease["project_id"],project_path=lease["project_path"],cue_id=lease["cue_id"],
             base_text=lease["base_text"],text=text,position=cursor.position(),anchor=cursor.anchor(),
-            saved_at=time.time()))
+            target=lease.get('target'),saved_at=time.time()))
 
     def _tick(self):
         if getattr(self.page,"_close_requested",False):return
@@ -152,11 +154,21 @@ def restore_into_editor(page,row):
     if page.project is None or page.project.project_id!=row["project_id"]:
         return False
     cue=page._cue_lookup.get(row["cue_id"])
-    if cue is None or cue.text!=row["base_text"]:
+    if cue is None:
+        return False
+    target=row.get('target')
+    if target:
+        from ..studio.caption_editor import CaptionEditTarget
+        try:binding=CaptionEditTarget(**target)
+        except (ValueError,TypeError):return False
+        if binding.read(page.project)!=row['base_text']:return False
+    elif cue.text!=row['base_text']:
         return False
     page.select_cue(cue.id)
-    page._begin_canvas_inline_edit()
+    page._open_caption_editor(cue.id, target.get('layer', 'original') if target else 'original')
     if getattr(page,"_canvas_editor",None) is None:return False
+    draft=getattr(page, '_caption_draft', None)
+    if draft is None or draft.target.cue_id!=cue.id or (target and dict(draft.target.__dict__)!=target):return False
     editor=page.subtitle_edit_input
     editor.setPlainText(row["text"])
     from PySide6.QtGui import QTextCursor

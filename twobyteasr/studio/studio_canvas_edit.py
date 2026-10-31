@@ -16,7 +16,9 @@ from ..design.ui_theme import theme_definition
 
 from ..i18n import bind_text
 
-class StudioCanvasEditMixin:
+from .caption_editor import CaptionEditorMixin
+
+class StudioCanvasEditMixin(CaptionEditorMixin):
     """Feature-domain mixin; host class provides widgets and state."""
 
     def _toggle_position_edit(self, enabled: bool) -> None:
@@ -77,6 +79,7 @@ class StudioCanvasEditMixin:
                 self._caption_transform_retired=True
                 return
             cue=next((c for c in targets if c.id==self.selected_cue_id),targets[0])
+            self._remember_canvas_edit_target(cue.id,panel.language.currentData())
             values=resolved_values(self.project,cue,panel.language.currentData()) if cue else None
             if values is not None:
                 self._caption_layer_canvas=True
@@ -201,47 +204,14 @@ class StudioCanvasEditMixin:
         card = getattr(self, "subtitle_edit_card", None)
         if card is None:
             return
-        if not visible and card.isVisible():
-            import sys
-            handle = int(card.internalWinId() or 0)
-            if sys.platform == "win32" and handle:
-                import ctypes
-                from ctypes import wintypes as W
-                vacated = W.RECT()
-                if ctypes.windll.user32.GetWindowRect(W.HWND(handle), ctypes.byref(vacated)):
-                    card.setVisible(False)
-                    try:
-                        self._clear_video_gdi((vacated.left, vacated.top, vacated.right, vacated.bottom))
-                    except (OSError, AttributeError, ValueError):
-                        pass
-                    return
-        if visible and not card.isVisible():
-            # 2026-10-11 (E/R flash): the card is a native window over the
-            # video. Shown as before, its first composited frame was blank,
-            # held old pixels, or sat at its old place until Qt laid it out.
-            # Place it where its bottom-centred grid cell puts it, then make
-            # the first paint happen before control returns to the compositor.
-            host = card.parentWidget()
-            if host is not None:
-                if card.layout() is not None:
-                    card.layout().activate()
-                hint, low, high = card.sizeHint(), card.minimumSize(), card.maximumSize()
-                width = min(host.width(), high.width(), max(hint.width(), low.width()))
-                height = min(host.height(), high.height(), max(hint.height(), low.height()))
-                card.setGeometry((host.width() - width) // 2, host.height() - height, width, height)
-        card.setVisible(bool(visible))
+        dock = getattr(self, "subtitle_edit_dock", card)
+        if visible and hasattr(dock, 'fit_to_workspace'):
+            dock.fit_to_workspace()
+        dock.setVisible(bool(visible))
         if visible:
-            card.raise_()
+            card.updateGeometry()
             if card.layout() is not None:
                 card.layout().activate()
-            import sys
-            handle = int(card.internalWinId() or 0)
-            if sys.platform == "win32" and handle:
-                import ctypes
-                # RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW: dispatch the
-                # first WM_PAINT now (Qt exposes and paints synchronously).
-                ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(handle), None, None, 0x0001 | 0x0080 | 0x0100)
-            card.repaint()
 
     def _widget_alive(self, widget) -> bool:
         if widget is None:
@@ -277,218 +247,41 @@ class StudioCanvasEditMixin:
         if not self.project:
             return
         if getattr(self, "_canvas_editor", None) is not None:
-            self._canvas_editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
             return
-        snapshot = self.video.playback_position_snapshot()
-        position = round(snapshot.presentation_media_ms)
-        if getattr(self, '_playback_mode', 'source') == 'mapped':
-            from ..timeline.studio_edit_sequence import sequence_of
-            from ..timeline.studio_sequence_mapper import source_to_timeline
-            mapped = source_to_timeline(
-                sequence_of(self.project), position,
-                segment=self._mapped_sequence_segment(),
-            )
-            if mapped is None:
-                bind_text(self.save_state, '当前没有可编辑字幕')
-                return
-            position = mapped.timeline_ms
+        if getattr(self, '_caption_following', False):
+            return
+        # The timeline clock has already passed the current edit-sequence
+        # mapping. Do not reinterpret source time or resurrect a stale row.
+        preferences = self._studio_preferences()
+        if preferences.get('caption_pause_on_edit', True) is not False:
+            self.video.set_paused(True)
+        position = self.timeline.playhead_ms
+        selected_target = self._resolve_caption_edit_target()
         cue = self.cue_controller.sync_playhead_target(position, force=True)
-        if cue is None:
-            bind_text(self.save_state, '当前没有可编辑字幕')
-            return
-        self.select_cue(cue.id)
-        self._manual_selection_hold = True
-        self._begin_canvas_inline_edit()
+        self._caption_follow_track = (selected_target.track_id if selected_target is not None else
+                                      cue.speaker_id if cue else self.session.preferred_subtitle_speaker)
+        layer = str(preferences.get('caption_default_layer', 'translation'))
+        self._caption_follow_layer = layer if layer in {'original', 'translation'} else 'translation'
+        self._caption_follow_fallback_original = self._caption_follow_layer == 'translation'
+        self._caption_following = True
+        self._caption_edit_locked = False
+        self._follow_caption_editor(position, force=True)
+        self._set_subtitle_editor_visible(True)
+        self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _begin_canvas_inline_edit(self) -> None:
-        started = perf_counter()
-        if getattr(self, '_canvas_editor', None) is not None:
-            self._canvas_editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            return
-        if not self.project or not self.selected_cue_id:
-            return
-        cue = self._cue_lookup.get(self.selected_cue_id)
-        if cue is None:
-            return
-        if cue.speaker_id in self.timeline.locked_speakers:
-            bind_text(self.save_state, '轨道已锁定，请先解锁')
-            return
-        # Editing is a transactional operation: pause first, then lock the
-        # cue/candidate identity used for commit and cancel. This prevents a
-        # moving playhead or review navigation from applying text to another
-        # cue while the editor is open.
-        try:
-            if self.video.controller and not bool(self.video.playback_position_snapshot().paused):
-                self.video.set_paused(True)
-                self._sync_play_button(True)
-        except (RuntimeError, AttributeError):
-            pass
-        if self._review_mode:
-            candidate_id = ""
-            candidates = getattr(self, "_review_candidates", ())
-            if candidates:
-                candidate_id = f"{cue.id}:candidate:{getattr(self, '_review_selected_candidate_index', 0)}"
-            self._review_edit_lock = {"cue_id": cue.id, "candidate_id": candidate_id}
-        if getattr(self, "_canvas_editor", None) is not None:
-            QApplication.setActiveWindow(self.window())
-            self._canvas_editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            return
-        # Use the existing transaction lock for normal editing too. Playback
-        # and an explicit selection change may happen before this is committed.
-        if not self._review_mode:
-            self._review_edit_lock = {'cue_id': cue.id, 'candidate_id': ''}
-        editor = self.subtitle_edit_input
-        editor._diagnostic_context = dict(project_id=self.project.project_id, cue_id=cue.id)
-        if editor.toPlainText() != cue.text and getattr(self, "_canvas_editor", None) is not editor:
-            editor.setPlainText(cue.text)
-        cursor = editor.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        editor.setTextCursor(cursor)
-        self._set_subtitle_editor_visible(True)
-        self._canvas_editor = editor
-        self.position_overlay._inline_editing = True
-        self.position_overlay.hide()
-        self._sync_transform_visual_overlay()
-        self._live_edit_text_overrides[cue.id] = cue.text
-        payload = recipe_payload_for_style(self.project.style_recipes, cue.style_id)
-        if not payload or route_recipe(payload).engine != "remotion":
-            self._refresh_ass_preview()
-        self._canvas_editor_hint = None
-        self.window().activateWindow()
-        QApplication.setActiveWindow(self.window())
-        editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
-        QTimer.singleShot(0, lambda target=editor: target.setFocus(Qt.FocusReason.ShortcutFocusReason))
-        self._studio_trace(
-            "EDIT_CARD_OPEN", cue_id=cue.id, visible=editor.isVisible(),
-            current_text=editor.toPlainText(),
-            editor_show_ms=round((perf_counter() - started) * 1000, 2),
-        )
-        return
-        self._studio_trace("INLINE_BEGIN", cue_id=self.selected_cue_id)
-        focus_before = QApplication.focusWidget()
-        editor = _CanvasInlineEdit(self)
-        editor.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
-        editor.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-        editor.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        editor.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        editor.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        created = perf_counter()
-        self._studio_trace("EDITOR_CREATED", cue_id=cue.id, native=True)
-        editor._diagnostic_context = dict(project_id=self.project.project_id, cue_id=cue.id)
-        editor.setObjectName("canvasInlineEditor")
-        editor.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        editor.setPlainText(cue.text)
-        editor.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        editor.document().setDocumentMargin(0)
-        editor.setCursorWidth(2)
-        style = next((item for item in self.project.styles if item.id == cue.style_id), None)
-        if style is not None:
-            mapper = self.position_overlay._mapper()
-            editor_font = editor.font()
-            editor_font.setFamily(style.font_family)
-            editor_font.setPixelSize(max(8, round(
-                float(style.font_size) * mapper.scale_y * float(style.scale_y) / 100.0
-                * self.position_overlay.ASS_VISIBLE_EM_FACTOR
-            )))
-            editor_font.setStretch(max(1, round(float(style.scale_x) / max(float(style.scale_y), 1e-6) * 100)))
-            editor_font.setBold(bool(style.bold)); editor_font.setItalic(bool(style.italic)); editor_font.setUnderline(bool(style.underline))
-            editor_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, float(style.spacing or 0.0) * mapper.scale_x)
-            editor.setFont(editor_font)
-            text_format = QTextCharFormat()
-            text_format.setForeground(QColor(style.primary_color))
-            text_format.setTextOutline(QPen(
-                QColor(style.outline_color),
-                max(0.0, float(style.outline_width) * max(mapper.scale_x, mapper.scale_y)),
-            ))
-            cursor = editor.textCursor()
-            cursor.select(QTextCursor.SelectionType.Document)
-            cursor.mergeCharFormat(text_format)
-            cursor.clearSelection()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            editor.setTextCursor(cursor)
-            option = editor.document().defaultTextOption()
-            column = (int(style.alignment) - 1) % 3
-            option.setAlignment((Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignHCenter, Qt.AlignmentFlag.AlignRight)[column])
-            editor.document().setDefaultTextOption(option)
-        editor.setMinimumWidth(80)
-        editor.setMaximumWidth(max(320, min(720, self.video.width() - 24)))
-        editor.setStyleSheet(
-            "QPlainTextEdit#canvasInlineEditor { background:rgba(246,248,242,18); color:#fffdf8; "
-            "border:1px solid rgba(142,190,151,220); border-radius:3px; padding:1px; "
-            "selection-background-color:rgba(113,152,122,95); }"
-        )
-        rect = self.position_overlay._rendered_text_rect().toRect().adjusted(-3, -3, 3, 3)
-        rect.moveTopLeft(self.position_overlay.mapToGlobal(rect.topLeft()))
-        video_rect = QRect(self.video.mapToGlobal(QPoint(0, 0)), self.video.size())
-        rect.setWidth(min(editor.maximumWidth(), max(editor.minimumWidth(), rect.width())))
-        rect.moveLeft(max(video_rect.left() + 6, min(video_rect.right() - rect.width() - 6, rect.left())))
-        rect.moveTop(max(video_rect.top() + 6, min(video_rect.bottom() - rect.height() - 6, rect.top())))
-        rect.moveTopLeft(self.mapFromGlobal(rect.topLeft()))
-        editor.setGeometry(rect)
-        editor._wysiwyg_min_height = max(24, rect.height())
-        geometry_ready = perf_counter()
-        editor.installEventFilter(self)
-        editor.textChanged.connect(self._resize_canvas_inline_editor)
-        editor.input_method_received.connect(
-            lambda preedit, commit, text: (
-                self._studio_trace("IME_PREEDIT", cue_id=self.selected_cue_id, preedit=preedit, current_text=text)
-                if preedit else None,
-                self._studio_trace("IME_COMMIT", cue_id=self.selected_cue_id, commit=commit, current_text=text)
-                if commit else None,
-            )
-        )
-        editor.diagnostic.connect(lambda event, fields: self._studio_trace(event, cue_id=self.selected_cue_id, **dict(fields)))
-        self.position_overlay._inline_editing = True
-        self.position_overlay.update()
-        editor.show()
-        editor.raise_()
-        visible = perf_counter()
-        self._canvas_editor = editor
-        self._studio_trace("EDITOR_GEOMETRY", cue_id=cue.id, geometry=[rect.x(), rect.y(), rect.width(), rect.height()])
-        self._studio_trace("EDITOR_VISIBLE", cue_id=cue.id, visible=editor.isVisible())
-        editor.activateWindow()
-        editor.setFocus(Qt.FocusReason.MouseFocusReason)
-        def activate_editor(target=editor) -> None:
-            if target is not getattr(self, "_canvas_editor", None):
-                return
-            target.raise_()
-            target.activateWindow()
-            handle = target.windowHandle()
-            if handle is not None:
-                handle.requestActivate()
-            target.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            focus = QApplication.focusWidget()
-            self._studio_trace("EDITOR_ACTIVE", cue_id=cue.id, active=QApplication.activeWindow() is self.window())
-            self._studio_trace("FOCUS_WIDGET", cue_id=cue.id, widget=type(focus).__name__ if focus else "None")
-        QTimer.singleShot(0, activate_editor)
-        QTimer.singleShot(40, activate_editor)
-        focused = perf_counter()
-        self._canvas_editor_hint = None
-        if self._review_mode:
-            self.review_dock_candidates.setEnabled(False)
-        self._studio_trace(
-            "E_EDIT",
-            cue_id=self.selected_cue_id,
-            focus_before=type(focus_before).__name__ if focus_before else "None",
-            editor_created=True,
-            editor_visible=editor.isVisible(),
-            geometry=[rect.x(), rect.y(), rect.width(), rect.height()],
-            parent=type(editor.parentWidget()).__name__,
-            focus=type(QApplication.focusWidget()).__name__ if QApplication.focusWidget() else "None",
-            input_method_enabled=editor.testAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled),
-            current_text=editor.toPlainText(),
-            review_mode=self._review_mode,
-            editor_show_ms=round((visible - started) * 1000, 2),
-            editor_create_ms=round((created - started) * 1000, 2),
-            editor_geometry_ms=round((geometry_ready - created) * 1000, 2),
-            editor_focus_ms=round((focused - visible) * 1000, 2),
-            ass_refresh_ms=0,
-            mpv_reload_ms=0,
-            qc_recompute_ms=0,
-        )
+        return self._open_caption_editor()
 
     def _queue_edit_preview(self) -> None:
-        if getattr(self, "_canvas_editor", None) is getattr(self, "subtitle_edit_input", None) and self.selected_cue_id:
+        if getattr(self, '_caption_editor_opening', False):
+            return
+        if getattr(self, '_caption_draft', None) is not None:
+            self._lock_caption_editor()
+        if getattr(self, "_caption_draft", None) is not None:
+            self._refresh_editor_suggestions()
+        draft = getattr(self, '_caption_draft', None)
+        cue_id = draft.target.cue_id if draft else self.selected_cue_id
+        if getattr(self, "_canvas_editor", None) is getattr(self, "subtitle_edit_input", None) and cue_id:
             recovery = getattr(self, "_draft_recovery", None)
             if recovery is not None:
                 recovery.changed()
@@ -498,25 +291,14 @@ class StudioCanvasEditMixin:
                 # space for long-project compile/IPC and continuous typing.
                 self._edit_preview_timer.start(200)
                 self._edit_preview_queued_at = perf_counter()
-                self._studio_trace('EDIT_PREVIEW_QUEUED', cue_id=self.selected_cue_id, queue_length=1)
+                self._studio_trace('EDIT_PREVIEW_QUEUED', cue_id=cue_id, queue_length=1)
 
     def _apply_subtitle_edit_card_theme(self) -> None:
-        """Token-driven sheet for the inline subtitle edit card (all themes)."""
         card = getattr(self, "subtitle_edit_card", None)
         if card is None:
             return
         from ..design.theme_manager import theme_key
-
-        theme = theme_definition(theme_key())
-        card.setStyleSheet(
-            f"QFrame#subtitleEditCard{{background:{theme.panel};border:1px solid {theme.border};"
-            "border-radius:10px;}"
-            f"QLabel#subtitleEditCardTitle{{color:{theme.text};font-size:14px;font-weight:700;}}"
-            f"QLabel#subtitleEditCardHint{{color:{theme.text_muted};font-size:11px;}}"
-            f"QPlainTextEdit#subtitleEditCardInput{{background:{theme.input_surface};color:{theme.text};"
-            f"border:1px solid {theme.border};border-radius:8px;padding:10px 14px;"
-            f"font-size:24px;font-weight:650;selection-background-color:{theme.accent};}}"
-        )
+        card.refresh_theme_palette(theme_definition(theme_key()))
 
     def _apply_teach_banner_theme(self) -> None:
         banner = getattr(self, "teach_banner", None)
@@ -536,6 +318,8 @@ class StudioCanvasEditMixin:
         self._apply_teach_banner_theme()
 
     def _flush_edit_preview(self) -> None:
+        if getattr(self, "_caption_draft", None) is not None:
+            return self._flush_caption_editor_preview()
         if __import__("os").environ.get("TWOBYTEASR_DIAGNOSTIC_NO_EDIT_PREVIEW") == "1":
             return
         lock = getattr(self, '_review_edit_lock', None) or {}
@@ -587,6 +371,8 @@ class StudioCanvasEditMixin:
         editor.setGeometry(rect)
 
     def _commit_canvas_inline_edit(self, *, advance: bool = False) -> None:
+        if getattr(self, '_caption_following', False) or getattr(self, "_caption_draft", None) is not None:
+            return self._end_caption_editor(keep_open=False)
         try:
             self._commit_canvas_inline_edit_impl(advance=bool(advance or self._review_mode),play_next=bool(advance))
         finally:
@@ -674,6 +460,14 @@ class StudioCanvasEditMixin:
         self._studio_trace("INLINE_END", cue_id=cue_id, result="committed")
 
     def _cancel_canvas_inline_edit(self) -> None:
+        self._caption_following = False
+        self._caption_edit_locked = False
+        self._set_subtitle_editor_visible(False)
+        draft = getattr(self, "_caption_draft", None)
+        if draft is not None:
+            self._live_edit_text_overrides.pop(draft.target.render_id, None)
+            self._caption_draft = None
+            self._reset_caption_input_method()
         editor = getattr(self, "_canvas_editor", None)
         if editor is not None:
             self._canvas_editor = None

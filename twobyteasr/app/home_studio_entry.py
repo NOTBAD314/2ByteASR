@@ -1,7 +1,7 @@
 """A quiet, cached project-cover backdrop for the Home Studio entrance."""
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter,
                            QPainterPath, QPen)
 from PySide6.QtWidgets import QFrame, QSizePolicy, QToolButton, QWidget
@@ -56,8 +56,13 @@ def _edited_text(record) -> str:
 def recent_studio_entries(records, limit=12):
     """Openable recent projects in recent-open order, with the library's cover rule."""
     entries = []
+    seen = set()
     for item in records if isinstance(records, list) else []:
         record = item if isinstance(item, dict) else {"path": str(item)}
+        key = str(Path(str(record.get("path") or "")).resolve()).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
         name, cover = latest_studio_entry([record])
         if not name:
             continue
@@ -138,6 +143,7 @@ class RecentProjectHero(_HoverButton):
         super().resizeEvent(event)
         # The cover follows the window, but never taller than 16:10.
         cap = max(150, int(self.width() * 0.625))
+        cap = min(cap, getattr(self, '_budget_height', cap))
         if self.maximumHeight() != cap:
             self.setMaximumHeight(cap)
 
@@ -311,16 +317,38 @@ class RecentProjectList(QWidget):
         self.limit = limit
         self.rows = []
         self.entries = []
+        self.setProperty('uiZoomOwnSize', True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def sizeHint(self):
-        return QSize(320, self.ROW * len(self.entries))
+        return QSize(320, self.row_height() * len(self.entries))
+
+    def row_height(self):
+        return _zpx(self.ROW)
+
+    def apply_ui_zoom(self, _factor):
+        self._show_entries()
+        parent = self.parentWidget()
+        if hasattr(parent, 'schedule_recent_fit'):
+            parent.schedule_recent_fit()
 
     def minimumSizeHint(self):
         return self.sizeHint()
 
     def set_entries(self, entries):
-        self.entries = list(entries)[:self.limit]
+        self._all_entries = list(entries)
+        self._show_entries()
+        parent = self.parentWidget()
+        if hasattr(parent, 'schedule_recent_fit'):
+            parent.schedule_recent_fit()
+
+    def set_limit(self, limit):
+        if self.limit != limit:
+            self.limit = limit
+            self._show_entries()
+
+    def _show_entries(self):
+        self.entries = getattr(self, '_all_entries', [])[:self.limit]
         while len(self.rows) < len(self.entries):
             row = RecentProjectRow(self)
             index = len(self.rows)
@@ -330,7 +358,7 @@ class RecentProjectList(QWidget):
         for index, row in enumerate(self.rows):
             if index < len(self.entries):
                 row.set_entry(self.entries[index])
-                row.setGeometry(0, index * self.ROW, self.width(), self.ROW)
+                row.setGeometry(0, index * self.row_height(), self.width(), self.row_height())
                 row.show()
             else:
                 row.hide()
@@ -344,12 +372,110 @@ class RecentProjectList(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         for index, row in enumerate(self.rows[:len(self.entries)]):
-            row.setGeometry(0, index * self.ROW, self.width(), self.ROW)
+            row.setGeometry(0, index * self.row_height(), self.width(), self.row_height())
+
+
+class StudioEntryPin(QObject):
+    """Keep the original left card visible; its button remains inside it."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window_owner = window
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self.sync)
+        window.settings_scroll.viewport().installEventFilter(self)
+        window.settings_scroll.verticalScrollBar().valueChanged.connect(self.schedule_sync)
+        window.pages.currentChanged.connect(self.sync)
+        self.set_card()
+
+    def set_card(self):
+        window = self.window_owner
+        card = window.studio_entry_card
+        old = getattr(self, 'card', None)
+        if old is not None and old is not card:
+            old.hide()
+            old.deleteLater()
+        self.card = card
+        card.setProperty('uiZoomOwnSize', True)
+        card.setParent(window.settings_scroll.viewport())
+        card.installEventFilter(self)
+        window.studio_entry_slot.installEventFilter(self)
+        window.settings_scroll.widget().installEventFilter(self)
+        self.schedule_sync()
+
+    def schedule_sync(self, *_args):
+        if not self._sync_timer.isActive():
+            self._sync_timer.start(0)
+
+    def sync(self, *_args):
+        window = self.window_owner
+        home = window.pages.currentWidget() is window.settings_scroll and window.settings_scroll.isVisible()
+        self.card.setVisible(home)
+        if not home:
+            return
+        card, viewport, slot = self.card, window.settings_scroll.viewport(), window.studio_entry_slot
+        origin = slot.mapTo(viewport,QPoint())
+        # The slot scrolls with the settings page. The left card's top follows
+        # it until reaching the viewport top, while the card bottom stays in
+        # the viewport. No extra row is inserted above the global action bar.
+        top = max(0,min(origin.y(),max(0,viewport.height()-_zpx(300))))
+        height = max(1,viewport.height()-top-_zpx(6))
+        card.setGeometry(origin.x(),top,slot.width(),height)
+        card.raise_()
+        card.schedule_recent_fit()
+
+    def eventFilter(self, obj, event):
+        if event.type() in {QEvent.Resize, QEvent.Show, QEvent.Hide, QEvent.LayoutRequest, QEvent.FontChange}:
+            self.schedule_sync()
+        return False
 
 
 class StudioEntryCard(QFrame):
     clicked = Signal()
     refresh_requested = Signal()
+
+    def set_recent_layout(self, header, hero, caption, recent, footer):
+        self._recent_layout_parts = (header, hero, caption, recent, footer)
+        self._recent_fit = QTimer(self)
+        self._recent_fit.setSingleShot(True)
+        self._recent_fit.setInterval(0)
+        self._recent_fit.timeout.connect(self._fit_recent_rows)
+
+    def schedule_recent_fit(self):
+        timer = getattr(self, '_recent_fit', None)
+        if timer is not None and not timer.isActive():
+            timer.start()
+
+    def _fit_recent_rows(self):
+        header, hero, caption, recent, footer = self._recent_layout_parts
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        width = max(1, self.width() - margins.left() - margins.right())
+        # Size from the card budget, never from the previous row count or the
+        # hero's current allocation (which would feed back into itself).
+        internal_footer = footer.parentWidget() is self
+        budget = (self.height() - margins.top() - margins.bottom()
+                  - header.sizeHint().height() - (footer.sizeHint().height() if internal_footer else 0)
+                  - caption.sizeHint().height() - spacing * (4 if internal_footer else 3))
+        cover_height = min(max(hero.minimumSizeHint().height(), round(width * .625)),
+                           max(hero.minimumSizeHint().height(), round(budget * .58)))
+        hero._budget_height = cover_height
+        if hero.maximumHeight() != cover_height:
+            hero.setMaximumHeight(cover_height)
+        available = budget - cover_height
+        rows = max(0, int(available // recent.row_height()))
+        recent.set_limit(min(len(getattr(recent, '_all_entries', [])), rows))
+        caption.setVisible(bool(recent.entries))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.schedule_recent_fit()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        self.schedule_recent_fit()
 
     def __init__(self, parent=None):
         super().__init__(parent)

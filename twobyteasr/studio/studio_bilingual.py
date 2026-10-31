@@ -295,15 +295,87 @@ class ApplyTranslationSnapshotCommand(QUndoCommand):
         self.outcome["applied"] = False
 
 
+class ManualTranslationCommand(QUndoCommand):
+    """One record and render entry; unrelated translations keep their identity."""
+    def __init__(self, project, cue, value, changed=None, *, target=None):
+        super().__init__('编辑译文')
+        from ..subtitle_rules import subtitle_translation as st
+        meta = project.generation_metadata
+        if not st._valid_container(meta.get(st.RECORDS_KEY)):
+            st.migrate(project)
+        else:
+            container = meta[st.RECORDS_KEY]
+            rendered = meta.get(st.RENDER_KEY, {}).get(cue.id, '')
+            record = container['records'].get(cue.id)
+            if str(rendered or '').strip() and (not isinstance(record, dict) or str(record.get('text') or '') != str(rendered)):
+                # Reuse the legacy reconciliation on just this target. Do not
+                # deepcopy or overwrite unrelated records / in-flight results.
+                small = dict(container, records={cue.id: record} if record else {})
+                reconciled, _ = st._migrated_container({st.RECORDS_KEY:small,st.RENDER_KEY:{cue.id:rendered}},[cue])
+                updated = dict(container['records']);updated[cue.id] = reconciled['records'][cue.id]
+                meta[st.RECORDS_KEY] = dict(container, records=updated, history=reconciled['history'])
+        self.project, self.cue_id, self.changed = project, cue.id, changed
+        self.target = st.container_target(project)
+        if target is not None and st.normalize_target(target) != self.target:
+            raise ValueError('译文语言已切换，请重新选择字幕后编辑')
+        self.before = copy.deepcopy(st.records_of(project).get(cue.id))
+        self.after = st._record(value, cue.text, origin=st.ORIGIN_MANUAL, target=self.target,
+                               previous=st._pushed_previous(self.before), cleared=True if not value else None)
+        self.history = {'at': st._now(), 'kind': 'manual', 'cue_id': cue.id,
+                        'target': self.target, 'cleared': not bool(value)}
+        self.had_container = st._valid_container(meta.get(st.RECORDS_KEY))
+        self.had_render = st.RENDER_KEY in meta
+        self.before_render = meta.get(st.RENDER_KEY, {}).get(cue.id)
+
+    def _apply(self, record, *, redo):
+        from ..subtitle_rules import subtitle_translation as st
+        from ..timeline.studio_commands import _commit_mutation
+        from ..projects.studio_runtime_state import DirtyDomain
+        from ..subtitle_rules.current_issues import invalidate
+        def mutate():
+            meta = self.project.generation_metadata
+            container = meta.get(st.RECORDS_KEY)
+            if not st._valid_container(container):
+                container = st._empty_container(); container['target'] = self.target
+                meta[st.RECORDS_KEY] = container
+            if st.container_target_value(container) != self.target:
+                raise ValueError('译文语言已变化，不能向另一语言写入旧编辑')
+            records = dict(container['records'])
+            if record is None:
+                records.pop(self.cue_id, None)
+            else:
+                records[self.cue_id] = copy.deepcopy(record)
+            container['records'] = records
+            history = [entry for entry in container.get('history', ()) if entry is not self.history]
+            if redo:history.append(self.history)
+            container['history'] = history[-st.MAX_HISTORY:]
+            view = dict(meta.get(st.RENDER_KEY, {}))
+            value = str(record.get('text') or '') if record is not None else self.before_render
+            if value:view[self.cue_id] = value
+            else:view.pop(self.cue_id, None)
+            if view or self.had_render or redo:meta[st.RENDER_KEY] = view
+            else:meta.pop(st.RENDER_KEY, None)
+            if not redo and not self.had_container and not records:
+                meta.pop(st.RECORDS_KEY, None)
+            st.mark_manual_intent(self.project, self.cue_id)
+            invalidate(self.project)
+        _commit_mutation(self.project, action_id=self.text(), cue_ids=(self.cue_id,),
+            dirty=(DirtyDomain.CUE_CONTENT | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE |
+                   DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.QC | DirtyDomain.AUTOSAVE | DirtyDomain.PROJECT_METADATA),
+            mutate=mutate, changed=self.changed)
+
+    def redo(self):self._apply(self.after, redo=True)
+    def undo(self):self._apply(self.before, redo=False)
+
+
 def set_manual_translation(page, cue_id, text, changed=None, *, target=None) -> bool:
     """One manual text transaction, preserving/remapping the daily's local formatting."""
-    from ..subtitle_rules.subtitle_translation import migrate, set_manual, clean_translation
+    from ..subtitle_rules.subtitle_translation import clean_translation, source_sha
     from ..caption_style.text_marks import layer_marks, remap_marks, with_marks
     from ..timeline.studio_commands import SetCueFieldsCommand
     project = page.session.project if hasattr(page, "session") else page.project
     if not project:
         return False
-    migrate(project)
     cue = next((cue for cue in project.cues if cue.id == str(cue_id)), None)
     if cue is None:
         return False
@@ -315,17 +387,15 @@ def set_manual_translation(page, cue_id, text, changed=None, *, target=None) -> 
         if marks:
             override = with_marks(cue, remap_marks(old, value, marks), "translation")
         override.pop("translation_group", None)
-    before, after = set_manual(project, str(cue_id), value, target=target)
+    command = ManualTranslationCommand(project, cue, value, changed, target=target)
     style_changed = override != cue.appearance_override
-    if before == after and not style_changed:
+    if old == value and not style_changed and (command.before is None or command.before.get('origin') == 'manual' and command.before.get('status') != 'failed' and command.before.get('source_sha') == source_sha(cue.text) and not command.before.get('legacy')):
         return False
     stack = page.session.undo_stack
     if style_changed:
         stack.beginMacro("编辑译文")
     try:
-        if before != after:
-            stack.push(ApplyTranslationSnapshotCommand(project, before, after, (cue_id,),
-                                                       label="编辑译文", changed=changed))
+        stack.push(command)
         if style_changed:
             stack.push(SetCueFieldsCommand(project, cue.id, {"appearance_override": override}, "保留译文局部格式", changed))
     finally:

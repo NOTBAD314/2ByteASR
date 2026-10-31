@@ -519,6 +519,24 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         "stage": stage,
         "version": version,
     }
+    if stage in {'qwen', 'primary_qwen_local'}:
+        from ..subtitle_rules.language_rules import qwen_language_name
+        actual_language = runtime_context.task_language or runtime_context.requested_language
+        base['request_language'] = qwen_language_name(actual_language)
+        policy = (runtime_context.recognition_snapshot or {}).get('language_recovery_policy') or {}
+        if policy.get('explicit_local_range'):
+            base['local_range_contract'] = 'local-language-range-v3-measured-window-timing'
+    if stage in {'grouped','grouped_local','final_timing'}:
+        from ..subtitle_rules.segmentation_profiles import task_language_tag, profile_for, VERSION, SPAN_VERSION
+        tag=task_language_tag();profile=profile_for(tag)
+        base['segmentation_language_policy']={'language':tag,'version':VERSION,'rules':profile.fingerprint,
+                                              'spans':SPAN_VERSION,'unit':profile.unit}
+        if stage=='grouped':
+            from ..subtitle_rules.grouping_request import grouping_prompt_key
+            base['effective_grouping_prompt']=grouping_prompt_key(tag)
+    if stage == 'primary_api' or stage in {'firered_primary', 'polished', 'grouped', 'grouped_local', 'final_timing'}:
+        from .transcript_fidelity import RULE_VERSION
+        base['transcript_fidelity'] = RULE_VERSION
     # Version ALL derived identities, including child batches. Independent audio,
     # VAD, FireRed and Qwen evidence keep their existing signatures.
     if stage in {"firered_primary", "firered_llm", "polished", "grouped", "grouped_local", "final_timing"}:
@@ -529,6 +547,10 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         if str(getattr(runtime_context, "task_language", "") or "") == "ja":
             base["task_language"] = "ja"
             base["japanese_rules"] = "ja-text-v2-bunsetsu"
+        elif str(getattr(runtime_context, "task_language", "") or "") not in {"", "zh"}:
+            # English and European text/timing policies differ too. Keep the
+            # language-independent audio and raw auto-ASR caches reusable.
+            base["task_language"] = str(runtime_context.task_language)
     if stage == "audio":
         base.update({"sample_rate": AUDIO_SAMPLE_RATE, "format": "float32-mono"})
     elif stage == "qwen":
@@ -558,6 +580,10 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
             }
         )
     elif stage == "polished":
+        from ..subtitle_rules.correction_risk import RULE_VERSION as CORRECTION_RISK_VERSION
+        base.update(content_language=str(getattr(runtime_context, 'task_language', '') or
+                                        getattr(runtime_context, 'requested_language', '') or 'auto'),
+                    correction_risk=CORRECTION_RISK_VERSION)
         from ..providers.asr_provider_snapshot import task_provider_snapshot, POLISH_PROMPT_VERSION
         from ..glossary.terminology import runtime_snapshot
         from ..glossary.terminology_retrieval import RULE_VERSION as TERM_RETRIEVAL_VERSION
@@ -850,6 +876,7 @@ def run_cached_api_batch(
     provider_snapshot=None,
     validator=None,
     diagnostics=None,
+    resume=None,
 ):
     """逐批保存成功的 DashScope 结果；单批失败不会拖累其余批次缓存。"""
     owner = get_runtime_context()
@@ -880,6 +907,7 @@ def run_cached_api_batch(
     cache_path = os.path.join(batch_dir, f"{batch_key}.json")
     if diagnostics is not None:
         diagnostics.update(cache_key=batch_key, cache_version=GROUP_CACHE_VERSION, cache_hit=False)
+    cached_partial = None
     if not api_stage_force_refresh(stage):
         try:
             with open(cache_path, "r", encoding="utf-8") as file:
@@ -899,7 +927,9 @@ def run_cached_api_batch(
                 if grouped_data and (validator is None or not validator(decoded)):
                     raise ValueError("Cached grouped text no longer matches immutable input")
                 require_current()
-                extend_review_items(payload.get("review_items", []))
+                partial = stage == 'polished' and bool(getattr(decoded, 'failures', {}))
+                if not partial:
+                    extend_review_items(payload.get("review_items", []))
                 print(f"      [逐批缓存命中] {stage}")
                 record_run_event("CACHE_ACCEPTED", stage=f"{stage}_batch", path=cache_path, reason="fingerprint_match,model_hash_match,upstream_hash_match,schema_match")
                 record_run_event("cache_hit", stage=f"{stage}_batch", path=cache_path)
@@ -909,13 +939,17 @@ def run_cached_api_batch(
                     return GroupedBatchResult(decoded, origin=payload.get("producer", "local"),
                         validated=strict_group or payload.get("producer") == "local_fast",
                         cache_hit=True, data_validated=True)
-                return decoded
-            record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", path=cache_path, reason="signature_or_dependency_mismatch")
+                if partial and resume is not None:
+                    cached_partial = decoded
+                else:
+                    return decoded
+            if cached_partial is None:
+                record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", path=cache_path, reason="signature_or_dependency_mismatch")
         except (OSError, ValueError, TypeError):
             record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", path=cache_path, reason="missing_artifact")
 
     with capture_review_items() as batch_review_items:
-        value = runner()
+        value = resume(cached_partial) if cached_partial is not None else runner()
     require_current()
     if grouped_data and (validator is None or not validator(value)):
         raise ValueError("断句批次结果未通过来源契约；未提交或缓存。")
@@ -931,7 +965,8 @@ def run_cached_api_batch(
         getattr(value, "origin", None) == "ai" and getattr(value, "validated", False)
         and validator is not None and validator(value)
     )
-    if not used_fallback and validated_ai:
+    persist_polish_state = stage == 'polished' and hasattr(value, 'succeeded') and hasattr(value, 'failures')
+    if (not used_fallback and validated_ai) or persist_polish_state:
         require_current()
         os.makedirs(batch_dir, exist_ok=True)
         atomic_write_json(
@@ -942,6 +977,9 @@ def run_cached_api_batch(
                 "identity": cache_context["identity"],
                 "signature": signature,
                 "dependency_hash": stable_digest(dependency),
+                **({'result_state': 'partial' if value.failures else 'validated',
+                    'retained_ids': sorted(value.failures), 'succeeded_ids': sorted(value.succeeded)}
+                   if persist_polish_state else {}),
                 **({"provider_fingerprint": provider_snapshot.fingerprint,
                     "cache_version": GROUP_CACHE_VERSION, "producer": "ai",
                     "validation": "source_contract_v1"} if strict_group else {}),

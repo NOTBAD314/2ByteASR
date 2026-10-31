@@ -293,11 +293,37 @@ def preview_clip_edit(project, drag, locked_speakers=()):
         earliest = min((a for a, b in drag.get('group_intervals', {}).values()), default=drag['origin_in'])
         command = reassign_clips_command(project, source, target, ids,
             start=drag['preview_in'] - (drag['origin_in'] - earliest), locked_speakers=locked_speakers)
+        return command.after
+    # Pointer motion owns only media geometry. Building a QUndoCommand here
+    # copied all caption receipts three times and projected the whole project
+    # for every mouse event. The actual release still uses the full preflight.
+    _editable(project, source)
+    working = copy.copy(project)
+    working.studio_state = dict(project.studio_state)
+    videos, audios, groups, sequence = _snapshot(project)
+    working.video_tracks, working.audio_tracks, working.av_track_groups = videos, audios, groups
+    working._edit_sequence_runtime = EditSequenceRuntime(sequence)
+    track = track_by_id(working, source)
+    clip = next(c for c in track.clips if c.id == drag['clip_id'])
+    if drag['mode'] == 'move':
+        delta = drag['preview_in'] - drag['origin_in']
+        for item in track.clips:
+            if item.id in ids:
+                _shift(item, delta)
     else:
-        command = clip_edit_command(project, source, 'move' if drag['mode'] == 'move' else 'trim',
-            clip_id=drag['clip_id'], clip_ids=ids, start=drag['preview_in'], end=drag['preview_out'],
-            locked_speakers=locked_speakers)
-    return command.after
+        _trim(clip, drag['preview_in'], drag['preview_out'],
+              media_edit_limit(asset_by_id(project, clip.asset_id)))
+    track.clips.sort(key=lambda c: (c.timeline_in_ms, c.id))
+    _check_collisions(track_by_id(project, source), track)
+    if source == primary_video_track_id(project):
+        sequence.segments = [VideoSegment(c.id, asset_by_id(project, c.asset_id).canonical_source,
+            c.source_in_ms, c.source_out_ms, c.timeline_in_ms, c.timeline_out_ms) for c in track.clips]
+    sync_linked_av_contract(working)
+    sounds = {t.id: t for t in audios}
+    for original in project.audio_tracks:
+        if original.locked and original != sounds.get(original.id):
+            raise ValueError(f'关联音轨 {original.name or original.id} 已锁定，请先解锁')
+    return videos, audios, groups, sequence
 
 
 def _trim(clip, start, end, asset_duration):
@@ -322,9 +348,8 @@ def _shift(clip, delta):
     clip.timeline_out_ms += delta
 
 
-def _split(project, track, clip, time_ms):
-    if not clip.timeline_in_ms < time_ms < clip.timeline_out_ms:
-        raise ValueError('切点必须位于片段内部')
+def split_origin(project, track, clip):
+    """Read-only continuous map, shared by the hover resolver and commit."""
     sequence = sequence_of(project)
     # Retain the original affine map across successive razors. Interpolating
     # an already rounded child introduces a second source-ms rounding shift.
@@ -333,10 +358,17 @@ def _split(project, track, clip, time_ms):
     lane_sequence.segments = [VideoSegment(c.id, asset_by_id(project, c.asset_id).canonical_source,
         c.source_in_ms,c.source_out_ms,c.timeline_in_ms,c.timeline_out_ms)
         for c in sorted(track.clips,key=lambda c:(c.timeline_in_ms,c.id))]
-    origin = next((s for s in caption_continuous_segments(lane_sequence)
+    return next((s for s in caption_continuous_segments(lane_sequence)
         if (s.id == clip.id or s.id in sequence.segment_lineage.get(clip.id, []))
         and s.timeline_in_ms <= clip.timeline_in_ms < clip.timeline_out_ms <= s.timeline_out_ms
         and s.source_in_ms <= clip.source_in_ms < clip.source_out_ms <= s.source_out_ms), clip)
+
+
+def _split(project, track, clip, time_ms):
+    if not clip.timeline_in_ms < time_ms < clip.timeline_out_ms:
+        raise ValueError('切点必须位于片段内部')
+    sequence = sequence_of(project)
+    origin = split_origin(project, track, clip)
     source = origin.source_in_ms + round(Fraction((time_ms-origin.timeline_in_ms) *
         (origin.source_out_ms-origin.source_in_ms), origin.timeline_out_ms-origin.timeline_in_ms))
     if not clip.source_in_ms < source < clip.source_out_ms:
@@ -360,6 +392,36 @@ def _split(project, track, clip, time_ms):
                 sibling.linked_video_clip_id = right.id
                 sound.clips.append(sibling)
     return right
+
+
+def split_audio_command(project, track_id, clip_id, time_ms, *, page=None):
+    """Split one independent audio clip. Linked audio is routed to its video.
+
+    No new samples are generated; both children still address the same source.
+    """
+    track = next(t for t in project.audio_tracks if t.id == track_id)
+    if track.locked:
+        raise ValueError(f'{track.name or track.id} 音轨已锁定')
+    clip = next(c for c in track.clips if c.id == clip_id)
+    if any(g.linked and g.audio_track_id == track_id for g in project.av_track_groups) and clip.linked_video_clip_id:
+        raise ValueError('链接音频请使用对应视频的分割操作')
+    point = int(time_ms)
+    if not clip.timeline_in_ms < point < clip.timeline_out_ms:
+        raise ValueError('切点必须位于音频片段内部')
+    source = clip.source_in_ms + round(Fraction((point - clip.timeline_in_ms) *
+        (clip.source_out_ms - clip.source_in_ms), clip.timeline_out_ms - clip.timeline_in_ms))
+    if not clip.source_in_ms < source < clip.source_out_ms:
+        raise ValueError('切点过于贴近片段边界')
+    working = _working_copy(project, independent=False)
+    sound = next(t for t in working.audio_tracks if t.id == track_id)
+    left = next(c for c in sound.clips if c.id == clip_id)
+    right = copy.deepcopy(left)
+    right.id = 'audio-' + uuid.uuid4().hex[:12]
+    left.timeline_out_ms, left.source_out_ms = point, source
+    right.timeline_in_ms, right.source_in_ms = point, source
+    sound.clips.append(right)
+    sound.clips.sort(key=lambda c: (c.timeline_in_ms, c.id))
+    return _finalize_edit(project, working, '拆分音频片段', page=page)
 
 
 def _check_collisions(before, after):

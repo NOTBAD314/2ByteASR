@@ -72,6 +72,10 @@ def execute_unit(project,report,options,unit,token):
             caption_arbitration={'retry_mapping_hint':unit.get('failure_detail') or unit.get('reason')})
         context=configured.create_runtime_context(core,cancellation_token=token)
         context.asr_settings_snapshot=settings;context.provider_snapshots={'polish':provider}
+        from ..subtitle_rules.subtitle_translation import translation_source
+        from ..subtitle_rules.correction_risk import words
+        context.task_language=translation_source(project).language
+        context.correction_lexical_words=frozenset(word.casefold() for cue in project.cues for word in words(cue.text))
         with activate_runtime_context(context):
             answer=retry_failed_polish([row],project.media.display_name or project.media.path,
                 {'fallback_ids':[record_id],'fallback_cues':1},None)

@@ -113,6 +113,8 @@ def save_hub_preferences(
     startup_page: str | None = None,
     speaker_main_tracks: int | None = None,
     update_reminder: bool | None = None,
+    caption_pause_on_edit: bool | None = None,
+    caption_default_layer: str | None = None,
 ) -> None:
     def mutate(payload: dict) -> None:
         previous_preferences = payload.get("studio_preferences", {})
@@ -142,6 +144,11 @@ def save_hub_preferences(
             )
         if update_reminder is not None:
             payload["studio_preferences"]["update_reminder"] = bool(update_reminder)
+        if caption_pause_on_edit is not None:
+            payload["studio_preferences"]["caption_pause_on_edit"] = bool(caption_pause_on_edit)
+        if caption_default_layer is not None:
+            payload["studio_preferences"]["caption_default_layer"] = (
+                'original' if caption_default_layer == 'original' else 'translation')
 
     _write_settings_json(mutate)
 
@@ -287,6 +294,8 @@ def open_application_settings(
         str(dialog.startup_page.currentData() or "recognition"),
         speaker_main_tracks=int(chosen('speaker_tracks', 'speaker_main_tracks', 2) or 2),
         update_reminder=bool(chosen('update_reminder_box', 'update_reminder', True)),
+        caption_pause_on_edit=bool(chosen('caption_pause_on_edit', 'caption_pause_on_edit', True)),
+        caption_default_layer=str(chosen('caption_default_layer', 'caption_default_layer', 'translation')),
     )
     _apply_speaker_tracks_to_open_project(owner)
     QApplication.instance().setProperty("reduceMotion", reduce_motion)

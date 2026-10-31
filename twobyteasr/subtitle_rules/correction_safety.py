@@ -737,6 +737,13 @@ def decompose_broad_edit(source, target, basis):
 
 def find_unique_patch_span(text, source):
     """优先精确匹配；否则允许 Qwen 的 from 忽略字幕中的空格。"""
+    from .language_rules import active_task_language
+    from .correction_risk import SPACED_LANGUAGES
+    if active_task_language() in SPACED_LANGUAGES:
+        pattern = (r'(?<![\w\x27’])' if source[:1].isalnum() else '') + re.escape(source)
+        pattern += r'(?![\w\x27’])' if source[-1:].isalnum() else ''
+        matches = list(re.finditer(pattern, text))
+        return matches[0].span() if len(matches) == 1 else None
     if text.count(source) == 1:
         start = text.index(source)
         return start, start + len(source)
@@ -845,7 +852,21 @@ def apply_correction_edits(
             and row.get('canonical', '').casefold() == target.casefold()}
         if len(canonical_spellings) == 1:
             target = next(iter(canonical_spellings))
-        if not source or not target or content_only(source) == content_only(target):
+        if source and source == target:
+            if source not in text:
+                reject('noop_source_missing')
+                continue
+            if decisions is not None:
+                decisions.append({**edit, 'accepted': False, 'state': 'completed_no_change', 'rule_id': 'no_change'})
+            continue
+        if any(row['from'] == source and row.get('model_to', row['to']) == target
+                and ((('start' in edit or 'end' in edit) and row.get('start')==edit.get('start')
+                      and row.get('end')==edit.get('end'))
+                     or ('start' not in edit and 'end' not in edit and source not in text)) for row in applied):
+            if decisions is not None:
+                decisions.append({**edit, 'accepted': False, 'state': 'already_applied', 'rule_id': 'already_applied'})
+            continue
+        if not source or not target:
             from .number_fidelity import numeric_events
             rule = ('ordered_numeric_events_changed' if
                 tuple(x.value for x in numeric_events(source)) != tuple(x.value for x in numeric_events(target))
@@ -881,6 +902,30 @@ def apply_correction_edits(
             continue
         start, end = span
         candidate_preview = clean_subtitle_text(text[:start] + target + text[end:])
+        from .language_rules import active_task_language
+        from .correction_risk import SPACED_LANGUAGES, assess_patch
+        language = active_task_language()
+        if language in SPACED_LANGUAGES:
+            from ..recognition.run_context import get_runtime_context
+            context = get_runtime_context()
+            # The primary's own spelling is a boundary anchor, not independent
+            # acoustic evidence. Forced alignment never adds an ASR vote.
+            allowed, reason = assess_patch(source, target, text, start, end,
+                language=language, references=[value for _, value in independent_sources],
+                authoritative=[moss_text] if moss_text else (),
+                lexicon=getattr(context, 'correction_lexical_words', ()))
+            if allowed and not protect_primary_speaker:
+                text = candidate_preview
+                applied.append({**edit, 'from': source, 'to': target, 'actual_span': [start, end],
+                                'risk_evidence': reason, 'acoustic_verified': False})
+                continue
+            # Complete, confirmed glossary terms still use the established
+            # evidence path. Latin letters alone do not make ordinary speech
+            # an English abbreviation or a protected name.
+            if not any(row.get('canonical') == target and row.get('status') == 'confirmed'
+                       for row in contextual_term_candidates):
+                reject(reason, language=language)
+                continue
         from .pronouns import pronoun_swap_in_context
         if pronoun_swap_in_context(text, start, end, target):
             # 2026-10-15: 他/她/它 are one syllable; no ASR can support or refute

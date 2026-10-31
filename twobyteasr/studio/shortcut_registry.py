@@ -130,21 +130,23 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('review_play_context', '播放当前审核片段', 'Space', 'studio.review', '审核'),
     _a('confirm_review', '确认当前审核', 'Return', 'studio.review', '审核'),
     _a('confirm_next_review', '确认并播放下一条审核', 'Ctrl+Return', 'studio.review', '审核'),
-    _a('reasr_review', '重新识别当前审核', 'Shift+R', 'studio.review', '审核'),
+    _a('reasr_review', '重新识别当前审核', 'Ctrl+Shift+R', 'studio.review', '审核'),
+    _a('adopt_suggestion', '采纳高亮修改建议', 'Shift+R', 'studio.review', '审核'),
+    _a('editor_flip_pronoun', '切换当前编辑草稿的全部人称', 'Shift+P', 'studio.editor', '编辑'),
     _a('skip_review', '跳过当前审核', 'Ctrl+Down', 'studio.review', '审核'),
     _a('review_previous', '上一条待审核', 'Up', 'studio.review', '审核'),
     _a('review_next', '下一条待审核', 'Down', 'studio.review', '审核'),
     _a('review_next_w', '下一条待审核 (W)', 'W', 'studio.review', '审核'),
-    _a('review_next_a', '下一条待审核 (A)', 'A', 'studio.review', '审核'),
+    _a('review_next_a', '下一条待审核 (D)', 'D', 'studio.review', '审核'),
     _a('review_previous_s', '上一条待审核 (S)', 'S', 'studio.review', '审核'),
-    _a('review_previous_d', '上一条待审核 (D)', 'D', 'studio.review', '审核'),
+    _a('review_previous_d', '上一条待审核 (A)', 'A', 'studio.review', '审核'),
     _a('exit_review', '退出优先审核', 'Esc', 'studio.review', '审核'),
     _a('review_adopt_1', '采用第 1 个候选', '1', 'studio.review', '审核'),
     _a('review_adopt_2', '采用第 2 个候选', '2', 'studio.review', '审核'),
     _a('review_adopt_3', '采用第 3 个候选', '3', 'studio.review', '审核'),
     _a('review_adopt_4', '采用第 4 个候选', '4', 'studio.review', '审核'),
     # 2026-10-15 (user: 他/她 is the most frequent fix): flip the caption's pronouns.
-    _a('review_flip_pronoun', '切换这一条的人称（他 ↔ 她）', 'P', 'studio.review', '审核'),
+    _a('review_flip_pronoun', '切换这一条的人称（他 ↔ 她）', 'Shift+P', 'studio.review', '审核'),
     # Home page
     _a('home.start_run', '开始生成字幕', 'Ctrl+Return', 'home', '首页'),
     _a('home.choose_media', '选择素材', 'Ctrl+O', 'home', '首页'),
@@ -165,7 +167,7 @@ ACTIONS: tuple[ShortcutAction, ...] = (
 )
 
 BY_ID = {action.id: action for action in ACTIONS}
-SCOPE_LABELS = {'studio': '字幕工作台', 'studio.review': '审核模式（工作台内）', 'home': '首页',
+SCOPE_LABELS = {'studio': '字幕工作台', 'studio.review': '审核模式（工作台内）', 'studio.editor': '独立字幕编辑框', 'home': '首页',
                 'proofread': 'AI 词库校对页', 'app': '全局'}
 CATEGORY_ORDER = ('播放', '编辑', '时间轴', '剪辑', '审核', '文件', '窗口', '首页', '词库校对页', '全局')
 
@@ -267,6 +269,15 @@ def load_values(stored: dict | None, platform: str | None = None) -> tuple[dict[
     for action_id in ('confirm_review', 'confirm_next_review'):
         if action_id in stored:
             values[action_id] = normalize(stored[action_id])
+    # This session's requested review mapping supersedes the historic A/D
+    # mapping, including stored copies of those defaults.
+    for action_id in ('review_next_w', 'review_next_a', 'review_previous_s', 'review_previous_d', 'adopt_suggestion'):
+        values[action_id] = defaults[action_id]
+    for action_id, old in (('editor_flip_pronoun', 'ALT+P'), ('review_flip_pronoun', 'P')):
+        if values.get(action_id, '').upper() == old:
+            values[action_id] = defaults[action_id]
+    if values.get('reasr_review', '').upper() == 'SHIFT+R':
+        values['reasr_review'] = defaults['reasr_review']
     unbound = []
     custom = {action_id: value for action_id, value in values.items()
               if action_id in stored and value and value != defaults.get(action_id)}

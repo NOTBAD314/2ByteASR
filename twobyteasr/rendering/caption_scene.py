@@ -290,13 +290,18 @@ class SceneRasterizer:
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
         snapshot = prepared.snapshot
-        from ..caption_style.word_animation import word_state
+        from ..caption_style.word_animation import word_state,uniform_line_unit
         plan = getattr(snapshot, 'word_animation', None) or {}
-        key = (prepared.snapshot_hash, width, height, word_state(plan, relative))
+        uniform=uniform_line_unit(plan) if snapshot.style_recipe.get('visualGraph') else None
+        key = (prepared.snapshot_hash, width, height, ('uniform-line',) if uniform is not None else word_state(plan, relative))
         cached = self.rasters.get(key)
         if cached is None:
             scene = compiled_scene_for_snapshot(snapshot)
-            layers = render_live_layers(snapshot, width=width, height=height, word_time_ms=relative) if scene and scene.tracks else None
+            neutral=(min(float(uniform['frames'][0][0]),
+                float(uniform['loop'].get('start',0))-float(uniform['loop'].get('offset',0)))-1) if uniform is not None else relative
+            layers = render_live_layers(snapshot, width=width, height=height,
+                word_time_ms=neutral) if scene and (scene.tracks or uniform is not None) else None
+            if layers is not None and uniform is not None:layers.uniform_unit=uniform
             image = render_live_snapshot(snapshot, width=width, height=height, word_time_ms=relative) if layers is None else None
             cached = (scene, layers, image)
             self.rasters[key] = cached

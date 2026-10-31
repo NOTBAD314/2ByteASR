@@ -23,6 +23,9 @@ _HANGUL = re.compile(r"[가-힣ᄀ-ᇿ㄰-㆏]")
 _WORD_CORE = re.compile(r"[0-9A-Za-z가-힣ᄀ-ᇿ㄰-㆏㐀-鿿]+")
 
 
+from .segmentation_profiles import profile_for as _profile_for
+_PROFILE=_profile_for('ko')
+
 @dataclass(frozen=True)
 class KoreanLineRules:
     """Limits for one Korean subtitle (lengths in Netflix units, see display_length).
@@ -30,17 +33,17 @@ class KoreanLineRules:
     ``max_chars``/``preferred_chars`` are one line; since 2026-10-21 a subtitle
     holds up to ``max_lines`` lines (``cue_*``), so a whole sentence stays one.
     """
-    preferred_chars: float = 12.0
-    max_chars: float = 16.0
-    min_chars: float = 4.0
-    max_lines: int = 2
-    cue_preferred_chars: float = 24.0
-    cue_max_chars: float = 32.0
-    max_seconds: float = 7.0
-    min_seconds: float = 0.8
-    comfortable_cps: float = 12.0     # adult programmes
-    warning_cps: float = 14.0
-    critical_cps: float = 18.0
+    preferred_chars: float = _PROFILE.line_preferred
+    max_chars: float = _PROFILE.line_max
+    min_chars: float = _PROFILE.minimum_units
+    max_lines: int = _PROFILE.lines
+    cue_preferred_chars: float = _PROFILE.preferred
+    cue_max_chars: float = _PROFILE.hard_max
+    max_seconds: float = _PROFILE.max_seconds
+    min_seconds: float = _PROFILE.min_seconds
+    comfortable_cps: float = _PROFILE.comfortable_cps
+    warning_cps: float = _PROFILE.warning_cps
+    critical_cps: float = _PROFILE.critical_cps
 
 
 RULES = KoreanLineRules()
@@ -54,7 +57,8 @@ def char_weight(char: str) -> float:
 
 
 def display_length(text: str) -> float:
-    return sum(char_weight(char) for char in normalize_spaces(text))
+    from .segmentation_profiles import measure
+    return measure(text,'ko')
 
 
 def hangul(text: str) -> int:

@@ -10,6 +10,7 @@ import time
 from twobyteasr.providers.ai_providers import provider_for_stage
 
 from subtitle_core import *  # noqa: F401,F403
+from .segmentation_profiles import current_profile as _current_language_profile
 from twobyteasr.subtitle_rules.segmentation import (
     firered_pause_character_gaps,
     hard_break_character_offsets,
@@ -251,7 +252,7 @@ def _clear_short_utterance(batch, firered_tokens=()):
     text = str(item.text or '').strip()
     from .segmentation import INCOMPLETE_BOUNDARY_SUFFIXES, DANGLING_SHORT_FRAGMENTS
     return bool(0 < display_length(text) <= PROTECTED_SOURCE_SHORT_CHARS
-        and 0 < item.end-item.start <= MAX_SUBTITLE_SECONDS
+        and 0 < item.end-item.start <= _current_language_profile().max_seconds
         and not hard_break_character_offsets(batch, firered_tokens)
         and content_only(text) not in DANGLING_SHORT_FRAGMENTS
         and not content_only(text).endswith(INCOMPLETE_BOUNDARY_SUFFIXES)
@@ -372,14 +373,14 @@ def cues_from_resegmented_texts(
         natural_soft_inside.update(text_boundary_hints(text))
         natural_soft_inside.update(semantic_restart_boundary_offsets(text))
         repair_reasons = []
-        if length > COMPLETE_PHRASE_SOFT_MAX_CHARS:
+        if length > _current_language_profile().hard_max:
             repair_reasons.append(f"{length} 字")
         elif comfort_max_chars is not None and length > comfort_max_chars:
             # 仅本地回退路径使用：13-16 字的段重切到舒适长度，防止单行折行。
             repair_reasons.append(f"{length} 字（回退舒适长度）")
         # 10 字只是观看舒适目标，不是本地硬切条件。11-16 字若 Qwen 判断语义
         # 尚未说完就保持完整，避免用均匀字时长伪造断点并造成时间轴漂移。
-        if end - start > MAX_SUBTITLE_SECONDS + 0.05:
+        if end - start > _current_language_profile().max_seconds + 0.05:
             repair_reasons.append(f"{end - start:.2f} 秒")
         if forced_inside:
             repair_reasons.append("跨真实长停顿")
@@ -466,7 +467,7 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
         cue.text = segment.text
     if all(
         display_length(cue.text) <= FALLBACK_COMFORT_MAX_CHARS
-        and cue.end - cue.start <= MAX_SUBTITLE_SECONDS + 0.05
+        and cue.end - cue.start <= _current_language_profile().max_seconds + 0.05
         and cue.end > cue.start
         for cue in source_cues
     ):
@@ -520,6 +521,30 @@ def call_grouping_api(
     _cache_context=None,
     _read_only_context=None,
 ):
+    from .segmentation_profiles import current_profile,word_spans
+    language_profile=current_profile()
+    if language_profile.strategy!='cjk':
+        if abort_event is not None and abort_event.is_set():
+            from ..recognition.service import CancelledError
+            raise CancelledError('断句已取消。')
+        if language_profile.strategy=='conservative':
+            return [] if _messages_only else retain_source_utterances(segment_batch,language_profile)
+        from ..providers.asr_provider_snapshot import task_provider_snapshot,GroupedBatchResult
+        from .grouping_contract import capture_grouping_source,validate_grouping_result
+        batch=[(str(s.segment_id),[w[2] for w in word_spans(s.text)]) for s in segment_batch]
+        if language_profile.code=='ko':
+            from . import korean_segmentation as owner
+            if _messages_only:return owner.build_ai_messages(batch)
+            result=owner.group_korean_with_ai(segment_batch,firered_tokens,provider_snapshot or task_provider_snapshot('group'))
+        else:
+            from . import english_segmentation as owner
+            from .european_text import lexicon
+            lex=lexicon(language_profile.code) if language_profile.code!='en' else None
+            if _messages_only:return owner.build_ai_messages(batch,lex)
+            result=owner.group_english_with_ai(segment_batch,firered_tokens,provider_snapshot or task_provider_snapshot('group'),lexicon=lex)
+        validate_grouping_result(segment_batch,result)
+        return GroupedBatchResult(result,origin='mixed',validated=True,data_validated=True,
+            source_fingerprint=capture_grouping_source(segment_batch).fingerprint)
     from ..providers.provider_input_budget import RetryBudget
     _retry_budget=_retry_budget if _retry_budget is not None else RetryBudget(GROUPING_API_RETRIES-1)
     from ..providers.asr_provider_snapshot import (
@@ -620,7 +645,7 @@ def call_grouping_api(
     from .grouping_request import grouping_prompt_key, grouping_system_prompt, task_prompt_language
     from ..recognition.content_scene import runtime_content_scene
     scene = runtime_content_scene()
-    prompt = grouping_system_prompt(MAX_SUBTITLE_CHARS, MAX_SUBTITLE_SECONDS)
+    prompt = grouping_system_prompt(_current_language_profile().hard_max, _current_language_profile().max_seconds)
     from .language_rules import is_english
     if is_english():
         prompt = grouping_system_prompt(84, 6.0) + (
@@ -1083,6 +1108,24 @@ def call_grouping_api(
 
 
 @_source_bound_candidate
+def retain_source_utterances(segments,profile=None):
+    from .segmentation_profiles import current_profile,task_language_tag,measure
+    profile=profile or current_profile()
+    result=[];overflow=0
+    for row in sorted(segments,key=lambda r:(r.start,r.end,r.segment_id)):
+        cue=SubtitleCue(len(result)+1,float(row.start),float(row.end),row.text,
+            bool(getattr(row,'timing_locked',False)),row.speaker or 'S00')
+        cue.source_spans=[dict(source_id=row.segment_id,char_start=0,char_end=len(row.text),raw_text=row.text,
+            index_unit='python_unicode_codepoint',source_time=[row.start,row.end])]
+        cue.timing_basis='original_source_sentence'
+        cue.segmentation_language=task_language_tag(profile.code)
+        result.append(cue)
+        overflow+=measure(row.text,profile.code)>profile.hard_max or row.end-row.start>profile.max_seconds
+    record_run_event('conservative_language_grouping',language=profile.code,policy=profile.fingerprint,
+        utterances=len(result),over_limit_retained=overflow,reason='no_reliable_lexical_boundaries; source_utterances_retained')
+    return result
+
+
 def group_subtitles(
     segments,
     firered_tokens=(),
@@ -1096,6 +1139,20 @@ def group_subtitles(
     from ..providers.asr_provider_snapshot import task_provider_snapshot, digest, GroupedBatchResult, validate_grouped_text, restore_source_text
     use_ai = bool(use_ai)
     snapshot = (provider_snapshot or task_provider_snapshot("group")) if use_ai else None
+    from .segmentation_profiles import current_profile,task_language_tag
+    profile=current_profile()
+    if profile.strategy!='cjk':
+        if profile.strategy=='eojeol':
+            from .korean_segmentation import group_korean_with_ai,group_korean
+            result=group_korean_with_ai(segments,firered_tokens,snapshot) if use_ai else group_korean(segments,firered_tokens)
+        elif profile.strategy=='space':
+            from .english_segmentation import group_english_with_ai,group_english
+            from .european_text import lexicon
+            lex=lexicon(profile.code) if profile.code!='en' else None
+            result=group_english_with_ai(segments,firered_tokens,snapshot,lexicon=lex) if use_ai else group_english(segments,firered_tokens,lexicon=lex)
+        else:
+            result=retain_source_utterances(segments,profile)
+        return GroupedBatchResult(result,origin='mixed' if use_ai and profile.strategy!='conservative' else 'local_fast',validated=True,data_validated=True)
     if use_ai:
         print(
             "   云端模型阅读全稿并选择同一说话人内部的语义断点，"
@@ -1344,6 +1401,8 @@ def group_subtitles(
         cues = fallback_group(ordered_segments, firered_tokens, speech_regions)
     for cue_id, cue in enumerate(cues, 1):
         cue.cue_id = cue_id
+    from .grouping_contract import attach_grouping_spans
+    attach_grouping_spans(ordered_segments,cues)
     origins = {getattr(value, 'origin', 'fallback') for value in results.values()}
     all_validated = bool(use_ai) and not postprocess_fallback and all(getattr(value, 'validated', False) for value in results.values())
     origin = 'ai' if all_validated and origins <= {'ai'} else 'local_fast' if all_validated and origins <= {'local_fast'} else 'mixed' if all_validated else 'fallback' if use_ai else 'local'
@@ -1355,4 +1414,6 @@ def group_subtitles(
         batch_count=len(jobs), remote_batch_count=sum(not job[-1] for job in jobs) if use_ai else 0,
         local_fast_batch_count=sum(bool(job[-1]) for job in jobs), protected_turn_count=len(turns),
         result_origin=origin)
-    return GroupedBatchResult(cues, origin=origin, validated=all_validated)
+    from .grouping_contract import capture_grouping_source
+    return GroupedBatchResult(cues, origin=origin, validated=all_validated,data_validated=True,
+        source_fingerprint=capture_grouping_source(ordered_segments).fingerprint)

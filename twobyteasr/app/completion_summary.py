@@ -11,6 +11,8 @@ _COPY = {
     '已收起 · 展开摘要': ('Collapsed · Show summary', '折りたたみ · 要約を表示'),
     '收起': ('Collapse', '折りたたむ'),
     '展开': ('Expand', '展開'),
+    '查看全部': ('View all', 'すべて表示'),
+    '只看摘要': ('Summary only', '要約のみ'),
     '有效音频 {seconds} 秒': ('Audio processed: {seconds}s', '処理音声 {seconds} 秒'),
     '有效时长未记录': ('Processed duration unrecorded', '処理時間の記録なし'),
     '字幕工程已保存并载入': ('Subtitle project saved and loaded', '字幕プロジェクトを保存・読込済み'),
@@ -78,7 +80,7 @@ def _count(value):
 
 
 def completion_summary(report, outcome, *, media_path='', project_path='', project_loaded=False,
-                       project_error='', language='zh', project_cues=None):
+                       project_error='', language='zh', project_cues=None, save_state=''):
     """Use this task's immutable report and caller-verified delivery only.
 
     Missing counters stay unknown. A saved project and a completed request are
@@ -117,6 +119,8 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
     seconds = result.get('audio_seconds')
     duration = line('有效音频 {seconds} 秒', seconds=f'{float(seconds):.3f}') if isinstance(seconds, (int, float)) else translate('有效时长未记录', language)
     saved = translate('字幕工程已保存并载入', language) if project_loaded else line('工程无法载入：{reason}', reason=project_error) if project_error else translate('工程保存状态待确认', language)
+    if save_state:
+        saved = translate('最新修改正在保存' if save_state == 'pending' else '最新修改保存失败，仍保留在内存中', language)
     resolved = _dict(profile.get('resolved_context')) or _dict(settings.get('resolved_content_context'))
     domain = str(resolved.get('domain') or resolved.get('game') or profile.get('game') or '')
     source = str(resolved.get('domain_source') or resolved.get('source') or '')
@@ -139,7 +143,7 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
 
     warnings = []
     gaps = _count(context.get('unresolved_recall_gaps'))
-    if gaps:
+    if gaps and context.get('recall_gaps_are_errors'):
         gap_cues = _count(context.get('recall_gap_cues'))
         warnings.append(line('待审核：{count} 处疑似术语未召回{scope}', count=gaps,
                              scope=line('（{count} 条处理记录）', count=gap_cues) if gap_cues is not None else ''))

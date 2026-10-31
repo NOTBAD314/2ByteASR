@@ -113,4 +113,12 @@ def normalized_preferences(value):
         if key in prefs and prefs[key] != number:
             changes.append(key)
         prefs[key] = number
+    pause = prefs.get('caption_pause_on_edit', True)
+    if type(pause) is not bool:
+        changes.append('caption_pause_on_edit');pause = True
+    prefs['caption_pause_on_edit'] = pause
+    layer = prefs.get('caption_default_layer', 'translation')
+    if layer not in ('original', 'translation'):
+        changes.append('caption_default_layer');layer = 'translation'
+    prefs['caption_default_layer'] = layer
     return prefs, changes

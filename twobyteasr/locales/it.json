@@ -8494,5 +8494,14 @@
   "需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；选自己的 OSS 时另需同一国际账号下的 OSS。Qwen Cloud 的 Key 与千问AI平台（中国站）、阿里云百炼的 Key 都不能互换；Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。": "Serve un account Qwen Cloud (home.qwencloud.com, accesso con un account internazionale Alibaba Cloud); per usare il tuo OSS serve anche OSS sullo stesso account internazionale. Le chiavi Qwen Cloud non sono intercambiabili con quelle di Qianwen AI Platform (sito Cina) o di Alibaba Cloud Model Studio; nemmeno l'accesso alla chat di qwen.ai può chiamare l'API di riconoscimento.",
   "需要千问AI平台账号（platform.qianwenai.com，用阿里云账号或手机号登录）；选自己的 OSS 时另需阿里云 OSS。千问AI平台的 Key 与 Qwen Cloud（国际站）、阿里云百炼的 Key 都不能互换；千问 App 的聊天登录也不能用来调用识别接口。": "Serve un account Qianwen AI Platform (platform.qianwenai.com, accesso con un account Alibaba Cloud o un numero di telefono); per usare il tuo OSS serve anche Alibaba Cloud OSS. Le chiavi di Qianwen AI Platform non sono intercambiabili con quelle di Qwen Cloud (sito internazionale) o di Alibaba Cloud Model Studio; nemmeno l'accesso alla chat dell'app Qwen può chiamare l'API di riconoscimento.",
   "音频会先上传到服务商临时空间（48 小时后由服务商自动删除），再提交识别。": "L'audio viene prima caricato nello spazio temporaneo del fornitore (il fornitore lo elimina automaticamente dopo 48 ore) e poi inviato per il riconoscimento.",
-  "下载源也决定运行环境（Python、PyTorch 和依赖包）从哪里下载：选 ModelScope 或 HF 镜像时国内镜像在前，选 Hugging Face 官方时官方在前，选自动时先测各来源的速度再排顺序。下载中变慢或停住会换来源接着下。所有文件都按锁定的 SHA-256 校验。": "La sorgente di download decide anche da dove arriva l'ambiente di esecuzione (Python, PyTorch e pacchetti): con ModelScope o il mirror HF si usano prima i mirror della Cina continentale, con Hugging Face ufficiale le sorgenti ufficiali, e con Automatico ogni sorgente viene prima misurata e ordinata per velocità. Un download che rallenta o si blocca prosegue da un'altra sorgente. Ogni file viene verificato con il suo SHA-256 bloccato."
+  "下载源也决定运行环境（Python、PyTorch 和依赖包）从哪里下载：选 ModelScope 或 HF 镜像时国内镜像在前，选 Hugging Face 官方时官方在前，选自动时先测各来源的速度再排顺序。下载中变慢或停住会换来源接着下。所有文件都按锁定的 SHA-256 校验。": "La sorgente di download decide anche da dove arriva l'ambiente di esecuzione (Python, PyTorch e pacchetti): con ModelScope o il mirror HF si usano prima i mirror della Cina continentale, con Hugging Face ufficiale le sorgenti ufficiali, e con Automatico ogni sorgente viene prima misurata e ordinata per velocità. Un download che rallenta o si blocca prosegue da un'altra sorgente. Ogni file viene verificato con il suo SHA-256 bloccato.",
+  "未指定语言": "Lingua non specificata",
+  "导入字幕并替换此轨道…": "Importa sottotitoli e sostituisci questa traccia…",
+  "字幕轨道的说话人和语言…": "Parlante e lingua della traccia dei sottotitoli…",
+  "已导入 {count} 条字幕": "Importati {count} sottotitoli",
+  "输入要查找的文字，匹配会在这里列出\n也可以在字幕里选字后右键「批量替换相同文字…」": "Digita il testo da cercare; le corrispondenze compaiono qui\nOppure seleziona del testo in un sottotitolo e fai clic destro su «Sostituisci lo stesso testo in blocco…»",
+  "+ 更多选项": "+ Altre opzioni",
+  "替换 {value0} 处": "Sostituisci {value0}",
+  "{value0} 处": "{value0} occorrenze",
+  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zoom della timeline: a sinistra vedi di più, a destra ingrandisci (o Ctrl+rotellina)"
 }

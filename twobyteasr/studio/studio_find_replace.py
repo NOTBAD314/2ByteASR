@@ -401,6 +401,7 @@ def _preview_colors() -> dict[str, str]:
         "text": theme.text, "secondary": theme.text_secondary, "muted": theme.text_muted,
         "removed": _blend(theme.danger, theme.input_surface, 0.32),
         "added": _blend(theme.success, theme.input_surface, 0.30),
+        "removed_text": theme.danger, "added_text": theme.success,
     }
 
 
@@ -418,6 +419,36 @@ def replace_row_html(text: str, hit: TextOccurrence, colors: dict[str, str]) -> 
             f'<span style="color:{colors["text"]};">{clean(text[:start])}{removed}{clean(text[end:])}</span><br>'
             f'<span style="color:{colors["muted"]};">→</span>&nbsp;'
             f'<span style="color:{colors["secondary"]};">{clean(text[:start])}{added}{clean(text[end:])}</span>')
+
+
+def replace_card_html(text: str, hits: list[TextOccurrence], colors: dict[str, str]) -> str:
+    """One cue as one line: every match struck out with its new words beside it, the time on the right."""
+    clean = lambda part: html.escape(part).replace("\n", " / ")
+    ordered = sorted(hits, key=lambda hit: hit.span)
+    if any(text[hit.span[0]:hit.span[1]] != hit.original for hit in ordered):
+        ordered, text = ordered[:1], ordered[0].original
+        ordered = [TextOccurrence(ordered[0].cue_id, ordered[0].start_ms, text, ordered[0].replacement,
+                                  (0, len(text)))]
+    parts, cursor = [], 0
+    for hit in ordered:
+        start, end = hit.span
+        if start < cursor:
+            continue
+        parts.append(clean(text[cursor:start]))
+        parts.append(f'<span style="background-color:{colors["removed"]}; color:{colors["removed_text"]}; '
+                     f'text-decoration:line-through;">{clean(text[start:end])}</span>')
+        if hit.replacement:
+            parts.append(f'<span style="background-color:{colors["added"]}; color:{colors["added_text"]}; '
+                         f'font-weight:600;">{clean(hit.replacement)}</span>')
+        cursor = end
+    parts.append(clean(text[cursor:]))
+    count = (f'&nbsp;&nbsp;<span style="color:{colors["muted"]};">{html.escape(tr("{value0} 处", value0=len(ordered)))}</span>'
+             if len(ordered) > 1 else "")
+    return (f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
+            f'<td><span style="color:{colors["text"]};">{"".join(parts)}</span>{count}</td>'
+            f'<td align="right" width="96" style="white-space:pre;"><span style="color:{colors["muted"]};">'
+            f'{clock_ms(ordered[0].start_ms)}</span></td>'
+            f'</tr></table>')
 
 
 class _PreviewRowDelegate(QStyledItemDelegate):
@@ -551,17 +582,21 @@ class _TextPreviewDialog(QDialog):
         self.preview.currentItemChanged.connect(self._update_association_button)
         layout.addWidget(self.preview, 1)
 
-    def _add_footer(self, layout: QVBoxLayout, leading=(), trailing=()) -> None:
+    def _add_footer(self, layout: QVBoxLayout, leading=(), trailing=(), *, close_button=True) -> None:
         footer = QHBoxLayout()
         footer.setSpacing(8)
         for widget in leading:
             footer.addWidget(widget)
         footer.addStretch(1)
-        close_button = QPushButton("关闭")
-        close_button.clicked.connect(self.reject)
-        for widget in (*trailing, close_button):
+        closing = ()
+        if close_button:
+            # The title bar's × and Esc close every tool; some keep a 关闭 button too.
+            close = QPushButton("关闭")
+            close.clicked.connect(self.reject)
+            closing = (close,)
+        for widget in (*trailing, *closing):
             footer.addWidget(widget)
-        for button in (*leading, *trailing, close_button):
+        for button in (*leading, *trailing, *closing):
             if isinstance(button, QPushButton):
                 button.setMinimumHeight(34)
         layout.addLayout(footer)
@@ -589,6 +624,13 @@ class _TextPreviewDialog(QDialog):
 
     def _row_html(self, hit: TextOccurrence, text: str, colors) -> str:
         return ""
+
+    def _preview_rows(self, hits: list[TextOccurrence]) -> list[list[TextOccurrence]]:
+        """Which hits share one list row (and one check box). One each by default."""
+        return [[hit] for hit in hits]
+
+    def _rows_html(self, row: list[TextOccurrence], text: str, colors) -> str:
+        return self._row_html(row[0], text, colors)
 
     def _apply_extras(self, hits) -> dict:
         """Undo title, learning and receipt for this tool's apply."""
@@ -625,13 +667,16 @@ class _TextPreviewDialog(QDialog):
         self._refresh_status()
 
     def _add_preview_rows(self, hits, texts, colors) -> None:
-        for hit in hits:
-            item = QListWidgetItem(self._row_text(hit))
-            row_html = self._row_html(hit, texts.get(hit.cue_id, ""), colors)
+        self._preview_row_hits = self._preview_rows(hits)
+        for row in self._preview_row_hits:
+            hit = row[0]
+            item = QListWidgetItem("\n".join(self._row_text(each) for each in row))
+            row_html = self._rows_html(row, texts.get(hit.cue_id, ""), colors)
             if row_html:
                 item.setData(PREVIEW_HTML_ROLE, row_html)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if hit.default_selected else Qt.CheckState.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if all(each.default_selected for each in row)
+                               else Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, hit.cue_id)
             item.setData(Qt.ItemDataRole.UserRole+1, {'surface':hit.original,'canonical_options':[hit.replacement],
                 'state':'proposal','cue_id':hit.cue_id})
@@ -662,10 +707,13 @@ class _TextPreviewDialog(QDialog):
 
     def _checked_hits(self) -> list[TextOccurrence]:
         hits = []
-        for index, hit in enumerate(self._preview_hits):
+        rows = getattr(self, "_preview_row_hits", None)
+        if rows is None or sum(map(len, rows)) != len(self._preview_hits):
+            rows = [[hit] for hit in self._preview_hits]
+        for index, row in enumerate(rows):
             item = self.preview.item(index)
             if item is not None and item.checkState() == Qt.CheckState.Checked:
-                hits.append(hit)
+                hits.extend(row)
         return hits
 
     def _set_all_preview_checked(self, checked: bool) -> None:
@@ -740,54 +788,79 @@ class FindReplaceDialog(_TextPreviewDialog):
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(10)
 
-        form = QGridLayout()
-        form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(8)
-        find_label = QLabel("查找")
-        replace_label = QLabel("替换")
-        for label in (find_label, replace_label):
-            label.setObjectName("findFieldLabel")
+        # 2026-10-30 (user picked draft C): one line reads "find → replace",
+        # the options are a row of small tags, results are one card per cue.
+        fields = QHBoxLayout()
+        fields.setSpacing(8)
         self.find_edit = QLineEdit()
         bind_text(self.find_edit, '要查找的文字，例如：尼奈', property='placeholderText')
         self.replace_edit = QLineEdit()
         bind_text(self.replace_edit, '替换为，例如：她', property='placeholderText')
-        for edit in (self.find_edit, self.replace_edit):
-            edit.setMinimumHeight(34)
+        from ..design.themed_icons import install_themed_icon, themed_icon
+        for edit, icon_name in ((self.find_edit, "fa5s.search"), (self.replace_edit, "fa5s.pen")):
+            edit.setObjectName("findBigField")
+            edit.setMinimumHeight(42)
             edit.setClearButtonEnabled(True)
+            edit.addAction(themed_icon(icon_name, "muted"), QLineEdit.ActionPosition.LeadingPosition)
             edit.textChanged.connect(self._queue_live_search)
             edit.installEventFilter(self)
-        self.scope_combo = self._scope_box()
-        bind_text(self.scope_combo, '范围', property='toolTip')
-        self.scope_combo.currentIndexChanged.connect(lambda *_args: self._queue_live_search())
         self.swap_button = QPushButton()
         self.swap_button.setObjectName("findSwapButton")
         bind_text(self.swap_button, '对调查找和替换', property='toolTip')
-        from ..design.themed_icons import install_themed_icon
-        install_themed_icon(self.swap_button, "fa5s.arrows-alt-v", "secondary")
-        self.swap_button.setFixedSize(34, 34)
+        install_themed_icon(self.swap_button, "fa5s.exchange-alt", "secondary")
+        # The shared button rules pad and square every button; its own sheet keeps it round.
+        self.swap_button.setStyleSheet("padding: 0; min-width: 36px; max-width: 36px; "
+                                       "min-height: 36px; max-height: 36px; border-radius: 18px;")
+        self.swap_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.swap_button.clicked.connect(self._swap_fields)
-        form.addWidget(find_label, 0, 0)
-        form.addWidget(self.find_edit, 0, 1)
-        form.addWidget(self.scope_combo, 0, 2)
-        form.addWidget(replace_label, 1, 0)
-        form.addWidget(self.replace_edit, 1, 1)
-        form.addWidget(self.swap_button, 1, 2, Qt.AlignmentFlag.AlignLeft)
-        form.setColumnStretch(1, 1)
-        layout.addLayout(form)
+        fields.addWidget(self.find_edit, 1)
+        fields.addWidget(self.swap_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        fields.addWidget(self.replace_edit, 1)
+        layout.addLayout(fields)
 
+        self.scope_combo = self._scope_box()
+        self.scope_combo.setObjectName("findScopeTag")
+        bind_text(self.scope_combo, '范围', property='toolTip')
+        self.scope_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # A tag sized to its label, not the dialog's 180 px field rule.
+        self.scope_combo.setProperty("fieldWidth", "tag")
+        self.scope_combo.currentIndexChanged.connect(lambda *_args: self._queue_live_search())
+        self.lock_box = _option_chip("不修改锁定字幕", checked=True)
+        install_themed_icon(self.lock_box, "fa5s.lock", "secondary")
         self.case_box = _option_chip("区分大小写")
         self.word_box = _option_chip("全词匹配")
         self.regex_box = _option_chip("正则表达式")
         self.body_box = _option_chip("仅正文")
-        self.lock_box = _option_chip("不修改锁定字幕", checked=True)
         for box in (self.case_box, self.word_box, self.regex_box, self.body_box, self.lock_box):
             box.toggled.connect(self._queue_live_search)
         self.project_entity_box = _option_chip(tr('记录为本工程已确认实体'))
         bind_text(self.project_entity_box, '确认只用于本素材；其它出现位置仍需逐项预览，不写入全局词库。', property='toolTip')
-        layout.addWidget(_chip_row((self.case_box, self.word_box, self.regex_box, self.body_box,
-                                    self.lock_box, self.project_entity_box)))
+        # The two rarely used options wait behind 更多; turning one on keeps it shown.
+        self.more_options_button = QPushButton()
+        self.more_options_button.setObjectName("findMoreChip")
+        self.more_options_button.setAutoDefault(False)
+        self.more_options_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.more_options_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more_options_button.clicked.connect(lambda: self._show_more_options(True))
+        for box in (self.body_box, self.project_entity_box):
+            box.toggled.connect(lambda *_args: self._show_more_options(False))
+        self._more_options_open = False
+        layout.addWidget(_chip_row((self.scope_combo, self.lock_box, self.case_box, self.word_box,
+                                    self.regex_box, self.body_box, self.project_entity_box,
+                                    self.more_options_button)))
+        self._show_more_options(False)
 
         self._add_results(layout)
+        self.preview.setObjectName("findResultCards")
+        self.preview.setSpacing(3)
+        self.preview.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._empty_hint = QLabel(self.preview.viewport())
+        self._empty_hint.setObjectName("findEmptyHint")
+        self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint.setWordWrap(True)
+        self._empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        bind_text(self._empty_hint, '输入要查找的文字，匹配会在这里列出\n也可以在字幕里选字后右键「批量替换相同文字…」')
+        self.preview.viewport().installEventFilter(self)
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -798,16 +871,20 @@ class FindReplaceDialog(_TextPreviewDialog):
         self.key_hint.setObjectName("findKeyHint")
         bind_text(self.key_hint, '↓ 切到替换　Enter 替换所选　Esc 关闭')
         self.next_button = QPushButton("替换下一个")
+        self.next_button.setObjectName("findQuietButton")
         self.next_button.clicked.connect(self._do_replace_next)
         self.all_button = QPushButton("替换所选")
         self.all_button.setProperty("studioPrimary", True)
         self.all_button.clicked.connect(self._do_apply_preview)
-        self._add_footer(layout, leading=(self.key_hint,), trailing=(self.next_button, self.all_button))
+        self._add_footer(layout, leading=(self.key_hint,), trailing=(self.next_button, self.all_button),
+                         close_button=False)
         self._finish_setup()
         self.find_edit.setFocus()
 
     # ---------------------------------------------------------- keyboard
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and watched is self.preview.viewport():
+            self._empty_hint.setGeometry(watched.rect().adjusted(24, 0, -24, 0))
         if event.type() == QEvent.Type.KeyPress and watched in (self.find_edit, self.replace_edit):
             key = event.key()
             if key == Qt.Key.Key_Down and watched is self.find_edit:
@@ -851,7 +928,28 @@ class FindReplaceDialog(_TextPreviewDialog):
         return '没有匹配的字幕' if self.find_edit.text().strip() else '输入查找文字后显示匹配数量'
 
     def _row_html(self, hit: TextOccurrence, text: str, colors) -> str:
-        return replace_row_html(text, hit, colors)
+        return replace_card_html(text, [hit], colors)
+
+    def _preview_rows(self, hits: list[TextOccurrence]) -> list[list[TextOccurrence]]:
+        # One card per cue: two matches in one sentence are ticked together.
+        rows: dict[str, list[TextOccurrence]] = {}
+        for hit in hits:
+            rows.setdefault(hit.cue_id, []).append(hit)
+        return list(rows.values())
+
+    def _rows_html(self, row: list[TextOccurrence], text: str, colors) -> str:
+        return replace_card_html(text, row, colors)
+
+    def _show_more_options(self, open_: bool) -> None:
+        """仅正文 and 记录实体 stay behind 更多 until opened or turned on."""
+        self._more_options_open = self._more_options_open or bool(open_)
+        hidden = 0
+        for box in (self.body_box, self.project_entity_box):
+            shown = self._more_options_open or box.isChecked()
+            box.setVisible(shown)
+            hidden += not shown
+        bind_text(self.more_options_button, '+ 更多选项')
+        self.more_options_button.setVisible(hidden > 0)
 
     def _apply_extras(self, hits) -> dict:
         extras = {"title": self.find_edit.text() or self._title}
@@ -905,6 +1003,12 @@ class FindReplaceDialog(_TextPreviewDialog):
         has_rows = self.preview.count() > 0
         self.select_all_button.setVisible(has_rows)
         self.select_none_button.setVisible(has_rows)
+        checked = len(self._checked_hits())
+        if checked:
+            bind_text(self.all_button, '替换 {value0} 处', value0=checked)
+        else:
+            bind_text(self.all_button, '替换所选')
+        self._empty_hint.setVisible(not has_rows and not needle)
         if not enabled:
             bind_text(self.status_label, '输入查找文字后显示匹配数量')
             return

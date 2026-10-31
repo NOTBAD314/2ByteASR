@@ -131,10 +131,17 @@ def test_p_flips_the_caption_and_a_consistent_caption_still_gets_card_one(tmp_pa
         widgets = [layout.itemAt(index).widget() for index in range(layout.count())]
         cards = [widget for widget in widgets if isinstance(widget, ReviewCandidateCard)]
         assert len(cards) == 1 and [row.original for row in cards[0]._suggestions] == ["他", "他"]
-        assert page._flip_review_pronouns()
-        assert page._cue_lookup["a"].text == "她说她们马上到"
-        assert page._apply_review_suggestion(0)            # one click: 她 → 他 for that one place
-        assert page._cue_lookup["a"].text == "他说她们马上到"
+        assert not page._flip_review_pronouns()  # two people need a precise target
+        assert page._canvas_editor is not None
+        from PySide6.QtGui import QTextCursor
+        page.subtitle_edit_input.moveCursor(QTextCursor.MoveOperation.Start)
+        assert page._flip_editor_pronoun()
+        assert page._cue_lookup['a'].text == '他说他们马上到'
+        page._submit_caption_draft()
+        assert page._cue_lookup['a'].text == '她说他们马上到'
+        page._refresh_review_summary_strip()
+        assert page._apply_review_suggestion(1)  # only the explicitly clicked second pronoun
+        assert page._cue_lookup['a'].text == '她说她们马上到'
         page.select_cue("b")
         page._refresh_review_summary_strip()
         app.processEvents()

@@ -45,6 +45,19 @@ PRICING_PAGE = 'https://platform.mosi.cn/app/pricing/'
 DOCS_PAGE = 'https://platform.mosi.cn/docs/reference/transcriptions/'
 GUIDE_PAGE = 'https://platform.mosi.cn/docs/scenarios/transcribe-diarization/'
 
+# Checked against the actual MOSI REST contract, 2026-10-30. It documents
+# neither a language hint nor forced language, unlike some OpenAI-compatible
+# transcription endpoints. Do not send an invented language= parameter.
+LANGUAGE_NOTICE = ('MOSS Pro 云端自动判断转写语言，接口未提供指定语言参数；'
+                   '这里的语言选择用于后续对齐和文字处理，不能强制云端输出该语言。')
+
+
+def language_policy(requested):
+    from ..subtitle_rules.language_rules import normalize_language
+    return dict(requested_language=normalize_language(requested), request_language=None,
+                language_control='automatic_only', provider_detected_language=None,
+                capability_source=DOCS_PAGE)
+
 MAX_AUDIO_SECONDS = 60 * 60
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 # Requests of about 20 minutes (2026-10-23). A user's 40-minute request took
@@ -489,6 +502,8 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     terms = list(endpoint.get('mosi_keyterms') or [])
     if terms:
         fields['keyterms'] = json.dumps(terms, ensure_ascii=False)
+    # These are the actual non-secret multipart fields, not a UI promise.
+    _save(state_path.parent / 'submission-parameters.json', fields)
     form = _MultipartBody(list(fields.items()), 'audio.wav', wav, upload_progress, file_type='audio/wav')
     check()
     state.update(status='SUBMITTING', bytes=len(wav), created_at=time.time())
@@ -865,6 +880,8 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                                    keyterms_dropped=endpoint.get('mosi_keyterms_dropped') or [],
                                    price_cny_per_hour=PRICE_CNY_PER_HOUR, price_checked=PRICE_CHECKED))
     board = _Board(total, progress)
+    from ..recognition.run_context import get_runtime_context
+    requested_language = get_runtime_context().requested_language
     lock = threading.Lock()
     converted = [None] * total
     timings = [dict(provider=PROVIDER, model=MODEL, request_index=i, request_total=total,
@@ -898,6 +915,19 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                           start=round(start / 16000, 3), end=round(end / 16000, 3),
                           **{key: value for key, value in repair.items() if key != 'examples'})
         rows = result_rows(dict(payload, segments=kept), offset=start / 16000, duration=(end - start) / 16000)
+        from ..recognition.language_diagnostics import transcript_language_sample
+        from ..subtitle_rules.language_rules import normalize_language, TASK_LANGUAGES
+        detected = normalize_language(payload.get('language'))
+        receipt = dict(source='mosi_raw_response', provider=PROVIDER, request_index=index,
+                       start=start / 16000, end=end / 16000, request_language=None,
+                       language_control='automatic_only',
+                       provider_detected_language=detected if detected in TASK_LANGUAGES else None,
+                       remote_task_id=str(payload.get('id') or '')[:128],
+                       raw_result_path=str(folder / 'result.json'),
+                       transcript=transcript_language_sample(row.get('text') for row in rows))
+        if rows:
+            rows[0]['asr_language_receipt'] = receipt
+        _record_event('asr_language_request', requested_language=requested_language, **receipt)
         if any(row.get('speaker') is not None for row in rows):
             # Labels are only meaningful inside one request: S01 of request 1
             # and S01 of request 2 are not assumed to be the same person.

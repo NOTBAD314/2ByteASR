@@ -278,6 +278,14 @@ function Invoke-PythonInstall([string[]]$arguments) {
     }
 }
 function Install-ManagedPython([string]$version) {
+    $candidate=Join-Path $env:UV_PYTHON_INSTALL_DIR ('cpython-'+$version+'-windows-x86_64-none\python.exe')
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        try {
+            Run-Bounded $candidate @('-I','-X','utf8','-c',("import sys;assert '.'.join(map(str,sys.version_info[:3]))=='"+$version+"'")) 30
+            Write-Host ('[运行库] 复用已验证的基础 Python '+$version)
+            return
+        } catch { Write-Host ('[运行库] 基础 Python 启动检查未通过，保留诊断后重新准备：'+$_.Exception.Message) }
+    }
     $arguments=@('--no-config','--system-certs','python','install',$version,'--install-dir',$env:UV_PYTHON_INSTALL_DIR,'--no-bin','--no-registry')
     foreach ($attempt in (Get-PreferredOrder ([pscustomobject]@{label='默认来源';url=''}) @($script:pythonMirrors))) {
         $extra=@()

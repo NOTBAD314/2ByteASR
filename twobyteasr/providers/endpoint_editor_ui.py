@@ -310,7 +310,8 @@ class PromptDialog(SpringDialog):
     the built-in guidance. A running task keeps the settings it started with.
     """
 
-    LANGUAGES = (("zh", "中文字幕"), ("ja", "日语字幕"), ("en", "英语字幕"))
+    from ..subtitle_rules.segmentation_profiles import prompt_languages
+    LANGUAGES = prompt_languages()
 
     def __init__(self, parent=None, settings=None):
         super().__init__(parent)
@@ -323,11 +324,18 @@ class PromptDialog(SpringDialog):
         self._settings = settings
         self._limit = CUSTOM_GUIDANCE_MAX_CHARS
         stored = settings.get("grouping_prompts") if isinstance(settings.get("grouping_prompts"), dict) else {}
+        self._stored = dict(stored)
+        from ..subtitle_rules.segmentation_profiles import canonical_prompt_values
+        stored=canonical_prompt_values(stored)
+        self._canonical_stored=stored
+        self._restored = set()
         self._defaults = {code: default_grouping_guidance(code) for code, _label in self.LANGUAGES}
         self._drafts = {code: str(stored.get(code) or "").strip() or self._defaults[code]
                         for code, _label in self.LANGUAGES}
         spoken = str((settings.get("subtitle_language") or {}).get("recognition_language") or "")
-        self._current = spoken if spoken in self._drafts else "zh"
+        from ..subtitle_rules.segmentation_profiles import language_tag, profile_for
+        tag=language_tag(spoken)
+        self._current = tag if tag in self._drafts and spoken not in ('','auto') else profile_for(tag).code if tag!='und' else 'zh'
         self.setObjectName("groupingPromptDialog")
         bind_text(self, 'AI 断句提示词', property='windowTitle')
         self.resize(820, 680)
@@ -380,7 +388,8 @@ class PromptDialog(SpringDialog):
         self.editor.setMinimumHeight(260)
         bind_text(self.editor, '断句说明', property='accessibleName')
         layout.addWidget(self.editor, 3)
-        fixed_note = bind_text(QLabel(), '程序固定的部分不能改：模型只返回换字幕的位置，不改一个字；说话人切换和长停顿处一定断开；每条字幕的长度上限照旧。字幕校对的提示词由程序内置，不在这里修改。')
+        fixed_note = QLabel()
+        self.fixed_note = fixed_note
         fixed_note.setObjectName("muted")
         fixed_note.setWordWrap(True)
         layout.addWidget(fixed_note)
@@ -420,7 +429,7 @@ class PromptDialog(SpringDialog):
 
         self.language.currentIndexChanged.connect(self._switch_language)
         self.editor.textChanged.connect(self._refresh_state)
-        self.restore.clicked.connect(lambda: self.editor.setPlainText(self._defaults[self._current]))
+        self.restore.clicked.connect(self._restore_current)
         self.fixed_toggle.toggled.connect(self._show_fixed)
         self._refresh_fixed()
         self._refresh_state()
@@ -440,9 +449,19 @@ class PromptDialog(SpringDialog):
         from ..subtitle_rules.grouping_request import fixed_grouping_prompt_parts
         head, reminder, tail = fixed_grouping_prompt_parts(self._current)
         self.fixed.setPlainText(f"{head}\n{tr('（这里是上面可以修改的断句说明；改过时程序再加一句：）')}\n{reminder}\n\n{tail}")
+        from ..subtitle_rules.segmentation_profiles import profile_for,unit_label
+        p=profile_for(self._current)
+        self.fixed_note.setText(tr('当前语言 {language}：长度单位 {unit}；建议 {preferred}、软上限 {soft}、上限 {hard}，最多 {lines} 行 / {seconds} 秒。只选合法边界，完整长词超限时保留并提示；显示换行与时间字幕切分分别处理。').format(
+            language=self._current,unit=unit_label(self._current),preferred=p.preferred,soft=p.soft_max,hard=p.hard_max,lines=p.lines,seconds=p.max_seconds))
+
+    def _restore_current(self):
+        self._restored.add(self._current)
+        self.editor.setPlainText(self._defaults[self._current])
 
     def _refresh_state(self):
         text = self.editor.toPlainText().strip()
+        if text != self._defaults[self._current].strip():
+            self._restored.discard(self._current)
         builtin = not text or text == self._defaults[self._current].strip()
         too_long = len(text) > self._limit
         self.state.setText(tr('超过 {limit} 字，请删减').format(limit=self._limit) if too_long
@@ -453,10 +472,11 @@ class PromptDialog(SpringDialog):
     def guidance_values(self) -> dict:
         """What saving writes: empty for the built-in guidance."""
         self._drafts[self._current] = self.editor.toPlainText()
-        values = {}
+        values = dict(self._stored)  # preserve unknown/legacy language customizations
         for code, text in self._drafts.items():
             text = text.strip()
-            values[code] = "" if not text or text == self._defaults[code].strip() else text[:self._limit]
+            explicit_old = bool(self._canonical_stored.get(code)) and text == str(self._canonical_stored[code]).strip()
+            values[code] = "" if code in self._restored or not text or text == self._defaults[code].strip() and not explicit_old else text[:self._limit]
         return values
 
     def save(self):

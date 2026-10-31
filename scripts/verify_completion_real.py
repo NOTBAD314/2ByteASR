@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--scale', default='1', help='Qt test multiplier, or natural for the inherited Windows desktop DPI without Qt overrides')
     parser.add_argument('--layout-baseline', type=Path)
     parser.add_argument('--summary-layout', action='store_true', help='Verify current summary/full/collapse layout using the retained real task')
+    parser.add_argument('--fidelity',action='store_true',help='Verify real multilingual counts and an explicitly injected save/recovery UI state')
     args = parser.parse_args()
     output = args.output.resolve()
     if not output.is_relative_to(ROOT/'tmp') or output.exists():
@@ -58,7 +59,7 @@ def main():
         if args.scale == 'natural' else 'Controlled per-process Qt test multiplier; actual DPR measured by the app; OS DPI unchanged')
     (output/'input.json').write_text(json.dumps(dict(project=str(project), report=str(report),
         source_project=str(args.project.resolve()), source_report=str(args.report.resolve()), requested_scale=args.scale,
-        layout_baseline=layout_baseline, dpi_scope=dpi_scope, summary_layout=args.summary_layout,
+        layout_baseline=layout_baseline, dpi_scope=dpi_scope, summary_layout=args.summary_layout,fidelity=args.fidelity,
         verification_scope='Retained real terminal replay through normal quick_start; structural state coverage separately labeled; no new ASR or provider call. ' + dpi_scope),
         ensure_ascii=False, indent=2), 'utf8')
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)

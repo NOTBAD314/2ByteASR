@@ -92,7 +92,22 @@ def _observations(row, role_models=None):
         yield model, str(text), field, windows
 
 
-def project_row_observations(reference, row, cue, *, role_models=None):
+def _recorded_number_text(value, row):
+    """Replay only equivalent, exactly located number-normalization receipts."""
+    from ..subtitle_rules.studio_qc import normalize_spoken_text
+    polish = (row.get('caption_arbitration') or {}).get('terminology_polish') or {}
+    events = sorted(polish.get('number_events') or (), key=lambda e: int(e.get('start', 0)), reverse=True)
+    for event in events:
+        a, b = event.get('start'), event.get('end')
+        old, new = str(event.get('source') or ''), str(event.get('value') or '')
+        if (isinstance(a, int) and isinstance(b, int) and 0 <= a < b <= len(value)
+                and value[a:b] == old and old and new
+                and normalize_spoken_text(old) == normalize_spoken_text(new)):
+            value = value[:a] + new + value[b:]
+    return value
+
+
+def project_row_observations(reference, row, cue, *, role_models=None, projection_words=None, text_range=None):
     from ..subtitle_rules.studio_qc import normalize_spoken_text
     start, end = int(cue.start_ms), int(cue.end_ms)
     current = normalize_spoken_text(cue.text)
@@ -102,6 +117,8 @@ def project_row_observations(reference, row, cue, *, role_models=None):
         return []
     output = []
     for model, value, field, windows in _observations(row, role_models):
+        observed_text = value
+        value = _recorded_number_text(value, row)
         # Legacy segment scope is recoverable evidence; it is explicitly not
         # a newly recovered per-model native alignment.
         scopes = list(windows) if isinstance(windows, (list, tuple)) else [
@@ -120,8 +137,12 @@ def project_row_observations(reference, row, cue, *, role_models=None):
             # One original segment can feed several cues. Preserve its source
             # range, and align only the requested part against the stored words.
             proxy = dict(row, _observation=value)
+            if projection_words is not None:
+                proxy['words'] = projection_words
             selection = SimpleNamespace(start_ms=low, end_ms=high)
-            if not timed or (low <= a and b <= high):
+            if text_range is not None:
+                text = slice_evidence(proxy, selection, '_observation', caption=cue.text, text_range=text_range)
+            elif not timed or (low <= a and b <= high):
                 text = value
             else:
                 text = slice_evidence(proxy, selection, '_observation', caption=cue.text)
@@ -133,8 +154,9 @@ def project_row_observations(reference, row, cue, *, role_models=None):
             decision = row.get('caption_arbitration') or {}
             original = decision.get('independent_input_evidence') or {}
             comparison_source = original.get('primary') or row.get('moss_text') or row.get('text', '')
-            comparison = slice_evidence(dict(row, _comparison=comparison_source),
-                selection, '_comparison', caption=cue.text) if timed else str(cue.text)
+            comparison_source = _recorded_number_text(comparison_source, row)
+            comparison = slice_evidence(dict(proxy, _comparison=comparison_source),
+                selection, '_comparison', caption=cue.text, text_range=text_range) if timed else str(cue.text)
             # Stored word midpoints may omit a displayed suffix even while
             # the clipped model window covers the cue's entire time range.
             # Record only a unique textual match; these are normalized text
@@ -144,6 +166,7 @@ def project_row_observations(reference, row, cue, *, role_models=None):
             if text_start >= 0 and current.find(normalized_comparison, text_start+1) >= 0:
                 text_start = -1
             payload = dict(model=model, text=text, source=field, reference=reference,
+                observed_text=observed_text,
                 start_ms=low, end_ms=high, cue_start_ms=start, cue_end_ms=end,
                 original_start_ms=left, original_end_ms=right,
                 coverage_basis=scope.get('coverage_basis', 'observed_model_window'),
@@ -236,8 +259,18 @@ def _timeline_row_observations(project, cue, reference, row, role_models, receip
                 if left[0] <= value <= right[0]), (points[0], points[1]) if value < points[0][0] else (points[-2], points[-1]))
             (a, x), (b, y) = pair
             return round(x+(value-a)*(y-x)/(b-a))
-        source_start = max(anchors[0][0], project_clock(int(cue.start_ms), True))
-        source_end = min(anchors[-1][0], project_clock(int(cue.end_ms), True))
+        source_start = project_clock(int(cue.start_ms), True)
+        source_end = project_clock(int(cue.end_ms), True)
+        from ..subtitle_rules.studio_qc import normalize_spoken_text
+        original=(row.get('caption_arbitration') or {}).get('independent_input_evidence') or {}
+        primary=original.get('primary') or row.get('moss_text') or row.get('text') or ''
+        exact_other_source=(reference!=clock_reference and normalize_spoken_text(primary)==normalize_spoken_text(cue.text))
+        if not exact_other_source:
+            source_start=max(anchors[0][0],source_start)
+            source_end=min(anchors[-1][0],source_end)
+        # Another provider's native words can extend beyond the forced
+        # aligner's word edges. An exact full source sentence is bounded by
+        # the cue / frozen source interval, not that other clock's last word.
         if frozen_end > frozen_start:
             source_start, source_end = max(source_start, frozen_start), min(source_end, frozen_end)
         if source_end <= source_start:
@@ -249,7 +282,24 @@ def _timeline_row_observations(project, cue, reference, row, role_models, receip
         # Without a proven word mapping this is context for the whole display
         # cue, never a proportional estimate of acoustic word positions.
     source_cue = SimpleNamespace(start_ms=source_start, end_ms=source_end, text=cue.text)
-    observations = project_row_observations(reference, row, source_cue, role_models=role_models)
+    # The receipt was constructed from the measured FireRed clock, while the
+    # old row.words may be uniformly spread API display estimates. Feeding
+    # the recovered FireRed interval back through that different clock loses
+    # the last character (300.020 vs estimated midpoint 300.045 in the case).
+    # Keep the exact source text range only for the complete receipt; trims
+    # still use the proven clock and its bounded source interval.
+    from .word_timing_provenance import estimated_word_timing
+    projection_words = original_words if proven and estimated_word_timing(clock_row) else None
+    text_range = None
+    if (proven and clock_reference == reference
+            and cue.end_ms-cue.start_ms == base_end-base_start
+            and int(selected_original[-1]['end_ms']) <= frozen_end
+            and int(selected_original[0]['end_ms']) > frozen_start
+            and wanted == content(receipt.get('text') or '')):
+        text_range = matches[0]
+        projection_words = original_words
+    observations = project_row_observations(reference, row, source_cue, role_models=role_models,
+        projection_words=projection_words, text_range=text_range)
     if not observations and clock_reference == reference:
         # An exact task/parent receipt still owns the original transcript when
         # its old word stream cannot be sliced (e.g. corrected text differs).
@@ -273,8 +323,33 @@ def _timeline_row_observations(project, cue, reference, row, role_models, receip
     return observations
 
 
+def _mark_neighbor_context(observations, cue):
+    """A weak legacy neighbor must not contaminate an exact current reading.
+
+    Keep the row and original source interval for diagnostics. This is not a
+    new acoustic alignment: only a full same-source textual receipt plus an
+    unmapped, out-of-cue original interval establishes neighboring context.
+    """
+    full = {r['model'] for r in observations if r.get('cue_text_start') == 0
+            and r.get('cue_text_end') == r.get('cue_text_length') and r.get('cue_text_length')
+            and not r.get('context_only')}
+    for row in observations:
+        if (row.get('model') in full and row.get('cue_text_start') is None
+                and row.get('projection_basis') == 'frozen_caption_source_interval'
+                and (row.get('original_start_ms', cue.start_ms) < cue.start_ms-50
+                     or row.get('original_end_ms', cue.end_ms) > cue.end_ms+50)):
+            row['context_only'] = True
+            row['coverage_unknown'] = True
+    return observations
+
+
 def cue_source_hypotheses(project, cue, *, index=None):
     refs = list(dict.fromkeys(getattr(cue, 'evidence_refs', ()) or ()))
+    from ..projects.subtitle_import import imported_track
+    if not refs and imported_track(project, getattr(cue, 'speaker_id', '')):
+        # The same time is not an acoustic association. Imported originals,
+        # translations and independent languages retain their own identity.
+        return ()
     evidence = getattr(project, 'asr_evidence', {})
     settings = (getattr(project, 'generation_metadata', {}) or {}).get('models') or {}
     role_models = {}
@@ -310,7 +385,7 @@ def cue_source_hypotheses(project, cue, *, index=None):
                 seen.add(key)
                 result.append(observation)
     result.sort(key=lambda item: (item['start_ms'], item['reference']))
-    return tuple(result)
+    return tuple(_mark_neighbor_context(result, cue))
 
 
 def coverage_summary(hypotheses):

@@ -65,6 +65,10 @@ def main() -> None:
     if language not in {None, "Chinese", "Japanese", "English", "Korean", "Spanish", "German", "French",
                         "Portuguese", "Italian", "Russian"}:
         raise RuntimeError("Invalid Qwen worker language")
+    allowed_languages = {None, "Chinese", "Japanese", "English", "Korean", "Spanish", "German", "French",
+                         "Portuguese", "Italian", "Russian"}
+    if any(job.get('language', language) not in allowed_languages for job in jobs):
+        raise RuntimeError('Invalid Qwen window language')
     if not jobs:
         raise RuntimeError("Qwen3-ASR manifest is empty")
     load_started = time.perf_counter()
@@ -79,10 +83,28 @@ def main() -> None:
         report=lambda error_type, detail: _emit("read_only_load_failed", error_type=error_type, detail=detail))
     load_ms = (time.perf_counter() - load_started) * 1000.0
     _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
+    generated = []
+    if policy.get('generation_evidence'):
+        original_generate = model.model.generate
+        def measured_generate(*a, **kw):
+            value = original_generate(*a, **kw)
+            sequences = getattr(value, 'sequences', value)
+            prefix = int(kw['input_ids'].shape[-1])
+            eos = model.model.generation_config.eos_token_id
+            eos = set(eos if isinstance(eos, (list, tuple)) else [eos])
+            for ids in sequences[:, prefix:].detach().cpu().tolist():
+                stop = next((i for i, token in enumerate(ids) if token in eos), None)
+                generated.append(dict(output_tokens=stop + 1 if stop is not None else len(ids),
+                                      eos_observed=stop is not None,
+                                      token_limit_reached=stop is None and len(ids) >= max_new_tokens))
+            return value
+        model.model.generate = measured_generate
     try:
         results = []
         inference_started = time.perf_counter()
         for offset in range(0, len(jobs), batch_size):
+            if policy.get('cancel_file') and Path(policy['cancel_file']).exists():
+                raise RuntimeError('Qwen recognition cancelled; partial checkpoint retained')
             batch = jobs[offset:offset + batch_size]
             audio = []
             for job in batch:
@@ -92,12 +114,16 @@ def main() -> None:
                 if pcm.size != int(job["samples"]) or hashlib.sha256(pcm.tobytes()).hexdigest() != job["pcm_sha256"]:
                     raise RuntimeError("Qwen PCM fingerprint mismatch")
                 audio.append((pcm, sample_rate))
+            generation_start = len(generated)
             values = model.transcribe(audio=audio,
                 context=[str(job.get("context") or "") for job in batch],
-                language=[language] * len(batch), return_time_stamps=False)
+                language=[job.get('language', language) for job in batch], return_time_stamps=False)
             if len(values) != len(batch):
                 raise RuntimeError("Qwen returned a partial batch")
-            for job, value in zip(batch, values):
+            measures = generated[generation_start:]
+            if policy.get('generation_evidence') and len(measures) != len(batch):
+                raise RuntimeError('Qwen generation evidence/window mapping mismatch')
+            for row_index, (job, value) in enumerate(zip(batch, values)):
                 text = str(getattr(value, "text", "") or "").strip()
                 try:
                     confidence = float(getattr(value, "confidence", 0.0)) if text else 0.0
@@ -107,7 +133,13 @@ def main() -> None:
                     "language": str(getattr(value, "language", "") or ""),
                     "confidence": confidence, "start": job["start"], "end": job["end"],
                     "samples": job["samples"], "pcm_sha256": job["pcm_sha256"],
-                    "context_sha256": hashlib.sha256(str(job.get("context") or "").encode("utf8")).hexdigest()})
+                    "context_sha256": hashlib.sha256(str(job.get("context") or "").encode("utf8")).hexdigest(),
+                    "request_language": job.get('language', language),
+                    **({'generation': measures[row_index]} if measures else {})})
+            if policy.get('checkpoint'):
+                _atomic_write(Path(args.output).with_suffix('.partial.json'),
+                              {'results': results, 'policy': policy, 'complete': False})
+            _emit('batch_completed', completed=len(results), total=len(jobs))
         if not any(item.get("text") for item in results):
             raise RuntimeError("Qwen3-ASR returned no parsed output")
         inference_ms = (time.perf_counter() - inference_started) * 1000.0

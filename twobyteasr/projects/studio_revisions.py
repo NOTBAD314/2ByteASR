@@ -391,6 +391,14 @@ class StudioRevisionStore:
         self._persistence_pending = None
         self.render = self._capture_render(revision)
 
+    def authoring_render(self):
+        """Presentation inputs with persisted cue IDs rather than render projections.
+
+        Independent captions have no source-ASS rows. An edit still needs the
+        current authored DTOs when one source has several display instances.
+        """
+        return replace(self.render, cues=self._cues, timeline_cues=None)
+
     def _capture_render_cues(self) -> tuple:
         """2026-09-19 P0：预览渲染（native ASS）用 source 域投影。
 
@@ -415,6 +423,11 @@ class StudioRevisionStore:
 
     def _capture_timeline_cues(self) -> tuple:
         from ..timeline.studio_edit_sequence import projected_cues, sequence_of
+        if self.project.render_settings.get('_cue_domain') == 'timeline':
+            # Independent caption objects already use the project clock;
+            # projected_cues returns this exact canonical list regardless of
+            # video cuts. Reuse the incrementally captured DTOs as well.
+            return self._cues
         if sequence_of(self.project).is_identity():
             return self._cues
         return _reuse_equal((RenderCueDTO.capture(c) for c in projected_cues(self.project, domain='timeline')),
@@ -448,8 +461,27 @@ class StudioRevisionStore:
         from ..timeline.studio_caption_timeline import KEY
         timeline = state.get(KEY)
         instances = timeline.get("instances") if isinstance(timeline, Mapping) else None
+        def frozen_state_item(key, item):
+            if key != 'term_word_overrides' or not isinstance(item, Mapping):
+                return freeze_json(item)
+            # Word overrides are opaque JSON to render/persistence consumers.
+            # Keep each cue as an immutable blob, using exact content bytes
+            # rather than object identity to detect in-place edits too.
+            previous = getattr(self, '_word_override_freeze_memo', {})
+            current = {}
+            for cue_id, row in item.items():
+                try:
+                    data = marshal.dumps(row, 2)
+                except (ValueError, TypeError):
+                    return freeze_json(item)
+                old = previous.get(str(cue_id))
+                frozen = old[1] if old is not None and old[0] == data else FrozenBlob.capture(row, data)
+                current[str(cue_id)] = (data, frozen)
+            self._word_override_freeze_memo = current
+            return FrozenMap(tuple((name, current[name][1]) for name in sorted(current)))
         if not isinstance(instances, Mapping) or not instances:
-            return freeze_json(state)
+            return FrozenMap(tuple((str(key), frozen_state_item(key, item))
+                                   for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
         previous = getattr(self, "_receipt_freeze_memo", {})
         current = {}
         frozen_instances = []
@@ -459,7 +491,7 @@ class StudioRevisionStore:
             except ValueError:
                 return freeze_json(state)
             hit = previous.get(str(name))
-            frozen = hit[1] if hit is not None and hit[0] == data else freeze_json(receipt)
+            frozen = hit[1] if hit is not None and hit[0] == data else FrozenBlob.capture(receipt, data)
             current[str(name)] = (data, frozen)
             frozen_instances.append((str(name), frozen))
         self._receipt_freeze_memo = current
@@ -487,7 +519,7 @@ class StudioRevisionStore:
                 (str(key), FrozenMap(tuple(frozen_instances)) if key == "instances" else frozen_aux(key, item))
                 for key, item in sorted(timeline.items(), key=lambda pair: str(pair[0]))))
         return FrozenMap(tuple(
-            (str(key), frozen_timeline() if key == KEY else freeze_json(item))
+            (str(key), frozen_timeline() if key == KEY else frozen_state_item(key, item))
             for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
 
     def _capture_render(self, revision: int, *, style_only: bool = False) -> SubtitleRenderRevision:
@@ -661,9 +693,15 @@ class StudioRevisionStore:
             self.refresh_persistence(self._persistence_pending)
         return self._persistence
 
-    def consume(self, delta: StateDelta) -> None:
+    def consume(self, delta: StateDelta, *, prepare_render: bool = True) -> None:
         project = self.project
         dirty = delta.dirty
+        if dirty == DirtyDomain.AUTOSAVE:
+            # Review retention/ignore and panel state are save-only. They
+            # cannot invalidate the visible caption/geometry revision.
+            self.render = replace(self.render, revision_id=delta.revision)
+            self._persistence_pending = delta.revision
+            return
         if not dirty & (_VISUAL_DIRTY | _MAPPING_DIRTY | _STYLE_DIRTY | DirtyDomain.AUTOSAVE):
             # Selection/paint/QC is not a render revision. Re-freezing all ASR
             # metadata here made selection cost grow with the entire project.
@@ -715,12 +753,23 @@ class StudioRevisionStore:
         # A field-only presentation transaction changes no caption receipts or
         # other studio metadata. Reuse the immutable state for that exact set
         # of typed domains; text/timing/structure/metadata changes recapture.
-        self.render = self._capture_render(delta.revision, style_only=style_only)
+        if prepare_render:
+            self.render = self._capture_render(delta.revision, style_only=style_only)
+        else:
+            self._render_pending_revision = delta.revision
         if dirty & DirtyDomain.AUTOSAVE:
             # The existing debounce/save boundary freezes once before handing
             # data to a worker. Re-freezing all ASR evidence for every pointer
             # release/keystroke stalls the GUI and is discarded at that boundary.
             self._persistence_pending = delta.revision
+
+    def materialize_render(self):
+        pending = getattr(self, '_render_pending_revision', None)
+        if pending is not None:
+            runtime = getattr(self.project, '_studio_state_runtime', None)
+            self.render = self._capture_render(max(pending, getattr(runtime, 'revision', pending)))
+            self._render_pending_revision = None
+        return self.render
 
     def refresh_persistence(self, generation: int, *, deep: bool = False) -> PersistenceRevision:
         # Studio viewport/layout fields are captured immediately before the

@@ -90,3 +90,24 @@ def test_release_drops_rasters_and_fences_late_warm_results(monkeypatch):
     assert preview._cache == {} and preview._cache_bytes == 0
     preview._ready(generation, "c2", (object(), None), _Snapshot("c2"))
     assert preview._cache == {}
+
+
+def test_hidden_page_does_not_prepare_or_resume_warm_work(monkeypatch):
+    preview,built=_preview(monkeypatch,3)
+    page=preview.page;page._close_requested=False;page.isVisible=lambda:False
+    preview.request_warm();assert not preview._warm_timer.isActive()
+    preview._warm_ids=['c1'];preview._warm_next()
+    assert not built and preview._warm_ids==[]
+    generation=preview._warm_generation
+    preview.suspend_warm()
+    assert preview._warm_generation==generation+1
+    preview._ready(generation, "c2", (object(), None), _Snapshot("c2"))
+    assert preview._cache == {}
+
+
+def test_borrowed_export_canvas_is_not_warmed_as_a_studio_preview(monkeypatch):
+    preview,built=_preview(monkeypatch,3)
+    page=preview.page;page._close_requested=False;page.export_workspace=object()
+    preview.request_warm();assert not preview._warm_timer.isActive()
+    preview._warm_ids=['c1'];preview._warm_next()
+    assert not built and preview._warm_ids==[]

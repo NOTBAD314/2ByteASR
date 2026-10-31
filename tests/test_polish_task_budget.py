@@ -375,4 +375,4 @@ def test_bounded_http_transport_requests_are_audited(monkeypatch, tmp_path):
     answered_row, refused_row = invocation_rows(tmp_path)
     assert answered_row['stage'] == 'grouped' and answered_row['status_code'] == 200 and answered_row['ok']
     assert (refused_row['status_code'], refused_row['ok'], refused_row['error']) == (None, False, 'auth_config')
-    assert diagnostics == {'http_status': 200}
+    assert diagnostics == {'http_status': 200, 'stage': 'grouped'}

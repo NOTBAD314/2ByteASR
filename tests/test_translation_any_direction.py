@@ -44,7 +44,7 @@ class FakeProvider:
 
 
 def test_targets_are_every_other_language_of_the_source():
-    european = ("es", "de", "fr", "pt", "it", "ru")                  # targets since 2026-10-19
+    european = ("es", "de", "fr", "pt", "it", "ru",'pt-BR','pt-PT')
     assert st.targets_for("zh") == ("en", "ja", "ko", *european)
     assert st.targets_for("ja") == ("zh-Hans", "zh-Hant", "en", "ko", *european)
     assert st.targets_for("en") == ("zh-Hans", "zh-Hant", "ja", "ko", *european)

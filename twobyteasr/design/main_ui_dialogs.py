@@ -51,6 +51,17 @@ class _DialogInputGuard(QObject):
             return False
         if not isinstance(obj, QWidget):
             return False
+        # A history/settings dialog may open another dialog with the main
+        # window as owner. Its widgets are siblings, not descendants of this
+        # dialog. Only the most recently entered, visible exec owns input.
+        # Otherwise an older guard blocks the new dialog after its own guard
+        # allowed the event, leaving a live event loop with inert buttons.
+        from shiboken6 import isValid
+        visible = getattr(QApplication.instance(), '_spring_visible_dialogs', ())
+        active = next((dialog for dialog in reversed(visible)
+                       if isValid(dialog) and dialog.isVisible()), None)
+        if not self.dialog.isVisible() or active is not self.dialog:
+            return False
         current = obj
         while current is not None:
             if current is self.dialog:
@@ -74,7 +85,9 @@ class DialogSurface(QFrame):
         super().__init__(parent)
         self.setObjectName("dialogSurface")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
+        # The rounded surface is the sole background owner. A palette auto
+        # fill is rectangular and leaks behind its styled rounded outline.
+        self.setAutoFillBackground(False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -170,6 +183,10 @@ class SpringDialog(QDialog):
         self.destroyed.connect(loop.quit)
         guard = _DialogInputGuard(self)
         self._input_guard = guard
+        guards = getattr(app, '_spring_dialog_guards', None)
+        if guards is None:
+            guards = app._spring_dialog_guards = []
+        guards.append(guard)
         app.installEventFilter(guard)
         self.setWindowModality(Qt.NonModal)
         self.show()
@@ -179,6 +196,8 @@ class SpringDialog(QDialog):
             loop.exec()
         finally:
             from shiboken6 import isValid
+            if guard in guards:
+                guards.remove(guard)
             if isValid(guard):
                 app.removeEventFilter(guard)
             if isValid(self):
@@ -217,6 +236,13 @@ class SpringDialog(QDialog):
         super().paintEvent(event)
 
     def showEvent(self, event):
+        app = QApplication.instance()
+        visible = getattr(app, '_spring_visible_dialogs', None)
+        if visible is None:
+            visible = app._spring_visible_dialogs = []
+        if self in visible:
+            visible.remove(self)
+        visible.append(self)
         self._exit_pending = False
         from .presentation import prepare_controls
         prepare_controls(self)
@@ -297,6 +323,9 @@ class SpringDialog(QDialog):
         animation.start()
 
     def hideEvent(self, event):
+        visible = getattr(QApplication.instance(), '_spring_visible_dialogs', ())
+        if self in visible:
+            visible.remove(self)
         if self._modal_backdrop is not None:
             try:
                 self._modal_backdrop.hide()

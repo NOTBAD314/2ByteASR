@@ -300,7 +300,7 @@ class StudioMediaFlowMixin:
                 elapsed_ms=data.get("elapsed_ms"),
             )
 
-    def _begin_media_drop(self, paths, position_ms, track_id=""):
+    def _begin_media_drop(self, paths, position_ms, track_id="", *, subtitle_paths=()):
         project = self.project
         if project is None:
             return
@@ -314,7 +314,8 @@ class StudioMediaFlowMixin:
             results = [ingest_media(path, generation=generation, project_token=project_id) for path in paths]
             try:
                 self.media_ingest_ready_signal.emit({"kind":"media_drop", "generation":generation,
-                    "project_id":project_id, "results":results, "position_ms":position_ms, "track_id":track_id})
+                    "project_id":project_id, "results":results, "position_ms":position_ms, "track_id":track_id,
+                    "subtitle_paths":list(subtitle_paths)})
             except RuntimeError:
                 pass
         self._media_ingest_thread = threading.Thread(target=work, daemon=True, name="studio-media-drop")
@@ -363,6 +364,8 @@ class StudioMediaFlowMixin:
             # The first recording of a project: look for its same-name XML
             # (a dropped XML counts as the user's explicit choice).
             self._schedule_danmaku_discovery(manual_path=dropped_xml)
+        if payload.get("subtitle_paths"):
+            self._import_subtitle_files(payload["subtitle_paths"])
 
     def _reset_playhead_for_first_media(self, *, reason: str, position_ms: int = 0) -> None:
         """首次主媒体的确定起点：播放头=0、视口最左，并留结构化取证日志。"""
@@ -708,49 +711,28 @@ class StudioMediaFlowMixin:
             bind_text(note, {'EMPTY': '支持 MP4 / FLV / MKV / MOV / MP3 / WAV 等常用格式', 'LOADING': '分析在后台进行，界面仍可操作。', 'READY': '', 'ERROR': message or '请重试，或重新选择另一个媒体文件。'}[state])
 
     def _read_subtitle_cues(self, path: Path) -> list[StudioCue]:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-        cues: list[StudioCue] = []
+        # Compatibility reader; the importer uses the full prepared plan.
+        from ..projects.subtitle_import import read_subtitles
+        from uuid import uuid4
+        parsed = read_subtitles(path)
+        return [StudioCue("subtitle-cue-" + uuid4().hex, row.start_ms, row.end_ms,
+                          row.text, speaker_id=row.speaker or "unassigned-" + uuid4().hex,
+                          original_text=row.text) for row in parsed.rows]
 
-        def _time_ms(value: str) -> int:
-            parsed = parse_subtitle_timecode_ms(value)
-            if parsed is None:
-                raise ValueError(f"无效字幕时间：{value}")
-            return parsed
-
-        if path.suffix.lower() == ".srt":
-            blocks = re.split(r"\r?\n\s*\r?\n", text.strip())
-            for index, block in enumerate(blocks, 1):
-                lines = block.splitlines()
-                timing_index = next((i for i, line in enumerate(lines) if "-->" in line), -1)
-                if timing_index < 0:
-                    continue
-                start, end = (part.strip() for part in lines[timing_index].split("-->", 1))
-                cue_text = " ".join(line.strip() for line in lines[timing_index + 1 :] if line.strip())
-                cues.append(StudioCue(f"import-{index}", _time_ms(start), _time_ms(end), cue_text, original_text=cue_text))
-        else:
-            for index, line in enumerate(text.splitlines(), 1):
-                if not line.startswith("Dialogue:"):
-                    continue
-                parsed_line = parse_ass_dialogue_line(line)
-                if parsed_line is None:
-                    continue
-                start_ms, end_ms, _style, actor, cue_text = parsed_line
-                cues.append(StudioCue(f"import-{index}", start_ms, end_ms, cue_text, speaker_id=actor or "S00", original_text=cue_text))
-        return cues
-
-    def _open_subtitle_import_dialog(self) -> None:
+    def _open_subtitle_import_dialog(self, *, replace_track_id: str = "") -> None:
         if not self.project:
             return
-        path, _selected = QFileDialog.getOpenFileName(
-            self,
-            tr('导入字幕'),
-            str(self.project_path.parent if self.project_path else Path.home()),
-            "字幕文件 (*.srt *.ass)",
-        )
-        if path:
-            self._import_subtitle_file(Path(path))
+        title = tr('导入字幕并替换此轨道…') if replace_track_id else tr('导入字幕')
+        directory = str(self.project_path.parent if self.project_path else Path.home())
+        if replace_track_id:
+            path, _selected = QFileDialog.getOpenFileName(self, title, directory, "字幕文件 (*.srt *.ass)")
+            paths = [path] if path else []
+        else:
+            paths, _selected = QFileDialog.getOpenFileNames(self, title, directory, "字幕文件 (*.srt *.ass)")
+        if paths:
+            self._import_subtitle_files([Path(path) for path in paths], replace_track_id=replace_track_id)
 
-    def _open_recognition_sheet(self, range_ms=None) -> None:
+    def _open_recognition_sheet(self, range_ms=None, language_recovery=None) -> None:
         """The 识别字幕 sheet; ``range_ms`` = (in, out) opens it for that stretch only
         (2026-10-25, studio_range_recognition)."""
         project = self.project
@@ -820,7 +802,7 @@ class StudioMediaFlowMixin:
         from ..design.theme_manager import theme_key
         from ..design.tokens import RADIUS_SCALE, TYPE_SCALE
         from ..design.ui_theme import blend_hex, hex_luminance, theme_definition
-        from .recognition_role_rows import RecognitionRoleRow, catalog_facts, role_row_rules
+        from .recognition_role_rows import RecognitionCardHeader, RecognitionRoleRow, catalog_facts, role_row_rules
         palette = theme_definition(theme_key())
         light = hex_luminance(palette.surface) > 0.5
         sheet.setStyleSheet(
@@ -853,7 +835,6 @@ class StudioMediaFlowMixin:
         # 2026-10-23（用户：比例臃肿、右边不对称）：两张对称的卡片，等高、同样的内边距、
         # 同样一行标题栏——左「识别方案」+ 方案下拉，下面三行薄模型行；右「这次识别」
         # + 文件名 + 右上角「AI 设置」，下面词库、翻译、仅本地识别和唯一的主按钮。
-        from ..design.presentation import CONTROL_HEIGHTS
         outer = QVBoxLayout(body)
         outer.setContentsMargins(18, 14, 18, 16)
         outer.setSpacing(0)
@@ -869,9 +850,7 @@ class StudioMediaFlowMixin:
             box = QVBoxLayout(frame)
             box.setContentsMargins(16, 14, 16, 14)
             box.setSpacing(8)
-            header = QWidget()
-            header.setObjectName("recognitionCardHeader")
-            header.setFixedHeight(CONTROL_HEIGHTS["default"])
+            header = RecognitionCardHeader()
             header_row = QHBoxLayout(header)
             header_row.setContentsMargins(0, 0, 0, 0)
             header_row.setSpacing(10)
@@ -891,6 +870,10 @@ class StudioMediaFlowMixin:
             plan.addItem(entry.label, entry.key)
         plan.addItem("当前主页方案", "home")
         plan.setCurrentIndex(plan.findData("home"))
+        for index in range(plan.count()):
+            plan.setItemData(index, plan.itemText(index), Qt.ItemDataRole.ToolTipRole)
+        plan.currentTextChanged.connect(plan.setToolTip)
+        plan.setToolTip(plan.currentText())
         field_width(plan, "expanding")
         plan_row.addWidget(plan, 1, Qt.AlignmentFlag.AlignVCenter)
 
@@ -1106,6 +1089,9 @@ class StudioMediaFlowMixin:
             except Exception:  # noqa: BLE001 - home not built: originals only
                 language_options = {}
         spoken = str(language_options.get("recognition_language") or "auto")
+        if language_recovery:
+            spoken = str(language_recovery['requested_language'])
+            language_options['recognition_language'] = spoken
         for value in (TARGETS if spoken == "auto" else targets_for(spoken)):
             translation_target.addItem(TARGET_LABELS[value], value)
         translation_target.setCurrentIndex(max(0, translation_target.findData(
@@ -1153,8 +1139,8 @@ class StudioMediaFlowMixin:
             translation_output.setToolTip(str(note))
             ai_button.setToolTip(str(note))
             # A range run recognizes original text only (no translation this time).
-            ai_button.setVisible(not range_info and callable(getattr(host, "_open_ai_settings_dialog", None)))
-            translation_target.setVisible(not range_info and ready and translation_output.currentData() != "original")
+            ai_button.setVisible((not range_info or bool(language_recovery)) and callable(getattr(host, "_open_ai_settings_dialog", None)))
+            translation_target.setVisible((not range_info or bool(language_recovery)) and ready and translation_output.currentData() != "original")
             QTimer.singleShot(0, fit_card)
 
         def open_ai_settings() -> None:
@@ -1183,7 +1169,9 @@ class StudioMediaFlowMixin:
             if range_info["window"] != range_info["requested"]:
                 range_notes.append(bind_text(QLabel(), '入点或出点切在字幕中间，这几条整条一起重新识别。'))
             if range_info["translated"]:
-                range_notes.append(bind_text(QLabel(), '这一段的译文会清空，之后可以重新翻译。'))
+                range_notes.append(bind_text(QLabel(),
+                    '旧译文会归档；新原文只采用本次生成的对应译文，未翻译时明确保留待翻译状态。'
+                    if language_recovery else '这一段的译文会清空，之后可以重新翻译。'))
             for index, note in enumerate(range_notes):
                 note.setObjectName("recognitionImpact" if index == 0 else "recognitionStepHint")
                 note.setWordWrap(True)
@@ -1412,7 +1400,7 @@ class StudioMediaFlowMixin:
             settings = getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}
             output = str(translation_output.currentData() or "original") if translation_state["ready"] else "original"
             stretch = current_range()
-            if stretch is not None:
+            if stretch is not None and not language_recovery:
                 output = "original"
             options = {
                 "purpose": "analysis" if local_analysis.isChecked() else "final",
@@ -1437,6 +1425,10 @@ class StudioMediaFlowMixin:
                                recognition_range_ms=stretch["window"],
                                requested_range_ms=stretch["requested"],
                                range_replaced_cue_ids=stretch["replaced"])
+            if language_recovery:
+                options['language_recovery_policy'] = dict(language_recovery,
+                    explicit_range=True, explicit_local_range=str(primary_model.currentData())=='qwen_local')
+                options['recognition_language'] = spoken
             return options
 
         def dispatch(action: str, lanes=None) -> None:
@@ -1450,6 +1442,14 @@ class StudioMediaFlowMixin:
                 bind_text(problem, '已有识别任务正在运行，请等待完成或取消后再试。')
                 problem.show()
                 return
+            if language_recovery and str(primary_model.currentData())=='qwen_local':
+                from ..recognition.asr import resolve_qwen_asr_local_source, resolve_qwen_aligner_local_source
+                from ..system.runtime_registry import resolve_runtime_python
+                ready = bool(resolve_qwen_asr_local_source() and resolve_runtime_python('main',register=False))
+                if not ready or (str(timeline_model.currentData())=='qwen_aligner' and not resolve_qwen_aligner_local_source()):
+                    bind_text(problem,'本地模型或运行环境未就绪。正常结果已保留；请选择已有可用方案，本次不会自动下载或上传音频。')
+                    problem.show()
+                    return
             if (self.project is not project or str(self.project_path or '') != project_path
                     or str(project.media.path or '') != media_path):
                 bind_text(problem, '工程或媒体已变化，请关闭窗口后重新开始识别。')
@@ -1563,6 +1563,18 @@ class StudioMediaFlowMixin:
         start.clicked.connect(start_clicked)
         confirm_replace.clicked.connect(lambda: dispatch("start_final"))
         apply_plan()
+        if language_recovery:
+            select_plan('custom')
+            for combo, value in ((primary_model,'qwen_local'),(timeline_model,'qwen_aligner'),(review_model,'off')):
+                index = combo.findData(value)
+                if index < 0:
+                    combo.addItem({'qwen_local':tr('Qwen3-ASR 本地'),'qwen_aligner':tr('Qwen3-ForcedAligner'),'off':tr('关闭')}[value],value)
+                    index=combo.findData(value)
+                combo.setCurrentIndex(index)
+            bind_text(start, '用所选方案恢复这一段')
+            range_notes.append(bind_text(QLabel(), '只处理异常范围；本地方案不会上传音频，模型未就绪时不会自动下载。旧文字与设置保留在可恢复记录中。'))
+            range_notes[-1].setWordWrap(True)
+            summary.insertWidget(max(0,summary.count()-1),range_notes[-1])
         refresh_translation_lock(initial=True)
         # 四处引用旧 sheet 状态对象的地方都已改走左侧芯片；重建弹窗前清理
         # 上一张 retain 的 sheet，避免反复开关累积孤儿控件。
@@ -1743,6 +1755,8 @@ class StudioMediaFlowMixin:
         recognize = getattr(self, "cue_recognize_button", None)
         if recognize is not None:
             recognize.setVisible(not getattr(self, "_recognition_running", False))
+        from .language_recovery_ui import sync_action
+        sync_action(self)
 
     def _recognition_show_status(self, stage: str, detail: str = "") -> None:
         self._recognition_stage_message = stage
@@ -1897,6 +1911,10 @@ class StudioMediaFlowMixin:
             return
         _frame, label = parts
         duration = float(getattr(getattr(self.project, "media", None), "duration_ms", 0) or 0) / 1000.0
+        request=getattr(self,'_recognition_request_options',{}) or {}
+        span=request.get('recognition_range_ms')
+        if isinstance(span,(list,tuple)) and len(span)==2:
+            duration=max(0.,(float(span[1])-float(span[0]))/1000)
         rate = duration / float(elapsed_seconds) if elapsed_seconds > 0 and duration > 0 else 0.0
         suffix = f" · {rate:.1f}× realtime" if rate else ""
         label.setProperty("recognitionStage", "")
@@ -1954,32 +1972,31 @@ class StudioMediaFlowMixin:
                 button.hide()
 
     def _import_subtitle_file(self, path: Path) -> None:
+        return self._import_subtitle_files([path])
+
+    def _import_subtitle_files(self, paths, *, replace_track_id: str = ""):
         if not self.project:
-            studio_message_box(
-                self,
-                QMessageBox.Icon.Information,
-                tr('先加载媒体'),
-                tr('请先拖入媒体或 .2byteproj，再导入字幕。'),
-            )
+            studio_message_box(self, QMessageBox.Icon.Information, tr('先加载媒体'),
+                               tr('请先拖入媒体或 .2byteproj，再导入字幕。'))
             return
+        from ..projects.subtitle_import import prepare_import
+        from ..timeline.subtitle_import_command import ImportSubtitlesCommand
         try:
-            cues = self._read_subtitle_cues(path)
-            if not cues:
-                raise ValueError("没有读取到有效字幕")
-            from ..timeline.studio_commands import ReplaceCuesCommand
-            self.undo_stack.push(
-                ReplaceCuesCommand(
-                    self.project,
-                    cues,
-                    f"Import {path.suffix.upper()}",
-                    self._changed,
-                    MutationOrigin.IMPORT,
-                )
-            )
-            self.cue_model.set_project(self.project)
-            self.timeline.set_project(self.project)
-            self._populate_speakers()
-            self.select_cue(cues[0].id)
+            if replace_track_id in self.timeline.locked_speakers:
+                raise ValueError("指定字幕轨道已锁定，请先解锁")
+            plan = prepare_import(self.project, paths, replace_track_id=replace_track_id)
+            self._last_subtitle_import = plan
+            if not plan.cues:
+                raise ValueError("\n".join(plan.failures) or "没有读取到有效字幕")
+            self.undo_stack.push(ImportSubtitlesCommand(self.project, plan, self._changed, self._populate_speakers))
+            self.select_cue(plan.cues[0].id)
+            message = tr('已导入 {count} 条字幕', count=len(plan.cues))
+            details = "\n".join(dict.fromkeys(plan.failures + plan.warnings))
+            if details:
+                message += " · " + details
+            self._show_studio_hint(message)
+            self.save_state.setToolTip(details)
+            return plan
         except (OSError, ValueError) as exc:
             studio_message_box(self, QMessageBox.Icon.Critical, tr('导入字幕失败'), str(exc))
 

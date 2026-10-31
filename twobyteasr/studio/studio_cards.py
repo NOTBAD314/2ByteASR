@@ -282,14 +282,60 @@ class _SubtitleEditCardEditor(InputLatencyTextEdit):
 
     commit_requested = Signal(bool)
     cancel_requested = Signal()
+    composition_changed = Signal(bool)
+
+    def finish_preedit(self, *, commit: bool) -> None:
+        """Consume one candidate key and retire even an abandoned IME session."""
+        from PySide6.QtGui import QInputMethodEvent
+        from PySide6.QtWidgets import QApplication
+        method = QApplication.inputMethod()
+        if method is not None:
+            (method.commit if commit else method.reset)()
+        # Windows may end composition on focus loss without sending a final
+        # empty preedit event. The next Escape must still close the card.
+        self._preediting = False
+        self._ime_commit_key_pending = False
+        self._ime_commit_token = None
+        self.composition_changed.emit(False)
+        super().inputMethodEvent(QInputMethodEvent())
+
+    def focusOutEvent(self, event) -> None:
+        if getattr(self, '_preediting', False) and event.reason() != Qt.FocusReason.PopupFocusReason:
+            self.finish_preedit(commit=True)
+        super().focusOutEvent(event)
 
     def inputMethodEvent(self, event) -> None:
+        was_preediting = getattr(self, '_preediting', False)
         self._preediting = bool(event.preeditString())
+        self.composition_changed.emit(self._preediting)
         super().inputMethodEvent(event)
+        if was_preediting and event.commitString() and not self._preediting:
+            # Some platform IMEs deliver the commit before forwarding the same
+            # candidate-confirm key. Reserve only this dispatch turn, not the
+            # next physical Enter after the event loop settles.
+            from PySide6.QtCore import QTimer
+            token = object()
+            self._ime_commit_token = token
+            self._ime_commit_key_pending = True
+            def clear():
+                if getattr(self, '_ime_commit_token', None) is token:
+                    self._ime_commit_key_pending = False
+            QTimer.singleShot(0, clear)
+
+    def consume_ime_exit_key(self, key) -> bool:
+        if key not in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
+            return False
+        if getattr(self, '_preediting', False):
+            self.finish_preedit(commit=key != Qt.Key.Key_Escape)
+            return True
+        if getattr(self, '_ime_commit_key_pending', False):
+            self._ime_commit_key_pending = False
+            self._ime_commit_token = None
+            return True
+        return False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if (getattr(self, "_preediting", False)
-                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape)):
+        if self.consume_ime_exit_key(event.key()):
             # The platform IME consumes candidate keys first. Never turn a
             # remaining candidate-confirm key into a newline or project edit.
             event.accept()

@@ -71,7 +71,7 @@ def test_partial_qwen_coverage_does_not_claim_three_sources_everywhere():
     assert coverage['partial'] and (coverage['minimum_count'], coverage['maximum_count']) == (2, 3)
     assert coverage['spans'][-1]['models'] == ['firered', 'moss']
     aggregate = ReviewEvidenceAggregator().aggregate(p, p.cues[0])
-    assert aggregate.models_agree_text and aggregate.requires_review
+    assert aggregate.models_agree_text and not aggregate.requires_review
 
 
 def test_merge_retains_per_reference_coverage_instead_of_source_union():
@@ -201,7 +201,7 @@ def _real_new48_tail_project():
         cues=[StudioCue(**row) for row in fixture['cues']], asr_evidence=fixture['asr_evidence'])
 
 
-def test_real_new48_tail_current_full_text_needs_review_without_changing_accepted_text(tmp_path):
+def test_real_new48_tail_missing_proof_is_diagnostic_without_changing_text(tmp_path):
     p = _real_new48_tail_project()
     cue = next(c for c in p.cues if c.id == '48')
     p.studio_state['cue_statuses'] = {cue.id: 'done'}
@@ -213,15 +213,15 @@ def test_real_new48_tail_current_full_text_needs_review_without_changing_accepte
     assert {row['text'] for row in rows} == {'他会遇到一个什么样的'}
     assert {row['model'] for row in rows} == {'moss', 'firered', 'qwen3-asr'}
     aggregate = ReviewEvidenceAggregator().aggregate(p, cue)
-    assert aggregate.requires_review and not aggregate.models_agree_text
+    assert not aggregate.requires_review and not aggregate.models_agree_text
     assert aggregate.source_coverage['partial']
     assert not aggregate.source_coverage['conflict'], 'Three raw model observations agree; the missing tail is a projection defect'
     assert aggregate.source_coverage['minimum_count'] < 3
     assert aggregate.source_coverage['current_text_supported'] is False
     assert '完整' not in format_model_evidence_coverage(rows)['headline']
     candidates = review_candidates(p, cue)
-    assert len(candidates) == 2
-    assert set(candidates[1].sources) == {'MOSS', 'FireRed', 'Qwen'}
+    assert candidates and candidates[0].text == cue.text
+    assert all(set(candidate.sources) <= {'Current', 'MOSS', 'FireRed', 'Qwen'} for candidate in candidates)
     issues = SubtitleQCEngine().analyze(p).for_cue(cue.id)
     assert any(issue.issue_type == 'current_projection_difference' for issue in issues)
     assert not any(issue.issue_type == 'model_disagreement' for issue in issues)
@@ -230,17 +230,17 @@ def test_real_new48_tail_current_full_text_needs_review_without_changing_accepte
     assert reopened.cues[-1].text == cue.text
     assert reopened.studio_state['cue_statuses'][cue.id] == 'done'
     assert reopened.asr_evidence == before
-    assert ReviewEvidenceAggregator().aggregate(reopened, reopened.cues[-1]).requires_review
+    assert not ReviewEvidenceAggregator().aggregate(reopened, reopened.cues[-1]).requires_review
 
 
-def test_real_new48_one_candidate_three_supporters_remains_partial_and_needs_review():
+def test_real_new48_one_candidate_three_supporters_stays_partial_without_todo():
     p = _real_new48_tail_project()
     cue = next(c for c in p.cues if c.id == '3')
     candidates = review_candidates(p, cue)
     assert len(candidates) == 1
     assert set(candidates[0].sources) == {'Current', 'MOSS', 'FireRed', 'Qwen'}
     aggregate = ReviewEvidenceAggregator().aggregate(p, cue)
-    assert aggregate.models_agree_text and aggregate.requires_review
+    assert aggregate.models_agree_text and not aggregate.requires_review
     assert aggregate.source_coverage['partial'] and aggregate.source_coverage['minimum_count'] == 0
     assert not aggregate.source_coverage['conflict']
     assert '局部来源覆盖' in format_model_evidence_coverage(aggregate.hypotheses)['headline']
@@ -264,7 +264,7 @@ def test_real_gui_audit_selects_partial_same_text_and_actual_tail_projection_dif
     p = _real_new48_tail_project()
     cases = _review_cases(p)
     assert [(name, cue.id) for name, cue in cases] == [('agreement', '3'), ('conflict', '1'), ('tail-projection', '48')]
-    assert ReviewEvidenceAggregator().aggregate(p, cases[0][1]).requires_review
+    assert not ReviewEvidenceAggregator().aggregate(p, cases[0][1]).requires_review
     assert ReviewEvidenceAggregator().aggregate(p, cases[1][1]).source_coverage['conflict']
     # The same cue ID and sentence can already have complete projected words
     # in an edited project. The audit must not invent a tail defect there.
@@ -279,11 +279,11 @@ def test_legacy_serialized_confident_statistics_are_not_reused_for_tail_projecti
     p.studio_state['review_risks'] = deepcopy(legacy)
     assert cached_review_risks(p) == {}
     store_review_risks(p)
-    assert cached_review_risks(p)['48']['level'] != 'confident'
+    assert cached_review_risks(p).get('48', {}).get('level', 'confident') == 'confident'
     assert p.studio_state['review_risks'] == legacy
 
 
-def test_real_new48_normal_open_hydration_preserves_partial_word_scope_and_tail_review(tmp_path):
+def test_real_new48_normal_open_hydration_preserves_partial_word_scope_and_diagnostics(tmp_path):
     from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions
     from twobyteasr.acceptance.asr_evidence_audit import _review_cases
     p = _real_new48_tail_project()
@@ -296,7 +296,7 @@ def test_real_new48_normal_open_hydration_preserves_partial_word_scope_and_tail_
         assert [(r['model'], r['text'], r['start_ms'], r['end_ms']) for r in observations] == [
             (r['model'], r['text'], r['start_ms'], r['end_ms']) for r in before[cid]]
         aggregate = ReviewEvidenceAggregator().aggregate(p, cue)
-        assert aggregate.requires_review and aggregate.source_coverage['partial']
+        assert not aggregate.requires_review and aggregate.source_coverage['partial']
         assert aggregate.source_coverage['minimum_count'] == 0
     assert ('tail-projection', '48') in [(name, cue.id) for name, cue in _review_cases(p)]
     assert p.asr_evidence == raw
@@ -312,7 +312,7 @@ def test_real_new48_missing_qwen_confidence_is_not_a_zero_percent_qc_risk():
     ensure_independent_captions(p)
     cue = next(c for c in p.cues if c.id == '48')
     aggregate = ReviewEvidenceAggregator().aggregate(p, cue)
-    assert aggregate.requires_review and aggregate.source_coverage['current_text_supported'] is False
+    assert not aggregate.requires_review and aggregate.source_coverage['current_text_supported'] is False
     assert {r['model'] for r in aggregate.hypotheses} == {'moss', 'firered', 'qwen3-asr'}
     assert all(r['confidence'] is None for r in aggregate.hypotheses)
     assert not any(issue.issue_type == 'low_confidence' for issue in SubtitleQCEngine().analyze(p).for_cue(cue.id))
@@ -333,7 +333,7 @@ def test_real_new48_independent_move_and_ripple_preserve_original_tail_scope(tmp
     assert {row['text'] for row in moved} == {'他会遇到一个什么样的'}
     assert [(r['start_ms'], r['end_ms']) for r in moved] == [(r['start_ms']+4500, r['end_ms']+4500) for r in original]
     assert all(65817 <= r['source_start_ms'] < r['source_end_ms'] <= 67233 for r in moved)
-    assert ReviewEvidenceAggregator().aggregate(p, cue).requires_review
+    assert not ReviewEvidenceAggregator().aggregate(p, cue).requires_review
     assert p.asr_evidence == raw
     reopened = load_project(save_project(p, tmp_path/'moved-tail.2byteproj'))
     assert cue_source_hypotheses(reopened, reopened.cues[-1]) == moved

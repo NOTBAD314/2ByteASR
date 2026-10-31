@@ -3189,6 +3189,12 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
             aligned_key = segment_alignment_key(local_speaker, row.get("start", 0.0), row.get("end", 0.0))
             aligned_own = [token for token in timeline_tokens if str(token.get("alignment_key")) == aligned_key]
             row_tokens = list(aligned_own)
+        if row.get('source') == 'qwen_local_language_recovery' and aligned_own:
+            # Qwen-ASR windows are input bounds, not measured sentence times.
+            # Retain all audio in ASR, then let this transcript's measured word
+            # span remove leading/trailing silence before caption grouping.
+            start = max(start, min(float(t['start']) for t in aligned_own))
+            end = min(end, max(float(t['end']) for t in aligned_own))
         if streaming:
             from twobyteasr.recognition.optional_timing import exact_tokens
             row_tokens=row_tokens or exact_tokens(row,timeline_tokens)
@@ -3247,6 +3253,11 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
             segment.caption_arbitration = dict(segment.caption_arbitration or {}, forced_alignment_window={
                 "start": min(float(t["start"]) for t in aligned_own), "end": max(float(t["end"]) for t in aligned_own),
                 "job": aligned_key, "token_count": len(aligned_own), "kind": "forced_alignment_span"})
+            if row.get('source') == 'qwen_local_language_recovery':
+                segment.caption_arbitration.update(native_model_probability=None,confidence_kind='not_reported')
+                segment.caption_arbitration['source_window_timing'] = {
+                    'window': [float(row['start']),float(row['end'])],
+                    'measured': [start,end], 'job':aligned_key}
         # Independent text is evidence, never a replacement word sequence for
         # an unrelated API transcript. Project matching anchors onto this text.
         nearby = [] if aligner_mode else [token for token in (timeline_tokens or [])
@@ -3357,6 +3368,15 @@ def apply_alternate_dialogue_coverage(
     for segment, source_row in zip(segments, rows):
         expected_start = max(0.0, float(source_row.get("start", 0.0)))
         expected_end = max(expected_start + 0.04, float(source_row.get("end", expected_start)))
+        receipt = (segment.caption_arbitration or {}).get('source_window_timing') or {}
+        if source_row.get('source') == 'qwen_local_language_recovery' and receipt:
+            own = [t for t in timeline_tokens if t.get('source')=='qwen-forced-aligner'
+                   and t.get('alignment_key')==receipt.get('job')]
+            if own and receipt.get('window') == [expected_start,expected_end]:
+                measured = [max(expected_start,min(float(t['start']) for t in own)),
+                            min(expected_end,max(float(t['end']) for t in own))]
+                if receipt.get('measured') == measured:
+                    expected_start,expected_end = measured
         if (segment.text != legacy.clean_subtitle_text(source_row.get("text", ""))
                 or abs(segment.start - expected_start) > 1e-8
                 or abs(segment.end - expected_end) > 1e-8):
@@ -4537,7 +4557,7 @@ def process_media(
         return _run_audited_model_stage(
             legacy,
             model_id="mfa_aligner" if mfa_selected else "firered" if timeline_backend == "local" else timeline_backend,
-            role="timeline_alignment",
+            role="independent_text_and_timing" if timeline_backend == "local" else "timeline_alignment",
             backend="mfa_aligner" if mfa_selected else timeline_backend,
             media_path=media_path,
             worker=gate_worker,
@@ -4691,8 +4711,22 @@ def process_media(
     runtime_context.language_evidence = language_evidence
     legacy.TASK_LANGUAGE = task_language
     legacy.record_run_event("TASK_LANGUAGE", language=task_language, **language_evidence)
+    from twobyteasr.recognition.language_diagnostics import audit_primary_language
+    language_audit = audit_primary_language(moss_payload.get('segments', []), runtime_context, legacy)
+    from twobyteasr.recognition.transcript_acceptance import gate_primary
+    moss_payload = gate_primary(moss_payload, shared_audio, runtime_context, legacy, cache_context, language_audit)
+    if not moss_payload.get('segments') and any(r.get('status') != 'accepted'
+            for r in runtime_context.transcript_acceptance.get('ranges', [])):
+        # A remote SUCCESS can contain no accepted transcript. Save an empty
+        # but actionable project with the rejected ranges instead of aligning
+        # the wrong text or hiding the gap as a complete result.
+        return complete_media_run(cues=[], segments=[], file_index=file_index, file_total=file_total,
+            started=started, audio_seconds=audio_seconds, txt_path=txt_path, srt_path=srt_path,
+            stage_index=stage_total, stage_total=stage_total, legacy=legacy, runtime_context=runtime_context,
+            include_srt=False, model_statuses=_model_stage_summary(legacy))
     from twobyteasr.subtitle_rules.european_text import LABELS as _EU_LABELS
-    print(f"   [语言] 本任务按{ {'ja': '日语', 'en': '英语', 'ko': '韩语', **_EU_LABELS}.get(task_language, '中文') }处理"
+    from twobyteasr.subtitle_rules.segmentation_profiles import profile_for
+    print(f"   [语言] 本任务按{ {'zh': '中文', 'ja': '日语', 'en': '英语', 'ko': '韩语', **_EU_LABELS}.get(task_language, profile_for(task_language).name) }处理"
           f"（{language_evidence.get('decided_by')}，假名占比 {language_evidence.get('kana_share', 0):.0%}）。")
     if task_language not in ("zh", "") and firered_early is not None:
         # The overlapped FireRed run started before the language was known.
@@ -5294,14 +5328,19 @@ def process_media(
         runtime_context.provider_snapshot = task_provider_snapshot('group')
         legacy.record_run_event("asr_provider_snapshot", job_id=runtime_context.job_id,
                                 stage="grouped", **runtime_context.provider_snapshot.public_identity())
-    if (english_task or european_task) and not primary_backend.startswith('vibevoice_'):
+    from twobyteasr.subtitle_rules.segmentation_profiles import current_profile,task_language_tag
+    grouping_profile=current_profile()
+    legacy.record_run_event('segmentation_language_policy',language=task_language_tag(),
+        policy=grouping_profile.fingerprint,unit=grouping_profile.unit,
+        hard_max=grouping_profile.hard_max,max_seconds=grouping_profile.max_seconds,strategy=grouping_profile.strategy)
+    if grouping_profile.strategy=='space':
         # 2026-10-14: English lines are cut between words by the English rules
         # (twobyteasr/subtitle_rules/english_segmentation.py); the AI only picks break positions.
         # 2026-10-19: Spanish/German/French/Portuguese/Italian/Russian use the same
         # breaker with their own word lists (european_text.LEXICONS).
         from twobyteasr.subtitle_rules import english_segmentation, european_text
-        word_lexicon = european_text.lexicon(runtime_context.task_language) if european_task else None
-        word_label = european_text.LABELS[runtime_context.task_language] if european_task else "英文"
+        word_lexicon = european_text.lexicon(grouping_profile.code) if grouping_profile.code!='en' else None
+        word_label = european_text.LABELS.get(grouping_profile.code,grouping_profile.name) if grouping_profile.code!='en' else "英文"
         cues = legacy.run_timed_stage(
             stage_index, stage_total,
             f"云端模型{word_label}断句" if grouping_uses_ai else f"本地规则{word_label}断句",
@@ -5324,7 +5363,7 @@ def process_media(
                 },
             ),
         )
-    elif korean_task and not primary_backend.startswith('vibevoice_'):
+    elif grouping_profile.strategy=='eojeol':
         # 2026-10-19: Korean lines are cut between words (어절) by the Korean rules
         # (twobyteasr/subtitle_rules/korean_segmentation.py); the AI only picks break positions.
         from twobyteasr.subtitle_rules import korean_segmentation
@@ -5345,10 +5384,18 @@ def process_media(
                     "segments": legacy.serialize_segments(segments),
                     "firered_tokens": firered_tokens,
                     "use_ai": grouping_uses_ai,
-                    "korean_rules": korean_segmentation.KOREAN_GROUPING_PROMPT_VERSION,
+                    "korean_rules": korean_segmentation.grouping_prompt_version(),
                 },
             ),
         )
+    elif grouping_profile.strategy=='conservative':
+        from twobyteasr.subtitle_rules.grouping import retain_source_utterances
+        cues=legacy.run_timed_stage(stage_index,stage_total,'保守原句断句',
+            '缺少可靠词边界时保留原句，不逐字符硬切',
+            lambda: legacy.run_cached_stage('grouped_local',cache_context,
+                lambda: retain_source_utterances(segments,grouping_profile),
+                encoder=legacy.serialize_cues,decoder=legacy.deserialize_cues,
+                extra_signature={'segments':legacy.serialize_segments(segments),'language_policy':grouping_profile.fingerprint}))
     else:
         cues = legacy.run_timed_stage(
         stage_index,

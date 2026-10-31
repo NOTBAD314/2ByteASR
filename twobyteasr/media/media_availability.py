@@ -15,6 +15,28 @@ import time
 _WORKER_IDLE_SECONDS = 60.0
 
 
+def stat_sources_in_reader(sources, *, cancel_check=lambda:False):
+    """First-open filesystem checks on the existing disposable read thread.
+
+    No decoder or additional interpreter is needed to hand subtitle data to
+    the GUI. Slow filesystems can only hold this daemon reader; generation
+    checks still reject its late result. Full decoding stays in probe_sources.
+    """
+    results={}
+    for source in dict.fromkeys(str(s) for s in sources if s):
+        if cancel_check():break
+        row={'path':source,'status':'available','reason':''}
+        try:
+            stat=os.stat(source)
+            with open(source,'rb') as stream:stream.read(1)
+            row['signature']=[stat.st_size,stat.st_mtime_ns]
+        except FileNotFoundError:row.update(status='missing',reason='文件不存在')
+        except PermissionError:row.update(status='unreadable',reason='文件存在但没有读取权限')
+        except OSError as exc:row.update(status='unavailable',reason=f'位置不可用或读取失败（{getattr(exc,"winerror",None) or exc.errno}）')
+        results[source]=row
+    return results
+
+
 def _probe_worker(connection, idle_seconds=None):
     try:
         while True:

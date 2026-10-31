@@ -78,7 +78,8 @@ def open_failed_stage_review(studio,report,options=None):
             if cue is not None and hasattr(studio,'_seek'):studio._seek(cue.start_ms/1000)
     tree.itemClicked.connect(locate)
     units=recover_units(project,report)
-    for unit in units:show_unit(unit)
+    for unit in units:
+        if unit.get('classification') != 'protection_rejection':show_unit(unit)
     first=next((u for u in units if u.get('cue_ids') and u.get('status') not in TERMINAL),None)
     if first is not None:tree.setCurrentItem(items[first['key']]);locate(items[first['key']])
     def refresh_preview():

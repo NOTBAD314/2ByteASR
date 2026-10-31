@@ -79,7 +79,7 @@ def main():
             if font.is_file():
                 shutil.copy2(font, target_fonts / font.name)
     env = os.environ.copy()
-    env.update(TWOBYTEASR_TEST_ROOT=str(out / "profile"), TWOBYTEASR_STARTUP_TRACE=str(out / "startup.jsonl"),
+    env.update(TWOBYTEASR_TEST_ROOT=str(out if os.environ.get('PERF_ITALIAN') == '1' else out / "profile"), TWOBYTEASR_STARTUP_TRACE=str(out / "startup.jsonl"),
                TWOBYTEASR_SKIP_FIRST_RUN_WIZARD="1", TWOBYTEASR_STARTUP_OPEN_STUDIO="1",
                TWOBYTEASR_STARTUP_SIZE="1600x950", TWOBYTEASR_STARTUP_PROJECT=str(out / "project.2byteproj"),
                TWOBYTEASR_SEEK_CACHE_ROOT=str(out / "seek"), TWOBYTEASR_ACCEPTANCE_SCENARIO="perf-regression",

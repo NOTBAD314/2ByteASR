@@ -22,6 +22,9 @@ ACTION_LABELS = {
     "pick_timeline": "选择字幕时间轴模型…",
     "pick_review": "选择文字复核模型…",
     "model_workshop": "打开模型工坊",
+    "repair_runtime_main": "修复主运行环境（main）",
+    "repair_runtime_moss": "修复 MOSS 运行环境",
+    "repair_runtime_firered_llm": "修复 FireRed LLM 运行环境",
     "retry": "重试失败项",
     "mosi_resplit": "切成小段再交 MOSI…",
     "recover": "恢复已有识别结果…",
@@ -171,6 +174,14 @@ ISSUES: dict[str, KnownIssue] = _issues(
         supersedes=("worker_crashed", "unknown_failure"),
         short="要用的本机模型没有下载完整。",
     ),
+    *(KnownIssue(
+        'python_startup_'+role, 'environment', 'blocker', label+'的 Python 无法启动',
+        '启动器报 uv trampoline failed to spawn Python child process，或明确报 Python 无法启动。',
+        '运行环境入口无法启动它引用的基础 Python。需要检查基础路径和启动日志；这条错误不能证明模型权重损坏或依赖版本冲突。',
+        '点击修复此运行环境。程序保留已下载模型、工程和配置，用独立部署入口修复。',
+        actions=('repair_runtime_'+role,), supersedes=('runtime_broken','worker_crashed','unknown_failure'),
+        short='Python 启动失败，先修复实际失败的运行环境。')
+      for role,label in (('main','主运行环境（main）'),('moss','MOSS 运行环境'),('firered_llm','FireRed LLM 运行环境'))),
     KnownIssue(
         "runtime_broken", "environment", "blocker", "模型运行环境缺少组件或损坏",
         "错误里有 No module named、DLL load failed、ImportError、worker runtime missing、缺少新流水线组件。",
@@ -661,8 +672,21 @@ ISSUES: dict[str, KnownIssue] = _issues(
         "ai_edits_rejected", "ai_text", "tip", "部分 AI 修改被保护规则拒绝",
         "完成页写「AI建议被保护规则拒绝 N 处」。",
         "AI 想改的数字、人名或原文意思超出了允许范围（例如把「十分」改成「10分」），软件保留了原文。这是保护，不是故障。",
-        "不需要处理；想看具体是哪几处，可以在字幕工作台的待检查项里查看。",
+        "不需要逐条确认这些拒绝；原始提案与拒绝原因保留在任务报告中，有具体文字冲突的字幕仍可在工作台检查。",
         actions=("studio",),
+    ),
+    KnownIssue(
+        'ai_optional_metadata_ignored', 'ai_text', 'tip', '可选校对元数据未采用',
+        '报告记录可选术语提示的格式或引用无效。',
+        '校对正文已经返回；软件忽略了无效的可选提示，没有据此改动字幕，也没有把成功校对列为失败。',
+        '无需重试已经成功的校对；如需查看细节，可以展开本次依据。',
+    ),
+    KnownIssue(
+        'grouping_pause_fallback', 'segmentation', 'quality', '一批 AI 断句遗漏必须保留的停顿点',
+        '报告记录 grouping_api_fallback，原因是 boundaries 漏掉强制停顿位置。',
+        '该批断句没有保留检测到的停顿，软件只对这批使用本地规则；字幕文字与时间保留，文字校对的成功结果不受影响。',
+        '可在工作台试听这一批的切点；需要时使用完成页的重试失败项，仅补做未完成的断句。',
+        actions=('retry', 'studio'),
     ),
     KnownIssue(
         "search_not_configured", "ai_text", "tip", "联网核验没有执行",

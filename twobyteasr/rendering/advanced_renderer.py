@@ -683,6 +683,8 @@ def compile_composition_data(
     project = materialize_display_project(project)
     recipes: dict[str, object] = {}
     cues = []
+    font_faces={}
+    seen_font_faces=set()
     for cue in project.cues:
         if cue.end_ms <= start_ms or cue.start_ms >= end_ms:
             continue
@@ -692,6 +694,15 @@ def compile_composition_data(
         snapshot = build_visual_cue_snapshot(
             project, cue.id, width=width, height=height, fps=fps, resolved_cue=cue,
         )
+        from .export_font_assets import font_asset
+        face_key=(snapshot.font_family,snapshot.font_weight,snapshot.italic,
+                  getattr(snapshot.resolved_caption,'font_face_json',''))
+        if face_key not in seen_font_faces:
+            # One job freezes each face once, including a font larger than
+            # the persistent cache budget. Never re-encode it for every cue.
+            seen_font_faces.add(face_key)
+            asset=font_asset(snapshot)
+            if asset is not None:font_faces[(asset['family'],asset['weight'],asset['style'])]=asset
         visual = scale_visual_for_composition(normalized_visual_snapshot(snapshot), width)
         # recipes 键按样式共享，保持无偏移的样式定义；偏移只进 per-cue visual。
         if cue.style_id not in recipes:
@@ -725,6 +736,7 @@ def compile_composition_data(
         "width": int(width), "height": int(height), "fps": float(fps),
         "durationInFrames": max(1, round(duration_seconds * fps)),
         "cues": cues, "recipes": recipes,
+        "fontFaces": list(font_faces.values()),
         "debug": {
             "projectColorEncoding": "#AARRGGBB",
             "rendererColorEncoding": "#RRGGBBAA",

@@ -225,17 +225,19 @@ class CaptionTransformPanel(FoldCard):
             if getattr(self.page,'_caption_layer_canvas',False):self.page._caption_transform_retired=True
             self.page._caption_layer_canvas=False
             self.page.position_overlay._dragging=False
-        self.page._caption_transform_preview={}
-        self.page._caption_transform_preview_serial=getattr(self.page,'_caption_transform_preview_serial',0)+1
         try:
             if not cancel and changes and self.page.project is self._gesture_project:
                 self._commit(changes,self._gesture_ids,self._gesture_language,self._gesture_global,
                              self._gesture_reference)
         finally:
+            if not getattr(self.page,'_style_deferred_geometry_preview',False):self.page._caption_transform_preview={}
+            self.page._caption_transform_preview_serial=getattr(self.page,'_caption_transform_preview_serial',0)+1
             self._gesture_project=None;self._gesture_reference=None
             self._gesture_known_ids=set();self._gesture_visible={};self._gesture_ids=()
             self.page.timeline.set_caption_transform_active(False)
             self.page._present_caption_scene()
+            bulk=getattr(getattr(self.page,'style_controller',None),'_bulk_application',None)
+            if bulk is not None:bulk.resume_after_gesture()
 
     def refresh_gesture_targets(self,cues):
         if self.gesture is None or not self.pending or not self._gesture_global:return
@@ -281,6 +283,11 @@ class CaptionTransformPanel(FoldCard):
         if present:self.page._present_caption_scene()
 
     def _commit(self,changes,ids,language,global_mode,reference,*,reset=False):
+        bulk=getattr(getattr(self.page,'style_controller',None),'_bulk_application',None)
+        if getattr(self.page,'_style_application_busy',False) and bulk is not None:
+            mode=getattr(self,'_gesture_mode','absolute') if self._gesture_project is not None else 'absolute'
+            if bulk.defer_geometry(ids,language,changes,mode=mode,reference_id=reference.id,reset=reset,global_mode=global_mode):
+                return True
         if global_mode and reset:
             from .caption_group_transform import reset_group_command
             command=reset_group_command(self.page.project,self.page._changed)
@@ -289,8 +296,14 @@ class CaptionTransformPanel(FoldCard):
             command=GroupTransformCommand(self.page.project,
                 shared_after(self.page.project,reference,language,changes,reset=reset),self.page._changed)
         else:
-            command=transform_command(self.page.project,ids,language,changes,reset=reset,changed=self.page._changed,
-                reference_id=reference.id,mode=getattr(self,'_gesture_mode','absolute') if self._gesture_project is not None else 'absolute')
+            mode=getattr(self,'_gesture_mode','absolute') if self._gesture_project is not None else 'absolute'
+            from .bulk_transform_preparation import BULK_THRESHOLD,prepare_command
+            if len(ids)>=BULK_THRESHOLD:
+                command=prepare_command(self.page,ids,language,changes,reset=reset,
+                    reference_id=reference.id,mode=mode)
+            else:
+                command=transform_command(self.page.project,ids,language,changes,reset=reset,changed=self.page._changed,
+                    reference_id=reference.id,mode=mode)
         if command is not None:self.page.undo_stack.push(command)
         report_scope(self.page,getattr(self,'_gesture_scope',None) if self._gesture_project is not None else self._scope_snapshot,
                      applied=len(ids) if command is not None else 0)
@@ -317,6 +330,20 @@ class CaptionTransformPanel(FoldCard):
 
     def refresh(self):
         if self._updating:return
+        if (not self.isVisible() and self.gesture is None
+                and len(capture_scope(self.page).cue_ids) > 32):
+            # The Video tab's mixed-value form has no visible consumer while
+            # another tab is open. Keep selection/overlay ownership current,
+            # then hydrate the form from the latest state when it is shown.
+            self._needs_refresh=True
+            sync_tab=getattr(self.page,'_sync_video_tab_selection',None)
+            if callable(sync_tab):sync_tab()
+            if not self.isVisible():
+                self._scope_snapshot=capture_scope(self.page)
+                language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
+                with QSignalBlocker(self.language):self.language.setCurrentIndex(self.language.findData(language))
+                if self.page.project:self.sync_overlay()
+                return
         self._needs_refresh=False
         if self.gesture is not None:
             if (self.page.project is not self._gesture_project or self.page.selected_cue_id!=self._gesture_selected
@@ -415,8 +442,8 @@ class CaptionTransformPanel(FoldCard):
         reference=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
         language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
         self._gesture_project=None
-        self._commit(changes,[c.id for c in targets],language,self.global_link.isChecked() and self._scope_snapshot.scope=='all' and language=='linked',reference,reset=reset)
-        self.refresh()
+        pending=self._commit(changes,[c.id for c in targets],language,self.global_link.isChecked() and self._scope_snapshot.scope=='all' and language=='linked',reference,reset=reset)
+        if not pending:self.refresh()
 
     def sync_overlay(self):
         targets=self.targets()

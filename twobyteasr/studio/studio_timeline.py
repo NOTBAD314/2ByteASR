@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from .studio_track_header import ACTIONS, CONTROL_LEFT, action_at, button_rect, paint_button
+from .timeline_feedback import TimelineFeedbackMixin
+from .media_clip_shape import media_clip_shape
 from ..diagnostics.playback_probe import ENABLED as PLAYBACK_PROBE_ENABLED, measured, mark as playback_mark
 
 from bisect import bisect_left, bisect_right
@@ -224,7 +226,9 @@ class _TimelineInlineEdit(QPlainTextEdit):
         super().focusOutEvent(event)
 
 
-class WaveformTimeline(QWidget):
+class WaveformTimeline(TimelineFeedbackMixin, QWidget):
+    # The visible length or the project length changed (the toolbar zoom slider follows it).
+    view_changed = Signal()
     cue_selected = Signal(str)
     seek_requested = Signal(float)
     scrub_finished = Signal(float)
@@ -239,6 +243,8 @@ class WaveformTimeline(QWidget):
     merge_pair_requested = Signal(str, str)
     video_razor_requested = Signal(int)
     video_clip_razor_requested = Signal(str, str, int)
+    audio_clip_razor_requested = Signal(str, str, int)
+    range_edit_committed = Signal(object, object)
     edit_blocked = Signal(str)
     video_lock_toggled = Signal()
     video_track_action_requested = Signal(str, str)
@@ -314,6 +320,11 @@ class WaveformTimeline(QWidget):
         self._timeline_palette_cache: TimelinePalette | None = None
         self.visible_start_ms = 0
         self.visible_duration_ms = 60_000
+        self._view_mode = 'initial'
+        self._range_drag = self._range_preview = None
+        self._media_cut = self._media_cut_key = None
+        self._media_cut_region = QRegion()
+        self._media_edge_hover = None
         self.playhead_ms = 0
         self.selected_id = ""
         self.selected_audio_track_id = ""
@@ -425,6 +436,10 @@ class WaveformTimeline(QWidget):
         self._clip_scroll_timer = QTimer(self)
         self._clip_scroll_timer.setInterval(30)
         self._clip_scroll_timer.timeout.connect(self._scroll_clip_drag)
+        self._feedback_refinement_timer = QTimer(self)
+        self._feedback_refinement_timer.setSingleShot(True)
+        self._feedback_refinement_timer.setInterval(100)
+        self._feedback_refinement_timer.timeout.connect(self._media_refinement_ready)
         self._segment_drag: dict[str, object] | None = None
         self._track_reorder_drag: dict[str, object] | None = None
         self.thumbnail_requests_enabled = True
@@ -1149,6 +1164,7 @@ class WaveformTimeline(QWidget):
         return preview
 
     def _begin_video_drag(self, track_id, clip, event):
+        self.hold_manual_view()
         from ..timeline.studio_clip_edit import trim_bounds, media_edit_limit
         from ..timeline.studio_media_pool import asset_by_id
         x = event.position().x()
@@ -1195,9 +1211,32 @@ class WaveformTimeline(QWidget):
             start, end = min(origin_out - 1, max(drag['min_in'], origin_in + delta)), origin_out
         else:
             start, end = origin_in, min(drag['max_out'], max(origin_in + 1, origin_out + delta))
+        drag['limit'] = ''
+        if mode != 'move':
+            from ..timeline.media_edit_time import asset_frame_rate, frame_time
+            from ..timeline.studio_media_pool import asset_by_id
+            clip = next(c for t in self.project.video_tracks if t.id == drag['track_id'] for c in t.clips if c.id == drag['clip_id'])
+            rate = asset_frame_rate(asset_by_id(self.project, clip.asset_id))
+            if mode == 'trim_left':
+                start = min(origin_out - 1, max(drag['min_in'], frame_time(clip, start, rate, extending=True)[0]))
+                if origin_in + delta < drag['min_in']:
+                    drag['limit'] = tr('已到可用素材开头')
+            else:
+                end = min(drag['max_out'], max(origin_in + 1, frame_time(clip, end, rate, extending=True)[0]))
+                if origin_out + delta > drag['max_out']:
+                    drag['limit'] = tr('已到可用素材结尾')
         drag['target_track_id'] = target
         self._snap_bypass = bool(modifiers & Qt.KeyboardModifier.AltModifier)
         start, end = self._snap_video_interval(start, end, drag)
+        if mode != 'move' and rate is not None:
+            before_edge = start if mode == 'trim_left' else end
+            if mode == 'trim_left':
+                start = min(origin_out - 1, max(drag['min_in'], frame_time(clip, start, rate, extending=True)[0]))
+            else:
+                end = min(drag['max_out'], max(origin_in + 1, frame_time(clip, end, rate, extending=True)[0]))
+            after_edge = start if mode == 'trim_left' else end
+            if self._snap_target and after_edge != before_edge:
+                self._snap_target = dict(self._snap_target, time=after_edge, label=self._snap_target['label'] + ' · ' + tr('帧对齐'))
         drag['preview_in'], drag['preview_out'] = start, end
         key = (target, start, end, tuple(sorted(self.locked_speakers)))
         if key != drag.get('preview_key'):
@@ -1211,10 +1250,11 @@ class WaveformTimeline(QWidget):
             except (ValueError, KeyError) as exc:
                 drag['snapshot'] = None
                 drag['invalid'] = str(exc)
-        self.setCursor(Qt.CursorShape.ForbiddenCursor if drag.get('invalid') else Qt.CursorShape.ClosedHandCursor)
-        self.setToolTip(str(drag.get('invalid') or ''))
+        self.setCursor(Qt.CursorShape.ForbiddenCursor if drag.get('invalid') else
+                       Qt.SizeHorCursor if mode != 'move' else Qt.ClosedHandCursor)
+        self.setToolTip(str(drag.get('invalid') or drag.get('limit') or ''))
         at_edge = point.x() < self.TRACK_HEADER_WIDTH + 24 or point.x() > self._content_right() - 24
-        if drag['moved'] and at_edge:
+        if drag['moved'] and at_edge and not drag.get('limit'):
             self._clip_scroll_timer.start()
         else:
             self._clip_scroll_timer.stop()
@@ -1222,8 +1262,12 @@ class WaveformTimeline(QWidget):
         self.update()
 
     def _scroll_clip_drag(self):
-        drag = self._clip_drag
+        range_drag = self._range_drag
+        drag = self._clip_drag or range_drag
         if not drag:
+            self._clip_scroll_timer.stop()
+            return
+        if drag.get('limit'):
             self._clip_scroll_timer.stop()
             return
         x = drag['pointer'].x()
@@ -1231,11 +1275,23 @@ class WaveformTimeline(QWidget):
         if not direction:
             self._clip_scroll_timer.stop()
             return
-        start = max(0, self.visible_start_ms + direction * max(1, round(self.visible_duration_ms * .015)))
+        width = max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
+        penetration = self.TRACK_HEADER_WIDTH + 24 - x if direction < 0 else x - (self._content_right() - 24)
+        step = max(1, round(min(16, max(1, penetration * .5)) * self.visible_duration_ms / width))
+        start = max(0, self.visible_start_ms + direction * step)
         # Moving beyond the current project tail must be possible. This extent
         # belongs only to the drag viewport, never the persisted timeline.
-        drag['extent_ms'] = max(self._duration_ms(), start + self.visible_duration_ms)
+        if not range_drag:
+            limit = start + self.visible_duration_ms
+            if drag['mode'] != 'move':
+                limit = min(drag['max_out'], limit)
+            drag['extent_ms'] = max(self._project_duration_ms, limit)
+        before = self.visible_start_ms
         self.set_visible_window(start, self.visible_duration_ms)
+        if range_drag:
+            self._range_move(drag['pointer'], drag.get('modifiers', Qt.NoModifier))
+        if self.visible_start_ms == before:
+            self._clip_scroll_timer.stop()
 
     def _snap_video_interval(self, start, end, drag):
         """One logical-pixel threshold, one shared displacement, integer ms."""
@@ -1325,8 +1381,8 @@ class WaveformTimeline(QWidget):
 
     def _sync_scrollbars(self) -> None:
         duration = self._duration_ms()
-        maximum = max(0, duration - self.visible_duration_ms,
-                      min(duration, getattr(self, '_page_tail_start_ms', 0)))
+        maximum = self._scroll_maximum()
+        self.visible_start_ms = min(maximum, max(0, self.visible_start_ms))
         self.horizontal_scrollbar.blockSignals(True)
         self.horizontal_scrollbar.setRange(0, maximum)
         self.horizontal_scrollbar.setPageStep(min(duration, self.visible_duration_ms))
@@ -1334,6 +1390,10 @@ class WaveformTimeline(QWidget):
         self.horizontal_scrollbar.setValue(min(maximum, self.visible_start_ms))
         self.horizontal_scrollbar.setVisible(maximum > 0)
         self.horizontal_scrollbar.blockSignals(False)
+        view = (duration, self.visible_duration_ms)
+        if view != getattr(self, '_announced_view', None):
+            self._announced_view = view
+            self.view_changed.emit()
 
         track_height = self._subtitle_content_height()
         track_maximum = max(0, track_height - round(self._track_viewport().height()))
@@ -1358,15 +1418,15 @@ class WaveformTimeline(QWidget):
         )
 
     def _horizontal_scrolled(self, value: int) -> None:
-        self._follow_suspended_until = perf_counter() + 2.0
+        self.hold_manual_view()
         self.visible_start_ms = int(value)
+        self._refresh_pointer_feedback()
         self.update()
 
     def set_visible_window(self, start_ms: int, duration_ms: int) -> None:
         duration = self._duration_ms()
-        visible_duration = min(max(1000, int(duration_ms)), max(1000, duration or int(duration_ms)))
-        maximum = max(0, duration - visible_duration,
-                      min(duration, getattr(self, '_page_tail_start_ms', 0)))
+        visible_duration = min(max(1000, int(duration_ms)), max(18_000_000, duration * 2))
+        maximum = self._scroll_maximum(visible_duration)
         visible_start = min(maximum, max(0, int(start_ms)))
         changed = (
             visible_duration != self.visible_duration_ms
@@ -1374,13 +1434,17 @@ class WaveformTimeline(QWidget):
         )
         self.visible_duration_ms = visible_duration
         self.visible_start_ms = visible_start
+        self._view_mode = 'manual'
         self._sync_scrollbars()
         if changed:
             if self._clip_drag and self._clip_drag.get('pointer') is not None:
                 self._update_clip_drag(self._clip_drag['pointer'], self._clip_drag['modifiers'])
+            self._refresh_pointer_feedback()
             self.update()
 
     def reveal_playhead(self, milliseconds: int, *, force: bool = False) -> bool:
+        if not force and (self._viewport_manipulated() or getattr(self, '_manual_view_hold', False)):
+            return False
         left = self.visible_start_ms
         right = left + self.visible_duration_ms
         # 2026-09-02 修复（倍速跳变风暴）：旧参数把跳变后的播头放在窗口 72%
@@ -1397,13 +1461,13 @@ class WaveformTimeline(QWidget):
     def _viewport_manipulated(self) -> bool:
         return bool(getattr(self, '_scrub_drag', False) or getattr(self, '_pan_drag', None)
             or any(getattr(self, attr, None) for attr in ('_drag', '_clip_drag', '_segment_drag',
-                '_track_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag'))
+                '_track_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag', '_range_drag'))
             or self.horizontal_scrollbar.isSliderDown()
             or perf_counter() < getattr(self, '_follow_suspended_until', 0))
 
     def page_playhead(self, milliseconds: int) -> bool:
         """Reveal only on overflow, anchored to the actual content left edge."""
-        if self._viewport_manipulated():
+        if self._viewport_manipulated() or getattr(self, '_manual_view_hold', False):
             return False
         x = self._time_to_x(milliseconds)
         if self.TRACK_HEADER_WIDTH - .5 <= x < self._content_right():
@@ -1445,8 +1509,7 @@ class WaveformTimeline(QWidget):
         runs out or the content changes.
         """
         duration = self._duration_ms()
-        maximum = max(0, duration - self.visible_duration_ms,
-                      min(duration, getattr(self, '_page_tail_start_ms', 0)))
+        maximum = self._scroll_maximum()
         start = min(maximum, max(0, int(start_ms)))
         self._follow_active_until = perf_counter() + 0.5
         if start == self.visible_start_ms:
@@ -1466,6 +1529,8 @@ class WaveformTimeline(QWidget):
             or bool(self._merge_anchor_id)
         )
         self._clear_razor_preview()
+        self._clear_media_razor()
+        self._media_edge_hover = None
         self.tool_mode = normalized
         self._merge_drag = None
         self._merge_anchor_id = ""
@@ -1490,6 +1555,17 @@ class WaveformTimeline(QWidget):
             self.update()
 
     def set_project(self, project: SubtitleProject | None) -> None:
+        new_project = project is not self.project
+        if new_project:
+            # Invalidate in-flight demand immediately, including while the
+            # next project is hidden and has not painted its viewport yet.
+            # Valid content-addressed images remain reusable in memory.
+            self._thumbnails.set_view(())
+            self._manual_view_hold = False
+            self._range_release(cancel=True)
+            self._clear_media_razor()
+            self._clear_razor_preview()
+            self._media_edge_hover = None
         if project is not self.project:
             self._cancel_inline_edit()
             self.set_subtitle_layer("original")
@@ -1542,9 +1618,11 @@ class WaveformTimeline(QWidget):
         ):
             self.selected_video_track_id = project.video_tracks[0].id if project.video_tracks else ""
         self.selected_video_clip_id = ""
-        duration = project.media.duration_ms if project else 0
-        self.visible_duration_ms = min(max(10_000, duration or 60_000), 300_000)
-        self.visible_start_ms = 0
+        if new_project:
+            duration = self._project_duration_ms
+            self.visible_duration_ms = min(max(10_000, duration or 60_000), 300_000)
+            self.visible_start_ms = 0
+            self._view_mode = 'initial'
         self._sync_track_minimum_height()
         self._sync_scrollbars()
         self.update()
@@ -1578,6 +1656,11 @@ class WaveformTimeline(QWidget):
         # not compete with a live canvas gesture for a full timeline layout.
         if getattr(self,'_caption_transform_active',False):
             self._media_refinement_pending=True
+            return
+        if (self._range_drag is not None or self._clip_drag is not None
+                or (self.tool_mode == 'razor' and perf_counter() - getattr(self, '_feedback_motion_at', 0) < .10)):
+            if not self._feedback_refinement_timer.isActive():
+                self._feedback_refinement_timer.start()
             return
         self.update()
 
@@ -1614,6 +1697,7 @@ class WaveformTimeline(QWidget):
         return cache
 
     def refresh_media_graph(self) -> None:
+        self._clear_razor_preview()
         if self.project and not any(
             track.id == self.selected_video_track_id for track in self.project.video_tracks
         ):
@@ -1641,6 +1725,7 @@ class WaveformTimeline(QWidget):
         if next_value == previous:
             return
         self.playhead_ms = next_value
+        self._refresh_pointer_feedback()
         self._thumbnails.note_activity()
         region = self._transport_cursor_region(previous) | self._transport_cursor_region(next_value)
         if PLAYBACK_PROBE_ENABLED:
@@ -1673,6 +1758,7 @@ class WaveformTimeline(QWidget):
         if enabled == self.snap_enabled:
             return
         self.snap_enabled = enabled
+        self._refresh_pointer_feedback()
         if self.project is not None:
             self.project.studio_state["timeline_snap_enabled"] = enabled
         self.snap_changed.emit(enabled)
@@ -2097,6 +2183,7 @@ class WaveformTimeline(QWidget):
         self._razor_painted = current
 
     def _clear_razor_preview(self) -> None:
+        self._clear_media_razor()
         if self._razor_drag is None and self._razor_hover is None:
             return
         self._razor_drag = None
@@ -2106,6 +2193,12 @@ class WaveformTimeline(QWidget):
         self._razor_painted = QRegion()
 
     def _update_razor_hover(self, point: QPoint, modifiers) -> None:
+        if self._update_media_razor(point, modifiers):
+            if self._razor_hover is not None:
+                self._razor_hover = None
+                self._razor_resolved = None
+                self._refresh_razor_preview()
+            return
         cue = self._razor_target_at(point.x(), self._speaker_at(point)) if point.x() >= self.TRACK_HEADER_WIDTH else None
         if cue is None:
             if self._razor_hover is not None:
@@ -2116,18 +2209,22 @@ class WaveformTimeline(QWidget):
         self._razor_hover = {
             "cue_id": cue.id,
             "split_ms": self._x_to_time(point.x()),
+            "pointer_x": point.x(),
             "bypass_snap": bool(modifiers & Qt.KeyboardModifier.AltModifier),
         }
         self._refresh_razor_preview()
 
     def _start_razor_drag(self, cue_id: str, x: float) -> None:
         hover = self._razor_hover or {}
+        pointer_ms = self._x_to_time(x)
+        if hover.get('cue_id') == cue_id and abs(float(hover.get('pointer_x', x + 2)) - x) <= 1:
+            pointer_ms = int(hover['split_ms'])
         self._razor_drag = {
             "cue_id": cue_id,
             "speaker_id": getattr(self._timeline_cue_by_id.get(cue_id), "speaker_id", ""),
             "origin_x": x,
-            "pressed_ms": self._x_to_time(x),
-            "split_ms": self._x_to_time(x),
+            "pressed_ms": pointer_ms,
+            "split_ms": pointer_ms,
             "bypass_snap": bool(hover.get("bypass_snap")),
             "moved": False,
         }
@@ -2321,7 +2418,8 @@ class WaveformTimeline(QWidget):
                 if visible or nearby:
                     focus=sin+max(0,min(tout-tin,self.playhead_ms-tin))*(sout-sin)/(tout-tin)
                     lod=filmstrip_lod_ms((right-left)*1000/max(1,sout-sin),height)
-                    views.append(FilmstripView(path,visible,nearby,int(focus),f'{track_id}:{owner}',int(sin),int(sout),lod))
+                    token=f'{id(self.project):x}:{self.project.project_id}:{track_id}:{owner}'
+                    views.append(FilmstripView(path,visible,nearby,int(focus),token,int(sin),int(sout),lod))
             for segment in sequence.segments:
                 if (segment.source_path or sequence.source_path) in offline_sources:
                     continue
@@ -2809,15 +2907,7 @@ class WaveformTimeline(QWidget):
         visible_end = visible_start + int(self.visible_duration_ms)
         painter.save()
         for audio_id, rect in rects.items():
-            painter.fillRect(
-                QRectF(
-                    self.TRACK_HEADER_WIDTH,
-                    rect.top(),
-                    self._content_right() - self.TRACK_HEADER_WIDTH,
-                    rect.height(),
-                ),
-                QColor(palette.waveform_background),
-            )
+            # Retain the empty-lane grid; each real audio clip owns its fill.
             track = tracks.get(audio_id)
             muted = bool(track and track.muted)
             locked = bool(track and track.locked)
@@ -2863,10 +2953,20 @@ class WaveformTimeline(QWidget):
                 overlap_out = min(visible_end, int(clip.timeline_out_ms))
                 if overlap_out <= overlap_in:
                     continue
+                block, silhouette = media_clip_shape(
+                    self._time_to_x(clip.timeline_in_ms), self._time_to_x(clip.timeline_out_ms),
+                    rect.top() + 4, rect.height() - 8, self.TRACK_HEADER_WIDTH, self._content_right())
+                painter.save()
+                painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
+                painter.fillPath(silhouette, mix(palette.waveform_background, palette.waveform_edge, .09))
                 asset = assets.get(clip.asset_id)
                 # Each lane draws its own stream, never another lane's copy.
                 cache = self.waveform_cache_for_source(asset.canonical_source, clip.stream_index) if asset else None
                 if asset is None or cache is None:
+                    painter.setPen(QPen(QColor(palette.waveform_edge), 1))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawPath(silhouette)
+                    painter.restore()
                     continue
                 from ..timeline.clip_time_mapper import project_to_source
                 source_in = project_to_source(clip, overlap_in)
@@ -2884,6 +2984,7 @@ class WaveformTimeline(QWidget):
                     cache, source_in, source_out, left, right, rect,
                     int(clip.source_in_ms), int(clip.source_out_ms))
                 if not pieces:
+                    painter.restore()
                     continue
                 center = rect.center().y()
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -2905,6 +3006,9 @@ class WaveformTimeline(QWidget):
                 painter.setPen(QPen(QColor(palette.waveform_edge), 1.0))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawLine(round(left), round(center), round(right), round(center))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(silhouette)
+                painter.restore()
             painter.restore()
             painter.setPen(QPen(mix(palette.grid_minor, palette.background, 0.4), 1))
             painter.drawLine(0, round(rect.bottom()), self._content_right(), round(rect.bottom()))
@@ -3119,6 +3223,8 @@ class WaveformTimeline(QWidget):
             painter.drawRect(rect)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr('空白 · {key} 闭合', key=self._delete_key_text()))
         self._paint_edge_feedback(painter, palette)
+        self._paint_media_edges(painter, palette)
+        self._paint_range_feedback(painter, palette)
         # 右侧统一控制区：泳道分界把手（滚动/调高同列，直绘在滚动条列）。
         if event.region().intersects(QRect(self.width()-self._track_height_strip_width(),0,
                                            self._track_height_strip_width(),self.height())):
@@ -3127,6 +3233,7 @@ class WaveformTimeline(QWidget):
             # Dynamic layer over the cached raster; never dirties the base.
             from . import timeline_razor
             timeline_razor.paint(self, painter, palette, self._razor_resolution())
+            self._paint_media_razor(painter, palette)
         elif self.tool_mode == "merge":
             from . import timeline_merge
             timeline_merge.paint(self, painter, palette, self._merge_preview_state())
@@ -3300,23 +3407,6 @@ class WaveformTimeline(QWidget):
         track_viewport = self._track_viewport()
         sequence = sequence_of(self.project) if self.project else None
         sequence_runtime = runtime_of(self.project) if self.project else None
-        if sequence is not None and (sequence.in_point_ms is not None or sequence.out_point_ms is not None):
-            from ..projects.project_range import effective_range
-            from PySide6.QtGui import QPolygonF
-            from PySide6.QtCore import QPointF
-            start, end = effective_range(self.project)
-            left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(start))
-            right = min(self._content_right(), self._time_to_x(end))
-            if right > left:
-                painter.fillRect(QRectF(left,0,right-left,self.RULER_HEIGHT),QColor(147,191,165,45))
-            for value, direction, label in ((sequence.in_point_ms,1,'I'),(sequence.out_point_ms,-1,'O')):
-                if value is None:continue
-                x = self._time_to_x(value)
-                if not self.TRACK_HEADER_WIDTH <= x <= self._content_right():continue
-                painter.setPen(QColor('#93bfa5')); painter.setBrush(QColor('#93bfa5'))
-                painter.drawPolygon(QPolygonF([QPointF(x,0),QPointF(x+direction*10,0),QPointF(x,12)]))
-                painter.drawLine(QPointF(x,0),QPointF(x,self.RULER_HEIGHT))
-                painter.drawText(QRectF(x-9,13,18,16),Qt.AlignCenter,label)
         overscan = max(1_000, int(self.visible_duration_ms * 0.02))
         visible_start = max(0, int(self.visible_start_ms) - overscan)
         visible_end = int(self.visible_start_ms + self.visible_duration_ms) + overscan
@@ -3423,7 +3513,7 @@ class WaveformTimeline(QWidget):
                 continue
             background = QColor(palette.track_background if index % 2 == 0 else palette.track_alternate)
             if kind != "speaker":
-                background = mix(palette.track_alternate, palette.header_hover, 0.35)
+                background = QColor(palette.background)
             painter.fillRect(
                 QRectF(self.TRACK_HEADER_WIDTH, visible_rect.top(), self._content_right() - self.TRACK_HEADER_WIDTH, visible_rect.height()),
                 background,
@@ -3437,7 +3527,7 @@ class WaveformTimeline(QWidget):
         if self.waveform_visible and not timing_only:
             painter.fillRect(
                 QRectF(self.TRACK_HEADER_WIDTH, waveform_rect.top(), self._content_right() - self.TRACK_HEADER_WIDTH, waveform_rect.height()),
-                QColor(palette.waveform_background),
+                QColor(palette.background),
             )
 
         content_width = max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
@@ -3610,8 +3700,21 @@ class WaveformTimeline(QWidget):
                 name_font.setPointSize(14 if rect.height() < 84 else 16)
                 name_font.setBold(True)
                 painter.setFont(name_font)
-                painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
-                                 painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
+                imported = self.project.generation_metadata.get("subtitle_imports", {}).get("tracks", {}).get(speaker_id)
+                if imported and " · " in name and rect.height() >= 34:
+                    title, language = name.split(" · ", 1)
+                    name_font.setPointSize(11)
+                    painter.setFont(name_font)
+                    painter.drawText(QRectF(55, rect.center().y() - 17, CONTROL_LEFT - 61, 18), Qt.AlignVCenter,
+                        painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 61))
+                    name_font.setPointSize(9)
+                    name_font.setBold(False)
+                    painter.setFont(name_font)
+                    painter.drawText(QRectF(55, rect.center().y() + 1, CONTROL_LEFT - 61, 17), Qt.AlignVCenter,
+                        painter.fontMetrics().elidedText(language, Qt.ElideRight, CONTROL_LEFT - 61))
+                else:
+                    painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
+                                     painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
                 name_font.setBold(False)
                 painter.setFont(name_font)
                 self._paint_subtitle_header_buttons(painter, palette, "speaker", speaker_id, rect)
@@ -3791,7 +3894,9 @@ class WaveformTimeline(QWidget):
 
         painter.restore()
 
-        if not timing_only:self._paint_linked_audio_tracks(painter, palette)
+        if not timing_only:
+            self._paint_linked_audio_tracks(painter, palette)
+            self._paint_media_boundaries(painter, palette)
         self._paint_selection_feedback(painter,palette)
         self._paint_transitions(painter,palette)
         if self._marquee_rect is not None:
@@ -4158,6 +4263,10 @@ class WaveformTimeline(QWidget):
         self._selection_before_press = self.clip_selection()
         self.selected_gap = None
         point = event.position().toPoint()
+        if event.button() == Qt.LeftButton:
+            if self._range_press(event.position()) or self._media_razor_press(event.position(), event.modifiers()):
+                event.accept()
+                return
         translation_track = self._track_layout()[1] if self.project else None
         if (event.button() == Qt.LeftButton and translation_track is not None
                 and translation_track.contains(point) and self._track_viewport().contains(point)):
@@ -4248,7 +4357,7 @@ class WaveformTimeline(QWidget):
                 if key:self._begin_group_drag(event)
                 event.accept()
                 return
-            if self._unified_selection and not ctrl_duration and key and key in (self.selected_segment_ids|self.selected_audio_clip_ids|self.selected_ids):
+            if self._unified_selection and not ctrl_duration and not self._media_edge_at(point) and key and key in (self.selected_segment_ids|self.selected_audio_clip_ids|self.selected_ids):
                 if event.modifiers() & Qt.ControlModifier:
                     selection=self.clip_selection()
                     from ..timeline.studio_selection import remove_linked_selection
@@ -4361,11 +4470,9 @@ class WaveformTimeline(QWidget):
             clip = self._video_clip_at(track_id, click_ms)
             if self.tool_mode == 'selection':
                 row = next(t for t in self.project.video_tracks if t.id == track_id)
-                edges = [(abs(event.position().x()-self._time_to_x(value)), c.id != self.selected_video_clip_id, c.id, c)
-                         for c in row.clips for value in (c.timeline_in_ms,c.timeline_out_ms)
-                         if abs(event.position().x()-self._time_to_x(value)) <= self.VIDEO_CLIP_TRIM_HANDLE_PX]
-                if edges and (clip is not None or min(e[0] for e in edges) <= 1):
-                    clip = min(edges,key=lambda item:item[:3])[3]
+                hit = self._media_edge_at(point)
+                if hit:
+                    clip = next(c for c in row.clips if c.id == hit[1])
             previous_selection = set(self.selected_segment_ids)
             previous_anchor = self.selected_segment_id
             self.selected_video_clip_id = clip.id if clip else ''
@@ -4723,6 +4830,13 @@ class WaveformTimeline(QWidget):
         if self._inline_editor is None or self._inline_target is None:
             return
         cue_id, translation = self._inline_target
+        if getattr(self._inline_editor,'_composing',False):
+            method=QApplication.inputMethod()
+            if method is not None:method.commit()
+            if getattr(self._inline_editor,'_composing',False):
+                self._inline_editor._finished=False
+                self.edit_blocked.emit(tr('输入法候选尚未确认，请先确认候选再提交'))
+                return
         from ..subtitle_rules.subtitle_translation import container_target
         if (self._inline_binding is None or self.project is not self._inline_binding[0]
                 or (translation and container_target(self.project) != self._inline_binding[1])):
@@ -4730,8 +4844,18 @@ class WaveformTimeline(QWidget):
             self.edit_blocked.emit(tr("工程或译文语言已切换，请重新选择字幕后编辑"))
             return
         text = self._inline_editor.toPlainText()
-        self._cancel_inline_edit()
+        self._inline_editor._finished=True  # signal handlers can move focus while applying
         self.text_edit_committed.emit(cue_id, translation, text)
+        cue=next((c for c in self.project.cues if c.id==cue_id),None)
+        if translation:
+            from ..caption_style.bilingual_layout import translations_of
+            current=translations_of(self.project.generation_metadata).get(cue_id,'')
+        else:current=cue.text if cue is not None else None
+        if current!=text:
+            if self._inline_editor is not None:self._inline_editor._finished=False
+            self.edit_blocked.emit(tr('字幕未提交；输入内容已保留，可重试'))
+            return
+        self._cancel_inline_edit()
         if navigate:
             self._open_adjacent_inline_editor(cue_id, translation, navigate)
 
@@ -4846,6 +4970,9 @@ class WaveformTimeline(QWidget):
 
     @measured('mouse_move')
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._range_move(event.position(), event.modifiers()):
+            event.accept()
+            return
         if self._group_drag is not None:
             drag=self._group_drag
             moved=(event.position()-drag['origin']).manhattanLength()>=QApplication.startDragDistance()
@@ -4997,6 +5124,7 @@ class WaveformTimeline(QWidget):
             if abs(event.position().x() - origin_x) < QApplication.startDragDistance():
                 return
             self._pan_drag_moved = True
+            self.hold_manual_view()
             content_width = max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
             delta_ms = round((event.position().x() - origin_x) * self.visible_duration_ms / content_width)
             self.set_visible_window(origin_start - delta_ms, self.visible_duration_ms)
@@ -5009,10 +5137,23 @@ class WaveformTimeline(QWidget):
             return
         if not self._drag:
             point = event.position().toPoint()
+            range_handle = self._update_range_hover(point)
+            if range_handle is not None:
+                self._clear_razor_preview()
+                from ..projects.project_range import clock_text
+                self.setCursor(Qt.SizeHorCursor)
+                self.setToolTip(('I · ' + tr('入点') if range_handle == 0 else 'O · ' + tr('出点'))
+                                + ' ' + clock_text(self._range_display_points()[range_handle]))
+                return
             if self.tool_mode == "razor":
-                self._update_razor_hover(point, event.modifiers())
+                self._update_razor_hover(event.position(), event.modifiers())
             elif self.tool_mode == "merge":
                 self._update_merge_hover(point)
+            media_edge = self._update_media_edge(point)
+            if media_edge:
+                self.setCursor(Qt.SizeHorCursor)
+                self.setToolTip(tr('修剪片段起点') if media_edge[2] == 'trim_left' else tr('修剪片段终点'))
+                return
             cue, mode = self._cue_at(point)
             resize_hover = ((cue.id, mode) if cue and mode in {"left", "right"}
                             and cue.speaker_id not in self.locked_speakers and self.tool_mode == "selection" else None)
@@ -5252,6 +5393,11 @@ class WaveformTimeline(QWidget):
         return bool(key) and normalize(pressed).casefold() == key.casefold()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key_Escape and self._range_release(cancel=True):
+            event.accept()
+            return
+        if event.key() == Qt.Key_Alt and getattr(self, '_feedback_pointer', None) is not None:
+            self._update_media_razor(self._feedback_pointer.toPoint(), Qt.AltModifier)
         if event.key() == Qt.Key_Control and self._drag and self._drag[1] != 'roll' and getattr(self, '_seam_candidate', None):
             self._flush_timing_preview()
             cue_id, mode, origin_x, _, _ = self._drag
@@ -5298,15 +5444,21 @@ class WaveformTimeline(QWidget):
         if event.key() == Qt.Key.Key_Alt:
             self._snap_alt_held = False
             self._snap_bypass = False
+            if getattr(self, '_feedback_pointer', None) is not None:
+                self._update_media_razor(self._feedback_pointer.toPoint(), Qt.NoModifier)
             event.accept()
             return
         super().keyReleaseEvent(event)
 
     def hideEvent(self, event) -> None:
+        self._range_release(cancel=True)
+        self._clear_media_razor()
         self.cancel_timing_edit()
         super().hideEvent(event)
 
     def leaveEvent(self, event) -> None:
+        self._clear_media_razor()
+        self._media_edge_hover = None
         if self._razor_drag is None and self._razor_hover is not None:
             self._clear_razor_preview()
         if self._merge_drag is None and self._merge_hover_id:
@@ -5325,6 +5477,9 @@ class WaveformTimeline(QWidget):
 
     @measured('mouse_release')
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton and self._range_release():
+            event.accept()
+            return
         if event.button()==Qt.LeftButton and self._group_drag is not None:
             drag,self._group_drag=self._group_drag,None
             self._snap_target=None
@@ -5435,6 +5590,7 @@ class WaveformTimeline(QWidget):
         if self._clip_drag:
             from ..timeline.studio_media_pool import primary_video_track_id
             drag = self._clip_drag
+            self.hold_manual_view()
             self._clip_drag = None
             self._snap_target = None
             self.interaction_changed.emit(False)
@@ -5447,6 +5603,10 @@ class WaveformTimeline(QWidget):
                 self.seek_requested.emit(
                     self._bounded_time_ms(self._x_to_time(event.position().x())) / 1000.0
                 )
+            elif (str(drag.get('mode')) != 'move' and 'preview_in' in drag
+                  and (drag['preview_in'],drag['preview_out']) == (drag['origin_in'],drag['origin_out'])):
+                if drag.get('limit'):
+                    self.edit_blocked.emit(drag['limit'])
             elif str(drag["mode"]) == "move":
                 source_track = str(drag["track_id"])
                 if str(drag.get("target_track_id") or "") and str(drag["target_track_id"]) != source_track:
@@ -5548,7 +5708,7 @@ class WaveformTimeline(QWidget):
         if not delta:
             event.accept()
             return
-        self._follow_suspended_until = perf_counter() + 2.0
+        self.hold_manual_view()
         self._thumbnails.note_activity()
         duration = self._duration_ms()
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -5556,21 +5716,30 @@ class WaveformTimeline(QWidget):
             # visible_start 之前的时间导致视口跳变。
             anchor_x = max(self.TRACK_HEADER_WIDTH, event.position().x())
             anchor = self._x_to_time(anchor_x)
-            factor = 0.8 if delta > 0 else 1.25
-            new_duration = min(max(1000, round(self.visible_duration_ms * factor)), max(1000, duration or 18_000_000))
+            factor = .8 ** (delta / (120 if not angle.isNull() else 100))
+            new_duration = min(max(1000, round(self.visible_duration_ms * factor)), max(1000, round(duration * 1.5) or 18_000_000))
             ratio = (anchor_x - self.TRACK_HEADER_WIDTH) / max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
             self.set_visible_window(round(anchor - new_duration * ratio), new_duration)
         else:
-            shift = round(self.visible_duration_ms * (-0.12 if delta > 0 else 0.12))
+            shift = (round(-delta * self.visible_duration_ms * .12 / 120)
+                     if not angle.isNull() else
+                     round(-delta * self.visible_duration_ms / max(1, self._content_right()-self.TRACK_HEADER_WIDTH)))
             self.set_visible_window(self.visible_start_ms + shift, self.visible_duration_ms)
-        if self.tool_mode == "razor" and self._razor_drag is None and self._razor_hover is not None:
+        if self.tool_mode == "razor" and self._razor_drag is None:
             # Keep the hover cut under the pointer after zooming/scrolling.
-            self._update_razor_hover(event.position().toPoint(), event.modifiers())
+            self._update_razor_hover(event.position(), event.modifiers())
         event.accept()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        old_width = event.oldSize().width() - self.TRACK_HEADER_WIDTH - self.vertical_scrollbar.sizeHint().width()
+        new_width = self._content_right() - self.TRACK_HEADER_WIDTH
+        if old_width > 1 and new_width > 1 and self._view_mode == 'manual':
+            self.visible_duration_ms = max(1000, round(self.visible_duration_ms * new_width / old_width))
+        elif self._view_mode == 'fit':
+            self.fit_all_time()
         self._sync_scrollbars()
+        self._refresh_pointer_feedback()
         overlay = getattr(self, '_transport_overlay', None)
         if overlay is not None:
             overlay.setGeometry(self.rect())

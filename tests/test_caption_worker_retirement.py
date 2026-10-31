@@ -39,6 +39,9 @@ def cache_inputs(monkeypatch):
     project = SimpleNamespace(cues=[cue], style_recipes={})
     revision = SimpleNamespace(project_id="project", mapping_revision=1, visual_revision=1,
                                cues=(cue,), timeline_cues=None)
+    # Scope fidelity/index retirement have their own real-DTO tests. These
+    # barriers isolate publication after cancellation without GUI/font work.
+    monkeypatch.setattr(cache_module.PlaybackCaptionCache, '_window_revision', lambda self, revision, ids: revision)
     monkeypatch.setattr(cache_module, "materialize_captions", lambda *a, **k: (
         SimpleNamespace(project=project), set(), ""))
     monkeypatch.setattr(visual_snapshot, "build_visual_cue_snapshot", lambda *a, **k: Snapshot())

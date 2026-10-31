@@ -256,8 +256,10 @@ def run(output, *, window):
         found['rows'] = dialog.preview.count()
         found['status'] = dialog.status_label.text()
         found['list_share'] = round(dialog.preview.height() / dialog.height(), 2)
-        chips = [dialog.case_box, dialog.word_box, dialog.regex_box, dialog.body_box, dialog.lock_box,
-                 dialog.project_entity_box]
+        # 2026-10-30 (draft C): 仅正文 / 记录实体 wait behind 更多; measure the tags shown.
+        chips = [chip for chip in (dialog.scope_combo, dialog.lock_box, dialog.case_box, dialog.word_box,
+                                   dialog.regex_box, dialog.body_box, dialog.project_entity_box,
+                                   dialog.more_options_button) if chip.isVisible()]
         host = chips[0].parentWidget()
         chip_rects = [rect_in(chip, host) for chip in chips]
         found['chips'] = chip_rects
@@ -300,14 +302,15 @@ def run(output, *, window):
     with_dialog(FindReplaceDialog, replace, page._open_find_replace)
     result['find_replace'] = found
     check('↓ moves from 查找 to 替换, ↑ back', found.get('down') and found.get('up'), found)
-    check('live preview lists every occurrence', found.get('rows') == 6, found.get('rows'))
+    # One card per cue (2026-10-30): six matches in five cues.
+    check('live preview lists every occurrence, one card per cue', found.get('rows') == 5, found.get('rows'))
     check('the preview list takes over half the dialog', found.get('list_share', 0) >= 0.5, found.get('list_share'))
     check('option chips fit, wrap without overlapping', found.get('chips_fit') and not found.get('chips_overlap'),
           dict(chips=found.get('chips'), overlap=found.get('chips_overlap')))
     check('footer labels fit', all(found.get('labels_fit', {}).values()) and found.get('hint_fits'),
           dict(labels=found.get('labels_fit'), hint=found.get('hint_fits')))
     expected = [text.replace('尼奈', '她') for text in original]
-    expected[1] = '我觉得尼奈应该先撤，她血不多了'
+    expected[1] = original[1]  # its card (both matches in that cue) was unticked
     check('Enter applies the checked rows as one undo step',
           found.get('after_enter') == expected and found.get('undo_steps') == 1,
           dict(after=found.get('after_enter'), undo=found.get('undo_steps'), status=found.get('after_status')))

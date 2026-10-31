@@ -16,7 +16,7 @@ def content(text):return re.sub(r'[\s，。！？、,.!?；;：:]','',str(text))
 def usable_transcript(text):
     """Damaged decoding is unavailable evidence, never an independent vote."""
     value = str(text or '')
-    return bool(value) and not any(
+    return bool(value.strip()) and value.strip().casefold() not in {'<sil>','<blank>','<s>','</s>','<unk>','[sil]'} and not any(
         char == '\ufffd' or 0xd800 <= ord(char) <= 0xdfff
         or (ord(char) < 32 and char not in '\t\r\n') for char in value)
 

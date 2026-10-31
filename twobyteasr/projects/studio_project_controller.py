@@ -809,17 +809,24 @@ class StudioProjectController:
             if saved_cue_id in valid_cue_ids
                 else (view_cues[0].id if view_cues else "")
         )
+        # Restoring the inspector is not a fresh user selection. Review uses
+        # the playhead until a real table/timeline/canvas selection is made.
+        page.timeline.explicit_subtitle_id = ''
+        page._caption_canvas_edit_target = None
         mark_hydration("cue_selection")
         # 选中/可见窗/播放头恢复是第二大的单块主线程阶段（实测 ~450ms），同样切块。
         yield '恢复播放位置'
         from ..timeline.studio_edit_sequence import timeline_duration_ms
         duration = timeline_duration_ms(project)
         saved_zoom = studio_state.get("zoom")
+        saved_view = studio_state.get('timeline_view')
+        explicit_view = (isinstance(saved_view, dict) and saved_view.get('mode') in ('manual', 'fit', 'initial')
+                         and isinstance(saved_view.get('duration_ms'), int) and saved_view['duration_ms'] >= 1000)
         if saved_zoom is None:
             visible_duration = min(60_000, max(1000, duration))
         else:
             try:
-                zoom = max(1.0, float(saved_zoom))
+                zoom = max(.01, float(saved_zoom))
             except (TypeError, ValueError):
                 zoom = 1.0
             # Legacy zoom=1 must not turn a multi-hour project into a
@@ -829,11 +836,18 @@ class StudioProjectController:
                 max(1000, round(duration / zoom)),
                 max(1000, duration),
             )
-        maximum_scroll = max(0, duration - visible_duration)
+        if explicit_view:
+            visible_duration = saved_view['duration_ms']
+        maximum_scroll = max(0, duration + page.timeline._tail_padding_ms(visible_duration) - visible_duration)
         page.timeline.set_visible_window(
             min(maximum_scroll, max(0, int(studio_state.get("scroll_ms", 0) or 0))),
             visible_duration,
         )
+        if explicit_view:
+            if saved_view['mode'] == 'fit':
+                page.timeline.fit_all_time()
+            else:
+                page.timeline._view_mode = saved_view['mode']
         playhead_ms = min(
             duration, max(0, int(studio_state.get("playhead_ms", 0) or 0))
         )
@@ -1097,7 +1111,12 @@ class StudioProjectController:
         self, project_path: Path, official: SubtitleProject, *, single_shot_fn
     ) -> tuple[SubtitleProject, bool]:
         page = self.page
-        candidate = recoverable_autosave(project_path, official=official)
+        inspection = official.__dict__.pop('_recovery_inspection', None)
+        if inspection is not None and inspection.matches(project_path, official):
+            candidate = Path(inspection.candidate)
+        else:
+            inspection = None
+            candidate = recoverable_autosave(project_path, official=official)
         page._studio_trace(
             "RECOVERY",
             official_path=str(project_path),
@@ -1110,7 +1129,10 @@ class StudioProjectController:
         # "自动保存不比正式新"（重复进入实测省 438-710ms/次）。
         from .studio_project import autosave_fingerprint_sidecar, project_content_fingerprint
         sidecar = autosave_fingerprint_sidecar(candidate)
-        if sidecar and str(sidecar.get("content_fingerprint") or "") == project_content_fingerprint(official):
+        official_fingerprint = (inspection.official_fingerprint if inspection is not None
+                                else project_content_fingerprint(official))
+        if (inspection is not None and inspection.equivalent
+                or sidecar and str(sidecar.get("content_fingerprint") or "") == official_fingerprint):
             page._studio_trace(
                 "RECOVERY",
                 official_path=str(project_path),
@@ -1121,9 +1143,11 @@ class StudioProjectController:
             return official, False
         try:
             page._studio_trace('RECOVERY_CANDIDATE_READ_BEGIN', autosave_path=str(candidate))
-            recovered = load_project(candidate)
+            if inspection is not None and inspection.invalid:
+                raise ProjectValidationError('自动恢复副本未通过读取检查')
+            recovered = inspection.recovered if inspection is not None else load_project(candidate)
             page._studio_trace('RECOVERY_CANDIDATE_READ_END', cue_count=len(recovered.cues))
-            if project_content_fingerprint(recovered) == project_content_fingerprint(official):
+            if inspection is None and project_content_fingerprint(recovered) == official_fingerprint:
                 page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(project_path), decision="official_unchanged")
                 return official, False
         except (OSError, ProjectValidationError):
@@ -1197,16 +1221,29 @@ class StudioProjectController:
             capture_manual_save, manual_save_scope, observe_save_edits, persist_with_progress,
         )
         from ..diagnostics.editor_diagnostics import measure
+        phase='commit_editors'
+        caption_save_token = None
         try:
             with manual_save_scope(page):
+                style_controller=getattr(page,'style_controller',None)
+                if style_controller is not None and not style_controller.flush_pending_application():
+                    return
                 if getattr(page, "_canvas_editor", None) is not None:
-                    page._commit_canvas_inline_edit()
+                    if getattr(page, '_caption_following', False):
+                        caption_save_token = page._commit_caption_for_manual_save()
+                        if caption_save_token is False:
+                            return
+                    else:
+                        committed = page._commit_canvas_inline_edit()
+                        if committed is False or (committed is None and getattr(page, '_canvas_editor', None) is not None):
+                            return  # genuine validation failure, never window visibility
                 timeline = getattr(page, "timeline", None)
                 if timeline is not None and getattr(timeline, "_inline_editor", None) is not None:
                     timeline._commit_inline_edit()
+                    if getattr(timeline,'_inline_editor',None) is not None:return
                 translation_editor = getattr(page, "translation_text", None)
                 if callable(getattr(translation_editor, "commit", None)):
-                    translation_editor.commit()
+                    if translation_editor.commit() is False:return
                 page._capture_studio_state()
                 page._autosave_timer.stop()
                 generation = self.session.generation
@@ -1215,8 +1252,10 @@ class StudioProjectController:
                 revision_id = getattr(runtime, "revision", 0)
                 save_generation = getattr(page, "_autosave_generation", 0)
                 with measure("MANUAL_SAVE_SNAPSHOT"):
+                    phase='snapshot'
                     revision = capture_manual_save(page, project, revision_id)
                 with observe_save_edits(runtime) as new_edits, measure("MANUAL_SAVE"):
+                    phase='persist'
                     saved = persist_with_progress(
                         page, revision, target, save_project_fn=save_project_fn)
                 # The modal guard blocks user navigation. Also reject stale
@@ -1244,8 +1283,19 @@ class StudioProjectController:
                 page._autosave_deadline.mark_succeeded()
                 bind_text(page.save_state, '已保存')
                 page.save_state.setToolTip("")
+                if caption_save_token:
+                    page._finish_caption_manual_save(caption_save_token)
         except Exception as exc:
+            from ..diagnostics.event_log import emit, exception_info
+            import traceback
+            emit('project.save_failed',level='ERROR',result='failed',project_id=project.project_id,
+                 stage=phase,revision_after=getattr(getattr(project,'_studio_state_runtime',None),'revision',None),
+                 exception={**exception_info(exc),'traceback':traceback.format_exc()})
             page._schedule_autosave()
+            bind_text(page.save_state,'磁盘保存失败；当前修改仍在内存中，可重试保存')
+            page.save_state.setToolTip(str(exc))
+            if caption_save_token:
+                page._finish_caption_manual_save(caption_save_token, error=exc)
             message_box_fn(page, QMessageBox.Icon.Critical, "保存失败", str(exc))
         finally:
             finished = getattr(page, 'manual_save_finished', None)

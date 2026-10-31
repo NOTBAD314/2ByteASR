@@ -20,13 +20,11 @@ def completion_page():
     page = shell._result_page()
     shell.result_task_selector.hide()
     shell.result_icon.hide()
-    shell.result_review_status.hide()
     shell.result_summary.setText('识别成功 · 43 条字幕 · 存在待审核项')
-    shell.open_priority_review_button.show()
     return shell, page
 
 
-def test_top_alignment_shared_three_columns_and_fold_growth():
+def test_top_alignment_todo_section_and_fold_growth():
     shell, page = completion_page()
     page.resize(1240, 940)
     page.show()
@@ -35,38 +33,81 @@ def test_top_alignment_shared_three_columns_and_fold_growth():
     viewport = page.viewport()
     assert shell.result_summary_card.mapTo(viewport, QPoint()).y() == 28
     assert shell.result_action_grid.columns == 3
-    assert shell.result_secondary_layout is shell.result_action_grid.grid
     cards = shell.result_action_grid.cards
-    buttons = shell.result_action_grid.secondary_actions
-    for card, button in zip(cards, buttons):
-        assert abs(card.x()-button.x()) <= 1
-        assert abs(card.width()-button.width()) <= 1
     assert max(card.width() for card in cards)-min(card.width() for card in cards) <= 1
-    assert buttons[0].y()-cards[0].geometry().bottom()-1 == 16
-    assert len({button.height() for button in buttons}) == 1
-    # The normal translation pass protects text with nonzero minimum widths.
-    # Their actual common-grid rectangles must still adapt when resized.
-    assert any(button.minimumWidth() > 0 for button in buttons)
-    assert all(button.minimumWidth() <= button.width() <= button.maximumWidth() for button in buttons)
-    original_widths = [button.width() for button in buttons]
-    page.resize(1160, 940)
-    APP.processEvents()
-    assert shell.result_action_grid.columns == 3
-    assert all(button.width() < before for button, before in zip(buttons, original_widths))
-    assert all(abs(card.width()-button.width()) <= 1 for card, button in zip(cards, buttons))
-    page.resize(1240, 940)
-    APP.processEvents()
-    assert [button.width() for button in buttons] == original_widths
-    assert not shell.result_files_toggle.isChecked() and not shell.result_log_toggle.isChecked()
-    assert shell.result_files_panel.mode == 'collapsed' and shell.result_log_panel.mode == 'collapsed'
-    before = shell.result_action_grid.mapTo(viewport, QPoint()).y()
+    # 2026-10-30 (design B): the 52px operation bar sits between the summary and the
+    # main actions; 「开始优先审核」 is gone and no supporting row remains.
+    assert not hasattr(shell, 'open_priority_review_button')
+    assert shell.result_action_grid.secondary_actions == ()
+    todo = shell.result_todo
+    summary_bottom = shell.result_summary_card.mapTo(viewport, QPoint()).y() + shell.result_summary_card.height()
+    assert summary_bottom < todo.mapTo(viewport, QPoint()).y() < cards[0].mapTo(viewport, QPoint()).y()
+    assert shell.repolish_current_glossary_button is todo.ai_card.action
+    assert todo.ai_card.isVisible() and todo.ai_card.badge.isVisible()
+    assert not todo.review_card.isVisible() and not todo.retry_card.isVisible()
+    assert todo.height() >= todo.ai_card.height() + 6
+    assert shell.result_more_button.parentWidget() is todo
+    # Both summaries start open and have the same natural height.
+    files, log = shell.result_files_panel, shell.result_log_panel
+    assert shell.result_folds.columns == 2 and abs(files.y()-log.y()) <= 1 and files.x() < log.x()
+    assert files.mapTo(viewport, QPoint()).y() > cards[0].mapTo(viewport, QPoint()).y()
+    assert shell.result_files_toggle.isChecked() and shell.result_log_toggle.isChecked()
+    assert files.mode == 'summary' and log.mode == 'summary'
+    assert files.height() == log.height()
+    before = shell.result_folds.height()
     QTest.mouseClick(shell.result_files_toggle, Qt.MouseButton.LeftButton)
     APP.processEvents()
-    assert shell.result_action_grid.mapTo(viewport, QPoint()).y() > before
+    assert files.mode == 'collapsed' and log.mode == 'summary'
+    assert shell.result_folds.height() == before
     title, arrow = shell.result_more_button.content_rects()
     assert arrow.center().y() == shell.result_more_button.height()/2
     assert title.width() > 0
     page.close(); page.deleteLater(); shell.deleteLater(); APP.processEvents()
+
+
+def test_preview_fills_viewport_and_absorbs_resize_fold_and_task_changes():
+    shell, page = completion_page()
+    preview = shell.result_preview
+    rows = [('00:01.0', 'S00', '#c9a227', f'字幕 {index}') for index in range(60)]
+    preview.set_rows(rows, len(rows))
+    shell.result_files_panel.set_summary_lines(['素材', '字幕', '场景', '词库'])
+    shell.result_log_panel.set_summary_lines(['完成', '检查', '记录', '提示', '待检查'])
+    page.resize(1460, 940); page.show()
+
+    def settle():
+        for _ in range(8):
+            APP.processEvents()
+
+    def assert_bottom():
+        viewport = page.viewport()
+        bottom = preview.mapTo(viewport, QPoint()).y() + preview.height()
+        assert abs(viewport.height() - bottom - 28) <= 1
+        assert preview.list.height() >= 6 * 36
+        assert page.verticalScrollBar().maximum() == 0
+
+    settle(); assert_bottom()
+    first_height = preview.list.height()
+    page.resize(1460, 1300); settle(); assert_bottom()
+    assert abs(preview.list.height() - first_height - 360) <= 1
+    before = preview.list.height()
+    for panel in (shell.result_files_panel, shell.result_log_panel):
+        panel.set_mode('collapsed')
+    settle(); assert_bottom()
+    assert preview.list.height() > before
+    preview.set_rows(rows[:5], 5); settle(); assert_bottom()
+    assert preview.list.bar.isHidden() and preview.note.text() == '共 5 条'
+    # No accumulated height or pending adapt loop on an unchanged page.
+    stable = (shell.result_content.height(), preview.height())
+    for _ in range(30):
+        APP.processEvents()
+    assert stable == (shell.result_content.height(), preview.height())
+    assert not shell.result_content._adapt_pending
+    page.resize(1460, 400); settle()
+    assert preview.list.height() == 6 * 36
+    assert page.verticalScrollBar().maximum() > 0
+    page.ensureWidgetVisible(preview.list); settle()
+    assert page.horizontalScrollBar().maximum() == 0
+    page.close(); page.deleteLater(); shell.deleteLater(); settle()
 
 
 @pytest.mark.parametrize('language', ['zh', 'en', 'ja'])
@@ -100,8 +141,6 @@ def test_readable_fonts_and_short_window_keeps_card_sizes(language, monkeypatch)
         assert abs((icon.left()+group_right)/2-card.rect().center().x()) <= 2
         assert abs(icon.center().y()-card.rect().center().y()) <= 1
         assert abs((title.top()+description.bottom())/2-card.rect().center().y()) <= 1
-    assert all(40 <= button.height() <= 48 and 13 <= button.font().pixelSize() <= 16
-        for button in shell.result_action_grid.secondary_actions)
     assert all(44 <= header.height() <= 52 for header in (shell.result_files_toggle, shell.result_log_toggle))
     page.resize(1440, 400)
     APP.processEvents()
@@ -127,8 +166,8 @@ def test_common_desktop_width_uses_85_to_90_percent_of_viewport(width):
 def test_intermediate_width_wraps_before_translated_supporting_labels_overflow(language):
     shell, page = completion_page()
     page.resize(1100, 620); page.show(); apply_ui_language(page, language); APP.processEvents()
-    for button in shell.result_action_grid.secondary_actions:
-        assert button.fontMetrics().horizontalAdvance(button.text())+40 <= button.width()
+    for button in (shell.result_todo.ai_card.action, shell.result_more_button):
+        assert button.fontMetrics().horizontalAdvance(button.text())+24 <= button.width()
         assert button.width() <= shell.result_content.width()
     assert page.horizontalScrollBar().maximum() == 0
     assert .85 <= shell.result_content.width()/page.viewport().width() <= .90
@@ -158,26 +197,6 @@ def test_actual_navigation_gap_uses_parent_chain_and_leaves_other_pages_padding_
     shell.close(); shell.deleteLater(); APP.processEvents()
 
 
-def test_audit_accepts_polished_minimum_50_with_actual_height_52_and_measures_real_text():
-    from twobyteasr.acceptance.completion_real_audit import secondary_control_measurement
-    shell, page = completion_page()
-    page.resize(1320, 850); page.show(); apply_ui_language(page, 'zh'); APP.processEvents()
-    from twobyteasr.app.completion_widgets import COMPLETION_SECONDARY_HEIGHT as height
-    for button in shell.result_action_grid.secondary_actions:
-        button.setMinimumHeight(height - 2)
-        APP.processEvents()
-        # Reproduce a legal min(h-2)/actual h/max h receipt geometry.
-        # Offscreen QToolButton's preferred height differs by style.
-        button.resize(button.width(), height)
-        measured = secondary_control_measurement(button)
-        assert measured['fits'], measured
-        assert measured['height'] == height and measured['minimum_height'] == height - 2 and measured['maximum_height'] == height
-        assert measured['text_bounds']['height'] <= measured['available']['height']
-    shell.result_more_button.setFixedWidth(30)
-    assert not secondary_control_measurement(shell.result_more_button)['fits']
-    page.close(); page.deleteLater(); shell.deleteLater(); APP.processEvents()
-
-
 def test_narrow_page_stacks_all_operations_and_scrolls_without_horizontal_overflow():
     shell, page = completion_page()
     page.resize(580, 420)
@@ -186,10 +205,13 @@ def test_narrow_page_stacks_all_operations_and_scrolls_without_horizontal_overfl
     assert shell.result_action_grid.columns == 1
     assert page.verticalScrollBar().maximum() > 0
     assert page.horizontalScrollBar().maximum() == 0
-    controls = shell.result_action_grid.cards + shell.result_action_grid.secondary_actions
+    controls = shell.result_action_grid.cards
     assert all(earlier.geometry().bottom() < later.geometry().top() for earlier, later in zip(controls, controls[1:]))
     assert all(control.width() <= page.viewport().width() for control in controls)
     assert len({control.x() for control in controls}) == 1
+    assert shell.result_todo.columns == 1 and shell.result_folds.columns == 1
+    files, log = shell.result_files_panel, shell.result_log_panel
+    assert files.geometry().bottom() < log.geometry().top() and files.x() == log.x()
     page.close()
     page.deleteLater()
     shell.deleteLater()

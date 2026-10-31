@@ -123,7 +123,11 @@ def test_bad_edit_span_falls_back_only_for_that_cue(context, monkeypatch, edits)
     monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(structured_complete=lambda *a, **k: value))
     result = polishing.call_correction_api([segment(), second], [], '', '', 'fixture', '', [], [], [])
-    assert result.succeeded == {1} and result.failures == {2: 'semantic_validation'}
+    if edits[0]['from']=='secnod':
+        assert result.succeeded=={1,2} and not result.failures
+        assert result.details[2]['rejected_edits'][0]['rule_id']=='source_quote_not_found'
+    else:
+        assert result.succeeded == {1} and result.failures == {2: 'semantic_validation'}
     assert result[2] == 'A second line'
 
 
@@ -141,8 +145,11 @@ def test_partial_result_is_not_cached_as_success(context):
                                       encoder=polishing._encode_polish_batch,
                                       decoder=polishing._decode_polish_batch)
         assert result.failures == {2: 'semantic_validation'}
-    assert len(calls) == 2
-    assert not list(Path(cache['cache_dir']).glob('api_batches/polished/*.json'))
+    assert len(calls) == 1
+    cached = list(Path(cache['cache_dir']).glob('api_batches/polished/*.json'))
+    assert len(cached)==1
+    payload=json.loads(cached[0].read_text('utf8'))
+    assert payload['result_state']=='partial' and payload['succeeded_ids']==[1] and payload['retained_ids']==[2]
 
 
 def test_unknown_id_prevents_partial_salvage(context, monkeypatch):

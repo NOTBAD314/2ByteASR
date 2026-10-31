@@ -1,10 +1,12 @@
 ﻿"""output stage implementation extracted from subtitle_core."""
 
 import json
+import hashlib
 import os
 import re
 import shutil
 import uuid
+from pathlib import Path
 from difflib import SequenceMatcher
 from statistics import median
 
@@ -453,10 +455,12 @@ def write_all_outputs_transactional(
     speaker_outputs = []
     single_lane_cues = build_single_lane_cues(cues)
     payloads = {}
+    srt_scopes = {}
     if include_txt:
         payloads[os.path.abspath(txt_path)] = (render_txt(cues), "utf-8")
     if include_srt:
         payloads[os.path.abspath(srt_path)] = (render_srt(single_lane_cues), "utf-8-sig")
+        srt_scopes[os.path.abspath(srt_path)] = single_lane_cues
     for index, speaker in enumerate(speaker_order, 1) if include_srt and include_speaker_tracks else ():
         speaker_cues = [cue for cue in cues if (cue.speaker or "S00") == speaker]
         if not speaker_cues:
@@ -464,6 +468,7 @@ def write_all_outputs_transactional(
         safe_speaker = _safe_filename_part(display_names[speaker])
         path = os.path.abspath(f"{base}_主播{index}_{safe_speaker}{extension}")
         payloads[path] = (render_srt(speaker_cues), "utf-8-sig")
+        srt_scopes[path] = speaker_cues
         speaker_outputs.append((speaker, path, len(speaker_cues)))
 
     legacy_review_path = os.path.abspath(f"{base}_疑似吞字幕复核{extension}")
@@ -491,6 +496,32 @@ def write_all_outputs_transactional(
                 backup = f"{path}.{transaction_id}.bak"
                 shutil.copy2(path, backup)
                 backup_paths[path] = backup
+
+        # Recognition's combined/plain SRT cannot carry per-row speaker IDs.
+        # Stage its companion in the same rollback transaction, bound to the
+        # bytes actually written (including the BOM and platform newlines).
+        from ..exports.srt_codec import SIDECAR_FORMAT, sidecar_path
+        language = get_runtime_context().task_language or ""
+        for path, exported_cues in srt_scopes.items():
+            rows = [dict(number=index, start_ms=int(round(cue.start * 1000)),
+                         end_ms=int(round(cue.end * 1000)),
+                         speaker=display_names.get(cue.speaker or "S00", cue.speaker or "S00"),
+                         language=language, track_id=cue.speaker or "S00", cue_id=str(cue.cue_id), role="original")
+                    for index, cue in enumerate(exported_cues, 1)]
+            metadata = dict(format=SIDECAR_FORMAT, version=1, export_id=transaction_id,
+                sha256=hashlib.sha256(Path(temporary_paths[path]).read_bytes()).hexdigest(), rows=rows)
+            companion = str(sidecar_path(Path(path)))
+            temporary = f"{companion}.{transaction_id}.tmp"
+            temporary_paths[companion] = temporary
+            with open(temporary, "w", encoding="utf-8", newline="\n") as file:
+                json.dump(metadata, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            if os.path.isfile(companion):
+                backup = f"{companion}.{transaction_id}.bak"
+                shutil.copy2(companion, backup)
+                backup_paths[companion] = backup
 
         for path, temporary in temporary_paths.items():
             os.replace(temporary, path)

@@ -8494,5 +8494,14 @@
   "需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；选自己的 OSS 时另需同一国际账号下的 OSS。Qwen Cloud 的 Key 与千问AI平台（中国站）、阿里云百炼的 Key 都不能互换；Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。": "Precisa de uma conta Qwen Cloud (home.qwencloud.com, entrar com uma conta internacional da Alibaba Cloud); para usar seu próprio OSS, também é preciso OSS na mesma conta internacional. As chaves do Qwen Cloud não são intercambiáveis com as do Qianwen AI Platform (site da China) nem com as do Alibaba Cloud Model Studio; o login do chat qwen.ai também não chama a API de reconhecimento.",
   "需要千问AI平台账号（platform.qianwenai.com，用阿里云账号或手机号登录）；选自己的 OSS 时另需阿里云 OSS。千问AI平台的 Key 与 Qwen Cloud（国际站）、阿里云百炼的 Key 都不能互换；千问 App 的聊天登录也不能用来调用识别接口。": "Precisa de uma conta Qianwen AI Platform (platform.qianwenai.com, entrar com uma conta Alibaba Cloud ou um número de telefone); para usar seu próprio OSS, também é preciso Alibaba Cloud OSS. As chaves do Qianwen AI Platform não são intercambiáveis com as do Qwen Cloud (site internacional) nem com as do Alibaba Cloud Model Studio; o login do chat do app Qwen também não chama a API de reconhecimento.",
   "音频会先上传到服务商临时空间（48 小时后由服务商自动删除），再提交识别。": "Primeiro, o áudio é enviado ao armazenamento temporário do provedor (o provedor o exclui automaticamente após 48 horas) e depois submetido ao reconhecimento.",
-  "下载源也决定运行环境（Python、PyTorch 和依赖包）从哪里下载：选 ModelScope 或 HF 镜像时国内镜像在前，选 Hugging Face 官方时官方在前，选自动时先测各来源的速度再排顺序。下载中变慢或停住会换来源接着下。所有文件都按锁定的 SHA-256 校验。": "A fonte de download também define de onde vem o ambiente de execução (Python, PyTorch e pacotes): com ModelScope ou espelho HF, os espelhos da China continental vêm primeiro; com Hugging Face oficial, as fontes oficiais; e no Automático cada fonte é medida antes e ordenada pela velocidade. Um download que fica lento ou trava continua de outra fonte. Cada arquivo é verificado pelo SHA-256 fixado."
+  "下载源也决定运行环境（Python、PyTorch 和依赖包）从哪里下载：选 ModelScope 或 HF 镜像时国内镜像在前，选 Hugging Face 官方时官方在前，选自动时先测各来源的速度再排顺序。下载中变慢或停住会换来源接着下。所有文件都按锁定的 SHA-256 校验。": "A fonte de download também define de onde vem o ambiente de execução (Python, PyTorch e pacotes): com ModelScope ou espelho HF, os espelhos da China continental vêm primeiro; com Hugging Face oficial, as fontes oficiais; e no Automático cada fonte é medida antes e ordenada pela velocidade. Um download que fica lento ou trava continua de outra fonte. Cada arquivo é verificado pelo SHA-256 fixado.",
+  "未指定语言": "Idioma não especificado",
+  "导入字幕并替换此轨道…": "Importar legendas e substituir esta faixa…",
+  "字幕轨道的说话人和语言…": "Falante e idioma da faixa de legendas…",
+  "已导入 {count} 条字幕": "{count} legendas importadas",
+  "输入要查找的文字，匹配会在这里列出\n也可以在字幕里选字后右键「批量替换相同文字…」": "Digite o texto a procurar; as correspondências aparecem aqui\nOu selecione um texto na legenda e clique com o botão direito em “Substituir o mesmo texto em lote…”",
+  "+ 更多选项": "+ Mais opções",
+  "替换 {value0} 处": "Substituir {value0}",
+  "{value0} 处": "{value0} ocorrências",
+  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zoom da linha do tempo: à esquerda mostra mais, à direita amplia (ou Ctrl+roda)"
 }

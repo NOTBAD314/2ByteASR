@@ -86,6 +86,8 @@ def model_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[str
         text = str(text or "").strip()
         if not text or text == current:
             continue
+        if unicodedata.normalize('NFC',text)==unicodedata.normalize('NFC',current):
+            continue
         matcher = SequenceMatcher(None, current, text, autojunk=False)
         if matcher.ratio() < MIN_CANDIDATE_RATIO:
             continue

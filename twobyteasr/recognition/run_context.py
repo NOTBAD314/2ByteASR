@@ -69,6 +69,8 @@ class RuntimeContext:
     requested_language: str = "auto"
     task_language: str = ""
     language_evidence: dict[str, Any] = field(default_factory=dict)
+    transcript_acceptance: dict[str, Any] = field(default_factory=dict)
+    language_recovery_result: Any | None = field(default=None, repr=False)
     # Requested subtitle output (original/translation/bilingual) and translation
     # target (zh-Hans / zh-Hant / en / ja / ko; the name predates non-Chinese targets).
     subtitle_output: str = "original"
@@ -92,6 +94,8 @@ class RuntimeContext:
         self.committed_result_ref.clear()
         self.task_language = ""
         self.language_evidence = {}
+        self.transcript_acceptance = {}
+        self.language_recovery_result = None
         self.japanese_phrases = None
         self.segment_alignment_evidence = None
 

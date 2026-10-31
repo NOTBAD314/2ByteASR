@@ -25,6 +25,23 @@ def call(rows,cache=None):
                                         _cache_context=cache,batch_index=1,batch_total=1)
 
 
+def test_spaced_truncation_has_bounded_fanout_and_preserves_every_input(context,monkeypatch):
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    rows=[cue(i,'Kimi Antonelli e Leclerc mantengono la posizione.') for i in range(1,9)]
+    requests=[]
+    def complete(messages,**kwargs):
+        ids=[r['id'] for r in json.loads(messages[1]['content'])['cues']]
+        requests.append(ids)
+        raise AIProviderError('isolated output cutoff',category='structured_output_truncated')
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    with language_scope('it'):
+        result=call(rows)
+    assert len(requests)==3
+    assert requests[0]==list(range(1,9)) and requests[1]==list(range(1,5)) and requests[2]==list(range(5,9))
+    assert set(result)==set(range(1,9)) and all(result[row.segment_id]==row.text for row in rows)
+    assert not result.succeeded and len(result.failures)==8
+
+
 def singleton_budget(monkeypatch,rows):
     messages=polishing.call_correction_api([rows[0]],[],'只读前文','只读后文','合成夹具','原神',[],[],[],_messages_only=True)
     _,report=prepare_input(messages,max_tokens=4096,operation='polish')
@@ -55,7 +72,11 @@ def test_complete_request_splits_and_reuses_only_successful_children(context,mon
     owner.review_items.clear()
     failing.clear()
     second=call(rows,cache)
-    assert second.succeeded=={101,102,103} and not second.failures
+    assert second.succeeded=={101,103} and second.failures=={102:'permission_denied'}
+    assert calls==[[101],[102],[103]]
+    owner.force_refresh_polish_cache=True
+    retried=call([rows[1]],cache)
+    assert retried.succeeded=={102} and not retried.failures
     assert calls==[[101],[102],[103],[102]]
     assert set(second)=={101,102,103}
     assert [(x.segment_id,x.text,x.speaker,x.start,x.end) for x in rows]==[

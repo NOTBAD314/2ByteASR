@@ -15,6 +15,16 @@ def widget(*, maximum=False, fullscreen=False, minimized=False):
     return SimpleNamespace(isMaximized=lambda:maximum,isFullScreen=lambda:fullscreen,isMinimized=lambda:minimized)
 
 
+@pytest.mark.parametrize('message,expected', [(0x0085,0),(0x0086,1)])
+def test_client_owned_frame_handles_native_activation_paint_without_geometry_changes(monkeypatch,message,expected):
+    from twobyteasr.app import window_native_frame as frame
+    w=widget();w._native_frame_active=True
+    monkeypatch.setattr(bounds,'existing_native_handle',lambda *a,**k:123)
+    assert frame.handle_message(w,message,0,0,hwnd=123)==expected
+    w.isMinimized=lambda:True
+    assert frame.handle_message(w,message,0,0,hwnd=123) is None
+
+
 def test_normal_resize_keeps_requested_client_extent_without_qt_native_reexpansion():
     pos=WINDOWPOS(1,0,50,40,1680,1138,0)
     assert bounds.native_windowpos(widget(),ctypes.addressof(pos))

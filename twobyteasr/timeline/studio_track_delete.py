@@ -288,6 +288,12 @@ def track_menu(page, kind, track_id, pos):
         action.setCheckable(True);action.setChecked(enabled)
         action.triggered.connect(lambda checked:page.undo_stack.push(set_caption_ripple_command(page.project,track_id,checked)))
         role_menu(page, menu, track_id)
+        replace = menu.addAction(tr('导入字幕并替换此轨道…'),
+            lambda: page._open_subtitle_import_dialog(replace_track_id=track_id))
+        replace.setEnabled(track_id not in page.timeline.locked_speakers)
+        from ..studio.subtitle_track_metadata import edit_track_metadata
+        metadata = menu.addAction(tr('字幕轨道的说话人和语言…'), lambda: edit_track_metadata(page, track_id))
+        metadata.setEnabled(track_id not in page.timeline.locked_speakers)
         menu.addSeparator()
     if kind == 'audio':
         from ..i18n import tr

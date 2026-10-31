@@ -10,7 +10,7 @@ import random
 
 from twobyteasr.timeline.studio_caption_timeline import KEY
 from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.projects.studio_revisions import StudioRevisionStore, freeze_json
+from twobyteasr.projects.studio_revisions import StudioRevisionStore, freeze_json, thaw_json
 
 
 def _project(count=300):
@@ -83,3 +83,19 @@ def test_original_archive_shared_but_in_place_changes_are_detected():
     project.studio_state[KEY]['source_archive'][0]['text'] = '原档案被显式修正'
     assert archive() is not original
     assert store._frozen_studio_state() == freeze_json(project.studio_state)
+
+
+def test_word_override_blobs_share_unchanged_rows_and_detect_in_place_edits():
+    project = _project(3)
+    project.studio_state.pop(KEY)
+    project.studio_state['term_word_overrides'] = {
+        'c0': {'text': 'old', 'words': [{'text': 'old', 'start_ms': 0, 'end_ms': 10}]},
+        'c1': {'text': 'kept', 'words': []}}
+    store = StudioRevisionStore(project)
+    before = dict(dict(store._frozen_studio_state().items)['term_word_overrides'].items)
+    project.studio_state['term_word_overrides']['c0']['words'][0]['text'] = 'new'
+    after_state = store._frozen_studio_state()
+    after = dict(dict(after_state.items)['term_word_overrides'].items)
+    assert after['c1'] is before['c1'] and after['c0'] is not before['c0']
+    assert thaw_json(after_state) == thaw_json(freeze_json(project.studio_state))
+    assert thaw_json(before['c0'])['words'][0]['text'] == 'old'

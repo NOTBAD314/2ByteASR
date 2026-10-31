@@ -340,6 +340,8 @@ def build_visual_cue_snapshot(
             or (project.studio_state.get('caption_group_transform') and not cue.transform.get('_group_materialized'))):
         from .caption_layer_transform import displayed_layer
         cue = displayed_layer(project, cue, 'original') or cue
+    from .bilingual_layout import motion_layout_cue
+    cue=motion_layout_cue(cue,project.effects.get(cue.effect_id))
     # Web-theme previews and renders show the project's punctuation choice.
     from ..subtitle_rules.punctuation_style import style_cues
     cue = style_cues(project, [cue])[0]

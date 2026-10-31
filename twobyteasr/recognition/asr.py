@@ -1,6 +1,7 @@
 """asr stage implementation extracted from subtitle_core."""
 
 import base64
+import copy
 import atexit
 import ast
 import hashlib
@@ -1549,8 +1550,18 @@ def _api_transcription_rows(result, chunk):
                  float(segment.get("confidence", 0.78))]
             )
             continue
+        from .transcript_fidelity import transcript_spans
+        source_text = str(segment.get('text') or '')
+        spans = transcript_spans(source_text, [_word_text(w) for w in seg_words])
+        # The provider sentence is authoritative. A partial/mismatched word
+        # response must not silently replace it with a different transcript.
+        if spans is None:
+            groups.append([seg_start, seg_end, seg_speaker, [], source_text,
+                           float(segment.get('confidence', 0.78))])
+            continue
         current = None
-        for word in seg_words:
+        source_groups = []
+        for word, span in zip(seg_words, spans):
             speaker = _normalize_speaker_id(word.get("speaker")) or seg_speaker
             if current is None or speaker != current[2]:
                 current = [
@@ -1558,9 +1569,19 @@ def _api_transcription_rows(result, chunk):
                     "", float(segment.get("confidence", 0.78)),
                 ]
                 groups.append(current)
+                source_groups.append((current, []))
             else:
                 current[1] = max(current[1], float(word["end"]))
                 current[3].append(word)
+            if span is not None:
+                source_groups[-1][1].append(span)
+        for group_index, (group, positions) in enumerate(source_groups):
+            if not positions:
+                continue
+            a = positions[0][0] if group_index else 0
+            following = [s for _, values in source_groups[group_index + 1:] for s in values]
+            b = following[0][0] if following else len(source_text)
+            group[4] = source_text[a:b].strip()
     if not groups:
         current = None
         for word in words:
@@ -1582,6 +1603,7 @@ def _api_transcription_rows(result, chunk):
 
     rows = []
     floor = base
+    from .transcript_fidelity import clean_transcript
     for rel_start, rel_end, speaker, group_words, fallback_text, confidence in groups:
         # 整组落在块外（如提供方越界 segment）：丢弃，不得造 0.02s 垃圾行
         if base + float(rel_start) >= limit - 0.02:
@@ -1590,7 +1612,11 @@ def _api_transcription_rows(result, chunk):
         if end <= start:
             continue
         if group_words:
-            text = clean_subtitle_text(_join_word_texts(_word_text(w) for w in group_words))
+            # Bare words (e.g. MAI) need spaces; native subword tokens (Qwen)
+            # do not. Prefer the exact original sentence/speaker slice.
+            text = clean_transcript(str(fallback_text)) if fallback_text else clean_transcript(
+                (''.join if result.get('timestamp_source') in {'qwen31_native', 'qwen3_filetrans_native'}
+                 else _join_word_texts)(_word_text(w) for w in group_words))
             tokens = []
             for word in group_words:
                 token_start, token_end = _clamped(
@@ -1604,8 +1630,11 @@ def _api_transcription_rows(result, chunk):
                         "confidence": float(word.get("confidence", confidence)),
                     }
                 )
+            if fallback_text:
+                from .transcript_fidelity import word_tokens
+                tokens = word_tokens(text, tokens)
         else:
-            text = clean_subtitle_text(str(fallback_text or ""))
+            text = clean_transcript(str(fallback_text or ""))
             tokens = []
         if not content_only(text):
             continue
@@ -2852,6 +2881,13 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                 event_handler(json.loads(line[len('[2BYTEASR_API] '):]))
                 continue
             captured[kind].append(line)
+            if line.startswith('[2BYTEASR_QWEN3_ASR] '):
+                event = json.loads(line[len('[2BYTEASR_QWEN3_ASR] '):])
+                record_run_event('asr_worker_progress', backend='qwen_local', worker_pid=process.pid,
+                                 worker_state=event.get('event'),
+                                 **{k: v for k, v in event.items() if k != 'event'})
+                if event_handler is not None:
+                    event_handler(event)
             if line.startswith('[2BYTEASR_SPEAKER] '):
                 event=json.loads(line[len('[2BYTEASR_SPEAKER] '):])
                 record_run_event('speaker_progress',worker_pid=process.pid,**event)
@@ -3470,6 +3506,55 @@ def transcribe_primary_reference(
         return transcribe_reference(shared_audio, speech_regions, backend=backend,
                                     language=qwen_language_name(active_task_language()))
     mapped = "local" if backend == "qwen_local" else backend
+    task = get_runtime_context()
+    recovery_policy = (task.recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if backend == 'qwen_local' and recovery_policy.get('explicit_local_range'):
+        import numpy as np
+        from .cache import record_run_event
+        from ..subtitle_rules.language_rules import qwen_language_name
+        from .local_language_recovery import recognize_range
+        from .transcript_acceptance import digest, recovered_rows
+        candidate = task.language_recovery_result
+        if candidate is None and recovery_policy.get('accepted_result_path'):
+            candidate = json.loads(Path(recovery_policy['accepted_result_path']).read_text('utf8'))
+        if candidate is not None:
+            expected = hashlib.sha256(np.asarray(shared_audio, dtype='<f4').tobytes()).hexdigest()
+            if candidate['identity']['pcm_sha256'] != expected:
+                raise RuntimeError('已恢复结果与当前范围音频不同，请重新识别该范围')
+            if (candidate['policy'].get('language') != qwen_language_name(task.requested_language)
+                    or any((r.get('generation') or {}).get('token_limit_reached') for r in candidate['rows'])):
+                raise RuntimeError('已有替代结果的语言或生成回执不匹配')
+            record_run_event('local_language_recovery_reuse', attempt_id=candidate['attempt_id'],
+                             model=candidate['model'], source='verified_local_asr_artifact')
+        else:
+            duration = len(shared_audio)
+            probes = []
+            for fraction in (.05, .5, .9):
+                left = max(0, min(duration-8*16000, round(duration*fraction)))
+                right = min(duration, left+12*16000)
+                if right-left >= 6*16000:
+                    probes.append((left,right))
+            candidate = recognize_range(shared_audio,0,duration,language=task.requested_language,
+                cache_root=Path(media_cache_context(audio_path)['cache_dir'])/'local-language',
+                token=task.cancellation_token, acoustic_samples=probes, source_identity=task.media_identity,
+                progress=lambda event: record_run_event('language_recovery_progress',
+                    **{'worker_state' if k=='event' else k:v for k,v in event.items()}),
+                retry=bool(recovery_policy.get('explicit_retry')))
+        from .transcript_acceptance import register_candidate
+        state = {'version':1,'identity':{'requested_language':task.requested_language},'ranges':[
+            {'id':recovery_policy.get('conflict_id') or candidate['attempt_id'], 'start_sample':0,
+             'end_sample':len(shared_audio),'start':0.,'end':len(shared_audio)/16000,'status':'pending','attempts':[]}]}
+        # The captured captions are audio-time speaker clues; no ordinal/text mapping.
+        offset = (task.recognition_snapshot.get('range_ms') or [0])[0]/1000
+        intervals = [dict(start=c['start_ms']/1000-offset, end=c['end_ms']/1000-offset, speaker=c['speaker_id'])
+                     for c in (task.recognition_snapshot.get('project') or {}).get('cues',[])]
+        state = register_candidate(state,state['ranges'][0]['id'],candidate,speaker_intervals=intervals)
+        if state['ranges'][0]['status'] != 'accepted':
+            raise RuntimeError('自动声学样本没有确认所选语言；未替换原字幕，请检查音轨或选择实际语言')
+        task.transcript_acceptance = state
+        selected = copy.deepcopy(state['ranges'][0]['accepted_rows'])
+        selected[0]['transcript_acceptance_receipt'] = copy.deepcopy(state)
+        return selected
     if mapped in {"api", "local", "whisper_turbo", "sensevoice", "funasr_nano"}:
         rows = transcribe_qwen_reference(
             audio_path,

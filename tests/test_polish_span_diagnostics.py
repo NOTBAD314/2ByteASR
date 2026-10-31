@@ -35,10 +35,19 @@ def test_overlapping_occurrences_are_not_mistaken_for_one_unique_quote():
 
 
 def test_missing_quote_and_overlapping_ranges_remain_rejected():
-    _, missing = validated("这里没有那个词", [edit("古龙", "骨龙", 0, 2)])
-    assert missing.details[1]["reason"] == "source_quote_not_found"
+    value, missing = validated("这里没有那个词", [edit("古龙", "骨龙", 0, 2)])
+    assert not missing
+    assert value['cues'][0]['edits'] == []
+    assert missing.protected[1][0]['rule_id'] == 'source_quote_not_found'
     _, overlap = validated("古龙来了", [edit("古龙", "骨龙", 0, 2), edit("龙", "笼", 1, 2)])
     assert overlap.details[1]["reason"] == "overlapping_edits"
+
+
+def test_missing_quote_does_not_discard_an_independent_valid_edit():
+    value, errors = validated('古龙来了', [edit('不存在', '错误建议', 10, 12), edit('古龙', '骨龙', 0, 2)])
+    assert not errors
+    assert value['cues'][0]['edits'] == [edit('古龙', '骨龙', 0, 2)]
+    assert len(errors.protected[1]) == 1
 
 
 def test_invalid_cue_schema_records_the_field_and_retains_valid_neighbor():

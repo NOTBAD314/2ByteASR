@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLayout, QSizePolicy, QWidget
 # folds only the roles its builder names, i.e. those reachable elsewhere
 # (the Studio timeline repeats them in 时间轴选项).
 FOLD_ORDER = ("display", "view")
+PILL_GROUPS = ("editing", "view", "display", "output")
 
 
 class CommandBar(QWidget):
@@ -340,6 +341,12 @@ def install_command_groups(page, parent_layout, old_layout, transport_start, vie
             # the controls no longer touch the pill's edge (2026-10-14).
             inner.setContentsMargins(12, 6, 12, 6)
             flow.center_index = index
+        elif names[index] in PILL_GROUPS:
+            # 2026-10-30 (user, draft B): the other groups are pills like the transport.
+            group.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            inner.setContentsMargins(4, 3, 4, 3)
+            if names[index] != "display" or icon_only:
+                inner.setSpacing(2)
         widgets = []
         for item in items:
             widget = item.widget()

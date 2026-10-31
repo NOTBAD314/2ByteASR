@@ -943,6 +943,7 @@ class CaptionReviewList(QWidget):
     edit_requested = Signal(str)
     edit_committed = Signal(str, str)
     issue_toggled = Signal(str, int)
+    adopt_requested = Signal()
     remember_requested = Signal(str)
     revert_requested = Signal(str)
     context_requested = Signal(str, object, object)  # cue_id, target, global QPoint
@@ -1259,6 +1260,8 @@ class CaptionReviewList(QWidget):
             lines += 1  # 已写回 · 还原这句
         if any(issue["stale"] for issue in row["issues"]):
             lines += 1
+        if row.get('review_retained') and not row.get('review_dismissed'):
+            lines += 1
         return lines
 
     def _row_height(self, row):
@@ -1271,7 +1274,10 @@ class CaptionReviewList(QWidget):
         return self.PAD + max(text, meta) + self.PAD
 
     def _remember_action(self, row):
-        pair = single_replacement(row.get("origin", row["base"]), row["base"])
+        # Word segmentation can initialize a large dictionary. Layout/paint
+        # must only read the result prepared by the local-check worker.
+        identity = (row.get("origin", row["base"]), row["base"])
+        pair = row.get('_remember_pair') if row.get('_remember_input') == identity else None
         if pair is None or row.get("remembered") == pair:
             return None
         return pair
@@ -1530,6 +1536,7 @@ class CaptionReviewList(QWidget):
             self._hover = slot
             self.update()
         target = self._target_at(event.position())
+        self._hover_target = target
         self.setCursor(Qt.CursorShape.IBeamCursor if target and target[0] in {"text"}
                        else Qt.CursorShape.PointingHandCursor if target else Qt.CursorShape.ArrowCursor)
         tip = ""
@@ -1571,6 +1578,7 @@ class CaptionReviewList(QWidget):
             self.setToolTip(tip)
 
     def leaveEvent(self, event):
+        self._hover_target = None
         self._hover = -1
         self.update()
 
@@ -1700,6 +1708,10 @@ class CaptionReviewList(QWidget):
         event.accept()
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_R and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+            self.adopt_requested.emit()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.rows_select_all.emit()
             return
@@ -1821,6 +1833,10 @@ class CaptionReviewList(QWidget):
                              int(Qt.AlignmentFlag.AlignVCenter), tr("选择本行"))
             self._hit_boxes.append((QRectF(x, meta_y, self.META_W, self.META_LINE), "rowcheck", row["cue_id"], -1))
             meta_y += self.META_LINE
+            if row.get('review_retained') and not row.get('review_dismissed'):
+                self._text_button(painter, x, QRectF(x,meta_y,self.META_W,self.META_LINE),
+                                  tr('忽略本行建议'), 'ignore', row, -1, theme)
+                meta_y += self.META_LINE
             if row["base"] != row.get("origin", row["base"]):
                 written = "✓ " + tr("已写回")
                 painter.setPen(QColor(colors["applied_line"]))
@@ -2252,7 +2268,7 @@ class CaptionReviewList(QWidget):
             self._hit_boxes.append((main, "mark", row["cue_id"], first))
             x += main_w + z(6)
         if group["state"] == "adopted":
-            status, tone = tr("已写回"), colors["applied_line"]
+            status, tone = tr("已采用"), colors["applied_line"]
         elif group["state"] == "partial":
             status, tone = tr("部分已写回"), colors["applied_line"]
         elif reviewed:
@@ -2270,9 +2286,8 @@ class CaptionReviewList(QWidget):
             x += width + z(6)
         opened = (row["cue_id"], first) in self.expanded
         x = self._text_button(painter, x, rect, tr("收起") if opened else tr("详情"), "detail", row, first, theme)
-        pending = next((g for g in self.groups(row) if g["state"] != "adopted" and not g["reviewed"]), None)
-        if pending is group:
-            self._text_button(painter, x, rect, tr("忽略本行建议"), "ignore", row, first, theme)
+        # Row dismissal stays available in the metadata column even when
+        # all groups have been adopted or have expired after manual editing.
 
     def _draw_detail(self, painter, row, group, line, rect, theme):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
@@ -2521,16 +2536,32 @@ def responsive_background(active):
     _sync_responsive()
 
 
-def _review_copy(project):
+def _review_copy(project, cue_ids=None):
     """A read-only view for the review worker without re-serializing the project.
 
     The review reads captions, evidence and metadata. Captions are copied
     (the page may apply while it runs); evidence and metadata are only ever
     replaced, never edited in place, by text edits (2026-10-10: the former
     to_dict/from_dict round trip blocked the window ~1 s per match)."""
-    view = copy.copy(project)
-    view.cues = [copy.copy(cue) for cue in project.cues]
+    from dataclasses import fields
+    view = object.__new__(type(project))
+    view.__dict__.update({field.name: getattr(project,field.name) for field in fields(project)})
+    view.cues = [copy.copy(cue) for cue in project.cues if cue_ids is None or cue.id in cue_ids]
     view.studio_state = dict(project.studio_state or {})
+    view.generation_metadata = dict(project.generation_metadata or {})
+    view.asr_evidence = dict(project.asr_evidence or {})
+    for key in ('manual_caption_text','term_word_overrides'):
+        value = view.studio_state.get(key)
+        if isinstance(value,dict):
+            view.studio_state[key] = {k: copy.deepcopy(v) for k,v in value.items() if cue_ids is None or k in cue_ids}
+    timeline = view.studio_state.get('caption_timeline')
+    if isinstance(timeline,dict):
+        view.studio_state['caption_timeline'] = dict(timeline,
+            instances={k:copy.deepcopy(v) for k,v in (timeline.get('instances') or {}).items()
+                       if cue_ids is None or k in cue_ids})
+    for key in ('translations','translation_records','asr_cue_states'):
+        value=view.generation_metadata.get(key)
+        if isinstance(value,dict):view.generation_metadata[key]=copy.deepcopy(value)
     return view
 
 
@@ -2564,6 +2595,11 @@ class _StutterThread(QThread):
     def run(self):
         result = {"stutter": {}, "consistency": {}, "evidence": {},
                   "texts": {cue_id: text for cue_id, _start, text in self.entries}}
+        result['remember'] = {}
+        for cue_id, pair in getattr(self, 'remember_inputs', {}).items():
+            if self.isInterruptionRequested():
+                return
+            result['remember'][cue_id] = (pair, single_replacement(*pair))
         try:
             from ..recognition.transcript_evidence import project_evidence
             result["evidence"] = project_evidence(self.project, self.protected, cancel_check=self.isInterruptionRequested)
@@ -2605,27 +2641,44 @@ class _SaveThread(QThread):
         # asdict/save_project walks cues and receipts separately, so sharing
         # the live project could save pre-edit text with post-undo metadata.
         # Keep the existing validated, backed-up atomic save in the worker.
-        from ..projects.studio_runtime_state import _json_snapshot
+        import marshal
+        from ..projects.studio_project import _private_project_payload
+        from ..timeline.studio_edit_sequence import persist_sequence
+        persist_sequence(project)
         # Recognition evidence and proofreading receipts dominate large
         # projects. Reuse the transaction snapshot copier for those JSON
         # fields, together so aliases within/between them stay consistent.
         # It falls back to deepcopy for values marshal cannot preserve.
-        values = [project.asr_evidence, project.generation_metadata, project.studio_state,
-                  project.edit_history, project.style_recipes, project.effects,
-                  project.render_settings, project.original_outputs, project.edit_sequence]
-        frozen = _json_snapshot(values)
-        memo = {id(value): copied for value, copied in zip(values, frozen)}
-        snapshot = copy.deepcopy(project, memo)
+        # One immutable byte snapshot of persisted fields. Runtime subscribers,
+        # caches and Qt objects never cross this worker boundary. Materializing
+        # every cue a second time belongs on the writer, not the input thread.
+        payload = _private_project_payload(project)
+        try:
+            frozen = marshal.dumps(payload, 2)
+        except (ValueError, TypeError):
+            # Legacy/imported JSON-compatible Mapping subclasses cannot be
+            # marshalled. Keep the old deepcopy compatibility on that rare
+            # path; never pass their live references to the writer.
+            frozen = copy.deepcopy(payload)
         super().__init__(parent)
-        self.project, self.path = snapshot, path
+        self.payload, self.path = frozen, path
+        self.error = ''
+
+    def _materialize_snapshot(self):
+        import marshal
+        from ..projects.studio_project import SubtitleProject
+        payload = marshal.loads(self.payload) if isinstance(self.payload, bytes) else self.payload
+        return SubtitleProject.from_dict(payload, owned=True)
 
     def run(self):
         try:
             from ..projects.studio_project import save_project
-            save_project(self.project, self.path, compact=True)
+            project = self._materialize_snapshot()
+            save_project(project, self.path, compact=True, owned=True)
             self.done.emit("")
         except Exception as exc:  # reported in the page
-            self.done.emit(str(exc) or type(exc).__name__)
+            self.error = str(exc) or type(exc).__name__
+            self.done.emit(self.error)
 
 
 class _StandalonePage:
@@ -2750,19 +2803,23 @@ def rebase_issue(issue, old_text, new_text, opcodes=None):
             if anchor >= 0 and new_text.startswith(left + word + right, anchor):
                 return place(candidate, applied)
     # 2) The place itself, without neighbours (a neighbour changed too).
+    # A diff can align either surviving copy of a repeated fragment.
+    ambiguous = bool(current and old_text.count(current) > 1 and old_text.count(current) != new_text.count(current))
     for applied in order:
         word = replacement if applied else original
         for candidate in starts:
-            if word and new_text.startswith(word, candidate):
+            unchanged = any(tag == 'equal' and x1 <= a and b <= x2
+                            and candidate == y1+a-x1 for tag,x1,x2,y1,y2 in opcodes)
+            if word and new_text.startswith(word, candidate) and (unchanged and not ambiguous or applied and word != current):
                 return place(candidate, applied)
     if not replacement and original and start == end and current == original:
         return place(start, True)  # the characters this deletion named are gone
-    # 3) A unique occurrence elsewhere in the caption.
+    # A unique word elsewhere alone does not establish its identity.
     for applied, word in ((False, original), (True, replacement)):
         if not word:
             continue
         hits = [m.start() for m in re.finditer(re.escape(word), new_text)]
-        if len(hits) == 1:
+        if len(hits) == 1 and (left or right) and new_text[max(0,hits[0]-len(left)):hits[0]+len(word)+len(right)] == left+word+right:
             return place(hits[0], applied)
     # Keep the text it was last valid in: undo/redo may bring that back.
     issue["anchor"] = (old_text, issue["checked"])
@@ -2856,8 +2913,10 @@ def group_pair(row, group):
 
 
 class GlossaryProofreadPage(QWidget):
+    SAVE_DRAIN_TIMEOUT_MS = 15_000
     back_requested = Signal()
     applied = Signal(str)
+    saving_changed = Signal(bool, str, str)
     # Set by the first-run tutorial while it runs: "AI 校对" then uses this offline
     # stand-in (same arguments as preview_glossary_correction) instead of a request.
     ai_stand_in = None
@@ -3234,7 +3293,7 @@ class GlossaryProofreadPage(QWidget):
         self.local_button.setFixedHeight(38)
         install_themed_icon(self.local_button, "fa5s.book", "zone_content")
         bind_text(self.local_button, '只用所选词库里已确认的写法在本机匹配，不调用 AI', property='toolTip')
-        self.local_button.clicked.connect(lambda: self._run(False))
+        self.local_button.clicked.connect(lambda: self._restart_review(False))
         checks_layout.addWidget(self.local_button)
         self.ai_button = QPushButton("AI 校对")
         self.ai_button.setObjectName("proofreadAccent")
@@ -3415,6 +3474,7 @@ class GlossaryProofreadPage(QWidget):
         self.list.edit_requested.connect(self._edit)
         self.list.edit_committed.connect(self._edit_committed)
         self.list.issue_toggled.connect(self._toggle_issue)
+        self.list.adopt_requested.connect(self._adopt_current_suggestion)
         self.list.remember_requested.connect(self._remember)
         self.list.revert_requested.connect(self._revert)
         self.list.context_requested.connect(self._context_menu)
@@ -3438,7 +3498,7 @@ class GlossaryProofreadPage(QWidget):
         self.count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bulk.addWidget(self.count_label, 1)
         self.select_all = QPushButton("采用全部建议")
-        self.select_none = QPushButton("全部不采用")
+        self.select_none = QPushButton(tr('忽略当前列表'))
         bind_text(self.select_all, '把列表中显示的建议全部写回工程（一步，可撤销）', property='toolTip')
         bind_text(self.select_none, '列表中显示的、已采用的建议改回原文；其余建议标为不采用（一步，可撤销）', property='toolTip')
         for button, state, name in ((self.select_all, True, "proofreadTint"), (self.select_none, False, "proofreadBarButton")):
@@ -3842,11 +3902,20 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                                  issues=[], applied=False, remembered=None))
         self._rows = rows
         self._by_id = {row["cue_id"]: row for row in rows}
+        from .proofread_retention import restore_row, review_state
+        self._review_round_id = review_state(project)['round_id']
+        for row in rows:
+            previous = restore_row(project, row)
+            if previous is not False and previous != row['base']:
+                rebase_issues(row['issues'], previous, row['base'])
+            row['applied'] = row['base'] != row['origin']
         self._row_states = {}
         self._cue_versions = {}
         self._row_summaries = {}
         self._filter_context = None
         self._row_indexes = {row['cue_id']: index for index, row in enumerate(rows)}
+        self._filter_members = set()
+        self._filter_included = {}
         self.list.set_rows(self._rows)
         self._fill_speakers()
         self._batch_selected.intersection_update(self._by_id)
@@ -3900,13 +3969,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._stutter_generation = getattr(self, "_stutter_generation", 0) + 1
         generation = self._stutter_generation
         entries = [(row["cue_id"], row["start_ms"], row["base"]) for row in self._rows]
-        view = _review_copy(project)
         scope = None if cue_ids is None else set(cue_ids)
-        if scope is not None:
-            view.cues = [cue for cue in view.cues if cue.id in scope]
+        view = _review_copy(project, scope)
         texts = {cue.id: cue.text for cue in view.cues}
         thread = _StutterThread(view, self._protected_terms(), entries, {},
                                 self._preferred_spellings(), self, cleanup=self.stutter_toggle.isChecked())
+        thread.remember_inputs = {row['cue_id']: (row['origin'], row['base']) for row in self._rows
+                                  if row['origin'] != row['base'] and (scope is None or row['cue_id'] in scope)}
         self._stutter_threads = getattr(self, "_stutter_threads", set()) | {thread}
 
         def ready(result):
@@ -3917,6 +3986,10 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 return
             decisions = self._decisions()
             current = {cue.id: cue.text for cue in live.cues}
+            for cue_id, (pair, replacement) in result.get('remember', {}).items():
+                row = self._by_id.get(cue_id)
+                if row is not None and (row['origin'], row['base']) == tuple(pair):
+                    row['_remember_input'], row['_remember_pair'] = tuple(pair), replacement
             fresh = {cue_id: hits for cue_id, (text, hits) in result.get("stutter", {}).items()
                      if current.get(cue_id) == text}
             self._add_stutter_issues(live, set(fresh), fresh)
@@ -3946,8 +4019,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
     def _apply_decisions(self, row, decisions):
         from .proofread_rules import is_ignored
         project, _ = self._live_project()
+        from .proofread_retention import review_state
+        saved = review_state(project)['rows'].get(row['cue_id'])
+        if saved is not None:
+            row['review_retained'] = bool(saved.get('retained'))
+            row['review_dismissed'] = bool(saved.get('dismissed'))
         for issue in row["issues"]:
-            ignored = not issue["checked"] and not issue["stale"] and is_ignored(project, row, issue)
+            ignored = not issue['checked'] and (row.get('review_dismissed', False)
+                or not issue['stale'] and is_ignored(project, row, issue))
             if issue.get("ignored") and not ignored:
                 issue["reviewed"] = False
             issue["ignored"] = ignored
@@ -4037,10 +4116,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         A group is one proposal (one decision); a suspected name without a
         candidate is something to look at, not a proposal."""
         groups = self._groups(row)
-        suggested = any(group["state"] != "adopted" and not group["reviewed"] for group in groups)
+        current = any(group['state'] != 'adopted' and not group['reviewed'] for group in groups)
+        if current and not row.get('review_dismissed'):
+            row['review_retained'] = True
+        suggested = bool(row.get('review_retained')) and not row.get('review_dismissed')
         pending = any(group["state"] != "adopted" and not group["reviewed"] for group in groups) or any(
             issue["kind"] == "suspect" and not issue["stale"] and not issue["reviewed"] for issue in row["issues"])
-        changed = row["base"] != row["origin"] or any(issue.get("ignored") for issue in row["issues"])
+        changed = row["base"] != row["origin"]
         return suggested, pending, changed
 
     def _needle(self):
@@ -4069,36 +4151,49 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         project_hidden = project.hidden_speaker_ids() if project is not None else frozenset()
         sticky_needle, sticky = getattr(self, "_sticky", ("", set()))
         context = (key, raw, sticky_needle, frozenset(sticky), self.stutter_toggle.isChecked(), frozenset(self._hidden_speakers), speaker, project_hidden)
-        incremental = cue_ids is not None and context == self._filter_context and bool(self._filter_counts) and not self._hidden_speakers and not speaker and not project_hidden
+        incremental = cue_ids is not None and context == self._filter_context and bool(self._filter_counts)
         counts = dict(self._filter_counts) if incremental else dict(all=0, suggested=0, pending=0, changed=0)
         totals = dict(self._proposal_totals) if incremental else dict(captions=len(self._rows), proposals=0,
-            adopted=0, asked=0, suspects=0, changed=0, ignored=0)
+            adopted=0, asked=0, suspects=0, changed=0, ignored=0, remaining=0)
         visible = set(self.list.visible) if incremental else set()
+        members = set(getattr(self, '_filter_members', ())) if incremental else set()
+        if not incremental:
+            self._filter_included = {}
         indices = [self._row_indexes[c] for c in cue_ids if c in self._row_indexes] if incremental else range(len(self._rows))
         gaps = {}
+        records = {}
+        from .proofread_retention import review_state, row_record, put_records
+        saved_rows = review_state(project)['rows']
         for index in indices:
             row = self._rows[index]
             identity = row["cue_id"]
             if speaker and (row.get("speaker_id") or "__none__") != speaker:
                 continue
             if incremental:
-                _old_suggested, _old_pending, _old_changed = self._row_states[identity]
+                _old_suggested, _old_pending, _old_changed = self._row_states.get(identity, (False,False,False))
                 for label, value in zip(('all', 'suggested', 'pending', 'changed'), (1, _old_suggested, _old_pending, _old_changed)):
-                    counts[label] -= value
-                for label, value in self._row_summaries[identity].items():
+                    counts[label] -= value * self._filter_included.get(identity, False)
+                for label, value in self._row_summaries.get(identity, {}).items():
                     totals[label] -= value
                 visible.discard(index)
+                members.discard(index)
             self._row_states[identity] = self._row_state(row)
+            if row.get('review_retained') or row.get('review_dismissed') or identity in saved_rows:
+                record = row_record(row)
+                if record != saved_rows.get(identity):
+                    records[identity] = record
             groups = self._groups(row)
             summary = dict(proposals=len(groups), adopted=sum(g['state'] == 'adopted' for g in groups),
+                remaining=sum(g['state']!='adopted' and not g['reviewed'] for g in groups),
                 asked=sum(g['pending'] and g['state'] != 'adopted' and not g['reviewed'] for g in groups),
                 suspects=sum(i['kind'] == 'suspect' and not i['stale'] for i in row['issues']),
-                changed=int(row['base'] != row['origin']), ignored=int(any(i.get('ignored') for i in row['issues'])))
+                changed=int(row['base'] != row['origin']), ignored=int(bool(row.get('review_dismissed')) or any(i.get('ignored') for i in row['issues'])))
             self._row_summaries[identity] = summary
             for label, value in summary.items():
                 totals[label] += value
             suggested, pending, changed = self._row_states[identity]
             hidden = self._speaker_hidden(row) or row.get("speaker_id") in project_hidden
+            self._filter_included[identity] = not hidden
             if not hidden:
                 counts["all"] += 1
                 counts["suggested"] += suggested
@@ -4112,14 +4207,27 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 # Captions just replaced stay listed (changed) until the
                 # search changes: the result does not vanish under the user.
                 continue
-            if hidden:
-                gap = gaps.setdefault(len(visible), dict(count=0, names=[], speakers=[], search=bool(needle)))
-                gap["count"] += 1
-                if row.get("speaker_id", "") not in gap["speakers"]:
-                    gap["speakers"].append(row.get("speaker_id", ""))
-                    gap["names"].append(row["speaker"][0] or tr("未标说话人"))
-                continue
-            visible.add(index)
+            members.add(index)
+            if not hidden:
+                visible.add(index)
+        shown = sorted(visible)
+        import bisect
+        for index in sorted(members-visible):
+            row = self._rows[index]
+            gap = gaps.setdefault(bisect.bisect_left(shown,index), dict(count=0,names=[],speakers=[],search=bool(needle)))
+            gap['count'] += 1
+            if row.get('speaker_id','') not in gap['speakers']:
+                gap['speakers'].append(row.get('speaker_id',''))
+                gap['names'].append(row['speaker'][0] or tr('未标说话人'))
+        self._filter_members = members
+        if records and project is not None:
+            from ..projects.studio_runtime_state import state_for, DirtyDomain
+            state = state_for(project)
+            with state.transaction(project, action_id='proofread_review_rows', dirty=DirtyDomain.AUTOSAVE,
+                                   affected_cue_ids=records, snapshot_cues=False):
+                put_records(project, records)
+            self._persist_soon(project, _studio)
+        self._review_round_id = review_state(project)['round_id']
         self._filter_context, self._filter_counts, self._proposal_totals = context, counts, totals
         for filter_key, label in FILTERS:
             self.filter_buttons[filter_key].setText(tr("{label} {count} 条", label=tr(label), count=counts[filter_key]))
@@ -4133,7 +4241,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         anchor = self.list._top_anchor() if self.list.visible else None
         self.list.find = dict(needle=raw, replace=self._replace_preview(), current=self.list.find.get("current"),
                               excluded=frozenset(getattr(self, "_excluded", ())))
-        self.list.set_visible(sorted(visible), gaps, changed_ids=cue_ids if incremental else None)
+        self.list.set_visible(shown, gaps, changed_ids=cue_ids if incremental else None)
         self.list._restore_anchor(anchor)
         self._batch_selected.intersection_update(self._batch_eligible_ids())
         self._sync_hits()
@@ -4152,24 +4260,26 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         groups = [group for row in self._rows for group in self._groups(row)]
         return dict(captions=len(self._rows), proposals=len(groups),
                     adopted=sum(group["state"] == "adopted" for group in groups),
+                    remaining=sum(g['state']!='adopted' and not g['reviewed'] for g in groups),
                     asked=sum(group["pending"] and group["state"] != "adopted" and not group["reviewed"] for group in groups),
                     suspects=sum(issue["kind"] == "suspect" and not issue["stale"] for row in self._rows
                                  for issue in row["issues"]),
                     changed=sum(1 for row in self._rows if row["base"] != row["origin"]),
-                    ignored=sum(1 for row in self._rows if any(i.get("ignored") for i in row["issues"])))
+                    ignored=sum(1 for row in self._rows if row.get('review_dismissed') or any(i.get("ignored") for i in row["issues"])))
 
     def _selection_changed(self, *_args):
         counts = self._proposal_totals or self.proposal_counts()
-        text = tr('共 {total} 条字幕 · 修改建议 {proposals} 处（已采用 {adopted} 处）', total=counts["captions"],
-                  proposals=counts["proposals"], adopted=counts["adopted"])
+        text = tr('共 {total} 条字幕 · 建议 {proposals} 处（未处理 {remaining} · 已采用 {adopted}）',
+                  total=counts['captions'], proposals=counts['proposals'], remaining=counts.get('remaining',0),adopted=counts['adopted'])
         if counts["suspects"]:
             text += tr(' · 疑似专名 {count} 处', count=counts["suspects"])
         text += tr(' · 本页已改 {changed} 条', changed=counts["changed"])
         if counts["ignored"]:
             text += tr(' · 已忽略 {count} 条', count=counts["ignored"])
         self.count_label.setText(text)
-        self.count_label.setToolTip(tr("一处建议＝一个要决定的修改（同一个词里的几处算一处）；"
-                                       "「有修改建议」「待确认」按字幕条数计；待确认包括还没决定的建议和疑似专名"))
+        self.count_label.setText(text + tr(' · 待确认 {count} 行 · 本轮保留 {retained} 行',
+            count=self._filter_counts.get('pending',0), retained=self._filter_counts.get('suggested',0)))
+        self.count_label.setToolTip(tr('有修改建议按本轮保留的字幕行计数；采用和改字后仍保留，主动忽略才移出。已修改只计实际改字。待确认只计尚未处理的建议。'))
         self.list.remember_targets = {"name": self._target_name()}
         self._batch_update()
         self.list.update()
@@ -4182,13 +4292,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         from ..studio.studio_text_tools import cue_locked
         locked = set((getattr(project, "studio_state", {}) or {}).get("locked_cue_ids", ()))
         cues = {c.id: c for c in getattr(project, "cues", ())}
-        return {self._rows[n]["cue_id"] for n in self.list.visible if self._unresolved(self._rows[n])
+        return {self._rows[n]["cue_id"] for n in self.list.visible if (self._unresolved(self._rows[n])
+                or self._rows[n].get('review_retained') and not self._rows[n].get('review_dismissed'))
                 and self._rows[n]["cue_id"] in cues and not cue_locked(cues[self._rows[n]["cue_id"]], locked)}
 
     def _batch_update(self):
         count = sum(len(self._unresolved(self._by_id[c])) for c in self._batch_selected if c in self._by_id)
         self.batch_count.setText(tr("已选 {rows} 行 · {issues} 处建议", rows=len(self._batch_selected), issues=count))
-        self.batch_adopt.setEnabled(bool(self._batch_selected))
+        self.batch_adopt.setEnabled(bool(count))
         self.batch_ignore.setEnabled(bool(self._batch_selected))
         self.list.selected_rows = self._batch_selected
         self.list.update()
@@ -4242,13 +4353,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 self._apply_decisions(self._by_id[cue_id], {})
             self._persist_soon(project, studio)
             self._apply_filter(cue_ids=set(decisions))
-        self._set_status(tr("已忽略 {rows} 行、{issues} 处建议，保留原文 · 可一次撤销", rows=len(decisions), issues=total)
+        self._set_status(tr("已忽略 {rows} 行、{issues} 处建议，保留当前文字 · 可一次撤销", rows=len(decisions), issues=total)
                          + (tr("；原文已改变，未处理：{rows}", rows="、".join(skipped)) if skipped else ""))
 
     def _batch_adopt(self):
         self.list.commit_pending_edit()
         from .proofread_batch import adoption_text
-        values, kinds, skipped = {}, {}, []
+        values, kinds, skipped, adopted = {}, {}, [], {}
         for cue_id in self._batch_selected & self._batch_eligible_ids():
             row = self._by_id[cue_id]
             chosen = []
@@ -4270,14 +4381,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if text != row["base"]:
                 values[cue_id] = text
                 kinds[cue_id] = {i["kind"] for i in chosen}
+                adopted[cue_id]=[i for i,issue in enumerate(row['issues']) if any(issue is part for part in chosen)]
         written = self._write(values, label=tr("采用所选 {count} 行的建议", count=len(values)),
-                              kinds=kinds, operation="adopt_selected") if values else 0
+                              kinds=kinds, operation="adopt_selected", adopted=adopted) if values else 0
         suffix = tr("；未处理 {count} 项：{rows}", count=len(skipped), rows="、".join(skipped[:8])) if skipped else ""
         if written or not values:
             self._set_status(tr("已采用 {count} 行建议 · 可一次撤销", count=written) + suffix)
 
     # writing ------------------------------------------------------------
-    def _write(self, values, *, label, kinds=None, manual=False, operation="edit", focus=None):
+    def _write(self, values, *, label, kinds=None, manual=False, operation="edit", focus=None, adopted=None):
         """Write {cue_id: text} into the current project as one undo step.
 
         The single path for a direct edit, an adopted (or reverted) proposal,
@@ -4317,8 +4429,29 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if page is None:
             self._standalone = page = _StandalonePage(project)
             self._bind_stack(page.session.undo_stack)
+        from .proofread_retention import row_record
+        records = {}
+        for cue_id, text in values.items():
+            future = dict(self._by_id[cue_id], issues=copy.deepcopy(self._by_id[cue_id]['issues']))
+            future_parts=list(future['issues'])
+            self._rebase_row(future, text)
+            indices = (adopted or {}).get(cue_id, ())
+            source = self._by_id[cue_id]
+            edits = [source['issues'][i] for i in indices]
+            for index in indices:
+                old = source['issues'][index]
+                a,b = old['span']
+                if source['base'][a:b] != old['original']:
+                    raise ValueError('建议正文版本已改变，不能采用旧偏移')
+                start = a + sum(len(other['replacement'])-(other['span'][1]-other['span'][0])
+                                for other in edits if other['span'][1]<=a and other is not old)
+                issue=future_parts[index]
+                issue.update(span=(start,start+len(old['replacement'])),checked=True,stale=False,reviewed=False,
+                             context=_context(text,start,start+len(old['replacement'])))
+                issue.pop('anchor',None)
+            records[cue_id] = row_record(future)
         command = BatchReplaceTextCommand(project, values, needle=label, changed=page._changed,
-                                          glossary_ids=glossary_ids, review_receipt=receipt)
+                                          glossary_ids=glossary_ids, review_receipt=receipt, proofread_records=records)
         command.setText(label)
         self._writing = True
         try:
@@ -4337,6 +4470,10 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         if not self._writing:
             # Undo/redo here or in Studio: re-read every caption it touched.
+            from .proofread_retention import review_state
+            project, _ = self._live_project()
+            if project is not None and review_state(project)['round_id'] != getattr(self, '_review_round_id', ''):
+                self._build_rows(project, start_checks=False)
             self._sync_from_project()
             for row in self._rows:
                 self._apply_decisions(row, {})
@@ -4386,9 +4523,18 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._apply_filter(cue_ids=set(changed))
 
     def _rebase_row(self, row, text):
+        checked = {id(issue): issue['checked'] for issue in row['issues']}
         rebase_issues(row["issues"], row["base"], text)
+        for issue in row['issues']:
+            if checked.get(id(issue)) != issue['checked'] and not issue.get('ignored'):
+                issue['reviewed'] = False
         row["issues"] = [issue for issue in row["issues"] if not (issue["kind"] == "suspect" and issue["stale"])]
         row["base"] = text
+        from .proofread_retention import review_state, restore_row
+        project,_ = self._live_project()
+        saved = review_state(project)['rows'].get(row['cue_id'])
+        if saved is not None and saved.get('base') == text:
+            restore_row(project,row)
         row["applied"] = text != row["origin"]
         if row.get("remembered") is not None and single_replacement(row["origin"], text) != row["remembered"]:
             row["remembered"] = None
@@ -4404,15 +4550,22 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         the project file is written here, off the UI thread, after a pause."""
         if studio is not None:
             schedule = getattr(studio, "_schedule_autosave", None)
-            if callable(schedule):
+            if getattr(self, '_save_to_result', False):
+                timer = getattr(studio, '_autosave_timer', None)
+                if timer is not None:
+                    timer.stop()
+            elif callable(schedule):
                 schedule()
             self.applied.emit(self._project_path)
-            return
+            if not getattr(self, '_save_to_result', False):
+                return
         self._save_timer.start()
+        self.saving_changed.emit(True, str(self._project_path), '')
 
     def _save_now(self):
         project, studio = self._live_project()
-        if project is None or studio is not None or not self._project_path:
+        if (project is None or (studio is not None and not getattr(self, '_save_to_result', False))
+                or not self._project_path):
             return
         if self._save_thread is not None and self._save_thread.isRunning():
             self._save_again = True
@@ -4423,17 +4576,23 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._save_error = str(exc) or type(exc).__name__
             self._set_status(tr("修改还在本页，但没有保存到工程文件：{reason}。可以再试一次保存（离开本页时也会再试）",
                                 reason=self._save_error[:200]))
+            self.saving_changed.emit(False, str(self._project_path), self._save_error)
             return
         self._save_thread = thread
+        saved_path = str(self._project_path)
+        owner = studio
+        saved_index = owner.undo_stack.index() if owner is not None else None
+        saved_revision = getattr(getattr(project, '_studio_state_runtime', None), 'revision', None)
+        self.saving_changed.emit(True, saved_path, '')
 
         def done(error):
             if self._save_thread is thread:
                 self._save_thread = None
-            thread.deleteLater()
             self._save_error = error or ""
             if error:
                 self._set_status(tr("修改还在本页，但没有保存到工程文件：{reason}。可以再试一次保存（离开本页时也会再试）",
                                     reason=error[:200]))
+                self.saving_changed.emit(False, saved_path, error)
             if self._save_again or self._save_timer.isActive():
                 self._save_again = False
                 # Let pending paints/edits run before capturing the next large
@@ -4441,11 +4600,20 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 self._save_timer.start()
                 return
             if not error:
+                if (owner is not None and owner.project is project
+                        and str(getattr(owner, 'project_path', '')) == saved_path
+                        and owner.undo_stack.index() == saved_index
+                        and getattr(getattr(project, '_studio_state_runtime', None), 'revision', None) == saved_revision):
+                    owner.undo_stack.setClean()
                 self.status_label.setText(self.status_label.text().replace(
                     tr("工程已更新（自动保存中）"), tr("工程已自动保存")))
                 self.applied.emit(self._project_path)
+                self.saving_changed.emit(False, saved_path, '')
 
-        thread.done.connect(done)
+        # done is emitted before run() returns. Keep the owner/ref until the
+        # actual QThread finished signal, including close/navigation races.
+        thread.finished.connect(lambda: done(getattr(thread, 'error', '')))
+        thread.finished.connect(thread.deleteLater)
         thread.finished.connect(lambda: responsive_background(False))
         responsive_background(True)
         thread.start()
@@ -4463,7 +4631,22 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if thread is None:
                 break
             # The finished signal is queued; deliver it so the error is known.
-            finished = thread.wait(15000)
+            from PySide6.QtCore import QEventLoop
+            from shiboken6 import isValid
+            loop = QEventLoop(self)
+            deadline = QTimer(loop)
+            deadline.setSingleShot(True)
+            deadline.timeout.connect(loop.quit)
+            thread.finished.connect(loop.quit)
+            if thread.isRunning():
+                deadline.start(self.SAVE_DRAIN_TIMEOUT_MS)
+                loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            deadline.stop()
+            finished = not isValid(thread) or not thread.isRunning()
+            if isValid(thread):
+                try: thread.finished.disconnect(loop.quit)
+                except (RuntimeError,TypeError): pass
+            loop.deleteLater()
             QApplication.processEvents()
             if not finished:
                 # Still writing (slow or network drive): never report the
@@ -4487,6 +4670,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         the newest edits could not be saved the user decides: retry, or stay
         here with the edits (they are never dropped silently). False = stay."""
         self.list.commit_pending_edit()
+        if getattr(self, '_return_save_pending', False) and self._save_thread is not None:
+            self._set_status(tr('工程仍在保存；完成后可以打开工作台或导出。'))
+            return False
         if self._flush_save():
             return True
         if project_path and self._project_path and (
@@ -4536,16 +4722,25 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     # proposals ----------------------------------------------------------
     def _set_all(self, adopt):
-        """Adopt (or revert) every listed proposal group as a whole, one step.
+        """Adopt each eligible group, or explicitly dismiss the visible rows.
 
         Groups that need a decision (several readings, or a change that
         would replace a name the library already knows) are never adopted
         in bulk: they stay listed as 待确认."""
-        values, kinds, skipped = {}, {}, 0
+        if not adopt:
+            previous=set(self._batch_selected)
+            self._batch_selected=self._batch_eligible_ids()
+            self._batch_ignore()
+            self._batch_selected=previous & self._batch_eligible_ids()
+            self._batch_update()
+            return
+        values, kinds, skipped, adopted = {}, {}, 0, {}
         for index in self.list.visible:
             row = self._rows[index]
             chosen = []
             for group in self._groups(row):
+                if group['reviewed'] or row.get('review_dismissed'):
+                    continue
                 issues = [row["issues"][i] for i in group["parts"]]
                 if adopt:
                     if group["state"] == "adopted" or any(issue["kind"] == "merge" for issue in issues):
@@ -4563,18 +4758,38 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if text != row["base"]:
                 values[row["cue_id"]] = text
                 kinds[row["cue_id"]] = {issue["kind"] for issue in chosen}
+                adopted[row['cue_id']] = [i for i,issue in enumerate(row['issues']) if any(issue is selected for selected in chosen)]
             for issue in chosen:
-                issue["reviewed"] = True
+                issue['reviewed'] = False
         left = tr("；{count} 处待确认的建议没有自动采用，请逐个决定", count=skipped) if adopt and skipped else ""
         if not values:
             self._apply_filter()
             self._set_status((tr("列表中没有可采用的建议") if adopt else tr("已把列表中的建议标为不采用")) + left)
             return
         label = tr("采用 {count} 条字幕的建议", count=len(values)) if adopt else tr("改回 {count} 条字幕的原文", count=len(values))
-        written = self._write(values, label=label, kinds=kinds, operation="adopt_all" if adopt else "revert_all")
+        written = self._write(values, label=label, kinds=kinds, operation="adopt_all", adopted=adopted)
         if written:
             self._set_status(tr("已写回 {count} 条字幕：{what} · {saved} · 可撤销", count=written, what=label,
                                 saved=self._saved_note()) + left)
+
+    def _adopt_current_suggestion(self):
+        """Shift+R applies a hovered option, or the next unambiguous group."""
+        cue_id=self.list.current
+        row=self._by_id.get(cue_id)
+        if row is None:
+            self._set_status(tr('请先选择字幕行或具体建议'))
+            return
+        hovered=getattr(self.list,'_hover_target',None)
+        if hovered and hovered[1]==cue_id and hovered[0] in {'check','mark','option'} and isinstance(hovered[2],int):
+            self._toggle_issue(cue_id,hovered[2])
+            return
+        group=next((g for g in self._groups(row) if g['state']!='adopted' and not g['reviewed']),None)
+        if group is None:
+            self._set_status(tr('当前字幕没有待处理建议'))
+        elif group['options']:
+            self._set_status(tr('请先高亮一个具体候选，再按 Shift+R'))
+        else:
+            self._toggle_issue(cue_id,group['parts'][0])
 
     def _toggle_issue(self, cue_id, index):
         """Adopt or take back the whole group that holds proposal ``index``.
@@ -4585,6 +4800,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if row is None or not 0 <= index < len(row["issues"]):
             return
         issue = row["issues"][index]
+        if issue.get('checked'):
+            self._set_status(tr('这处建议已采用；如需改回，请撤销或还原这句'))
+            return
         if not actionable(issue, self.stutter_toggle.isChecked(), row['base']):
             return
         self.list.commit_pending_edit()
@@ -4605,12 +4823,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._apply_filter()
             return
         for part in parts:
-            part["reviewed"] = True
+            part['reviewed'] = False
         # The proposal's direction either way: 巫 → 乌.
         summary = change_summary(row["base"], text) if adopt else change_summary(text, row["base"])
         label = tr("采用建议：{what}", what=summary) if adopt else tr("取消采用：{what}", what=summary)
         if self._write({cue_id: text}, label=label, kinds={cue_id: {part["kind"] for part in parts}},
-                       operation="adopt" if adopt else "revert", focus=cue_id):
+                       operation="adopt" if adopt else "revert", focus=cue_id,
+                       adopted={cue_id:[i for i,part in enumerate(row['issues']) if any(part is selected for selected in moving)]} if adopt else None):
             self._set_status(tr("{what}（{number}）· {saved}", what=label, number=row["number"],
                                 saved=self._saved_note()))
 
@@ -4618,8 +4837,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         """Ignore every unresolved proposal on this caption as one undo step."""
         self.list.commit_pending_edit()
         row = self._by_id.get(cue_id)
-        group = group_of(row, index, self._terms, self.stutter_toggle.isChecked()) if row is not None else None
-        if group is None:
+        if row is None or row.get('review_dismissed'):
             return
         from .proofread_rules import DECISIONS_KEY, decision_for
         from .proofread_decisions import IgnoreProofreadRowCommand
@@ -4628,7 +4846,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._sync_from_project()
             return
         unresolved = self._unresolved(row)
-        if not unresolved:
+        if not unresolved and not row.get('review_retained'):
             return
         previous = (project.studio_state.get(DECISIONS_KEY) or {}).get(cue_id, ())
         decisions = [*previous, *(decision_for(row, issue) for issue in unresolved)]
@@ -4645,7 +4863,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._cue_versions[cue_id] = self._cue_versions.get(cue_id, 0) + 1
         self._apply_decisions(row, {})
         self._persist_soon(project, studio)
-        self._set_status(tr("已忽略本行 {count} 处建议（{number}，保留原文）· 可撤销", count=len(unresolved), number=row["number"]))
+        self._set_status(tr("已忽略本行 {count} 处建议（{number}，保留当前文字）· 可撤销", count=len(unresolved), number=row["number"]))
         self._apply_filter(cue_ids={cue_id})
 
     def _manual_group(self, cue_id, index):
@@ -4839,13 +5057,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             group = group_of(row, index, self._terms, stutter)
             if group is not None and actionable(issue, stutter, row['base']):
                 if group["options"]:
-                    text = (tr("取消采用这个写法") if issue["checked"] else
+                    text = (tr('已采用；可撤销或还原这句') if issue["checked"] else
                             tr("采用这个写法「{new}」（写回工程）", new=issue["replacement"] or tr("删去")))
                 else:
-                    text = tr("取消采用这组建议") if group["state"] == "adopted" else tr("采用这组建议（写回工程）")
+                    text = tr('已采用；可撤销或还原这句') if group["state"] == "adopted" else tr("采用这组建议（写回工程）")
                 action = menu.addAction(text)
+                action.setEnabled(not issue['checked'])
                 action.triggered.connect(lambda _=False, c=cue_id, i=index: self._toggle_issue(c, i))
-                if group["state"] == "open" and not group["reviewed"]:
+                if row.get('review_retained') and not row.get('review_dismissed'):
                     ignore = menu.addAction(tr("忽略本行建议"))
                     ignore.triggered.connect(lambda _=False, c=cue_id, i=index: self._dismiss_group(c, i))
                 manual = menu.addAction(tr("手动改写这一处…"))
@@ -5892,7 +6111,33 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if shown == []:
             self._set_status(tr("说话人都已隐藏，没有要校对的字幕"))
             return
-        self._run(True, shown)
+        self._restart_review(True, shown)
+
+    def _restart_review(self, use_ai, cue_ids=None):
+        """Only an explicit user request starts a new review round."""
+        self.list.commit_pending_edit()
+        project, studio = self._live_project()
+        if project is None:
+            return
+        from .proofread_decisions import StartProofreadRoundCommand
+        page = studio or self._standalone
+        if page is None:
+            self._standalone = page = _StandalonePage(project)
+            self._bind_stack(page.session.undo_stack)
+        self._writing = True
+        try:
+            page.session.undo_stack.push(StartProofreadRoundCommand(project, changed=page._changed))
+        finally:
+            self._writing = False
+        for row in self._rows:
+            row['origin'] = row['base']
+            row['issues'] = []
+            row['review_retained'] = row['review_dismissed'] = False
+        from .proofread_retention import review_state
+        self._review_round_id = review_state(project)['round_id']
+        self._filter_context = None
+        self._persist_soon(project, studio)
+        self._run(use_ai, cue_ids)
 
     def _run(self, use_ai, cue_ids=None):
         """Match (or AI-review) all captions, or only ``cue_ids``."""
@@ -5921,7 +6166,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if callable(prepare) and not prepare():
             self._set_status(tr("术语库里有尚未提交的编辑，请先保存或放弃后再生成建议"))
             return
-        self._read_snapshot()
+        if cue_ids is None or self._snapshot is None or self._library_ids != self._selected_ids():
+            self._read_snapshot()
         live, _studio = self._live_project()
         if live is None:
             return
@@ -5947,7 +6193,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         settings = copy.deepcopy(getattr(legacy, "RUNTIME_SETTINGS", {}) or {})
         self._review_choices = self._active_choices()
         review_snapshot = prefer_spellings(self._snapshot, self._review_choices)
-        worker = _ReviewThread(_review_copy(live), wanted, review_snapshot, settings, bool(use_ai), self,
+        worker = _ReviewThread(_review_copy(live, scope), wanted, review_snapshot, settings, bool(use_ai), self,
                                stand_in=self.ai_stand_in if use_ai else None)
         self._worker, self._worker_ai, self._worker_scope_all = worker, bool(use_ai), scope is None
         self._set_busy(True)
@@ -6023,8 +6269,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
         kinds = {"local_confirmed": "term", "local_review": "near", "ai_accepted": "ai", "ai_review": "ai_review"}
         from .proofread_rules import full_word_pair, normalize_occurrence
-        from .terminology import TermResolver
-        resolver = TermResolver(prefer_spellings(self._snapshot, self._active_choices()),
+        from .terminology import prepared_resolver
+        resolver = prepared_resolver(prefer_spellings(self._snapshot, self._active_choices()),
                                 script=self._glossary_script()) if self._snapshot is not None else None
         for hit in result.hits:
             if not still_valid(hit.cue_id) or self._by_id.get(hit.cue_id) is None:
@@ -6151,7 +6397,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             status += tr(" · {count} 条结果因字幕已改动而丢弃", count=dropped)
         flash, self._flash = self._flash, ""
         self._set_status(f"{flash}\n{status}" if flash else status)
-        self._apply_filter()
+        self._apply_filter(cue_ids=scope)
 
     # audio ------------------------------------------------------------
     def _play(self, cue_id):
@@ -6185,10 +6431,50 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def _back(self):
         self._player.stop()
-        if not self.settle_writes():
+        self.list.commit_pending_edit()
+        self._cancel_hidden_checks()
+        if self._save_timer.isActive() and not self._save_error:
+            # Let the result page paint before capturing the debounced write.
+            # Its controls remain fenced and visibly show the pending save.
+            self._save_timer.stop()
+            self._save_again = True
+        elif self._save_error:
+            self._save_timer.stop()
+            self._save_now()
+        if self._save_thread is not None or self._save_again:
+            self._return_save_pending = True
+            self._set_status(tr("正在保存最新修改…"))
+            if not hasattr(self, '_back_save_timer'):
+                self._back_save_timer = QTimer(self)
+                self._back_save_timer.setInterval(25)
+                self._back_save_timer.timeout.connect(self._continue_back)
+            self._back_save_timer.start()
+            self._flush_library_changes()
+            self.saving_changed.emit(True, str(self._project_path), '')
+            self.back_requested.emit()
+            return
+        self._continue_back()
+
+    def _continue_back(self):
+        if self._save_thread is not None:
+            return
+        if self._save_timer.isActive() or self._save_again:
+            self._save_again = False
+            self._save_timer.stop()
+            self._save_now()
+            if self._save_thread is not None:
+                return
+        if hasattr(self, '_back_save_timer'):
+            self._back_save_timer.stop()
+        self.back_button.setEnabled(True)
+        returned = getattr(self, '_return_save_pending', False)
+        self._return_save_pending = False
+        if self._save_error:
+            self._set_status(tr("修改尚未保存：{reason}。请重试返回。", reason=self._save_error))
             return
         self._flush_library_changes()
-        self.back_requested.emit()
+        if not returned:
+            self.back_requested.emit()
 
     def showEvent(self, event):
         self._page_left = False
@@ -6205,7 +6491,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         # Leaving through the header (字幕工作台, 设置…) instead of 返回: the
         # file must be written before the next page reads it, or Studio could
         # load the old text and later save over these edits (2026-10-10).
-        if not event.spontaneous():
+        if not event.spontaneous() and not getattr(self, '_return_save_pending', False):
             self._flush_save()
         self._flush_library_changes()
         super().hideEvent(event)

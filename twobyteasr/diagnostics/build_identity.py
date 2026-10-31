@@ -30,6 +30,7 @@ _RETIRED_DELIVERY_FILES = frozenset({
     'twobyteasr/recognition/optional_model_details.py',
     'twobyteasr/acceptance/optional_models_audit.py',
     'twobyteasr/acceptance/optional_models_headed_audit.py',
+    'twobyteasr/caption_style/style_library.py',
 })
 _RETIRED_DELIVERY_ROOTS = ('third_party/DiariZen/', 'third_party/VibeVoice/')
 

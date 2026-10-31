@@ -7,6 +7,7 @@ thread coordination, final-stage call order, and transactional hand-off only.
 from __future__ import annotations
 
 import time
+import copy
 from concurrent.futures import ThreadPoolExecutor
 
 from twobyteasr.recognition.run_context import get_runtime_context
@@ -142,7 +143,8 @@ def finalize_cues(    cues,
 ):
     """Finalize display timing, then recheck content and numeric events."""
     from ..subtitle_rules.language_rules import is_spaced
-    if is_spaced() and not any(str(getattr(s, 'primary_source', '')).startswith('vibevoice_') for s in segments):
+    from ..subtitle_rules.segmentation_profiles import current_profile
+    if current_profile().strategy!='cjk':
         # English and (2026-10-19) Korean: cues are already cut between words.
         return finalize_english_cues(cues, segments, speech_regions, audio_seconds, timeline_fps, legacy)
     if not _streaming_partition and any(str(getattr(s,'primary_source','')).startswith('vibevoice_') for s in segments):
@@ -271,9 +273,11 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     """
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.language_rules import active_task_language, is_european, is_korean
+    from ..subtitle_rules.segmentation_profiles import current_profile,indivisible,measure
+    profile=current_profile()
     if is_korean():
         from ..subtitle_rules.korean_text import RULES, display_length
-    elif is_european():
+    elif is_european() or profile.code not in ('en','ko'):
         from ..subtitle_rules.european_text import display_length, lexicon
         RULES = lexicon(active_task_language()).rules
     else:
@@ -283,10 +287,14 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     finalized = [cue for cue in sorted(cues, key=lambda c: (c.start, c.end, c.speaker)) if str(cue.text or "").strip()]
     if not finalized:
         raise RuntimeError("断句后没有可用字幕。")
+    retained={}
+    for cue in finalized:
+        if cue.end-cue.start>profile.max_seconds and indivisible(cue.text,profile.code):
+            retained[(cue.cue_id,cue.speaker,cue.text)]=(cue.start,cue.end)
     for cue in finalized:
         start = max(0.0, float(cue.start))
         floor = max(RULES.min_seconds, display_length(cue.text) / RULES.warning_cps)
-        end = min(max(float(cue.end), start + floor), start + RULES.max_seconds)
+        end = max(float(cue.end),start+floor) if (cue.cue_id,cue.speaker,cue.text) in retained else min(max(float(cue.end), start + floor), start + RULES.max_seconds)
         if audio_seconds:
             end = min(end, float(audio_seconds))
         cue.start = round(start * fps) / fps
@@ -301,7 +309,7 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     finalized = legacy.extend_cue_tails_by_speaker(finalized, audio_seconds, timeline_fps)
     finalized = legacy.bridge_short_display_gaps(finalized, audio_seconds, timeline_fps)
     for cue in finalized:
-        if cue.end - cue.start > RULES.max_seconds:
+        if cue.end - cue.start > RULES.max_seconds and (cue.cue_id,cue.speaker,cue.text) not in retained:
             cue.end = cue.start + RULES.max_seconds
         if cue.end <= cue.start:
             cue.end = cue.start + frame
@@ -311,6 +319,15 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     # blank interval. Finish with the same end-only display rule as Chinese,
     # including Korean and every European language routed through this path.
     legacy.relock_display_timing(finalized, audio_seconds, timeline_fps, stage='word_final_display')
+    for cue in finalized:
+        key=(cue.cue_id,cue.speaker,cue.text)
+        if key in retained:
+            a,b=retained[key]
+            cue.start=round(a*fps)/fps
+            cue.end=round((min(b,audio_seconds) if audio_seconds else b)*fps)/fps
+    if retained:
+        legacy.record_run_event('indivisible_language_duration_retained',language=profile.code,count=len(retained),
+            reason='source_word_or_conservative_utterance_exceeds_duration; original_interval_retained')
     finalized.sort(key=lambda c: (c.start, c.end, c.speaker))
     for index, cue in enumerate(finalized, 1):
         cue.cue_id = index
@@ -375,7 +392,8 @@ def complete_media_run(
     from twobyteasr.recognition.service import CancelledError
     try:
         from twobyteasr.subtitle_rules.recognition_translation import translate_runtime_cues
-        translation_metadata = translate_runtime_cues(cues, runtime_context, legacy)
+        if cues:
+            translation_metadata = translate_runtime_cues(cues, runtime_context, legacy)
     except CancelledError:
         raise
     except Exception as exc:  # the recognition result is still delivered
@@ -424,6 +442,7 @@ def complete_media_run(
                             "asr_manifest_key": str(getattr(runtime_context, "asr_manifest_key", "") or ""),
                             "asr_provisional_cues": list(getattr(runtime_context, "asr_provisional_cues", ()) or ()),
                             "speaker_recovery": dict(getattr(runtime_context, "speaker_recovery", {}) or {}),
+                            "transcript_acceptance": copy.deepcopy(getattr(runtime_context, "transcript_acceptance", {}) or {}),
                             "terminology_status": dict(getattr(runtime_context,"terminology_status",{}) or {}),
                             "polishing_summary": dict(getattr(runtime_context,"polishing_summary",{}) or {}),
                             "terminology_snapshot": (runtime_context.glossary_snapshot.to_dict()
@@ -456,6 +475,12 @@ def complete_media_run(
                         decoded_audio_seconds=audio_seconds,
                     )
                 )
+                if output_details.get('project_error'):
+                    legacy.record_run_event('studio_project_failed', error=output_details['project_error'],
+                        cue_count=len(cues), recovery_project=output_details.get('recovery_project',''),
+                        diagnostic=output_details.get('project_save_diagnostic',{}),
+                        traceback=output_details.get('project_save_traceback',''))
+                    return
                 if token is not None:
                     token.raise_if_cancelled()
                 runtime_context.committed_result_ref = __import__("json").loads(output_details.get("result_ref_json") or "{}")
@@ -501,7 +526,7 @@ def complete_media_run(
     def deliver_outputs():
         legacy.record_run_event("studio_project_saving", project_path=str(getattr(runtime_context, "studio_project_path", "") or ""))
         write_studio_project()
-        if not output_details.get("project"):
+        if not output_details.get("project") and not output_details.get('recovery_project'):
             raise RuntimeError("识别结果工程保存失败：" + str(output_details.get("project_error") or "unknown"))
         if output_details.get("project"):
             legacy.record_run_event("studio_project_saved", project_path=output_details["project"], cue_count=len(cues),

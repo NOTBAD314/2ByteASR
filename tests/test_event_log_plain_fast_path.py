@@ -9,8 +9,8 @@ CORPUS = [
     'sk-abcdefghijklmnop', 'sk-proj-ABCDEFGHIJ1234', 'ghp_0123456789abcdef', 'xai-ABCDEFG12345',
     'AIzaSyA1234567890abcdefghij', 'eyJhbGciOiJIUzI1NiJ9abcdefgh', 'ya29.a0AfH6SMBxxxxxxxxxxxx',
     '字幕已生成·部分AI校对未完成', '准备超时；请检查素材和播放器状态。', 'x' * 3000,
-    'C:\\Users\\fixture\\a.flv', '/home/user/a.flv', 'https://api.deepseek.com/v1?key=1', 'a@b.cn',
-    'api_key=abc123', 'Bearer abc.def', 'token: secret-value', '-' * 5 + 'BEGIN RSA PRIVATE KEY' + '-' * 5 + 'abc',
+    'C:\\Users\\TestUser\\a.flv', '/home/user/a.flv', 'https://api.deepseek.com/v1?key=1', 'a@b.cn',
+    'api_key=abc123', 'Bearer abc.def', 'token: secret-value', '-----BEGIN RSA ' + 'PRIVATE KEY-----abc',
 ]
 
 

@@ -409,13 +409,18 @@ class StudioReadiness(QObject):
             try:
                 from ..projects.studio_project import load_project
                 value, error = load_project(path), ''
-                from ..media.media_availability import apply_availability, probe_sources
-                results = probe_sources(
+                from ..media.media_availability import apply_availability, stat_sources_in_reader
+                results = stat_sources_in_reader(
                     [a.canonical_source for a in value.media_pool],
-                    decode=True,
+                    # Existing source metadata is enough to bind captions.
+                    # Decode/codec probing continues through the page's media
+                    # availability service; it must not delay subtitle data.
                     cancel_check=lambda: epoch != self.generation or not self.active,
                 )
                 apply_availability(value, results)
+                if not self.expected_result_ref and epoch == self.generation and self.active:
+                    from ..projects.project_recovery_inspection import inspect_recovery
+                    value._recovery_inspection = inspect_recovery(path, value)
             except Exception as exc:
                 value, error = exc, str(exc)
             try:

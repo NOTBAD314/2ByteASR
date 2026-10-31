@@ -40,7 +40,7 @@ def start(window, output):
 
 
 def run(output, *, window):
-    from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+    from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QToolTip, QWidget
     from .blank_project_audit import _capture
@@ -141,6 +141,34 @@ def run(output, *, window):
                   dict(offset=entry['transport_offset'], video=video, transport=transport['rect']))
         check(f'{window.width()}: no overlap or clipping', not overlaps and not clipped, dict(overlaps=overlaps, clipped=clipped))
 
+    window.resize(1920, 1000)
+    QTest.qWait(700)
+    pills = {group.property('commandGroup'): group for group in page._timeline_group_widgets}
+    roles = ('editing', 'view', 'display', 'output')
+    check('wide: all four command capsules are styled and visible', all(pills[role].isVisible()
+          and pills[role].testAttribute(Qt.WidgetAttribute.WA_StyledBackground) for role in roles),
+          {role: pills[role].isVisible() for role in roles})
+    slider = page.timeline_zoom_slider
+    check('zoom slider is in the zoom capsule', slider.isVisible() and slider.parentWidget() is pills['view'])
+    from PySide6.QtWidgets import QStyle, QStyleOptionSlider, QToolButton
+    option = QStyleOptionSlider(); slider.initStyleOption(option)
+    handle = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider)
+    target = QPoint(slider.width()-handle.width()//2-1, slider.height()//2)
+    QTest.mousePress(slider, Qt.MouseButton.LeftButton, pos=handle.center())
+    QTest.mouseMove(slider, target, 100)
+    QTest.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=target)
+    QTest.qWait(250)
+    check('dragging zoom slider changes real visible timeline to one second', page.timeline.visible_duration_ms <= 1200,
+          dict(value=slider.value(), visible_ms=page.timeline.visible_duration_ms))
+    page.timeline_fit_button.click(); QTest.qWait(200)
+    check('fit timeline restores the slider to the start', slider.value() <= 1
+          and page.timeline.visible_duration_ms >= page.timeline._duration_ms()-2,
+          dict(value=slider.value(), visible_ms=page.timeline.visible_duration_ms))
+    plus = next(button for button in pills['view'].findChildren(QToolButton) if '放大时间轴' in button.toolTip())
+    QTest.mouseClick(plus, Qt.MouseButton.LeftButton); QTest.qWait(200)
+    check('zoom button keeps slider in sync', slider.value() > 0, slider.value())
+    _capture(window, output/'zoom-slider-capsules.png')
+    page.timeline_fit_button.click()
     window.resize(1600, 1000)
     QTest.qWait(700)
     if expect_redesign:

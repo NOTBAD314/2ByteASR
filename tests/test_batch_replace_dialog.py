@@ -105,21 +105,25 @@ def test_enter_applies_only_checked_rows_and_rows_show_both_versions(app, page):
         dialog.replace_edit.setText("她")
         dialog._search_timer.stop()
         dialog._do_preview()
-        assert dialog.preview.count() == 4
+        # 2026-10-30 (draft C): one card per cue; two matches in one sentence share it.
+        assert dialog.preview.count() == 3
+        assert len(dialog._checked_hits()) == 4 and dialog.all_button.text() == "替换 4 处"
         row = dialog.preview.item(0).data(PREVIEW_HTML_ROLE)
         assert "line-through" in row and "尼奈" in row and "她" in row and "00:00.000" in row
         assert "尼奈" in dialog.preview.item(0).text()  # plain text kept for reading and tests
+        assert "2 处" in dialog.preview.item(1).data(PREVIEW_HTML_ROLE)
         dialog.preview.item(1).setCheckState(Qt.CheckState.Unchecked)
+        assert dialog.all_button.text() == "替换 2 处"
         QTest.keyClick(dialog.find_edit, Qt.Key.Key_Enter)
-        assert _texts(page)[1] == "我觉得尼奈应该先撤，她血不多了"
+        assert _texts(page) == ["她这波打得好", "我觉得尼奈应该先撤，尼奈血不多了", "对面打野在上路", "她的大招还有十秒"]
         assert page.session.undo_stack.count() == 1
-        # The unchecked occurrence is still offered afterwards, still unticked,
+        # The unchecked cue is still offered afterwards, still unticked,
         # so a second Enter does not take it.
         assert dialog.preview.count() == 1
         assert dialog.preview.item(0).checkState() == Qt.CheckState.Unchecked
         assert "Ctrl+Z" in dialog.status_label.text()
         QTest.keyClick(dialog.find_edit, Qt.Key.Key_Enter)
-        assert _texts(page)[1] == "我觉得尼奈应该先撤，她血不多了"
+        assert _texts(page)[1] == "我觉得尼奈应该先撤，尼奈血不多了"
         assert page.session.undo_stack.count() == 1
     finally:
         dialog.close()

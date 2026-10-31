@@ -12,7 +12,7 @@ and languages, and no readiness is claimed.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
@@ -28,6 +28,92 @@ ICON_SIZE = 32
 # Interface language -> the badge language that is "theirs".
 UI_BADGE = {"zh": "zh", "zh-Hant": "zh", "en": "en", "ja": "ja", "ko": "ko"}
 SUPPORTED = {"strong", "usable"}
+
+
+class RecognitionCardHeader(QWidget):
+    """One row whose minimum follows its children's complete styled boxes.
+
+    Applying a root theme then UI zoom can leave QLayout's cached minimum
+    at the preceding scale even after QSS changed a combo's actual minimum.
+    Remeasure after that batch, and never independently scale the derived
+    container height. This keeps the full borders inside the scroll content.
+    """
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('recognitionCardHeader')
+        self.setProperty('uiZoomOwnSize', True)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self._measure_pending = False
+
+    def childEvent(self, event):
+        super().childEvent(event)
+        if (event.added() or event.polished()) and isinstance(event.child(), QWidget):
+            event.child().installEventFilter(self)
+            self._queue_measure()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.StyleChange, QEvent.FontChange, QEvent.Resize, QEvent.Show, QEvent.Hide, QEvent.PolishRequest):
+            self._measure()
+            self._queue_measure()
+        return super().eventFilter(obj, event)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.LayoutRequest, QEvent.Show, QEvent.StyleChange, QEvent.FontChange):
+            self._measure()
+            self._queue_measure()
+        return result
+
+    def _queue_measure(self):
+        if getattr(self, '_measure_pending', False):
+            return
+        self._measure_pending = True
+        QTimer.singleShot(0, self, self._measure)
+
+    def _measure(self):
+        self._measure_pending = False
+        if getattr(self, '_measuring', False):
+            return
+        layout = self.layout()
+        if layout is None:
+            return
+        self._measuring = True
+        try:
+            heights = []
+            widgets = []
+            title_width_changed = False
+            for i in range(layout.count()):
+                widget = layout.itemAt(i).widget()
+                if widget is not None and not widget.isHidden():
+                    widget.installEventFilter(self)
+                    widget.ensurePolished()
+                    if isinstance(widget, QLabel) and widget.objectName() == 'recognitionStepTitle':
+                        # These short field headings must not inherit the
+                        # preceding scale's cached text width. Context/file
+                        # labels keep their intentional elision policy.
+                        widget.setProperty('uiZoomOwnSize', True)
+                        inset = widget.contentsMargins()
+                        from ..design.tokens import TYPE_SCALE
+                        from ..app.ui_zoom import px
+                        styled_font = QFont(widget.font())
+                        styled_font.setPixelSize(px(TYPE_SCALE['heading2']))
+                        width = max(widget.fontMetrics().horizontalAdvance(widget.text()),
+                                    QFontMetrics(styled_font).horizontalAdvance(widget.text())) + inset.left() + inset.right()
+                        if widget.minimumWidth() != width:
+                            widget.setMinimumWidth(width)
+                            title_width_changed = True
+                    widgets.append(widget)
+                    heights.append(max(widget.minimumHeight(), widget.minimumSizeHint().height(), widget.sizeHint().height()))
+            margins = layout.contentsMargins()
+            height = max(heights, default=0) + margins.top() + margins.bottom()
+            if height != self.minimumHeight() or title_width_changed:
+                for widget in widgets:
+                    widget.updateGeometry()
+                self.setMinimumHeight(height)
+                layout.invalidate()
+                self.updateGeometry()
+        finally:
+            self._measuring = False
 
 
 def catalog_facts(role: str, backend: str, name: str, provider: str = "") -> dict:

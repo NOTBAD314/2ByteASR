@@ -31,16 +31,34 @@ def _input_text(row):
     return str(detail.get('input_text') or detail.get('original_text') or row.get('text') or '')
 
 
+def _join_before(project,parts,text):
+    if not parts or not parts[-1]['text'] or not text:return ''
+    from ..subtitle_rules.correction_risk import SPACED_LANGUAGES
+    language=(project.generation_metadata.get('language') or {}).get('code')
+    if not language:
+        from ..subtitle_rules.language_rules import detect_language
+        language=detect_language([cue.text for cue in project.cues])[0]
+    return ' ' if language in SPACED_LANGUAGES else ''
+
+
 def _current_parts(project,refs,start,end):
     parts=[];offset=0
+    from ..timeline.caption_frame_time import project_frame_rate
+    from ..timeline.clip_time_mapper import frame_tolerance_ms
+    tolerance=frame_tolerance_ms(float(project_frame_rate(project) or 0))
     for cue in sorted(project.cues,key=lambda c:(c.start_ms,c.end_ms,c.id)):
         if not set(cue.evidence_refs)&set(refs):continue
         overlap=min(end,cue.end_ms)-max(start,cue.start_ms)
         # Source refs can touch the previous caption by one rounded frame.
         # Such a neighbour is context, not ownership of this failed utterance.
-        if overlap<=10 and end-start>50:continue
+        if overlap<=0:continue
+        if (overlap<=tolerance and end-start>50
+                and (cue.start_ms<start or cue.end_ms>end)):continue
+        separator=_join_before(project,parts,cue.text)
+        offset+=len(separator)
         row={'cue_id':cue.id,'start_ms':cue.start_ms,'end_ms':cue.end_ms,'speaker_id':cue.speaker_id,
              'text':cue.text,'evidence_refs':list(cue.evidence_refs),'offset':offset}
+        if separator:row['join_before']=separator
         parts.append(row);offset+=len(cue.text)
     return parts
 
@@ -51,11 +69,14 @@ def capture_unit(project,unit):
         parts=[];offset=0
         for cue in sorted(project.cues,key=lambda c:(c.start_ms,c.end_ms,c.id)):
             if cue.id not in chosen:continue
+            separator=_join_before(project,parts,cue.text)
+            offset+=len(separator)
             parts.append({'cue_id':cue.id,'start_ms':cue.start_ms,'end_ms':cue.end_ms,'speaker_id':cue.speaker_id,
                 'text':cue.text,'evidence_refs':list(cue.evidence_refs),'offset':offset})
+            if separator:parts[-1]['join_before']=separator
             offset+=len(cue.text)
     else:parts=_current_parts(project,unit.get('evidence_refs',()),*unit.get('source_range_ms',(0,0)))
-    text=''.join(row['text'] for row in parts)
+    text=''.join(row.get('join_before','')+row['text'] for row in parts)
     from ..subtitle_rules.subtitle_translation import records_of
     return {'parts':parts,'text':text,'version':digest(parts),'project_id':str(project.project_id),
             'job_id':str(project.generation_metadata.get('job_id') or ''),'media_path':project.media.path,
@@ -75,6 +96,7 @@ def input_matches(project,captured):
         if cue is None:return False
         actual.append({'cue_id':cue.id,'start_ms':cue.start_ms,'end_ms':cue.end_ms,'speaker_id':cue.speaker_id,
             'text':cue.text,'evidence_refs':list(cue.evidence_refs),'offset':row['offset']})
+        if 'join_before' in row:actual[-1]['join_before']=row['join_before']
     return digest(actual)==captured.get('version')
 
 
@@ -113,6 +135,9 @@ def recover_units(project,report):
             captured=capture_unit(project,unit)
             unit.update(input=captured,cue_ids=[p['cue_id'] for p in captured['parts']],
                 status=unit.get('status','failed'),retryable=bool(captured['parts']))
+            if detail.get('validation_failure', {}).get('reason') == 'source_quote_not_found':
+                unit.update(status='completed_no_change', retryable=False, classification='protection_rejection',
+                    reason='AI建议引用的原文不存在，已拒绝建议并保留原字幕；属于保护警告')
             if not captured['parts']:unit.update(status='blocked',reason='失败处理记录仍在，但当前字幕缺少可确认的对应范围')
         else:unit.update(status='blocked',reason='原失败输入关联缺失或不唯一，不能按同号字幕猜测重试范围',evidence_refs=[],cue_ids=[])
         rows.append(unit)
@@ -160,7 +185,8 @@ def recover_units(project,report):
     for unit in rows:
         if unit.get('status')=='running' and unit['key'] not in ACTIVE_KEYS:
             unit.update(status='failed',reason='上次重试已中断或窗口已关闭；保留当前文字，可继续重试')
-    return rows
+    # Multiple callbacks/events of one stable stage unit remain one task.
+    return list({row['key']: row for row in rows}.values())
 
 
 def failure_summary(project,report):
@@ -171,9 +197,10 @@ def failure_summary(project,report):
             'pending_proposals':sum(u.get('status')=='proposals_pending' and input_matches(project,u['input']) for u in units)}
 
 
-def effective_report(project,report):
+def effective_report(project,report, *, summary=None):
     """Reconcile current completion UI without editing historical diagnostics."""
-    result=copy.deepcopy(report);summary=failure_summary(project,report)
+    result=dict(report);summary=summary if summary is not None else failure_summary(project,report)
+    result['polishing_summary']=dict(report.get('polishing_summary') or project.generation_metadata.get('polishing_summary') or {})
     units=summary['units'];polish=[u for u in units if u['stage']=='polish']
     pending=[u for u in polish if u.get('status') not in TERMINAL]
     resolved={str(i) for u in polish if u.get('status') in TERMINAL for i in u.get('original_ids',())}
@@ -181,7 +208,15 @@ def effective_report(project,report):
         value=result.setdefault('polishing_summary',copy.deepcopy(project.generation_metadata.get('polishing_summary') or {}))
         result['historical_polishing_summary']=copy.deepcopy(report.get('polishing_summary') or {})
         value['fallback_ids']=[i for u in pending for i in u.get('original_ids',())]
-        value['fallback_cues']=len(pending);value['fallback_batches']=int(bool(pending))
+        value['fallback_cues']=len(pending)
+        # A retry unit is one processing record; after partial retries it no
+        # longer describes the original batch boundaries. Keep those as
+        # history, never invent a current "one fallback batch" aggregate.
+        value['count_scope']='current_processing_task'
+        value['historical_batch_counts']={k:report.get('polishing_summary',{}).get(k) for k in ('success_batches','fallback_batches')}
+        value['success_batches']=None;value['fallback_batches']=None
+        from collections import Counter
+        value['failure_categories']=dict(Counter(u.get('reason','failed') for u in pending))
         value['failure_records']={str(i):u.get('reason','failed') for u in pending for i in u.get('original_ids',())}
         success={str(i) for i in value.get('success_ids') or ()}|resolved
         success_ids=sorted(map(int,success)) if all(i.isdigit() for i in success) else sorted(success)
@@ -198,25 +233,37 @@ def effective_report(project,report):
         result['review_items']=[r for r in result.get('review_items',()) if r.get('category')!='断句回退']
     if 'translation' not in remaining and any(u['stage']=='translation' for u in units):
         result['review_items']=[r for r in result.get('review_items',()) if r.get('category')!='翻译未全部完成']
-        for event in result.get('events',()):
-            if event.get('event')=='subtitle_translation':event['failed']=0
+        result['events']=[dict(event,failed=0) if event.get('event')=='subtitle_translation' else event
+                          for event in result.get('events',())]
     if 'review_items' in result:
         from .recognition_outcome import review_severity
         from collections import Counter
         result['review_severity_counts']=dict(Counter(review_severity(r) for r in result['review_items']))
+    from .current_review import current_review
+    current=current_review(project,report)
+    result['_current_review']=current
+    result['review_items']=[*current['items'],*current['suggestions'],*current['warnings']]
+    from .recognition_outcome import review_severity
+    from collections import Counter
+    result['review_severity_counts']=dict(Counter(review_severity(r) for r in result['review_items']))
     return result
 
 
 def refresh_completion_evidence(project,evidence):
     """Completion page and retry button read the same reconciled units."""
     if project is None or not evidence.get('display_payload'):return
-    if not recover_units(project,evidence['display_payload']):return
-    original=evidence.setdefault('historical_payload',copy.deepcopy(evidence['display_payload']))
-    display=effective_report(project,original)
+    runtime=getattr(project,'_studio_state_runtime',None)
+    stamp=(id(project),getattr(runtime,'revision',0),id(project.cues),len(project.cues),
+           id(project.generation_metadata.get(KEY)),id(project.studio_state.get('recognition_review_decisions')))
+    if evidence.get('_current_review_stamp')==stamp:return
+    original=evidence.setdefault('historical_payload',evidence['display_payload'])
+    summary=failure_summary(project,original)
+    display=effective_report(project,original,summary=summary)
     from .recognition_outcome import normalize_recognition_outcome
     evidence['display_payload']=display
-    evidence['outcome']=normalize_recognition_outcome(display)
-    evidence['stage_recovery']=failure_summary(project,original)
+    evidence['outcome']=normalize_recognition_outcome(display,delivery_witness=evidence.get('delivery_witness'))
+    evidence['stage_recovery']=summary
+    evidence['_current_review_stamp']=stamp
 
 
 def save_unit_states(project,report,updates,*,path):

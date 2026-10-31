@@ -165,6 +165,8 @@ class ProjectStateRuntime:
 
     def __init__(self, project: "SubtitleProject") -> None:
         self.revision = 0
+        self.language_source_revision = 0
+        self.presentation_revision = 0
         self.playback_revision = 0
         self.playback_invalidation = 'project_open'
         self._playback_plan = None
@@ -187,6 +189,8 @@ class ProjectStateRuntime:
         clone = object.__new__(type(self))
         memo[id(self)] = clone
         clone.revision = self.revision
+        clone.language_source_revision = self.language_source_revision
+        clone.presentation_revision = self.presentation_revision
         clone.playback_revision = self.playback_revision
         clone.playback_invalidation = 'project_copy'
         clone._playback_plan = None
@@ -309,6 +313,7 @@ class ProjectStateRuntime:
         selection_before: str | None = None,
         selection_after: str | None = None,
         snapshot_cues: bool = True,
+        studio_state_keys: Iterable[str] | None = None,
     ) -> "StateTransaction":
         return StateTransaction(
             self,
@@ -321,6 +326,7 @@ class ProjectStateRuntime:
             selection_before=selection_before,
             selection_after=selection_after,
             snapshot_cues=snapshot_cues,
+            studio_state_keys=studio_state_keys,
         )
 
     def _emit(self, delta: StateDelta) -> None:
@@ -367,6 +373,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         selection_before: str | None,
         selection_after: str | None,
         snapshot_cues: bool = True,
+        studio_state_keys: Iterable[str] | None = None,
     ) -> None:
         self.state = state
         self.project = project
@@ -396,6 +403,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._effects_snapshot = None
         self._recipes_snapshot = None
         self._metadata_snapshot = None
+        self._studio_state_keys=None if studio_state_keys is None else frozenset(studio_state_keys)
+        self._studio_key_snapshot=None
         self._media_pool_snapshot = None
         self._video_tracks_snapshot = None
         self._audio_tracks_snapshot = None
@@ -424,6 +433,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         active = self.state._active
         if active is not None:
             self._parent = active
+            if self.dirty & DirtyDomain.PROJECT_METADATA:
+                active._adopt_metadata_scope(self._studio_state_keys)
             active.mark_dirty(
                 self.dirty,
                 cue_ids=self.affected_cue_ids,
@@ -437,10 +448,30 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._diagnostic = begin_transaction(self)
         try:
             self._capture_domains(self.dirty)
+            if self._studio_state_keys is not None:
+                self._capture_domains(DirtyDomain.PROJECT_METADATA)
         except BaseException:
             release_transaction(self._diagnostic)
             raise
         return self
+
+    def _adopt_metadata_scope(self,keys):
+        if self._studio_state_keys is None:return
+        if keys is not None:
+            missing=set(keys)-self._studio_state_keys
+            if self._studio_key_snapshot is not None:
+                for key in missing:
+                    self._studio_key_snapshot[key]=(key in self.project.studio_state,copy.deepcopy(self.project.studio_state.get(key)))
+            self._studio_state_keys|=frozenset(keys)
+            return
+        saved=self._studio_key_snapshot
+        self._studio_state_keys=None
+        self._capture_domains(DirtyDomain.PROJECT_METADATA)
+        if saved is not None:
+            state=self._metadata_snapshot[1]
+            for key,(present,value) in saved.items():
+                if present:state[key]=copy.deepcopy(value)
+                else:state.pop(key,None)
 
     def _capture_domains(self, domains: DirtyDomain) -> None:
         if domains & SEQUENCE_DOMAINS and self._sequence_snapshot is None:
@@ -484,12 +515,17 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             self._effects_snapshot = copy.deepcopy(self.project.effects)
             self._recipes_snapshot = copy.deepcopy(self.project.style_recipes)
         if domains & DirtyDomain.PROJECT_METADATA and self._metadata_snapshot is None:
-            self._metadata_snapshot = (
-                copy.deepcopy(self.project.media),
-                _json_snapshot(self.project.studio_state),
-                _json_snapshot(self.project.generation_metadata),
-                _json_snapshot(self.project.render_settings),
-            )
+            if self._studio_state_keys is not None:
+                if self._studio_key_snapshot is None:
+                    self._studio_key_snapshot={key:(key in self.project.studio_state,
+                        copy.deepcopy(self.project.studio_state.get(key))) for key in self._studio_state_keys}
+            else:
+                self._metadata_snapshot = (
+                    copy.deepcopy(self.project.media),
+                    _json_snapshot(self.project.studio_state),
+                    _json_snapshot(self.project.generation_metadata),
+                    _json_snapshot(self.project.render_settings),
+                )
         if domains & MEDIA_DOMAINS:
             if self._media_pool_snapshot is None:
                 self._media_pool_snapshot = copy.deepcopy(self.project.media_pool)
@@ -501,6 +537,10 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 self._av_track_groups_snapshot = copy.deepcopy(self.project.av_track_groups)
 
     def _rollback(self) -> None:
+        if self._studio_key_snapshot is not None:
+            for key,(present,value) in self._studio_key_snapshot.items():
+                if present:self.project.studio_state[key]=copy.deepcopy(value)
+                else:self.project.studio_state.pop(key,None)
         if self._sequence_snapshot is not None:
             from ..timeline.studio_edit_sequence import replace_runtime_sequence
 
@@ -590,6 +630,11 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 self.state.reindex_cues(self.project)
         self.state.selected_cue_id = self.selection_after
         self.state.revision += 1
+        if self.dirty & (DirtyDomain.CUE_STYLE | DirtyDomain.TRANSFORM | DirtyDomain.PROJECT_METADATA | DirtyDomain.CUE_MODEL):
+            self.state.presentation_revision += 1
+        if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
+                         | SEQUENCE_DOMAINS):
+            self.state.language_source_revision += 1
         # A committed edit is the invalidation boundary, including undo/redo.
         # Selection, paint, QC and autosave alone do not rebuild media indexes.
         if self.dirty & (MEDIA_DOMAINS | SEQUENCE_DOMAINS | CUE_DOMAINS
