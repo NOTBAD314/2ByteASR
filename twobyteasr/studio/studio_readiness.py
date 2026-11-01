@@ -390,6 +390,7 @@ class StudioReadiness(QObject):
         self.loading_generation = self.generation
         epoch = self.generation
         self.path, self.active, self.ready = path, True, False
+        page.video._last_load_error = ''
         page.video.set_paused(True)
         from ..design.ui_motion import settle_layout
         settle_layout(page)
@@ -416,6 +417,7 @@ class StudioReadiness(QObject):
         self.page.timeline.setUpdatesEnabled(False)
         self.timer.start()
         self.player_ready = (os.environ.get("TWOBYTEASR_DIAGNOSTIC_NO_PLAYER") == "1"
+                             or getattr(page.video, '_recovery_request', None) is not None
                              or bool(page.video.controller is not None and page.video.controller.running))
         if not self.player_ready:
             if sys.platform == 'darwin':
@@ -462,15 +464,17 @@ class StudioReadiness(QObject):
         log_path = studio_data_root()/'logs/mpv.log'
         previous = page.video.controller
         def player():
-            controller = MpvController()
+            controller = None
             try:
+                controller = MpvController()
                 if previous is not None:
                     previous.close()
                 log_path.parent.mkdir(parents=True,exist_ok=True)
                 controller.start(hwnd,log_path=str(log_path))
                 self.player_loaded.emit(epoch,controller,'')
             except Exception as exc:
-                controller.close()
+                if controller is not None:
+                    controller.close()
                 try:self.player_loaded.emit(epoch,None,str(exc))
                 except RuntimeError:pass
         threading.Thread(target=player,name='studio-player-start',daemon=True).start()
@@ -741,7 +745,13 @@ class StudioReadiness(QObject):
     def _player_start_failure(self):
         """Why Windows could not load mpv at all, or '' (still starting / other errors)."""
         from ..playback.studio_mpv import startup_failure_message
-        controller = getattr(self.page.video, 'controller', None)
+        if not getattr(self, 'player_ready', True):
+            return ''  # The old exited child cannot fail its pending replacement.
+        video = self.page.video
+        detail = getattr(video, '_last_load_error', '')
+        if detail:
+            return detail
+        controller = getattr(video, 'controller', None)
         return startup_failure_message(getattr(controller, 'exit_code', None))
 
     def _record_player_wait(self, *, failed=False):

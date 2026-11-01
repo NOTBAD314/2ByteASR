@@ -61,6 +61,8 @@ from .studio_text_tools import (
 from ..i18n import bind_text
 
 from ..i18n import tr
+from .text_preview_list import TextPreviewList, PreviewItem
+from .subtitle_text_targets import entry_lookup, target_label, track_label, navigate_target, scope_entries
 
 
 # id(project) -> (weakref to it, {binding class: (runtime revision, document fingerprint)})
@@ -357,16 +359,32 @@ def apply_occurrences(
         review_receipt={**copy.deepcopy(review_receipt),'applied_changes':len(hits),
             'selected_changes':[{'cue_id':hit.cue_id,'span':list(hit.span),'from':hit.original,
                 'to':hit.replacement,'source':hit.source,'default_selected':hit.default_selected} for hit in hits]}
-    values = values_from_occurrences(page.session.project, hits)
+    from .subtitle_text_targets import entry_lookup
+    entries = entry_lookup(page.session.project, targets=[hit.target for hit in hits])
+    values = values_from_occurrences(page.session.project, hits, entries=entries)
     if not values:
         return 0, 0
+    hits = [hit for hit in hits if hit.target_key in values and
+            entries[hit.target_key].text[hit.span[0]:hit.span[1]] == hit.original]
+    if review_receipt is not None:
+        review_receipt['applied_changes'] = len(hits)
+        review_receipt['selected_changes'] = [dict(cue_id=hit.cue_id, target=entries[hit.target_key].target.to_dict(),
+            span=list(hit.span), **{'from': hit.original, 'to': hit.replacement}, source=hit.source,
+            default_selected=hit.default_selected) for hit in hits]
+    translation_values = {entries[key].target.cue_id: (text, entries[key].target.language)
+                          for key, text in values.items() if entries[key].target.storage == 'translation'}
+    cue_values = {entries[key].target.cue_id: text for key, text in values.items()
+                  if entries[key].target.storage == 'cue'}
+    # Translation terminology is not recognition evidence for the source language.
+    if any(entries[key].target.layer == 'translation' for key in values):
+        learn_pair = None
     origin = MutationOrigin.SEARCH_REPLACE if learn_pair else MutationOrigin.SYSTEM
     learning_meta = None
     if learn_pair is not None:
         learning_meta = _search_replace_learning(page, learn_pair[0], learn_pair[1])
     page.session.undo_stack.push(BatchReplaceTextCommand(
         page.session.project,
-        values,
+        cue_values,
         needle=title,
         changed=page._changed,
         origin=origin,
@@ -378,11 +396,14 @@ def apply_occurrences(
         learning_meta=learning_meta,
         glossary_ids=glossary_ids,
         review_receipt=review_receipt,
+        translation_values=translation_values,
     ))
     return len(hits), len(values)
 
 
+
 PREVIEW_HTML_ROLE = Qt.ItemDataRole.UserRole + 2
+TEXT_TARGET_ROLE = Qt.ItemDataRole.UserRole + 3
 
 
 def _blend(foreground: str, background: str, share: float) -> str:
@@ -539,6 +560,9 @@ class _TextPreviewDialog(QDialog):
         self._glossary_review_worker = None
         self._review_close_pending = False
         self._review_generation = 0
+        self._applied_rows = set()
+        self._applying = False
+        self._entry_by_key = {}
 
     def _scope_box(self) -> QComboBox:
         combo = QComboBox()
@@ -570,13 +594,16 @@ class _TextPreviewDialog(QDialog):
             button.clicked.connect(lambda _checked=False, value=checked: self._set_all_preview_checked(value))
             head.addWidget(button)
         layout.addLayout(head)
-        self.preview = QListWidget()
+        self.preview = TextPreviewList()
         self.preview.setObjectName("findResultList")
         self.preview.setMinimumHeight(180)
         self.preview.setWordWrap(True)
         self.preview.setResizeMode(QListView.ResizeMode.Adjust)
         self.preview.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.preview.setItemDelegate(_PreviewRowDelegate(self.preview))
+        self.preview.setLayoutMode(QListView.LayoutMode.Batched)
+        self.preview.setBatchSize(100)
+        self.preview.itemDoubleClicked.connect(self._edit_preview_item)
         self.preview.itemClicked.connect(self._preview_item_clicked)
         self.preview.itemChanged.connect(self._refresh_status)
         self.preview.currentItemChanged.connect(self._update_association_button)
@@ -647,40 +674,53 @@ class _TextPreviewDialog(QDialog):
         return None
 
     # ---------------------------------------------------------- preview list
-    def _fill_preview(self, hits: list[TextOccurrence], binding=None) -> None:
-        project = self._page.session.project
-        self._preview_hits = list(hits)
-        self._preview_binding = binding or PreviewBinding.capture(project)
-        texts = {cue.id: cue.text for cue in project.cues} if project is not None else {}
-        colors = _preview_colors() if hits else {}
-        self.preview.clear()
-        # Thousands of matches for a first letter: no layout or paint per row (2026-10-22).
+    def _fill_preview(self,hits,binding=None):
+        project=self._page.session.project
+        self._preview_hits=list(hits)
+        self._preview_binding=binding or PreviewBinding.capture(project)
+        self._applied_rows.clear()
+        self._entry_by_key=entry_lookup(project,targets=[hit.target for hit in hits]) if project else {}
+        texts={key:entry.text for key,entry in self._entry_by_key.items()}
+        colors=_preview_colors() if hits else {}
+        self.preview.blockSignals(True)
         self.preview.setUpdatesEnabled(False)
-        try:
-            self._add_preview_rows(hits, texts, colors)
+        try:self._add_preview_rows(hits,texts,colors)
         finally:
+            self.preview.blockSignals(False)
             self.preview.setUpdatesEnabled(True)
-        if hits:
-            bind_text(self.status_label, '找到 {value0} 处', value0=len(hits))
-        else:
-            bind_text(self.status_label, self._empty_message())
+        if hits:bind_text(self.status_label,'找到 {value0} 处',value0=len(hits))
+        else:bind_text(self.status_label,self._empty_message())
         self._refresh_status()
 
-    def _add_preview_rows(self, hits, texts, colors) -> None:
-        self._preview_row_hits = self._preview_rows(hits)
+    def _add_preview_rows(self,hits,texts,colors):
+        self._preview_row_hits=self._preview_rows(hits)
+        speakers={s.id:s.name for s in self._page.session.project.speakers}
+        items=[]
         for row in self._preview_row_hits:
-            hit = row[0]
-            item = QListWidgetItem("\n".join(self._row_text(each) for each in row))
-            row_html = self._rows_html(row, texts.get(hit.cue_id, ""), colors)
+            hit=row[0]
+            entry=self._entry_by_key.get(hit.target_key)
+            baseline=entry.text if entry else texts.get(hit.target_key,'')
+            label=target_label(entry.target) if entry else ''
+            meta=' · '.join(value for value in (label,speakers.get(entry.speaker_id,entry.speaker_id) if entry else '',
+                track_label(self._page.session.project,entry.target) if entry else '') if value)
+            before_after=baseline
+            for each in sorted(row,key=lambda h:h.span,reverse=True):
+                before_after=before_after[:each.span[0]]+each.replacement+before_after[each.span[1]:]
+            plain=(f'{clock_ms(hit.start_ms)} · {meta}\n'+tr('修改前：{text}',text=baseline)+'\n'
+                   +tr('建议：{text}',text=before_after)+'\n'+' · '.join(f'{h.original} → {h.replacement}' for h in row))
+            item=PreviewItem(plain)
+            row_html=self._rows_html(row,baseline,colors)
             if row_html:
-                item.setData(PREVIEW_HTML_ROLE, row_html)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if all(each.default_selected for each in row)
-                               else Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, hit.cue_id)
-            item.setData(Qt.ItemDataRole.UserRole+1, {'surface':hit.original,'canonical_options':[hit.replacement],
-                'state':'proposal','cue_id':hit.cue_id})
-            self.preview.addItem(item)
+                item.setData(PREVIEW_HTML_ROLE,'<span style="color:'+colors['secondary']+';">'+html.escape(meta)+'</span><br>'+row_html)
+            item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if all(h.default_selected for h in row) else Qt.Unchecked)
+            item.setData(Qt.UserRole,entry.target.cue_id if entry else hit.cue_id)
+            item.setData(Qt.UserRole+1,dict(surface=hit.original,canonical_options=[hit.replacement],state='proposal',cue_id=hit.cue_id))
+            if entry:
+                item.setData(TEXT_TARGET_ROLE,entry.target)
+                item.setToolTip(tr('对应原文：{text}',text=entry.source_text) if entry.source_text else tr('无可靠原文关联；按当前文本校对。'))
+            items.append(item)
+        self.preview.replace_items(items)
 
     def _preview_item_clicked(self, item: QListWidgetItem) -> None:
         cue_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
@@ -688,7 +728,9 @@ class _TextPreviewDialog(QDialog):
             binding = self._preview_binding
             project = self._page.session.project
             was_current = binding is not None and binding.matches(project)
-            self._page.select_cue(cue_id)
+            target=item.data(TEXT_TARGET_ROLE)
+            if target is not None:navigate_target(self._page,target)
+            else:self._page.select_cue(cue_id)
             if not was_current or self._page.session.project is not project:
                 return
             from ..projects.studio_runtime_state import DirtyDomain, state_for
@@ -712,16 +754,19 @@ class _TextPreviewDialog(QDialog):
             rows = [[hit] for hit in self._preview_hits]
         for index, row in enumerate(rows):
             item = self.preview.item(index)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
+            if item is not None and item.checkState() == Qt.CheckState.Checked and index not in self._applied_rows:
                 hits.extend(row)
         return hits
 
     def _set_all_preview_checked(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.preview.blockSignals(True)
         for index in range(self.preview.count()):
             item = self.preview.item(index)
             if item is not None and item.flags() & Qt.ItemIsUserCheckable:
                 item.setCheckState(state)
+        self.preview.blockSignals(False)
+        self._refresh_status()
 
     def _refresh_status(self, *_args) -> None:
         running = self._glossary_review_worker is not None and self._glossary_review_worker.isRunning()
@@ -751,6 +796,8 @@ class _TextPreviewDialog(QDialog):
             self.status_label.setText('同一位置选中了不同候选，请只保留一个后再应用；本次没有修改字幕。')
             return
         extras = self._apply_extras(hits)
+        self._last_applied_hits=list(hits)
+        self._applying=True
         total, cue_count = apply_occurrences(
             self._page, hits,
             title=extras.get("title") or self._title,
@@ -761,6 +808,7 @@ class _TextPreviewDialog(QDialog):
         )
         if total:
             self._page._show_studio_hint(tr('已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）', value0=total, value1=cue_count))
+        self._applying=False
         self._after_apply(total, cue_count)
 
     def reject(self) -> None:
@@ -771,6 +819,48 @@ class _TextPreviewDialog(QDialog):
             self.status_label.setText("正在取消校对，请稍候…")
             return
         super().reject()
+
+    def _add_text_targets(self, layout):
+        from .text_target_widgets import TextTargetSelector
+        self.text_targets = TextTargetSelector(self)
+        self.text_targets.bind(self._page.session.project, self._page)
+        self.text_targets.changed.connect(self._text_target_changed)
+        layout.addWidget(self.text_targets)
+
+    def _text_target_changed(self):
+        self._review_generation += 1
+        self._preview_binding = None
+        if hasattr(self,'project_entity_box'):
+            self.project_entity_box.setEnabled(self.text_targets.mode_value()=='original')
+        if hasattr(self,'_search_timer'):
+            self._queue_live_search()
+        else:
+            self._preview_hits=[]
+            if hasattr(self,'preview'):self.preview.clear()
+            if hasattr(self,'status_label'):self.status_label.setText(tr('操作对象已改变，请重新生成校对建议。'))
+
+    def _scoped_entries(self):
+        return scope_entries(self._page,self._current_scope(),mode=self.text_targets.mode_value(),tracks=self.text_targets.tracks())
+
+    def _edit_preview_item(self,item):
+        target=item.data(TEXT_TARGET_ROLE)
+        if target is None or not hasattr(self._page,'timeline'):return
+        if not navigate_target(self._page,target):
+            self.status_label.setText(tr('字幕或语言轨道已改变，请重新搜索。'));return
+        page=self._page
+        self.accept()
+        if target.storage=='translation':
+            from .studio_translation_edit import edit_translation
+            edit_translation(page,target.cue_id)
+        else:
+            cue=next((c for c in page.session.project.cues if c.id==target.cue_id),None)
+            if cue is not None:page.timeline._open_inline_editor(cue,False,cue.text)
+
+    def hideEvent(self,event):
+        timer=getattr(self,'_search_timer',None)
+        if timer is not None:timer.stop()
+        super().hideEvent(event)
+
 
 
 class FindReplaceDialog(_TextPreviewDialog):
@@ -787,6 +877,8 @@ class FindReplaceDialog(_TextPreviewDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(10)
+
+        self._add_text_targets(layout)
 
         # 2026-10-30 (user picked draft C): one line reads "find → replace",
         # the options are a row of small tags, results are one card per cue.
@@ -879,6 +971,8 @@ class FindReplaceDialog(_TextPreviewDialog):
         self._add_footer(layout, leading=(self.key_hint,), trailing=(self.next_button, self.all_button),
                          close_button=False)
         self._finish_setup()
+        self.project_entity_box.setEnabled(self.text_targets.mode_value()=='original')
+        self._page.session.undo_stack.indexChanged.connect(self._external_text_change)
         self.find_edit.setFocus()
 
     # ---------------------------------------------------------- keyboard
@@ -900,10 +994,12 @@ class FindReplaceDialog(_TextPreviewDialog):
                 return True
         return super().eventFilter(watched, event)
 
-    def _query(self) -> tuple:
+    def _query(self):
         return (self.find_edit.text(), self.replace_edit.text(), self._current_scope(),
                 self.case_box.isChecked(), self.word_box.isChecked(), self.regex_box.isChecked(),
-                self.body_box.isChecked(), self.lock_box.isChecked())
+                self.body_box.isChecked(), self.lock_box.isChecked(), self.text_targets.mode_value(),
+                self.text_targets.track.currentData(),
+                tuple(entry.key for entry in self._scoped_entries()) if self._current_scope() != SCOPE_ALL else ())
 
     def _apply_from_keyboard(self) -> None:
         if not self.find_edit.text():
@@ -934,7 +1030,7 @@ class FindReplaceDialog(_TextPreviewDialog):
         # One card per cue: two matches in one sentence are ticked together.
         rows: dict[str, list[TextOccurrence]] = {}
         for hit in hits:
-            rows.setdefault(hit.cue_id, []).append(hit)
+            rows.setdefault(hit.target_key, []).append(hit)
         return list(rows.values())
 
     def _rows_html(self, row: list[TextOccurrence], text: str, colors) -> str:
@@ -953,7 +1049,7 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     def _apply_extras(self, hits) -> dict:
         extras = {"title": self.find_edit.text() or self._title}
-        if self.regex_box.isChecked():
+        if self.regex_box.isChecked() or any(h.target is not None and h.target.layer=='translation' for h in hits):
             # Regex patterns are not term corrections; nothing is learned.
             return extras
         needle = self.find_edit.text().strip()
@@ -970,13 +1066,13 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     def _apply_checked(self) -> None:
         # Per cue, how many rows were left unticked: after the apply those are what remains.
-        self._skipped = (Counter(hit.cue_id for hit in self._preview_hits)
-                         - Counter(hit.cue_id for hit in self._checked_hits()))
+        self._skipped = (Counter(hit.target_key for hit in self._preview_hits)
+                         - Counter(hit.target_key for hit in self._checked_hits()))
         super()._apply_checked()
 
     def _after_apply(self, total: int, cue_count: int) -> None:
         self._do_preview()
-        if total and self._skipped and Counter(hit.cue_id for hit in self._preview_hits) == self._skipped:
+        if total and self._skipped and Counter(hit.target_key for hit in self._preview_hits) == self._skipped:
             # The rows left are the ones you unticked; a second Enter must not take them.
             self._set_all_preview_checked(False)
         self._refresh_status()
@@ -1000,36 +1096,33 @@ class FindReplaceDialog(_TextPreviewDialog):
         needle = self.find_edit.text()
         enabled = bool(needle) and self._page.session.project is not None
         self.next_button.setEnabled(enabled)
-        has_rows = self.preview.count() > 0
+        has_rows=self.preview.count()>0
         self.select_all_button.setVisible(has_rows)
         self.select_none_button.setVisible(has_rows)
-        checked = len(self._checked_hits())
-        if checked:
-            bind_text(self.all_button, '替换 {value0} 处', value0=checked)
-        else:
-            bind_text(self.all_button, '替换所选')
-        self._empty_hint.setVisible(not has_rows and not needle)
+        checked=len(self._checked_hits())
+        if checked:bind_text(self.all_button,'替换 {value0} 处',value0=checked)
+        else:bind_text(self.all_button,'替换所选')
+        self._empty_hint.setVisible(not bool(self._preview_hits))
+        self.all_button.setEnabled(bool(self._checked_hits()))
         if not enabled:
             bind_text(self.status_label, '输入查找文字后显示匹配数量')
             return
-        hits = find_occurrences(
-            self._page.session.project,
-            _scope_cue_ids(self._page, self._current_scope()),
-            needle,
-            self.replace_edit.text(),
-            case_sensitive=self.case_box.isChecked(),
-            whole_word=self.word_box.isChecked(),
-            regex=self.regex_box.isChecked(),
-            body_only=self.body_box.isChecked(),
-            skip_locked=self.lock_box.isChecked(),
-            locked_ids=_locked_ids(self._page),
-        )
+        if self._preview_query == self._query() and self._preview_binding is not None:
+            hits = self._preview_hits
+        else:
+            hits = find_occurrences(
+                self._page.session.project, _scope_cue_ids(self._page, self._current_scope()),
+                needle, self.replace_edit.text(), case_sensitive=self.case_box.isChecked(),
+                whole_word=self.word_box.isChecked(), regex=self.regex_box.isChecked(),
+                body_only=self.body_box.isChecked(), skip_locked=self.lock_box.isChecked(),
+                locked_ids=_locked_ids(self._page), entries=self._scoped_entries())
         if not hits:
             bind_text(self.status_label, '没有匹配的字幕')
             self.next_button.setEnabled(False)
             return
-        cues = {hit.cue_id for hit in hits}
-        bind_text(self.status_label, '匹配 {value0} 条字幕 · {value1} 处', value0=len(cues), value1=len(hits))
+        bind_text(self.status_label, '匹配 {cues} 条字幕 · {texts} 条文本 · {hits} 处',
+                  cues=len({h.cue_id for h in hits}), texts=len({h.target_key for h in hits}), hits=len(hits))
+
 
     @observed('cue.search')
     def _do_preview(self) -> None:
@@ -1044,7 +1137,7 @@ class FindReplaceDialog(_TextPreviewDialog):
             return
         binding = PreviewBinding.capture(project)
         hits = find_occurrences(
-            project, _scope_cue_ids(self._page, self._current_scope()),
+            project, list(dict.fromkeys(entry.target.cue_id for entry in self._scoped_entries())),
             self.find_edit.text(), self.replace_edit.text(),
             case_sensitive=self.case_box.isChecked(),
             whole_word=self.word_box.isChecked(),
@@ -1052,27 +1145,37 @@ class FindReplaceDialog(_TextPreviewDialog):
             body_only=self.body_box.isChecked(),
             skip_locked=self.lock_box.isChecked(),
             locked_ids=_locked_ids(self._page),
+            entries=self._scoped_entries(),
         )
         self._fill_preview(hits, binding)
+
 
     @observed('cue.replace_next')
     def _do_replace_next(self) -> None:
         needle = self.find_edit.text()
         if not needle:
             return
-        ok = replace_next(
-            self._page, needle=needle, replacement=self.replace_edit.text(),
-            scope=self._current_scope(),
-        )
+        self._do_preview()
+        hits = self._checked_hits()
+        current = self._page.session.selected_cue_id
+        hit = next((h for h in hits if h.cue_id == current), hits[0] if hits else None)
+        ok = apply_occurrences(self._page, [hit], title=needle, binding=self._preview_binding)[0] if hit else 0
+        if ok and hit.target is not None:
+            from .subtitle_text_targets import navigate_target
+            navigate_target(self._page, hit.target)
         if ok:
             self._page._show_studio_hint(tr('已替换下一条（可 Ctrl+Z 撤销）'))
         self._do_preview()
-        self._refresh_status()
+
 
     @observed('cue.replace_all')
     def _do_replace_all(self) -> None:
         self._do_preview()
         self._do_apply_preview()
+
+    def _external_text_change(self,*_args):
+        if self.isVisible() and not self._applying:self._queue_live_search()
+
 
 
 class GlossaryReviewDialog(_TextPreviewDialog):
@@ -1084,6 +1187,44 @@ class GlossaryReviewDialog(_TextPreviewDialog):
 
     _title = "应用术语库"
 
+    def _after_apply(self,total,cue_count):
+        if not total:return
+        from dataclasses import replace
+        from difflib import SequenceMatcher
+        actuals=entry_lookup(self._page.session.project,targets=[h.target for h in self._preview_hits])
+        selected=getattr(self,'_last_applied_hits',())
+        self.preview.blockSignals(True)
+        try:
+            for index,row in enumerate(self._preview_row_hits):
+                item=self.preview.item(index)
+                if any(hit in selected for hit in row):
+                    self._applied_rows.add(index)
+                    actual=actuals.get(row[0].target_key)
+                    written=tr('已写回：{text}',text=actual.text if actual else '')
+                    item.setText(item.text()+'\n'+written)
+                    rich=item.data(PREVIEW_HTML_ROLE)
+                    if rich:item.setData(PREVIEW_HTML_ROLE,rich+'<br>'+html.escape(written))
+                    item.setCheckState(Qt.Unchecked)
+                    item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
+                elif index not in self._applied_rows:
+                    updated=[]
+                    for hit in row:
+                        actual=actuals.get(hit.target_key)
+                        if actual is not None and hit.baseline is not None and hit.baseline!=actual.text:
+                            span=next(((c+hit.span[0]-a,c+hit.span[1]-a) for tag,a,b,c,d in
+                                SequenceMatcher(None,hit.baseline,actual.text,autojunk=False).get_opcodes()
+                                if tag=='equal' and a<=hit.span[0]<=hit.span[1]<=b),None)
+                            if span is None:
+                                item.setCheckState(Qt.Unchecked)
+                                item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
+                            else:hit=replace(hit,span=span,baseline=actual.text,context_snapshot=actual)
+                        updated.append(hit)
+                    self._preview_row_hits[index]=updated
+            self._preview_hits=[hit for row in self._preview_row_hits for hit in row]
+        finally:self.preview.blockSignals(False)
+        self._preview_binding=PreviewBinding.capture(self._page.session.project)
+        self._refresh_status()
+
     def __init__(self, page, parent=None):
         super().__init__(page, parent)
         self.setMinimumSize(640, 540)
@@ -1091,6 +1232,7 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(10)
+        self._add_text_targets(layout)
         layout.addLayout(self._terms_controls())
         self._add_results(layout)
         self.preview_button = QPushButton("预览")
@@ -1215,7 +1357,7 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         self._glossary_review_receipt = result.receipt
         for row in result.receipt.get('pending_rows', ()):
             title = '缺失名称关联（不会自动修改）' if row['state']=='missing_alias_or_candidate' else '已拒绝无效输出（不会应用）'
-            item = QListWidgetItem(f"{row['original']}\n{title}：{row['surface']} · {row['reason']}")
+            item = PreviewItem(f"{row['original']}\n{title}：{row['surface']} · {row['reason']}")
             item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
             item.setData(Qt.ItemDataRole.UserRole, row['cue_id'])
             item.setData(Qt.ItemDataRole.UserRole+1, row)
@@ -1306,7 +1448,9 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         from ..glossary.studio_glossary_service import preview_glossary_correction
         try:
             identities,snapshot=self._read_selected_snapshot()
-            result=preview_glossary_correction(project,cue_ids,snapshot,{},use_ai=False)
+            from .subtitle_text_targets import review_project
+            entries=self._scoped_entries()
+            result=preview_glossary_correction(review_project(project,entries),[e.key for e in entries],snapshot,{},use_ai=False)
         except Exception as exc:
             self._fill_preview([],binding)
             self.status_label.setText('当前词库本地预览未完成：'+str(exc)); return
@@ -1339,8 +1483,10 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         generation = self._review_generation
         settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
         from ..projects.studio_project import SubtitleProject
-        copied = SubtitleProject.from_dict(copy.deepcopy(project.to_dict()))
-        cue_ids = _scope_cue_ids(self._page, str(self.terms_scope.currentData() or SCOPE_ALL))
+        from .subtitle_text_targets import review_project
+        entries=self._scoped_entries()
+        copied=review_project(project,entries)
+        cue_ids = [entry.key for entry in entries]
         self._preview_hits = []
         self._preview_binding = None
         self._preview_snapshot_digest = None

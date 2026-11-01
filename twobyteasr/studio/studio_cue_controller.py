@@ -164,17 +164,23 @@ class StudioCueController:
         self._mirror_clock_selection(cue_id)
         return cue
 
-    def _mirror_clock_selection(self, cue_id: str) -> None:
+    def _mirror_clock_selection(self, cue_id: str, *, clear: bool = False) -> None:
         """Lightweight selection only: no editor hydration, focus, seek or dirty state."""
         page = self.page
-        if page.timeline.active_subtitle_layer == "translation":
+        if not clear and page.timeline.active_subtitle_layer == "translation":
             return
-        if getattr(page.timeline,"_unified_selection",False) and page.timeline.clip_selection().count:
+        if not clear and getattr(page.timeline,"_unified_selection",False) and page.timeline.clip_selection().count:
             return
         # Clicking a row also seeks. The observed clock target must not turn
         # the user's just-established Ctrl/Shift/ALL selection into one cue.
         if getattr(page, '_manual_selection_hold', False) and page.selection_model.scope.count() > 1:
             return
+        if not cue_id:
+            # No next clock tick is guaranteed while paused. hideEvent also
+            # retires the native mpv transform overlay, not just Qt pixels.
+            overlay = getattr(page, 'position_overlay', None)
+            if overlay is not None:
+                overlay.hide()
         self.session.selected_cue_id = cue_id
         page._manual_selection_hold = False
         scope = SelectionScope.explicit((cue_id,), cue_id) if cue_id else SelectionScope.empty()
@@ -205,7 +211,7 @@ class StudioCueController:
         self.session.observed_playhead_target_id = cue.id if cue else ''
         self.session.playhead_target_id = ''
         self.page._manual_selection_hold = False
-        self._mirror_clock_selection('')
+        self._mirror_clock_selection('', clear=True)
 
     def selected_cue_ids(self) -> list[str]:
         if not self.session.project:
@@ -325,7 +331,6 @@ class StudioCueController:
     def table_selection_changed(self) -> None:
         page = self.page
         page._caption_canvas_edit_target=None
-        page.timeline.set_subtitle_layer("original")
         rows = page.cue_table.selectionModel().selectedRows()
         selected = [
             str(page.cue_model.data(
@@ -338,6 +343,11 @@ class StudioCueController:
         active = str(page.cue_model.data(page.cue_model.index(index.row(), 0), Qt.ItemDataRole.UserRole) or '') if index.isValid() else ''
         if active not in selected:
             active = next((item for item in selected if item), '')
+        cue = self.session._cue_lookup.get(active)
+        layer = 'translation' if cue is not None and page.cue_model.editing_translation(cue) else 'original'
+        page.timeline.set_subtitle_layer(layer)
+        if layer == 'translation':
+            page.timeline.translation_selected_ids = set(selected)
         page.timeline.explicit_subtitle_id = active
         scope = SelectionScope.explicit(selected, active)
         page._manual_selection_hold = bool(scope.active_id)
@@ -784,7 +794,9 @@ class StudioCueController:
 
         if dirty & DirtyDomain.QC:
             from ..subtitle_rules.current_issues import invalidate
-            invalidate(project)
+            local = (affected and not dirty & (DirtyDomain.CUE_MODEL | DirtyDomain.SEQUENCE_STRUCTURE)
+                     and (not dirty & DirtyDomain.PROJECT_METADATA or dirty & DirtyDomain.CUE_TIMING))
+            invalidate(project, affected if local else None)
             # Interactive razor/merge/delete/add edits touch a handful of cues.
             # The full QC rescan measured ~0.8-1.3s of GUI-thread time on a
             # real 976-cue project, which is exactly the post-edit freeze.
@@ -947,8 +959,10 @@ class StudioCueController:
         origin: MutationOrigin = MutationOrigin.USER_EDIT,
     ) -> bool:
         project = self.session.project
-        cue = self.session._cue_lookup.get(str(cue_id))
-        if not project or cue is None or str(value) == cue.text:
+        if not project:return False
+        try:cue=cue_by_id(project,str(cue_id))
+        except KeyError:return False
+        if str(value) == cue.text:
             return False
         from ..timeline.studio_commands import LEARNABLE_TEXT_ORIGINS
 

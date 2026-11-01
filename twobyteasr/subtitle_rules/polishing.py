@@ -2174,7 +2174,8 @@ def polish_subtitles(segments, media_title, cache_context=None):
         return index, batch_result, review_items, adjudicated_ids
 
     results = {}
-    workers = min(CLOUD_BATCH_WORKERS, len(jobs)) if PARALLEL_CLOUD_BATCHES else 1
+    from ..system.task_resources import cloud_request_workers
+    workers = min(cloud_request_workers(snapshot,CLOUD_BATCH_WORKERS), len(jobs)) if PARALLEL_CLOUD_BATCHES else 1
     # Threads beyond the broker's concurrent requests only queue, and their
     # local request building competes with the active streams for the GIL.
     from ..providers.provider_service import GLOBAL_PROVIDER_SERVICE
@@ -2183,7 +2184,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
     workers = max(1, min(workers, capacity["effective_workers"]))
     retry_budget = correction_task_budget(snapshot.timeout_policy, len(jobs), workers)
     if workers > 1:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from ..recognition.run_context import ContextExecutor as ThreadPoolExecutor, bounded_results
 
         print(f"   [并行加速] {len(jobs)} 个校对批次，最多 {workers} 路并发。")
         record_run_event(
@@ -2196,9 +2197,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
             task_budget_seconds=round(retry_budget.remaining_seconds(), 3),
         )
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="glm-polish") as pool:
-            futures = {pool.submit(run_job, job): job[0] for job in jobs}
-            for future in as_completed(futures):
-                index, batch_result, review_items, adjudicated_ids = future.result()
+            for index, batch_result, review_items, adjudicated_ids in bounded_results(pool,run_job,jobs,limit=workers):
                 results[index] = batch_result
                 results[("adjudicated", index)] = adjudicated_ids
                 extend_review_items(review_items)

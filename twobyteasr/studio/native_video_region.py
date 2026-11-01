@@ -16,6 +16,9 @@ class Win32RegionApi:
         self.user.GetClassNameW.argtypes=[W.HWND,W.LPWSTR,ctypes.c_int]
         self.user.GetWindowRgn.argtypes=[W.HWND,W.HRGN];self.user.GetWindowRgn.restype=ctypes.c_int
         self.user.SetWindowRgn.argtypes=[W.HWND,W.HRGN,W.BOOL];self.user.SetWindowRgn.restype=ctypes.c_int
+        self.user.SendMessageTimeoutW.argtypes=[W.HWND,W.UINT,W.WPARAM,W.LPARAM,
+                                               W.UINT,W.UINT,ctypes.POINTER(ctypes.c_size_t)]
+        self.user.SendMessageTimeoutW.restype=ctypes.c_ssize_t
         self.gdi.CreateRectRgn.argtypes=[ctypes.c_int]*4;self.gdi.CreateRectRgn.restype=W.HRGN
         self.gdi.DeleteObject.argtypes=[W.HGDIOBJ];self.gdi.DeleteObject.restype=W.BOOL
 
@@ -63,6 +66,14 @@ class Win32RegionApi:
         # Success transfers HRGN ownership to Windows; the caller must neither
         # read nor delete that handle afterwards. Failure leaves it with us.
         return bool(self.user.SetWindowRgn(child,region or None,True))
+
+    def responsive(self, child):
+        # SetWindowRgn synchronously sends window-position messages to the
+        # foreign window. A suspended/hung mpv must not park Qt in that call
+        # before its IPC actor can trigger recovery. Do not allocate/transfer
+        # an HRGN until a bounded WM_NULL exchange has succeeded.
+        result = ctypes.c_size_t()
+        return bool(self.user.SendMessageTimeoutW(child,0,0,0,0x0003,50,ctypes.byref(result)))
 
 
 class NativeVideoRegionGate:
@@ -137,6 +148,9 @@ class NativeVideoRegionGate:
                 self.binding=binding;self.child=child
             if not self._live():
                 self.reset();return self._result('retired_child',retry=True)
+            responsive = getattr(self.api, 'responsive', None)
+            if (blocked or self.applied) and callable(responsive) and not responsive(self.child):
+                return self._result('window_unresponsive',retry=True)
             if blocked:
                 if self.applied and self.api.region_kind(self.child)==1:
                     self.empty_verified=True

@@ -145,6 +145,15 @@ def _runtime_measured(cue, side):
     return int(piece[f"{side}_ms"]) if piece.get(f"{side}_basis") == "model" else None
 
 
+def preserves_edge_piece(cue,side,value_ms):
+    """A display-cut refinement must not invert a retained acoustic piece."""
+    pieces=(getattr(cue,'forced_alignment',None) or {}).get('segments') or ()
+    if not pieces:return True
+    piece=pieces[0] if side=='start' else pieces[-1]
+    return (int(value_ms)<int(piece['end_ms']) if side=='start'
+            else int(value_ms)>int(piece['start_ms']))
+
+
 def apply_to_runtime_cues(cues, audio, legacy, *, sample_rate: int = 16000, fps: float | None = None) -> list[dict]:
     """Recognition: snap unmeasured same-speaker cuts to pauses (after final alignment).
 
@@ -170,6 +179,9 @@ def apply_to_runtime_cues(cues, audio, legacy, *, sample_rate: int = 16000, fps:
                 on_grid.append((replace(change, new_ms=new_ms), frame / fps))
     else:
         on_grid = [(change, change.new_ms / 1000.0) for change in changes]
+    on_grid=[(change,seconds) for change,seconds in on_grid
+             if preserves_edge_piece(by_id[change.left_id].cue,'end',change.new_ms)
+             and preserves_edge_piece(by_id[change.right_id].cue,'start',change.new_ms)]
     changes = [change for change, _seconds in on_grid]
     for change, seconds in on_grid:
         left, right = by_id[change.left_id].cue, by_id[change.right_id].cue

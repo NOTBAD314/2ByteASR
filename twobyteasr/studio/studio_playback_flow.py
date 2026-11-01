@@ -234,7 +234,7 @@ class StudioPlaybackFlowMixin:
 
     @measured('qt_position')
     def _position_changed(self, seconds: float, *, defer_follow: bool = False, _bypass_throttle: bool = False) -> None:
-        if getattr(self, '_loading_project_media', False):
+        if getattr(self, '_loading_project_media', False) or getattr(self, '_closing_project', False):
             return
         if getattr(self, "_defer_next_video_position_follow", False):
             defer_follow = True
@@ -868,9 +868,9 @@ class StudioPlaybackFlowMixin:
             # mpv/media clock is the playback truth: a dead transport is not
             # "Playing". The play click is the user's revive request.
             revived = bool(self.video.revive_dead_source(paused=False))
-            self._sync_play_button(not revived)
+            self._sync_play_button(True)
             if revived:
-                self.save_state.setText("播放已恢复")
+                self.save_state.setText("正在恢复播放器…")
                 self.video.setToolTip("")
             else:
                 self._show_video_error("播放器已停止且自动恢复失败，请重新打开工程。")
@@ -930,6 +930,8 @@ class StudioPlaybackFlowMixin:
 
     @observed('player.state')
     def _playback_state_changed(self, paused: bool) -> None:
+        if getattr(self, '_closing_project', False):
+            return
         if not paused and hasattr(self, 'timeline'):
             self.timeline._manual_view_hold = False
         if getattr(self.video, '_seek_hold_active', False):
@@ -1107,5 +1109,5 @@ class StudioPlaybackFlowMixin:
             self._show_video_error(str(exc))
 
     def _show_video_error(self, message: str) -> None:
-        self.save_state.setText("视频预览不可用")
+        self.save_state.setText(message if message.startswith(('播放器通信', '播放器重新初始化')) else '视频预览不可用')
         self.video.setToolTip(message)

@@ -111,17 +111,18 @@ def test_external_button_first_click_saves_once_and_dispatches(page):
     assert not page.subtitle_edit_dock.isVisible() and page._caption_draft is None
 
 
-def test_close_saves_but_explicit_cancel_discards_and_clean_close_has_no_undo(page):
+def test_close_and_explicit_cancel_discard_without_undo(page):
     editor = open_editor(page)
+    original=page.project.cues[0].text
     before = page.undo_stack.count()
     QTest.mouseClick(page.caption_close_button, Qt.MouseButton.LeftButton)
     assert page.undo_stack.count() == before and not page._caption_following
     editor = open_editor(page);editor.setPlainText('关闭保存')
     QTest.mouseClick(page.caption_close_button, Qt.MouseButton.LeftButton)
-    assert page.project.cues[0].text == '关闭保存'
+    assert page.project.cues[0].text == original and page.undo_stack.count()==before
     editor = open_editor(page);editor.setPlainText('取消不要')
     QTest.mouseClick(page.caption_cancel_button, Qt.MouseButton.LeftButton)
-    assert page.project.cues[0].text == '关闭保存' and page._caption_draft is None
+    assert page.project.cues[0].text == original and page._caption_draft is None
 
 
 def test_failure_keeps_bound_draft_across_external_selection_and_retries(page, monkeypatch):

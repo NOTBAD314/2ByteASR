@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 import copy
-from concurrent.futures import ThreadPoolExecutor
+from .run_context import ContextExecutor as ThreadPoolExecutor
 
 from twobyteasr.recognition.run_context import get_runtime_context
 from twobyteasr.subtitle_rules.segmentation import merge_split_interjections_in_cues
@@ -393,7 +393,19 @@ def complete_media_run(
     try:
         from twobyteasr.subtitle_rules.recognition_translation import translate_runtime_cues
         if cues:
-            translation_metadata = translate_runtime_cues(cues, runtime_context, legacy)
+            prepared = getattr(runtime_context,'translation_ready',None)
+            if isinstance(prepared,dict):
+                import hashlib,json
+                current = hashlib.sha256(json.dumps([(str(c.cue_id),c.text,c.speaker) for c in cues],
+                    ensure_ascii=False,sort_keys=True,default=str).encode('utf-8')).hexdigest()
+                if current == prepared.get('binding'):
+                    translation_metadata=prepared['metadata']
+                    legacy.record_run_event('translation_ready_reused', cues=len(cues), time_only_changes_allowed=True)
+                else:
+                    legacy.record_run_event('translation_late_result_rejected', reason='stable_text_or_identity_changed')
+                    translation_metadata=translate_runtime_cues(cues,runtime_context,legacy)
+            else:
+                translation_metadata = translate_runtime_cues(cues, runtime_context, legacy)
     except CancelledError:
         raise
     except Exception as exc:  # the recognition result is still delivered

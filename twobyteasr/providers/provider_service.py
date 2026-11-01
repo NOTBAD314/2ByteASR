@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 import uuid
+import contextvars
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
@@ -123,6 +124,8 @@ class _QueuedProviderRequest:
     kwargs: dict[str, Any] = field(compare=False)
     external_cancel: Callable[[], bool] | None = field(compare=False, default=None)
     callbacks: dict[str, Callable[..., Any]] = field(compare=False, default_factory=dict)
+    lane: str = field(compare=False, default='')
+    call_context: Any = field(compare=False,default=None)
 
 
 class AIClient(AIProvider):
@@ -338,6 +341,7 @@ class AIClient(AIProvider):
         **kwargs: Any,
     ) -> ProviderRequestHandle:
         seconds = max(timeout) if isinstance(timeout, tuple) else float(timeout)
+        kwargs.setdefault('_scheduler_stage',getattr(self,'scheduling_lane',self._stage))
         return self._service.submit(
             self._settings,
             self._stage,
@@ -370,6 +374,7 @@ class AIClient(AIProvider):
             kwargs.setdefault('native_structured_output', snapshot.structured_output if snapshot is not None
                               else bool(selected.get('structured_output', True)))
         self._last_request_trace = {}
+        kwargs.setdefault('_scheduler_stage',getattr(self,'scheduling_lane',self._stage))
         handle = self._service.submit(
             self._settings,
             self._stage,
@@ -463,18 +468,20 @@ class ProviderService:
     def __init__(
         self,
         *,
-        workers: int = 4,
+        workers: int | None = None,
         governor: ResourceGovernor | None = None,
         circuit_failures: int = 3,
         circuit_seconds: float = 30.0,
     ) -> None:
-        self._workers_requested = max(1, int(workers))
+        from ..system.task_resources import task_budget
+        self._workers_requested = max(1, int(workers if workers is not None else task_budget().ai_requests))
         self._governor = governor or GLOBAL_RESOURCE_GOVERNOR
         self._circuit_failures = max(1, int(circuit_failures))
         self._circuit_seconds = max(1.0, float(circuit_seconds))
         self._lock = threading.RLock()
         self._runtimes: dict[str, _ProviderRuntime] = {}
-        self._queue: queue.PriorityQueue[_QueuedProviderRequest] = queue.PriorityQueue()
+        from .fair_request_queue import FairRequestQueue
+        self._queue = FairRequestQueue(self._workers_requested)
         self._threads: list[threading.Thread] = []
         self._handles: dict[str, ProviderRequestHandle] = {}
         self._updating_transports: set[AITransport] = set()
@@ -489,6 +496,8 @@ class ProviderService:
         # requests; 41 proofreading and 50 grouping batches ran two at a time
         # although 4 were configured. Playback and dragging still allow one.
         limit = self._workers_requested
+        from ..system.task_resources import live_budget
+        limit=min(limit,live_budget().ai_requests)
         if snapshot.playback or snapshot.dragging:
             limit = min(limit, 1)
         return {"effective_workers": max(1, limit), "broker_workers": self._workers_requested,
@@ -958,11 +967,18 @@ class ProviderService:
             self._sequence += 1
             sequence = self._sequence
             self._handles[request_id] = handle
-        self._queue.put(_QueuedProviderRequest(
-            -int(priority), sequence, handle, runtime, tuple(copy.deepcopy(messages)),
-            copy.deepcopy(dict(schema)) if isinstance(schema, Mapping) else None,
-            dict(kwargs), cancel_check, callbacks,
-        ))
+        lane=str(kwargs.pop('_scheduler_stage',stage))
+        try:
+            self._queue.put(_QueuedProviderRequest(
+                -int(priority), sequence, handle, runtime, tuple(copy.deepcopy(messages)),
+                copy.deepcopy(dict(schema)) if isinstance(schema, Mapping) else None,
+                dict(kwargs), cancel_check, callbacks,lane=lane,call_context=contextvars.copy_context(),
+            ))
+        except queue.Full:
+            handle._error=AIProviderError('AI 本地队列已满，请稍后重试。',category='provider_busy')
+            handle._event.set()
+            with self._lock:self._handles.pop(handle.request_id,None)
+            return handle
         self._ensure_workers()
         return handle
 
@@ -973,22 +989,27 @@ class ProviderService:
             from ..diagnostics.event_log import context, emit, exception_info
             diagnostic_context = context(**getattr(handle,"_diagnostic_context",{}))
             diagnostic_context.__enter__()
+            def external_cancelled():
+                if request.external_cancel is None:return False
+                return bool(request.call_context.run(request.external_cancel)
+                    if request.call_context is not None else request.external_cancel())
             try:
-                if handle.cancelled or (request.external_cancel and request.external_cancel()):
+                if handle.cancelled or external_cancelled():
                     raise AIProviderError("AI 请求已取消。", category="cancelled")
                 with self._governor.lease(
                     ResourceKind.AI,
                     foreground=False,
                     cancelled=lambda: (
                         handle.cancelled
-                        or (request.external_cancel is not None and request.external_cancel())
+                        or external_cancelled()
                         or time.monotonic() >= handle.deadline_monotonic
                     ),
                 ) as allowed:
                     if not allowed:
-                        category = "cancelled" if handle.cancelled or (request.external_cancel and request.external_cancel()) else handle.timeout_category
+                        category = "cancelled" if handle.cancelled or external_cancelled() else handle.timeout_category
                         raise AIProviderError("AI 请求已取消。" if handle.cancelled else "AI 请求超时。", category=category)
-                    handle._value = self._execute(request)
+                    handle._value = (request.call_context.run(self._execute,request)
+                        if request.call_context is not None else self._execute(request))
             except BaseException as exc:
                 handle._error = exc
                 emit("provider.failure",level="ERROR",result="failed",request_id=handle.request_id,
@@ -1001,8 +1022,15 @@ class ProviderService:
                 handle._event.set()
                 with self._lock:
                     self._handles.pop(handle.request_id, None)
-                self._queue.task_done()
+                self._queue.task_done(error=handle._error)
                 diagnostic_context.__exit__(None,None,None)
+                # Idle worker stacks must not retain a completed shard's
+                # context, immutable project snapshot or request callbacks.
+                request.call_context=None
+                request.external_cancel=None
+                request.callbacks.clear()
+                request.messages=()
+                request.kwargs.clear()
 
     def cancel_all(self) -> int:
         """Broadcast cancellation without waiting for adapters or child processes."""
@@ -1033,6 +1061,14 @@ class ProviderService:
 
     def _execute(self, request: _QueuedProviderRequest) -> Any:
         runtime, handle = request.runtime, request.handle
+        from ..recognition.run_context import get_runtime_context
+        current=get_runtime_context();quota_owner=current.root_context or current
+        quota_key=None
+        if quota_owner.cancellation_token is not None:
+            quota_key=getattr(self._queue.local,'account',None) or self._queue._identity(request)[0]
+            with quota_owner.media_identity_lock:
+                if quota_key in quota_owner.provider_quota_rejections:
+                    raise AIProviderError('本识别任务的AI账号额度不足，已停止新请求；已完成结果保留。',category='quota_exhausted')
         failure_scope = request.kwargs.get('_task_failure_scope')
         if failure_scope is not None:
             failure_scope[0].raise_if_rejected(*failure_scope[1:])
@@ -1218,6 +1254,14 @@ class ProviderService:
                             setattr(runtime.adapter, attribute, copy.deepcopy(getattr(adapter, attribute)))
         assert last_error is not None
         category = str(getattr(last_error, "category", "provider_error"))
+        if quota_key is not None and category=='quota_exhausted':
+            with quota_owner.media_identity_lock:
+                first=quota_key not in quota_owner.provider_quota_rejections
+                quota_owner.provider_quota_rejections[quota_key]='quota_exhausted'
+            if first:
+                from ..recognition.cache import record_run_event
+                record_run_event('provider_account_quota_blocked',provider=handle.provider_id,
+                    stage=runtime.stage,new_recognition_task_can_retry=True)
         if category not in {
             "cancelled", "authentication_required", "structured_output", "structured_output_schema",
             "structured_json_parse_error", "schema", "quality_validator",

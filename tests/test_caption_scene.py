@@ -50,6 +50,25 @@ def alpha(image):
         buffer=image.constBits(), strides=(image.bytesPerLine(),4,1))[:,:,3].copy()
 
 
+def test_playback_skips_only_geometry_measurements_not_composited_pixels(app, monkeypatch):
+    from twobyteasr.rendering import alpha_geometry
+    inputs = prepared(2)
+    reference_renderer, playback_renderer = SceneRasterizer(), SceneRasterizer()
+    try:
+        reference, rows = reference_renderer.frame(inputs, 500, 600, 480)
+        assert all(row.get('bounds') and row.get('alpha_nonzero') for row in rows)
+        def unexpected_scan(_image):
+            raise AssertionError('playback geometry should be deferred')
+        monkeypatch.setattr(alpha_geometry, 'alpha_metrics', unexpected_scan)
+        actual, playback_rows = playback_renderer.frame(inputs, 500, 600, 480, measure_cue_geometry=False)
+        assert bytes(actual.constBits()) == bytes(reference.constBits())
+        assert [row['status'] for row in playback_rows] == ['rendered', 'rendered']
+        assert all('bounds' not in row and 'alpha_nonzero' not in row for row in playback_rows)
+    finally:
+        reference_renderer.close()
+        playback_renderer.close()
+
+
 @pytest.mark.parametrize('count', [1,2,3,4,6])
 def test_authored_rows_all_have_pixels_at_original_locations(app, count):
     renderer=SceneRasterizer()

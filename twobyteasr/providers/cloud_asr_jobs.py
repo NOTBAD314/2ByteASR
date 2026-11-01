@@ -51,9 +51,13 @@ def save(path, payload):
 
 def job_root(audio, endpoint, cache_root):
     import numpy as np
-    digest=hashlib.sha256(np.asarray(audio,dtype='<f4').tobytes()).hexdigest()
     identity=public_identity(endpoint)
-    identity.update(audio_sha256=digest, samples=len(audio), sample_rate=16000)
+    if getattr(audio,'prepared_pcm',False):
+        identity.update(prepared_source=audio.job_identity,samples=len(audio),sample_rate=16000)
+    else:
+        from ..recognition.alignment_audio import pcm_digest
+        digest=pcm_digest(audio)
+        identity.update(audio_sha256=digest, samples=len(audio), sample_rate=16000)
     # Account changes invalidate reuse without ever persisting credentials.
     identity['account_fingerprint']=hashlib.sha256(str(endpoint.get('api_key','')).encode()).hexdigest()
     key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()

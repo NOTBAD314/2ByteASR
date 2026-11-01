@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 import json
+import math
+import re
 import os
 from pathlib import Path
 import time
@@ -14,6 +16,22 @@ from .event_log import (FORMAT_VERSION, FILE_BYTES, MAX_EVENT_BYTES, TOTAL_BYTES
 
 MAX_EXPORT_BYTES = 32 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = 256 * 1024
+MAX_CONTEXT_BYTES = 4 * 1024 * 1024
+MAX_EVENTS_BYTES = 24 * 1024 * 1024
+
+
+def _stamp(value):
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _event_order(row):
+    def number(value):
+        try:return int(value)
+        except (TypeError, ValueError, OverflowError):return 0
+    return (_stamp(row.get('time')) or 0, number(row.get('pid')), number(row.get('sequence')))
 
 
 def _alive(row):
@@ -96,7 +114,7 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         try:
             files=snapshot["files"] if snapshot and directory==instance.directory else _session_files(directory,missing)
             meta=json.loads(files.get("session.json",b"{}"))
-            if not meta:
+            if not isinstance(meta,dict) or not meta:
                 missing.append(dict(session=directory.name,reason="missing_session_metadata"));continue
             if meta.get("status")=="running" and not _alive(meta): meta["status"]="previous_not_cleanly_ended"
             meta["directory"]=directory.name
@@ -120,14 +138,18 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
                         clean=sanitizer.clean(row)
                         clean["message"]=message
                         clean["event_name"]=sanitizer.string(row["event_name"])
+                        for key,default in (('level','INFO'),('result','observed'),('time',meta.get('started_at') or now())):
+                            clean.setdefault(key,default)
                         events.append(clean)
                     except (ValueError,TypeError,UnicodeError):
                         missing.append(dict(session=directory.name,file=name,line=index+1,reason="invalid_or_partial_line"))
-            losses.update(meta.get("losses",{}))
-            if meta.get("dropped"):losses["legacy_dropped"]+=meta["dropped"]
+            for key,value in (meta.get('losses') or {}).items() if isinstance(meta.get('losses'),dict) else ():
+                if isinstance(value,(int,float)) and math.isfinite(value) and value>=0:losses[key]+=value
+                else:missing.append(dict(session=directory.name,reason='invalid_loss_counter',field=str(key)[:80]))
+            if isinstance(meta.get('dropped'),(int,float)) and math.isfinite(meta['dropped']) and meta['dropped']>0:losses['legacy_dropped']+=meta['dropped']
         except (OSError,ValueError) as exc:
             missing.append(dict(session=directory.name,reason=type(exc).__name__))
-    events.sort(key=lambda r:(r.get("time",""),r.get("pid",0),r.get("sequence",0)))
+    events.sort(key=_event_order)
     newest=sessions[0].get("session_id",sessions[0].get("directory")) if sessions else None
     current_id=instance.session_id if snapshot else newest
     if scope=="session":
@@ -137,9 +159,12 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         selected=[e for e in events if prior and e.get("session_id")==prior.get("session_id",prior.get("directory"))]
         if prior is None:missing.append(dict(reason="no_retained_unclean_session"))
     else:
-        lower=start if scope=="range" else (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat()
-        upper=end or now()
-        selected=[e for e in events if (not lower or e.get("time","")>=lower) and e.get("time","")<=upper]
+        # Hidden date controls belong only to the explicit range. A report can
+        # remain open for hours: recent must use one fresh, consistent clock.
+        upper=_stamp(end) if scope=='range' and end else _stamp(now())
+        lower=_stamp(start) if scope=='range' and start else (upper-900 if scope!='range' else None)
+        selected=[e for e in events if (stamp:=_stamp(e.get('time'))) is not None
+                  and (lower is None or stamp>=lower) and stamp<=upper]
     # Pull the retained upstream provenance for this project/task, even across sessions.
     project_ids={e.get("project_id") for e in selected if e.get("project_id")}
     task_ids={e.get("task_id") for e in selected if e.get("task_id")}
@@ -147,13 +172,18 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
     for e in events:
         if e.get("project_id") in project_ids and e.get("task_id"):task_ids.add(e["task_id"])
     included={id(e) for e in selected}
+    context=[]; context_bytes=0
     for e in events:
         if id(e) not in included and ((e.get("project_id") and e.get("project_id") in project_ids) or (e.get("task_id") and e.get("task_id") in task_ids)):
-            selected.append(e)
-    selected.sort(key=lambda r:(r.get("time",""),r.get("pid",0),r.get("sequence",0)))
-    used_ids={e.get("session_id") for e in selected}
+            size=len(json.dumps(e,ensure_ascii=False).encode('utf8','replace'))
+            if context_bytes+size>MAX_CONTEXT_BYTES:
+                losses['context_omitted_by_budget']+=1
+                continue
+            context.append(dict(e,context_only=True));context_bytes+=size
+    selected.sort(key=_event_order)
+    used_ids={e.get("session_id") for e in selected+context}
     selected_sessions=[s for s in sessions if s.get("session_id",s.get("directory")) in used_ids or s.get("session_id")==current_id]
-    return dict(events=selected,sessions=selected_sessions,missing=missing[:128],missing_count=len(missing),
+    return dict(events=selected,context_events=context,sessions=selected_sessions,missing=missing[:128],missing_count=len(missing),
                 losses=dict(losses),cutoff_sequence=cutoff,scope=scope,upstream_task_ids=sorted(task_ids),
                 scanned_bytes=consumed,sanitizer=sanitizer)
 
@@ -179,6 +209,8 @@ def summary(data, report_id, description="", report=None):
         extra.append(tr("本程序记录截至 #{sequence}，其他进程只读完整的行", sequence=data["cutoff_sequence"]))
     if data.get("missing"):
         extra.append(tr("读不到的部分：{detail}", detail=json.dumps(data["missing"][:8], ensure_ascii=False)))
+    if data.get('context_events'):
+        extra.append(tr('另附 {count} 笔范围外的工程/任务背景记录，不计入本页时间轴。',count=len(data['context_events'])))
     generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     scope = data.get("scope") or "recent"
     return render_summary(analysis, report_id=report_id, description=description, generated=generated, version=version,
@@ -189,17 +221,54 @@ def summary(data, report_id, description="", report=None):
 def export_report(target, *, root, instance=None, scope="recent", start=None, end=None,
                   description="", report=None, content=None, settings=None):
     data=collect(root,instance=instance,scope=scope,start=start,end=end,report=report)
-    if not data["events"]:
+    if not data["events"] and not report:
         raise ValueError("所選範圍沒有可用事件，請改選本次會話或重試；未產生空診斷包")
     sanitizer=data.pop("sanitizer")
     report_id=(report or {}).get("report_id") or "report-"+uuid.uuid4().hex[:16]
+    if not data['events']:
+        data['missing'].append(dict(stage='collection',reason='no_events_in_selected_range'))
+        data['events']=[dict(time=now(),event_name='diagnostics.range_empty',level='WARN',
+                             result='partial',message='所选范围没有可读取事件；保留回报标记与缺失原因。',
+                             report_id=report_id)]
     description=sanitizer.string(description)
     note=summary(data,report_id,description,report)
+    # Bound the actual serialized output, not just the input JSONL scan. The
+    # readable copy used to double large ranges and fail the entire report.
+    encoded=[]; event_bytes=0; retained=[]
+    def priority(row):
+        important=(row.get('level') in {'ERROR','WARN'} or row.get('edit_session_id')
+                   or row.get('event_name') in {'problem.marked','project.saved','project.save_failed'}
+                   or str(row.get('event_name','')).startswith('video.export'))
+        return (bool(row.get('context_only')),not bool(important),-(_stamp(row.get('time')) or 0),-_event_order(row)[2])
+    for row in sorted([*data['events'],*data.get('context_events',[])],key=priority):
+        try:raw=(json.dumps(row,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n').encode('utf8')
+        except (ValueError,TypeError,UnicodeError):
+            data['missing'].append(dict(stage='serialization',reason='invalid_event',sequence=row.get('sequence')))
+            continue
+        if event_bytes+len(raw)>MAX_EVENTS_BYTES:
+            data['losses']['export_events_omitted_by_budget']=data['losses'].get('export_events_omitted_by_budget',0)+1
+            continue
+        retained.append(row);event_bytes+=len(raw)
+    retained.sort(key=_event_order)
+    encoded=[(json.dumps(row,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n').encode('utf8') for row in retained]
+    readable_parts=[]; readable_bytes=0
+    for row in retained:
+        try:raw=readable(row).encode('utf8')
+        except (KeyError,ValueError,TypeError,UnicodeError):
+            data['missing'].append(dict(stage='readable',reason='invalid_readable_event',sequence=row.get('sequence')))
+            continue
+        if readable_bytes+len(raw)>4*1024*1024:
+            data['losses']['readable_omitted_by_budget']=data['losses'].get('readable_omitted_by_budget',0)+1
+            continue
+        readable_parts.append(raw);readable_bytes+=len(raw)
+    environment_events=[r for r in data['events'] if r.get('event_name') in {'host','qt','screens','graphics','media','modules','player.modules'}]
+    if len(environment_events)>64 or len(data['sessions'])>64:
+        data['missing'].append(dict(stage='environment',reason='environment_records_limited_to_latest_64'))
     files={"README.txt":note.encode("utf8"),
-           "events.jsonl":("".join(json.dumps(r,ensure_ascii=False,separators=(",", ":"))+"\n" for r in data["events"])).encode("utf8"),
-           "readable.log":"".join(readable(r) for r in data["events"]).encode("utf8"),
-           "environment.json":json.dumps(dict(sessions=data["sessions"],settings=sanitizer.clean(settings or {}),
-               environment_events=[r for r in data["events"] if r.get("event_name") in {"host","qt","screens","graphics","media","modules","player.modules"}]),ensure_ascii=False,indent=2).encode("utf8")}
+           "events.jsonl":b''.join(encoded),
+           "readable.log":b''.join(readable_parts),
+           "environment.json":json.dumps(dict(sessions=data["sessions"][:64],settings=sanitizer.clean(settings or {}),
+               environment_events=environment_events[-64:]),ensure_ascii=False,indent=2).encode("utf8")}
     import sys
     if sys.platform == 'darwin':
         from ..system.macos_compatibility import host_diagnostics
@@ -216,8 +285,8 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
         # Only explicitly previewed/selected rows. Never read the project file here.
         selected=[{k:sanitizer.string(v) if isinstance(v,str) else sanitizer.clean(v,k) for k,v in row.items() if k in {"subtitle_id","text","translation","start_ms","end_ms"}} for row in content[:50]]
         raw=json.dumps(selected,ensure_ascii=False,indent=2).encode("utf8")
-        if len(raw)>MAX_ATTACHMENT_BYTES:raise ValueError("選取的內容超過 256 KiB，請縮小範圍")
-        files["selected-content.json"]=raw
+        if len(raw)>MAX_ATTACHMENT_BYTES:data['missing'].append(dict(stage='attachment',reason='selected_content_exceeds_256KiB'))
+        else:files["selected-content.json"]=raw
     capture=getattr(instance,'playback_capture',None) if instance is not None else None
     if capture:
         raw=json.dumps(sanitizer.clean(capture),ensure_ascii=False,indent=2).encode('utf8')
@@ -225,6 +294,43 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
             files['playback-diagnostic.json']=raw
         else:
             data['missing'].append(dict(reason='playback_capture_exceeds_4MiB'))
+    # Only explicitly referenced jobs from this live recorder. Keep technical
+    # manifests; never copy raw renderer props, subtitle text or process output.
+    if instance is not None and Path(root).resolve()==instance.root.resolve():
+        export_root=Path(root).parent.parent/'SubtitleStudioPreview/logs/exports'
+        allowed={'job_id','project_revision','caption_canvas','requested_encoder','requested_settings','settings',
+                 'runtime','worker_pid','worker_thread','burn_in','render_backend','last_encoding'}
+        jobs=list(dict.fromkeys(row.get('task_id') for row in reversed(data['events']) if row.get('task_id')))
+        def modified(path):
+            try:return path.stat().st_mtime
+            except OSError:return -1
+        for job_id in jobs[:8]:
+            if not isinstance(job_id,str) or not re.fullmatch(r'[a-fA-F0-9]{16,64}',job_id):continue
+            folder=export_root/job_id
+            if not folder.is_dir() or folder.is_symlink():continue
+            for path in sorted(folder.glob('*/manifest.json'),key=modified,reverse=True)[:3]:
+                try:
+                    if path.is_symlink() or not path.resolve().is_relative_to(export_root.resolve()) or path.stat().st_size>MAX_ATTACHMENT_BYTES:continue
+                    manifest=json.loads(path.read_text('utf8'))
+                    if not isinstance(manifest,dict):raise ValueError('export manifest must be an object')
+                    technical={key:value for key,value in manifest.items() if key in allowed}
+                    settings_keys={'container','codec','encoder','quality_mode','quality','bitrate_kbps','max_bitrate_kbps',
+                        'width','height','fps','audio_codec','audio_bitrate_kbps','audio_sample_rate','audio_channels',
+                        'preset','profile','level','pixel_format','gop','b_frames','font_directory','output_kind','audio_bit_depth'}
+                    for field in ('settings','requested_settings'):
+                        value=technical.get(field)
+                        if isinstance(value,dict):
+                            technical[field]={key:val for key,val in value.items() if key in settings_keys}
+                            if technical[field].get('font_directory'):
+                                technical[field]['font_directory']=sanitizer.alias(technical[field]['font_directory'],'path')
+                    runtime=technical.get('runtime')
+                    if isinstance(runtime,dict):
+                        keys={'executable_path','argv0','packaged','module_path','schema_version','app_version','git_sha',
+                            'git_dirty','build_time','build_channel','source_sha256','source_file_count'}
+                        technical['runtime']={key:val for key,val in runtime.items() if key in keys}
+                    files[f'exports/{job_id}-{path.parent.name}.json']=json.dumps(sanitizer.clean(technical),ensure_ascii=False,indent=2).encode('utf8')
+                except (OSError,ValueError,TypeError,UnicodeError) as exc:
+                    data['missing'].append(dict(stage='export_manifest',reason=type(exc).__name__,task_id=job_id))
     # Crash stacks have no source lines/locals; raw native files are never copied.
     for s in data["sessions"]:
         directory=Path(root)/s["directory"]
@@ -236,7 +342,6 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
                     size=path.stat().st_size
                     with path.open('rb') as stream:raw=stream.read(128*1024).decode('utf8','replace')
                     lines=[]
-                    import re
                     for line in raw.splitlines():
                         match=re.search(r'File "([^"]+)", line (\d+)(.*)',line)
                         if match:lines.append(f'File "{Path(match[1]).name}", line {match[2]}{sanitizer.string(match[3])}')
@@ -244,26 +349,54 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
                     files[f"crash/{s['directory']}-{kind}.txt"]='\n'.join(lines).encode('utf8')
                     if size>128*1024:data['missing'].append(dict(reason='attachment_truncated',attachment=kind,omitted_bytes=size-128*1024))
             except OSError as exc:data['missing'].append(dict(reason=type(exc).__name__,attachment=kind))
+    # Optional duplicates/captures must not make every event unrecoverable.
+    for name in ['readable.log','playback-diagnostic.json',*[k for k in files if k.startswith('crash/')],
+                 *reversed([k for k in files if k.startswith('exports/')])]:
+        if sum(map(len,files.values()))<=MAX_EXPORT_BYTES-128*1024:break
+        if name in files:
+            omitted=len(files.pop(name))
+            data['missing'].append(dict(stage='budget',reason='optional_attachment_omitted',attachment=name,bytes=omitted))
     # Include attachment failures in both views of the same export result.
     note=summary(data,report_id,description,report)
     files['README.txt']=note.encode('utf8')
     manifest=dict(format_version=FORMAT_VERSION,report_id=report_id,created=now(),scope=scope,
                   cutoff_sequence=data["cutoff_sequence"],event_count=len(data["events"]),
-                  status="partial" if data["missing"] or any(v for k,v in data["losses"].items() if any(word in k for word in ('failed','dropped','rotated','truncated','suppressed'))) else "complete",
-                  missing=data["missing"],losses=data["losses"],upstream_task_ids=data["upstream_task_ids"],
+                  context_event_count=len(data.get('context_events',[])),serialized_event_count=len(retained),
+                  status="partial" if data["missing"] or any(v for k,v in data["losses"].items() if any(word in k for word in ('failed','dropped','rotated','truncated','suppressed','omitted'))) else "complete",
+                  missing=data["missing"][:128],missing_count=len(data['missing']),losses=data["losses"],upstream_task_ids=data["upstream_task_ids"],
                   content_included=bool(content),dumps_included=False,
                   files=[dict(name=k,bytes=len(v)) for k,v in files.items()])
     files["manifest.json"]=json.dumps(manifest,ensure_ascii=False,indent=2).encode("utf8")
     if sum(map(len,files.values()))>MAX_EXPORT_BYTES:raise ValueError("診斷內容超過 32 MiB，請縮小時間範圍")
     target=Path(target)
     temp=target.with_name(target.name+"."+uuid.uuid4().hex[:8]+".tmp")
+    phase='zip_packaging'
     try:
         with zipfile.ZipFile(temp,"w",zipfile.ZIP_DEFLATED) as z:
             for name,value in files.items():z.writestr(name,value)
+        phase='zip_verification'
         with zipfile.ZipFile(temp) as z:
             if z.testzip() is not None or "events.jsonl" not in z.namelist():raise OSError("ZIP verification failed")
+        phase='atomic_publication'
         os.replace(temp,target)
+    except Exception as exc:
+        try:exc.diagnostic_stage=phase
+        except Exception:pass
+        raise
     finally:
         try:temp.unlink(missing_ok=True)
         except OSError:pass
     return dict(report_id=report_id,status=manifest["status"],files=len(files),bytes=target.stat().st_size,summary=note,target=str(target))
+
+
+def export_failure_details(exc):
+    """Copyable technical evidence; never infer disk capacity from a type."""
+    from .event_log import exception_info
+    chain=exception_info(exc)
+    frames=[frame for item in chain.get('chain',[]) for frame in item.get('frames',[])]
+    stage='collection' if any(f.get('function') in {'collect','snapshot','_session_files'} for f in frames) else 'export'
+    stage=getattr(exc,'diagnostic_stage',stage)
+    if any(f.get('function') in {'writestr','_open_to_write','replace'} for f in frames):stage='write_or_package'
+    reason='no_events' if isinstance(exc,ValueError) and '沒有可用事件' in str(exc) else type(exc).__name__
+    return dict(error=type(exc).__name__,stage=stage,reason_code=reason,
+                details=json.dumps(dict(stage=stage,reason_code=reason,exception=chain),ensure_ascii=False,indent=2))

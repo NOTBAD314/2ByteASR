@@ -22,6 +22,8 @@ KIND_TONE = {"act": "danger", "check": "warn", "stall": "warn", "slow": "warn", 
 PROBLEM_KINDS = {"act", "check", "stall", "slow", "auto"}
 
 ACTION_LABELS = {
+    'cue.editor_commit':'编辑字幕',
+    'video.export':'导出音视频',
     "cue.select": "选取字幕", "cue.multiselect": "多选字幕", "cue.deselect": "取消选取",
     "cue.edit": "修改字幕", "cue.add": "新增字幕", "cue.delete": "删除字幕",
     "cue.merge_pair": "合并字幕", "cue.merge": "合并字幕", "cue.split": "拆分字幕",
@@ -73,7 +75,7 @@ _GENERIC_FRAMES = ("threading.py", "contextlib.py", "ntpath.py", "pathlib.py", "
 def _ts(value):
     try:
         return datetime.fromisoformat(str(value)).timestamp()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, OSError):
         return None
 
 

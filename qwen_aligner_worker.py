@@ -141,6 +141,101 @@ def _tag_texts(manifest_path: Path, output: Path) -> None:
                            "load_ms": round((loaded - started) * 1000), "tag_ms": round((time.perf_counter() - loaded) * 1000)})
 
 
+def _read_request(manifest_path, np):
+    manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    policy = manifest.get('policy', {})
+    if (policy.get('version') != PROTOCOL or policy.get('audio_format') != 'float32-mono-npy-v1'
+            or policy.get('sample_rate') != 16000 or not 1 <= int(policy.get('batch_size', 0)) <= 16
+            or not set(policy.get('passes') or ['word']) <= {'word', 'char'}):
+        raise RuntimeError('Invalid aligner worker policy')
+    audio = manifest.get('audio') or {}
+    pcm = np.load(audio['path'], mmap_mode='r', allow_pickle=False)
+    if pcm.dtype != np.float32 or pcm.ndim != 1 or pcm.size != int(audio['samples']):
+        raise RuntimeError('Aligner input is not the declared mono float32 PCM')
+    jobs = manifest.get('jobs') or []
+    if not jobs:
+        raise RuntimeError('Aligner manifest is empty')
+    return manifest, pcm, jobs, policy
+
+
+def _infer_request(aligner, manifest, pcm, jobs, policy, output_path, torch, np, fa, device, dtype, load_ms):
+    sample_rate, batch_size = int(policy['sample_rate']), int(policy['batch_size'])
+    passes = list(policy.get('passes') or ['word'])
+    audio_spec = manifest['audio']
+    prepared = []
+    results = {}
+    for job in jobs:
+        text = str(job.get("text") or "")
+        language = str(job.get("language") or "Japanese")
+        start = max(0, int(job["window_start_ms"]) * sample_rate // 1000)
+        end = min(pcm.size,int(audio_spec.get('valid_samples',pcm.size)), int(job["window_end_ms"]) * sample_rate // 1000)
+        row = {"id": job["id"], "text": text, "language": language,
+               "window_start_ms": int(job["window_start_ms"]), "window_end_ms": int(job["window_end_ms"])}
+        if end - start > fa.ALIGNER_MAX_SECONDS * sample_rate:
+            row["status"] = "window_too_long"
+        elif end - start < int(0.08 * sample_rate):
+            row["status"] = "window_too_short"
+        elif not fa.content_char_map(text):
+            row["status"] = "no_alignable_text"
+        else:
+            words, tokenizer = _tokenize(aligner, text, language)
+            try:
+                word_units = fa.word_units(text, words)
+                row["mapping"] = tokenizer
+            except fa.UnitMappingError as exc:
+                # Tokenizer normalisation we cannot invert: align per character instead.
+                word_units = [fa.AlignUnit(c, a, b, "char", i) for i, (c, a, b) in enumerate(fa.content_char_map(text))]
+                row["mapping"] = f"{tokenizer}_fallback_chars"
+                row["mapping_error"] = str(exc)
+            row["tokenizer_words"] = words
+            row["status"] = "aligned"
+            prepared.append((row, np.ascontiguousarray(pcm[start:end], dtype=np.float32), word_units,
+                             fa.char_units(text, word_units) if "char" in passes else None))
+        results[str(job["id"])] = row
+    prepared.sort(key=lambda item: item[1].size)
+    started = time.perf_counter()
+    done = 0
+    for offset in range(0, len(prepared), batch_size):
+        batch = prepared[offset:offset + batch_size]
+        long_window = max(item[1].size for item in batch) > 60 * sample_rate
+        groups = [[item] for item in batch] if long_window else [batch]
+        for group in groups:
+            audios = [item[1] for item in group]
+            word_out = _align_batch(aligner, audios, [item[2] for item in group], torch)
+            char_out = (_align_batch(aligner, audios, [item[3] for item in group], torch)
+                        if "char" in passes else [None] * len(group))
+            for (row, audio, units, chars), (raw, fixed, posterior), char_pair in zip(group, word_out, char_out):
+                window_ms = round(audio.size * 1000 / sample_rate)
+                word_timed = fa.timed_units(units, raw, fixed, row["window_start_ms"], posterior, window_ms)
+                char_timed = (fa.timed_units(chars, char_pair[0], char_pair[1], row["window_start_ms"], char_pair[2],
+                                             window_ms) if char_pair is not None else None)
+                segments, stats = fa.reliable_segments(word_timed, char_timed)
+                row["word_units"] = fa.unit_rows(word_timed)
+                row["char_units"] = fa.unit_rows(char_timed) if char_timed is not None else None
+                row["segments"] = fa.unit_rows(fa.cover_display_span(row["text"], segments))
+                row["stats"] = stats
+        from twobyteasr.recognition.alignment_checkpoints import save_worker_checkpoint
+        metadata = dict(protocol=PROTOCOL, policy=policy, model=fa.ALIGNER_REPO,
+            model_revision=fa.ALIGNER_REVISION, code=fa.ALIGNER_CODE, unit_policy=fa.UNIT_POLICY_VERSION,
+            dtype=str(dtype), torch_version=torch.__version__, device=device)
+        by_job = {str(job['id']): job for job in jobs}
+        for row, *_ in batch:
+            save_worker_checkpoint(by_job[str(row['id'])].get('_checkpoint'), row, metadata)
+        done += len(batch)
+        _emit("progress", done=done, total=len(prepared),
+              range_start_ms=min(row['window_start_ms'] for row,*_ in batch),
+              range_end_ms=max(row['window_end_ms'] for row,*_ in batch))
+    inference_ms = (time.perf_counter() - started) * 1000.0
+    _atomic_write(Path(output_path), {
+        "protocol": PROTOCOL, "policy": policy, "results": [results[str(job["id"])] for job in jobs],
+        "audio_sha256": audio_spec.get("sha256"), "python": sys.executable, "pid": os.getpid(),
+        "torch_version": torch.__version__, "dtype": str(dtype), "device": device,
+        "backend": "torch-cuda" if device.startswith("cuda") else "torch-cpu", "model": fa.ALIGNER_REPO,
+        "model_revision": fa.ALIGNER_REVISION, "code": fa.ALIGNER_CODE, "unit_policy": fa.UNIT_POLICY_VERSION,
+        "load_ms": round(load_ms, 3), "inference_ms": round(inference_ms, 3)})
+    _emit("completed", aligned=len(prepared), jobs=len(jobs), inference_ms=round(inference_ms, 3), device=device)
+
+
 def main() -> None:
     # numpy and scipy each load OpenBLAS, which commits about 24 MB per CPU
     # thread at import (1.5 GB of this worker's peak on a 32-thread CPU).
@@ -151,6 +246,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-dir")
     parser.add_argument("--tag-only", action="store_true")
+    parser.add_argument("--resident", action="store_true")
     args = parser.parse_args()
     if args.tag_only:
         _tag_texts(Path(args.manifest), Path(args.output))
@@ -191,69 +287,18 @@ def main() -> None:
     load_ms = (time.perf_counter() - load_started) * 1000.0
     _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
     try:
-        prepared = []
-        results = {}
-        for job in jobs:
-            text = str(job.get("text") or "")
-            language = str(job.get("language") or "Japanese")
-            start = max(0, int(job["window_start_ms"]) * sample_rate // 1000)
-            end = min(pcm.size, int(job["window_end_ms"]) * sample_rate // 1000)
-            row = {"id": job["id"], "text": text, "language": language,
-                   "window_start_ms": int(job["window_start_ms"]), "window_end_ms": int(job["window_end_ms"])}
-            if end - start > fa.ALIGNER_MAX_SECONDS * sample_rate:
-                row["status"] = "window_too_long"
-            elif end - start < int(0.08 * sample_rate):
-                row["status"] = "window_too_short"
-            elif not fa.content_char_map(text):
-                row["status"] = "no_alignable_text"
-            else:
-                words, tokenizer = _tokenize(aligner, text, language)
-                try:
-                    word_units = fa.word_units(text, words)
-                    row["mapping"] = tokenizer
-                except fa.UnitMappingError as exc:
-                    # Tokenizer normalisation we cannot invert: align per character instead.
-                    word_units = [fa.AlignUnit(c, a, b, "char", i) for i, (c, a, b) in enumerate(fa.content_char_map(text))]
-                    row["mapping"] = f"{tokenizer}_fallback_chars"
-                    row["mapping_error"] = str(exc)
-                row["tokenizer_words"] = words
-                row["status"] = "aligned"
-                prepared.append((row, np.ascontiguousarray(pcm[start:end], dtype=np.float32), word_units,
-                                 fa.char_units(text, word_units) if "char" in passes else None))
-            results[str(job["id"])] = row
-        prepared.sort(key=lambda item: item[1].size)
-        started = time.perf_counter()
-        done = 0
-        for offset in range(0, len(prepared), batch_size):
-            batch = prepared[offset:offset + batch_size]
-            long_window = max(item[1].size for item in batch) > 60 * sample_rate
-            groups = [[item] for item in batch] if long_window else [batch]
-            for group in groups:
-                audios = [item[1] for item in group]
-                word_out = _align_batch(aligner, audios, [item[2] for item in group], torch)
-                char_out = (_align_batch(aligner, audios, [item[3] for item in group], torch)
-                            if "char" in passes else [None] * len(group))
-                for (row, audio, units, chars), (raw, fixed, posterior), char_pair in zip(group, word_out, char_out):
-                    window_ms = round(audio.size * 1000 / sample_rate)
-                    word_timed = fa.timed_units(units, raw, fixed, row["window_start_ms"], posterior, window_ms)
-                    char_timed = (fa.timed_units(chars, char_pair[0], char_pair[1], row["window_start_ms"], char_pair[2],
-                                                 window_ms) if char_pair is not None else None)
-                    segments, stats = fa.reliable_segments(word_timed, char_timed)
-                    row["word_units"] = fa.unit_rows(word_timed)
-                    row["char_units"] = fa.unit_rows(char_timed) if char_timed is not None else None
-                    row["segments"] = fa.unit_rows(fa.cover_display_span(row["text"], segments))
-                    row["stats"] = stats
-            done += len(batch)
-            _emit("progress", done=done, total=len(prepared))
-        inference_ms = (time.perf_counter() - started) * 1000.0
-        _atomic_write(Path(args.output), {
-            "protocol": PROTOCOL, "policy": policy, "results": [results[str(job["id"])] for job in jobs],
-            "audio_sha256": audio_spec.get("sha256"), "python": sys.executable, "pid": os.getpid(),
-            "torch_version": torch.__version__, "dtype": str(dtype), "device": device,
-            "backend": "torch-cuda" if device.startswith("cuda") else "torch-cpu", "model": fa.ALIGNER_REPO,
-            "model_revision": fa.ALIGNER_REVISION, "code": fa.ALIGNER_CODE, "unit_policy": fa.UNIT_POLICY_VERSION,
-            "load_ms": round(load_ms, 3), "inference_ms": round(inference_ms, 3)})
-        _emit("completed", aligned=len(prepared), jobs=len(jobs), inference_ms=round(inference_ms, 3), device=device)
+        _infer_request(aligner, manifest, pcm, jobs, policy, args.output, torch, np, fa, device, dtype, load_ms)
+        pcm._mmap.close()
+        if args.resident:
+            _emit('request_completed', output=str(args.output), model_load_count=1)
+            for raw in sys.stdin:
+                request = json.loads(raw)
+                if request.get('shutdown'):
+                    break
+                manifest, pcm, jobs, policy = _read_request(request['manifest'], np)
+                _infer_request(aligner, manifest, pcm, jobs, policy, request['output'], torch, np, fa, device, dtype, 0.)
+                pcm._mmap.close()
+                _emit('request_completed', output=str(request['output']), model_load_count=1)
     except Exception as exc:
         FAILURE_FACTS.update(memory_facts(exc))  # measured before the model is released below
         raise

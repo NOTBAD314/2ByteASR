@@ -119,7 +119,8 @@ def test_every_cut_position_is_graded_with_the_second_aligner(aligned):
         (0, "unreliable", "aligners_disagree", 250), (2, "independent", "second_aligner", 20),
         (5, "independent", "second_aligner", 20)]
     assert aligned.cues[1].forced_alignment["second"]["engine"] == "qwen3"
-    assert aligned.events[-1][0] == "boundary_grades" and aligned.events[-1][1]["independent"] == 5
+    grades=[payload for kind,payload in aligned.events if kind=='boundary_grades']
+    assert len(grades)==1 and grades[0]['independent']==5
 
 
 def test_traditional_delivery_keeps_the_caption_alignment(aligned):

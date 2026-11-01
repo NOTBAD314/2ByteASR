@@ -42,6 +42,19 @@ def video_frame_witness(video):
                 'measurement': 'backend has no mpv frame-ready witness'}
     result = dict(reader())
     result['ready'] = False
+    alive = getattr(controller, 'source_alive', None)
+    if callable(alive) and not alive():
+        result['status'] = 'transport_unhealthy'
+        return result
+    instance = getattr(controller, 'instance_id', None)
+    if instance is not None and result.get('instance_id') != instance:
+        result['status'] = 'stale_instance'
+        return result
+    status = getattr(controller, 'actor_status', lambda: {})()
+    connection = status.get('connection_generation')
+    if connection is not None and result.get('connection_generation') != connection:
+        result['status'] = 'stale_connection'
+        return result
     clock = getattr(video, '_playback_clock', None)
     if clock is not None and clock.exact_seek_pending:
         result['status'] = 'seek_pending'

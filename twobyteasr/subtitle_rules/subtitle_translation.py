@@ -854,6 +854,40 @@ def set_manual(project, cue_id: str, text: str, *, target: str | None = None) ->
     return before, snapshot(project)
 
 
+def manual_batch_state(project, values, *, source_values=None):
+    """Prepare one records/render snapshot without mutating the live document.
+
+    ``values`` is {cue_id: (text, expected_language)}. This is the bulk form
+    of set_manual: reconcile once, retain associations, rebuild once. The
+    command applies it via restore_snapshot so in-flight AI revisions advance.
+    """
+    before = snapshot(project)
+    cues = {cue.id: cue for cue in project.cues}
+    container, _changed = _migrated_container(_metadata(project), project.cues)
+    if container is None:
+        container = _empty_container()
+    records = container["records"]
+    for cue_id, (text, language) in values.items():
+        cue = cues.get(cue_id)
+        old = records.get(cue_id)
+        expected = str(old.get("target") or container_target_value(container)) if isinstance(old, Mapping) else container_target_value(container)
+        if cue is None or normalize_target(language) != normalize_target(expected):
+            raise ValueError("译文目标已删除或语言已改变，请重新预览")
+        value = clean_translation(text)
+        updated = dict(old or {})
+        source_text = (source_values or {}).get(cue_id, cue.text)
+        updated.update(_record(value, source_text, origin=ORIGIN_MANUAL, target=expected,
+                               previous=_pushed_previous(old), cleared=True if not value else None))
+        if value:
+            updated.pop("cleared", None)
+        updated.pop("last_error", None)
+        records[cue_id] = updated
+    _append_history(container, {"kind": "manual_batch", "cue_ids": list(values), "records": len(values)})
+    view = {cue_id: str(record.get("text") or "") for cue_id, record in records.items()
+            if cue_id in cues and isinstance(record, Mapping) and str(record.get("text") or "").strip()}
+    return before, {RECORDS_KEY: container, RENDER_KEY: view}
+
+
 def import_downloaded_translations(project, mapping: Mapping, *, target: str, track: Mapping) -> None:
     """Verified time-interval pairs enter the same records as editing/translation.
 
@@ -2078,7 +2112,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     report(f"共 {total} 条，待请求 {len(pending)} 条")
     batches = iter(plan_batches(source, pending, max_items=max_items, max_chars=max_chars,
                                context_cues=context_cues))
-    workers = max(1, min(4, int(workers or 1)))
+    workers = max(1, min(32, int(workers or 1)))
     emit('scheduling', workers=workers)
     if workers == 1:
         for batch in batches:
@@ -2086,7 +2120,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 break
             run(batch, 1)
     else:
-        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+        from concurrent.futures import wait, FIRST_COMPLETED
+        from ..recognition.run_context import ContextExecutor as ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='subtitle-translation') as pool:
             active = set()
             exhausted = False

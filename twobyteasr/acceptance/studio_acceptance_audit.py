@@ -76,11 +76,11 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mcp-production':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'mcp-production','long-pipeline-progress'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('studio-surface','font-picker','style-bilingual-motion','editor-bilingual','daily-regressions','home-timeline-float','timeline-operations','editor-runtime-tail'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('daily-export','large-playback','large-playback-interactions','playhead-selection','player-recovery','studio-surface','font-picker','style-bilingual-motion','editor-bilingual','daily-regressions','home-timeline-float','timeline-operations','editor-runtime-tail'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -104,7 +104,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('manual-translation', 'review-translate', 'review-editor', 'studio-followup', 'studio-interaction', 'caption-editor-a', 'studio-performance'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('manual-translation', 'review-translate', 'review-editor', 'studio-followup', 'studio-interaction', 'caption-editor-a', 'studio-performance', 'large-playback', 'studio-reliability'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -255,7 +255,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after'}:
+    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -470,11 +470,34 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'long-interactions':
+        from .long_interactions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mcp-production':
         from .mcp_production_audit import start
         output = audit_directory()
         if output is not None:
             start(window, output)
+        return
+    scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario in {'playhead-selection','large-playback','large-playback-interactions','daily-export'}:
+        if scenario=='playhead-selection':
+            from .playhead_selection_audit import start
+        elif scenario=='large-playback':
+            from .large_playback_audit import start
+        elif scenario=='large-playback-interactions':
+            from .large_playback_interaction_audit import start
+        else:
+            from .daily_export_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'player-recovery':
+        from .player_recovery_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-surface':
         from .studio_surface_audit import start
@@ -877,6 +900,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario == 'bilingual-text':
+        from .bilingual_text_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario in {'real-glossary-repair','real-glossary-repair-live','toolbar-scope','storage-media-relink','real-storage-after'}:
         output=audit_directory()
         if output is not None:
@@ -1256,6 +1284,21 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-editor':
         from .review_editor_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'large-playback':
+        from .large_playback_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-reliability':
+        from .studio_reliability_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'long-pipeline-progress':
+        from .long_pipeline_progress_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

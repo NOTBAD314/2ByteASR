@@ -1695,6 +1695,12 @@ class StudioAudioEngine(QObject):
         state = self._telemetry
         if state.get("state") in {"NO_OUTPUT_DEVICE", "UNSUPPORTED_OUTPUT_FORMAT"}:
             return True
+        # PCM can become available while the preceding paused control is
+        # still in flight. Starting mpv now queues the audio resume behind
+        # that request and manufactures an initial video lead. Wait for its
+        # acknowledgement; ongoing playback and silent output do not wait.
+        if request.get("paused", True) and getattr(self, "_sync_inflight", False):
+            return False
         if state.get("source_path") != request.get("source_path") or tuple(state.get("transport_generation") or ()) != tuple(request.get("transport_generation") or ()):
             return False
         rate = request.get("clip_rate", 1.) * request.get("transport_rate", 1.)

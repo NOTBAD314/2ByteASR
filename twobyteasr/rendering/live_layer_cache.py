@@ -79,11 +79,13 @@ class LiveLayerCache:
         *,
         max_entries: int = DEFAULT_MAX_ENTRIES,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        budget_provider=None,
     ) -> None:
         self._entries: OrderedDict[str, _CacheEntry] = OrderedDict()
         self._lock = threading.Lock()
         self._max_entries = int(max_entries)
         self._max_bytes = int(max_bytes)
+        self._budget_provider = budget_provider
         self._hits = 0
         self._misses = 0
         self._stores = 0
@@ -94,6 +96,9 @@ class LiveLayerCache:
 
     def store(self, key: str, layers: Mapping[str, QImage]) -> bool:
         """Crop full-canvas layer rasters to their union bbox and remember them."""
+        if self._budget_provider is not None:
+            with self._lock:
+                self._evict_locked()
         images = {
             str(layer_id): image
             for layer_id, image in layers.items()
@@ -137,6 +142,8 @@ class LiveLayerCache:
     def materialize(self, key: str, *, snapshot=None) -> LiveLayerImages | None:
         """Return full-canvas layer rasters rebuilt from the cropped cache."""
         with self._lock:
+            if self._budget_provider is not None:
+                self._evict_locked()
             entry = self._entries.get(str(key))
             if entry is None:
                 self._misses += 1
@@ -186,6 +193,8 @@ class LiveLayerCache:
             }
 
     def _evict_locked(self) -> None:
+        if self._budget_provider is not None:
+            self._max_bytes=max(1,int(self._budget_provider()))
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
         total = sum(entry.weight_bytes for entry in self._entries.values())
@@ -194,7 +203,12 @@ class LiveLayerCache:
             total -= evicted.weight_bytes
 
 
-GLOBAL_LIVE_LAYER_CACHE = LiveLayerCache()
+def _live_memory_budget():
+    from ..system.task_resources import cached_cache_budget
+    return cached_cache_budget(DEFAULT_MAX_BYTES,share=.25)
+
+
+GLOBAL_LIVE_LAYER_CACHE = LiveLayerCache(max_entries=64,budget_provider=_live_memory_budget)
 
 __all__ = [
     "GLOBAL_LIVE_LAYER_CACHE",

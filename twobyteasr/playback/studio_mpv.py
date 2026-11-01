@@ -41,6 +41,22 @@ class MpvIPCTimeoutError(RuntimeError):
     pass
 
 
+class MpvRecoveryExhaustedError(RuntimeError):
+    """The owner must replace this instance after its bounded IPC recovery."""
+
+
+def ipc_error_category(error):
+    if isinstance(error, MpvRecoveryExhaustedError):
+        return 'transport_budget_exhausted'
+    if isinstance(error, MpvIPCTimeoutError):
+        return 'transport_timeout'
+    if isinstance(error, (BrokenPipeError, OSError)):
+        return 'transport_disconnected'
+    if isinstance(error, MpvCommandError):
+        return 'property_unavailable' if error.error == 'property unavailable' else 'command_rejected'
+    return 'transport_failed'
+
+
 class MpvCommandError(RuntimeError):
     """A valid mpv response rejecting a command, not an IPC transport fault."""
 
@@ -244,7 +260,7 @@ class _MpvActorRequest:
     __slots__ = (
         "callback", "coalesce_key", "foreground", "deferred", "done",
         "result", "error", "on_discard",
-        "submitted_at",
+        "submitted_at", "cancelled",
     )
 
     def __init__(
@@ -266,6 +282,7 @@ class _MpvActorRequest:
         self.result: Any = None
         self.error: BaseException | None = None
         self.on_discard = on_discard
+        self.cancelled = False
 
     def discard(self):
         if self.on_discard is not None:
@@ -282,6 +299,9 @@ class _MpvCommandActor:
     are observed on the persistent client connection; one lightweight heartbeat
     drains those events instead of the GUI polling six properties in sequence.
     """
+
+    MAX_TRANSPORT_FAILURES = 3
+    OUTAGE_BUDGET_S = 4.0
 
     OBSERVED_PROPERTIES = (
         "video-out-params",
@@ -334,6 +354,11 @@ class _MpvCommandActor:
         self._last_error = ""
         self._command_error_count = 0
         self._last_command_error = ""
+        self._transport_failures = 0
+        self._outage_started = None
+        self._connection_generation = 0
+        self._observation_media_epoch = controller._subtitle_binding_epoch
+        self._active_request = None
         self._init_request_metrics()
         self._properties: dict[str, Any] = {}
         self._properties_lock = threading.Lock()
@@ -451,6 +476,14 @@ class _MpvCommandActor:
             self._queue_peak = max(self._queue_peak,len(self._requests))
             self._condition.notify()
         if request.done is None or not request.done.wait(max(0.1, timeout) + 0.5):
+            with self._condition:
+                request.cancelled = True
+                request.error = MpvIPCTimeoutError("mpv actor request timed out")
+                if request in self._requests:
+                    self._requests.remove(request)
+            request.discard()
+            if request.done is not None:
+                request.done.set()
             raise RuntimeError("mpv actor request timed out")
         if request.error is not None:
             raise request.error
@@ -480,7 +513,32 @@ class _MpvCommandActor:
             "source_generation": self._source_generation,
             "actor_sequence": self._property_sequence,
             "seconds_since_exchange": round(time.monotonic() - self._last_exchange_ok_ts, 3),
+            "instance_id": self.controller.instance_id,
+            "connection_generation": self._connection_generation,
+            "media_epoch": self.controller._subtitle_binding_epoch,
+            "transport_failures": self._transport_failures,
+            "recovery_exhausted": self.recovery_exhausted(),
         }
+
+    def recovery_exhausted(self):
+        started = getattr(self, '_outage_started', None)
+        return (getattr(self, '_transport_failures', 0) >= self.MAX_TRANSPORT_FAILURES
+                or started is not None and time.monotonic() - started >= self.OUTAGE_BUDGET_S)
+
+    def invalidate_observations(self, reason='transport_invalid'):
+        self._frame_witness_request = None
+        if reason == 'media_changed':
+            self._observation_media_epoch = -1
+            self._frame_restart_evidence = None
+            self._reconnect_frame_anchor = None
+            self._proven_frame_identity = None
+        with self._properties_lock:
+            self._properties.clear()
+            self._position_observation = {'source': reason, 'position': None,
+                'source_generation': self.controller.source_epoch,
+                'actor_sequence': self._property_sequence,
+                'observed_monotonic_ts': time.monotonic()}
+            self._frame_observation = {'status': reason}
 
     def mark_exchange_ok(self) -> None:
         self._last_exchange_ok_ts = time.monotonic()
@@ -508,9 +566,9 @@ class _MpvCommandActor:
                 playback_mark("mpv_time_pos", media_ms=float(value)*1000, generation=self._source_generation)
                 self._position_observation = {
                     "source": str(source),
-                    "source_generation": max(
-                        self._source_generation, self.controller.source_epoch
-                    ),
+                    "source_generation": self._source_generation,
+                    "instance_id": getattr(self.controller, 'instance_id', None),
+                    "connection_generation": getattr(self, '_connection_generation', 0),
                     "actor_sequence": self._property_sequence,
                     "observed_monotonic_ts": time.monotonic(),
                     "observed_perf_counter_ts": time.perf_counter(),
@@ -540,6 +598,9 @@ class _MpvCommandActor:
         self._seek_completed_generation = -1
         self._seek_poll_until = time.monotonic()+.35
         self._frame_witness_request = None
+        self._frame_restart_evidence = None
+        self._reconnect_frame_anchor = None
+        self._proven_frame_identity = None
         with self._properties_lock:
             self._frame_observation = {'status': 'awaiting_restart',
                                       'source_generation': self._source_generation}
@@ -563,7 +624,14 @@ class _MpvCommandActor:
                 or seek.get('perf_counter') == getattr(self, '_frame_ack_before_seek', None)):
             return
         request = dict(generation=generation, media_epoch=media_epoch, seek=seek,
-                       restarted=restarted, attempts=0, queued=False, signature=None)
+                       restarted=restarted, attempts=0, queued=False, signature=None,
+                       connection_generation=getattr(self, '_connection_generation', 0))
+        if getattr(self, '_proven_frame_identity', None) == (generation, media_epoch, seek['perf_counter']):
+            # Ordinary pause/rebuffer restarts do not describe a new seek.
+            # Revalidate this media's current position, without borrowing a
+            # previous load's proof or weakening the first-target check.
+            request['reconnect_target'] = self.property('time-pos', None)
+        self._frame_restart_evidence = dict(request)
         self._frame_witness_request = request
         self._schedule_frame_witness(request)
 
@@ -575,6 +643,7 @@ class _MpvCommandActor:
                 and getattr(self, '_frame_witness_request', None) is request
                 and request['generation'] == self._source_generation == self.controller.source_epoch
                 and request['media_epoch'] == self.controller._subtitle_binding_epoch
+                and request.get('connection_generation', 0) == getattr(self, '_connection_generation', 0)
                 and applied.get('generation') == request['generation']
                 and applied.get('perf_counter') != getattr(self, '_frame_ack_before_seek', None)
                 and applied.get('perf_counter') == request['seek'].get('perf_counter'))
@@ -595,7 +664,8 @@ class _MpvCommandActor:
             # Count work at execution, not each coalesced property notification.
             request['attempts'] += 1
             self._capture_frame_witness(request['generation'], request['media_epoch'],
-                                        request['seek'], request['restarted'])
+                                        request['seek'], request['restarted'],
+                                        reconnect_target=request.get('reconnect_target'))
             if (self.frame_observation().get('status') == 'ready'
                     or request['attempts'] >= self.FRAME_WITNESS_QUERY_LIMIT
                     or not self._frame_witness_current(request)):
@@ -631,12 +701,14 @@ class _MpvCommandActor:
             request['signature'] = signature
             self._schedule_frame_witness(request)
 
-    def _capture_frame_witness(self, generation, media_epoch, seek, restarted):
+    def _capture_frame_witness(self, generation, media_epoch, seek, restarted, *, reconnect_target=None):
+        connection_generation = getattr(self, '_connection_generation', 0)
         def current():
             applied = self.controller.applied_seek_state()
             return (not getattr(self, '_stopping', False)
                     and generation == self._source_generation == self.controller.source_epoch
                     and media_epoch == self.controller._subtitle_binding_epoch
+                    and connection_generation == getattr(self, '_connection_generation', 0)
                     and applied.get('generation') == generation
                     and applied.get('perf_counter') != getattr(self, '_frame_ack_before_seek', None)
                     and applied.get('perf_counter') == seek.get('perf_counter'))
@@ -644,6 +716,8 @@ class _MpvCommandActor:
             return
         started = time.perf_counter()
         witness = {'status': 'unavailable', 'source_generation': generation,
+            'instance_id': getattr(self.controller, 'instance_id', None),
+            'connection_generation': getattr(self, '_connection_generation', 0),
             'media_epoch': media_epoch, 'seek_target': seek.get('target'),
             'command_ack_at': seek['perf_counter'], 'restart_at': restarted,
             'measurement': 'playback-restart + current VO frame metadata; ready to present, not scanout'}
@@ -664,7 +738,12 @@ class _MpvCommandActor:
             # seek before the first picture lands on it. Bilibili FLVs start
             # video 64 ms (some ~1 s) after audio, so a seek to 0 showed 0.064
             # forever and never counted as this target's frame.
-            target = float(seek['target'])
+            # A proven paused image may have advanced since its last seek.
+            # Reconnecting revalidates that checkpoint with fresh IPC; it
+            # does not demand that playback jump back to the old seek target.
+            target = float(seek['target'] if reconnect_target is None else reconnect_target)
+            if reconnect_target is not None:
+                witness['reconnect_position'] = target
             lookup = getattr(self.controller, 'first_picture_seconds', None)
             first = lookup(state['path']) if callable(lookup) else None
             landing = target if first is None else max(target, first)
@@ -687,9 +766,14 @@ class _MpvCommandActor:
         if current():
             with self._properties_lock:
                 self._frame_observation = witness
+                if witness['status'] == 'ready':
+                    self._proven_frame_identity = (generation, media_epoch, seek['perf_counter'])
 
     def _handle_event(self, payload: dict[str, Any]) -> None:
         name=payload.get('event')
+        if name == 'end-file' and payload.get('reason') == 'error':
+            self.controller._last_media_failure = dict(media_epoch=self.controller._subtitle_binding_epoch,
+                                                      category='media_read_failed')
         if name == 'seek':
             self._seek_event_generation = self._source_generation
         elif (name == 'playback-restart'
@@ -698,7 +782,10 @@ class _MpvCommandActor:
         if name in {'start-file','file-loaded','end-file','shutdown','playback-restart'} or (name=='property-change' and payload.get('name') in {'pause','idle-active','speed','mute'}):
             from ..diagnostics.event_log import emit
             emit('player.state',module='mpv',phase=name,property=payload.get('name'),value=payload.get('data') if name=='property-change' else None,
-                 reason=payload.get('reason'),result='failed' if payload.get('error') else 'observed',source_epoch=self.controller.source_epoch)
+                 reason=payload.get('reason'),result='failed' if payload.get('error') else 'observed',source_epoch=self.controller.source_epoch,
+                 instance_id=getattr(self.controller, 'instance_id', None),
+                 connection_generation=getattr(self, '_connection_generation', 0),
+                 media_epoch=self.controller._subtitle_binding_epoch)
         if payload.get('event') == 'file-loaded':
             self.controller._subtitle_file_loaded()
         if name == 'playback-restart':
@@ -713,7 +800,10 @@ class _MpvCommandActor:
     def _open_pipe(self, timeout: float) -> None:
         if self._pipe is not None:
             return
-        deadline = time.monotonic() + max(0.1, timeout)
+        if self.recovery_exhausted():
+            raise MpvRecoveryExhaustedError('mpv transport recovery budget exhausted')
+        reconnected = self._ever_connected
+        deadline = time.monotonic() + min(1.5, max(0.1, timeout))
         last_error: OSError | None = None
         while time.monotonic() < deadline and not self._stopping:
             try:
@@ -724,16 +814,33 @@ class _MpvCommandActor:
                 time.sleep(0.025)
         if self._pipe is None:
             raise RuntimeError(f"mpv IPC pipe did not become ready: {last_error}")
+        self._connection_generation += 1
+        self._read_buffer = b''
         try:
             for observer_id, name in enumerate(self.OBSERVED_PROPERTIES, start=1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MpvIPCTimeoutError('mpv connection handshake timed out')
                 self._exchange_on_pipe(
-                    ["observe_property", observer_id, name], timeout=timeout,
+                    ["observe_property", observer_id, name], timeout=remaining,
                 )
             if self._ever_connected:
-                self.controller._restore_desired_state(self)
+                self.controller._restore_desired_state(self, deadline=deadline)
             self._ever_connected = True
             self._degraded = False
             self._last_error = ""
+            evidence = getattr(self, '_frame_restart_evidence', None)
+            if evidence is not None:
+                anchor = getattr(self, '_reconnect_frame_anchor', None)
+                checkpoint = (anchor.get('position') if anchor is not None
+                    and anchor.get('media_epoch') == self.controller._subtitle_binding_epoch
+                    and anchor.get('generation') == self._source_generation else None)
+                request = dict(evidence, connection_generation=self._connection_generation,
+                               queued=False, attempts=0, signature=None, reconnect_target=checkpoint)
+                self._frame_witness_request = request
+                self._schedule_frame_witness(request)
+            elif reconnected and self.controller._subtitle_media_path:
+                self.controller._needs_media_reload = True
         except BaseException:
             self._drop_pipe()
             raise
@@ -742,6 +849,14 @@ class _MpvCommandActor:
         pipe = self._pipe
         self._pipe = None
         self._read_buffer = b""
+        with self._properties_lock:
+            frame = self._frame_observation
+            position = self._properties.get('time-pos')
+            if (frame.get('status') == 'ready' and position is not None
+                    and frame.get('media_epoch') == self.controller._subtitle_binding_epoch):
+                self._reconnect_frame_anchor = dict(position=float(position),
+                    media_epoch=frame['media_epoch'], generation=self._source_generation)
+        self.invalidate_observations()
         if pipe is not None:
             try:
                 pipe.close()
@@ -755,6 +870,9 @@ class _MpvCommandActor:
         if deadline is None:
             deadline = time.monotonic() + max(0.01, timeout)
         while not self._stopping:
+            active = getattr(self, '_active_request', None)
+            if active is not None and active.cancelled:
+                raise MpvIPCTimeoutError('mpv IPC request cancelled after caller timeout')
             if b"\n" in self._read_buffer:
                 line, self._read_buffer = self._read_buffer.split(b"\n", 1)
                 return line + b"\n"
@@ -903,6 +1021,14 @@ class _MpvCommandActor:
         # Named-pipe reads are blocking, but mpv always returns one response for
         # every command. The actor owns that wait; the GUI never does for posts.
         deadline=time.monotonic()+max(.01,timeout)
+        tracked = values[:1] in (['loadfile'], ['seek'], ['stop'])
+        from ..diagnostics.event_log import emit
+        identity = dict(command_id=values[0] if values else 'unknown', request_id=request_id,
+            instance_id=getattr(self.controller, 'instance_id', None),
+            connection_generation=getattr(self, '_connection_generation', 0),
+            media_epoch=getattr(self.controller, '_subtitle_binding_epoch', None))
+        if tracked:
+            emit('player.ipc', module='mpv', result='submitted', **identity)
         try:
             pipe.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
             while True:
@@ -912,15 +1038,26 @@ class _MpvCommandActor:
                 if time.monotonic()>=deadline:
                     raise MpvIPCTimeoutError(f'mpv response deadline expired after {timeout:.3f}s')
                 parsed = json.loads(response.decode("utf-8")) if response else {}
+                if not response:
+                    raise BrokenPipeError('mpv IPC pipe closed')
                 if parsed.get("request_id") == request_id:
+                    self.mark_exchange_ok()
                     if parsed.get("error") not in {None, "success"}:
                         error = MpvCommandError(values, parsed.get("error"))
                         self._command_error_count += 1
                         self._last_command_error = str(error)
                         raise error
                     receipt['status'] = 'acknowledged'
+                    if tracked:
+                        emit('player.ipc', module='mpv', result='completed', **identity)
                     return parsed
-                self._handle_event(parsed)
+                if 'event' in parsed:
+                    self._handle_event(parsed)
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not isinstance(exc, MpvCommandError) or tracked:
+                emit('player.ipc', module='mpv', result='failed',
+                     error_code=ipc_error_category(exc), **identity)
+            raise
         finally:
             self._active_poll_receipt = previous
             sink = getattr(self, '_poll_attempt_sink', None)
@@ -939,6 +1076,11 @@ class _MpvCommandActor:
         attempts = []
         for attempt in range(2):
             try:
+                if self.recovery_exhausted():
+                    raise MpvRecoveryExhaustedError('mpv transport recovery budget exhausted')
+                active = getattr(self, '_active_request', None)
+                if active is not None and active.cancelled:
+                    raise MpvIPCTimeoutError('mpv actor request was cancelled')
                 with self._poll_attempt_scope(None):
                     self._open_pipe(timeout)
                 # Reconnect replay in _open_pipe has its own commands. Only
@@ -952,18 +1094,29 @@ class _MpvCommandActor:
                 self._degraded = False
                 self._last_error = ""
                 self._last_exchange_ok_ts = time.monotonic()
+                self._transport_failures = 0
+                self._outage_started = None
                 return {**response, '_ipc_poll_receipt': self._poll_summary(attempts)}
             except MpvCommandError as exc:
                 # The pipe delivered a complete response. Reconnecting cannot
                 # make a command valid (for example, seeking while mpv is
                 # idle at EOF) and would starve later actor requests.
                 exc._ipc_poll_receipt = self._poll_summary(attempts)
+                self.mark_exchange_ok()
+                self._transport_failures = 0
+                self._outage_started = None
+                self._degraded = False
                 raise
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 self._degraded = True
                 self._last_error = f"{type(exc).__name__}: {exc}"
+                self._transport_failures = getattr(self, '_transport_failures', 0) + 1
+                if getattr(self, '_outage_started', None) is None:
+                    self._outage_started = time.monotonic()
                 self._drop_pipe()
-                if attempt or self._stopping or not self.controller.running:
+                active = getattr(self, '_active_request', None)
+                if (attempt or self._stopping or not self.controller.running or self.recovery_exhausted()
+                        or active is not None and active.cancelled):
                     exc._ipc_poll_receipt = self._poll_summary(attempts)
                     raise
                 self._reconnect_attempts += 1
@@ -975,6 +1128,8 @@ class _MpvCommandActor:
             self.mark_degraded("mpv process exited")
             self._drop_pipe()
             return
+        if self.recovery_exhausted():
+            return  # The canvas serializes bounded process replacement.
         try:
             # This response also drains every queued property-change event from
             # the persistent observed client connection.
@@ -1001,7 +1156,10 @@ class _MpvCommandActor:
                 self._read_buffer+=os.read(descriptor,65536)
             while b'\n' in self._read_buffer:
                 line,self._read_buffer=self._read_buffer.split(b'\n',1)
-                if line:self._handle_event(json.loads(line.decode('utf8')))
+                if line:
+                    event = json.loads(line.decode('utf8'))
+                    if 'event' in event:
+                        self._handle_event(event)
         except (OSError,ValueError,AttributeError):
             return  # The existing heartbeat performs transport recovery.
 
@@ -1041,10 +1199,14 @@ class _MpvCommandActor:
                     # A newer media event may already be waiting in the pipe.
                     # Consume it before an old GUI raster's valid_when guard.
                     self._drain_property_events()
-                    request.result = request.callback()
+                    self._active_request = request
+                    if not request.cancelled:
+                        request.result = request.callback()
                 except BaseException as exc:
                     request.error = exc
+                    request.discard()
                 finally:
+                    self._active_request = None
                     ended = time.perf_counter()
                     with self._condition:
                         self._completed_count += 1
@@ -1111,6 +1273,12 @@ class _MpvCommandActor:
             try:timer.close()
             except (OSError,RuntimeError) as error:self._poll_timer_error=f'close: {error}'
         self._drop_pipe()
+        active = getattr(self, '_active_request', None)
+        if active is not None:
+            active.cancelled = True
+            active.error = RuntimeError('mpv actor stopped')
+            if active.done is not None:
+                active.done.set()
         for request in pending:
             request.error = RuntimeError("mpv actor stopped")
             request.discard()
@@ -1139,6 +1307,7 @@ class MpvController:
         self.executable = resolved
         self._process_factory = process_factory
         self._process: subprocess.Popen | None = None
+        self.instance_id = uuid.uuid4().hex
         self._pipe_path = ""
         self._request_id = 0
         self._actor: _MpvCommandActor | None = None
@@ -1151,6 +1320,7 @@ class MpvController:
         self._desired_subtitle_path = ''
         self._subtitle_visible = True
         self._desired_commands: dict[str, list[Any]] = {}
+        self._desired_lock = threading.RLock()
         # Seek-observation epoch owned by the controller; it survives actor
         # and pipe restarts. Replacement PlaybackClocks sync to it so seek
         # acknowledgements stay comparable across projects.
@@ -1183,7 +1353,9 @@ class MpvController:
         """
         if not self.running or self._actor is None:
             return False
-        return self._actor.seconds_since_exchange() <= max_silence_s
+        return (self._actor._thread.is_alive() and not self._actor._degraded
+                and not self._actor.recovery_exhausted()
+                and self._actor.seconds_since_exchange() <= max_silence_s)
 
     @property
     def source_epoch(self) -> int:
@@ -1196,6 +1368,10 @@ class MpvController:
         if self.running:
             return
         self._pipe_path = _ipc_pipe_name()
+        if log_path:
+            path = Path(log_path)
+            log_path = str(path.with_name(path.stem+'-'+self.instance_id[:10]+path.suffix))
+        self._log_path = str(log_path)
         try:
             with _without_system_error_boxes():
                 self._process = popen_hidden_subprocess(
@@ -1238,7 +1414,11 @@ class MpvController:
             raise RuntimeError("mpv actor is not running")
         started = time.perf_counter()
         try:
-            return actor.call(lambda: actor.exchange(values, timeout=timeout), timeout)
+            def perform():
+                if values[:1] == ['loadfile']:
+                    actor._observation_media_epoch = self._subtitle_binding_epoch
+                return actor.exchange(values, timeout=timeout)
+            return actor.call(perform, timeout)
         finally:
             elapsed = (time.perf_counter() - started) * 1000
             if elapsed >= 20:
@@ -1257,11 +1437,25 @@ class MpvController:
     ) -> bool:
         from ..diagnostics.event_log import context, current_context
         submitted_context = current_context()
+        actor = self._actor
+        media_epoch = self._subtitle_binding_epoch
         original_callback = callback
         def callback():
+            if self._actor is not actor or media_epoch != self._subtitle_binding_epoch:
+                if on_discard is not None:
+                    on_discard()
+                return None
             with context(**submitted_context):
-                return original_callback()
-        actor = self._actor
+                try:
+                    return original_callback()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    from ..diagnostics.event_log import emit
+                    self._last_async_failure = dict(media_epoch=media_epoch,
+                        category=ipc_error_category(exc), command_id=coalesce_key)
+                    emit('player.async_failed', module='mpv', result='failed',
+                         instance_id=self.instance_id, media_epoch=media_epoch,
+                         error_code=ipc_error_category(exc), command_id=coalesce_key)
+                    raise
         if actor is None:
             if on_discard is not None: on_discard()
             return False
@@ -1277,17 +1471,22 @@ class MpvController:
             on_discard=on_discard,
         )
 
+    def _observations_valid(self):
+        actor = self._actor
+        return (actor is not None and self.running and not getattr(actor, '_degraded', False)
+                and getattr(actor, '_observation_media_epoch', self._subtitle_binding_epoch) == self._subtitle_binding_epoch)
+
     def observed_property(self, name: str, default: Any = None) -> Any:
         actor = self._actor
-        return actor.property(name, default) if actor is not None else default
+        return actor.property(name, default) if self._observations_valid() else default
 
     def observed_properties(self) -> dict[str, Any]:
         actor = self._actor
-        return actor.properties() if actor is not None else {}
+        return actor.properties() if self._observations_valid() else {}
 
     def observed_position(self) -> dict[str, Any]:
         actor = self._actor
-        return actor.position_observation() if actor is not None else {
+        return actor.position_observation() if self._observations_valid() else {
             "source": "unobserved",
             "source_generation": 0,
             "actor_sequence": 0,
@@ -1297,7 +1496,7 @@ class MpvController:
 
     def observed_frame(self) -> dict[str, Any]:
         actor = self._actor
-        return actor.frame_observation() if actor is not None else {'status': 'unobserved'}
+        return actor.frame_observation() if self._observations_valid() else {'status': 'transport_or_media_invalid'}
 
     def set_first_picture(self, media_path, seconds: float | None) -> None:
         """Record where a source's first video picture sits on mpv's clock.
@@ -1359,8 +1558,42 @@ class MpvController:
             "pipe_open": False,
         }
 
+    def recovery_diagnostics(self):
+        """Bounded metadata, collected by the recovery worker before shutdown.
+
+        Raw native logs remain local. Only closed-vocabulary error categories
+        from their tail enter the privacy-filtered event bundle.
+        """
+        snapshot = dict(actor=self.actor_status(), instance_id=self.instance_id,
+                        player_pid=getattr(self._process, 'pid', None))
+        try:
+            import psutil
+            process = psutil.Process(self._process.pid)
+            snapshot['resources'] = dict(threads=process.num_threads(), handles=process.num_handles(),
+                                         rss_bytes=process.memory_info().rss)
+        except Exception:
+            snapshot['resources_unavailable'] = True
+        path = getattr(self, '_log_path', '')
+        if path:
+            snapshot['native_log_path'] = path
+            try:
+                with open(path, 'rb') as stream:
+                    stream.seek(0, 2)
+                    size = stream.tell()
+                    stream.seek(max(0, size-8192))
+                    tail = stream.read(8192).decode('utf8', errors='replace').lower()
+                snapshot['native_log_bytes'] = size
+                snapshot['native_tail_categories'] = {name+'_count': tail.count(token) for name, token in (
+                    ('device_removed', 'device removed'), ('device_lost', 'device lost'),
+                    ('d3d11', 'd3d11'), ('hardware_decode', 'hwdec'), ('decode_error', 'decode error'),
+                    ('file_error', 'failed to open'), ('error', 'error')) if token in tail}
+            except OSError:
+                snapshot['native_tail_unavailable'] = True
+        return snapshot
+
     def _remember_desired(self, key: str, command: Iterable[Any]) -> None:
-        self._desired_commands[str(key)] = list(command)
+        with self._desired_lock:
+            self._desired_commands[str(key)] = list(command)
 
     # Only transport-neutral state is safe to replay after an IPC reconnect:
     # the mpv process kept its media and position, so replaying a remembered
@@ -1373,12 +1606,20 @@ class MpvController:
         "preview-scale",
     })
 
-    def _restore_desired_state(self, actor: _MpvCommandActor) -> None:
-        for key, command in tuple(self._desired_commands.items()):
+    def _restore_desired_state(self, actor: _MpvCommandActor, *, deadline=None) -> None:
+        epoch = self._subtitle_binding_epoch
+        with self._desired_lock:
+            desired = tuple(self._desired_commands.items())
+        for key, command in desired:
+            if epoch != self._subtitle_binding_epoch:
+                return
             if str(key) not in self._REPLAYABLE_DESIRED_KEYS:
                 continue
             try:
-                actor._exchange_on_pipe(command, timeout=0.75)
+                remaining = .75 if deadline is None else min(.75, deadline - time.monotonic())
+                if remaining <= 0:
+                    raise MpvIPCTimeoutError('mpv desired-state restore timed out')
+                actor._exchange_on_pipe(command, timeout=remaining)
             except MpvCommandError:
                 # Desired state can contain media-dependent commands. At EOF
                 # they may be temporarily invalid, but they must not abort
@@ -1450,6 +1691,7 @@ class MpvController:
         seconds: float,
         *,
         generation: int,
+        paused: bool | None = None,
     ) -> bool:
         """Load a new source at its mapped time in one mpv command.
 
@@ -1469,6 +1711,8 @@ class MpvController:
             -1,
             {"start": f"{target:.6f}"},
         ]
+        if paused is not None:
+            self._remember_desired('pause', ['set_property', 'pause', bool(paused)])
 
         def perform_load_at() -> dict[str, Any]:
             if epoch != self._subtitle_binding_epoch:
@@ -1476,7 +1720,14 @@ class MpvController:
             actor = self._actor
             if actor is not None:
                 actor.begin_seek(generation, target)
+            if paused is not None:
+                self._clear_owned_overlays()
+                self._send(['set_property', 'pause', bool(paused)])
+            if epoch != self._subtitle_binding_epoch:
+                return {}
             result = self._send(command)
+            if epoch != self._subtitle_binding_epoch:
+                return {}
             with self._seek_apply_lock:
                 self._seek_applied = {
                     "generation": int(generation),
@@ -1496,8 +1747,13 @@ class MpvController:
         self._begin_subtitle_media('')
         self._desired_subtitle_path = ''
         epoch = self._subtitle_binding_epoch
+        def clear():
+            if epoch != self._subtitle_binding_epoch:
+                return None
+            self._clear_owned_overlays()
+            return self._send(['stop'])
         return self._post(
-            lambda: self._send(['stop']) if epoch == self._subtitle_binding_epoch else None,
+            clear,
             coalesce_key="loadfile",
             foreground=True,
         )
@@ -1690,6 +1946,24 @@ class MpvController:
         self._subtitle_media_ready = False
         self._studio_subtitle_sid = None
         self._studio_subtitle_path = ""
+        self._desired_subtitle_path = ''
+        with self._desired_lock:
+            self._desired_commands.clear()
+        self._last_async_failure = None
+        self._last_media_failure = None
+        self._needs_media_reload = False
+        with self._seek_apply_lock:
+            self._seek_applied = {}
+        actor = self._actor
+        if callable(getattr(actor, 'invalidate_observations', None)):
+            actor.invalidate_observations('media_changed')
+
+    def _clear_owned_overlays(self):
+        for overlay in (VIDEO_OVERLAY_ID, ADVANCED_OVERLAY_ID, TRANSFORM_OVERLAY_ID, VIDEO_TRANSFORM_OVERLAY_ID):
+            try:
+                self._send(['overlay-remove', overlay])
+            except MpvCommandError:
+                pass  # Missing reserved slots are a valid, already empty state.
 
     def _subtitle_file_loaded(self):
         # Events are read during IPC exchanges. Queue work instead of nesting
@@ -1763,9 +2037,7 @@ class MpvController:
         # With --idle=yes the same process remains ready for Undo/restoration.
         # Extra pause/playlist-clear round trips made last-segment Delete wait
         # for three named-pipe responses with no additional state guarantee.
-        self._subtitle_binding_epoch += 1
-        self._subtitle_media_path = ''
-        self._subtitle_media_ready = False
+        self._begin_subtitle_media('')
         self._desired_subtitle_path = ''
         self._send(["stop"])
         self._studio_subtitle_sid = None

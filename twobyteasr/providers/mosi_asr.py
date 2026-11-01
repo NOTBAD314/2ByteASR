@@ -492,6 +492,9 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     finish within it: a 1-hour WAV (110 MB) died after 15 s on a home uplink
     (2026-10-14). Streaming applies that timeout to each block instead.
     """
+    import os
+    if os.environ.get('TWOBYTEASR_MOSS_RESUME_ONLY')=='1':
+        raise ASRProtocolError('当前只允许恢复已知MOSS任务，缺少缓存时不创建收费请求。','resume_only')
     import requests
     from ..recognition.asr import _pcm16_wav_bytes
     from .dashscope_service import ServiceProblem, _MultipartBody
@@ -665,7 +668,8 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
 RATE_LIMIT_RETRY_SECONDS = 20
 
 
-def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait, timings=None) -> dict:
+def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait, timings=None,
+                    on_rate_limit=None) -> dict:
     """Upload the request unless MOSI already has it.
 
     HTTP 429 means MOSI already has as many requests as it takes; nothing was
@@ -687,6 +691,7 @@ def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, 
         except ASRProtocolError as exc:
             if exc.category != 'rate_limited' or time.monotonic() >= deadline:
                 raise
+            if on_rate_limit is not None:on_rate_limit()
         finally:
             if timings is not None:
                 timings['encode_upload_submit_seconds'] += _phase_clock() - began
@@ -698,10 +703,10 @@ def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, 
 
 
 def _wait_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait,
-                  segment=None, timings=None) -> dict:
+                  segment=None, timings=None, duration=None) -> dict:
     """Wait for a request MOSI has; keep and account its result."""
     state_path, raw_path = root / 'task.json', root / 'result.json'
-    duration = len(audio) / 16000
+    duration = len(audio) / 16000 if duration is None else duration
     began = _phase_clock()
     try:
         payload = poll(endpoint, client=client, state_path=state_path, state=state, duration=duration,
@@ -762,7 +767,7 @@ def _request_ranges(samples, root: Path, restart_terminal: bool, resplit_blocked
     it is, unless the user asked to send it again in pieces
     (``resplit_blocked``, 2026-10-24).
     """
-    fresh = plan_ranges(samples)
+    fresh = samples.ranges if getattr(samples, "prepared_pcm", False) else plan_ranges(samples)
     try:
         saved = [(int(row['start']), int(row['end']))
                  for row in json.loads((root / 'plan.json').read_text('utf8'))['requests']]
@@ -847,7 +852,8 @@ class _Board:
 
 def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, progress=lambda *a: None,
                sleep=time.sleep, max_wait=7200.0, restart_terminal=False, on_rows=None,
-               parallel=PARALLEL_REQUESTS, resplit_blocked=False, on_timing=None) -> list:
+               parallel=PARALLEL_REQUESTS, resplit_blocked=False, on_timing=None,
+               upload_parallel=1, adaptive_ceiling=None) -> list:
     """Run (or resume) all requests for the task audio; rows on the task clock.
 
     Requests are uploaded in order, one at a time, while at most ``parallel``
@@ -868,26 +874,47 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
     from .cloud_asr_jobs import job_root
     from ..recognition.speaker_evidence import scope_request_speakers
     client = client or network_policy
-    samples = np.asarray(audio)
-    if samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all():
+    prepared = bool(getattr(audio, 'prepared_pcm', False))
+    samples = audio if prepared else np.asarray(audio)
+    if not prepared and (samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all()):
         raise ASRProtocolError('MOSS Pro 云端输入必须是有效的 16kHz 单声道音频。', 'input_limit')
     endpoint = dict(endpoint, url=normalize_api_base(endpoint.get('url')))
     root = job_root(audio, endpoint, cache_root)
-    ranges = _request_ranges(samples, root, restart_terminal, resplit_blocked)
-    total = len(ranges)
-    _save(root / 'plan.json', dict(model=MODEL, requests=[dict(start=s, end=e) for s, e in ranges],
-                                   keyterms=endpoint.get('mosi_keyterms') or [],
-                                   keyterms_dropped=endpoint.get('mosi_keyterms_dropped') or [],
-                                   price_cny_per_hour=PRICE_CNY_PER_HOUR, price_checked=PRICE_CHECKED))
+    prior=[]
+    if prepared:
+        if resplit_blocked:
+            # A deliberate recut uses already completed canonical PCM while
+            # retaining this source's remote-task namespace.
+            ranges=_request_ranges(samples[0:len(samples)],root,restart_terminal,resplit_blocked)
+            prepared=False
+        else:
+            ranges=samples.ranges
+            try:prior=json.loads((root/'plan.json').read_text('utf8')).get('requests') or []
+            except (OSError,ValueError):prior=[]
+            if prior:
+                if (prior[0]['start']!=0 or any(a['end']!=b['start'] for a,b in zip(prior,prior[1:]))
+                        or len(prior)>len(ranges)):
+                    raise ASRProtocolError('已保存分片计划不一致，未重新提交。','input_limit')
+                ranges.known.update({index:(int(row['start']),int(row['end'])) for index,row in enumerate(prior)})
+            elif any(root.glob('request-*/task.json')):
+                raise ASRProtocolError('已存在远端任务但分片计划缺失，未重复上传。','submission_uncertain')
+    else:
+        ranges=_request_ranges(samples,root,restart_terminal,resplit_blocked)
+    total=len(ranges)
+    plan=dict(model=MODEL,requests=list(prior),keyterms=endpoint.get('mosi_keyterms') or [],
+        keyterms_dropped=endpoint.get('mosi_keyterms_dropped') or [],
+        price_cny_per_hour=PRICE_CNY_PER_HOUR,price_checked=PRICE_CHECKED,prepared_source=prepared,total=total)
+    if not prepared:plan['requests']=[dict(start=start,end=end) for start,end in ranges]
+    _save(root/'plan.json',plan)
     board = _Board(total, progress)
     from ..recognition.run_context import get_runtime_context
     requested_language = get_runtime_context().requested_language
     lock = threading.Lock()
     converted = [None] * total
     timings = [dict(provider=PROVIDER, model=MODEL, request_index=i, request_total=total,
-                    audio_seconds=(end-start)/16000, cache_hit=False, submit_requests=0, poll_requests=0,
+                    audio_seconds=None, cache_hit=False, submit_requests=0, poll_requests=0,
                     poll_http_seconds=0.0, poll_sleep_seconds=0.0, encode_upload_submit_seconds=0.0,
-                    remote_processing_seconds=None, _started=_phase_clock()) for i,(start,end) in enumerate(ranges)]
+                    remote_processing_seconds=None, _started=_phase_clock()) for i in range(total)]
 
     def timing(index, outcome, error=None):
         if on_timing is None:
@@ -934,8 +961,8 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
             rows = scope_request_speakers(rows, index, total)
         with lock:
             converted[index] = rows
-            if on_rows is not None:
-                on_rows(index, total, rows)
+        if on_rows is not None:
+            on_rows(index, total, rows)
         board.report(index, 'completed')
 
     def blocked(index, folder, segment):
@@ -943,10 +970,12 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         start, end = ranges[index]
         with lock:
             converted[index] = [gap_row(start, end, _load_state(folder), segment)]
+        if on_rows is not None:
+            on_rows(index, total, converted[index])
         board.report(index, 'completed')
 
-    jobs = []
-    for index, (start, end) in enumerate(ranges):
+    def prepare_job(index,start,end):
+        timings[index]['audio_seconds']=(end-start)/16000
         check()
         folder = _request_dir(root, index, start, end)
         segment = (index + 1, total, start / 16000, end / 16000)
@@ -956,7 +985,7 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
             timings[index]['cache_hit'] = True
             finish(index, folder, json.loads((folder / 'result.json').read_text('utf8')))
             timing(index, 'completed')
-            continue
+            return None
         try:
             state = _prepared_state(folder, progress=note, restart_terminal=restart_terminal, segment=segment)
         except ASRProtocolError as exc:
@@ -965,15 +994,44 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                 raise
             blocked(index, folder, segment)
             timing(index, 'blocked', exc)
-            continue
-        jobs.append((index, folder, segment, note, state))
-    errors, places = [], threading.Semaphore(max(1, int(parallel)))
+            return None
+        return (index, folder, segment, note, state)
+    if prepared:
+        # Verify every known terminal/uncertain state before submitting any
+        # new range. Known IDs can be polled before local audio is rebuilt.
+        known_jobs=[prepare_job(index,int(row['start']),int(row['end'])) for index,row in enumerate(prior)]
+        known_jobs=[job for job in known_jobs if job is not None]
+        known_jobs.sort(key=lambda job:(not bool(job[4].get('task_id')),job[0]))
+        def pending_jobs():
+            yield from known_jobs
+            for index in range(len(prior),total):
+                start,end=ranges[index]
+                plan['requests'].append(dict(start=start,end=end))
+                _save(root/'plan.json',plan)  # before a submission may exist
+                job=prepare_job(index,start,end)
+                if job is not None:yield job
+        jobs=pending_jobs()
+    else:
+        jobs=[prepare_job(index,start,end) for index,(start,end) in enumerate(ranges)]
+        jobs=[job for job in jobs if job is not None]
+        jobs.sort(key=lambda job:(not bool(job[4].get('task_id')),job[0]))
+    from ..system.task_resources import AdaptiveGate
+    errors = []
+    places = AdaptiveGate(parallel, adaptive_ceiling or parallel)
+    uploads = threading.Semaphore(max(1, int(upload_parallel)))
+    counts = dict(uploading=0, polling=0, queued=total-sum(row is not None for row in converted))
+
+    def activity(index, phase):
+        with lock:
+            snapshot = dict(counts)
+        _record_event('mosi_scheduler', request_index=index, request_total=total, phase=phase,
+                      **snapshot, remote_budget=places.snapshot())
 
     def wait(job, state):
         index, folder, segment, note, _ = job
         start, end = ranges[index]
         try:
-            finish(index, folder, _wait_request(samples[start:end], endpoint, folder, state, client=client,
+            finish(index, folder, _wait_request(None, endpoint, folder, state, duration=(end-start)/16000, client=client,
                                                 check=check, progress=note, sleep=sleep, max_wait=max_wait,
                                                 segment=segment, **({'timings':timings[index]} if on_timing else {})))
             timing(index, 'completed')
@@ -989,43 +1047,80 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
             timing(index, 'failed', exc)
             with lock:
                 errors.append(exc)
-        finally:
-            places.release()
+        # Admission is owned by submit_and_wait, through result retrieval.
 
-    with ThreadPoolExecutor(max_workers=max(1, min(int(parallel), len(jobs) or 1)),
-                            thread_name_prefix='mosi-request') as pool:
-        for job in jobs:
-            index, folder, segment, note, state = job
-            start, end = ranges[index]
-            try:
-                while not places.acquire(timeout=.1):  # a free place with MOSI
-                    check()
-                if errors:
-                    places.release()
-                    break
+    def submit_and_wait(job):
+        index, folder, segment, note, state = job
+        start, end = ranges[index]
+        try:
+            with places.lease(check):
+                with lock:
+                    if errors and not state.get('task_id'):
+                        return
+                    counts['queued'] -= 1
+                timings[index]['remote_admission_queue_seconds']=_phase_clock()-timings[index]['_started']
+                activity(index, 'admitted')
+                if not state.get('task_id'):
+                    while not uploads.acquire(timeout=.1):
+                        check()
+                    with lock:
+                        counts['uploading'] += 1
+                    activity(index, 'uploading')
+                    try:
+                        state = _submit_request(samples[start:end], endpoint, folder, state, client=client,
+                            check=check, progress=note, sleep=sleep, max_wait=max_wait,
+                            on_rate_limit=lambda:places.feedback(False,cooldown=min(20.,RATE_LIMIT_RETRY_SECONDS)),
+                            **({'timings':timings[index]} if on_timing else {}))
+                    finally:
+                        uploads.release()
+                        with lock:
+                            counts['uploading'] -= 1
+                with lock:
+                    counts['polling'] += 1
+                activity(index, 'remote_wait')
                 try:
-                    state = _submit_request(samples[start:end], endpoint, folder, state, client=client, check=check,
-                                            progress=note, sleep=sleep, max_wait=max_wait,
-                                            **({'timings':timings[index]} if on_timing else {}))
-                except BaseException:
-                    places.release()
-                    raise
-            except ASRProtocolError as exc:
-                if exc.category == 'content_rejected':
-                    # Refused at upload by the same review: a gap like a block.
-                    blocked(index, folder, segment)
-                    timing(index, 'blocked', exc)
-                    continue
+                    wait(job, state)
+                finally:
+                    with lock:
+                        counts['polling'] -= 1
+                if _load_state(folder).get('status') == 'SUCCESS':
+                    places.feedback(True)
+        except ASRProtocolError as exc:
+            if exc.category == 'content_rejected':
+                blocked(index, folder, segment)
+                timing(index, 'blocked', exc)
+            else:
+                if exc.category in {'rate_limited','timeout'}:
+                    places.feedback(False, cooldown=min(20., RATE_LIMIT_RETRY_SECONDS))
                 timing(index, 'failed', exc)
                 with lock:
                     errors.append(exc)
+        except BaseException as exc:
+            timing(index, 'failed', exc)
+            with lock:
+                errors.append(exc)
+        finally:
+            activity(index, 'released')
+
+    # Known remote IDs are resumed before new submissions. Each worker owns
+    # its remote place until terminal/result, independently of upload slots.
+    with ThreadPoolExecutor(max_workers=max(1, min(int(adaptive_ceiling or parallel), total or 1)),
+                            thread_name_prefix='mosi-request') as pool:
+        from concurrent.futures import wait as wait_futures, FIRST_COMPLETED
+        pending, cursor = set(), iter(jobs)
+        exhausted = False
+        while pending or not exhausted:
+            while len(pending) < places.ceiling and not exhausted:
+                job = next(cursor, None)
+                if job is None:
+                    exhausted = True
+                else:
+                    pending.add(pool.submit(submit_and_wait, job))
+            if not pending:
                 break
-            except BaseException as exc:  # noqa: BLE001 - recorded; requests MOSI has are still waited for
-                timing(index, 'failed', exc)
-                with lock:
-                    errors.append(exc)
-                break
-            pool.submit(wait, job, state)
+            done, pending = wait_futures(pending, timeout=.1, return_when=FIRST_COMPLETED)
+            for future in done:
+                future.result()
     if errors:
         raise errors[0]
     if total > 1:

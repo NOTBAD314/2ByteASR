@@ -160,6 +160,13 @@ def sync_editor_layer(page, *, explicit=False):
         page._caption_canvas_edit_target=None
     timeline = page.timeline
     translation = timeline.active_subtitle_layer == "translation"
+    model = getattr(page, 'cue_model', None)
+    if model is not None and hasattr(model, 'set_text_layer'):
+        from PySide6.QtCore import QSignalBlocker
+        table = getattr(page, 'cue_table', None)
+        blocker = QSignalBlocker(table.selectionModel()) if table is not None else None
+        model.set_text_layer('translation' if translation else 'original')
+        del blocker
     target = container_target(page.project) if page.project else ""
     target = TARGET_LABELS.get(target, target)
     label = getattr(page, "current_text_layer_label", None)

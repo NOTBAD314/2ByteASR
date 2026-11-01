@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import threading
 import uuid
+import contextvars
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -82,9 +84,25 @@ class RuntimeContext:
     japanese_phrases: Any | None = None
     # Task-private first-pass alignment receipt; never written to settings.
     segment_alignment_evidence: Any | None = field(default=None, repr=False)
+    alignment_audio_inputs: dict[Any, str] = field(default_factory=dict, repr=False)
+    alignment_checkpoint_dir: str = ''
+    aligner_sessions: dict[Any, Any] = field(default_factory=dict, repr=False)
+    shard_id: str = ''
+    primary_ready_callback: Any | None = field(default=None, repr=False)
+    long_pipeline: Any | None = field(default=None, repr=False)
+    root_context: Any | None = field(default=None, repr=False)
+    execution_budget: Any | None = field(default=None, repr=False)
+    provider_quota_rejections: dict[str,str] = field(default_factory=dict,repr=False)
+    translation_ready: Any | None = field(default=None, repr=False)
+    streaming_preparation: Any | None = field(default=None, repr=False)
+    early_primary: Any | None = field(default=None, repr=False)
+    input_session: Any | None = field(default=None, repr=False)
+    shard_input_version: str = ''
+    shard_bounds: tuple[float,float] | None = None
 
     def reset_for_media(self) -> None:
         """Clear output/report state while retaining queue-wide discovered terms."""
+        self.close_resources()
         self.review_items.clear()
         self.asr_provisional_cues.clear()
         self.asr_manifest_key = ""
@@ -98,17 +116,84 @@ class RuntimeContext:
         self.language_recovery_result = None
         self.japanese_phrases = None
         self.segment_alignment_evidence = None
+        self.alignment_audio_inputs.clear()
+        self.alignment_checkpoint_dir = ''
+
+    def close_resources(self):
+        if self.long_pipeline is not None:
+            pipeline, self.long_pipeline = self.long_pipeline, None
+            pipeline.close()
+        if self.early_primary is not None:
+            pool,future=self.early_primary
+            self.early_primary=None
+            pool.shutdown(wait=True,cancel_futures=True)
+        if self.input_session is not None:
+            session,self.input_session=self.input_session,None
+            session.close()
+        with self.media_identity_lock:
+            sessions = list(self.aligner_sessions.values())
+            self.aligner_sessions.clear()
+        for session in sessions:
+            session.close()
+        if self.streaming_preparation is not None:
+            producer,self.streaming_preparation=self.streaming_preparation,None
+            producer.close()
 
 
 _CONTEXT_LOCK = threading.RLock()
 _OPERATION_LOCK = threading.RLock()
 _ACTIVE_CONTEXT = RuntimeContext()
+_LOCAL_CONTEXT = contextvars.ContextVar('2byteasr_local_stage_context', default=None)
 
 
 def get_runtime_context() -> RuntimeContext:
     """Return the context active for the current queue and its worker threads."""
+    local = _LOCAL_CONTEXT.get()
+    if local is not None:
+        return local
     with _CONTEXT_LOCK:
         return _ACTIVE_CONTEXT
+
+
+def context_is_current(context):
+    with _CONTEXT_LOCK:
+        root = getattr(context, 'root_context', None)
+        return root is None or _ACTIVE_CONTEXT is root
+
+
+@contextmanager
+def local_runtime_context(context):
+    """A shard's local outputs/settings; queue ownership stays with its root."""
+    token = _LOCAL_CONTEXT.set(context)
+    try:
+        if not context_is_current(context):
+            from .service import CancelledError
+            raise CancelledError('分片所属的识别任务已结束。')
+        yield context
+    finally:
+        _LOCAL_CONTEXT.reset(token)
+
+
+class ContextExecutor(ThreadPoolExecutor):
+    def submit(self, fn, /, *args, **kwargs):
+        captured = contextvars.copy_context()
+        return super().submit(captured.run, fn, *args, **kwargs)
+
+
+def bounded_results(pool, runner, jobs, *, limit):
+    """Completion-order consumption without queueing the entire corpus."""
+    jobs, pending, exhausted = iter(jobs), set(), False
+    while pending or not exhausted:
+        while len(pending) < max(1, limit) and not exhausted:
+            job = next(jobs, None)
+            if job is None:
+                exhausted = True
+            else:
+                pending.add(pool.submit(runner, job))
+        if pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                yield future.result()
 
 
 def runtime_context_from_legacy(legacy: Any) -> RuntimeContext:
@@ -186,11 +271,14 @@ def activate_runtime_context(
     try:
         yield context
     finally:
-        with _CONTEXT_LOCK:
-            _ACTIVE_CONTEXT = previous
-            if legacy is not None:
-                sync_legacy_runtime(legacy, previous)
-        _OPERATION_LOCK.release()
+        try:
+            context.close_resources()
+        finally:
+            with _CONTEXT_LOCK:
+                _ACTIVE_CONTEXT = previous
+                if legacy is not None:
+                    sync_legacy_runtime(legacy, previous)
+            _OPERATION_LOCK.release()
 
 
 __all__ = [

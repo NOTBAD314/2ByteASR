@@ -68,6 +68,22 @@ def test_pending_initial_child_applies_existing_block_when_bound():
     assert not api.owned and not api.deleted
 
 
+def test_unresponsive_foreign_window_is_not_given_synchronous_region_messages():
+    gate, api, controller = fixture(((0,0,50,50),))
+    api.responsive = lambda child: False
+    state = gate.sync(controller, 10, True)
+    assert state['status'] == 'window_unresponsive' and state['retry']
+    assert not api.sets and not api.owned
+    api.responsive = lambda child: True
+    assert gate.sync(controller,10,True)['status'] == 'blocked'
+    saved = gate.saved
+    api.responsive = lambda child: False
+    assert gate.sync(controller,10,False)['status'] == 'window_unresponsive'
+    assert gate.saved == saved and saved in api.owned
+    gate.close()
+    assert not api.owned
+
+
 def test_custom_region_is_restored_and_transferred_exactly_once():
     original=((2,3,40,50),(90,80,100,90))
     gate,api,c=fixture(original)

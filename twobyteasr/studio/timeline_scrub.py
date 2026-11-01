@@ -78,3 +78,11 @@ class TimelineScrub(QObject):
         if was_dragging and self.resume:
             self.page.video.set_paused(False)
         self.resume = False
+
+    def cancel(self):
+        """Discard work before hiding/replacing the timeline's project."""
+        self.timer.stop()
+        self.pending = None
+        self.inflight = False
+        self.pressed = self.active = self.page._timeline_scrub_active = False
+        self.resume = False

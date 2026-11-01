@@ -637,7 +637,7 @@ class StudioWorkspaceBuilder:
         page.subtitle_edit_title = page.subtitle_edit_card.title
         page.subtitle_edit_input = page.subtitle_edit_card.editor
         page.caption_close_button = page.subtitle_edit_card.close_button
-        page.caption_close_button.clicked.connect(lambda: page._end_caption_editor(keep_open=False))
+        page.caption_close_button.clicked.connect(lambda: page._cancel_bound_caption_editor(trigger='header_close'))
         page.subtitle_edit_input.commit_requested.connect(
             lambda advance=False: page._commit_canvas_inline_edit(advance=advance))
         page.subtitle_edit_input.cancel_requested.connect(page._cancel_canvas_inline_edit)
@@ -1348,6 +1348,7 @@ class StudioWorkspaceBuilder:
         page._timeline_scrub = TimelineScrub(page)
         page.timeline.seek_requested.connect(page._timeline_scrub.request)
         page.timeline.scrub_finished.connect(page._timeline_scrub.finish)
+        page.timeline.scrub_cancelled.connect(page._timeline_scrub.cancel)
         page.timeline.snap_changed.connect(page.snap_toggle.setChecked)
         page.timeline_zoom_slider.attach(page.timeline)
         from .studio_timing_preview import CueTimingPreview
@@ -1871,12 +1872,12 @@ class StudioWorkspaceBuilder:
         page.cue_model.text_edit_requested.connect(
             lambda cue_id, text: page._timeline_text_edited(cue_id, False, text)
         )
+        page.cue_model.translation_edit_requested.connect(
+            lambda cue_id, text: page._timeline_text_edited(cue_id, True, text)
+        )
         page.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         page.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        page.cue_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked
-            | QAbstractItemView.EditTrigger.EditKeyPressed
-        )
+        page.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         page.cue_table.setTabKeyNavigation(True)
         page.cue_table.setAlternatingRowColors(True)
         page.cue_table.setShowGrid(False)

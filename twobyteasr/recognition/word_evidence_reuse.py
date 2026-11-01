@@ -11,6 +11,7 @@ import bisect
 import difflib
 import hashlib
 import re
+from itertools import accumulate
 from collections import Counter
 
 from ..forced_alignment import ALIGNER_CODE, ALIGNER_REPO, ALIGNER_REVISION, UNIT_POLICY_VERSION, content_char_map
@@ -24,11 +25,11 @@ MAX_CUE_PAD_MS = 50
 
 def audio_sha256(audio):
     """Same bytes the Qwen worker receives, without copying a long audio array."""
-    import numpy as np
-    pcm = np.ascontiguousarray(audio, dtype=np.float32)
-    if pcm.ndim != 1 or not np.isfinite(pcm).all():
+    from .alignment_audio import pcm_digest
+    try:
+        return pcm_digest(audio)
+    except ValueError:
         return ''
-    return hashlib.sha256(memoryview(pcm).cast('B')).hexdigest()
 
 
 def _chars(text, start=0, end=None):
@@ -72,7 +73,8 @@ def _remap_units(units, source_chars, mapping):
     return out, covered
 
 
-def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None):
+def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
+               audio=None,audio_clock_identity=None,valid_samples=None):
     """Return cue-index -> alignment plus explicit reasons for non-reuse.
 
     A changed token only invalidates matching cues; matching blocks are
@@ -80,12 +82,13 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None):
     """
     cues = list(cues)
     reasons = Counter()
-    if (str(language).casefold() != 'english' or not isinstance(payload, dict)
+    per_window=(isinstance(payload,dict) and audio is not None and bool(audio_clock_identity)
+                and payload.get('audio_clock_identity')==audio_clock_identity)
+    if (str(language).casefold() not in {'english', 'japanese'} or not isinstance(payload, dict)
             or payload.get('protocol') != 'qwen-aligner-units-v1'
             or payload.get('model') != ALIGNER_REPO or payload.get('model_revision') != ALIGNER_REVISION
             or payload.get('code') != ALIGNER_CODE or payload.get('unit_policy') != UNIT_POLICY_VERSION
-            or not audio_digest
-            or payload.get('audio_sha256') != audio_digest):
+            or not (per_window or bool(audio_digest) and payload.get('audio_sha256') == audio_digest)):
         return {}, {'evidence_unavailable': len(cues)}
     policy = payload.get('policy') or {}
     if (not isinstance(policy, dict) or policy.get('version') != 'qwen-aligner-units-v1'
@@ -96,6 +99,19 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None):
     if (not isinstance(rows, list) or any(not isinstance(row, dict) or not row.get('id') for row in rows)
             or len({str(row['id']) for row in rows}) != len(rows)):
         return {}, {'invalid_receipt': len(cues)}
+    verified={}
+    def audio_matches(row):
+        if not per_window:return True
+        key=str(row['id'])
+        if key not in verified:
+            from .alignment_audio import pcm_digest
+            start=max(0,int(row['window_start_ms'])*16)
+            end=min(len(audio) if valid_samples is None else valid_samples,int(row['window_end_ms'])*16)
+            expected=(payload.get('window_hashes') or {}).get(key)
+            verified[key]=bool(expected) and pcm_digest(audio[start:end],check=cancel_check)==expected
+        return verified[key]
+    if str(language).casefold() == 'japanese':
+        return _plan_japanese_reuse(cues,payload,audio_digest or audio_clock_identity,cancel_check,audio_matches)
     source, target = [], []
     for row_index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get('text'), str):
@@ -135,6 +151,9 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None):
             reasons['cross_source_job'] += 1
             continue
         row = rows[next(iter(row_ids))]
+        if not audio_matches(row):
+            reasons['audio_window_mismatch']+=1
+            continue
         if (row.get('status') != 'aligned' or str(row.get('language', '')).casefold() != 'english'
                 or _speaker(row.get('id')) != str(getattr(cue, 'speaker', '') or 'S00')):
             reasons['speaker_or_status'] += 1
@@ -194,9 +213,90 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None):
             **meta, 'language': language, 'status': 'aligned', 'mapping': row.get('mapping'),
             'text': cue.text, 'window_start_ms': row.get('window_start_ms'),
             'window_end_ms': row.get('window_end_ms'),
-            'run': {'id': str(row.get('id')), 'source': POLICY, 'audio_sha256': audio_digest},
+            'run': {'id': str(row.get('id')), 'source': POLICY, 'audio_sha256': payload.get('audio_sha256'),
+                    'audio_clock_identity':payload.get('audio_clock_identity'),
+                    'source_window_sha256':(payload.get('window_hashes') or {}).get(str(row.get('id')))},
             'segments': copy.deepcopy(pieces), 'stats': {'reused_units': len(pieces), 'reused_words': len(indices)},
             'tokenizer_words': [target[index][0] for index in indices],
             'units_word': _compact(units), 'units_char': [], 'unit_fields': list(UNIT_FIELDS),
         }
+    return reusable, dict(reasons)
+
+
+def _plan_japanese_reuse(cues, payload, audio_digest, cancel_check,audio_matches=lambda row:True):
+    """Use exact characters in a unique speaker/time window, never a global diff.
+
+    Repeated kana/short replies elsewhere cannot steal a mapping. A unit that
+    crosses a new cue boundary, has repaired times or lacks coverage is sent
+    back to the local aligner. Display times and text remain unchanged.
+    """
+    from .cue_forced_alignment import UNIT_FIELDS, _compact
+    rows = payload['results']
+    # A time index also handles long/nested overlapping utterances.
+    by_speaker = {}
+    for row in rows:
+        if (row.get('status') == 'aligned' and str(row.get('language', '')).casefold() == 'japanese'
+                and isinstance(row.get('text'), str)):
+            by_speaker.setdefault(_speaker(row['id']), []).append(row)
+    indexes = {}
+    for speaker, values in by_speaker.items():
+        values.sort(key=lambda row: int(row['window_start_ms']))
+        indexes[speaker] = (values, [int(row['window_start_ms']) for row in values],
+                            list(accumulate((int(row['window_end_ms']) for row in values), max)))
+    reusable, reasons = {}, Counter()
+    meta = {key: payload.get(key) for key in ('model', 'model_revision', 'code', 'unit_policy', 'dtype', 'torch_version')}
+    for index, cue in enumerate(cues, 1):
+        if cancel_check:
+            cancel_check()
+        text = str(getattr(cue, 'text', '') or '')
+        target = _chars(text)
+        cue_start, cue_end = round(cue.start * 1000), round(cue.end * 1000)
+        values, starts, ends = indexes.get(str(getattr(cue, 'speaker', '') or 'S00'), ([], [], []))
+        lo = bisect.bisect_left(ends, cue_start - MAX_CUE_PAD_MS)
+        hi = bisect.bisect_right(starts, cue_end + MAX_CUE_PAD_MS)
+        found = []
+        needle = ''.join(x[0] for x in target)
+        if any(len(item[0]) != 1 for item in target):
+            reasons['ambiguous_normalization'] += 1
+            continue
+        for row in values[lo:hi]:
+            source_chars = _chars(row['text'])
+            if any(len(item[0]) != 1 for item in source_chars):
+                continue
+            source = ''.join(x[0] for x in source_chars)
+            offset = source.find(needle) if needle else -1
+            if offset>=0 and not audio_matches(row):continue
+            while offset >= 0:
+                mapping = {offset + i: (a, b) for i, (_, a, b) in enumerate(target)}
+                pieces, covered = _remap_units(row.get('segments'), source_chars, mapping)
+                valid = pieces is not None and covered == set(mapping) and bool(pieces)
+                if valid:
+                    pieces.sort(key=lambda item: item['char_start'])
+                    valid = all(item.get('start_basis') == item.get('end_basis') == 'model'
+                        and int(row['window_start_ms']) <= int(item['start_ms']) < int(item['end_ms']) <= int(row['window_end_ms'])
+                        and cue_start - MAX_CUE_PAD_MS <= int(item['start_ms']) < int(item['end_ms']) <= cue_end + MAX_CUE_PAD_MS
+                        for item in pieces)
+                    valid = valid and all(a['end_ms'] <= b['start_ms'] for a, b in zip(pieces, pieces[1:]))
+                if valid:
+                    words, _ = _remap_units(row.get('word_units'), source_chars, mapping)
+                    chars, _ = _remap_units(row.get('char_units'), source_chars, mapping)
+                    # Raw units crossing a cue are diagnostic only; never
+                    # manufacture a boundary in one. Measured pieces above
+                    # provide the complete, validated timing coverage.
+                    found.append((row, pieces, words or [], chars or []))
+                offset = source.find(needle, offset + 1) if needle else -1
+        if len(found) != 1:
+            reasons['ambiguous_time_text' if found else 'changed_crossing_or_unmeasured'] += 1
+            continue
+        row, pieces, words, chars = found[0]
+        reusable[index] = {
+            **meta, 'language': 'Japanese', 'status': 'aligned', 'mapping': row.get('mapping'),
+            'text': text, 'window_start_ms': row['window_start_ms'], 'window_end_ms': row['window_end_ms'],
+            'run': {'id': str(row['id']), 'source': 'source-japanese-evidence-v1',
+                    'audio_sha256':payload.get('audio_sha256'),'audio_clock_identity':payload.get('audio_clock_identity'),
+                    'source_window_sha256':(payload.get('window_hashes') or {}).get(str(row['id']))},
+            'segments': copy.deepcopy(pieces),
+            'stats': {'reused_units': len(pieces), 'reused_words': len(words)},
+            'tokenizer_words': [text[p['char_start']:p['char_end']] for p in pieces],
+            'units_word': _compact(words), 'units_char': _compact(chars), 'unit_fields': list(UNIT_FIELDS)}
     return reusable, dict(reasons)

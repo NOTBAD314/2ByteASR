@@ -208,6 +208,22 @@ class _EvidenceTimeIndex:
                     matched.append((row_start, _reference, row))
         return tuple(matched)
 
+    def compact(self):
+        """Time/reference pairs only; never send a second evidence-row graph."""
+        return {'version': 1, 'max_duration_ms': self._max_duration_ms,
+                'buckets': {key: [(start, reference) for start, reference, _row in rows]
+                            for key, rows in self._buckets.items()}}
+
+    @classmethod
+    def bind_compact(cls, evidence, value):
+        if not isinstance(value, dict) or value.get('version') != 1:return None
+        result=cls.__new__(cls);result._max_duration_ms=int(value['max_duration_ms'])
+        result._buckets=defaultdict(list)
+        for key, entries in value['buckets'].items():
+            result._buckets[int(key)]=[(start,reference,evidence[reference]) for start,reference in entries
+                                       if reference in evidence]
+        return result
+
 
 class QCRule(Protocol):
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]: ...
@@ -1078,9 +1094,10 @@ class SubtitleQCEngine:
         self,
         project: SubtitleProject,
         terminology: Iterable[TerminologyEntry] = (),
+        *, evidence_index=None,
     ) -> _QCContext:
         ordered = tuple(sorted(project.cues, key=lambda item: (item.start_ms, item.end_ms, item.id)))
-        evidence_index = (
+        evidence_index = evidence_index if evidence_index is not None else (
             _EvidenceTimeIndex(project.asr_evidence)
             if getattr(project, "asr_evidence", None)
             else None
@@ -1149,7 +1166,7 @@ class SubtitleQCEngine:
             context.ordered[index].id
             for index in range(max(0, position - 2), min(len(context.ordered), position + 3))
         }
-        partial = self.analyze(project, cue_ids=affected, terminology=terminology)
+        partial = QCResult(self.evaluate_cues(context, [cue for cue in context.ordered if cue.id in affected]))
         merged = dict(previous.issues_by_cue)
         for affected_id in affected:
             merged.pop(affected_id, None)
@@ -1164,6 +1181,7 @@ class SubtitleQCEngine:
         previous: QCResult,
         *,
         terminology: Iterable[TerminologyEntry] = (),
+        evidence_index=None,
     ) -> QCResult:
         """Same result as folding analyze_incremental() over ``cue_ids``.
 
@@ -1175,7 +1193,7 @@ class SubtitleQCEngine:
         if not cue_ids:
             return previous
         terminology = tuple(terminology)
-        context = self._context(project, terminology)
+        context = self._context(project, terminology, evidence_index=evidence_index)
         positions = [context.positions.get(cue_id) for cue_id in cue_ids]
         if any(position is None for position in positions):
             return self.analyze(project, terminology=terminology)
@@ -1184,7 +1202,7 @@ class SubtitleQCEngine:
             for position in positions
             for index in range(max(0, position - 2), min(len(context.ordered), position + 3))
         }
-        partial = self.analyze(project, cue_ids=affected, terminology=terminology)
+        partial = QCResult(self.evaluate_cues(context, [cue for cue in context.ordered if cue.id in affected]))
         merged = dict(previous.issues_by_cue)
         for affected_id in affected:
             merged.pop(affected_id, None)

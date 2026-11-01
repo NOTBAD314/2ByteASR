@@ -120,8 +120,13 @@ class CurrentIssueView:
                 for kind, rows in groups.items()}
 
 
-def invalidate(project):
-    project._current_issue_view = None
+def invalidate(project, cue_ids=None):
+    if cue_ids and getattr(project, '_current_issue_view', None) is not None:
+        pending = getattr(project, '_current_issue_dirty_ids', None)
+        project._current_issue_dirty_ids = set(pending or ()) | {str(key) for key in cue_ids}
+    else:
+        project._current_issue_view = None
+        project._current_issue_dirty_ids = None
 
 
 def _language(project, cue, layer):
@@ -179,14 +184,38 @@ def current_issue_view(project):
     # read-only empty sentinel out of that graph (mappingproxy cannot copy).
     cache_decisions = None if decisions is _EMPTY_DECISIONS else decisions
     cache = getattr(project, "_current_issue_view", None)
-    if cache is not None and cache[0] is qc and cache[1] is cache_decisions:
+    dirty = getattr(project, '_current_issue_dirty_ids', None)
+    if cache is not None and cache[0] is qc and cache[1] is cache_decisions and not dirty:
         return cache[2]
+    old_parts = getattr(project, '_current_issue_parts', None)
+    changed = None
+    if cache is not None and cache[1] is cache_decisions and old_parts is not None:
+        changed = set(dirty or ())
+        old_qc = cache[0].issues_by_cue
+        changed.update(str(key) for key in old_qc.keys() | qc.issues_by_cue.keys()
+                       if old_qc.get(key) is not qc.issues_by_cue.get(key))
+        # An overlap's version consumes its previous caption too. Rebuild the
+        # direct dependants, not a transitive chain of unchanged captions.
+        inputs = set(changed)
+        changed.update(str(key) for key, rows in qc.issues_by_cue.items()
+                       if str(key) not in inputs and any(
+                           str(row.fix_metadata.get('previous_cue_id', '')) in inputs for row in rows))
+        if len(changed) > max(64, len(project.cues)//2):
+            changed = None
     cues = {str(c.id): c for c in project.cues}
     legacy=legacy_review_inputs(project)
     active, diagnostics, records = defaultdict(list), defaultdict(list), []
+    parts = [dict(part) for part in old_parts] if changed is not None else [{} for _ in range(4)]
+    if changed is not None:
+        active.update({key: rows for key, rows in cache[2].by_cue.items() if key not in changed})
+        diagnostics.update({key: rows for key, rows in cache[2].diagnostics.items() if key not in changed})
+        for part in parts:
+            for key in changed:part.pop(key, None)
+    phase = 0
     seen = set()
     row_cache = getattr(project, '_current_issue_row_cache', {})
-    next_rows_cache = {}
+    next_rows_cache = ({key: value for key, value in row_cache.items() if key[0] not in changed}
+                       if changed is not None else {})
 
     def add(issue, cue, layer="original", language=None, text=None):
         text = cue.text if text is None else text
@@ -207,6 +236,7 @@ def current_issue_view(project):
             next_rows_cache[cache_key] = saved
             seen.add((row.issue_id, row.input_version))
             records.append(row)
+            parts[phase].setdefault(cue.id, []).append(row)
             (active if row.disposition == 'actionable' else diagnostics)[cue.id].append(row)
             return
         key = digest([project.project_id, cue.id, cue.speaker_id, layer, language, issue.issue_type, issue.source,location])
@@ -279,10 +309,12 @@ def current_issue_view(project):
         row = CurrentIssue(key, version, cue.id, cue.speaker_id, layer, language, issue.issue_type,
                            level, issue.label, detail, text, cue.start_ms, cue.end_ms, suggestions, disposition)
         records.append(row)
+        parts[phase].setdefault(cue.id, []).append(row)
         next_rows_cache[cache_key] = (issue, stamp, tuple(decisions.get(k) for k in decision_keys), decision_keys, row)
         (active if disposition == "actionable" else diagnostics)[cue.id].append(row)
 
     for cue_id, rows in qc.issues_by_cue.items():
+        if changed is not None and str(cue_id) not in changed:continue
         cue = cues.get(str(cue_id))
         if cue is not None:
             for issue in rows:
@@ -292,7 +324,9 @@ def current_issue_view(project):
     # A missing word map alone is not independent evidence of an error.
     from .studio_qc import QCCategory, QCIssue
     receipts = project.studio_state.get('caption_timeline', {}).get('instances', {})
+    phase = 1
     for cue_id, receipt in receipts.items():
+        if changed is not None and str(cue_id) not in changed:continue
         cue = cues.get(str(cue_id))
         if cue is not None and receipt.get('needs_review'):
             note = str(receipt['needs_review'])[:512]
@@ -307,10 +341,13 @@ def current_issue_view(project):
     target = container_target(project)
     translations = project.generation_metadata.get("translations", {})
     translation_cache = getattr(project, "_translation_issue_measurements", {})
-    next_cache = {}
+    next_cache = ({key: value for key, value in translation_cache.items() if str(key) not in changed}
+                  if changed is not None else {})
     proxy = SimpleNamespace(generation_metadata={"language": {"code": target}}, studio_state={}, cues=())
     context = SimpleNamespace(project=proxy, config=QCConfig())
+    phase = 2
     for cue_id, text in translations.items():
+        if changed is not None and str(cue_id) not in changed:continue
         cue = cues.get(str(cue_id))
         if cue is None or not text:
             continue
@@ -322,7 +359,10 @@ def current_issue_view(project):
         for issue in rows:
             add(issue, cue, "translation", target, str(text))
     project._translation_issue_measurements = next_cache
-    for cue_id, record in records_of(project).items():
+    translation_records = records_of(project)
+    phase = 3
+    for cue_id, record in translation_records.items():
+        if changed is not None and str(cue_id) not in changed:continue
         cue = cues.get(str(cue_id))
         if cue and not translations.get(cue_id) and status_of(record, cue.text, target=target) == FAILED:
             issue = QCIssue("missing_translation", QCSeverity.WARNING, QCCategory.TEXT, cue.id,
@@ -330,7 +370,43 @@ def current_issue_view(project):
             add(issue, cue, "translation", target, "")
     levels = {cue_id: ("high" if any(r.level == "high" for r in rows) else "suggested")
               for cue_id, rows in active.items()}
-    result = CurrentIssueView(dict(active), dict(diagnostics), tuple(records), levels)
+    # Preserve the full builder's rule and mapping order while sharing every
+    # unchanged cue's rows. Flattening references is cheap; recalibrating tens
+    # of thousands of issues/languages on every edit was seconds of GUI work.
+    records = tuple(row for part, order in zip(parts, (qc.issues_by_cue, receipts, translations, translation_records))
+                    for key in order for row in part.get(str(key), ()))
+    result = CurrentIssueView(dict(active), dict(diagnostics), records, levels)
     project._current_issue_row_cache = next_rows_cache
+    project._current_issue_parts = tuple(parts)
+    project._current_issue_dirty_ids = set()
     project._current_issue_view = (qc, cache_decisions, result)
     return result
+
+
+def _decision_version(project):
+    # Cue, language/model and sequence inputs are guarded by qc_revision.
+    # Review decisions are save-only and may change while that job runs.
+    return digest({key: project.studio_state.get(key, {}) for key in
+                   (DECISIONS, 'review_confirmations', 'manual_caption_text', LEGACY_INPUTS)})
+
+
+def prepare_issue_cache(project):
+    """Private QC-worker result; contains data only, never the worker project."""
+    view = current_issue_view(project)
+    return dict(version=1, decisions=_decision_version(project), view=view,
+                parts=project._current_issue_parts, rows=project._current_issue_row_cache,
+                translations=project._translation_issue_measurements)
+
+
+def adopt_issue_cache(project, qc, prepared):
+    """Adopt only after the caller's session/QC token and current decisions agree."""
+    if (not isinstance(prepared, dict) or prepared.get('version') != 1
+            or prepared.get('decisions') != _decision_version(project)):
+        return False
+    decisions = project.studio_state.get(DECISIONS) or _EMPTY_DECISIONS
+    project._current_issue_view = (qc, None if decisions is _EMPTY_DECISIONS else decisions, prepared['view'])
+    project._current_issue_parts = prepared['parts']
+    project._current_issue_row_cache = prepared['rows']
+    project._translation_issue_measurements = prepared['translations']
+    project._current_issue_dirty_ids = set()
+    return True

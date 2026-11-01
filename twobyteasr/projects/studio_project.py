@@ -1723,7 +1723,7 @@ def save_project_revision(
     if target.suffix.lower() != PROJECT_SUFFIX:
         target = target.with_suffix(PROJECT_SUFFIX)
     started = time.perf_counter()
-    from .studio_revisions import FrozenBlob, FrozenMap, PersistenceRevision
+    from .studio_revisions import FrozenBlob, FrozenMap, PersistenceRevision, freeze_json, thaw_json
     # 2026-10-22: validation only copies recognition evidence and generation
     # metadata, so their text is encoded straight from the frozen values,
     # reusing each unchanged evidence row's text from the previous save.
@@ -1731,11 +1731,24 @@ def save_project_revision(
     if isinstance(revision, PersistenceRevision):
         frozen = {name: getattr(revision, name) for name in ("asr_evidence", "generation_metadata")
                   if isinstance(getattr(revision, name), (FrozenMap, FrozenBlob))}
+    # Caption archives/word receipts are opaque JSON at validation, just like
+    # ASR evidence. Keep them frozen while validating the rest of the schema;
+    # thawing and pretty-printing their huge tree again stalls long saves and
+    # creates a second set of every word object. Small state still follows the
+    # normal normalization path (including transient review-risk removal).
+    state_heavy = {}
+    if isinstance(revision, PersistenceRevision) and isinstance(revision.studio_state, FrozenMap):
+        state_heavy = {key: value for key, value in revision.studio_state.items
+                       if key in {'caption_timeline', 'term_word_overrides'}}
     # Parsing/validation normalizes exactly the same project schema as the
     # synchronous writer, but only on the worker's private materialized copy
     # (owned: the thawed payload is not shared, so it is not copied again).
-    detached = SubtitleProject.from_dict(revision.to_payload(skip=frozenset(frozen)) if frozen
-                                         else revision.to_payload(), owned=True)
+    skip = frozenset(frozen) | ({'studio_state'} if state_heavy else set())
+    captured = revision.to_payload(skip=skip) if skip else revision.to_payload()
+    if state_heavy:
+        captured['studio_state'] = {key: thaw_json(value) for key, value in revision.studio_state.items
+                                    if key not in state_heavy}
+    detached = SubtitleProject.from_dict(captured, owned=True)
     from ..timeline.studio_edit_sequence import persist_sequence
     persist_sequence(detached)
     payload = _private_project_payload(detached)
@@ -1743,12 +1756,15 @@ def save_project_revision(
     state = payload.get("studio_state")
     if isinstance(state, dict):
         state.pop("review_risks", None)
+    if state_heavy:
+        frozen['studio_state'] = FrozenMap(tuple(sorted(
+            {**{key: freeze_json(value) for key, value in (state or {}).items()}, **state_heavy}.items())))
     materialize_ms = (time.perf_counter() - started) * 1000.0
     started = time.perf_counter()
     if frozen:
         from .frozen_json_text import pretty_document_pieces
         cache = _formal_text_cache(target)
-        _prefetch_evidence(cache, revision)
+        _prefetch_evidence(cache, revision, caption_state=True)
         content = list(_text_chunks(pretty_document_pieces(payload, frozen, cache)))
         cache.finish()
     else:
@@ -2341,12 +2357,24 @@ def discard_autosave(candidate: Path) -> None:
             pass
 
 
-def _prefetch_evidence(cache, revision) -> None:
+def _prefetch_evidence(cache, revision, *, caption_state: bool = False) -> None:
     """Rows not encoded yet (first save of a session) go to the resident worker."""
-    from .studio_revisions import FrozenMap
+    from .studio_revisions import FrozenMap, FrozenBlob
     evidence = getattr(revision, "asr_evidence", None)
     if isinstance(evidence, FrozenMap):
         cache.prefetch([value for _key, value in evidence.items])
+    if caption_state:
+        # Formal saves also contain the independent captions' word receipts.
+        # Their JSON encoding belongs on the same resident process as ASR
+        # evidence, so the writer thread does not compete with GUI Python.
+        blobs = []
+        def collect(value):
+            if isinstance(value, FrozenBlob):
+                blobs.append(value)
+            elif isinstance(value, FrozenMap):
+                for _key, item in value.items:collect(item)
+        collect(getattr(revision, 'studio_state', None))
+        cache.prefetch(blobs)
 
 
 def _evidence_row_texts(revision, cache) -> dict[str, str] | None:

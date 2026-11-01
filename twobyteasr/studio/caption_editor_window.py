@@ -69,7 +69,5 @@ class CaptionEditorWindow(QWidget):
         return result
 
     def closeEvent(self, event):
-        if self.page._end_caption_editor(keep_open=False):
-            event.accept()
-        else:
-            event.ignore()
+        self.page._cancel_bound_caption_editor(trigger='window_close')
+        event.accept()

@@ -68,7 +68,7 @@ def cache_hint_signature(endpoint, settings, requested_language=None):
     return {'api_hints_v1': hashlib.sha256(json.dumps(keep, ensure_ascii=False, sort_keys=True).encode('utf8')).hexdigest()}
 
 
-def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage_credentials=None):
+def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage_credentials=None,prepared_source=None):
     import numpy as np
     from ..recognition import asr
     from ..recognition.cache import record_run_event
@@ -100,6 +100,10 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
     def forward(event):
         asr._raise_if_queue_cancelled()
         kind,payload=event['kind'],event['payload']
+        if kind == 'asr_shard_ready' and publish_primary and callable(context.primary_ready_callback):
+            context.primary_ready_callback(payload)
+            record_run_event(kind, **{key:value for key,value in payload.items() if key != 'rows'})
+            return
         if kind=='cue_delta' and publish_primary:
             context.asr_manifest_key=payload['manifest_key']
             rows.update((row['id'],row) for row in payload['cues'])
@@ -107,15 +111,24 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
         record_run_event(kind,**payload)
     with tempfile.TemporaryDirectory(prefix='2byte-api-') as directory:
         root=Path(directory);array=root/'audio.npy';output=root/'output.json'
-        shape=sum(len(c['audio'][0]) for c in chunks)
-        audio=np.lib.format.open_memmap(array,mode='w+',dtype='float32',shape=(shape,))
         manifest=[];offset=0
-        for chunk in chunks:
-            asr._raise_if_queue_cancelled()
-            size=len(chunk['audio'][0]);audio[offset:offset+size]=chunk['audio'][0]
-            manifest.append(dict(offset=offset,samples=size,start=chunk['start'],end=chunk['end']))
-            offset+=size
-        audio.flush();del audio
+        if prepared_source is not None:
+            array=Path('unused-prepared-source.npy');shape=int(prepared_source['expected_samples'])
+        elif native_job and len(chunks)==1:
+            from ..recognition.alignment_audio import prepare_audio
+            spec=prepare_audio(chunks[0]['audio'][0],root,check=asr._raise_if_queue_cancelled)
+            array=Path(spec['path'])
+            manifest=[dict(offset=0,samples=spec['samples'],start=chunks[0]['start'],end=chunks[0]['end'])]
+            shape=spec['samples']
+        else:
+            shape=sum(len(c['audio'][0]) for c in chunks)
+            audio=np.lib.format.open_memmap(array,mode='w+',dtype='float32',shape=(shape,))
+            for chunk in chunks:
+                asr._raise_if_queue_cancelled()
+                size=len(chunk['audio'][0]);audio[offset:offset+size]=chunk['audio'][0]
+                manifest.append(dict(offset=offset,samples=size,start=chunk['start'],end=chunk['end']))
+                offset+=size
+            audio.flush();del audio
         from .llm_config import read_oss_credentials
         if storage_credentials is None:
             storage_credentials = read_oss_credentials() if is_filetrans_model(endpoint['model']) else ()
@@ -125,6 +138,7 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
             cancel_file=str(root/'cancel'),
             job_id=context.job_id,requested_language=context.requested_language,
             publish_primary=publish_primary,workers=max(1,min(6,int(asr.CLOUD_BATCH_WORKERS))))
+        if prepared_source is not None:request['prepared_source']=prepared_source
         if storage_credentials: request['storage_credentials'] = storage_credentials
         # Set only for one run after the user confirmed resubmission (retry dialog).
         if (settings or {}).get('models', {}).get('cloud_resubmit_confirmed') is True:

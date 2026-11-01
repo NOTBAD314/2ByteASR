@@ -2266,7 +2266,7 @@ def _main_runtime_available():
     return bool(python) and os.path.isfile(python)
 
 
-def detect_firered_vad(audio, legacy):
+def detect_firered_vad(audio, legacy, *, _owned_polling=False):
     paths = _script_paths(legacy)
     if not os.path.isdir(paths["firered_vad"]):
         raise RuntimeError("FireRedVAD 模型目录不存在。")
@@ -2288,24 +2288,33 @@ def detect_firered_vad(audio, legacy):
         wav_path = os.path.join(temp_dir, "audio.wav")
         legacy.write_pcm16_wav(wav_path, audio)
         output_path = os.path.join(temp_dir, "regions.json")
-        completed = run_hidden_subprocess(
-            [
-                python, '-I', "-u", str(worker),
-                "--wav", wav_path,
-                "--model-dir", paths["firered_vad"],
-                "--output", output_path,
-            ],
-            purpose="FireRedVAD worker",
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=1800,
-            env=utf8_worker_environment(),
-        )
-        if completed.returncode != 0:
-            stderr_tail = (completed.stderr or completed.stdout or "")[-1200:].strip()
-            raise RuntimeError(
-                f"FireRedVAD worker failed (exit {completed.returncode}): {stderr_tail}"
+        if _owned_polling:
+            from twobyteasr.recognition.asr import _run_isolated_asr_worker
+            from twobyteasr.system.processes import python_utf8_command
+            payload=_run_isolated_asr_worker(python_utf8_command([python,'-I',str(worker),
+                '--wav',wav_path,'--model-dir',paths['firered_vad'],'--output',output_path]),
+                output_path,model_id='firered_vad',audio_input='owned PCM shard',model_path=paths['firered_vad'],
+                entrypoint='firered_vad_worker.py',timeout_seconds=1800)
+            regions=payload['regions']
+        else:
+            completed = run_hidden_subprocess(
+                [
+                    python, '-I', "-u", str(worker),
+                    "--wav", wav_path,
+                    "--model-dir", paths["firered_vad"],
+                    "--output", output_path,
+                ],
+                purpose="FireRedVAD worker",
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=1800,
+                env=utf8_worker_environment(),
             )
-        regions = json.loads(Path(output_path).read_text(encoding="utf-8"))["regions"]
+            if completed.returncode != 0:
+                stderr_tail = (completed.stderr or completed.stdout or "")[-1200:].strip()
+                raise RuntimeError(
+                    f"FireRedVAD worker failed (exit {completed.returncode}): {stderr_tail}"
+                )
+            regions = json.loads(Path(output_path).read_text(encoding="utf-8"))["regions"]
     if not regions:
         raise RuntimeError("FireRedVAD 没有检测到语音。")
     print(f"   [完成] FireRedVAD：{len(regions)} 个人声区间。")
@@ -4019,6 +4028,7 @@ def process_media(
         timeline_fps = next((float(a.get("video_metadata", {}).get("fps") or 0)
                              for a in media_assets if a.get("video_metadata", {}).get("fps")), timeline_fps)
     cache_context = legacy.media_cache_context(media_path)
+    runtime_context.alignment_checkpoint_dir = os.path.join(cache_context['cache_dir'], 'alignment-checkpoints')
     legacy.begin_media_report(media_path, cache_context)
     paths = _script_paths(legacy)
     primary_backend = str(getattr(legacy, "PRIMARY_ASR_BACKEND", "moss"))
@@ -4119,11 +4129,28 @@ def process_media(
             )
             print(f"   [提示] 增量识别准备失败，回退现有完整流程：{exc}")
 
+    from twobyteasr.recognition.streaming_input import create_live_input
+    live_input=create_live_input(runtime_context,legacy,sys.modules[__name__],media_path,
+        cache_context,timeline_fps,paths,text_plan)
+    runtime_context.input_session=live_input
     stage_index += 1
     shared_audio = legacy.run_timed_stage(
-        stage_index, stage_total, "统一 16k 音频采样时钟", "CPU+磁盘缓存", lambda: legacy.load_shared_audio(media_path, cache_context)
+        stage_index, stage_total, "统一 16k 音频采样时钟", "CPU+磁盘缓存", lambda: live_input.complete_audio() if live_input is not None else legacy.load_shared_audio(media_path, cache_context)
     )
     audio_seconds = len(shared_audio) / legacy.AUDIO_SAMPLE_RATE
+    from twobyteasr.recognition.streaming_recognition import eligible, LongMediaPipeline
+    from twobyteasr.system.task_resources import task_budget
+    runtime_context.execution_budget = task_budget()
+    stream_ok, stream_reason = eligible(runtime_context, legacy, audio_seconds)
+    long_pipeline = live_input.graph if live_input is not None else None
+    if stream_ok and long_pipeline is None:
+        long_pipeline = LongMediaPipeline(context=runtime_context, legacy=legacy, pipeline=sys.modules[__name__],
+            media_path=media_path, cache_context=cache_context, audio=shared_audio,
+            seconds=audio_seconds, fps=timeline_fps, paths=paths, text_plan=text_plan)
+        runtime_context.long_pipeline = long_pipeline
+        runtime_context.primary_ready_callback = long_pipeline.accept
+    legacy.record_run_event('long_pipeline_admission', admitted=stream_ok, reason=stream_reason,
+        budget=vars(runtime_context.execution_budget))
     legacy.record_run_event("task_audio_ready", seconds=round(audio_seconds, 3))
     from twobyteasr.recognition.speaker_evidence import save_speaker_evidence, fuse_moss_speakers
     speaker_audit_root = Path(cache_context["cache_dir"]) / "speaker-evidence"
@@ -4134,7 +4161,7 @@ def process_media(
         "path": media_path, "seconds": audio_seconds, "samples": len(shared_audio),
         "sample_rate": legacy.AUDIO_SAMPLE_RATE, "time_domain": "timeline" if runtime_context.recognition_snapshot else "source",
         "snapshot": runtime_context.recognition_snapshot.get("fingerprint", ""),
-        "audio_sha256": hashlib.sha256(np.asarray(shared_audio,dtype='<f4').tobytes()).hexdigest(),
+        "audio_sha256": __import__('twobyteasr.recognition.alignment_audio',fromlist=['pcm_digest']).pcm_digest(shared_audio),
         "job_id": runtime_context.job_id,
         "project_id": runtime_context.recognition_snapshot.get("project_id", ""),
         "shared_by": ["primary", "vad", "firered", "alignment", "voiceprint", "review"],
@@ -4243,13 +4270,8 @@ def process_media(
                     chunks=len(references),
                 )
             else:
-                transcribe = lambda: legacy.transcribe_primary_reference(
-                    primary_backend,
-                    media_path,
-                    speech_regions,
-                    shared_audio,
-                    audio_seconds,
-                )
+                transcribe = (lambda:live_input.future.result()) if live_input is not None else lambda: legacy.transcribe_primary_reference(
+                    primary_backend,media_path,speech_regions,shared_audio,audio_seconds)
                 if deferred_primary_cache is not None:
                     # VAD runs beside the whole-file upload; the cache entry is
                     # written once VAD is known, under the same key as before.
@@ -4354,6 +4376,8 @@ def process_media(
         return value
 
     def run_vad_stage():
+        if live_input is not None and live_input.graph is not None:
+            return legacy.run_timed_stage(3,stage_total,'FireRedVAD 分片人声安全检查','CPU',live_input.vad_regions)
         audit_branch("vad")
         use_firered_vad = primary_backend == "moss" or (
             os.path.isdir(paths["firered_vad"]) and _main_runtime_available())
@@ -4376,7 +4400,7 @@ def process_media(
                     )
             return detect_lightweight_vad(shared_audio, legacy)
 
-        return legacy.run_timed_stage(
+        vad_result = legacy.run_timed_stage(
             3,
             stage_total,
             "FireRedVAD 人声安全检查" if use_firered_vad else "轻量静音与人声区间检测",
@@ -4393,6 +4417,9 @@ def process_media(
                 ),
             ),
         )
+        if long_pipeline is not None:
+            long_pipeline.set_vad(vad_result)
+        return vad_result
 
     def run_firered_stage():
         audit_branch("firered")
@@ -4688,6 +4715,9 @@ def process_media(
                                          review_items=primary_review_items)
             except Exception as exc:  # noqa: BLE001 - a missing cache entry only costs a later re-upload
                 legacy.record_run_event("cache_write_failed", stage=f"primary_{primary_backend}", error=str(exc)[:300])
+    if long_pipeline is not None:
+        long_pipeline.set_vad(speech_regions)
+        moss_payload = long_pipeline.ensure_primary(moss_payload)
     if moss_payload.get("cloud_gaps"):
         # The cloud's content review stopped part of the audio (2026-10-24):
         # an installed local primary model recognizes those ranges.
@@ -4785,6 +4815,39 @@ def process_media(
             legacy.record_run_event("moss_full_context_coverage", complete=False,
                 reason="vad_tail_uncovered", vad_last_end=vad_last_end, transcript_last_end=moss_last_end,
                 overlap_recognition_verified=False)
+
+    if long_pipeline is not None:
+        cues, segments = long_pipeline.collect()
+        from twobyteasr.subtitle_rules.display_timing import protect_runtime_display_tails
+        overlap_audit = protect_runtime_display_tails(cues, segments)
+        legacy.relock_display_timing(cues, audio_seconds, timeline_fps, stage='ready_shards_collection')
+        cues = legacy.validate_final_cues(cues, segments, audio_seconds, validate_text=False)
+        if speaker_mode != 'single':
+            review_scoped_voiceprints(cues, shared_audio, legacy, runtime_context, paths, speaker_processing, audit_branch)
+        save_speaker_evidence(speaker_audit_root, 'final', legacy.serialize_cues(cues))
+        speaker_processing['stages']['final_cues'] = label_summary(cues)
+        legacy.record_run_event('speaker_identity_stages', **speaker_processing)
+        legacy.record_run_event('display_overlap_classification', pairs=overlap_audit)
+        from twobyteasr.recognition.timing_ledger import TimingLedger
+        ledger = TimingLedger()
+        ledger.checkpoint('ready_shards_collection', cues, reason='validated local timing; one final boundary check')
+        ledger.acoustic(cues)
+        saved = ledger.save(timing_evidence_root, job_id=runtime_context.job_id,
+            language=runtime_context.task_language, timeline=str(legacy.FIRERED_ASR_BACKEND))
+        legacy.record_run_event('timing_ledger', evidence=saved or '', stages=['ready_shards_collection'],
+            shard_receipts=str(long_pipeline.root))
+        for index in range(4, stage_total):
+            legacy.record_run_event('stage_completed', index=index, total=stage_total,
+                label='分片并行任务已完成', elapsed_seconds=0., parallel_summary=True,
+                phase_details='long_pipeline_completed')
+        model_statuses = _model_stage_summary(legacy)
+        long_pipeline.close()
+        runtime_context.long_pipeline = None
+        return complete_media_run(cues=cues, segments=segments, file_index=file_index, file_total=file_total,
+            started=started, audio_seconds=audio_seconds, txt_path=txt_path, srt_path=srt_path,
+            stage_index=stage_total, stage_total=stage_total, legacy=legacy, runtime_context=runtime_context,
+            include_srt=str(legacy.FIRERED_ASR_BACKEND) != 'off', model_statuses=model_statuses,
+            cache_owners={'firered_primary': primary_backend.upper(), 'final_timing': str(legacy.FIRERED_ASR_BACKEND)})
 
     def run_qwen_stage():
         audit_branch("qwen_review")

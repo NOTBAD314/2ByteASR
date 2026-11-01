@@ -38,6 +38,17 @@ def grouping_batch_limits(segments, *, max_chars=1800, legacy_max_rows=10):
         # than accidentally splitting an otherwise complete short material.
         # The provider's actual encoded input budget still applies afterwards.
         return max(1, len(rows)), max_chars + 32 * len(rows), "complete_short_material"
+    from ..recognition.run_context import get_runtime_context
+    context=get_runtime_context()
+    if getattr(context,'execution_budget',None) is not None:
+        from ..providers.asr_provider_snapshot import task_provider_snapshot
+        from ..system.task_resources import cloud_request_workers
+        try:
+            snapshot=task_provider_snapshot('group')
+            if cloud_request_workers(snapshot,legacy_max_rows)>legacy_max_rows:
+                return 32,max_chars,'bounded_text_budget_v2'
+        except (ValueError,RuntimeError,AttributeError):
+            pass
     return legacy_max_rows, max_chars, "bounded_long_material"
 
 

@@ -965,7 +965,7 @@ class StudioProjectController:
                         page.video.load(playable_source, "", start_seconds=restore_seconds)
                     finally:
                         page._loading_project_media = False
-                page._studio_mark_startup_milestone("MPV_FILE_LOADED", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
+                page._studio_mark_startup_milestone("MPV_LOAD_REQUEST_QUEUED", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
                 page._studio_trace("P74C_T4_MPV_PATH", media_path=str(getattr(page.video, "_media_path", "") or project.media.path))
                 page._preview_timer.start(0)
                 if hasattr(page, "_reload_edit_playback"):
@@ -1295,10 +1295,9 @@ class StudioProjectController:
                     page._finish_caption_manual_save(caption_save_token)
         except Exception as exc:
             from ..diagnostics.event_log import emit, exception_info
-            import traceback
             emit('project.save_failed',level='ERROR',result='failed',project_id=project.project_id,
                  stage=phase,revision_after=getattr(getattr(project,'_studio_state_runtime',None),'revision',None),
-                 exception={**exception_info(exc),'traceback':traceback.format_exc()})
+                 exception=exception_info(exc))
             page._schedule_autosave()
             bind_text(page.save_state,'磁盘保存失败；当前修改仍在内存中，可重试保存')
             page.save_state.setToolTip(str(exc))

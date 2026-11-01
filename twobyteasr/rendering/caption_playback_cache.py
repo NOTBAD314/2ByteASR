@@ -144,6 +144,25 @@ def _changed_ids(old: dict | None, new: dict | None) -> set:
             if old.get(key) is not new.get(key) and old.get(key) != new.get(key)}
 
 
+def _reuse_caption_state(value, previous, plain):
+    """Thaw changed state branches, retaining worker-owned unchanged receipts.
+
+    Caption source projects are read-only inputs. Their display copies already
+    share unchanged records. Re-thawing the archive and every word list after
+    a one-letter edit created hundreds of thousands of disposable objects.
+    Reuse is based on the immutable revision object, never mutable GUI identity.
+    """
+    from ..projects.studio_revisions import FrozenMap, thaw_json
+    if value is previous:
+        return plain
+    if isinstance(value, FrozenMap) and isinstance(previous, FrozenMap) and isinstance(plain, dict):
+        old = dict(previous.items)
+        return {key: _reuse_caption_state(item, old.get(key), plain.get(key))
+                if key in old and key in plain else thaw_json(item)
+                for key, item in value.items}
+    return thaw_json(value)
+
+
 def _recipe_keys(style_id: str) -> tuple:
     text = str(style_id or "")
     keys = [text]
@@ -212,7 +231,8 @@ def materialize_captions(revision, previous: MaterializedCaptions | None = None,
             translations = translations_of(metadata)
             updates["generation_metadata"] = metadata
         if revision.studio_state is not previous.revision.studio_state:
-            updates["studio_state"] = thaw_json(revision.studio_state) or {}
+            updates["studio_state"] = _reuse_caption_state(
+                revision.studio_state, previous.revision.studio_state, source.studio_state) or {}
         if changed_styles:
             updates["styles"] = [SubtitleStyle(**asdict(style)) for style in revision.styles]
         if changed_speakers:

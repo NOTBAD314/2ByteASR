@@ -5,6 +5,42 @@ from twobyteasr.playback.frame_readiness import video_frame_witness
 from twobyteasr.playback.studio_mpv import _MpvCommandActor
 
 
+def test_reconnect_revalidates_paused_position_after_playback_advanced():
+    actor, seek, state, calls = actor_fixture()
+    state['time-pos'] = 12.3
+    actor._capture_frame_witness(4, 3, dict(seek), 2.)
+    assert actor.frame_observation()['status'] != 'ready'
+    actor._capture_frame_witness(4, 3, dict(seek), 2., reconnect_target=12.3)
+    witness = actor.frame_observation()
+    assert witness['status'] == 'ready' and witness['reconnect_position'] == 12.3
+    assert len(calls) == 8
+
+
+def test_frame_from_previous_instance_or_connection_is_never_ready():
+    actor, seek, state, calls = actor_fixture()
+    actor._capture_frame_witness(4, 3, dict(seek), 2.)
+    video = SimpleNamespace(_media_path='C:/fixture.mp4',
+        _playback_clock=SimpleNamespace(generation=4, exact_seek_pending=False),
+        controller=SimpleNamespace(instance_id='new', observed_frame=actor.frame_observation))
+    assert video_frame_witness(video)['status'] == 'stale_instance'
+    video.controller.instance_id = None
+    video.controller.actor_status = lambda: {'connection_generation': 2}
+    assert video_frame_witness(video)['status'] == 'stale_connection'
+
+
+def test_pause_restart_after_playback_does_not_reuse_old_seek_target():
+    actor, seek, state, calls, posts = queued_actor()
+    actor._capture_frame_witness(4, 3, dict(seek), 2.)
+    state['time-pos'] = 12.3
+    actor._properties['time-pos'] = 12.3
+    actor._queue_frame_witness()
+    posts.pop(0)()
+    assert actor.frame_observation()['status'] == 'ready'
+    assert actor.frame_observation()['reconnect_position'] == 12.3
+    actor.begin_seek(4, 12.)
+    assert actor._proven_frame_identity is None
+
+
 def actor_fixture():
     seek = dict(generation=4, target=12., perf_counter=1.)
     controller = SimpleNamespace(source_epoch=4, _subtitle_binding_epoch=3,

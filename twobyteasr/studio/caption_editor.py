@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from collections import ChainMap
 from time import perf_counter
-from PySide6.QtCore import QEvent, Qt, Signal, QTimer
+import json
+import uuid
+from PySide6.QtCore import QEvent, Qt, Signal, QTimer, QSignalBlocker
 from PySide6.QtGui import QTextCursor, QUndoCommand
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QHBoxLayout, QWidget, QVBoxLayout
 
@@ -32,9 +34,14 @@ class CaptionEditTarget:
     language: str
     role: str
 
+    def resolve(self, project):
+        if project is None or project.project_id != self.project_id:
+            return None
+        return next((c for c in project.cues if c.id == self.cue_id), None)
+
     def read(self, project):
-        cue = next((c for c in project.cues if c.id == self.cue_id and c.speaker_id == self.track_id), None)
-        if cue is None or project.project_id != self.project_id:
+        cue = self.resolve(project)
+        if cue is None:
             return None
         if self.layer == "translation":
             from ..subtitle_rules.subtitle_translation import container_target, records_of
@@ -64,6 +71,17 @@ class CaptionDraft:
     suggestion_text: str = ""
     ignored: dict = field(default_factory=dict)
     actions: list = field(default_factory=list)
+    session_generation: int | None = None
+    edit_session_id: str = field(default_factory=lambda: 'edit-' + uuid.uuid4().hex[:16])
+    opened_revision: int = 0
+    entity_epoch: int = 0
+    state: str = 'editing'
+
+    def owns(self, project, generation):
+        return (self.state in {'editing', 'rejected'}
+                and project is not None and project.project_id == self.target.project_id
+                and (generation == self.session_generation if self.session_generation is not None
+                     else project is self.project))
 
     def suggestion_key(self, row):
         return suggestion_identity(self.target.__dict__, row)
@@ -136,7 +154,9 @@ class CaptionEditorMixin:
         panel.pronoun_button.clicked.connect(self._flip_editor_pronoun)
         panel.ignore_button.clicked.connect(self._ignore_editor_suggestion)
         panel.cancel_button.clicked.connect(self._cancel_canvas_inline_edit)
-        panel.confirm_button.clicked.connect(lambda: self._commit_canvas_inline_edit())
+        panel.confirm_button.clicked.connect(lambda: self._caption_trigger_commit('button'))
+        panel.copy_draft_button.clicked.connect(lambda: QApplication.clipboard().setText(self.subtitle_edit_input.toPlainText()))
+        panel.reload_current_button.clicked.connect(self._reload_current_caption_text)
         self._caption_tools_installed = True
 
     def _locate_caption_suggestion(self, start, end):
@@ -158,9 +178,9 @@ class CaptionEditorMixin:
         timeline = self.timeline
         layer = layer or timeline.active_subtitle_layer
         cue_id = cue_id or timeline.explicit_subtitle_id or timeline.selected_id or self.selected_cue_id
-        cue = self._cue_lookup.get(str(cue_id))
-        if cue is None:
-            return None
+        from ..timeline.studio_commands import cue_by_id
+        try:cue=cue_by_id(self.project,str(cue_id))
+        except KeyError:return None
         from ..projects.subtitle_import import imported_track
         from ..subtitle_rules.current_issues import _language
         track = imported_track(self.project, cue.speaker_id)
@@ -186,12 +206,16 @@ class CaptionEditorMixin:
         self.subtitle_edit_card.title.setText('跟随 · 译文' if target.role == 'translation' else '跟随 · 原文')
         self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
-    def _bind_caption_editor(self, target):
+    def _bind_caption_editor(self, target, *, edit_session_id=None):
         started = perf_counter()
         if target is None:
             self.save_state.setText("当前没有可编辑字幕")
             return False
-        if target.track_id in self.timeline.locked_speakers or (target.layer == "translation" and "translation" in self.timeline.locked_speakers):
+        cue = target.resolve(self.project)
+        if cue is None:
+            return False
+        target = replace(target, track_id=cue.speaker_id)
+        if cue.speaker_id in self.timeline.locked_speakers or (target.layer == "translation" and "translation" in self.timeline.locked_speakers):
             self.save_state.setText("轨道已锁定，请先解锁")
             return False
         text = target.read(self.project)
@@ -199,13 +223,20 @@ class CaptionEditorMixin:
             return False
         self._install_caption_editor_tools()
         draft = CaptionDraft(self.project, target, text)
+        from ..projects.studio_runtime_state import state_for
+        runtime = state_for(self.project)
+        draft.session_generation = self.session.generation
+        draft.opened_revision = runtime.revision
+        draft.entity_epoch = runtime.entity_epochs.get(target.cue_id, 0)
+        if edit_session_id:
+            draft.edit_session_id = edit_session_id
         self._caption_draft = draft
         self._review_edit_lock = None
         self._canvas_editor = self.subtitle_edit_input
         editor = self._canvas_editor
         self._reset_caption_input_method()
         self.subtitle_edit_card.reset()
-        editor._diagnostic_context = dict(project_id=target.project_id, cue_id=target.cue_id,
+        editor._diagnostic_context = dict(edit_session_id=draft.edit_session_id, project_id=target.project_id, cue_id=target.cue_id,
                                           track_id=target.track_id, layer=target.layer, language=target.language)
         self._caption_editor_opening = True
         editor.setEnabled(True)
@@ -216,7 +247,6 @@ class CaptionEditorMixin:
         from ..projects.subtitle_import import language_label
         from .studio_cue_table import _speaker_name
         from .studio_helpers import _format_ms
-        cue = self._cue_lookup[target.cue_id]
         self.subtitle_edit_title.setText("编辑译文" if target.role == 'translation' else "编辑原文")
         self.subtitle_edit_card.role.setText(language_label(target.language))
         self.subtitle_edit_card.role.show()
@@ -236,16 +266,67 @@ class CaptionEditorMixin:
         self.caption_pronoun_button.setEnabled(True)
         self._caption_editor_opening = False
         self._set_subtitle_editor_visible(True)
-        QTimer.singleShot(10, lambda: self._refresh_editor_suggestions() if getattr(self, '_caption_draft', None) is draft and self.project is draft.project else None)
+        QTimer.singleShot(10, lambda: self._refresh_editor_suggestions() if getattr(self, '_caption_draft', None) is draft and self._caption_owns_draft(draft) else None)
         self._studio_trace('EDIT_CARD_OPEN', cue_id=target.cue_id, layer=target.layer,
                            editor_show_ms=(perf_counter()-started)*1000)
+        from ..diagnostics.event_log import emit
+        emit('caption.edit_open', **self._caption_edit_context(draft), result='opened')
         return True
+
+    def _caption_owns_draft(self, draft):
+        return draft is not None and draft.owns(self.project, self.session.generation)
+
+    def _caption_trigger_commit(self, trigger):
+        previous = getattr(self, '_caption_submit_trigger', None)
+        self._caption_submit_trigger = trigger
+        try:
+            return self._commit_canvas_inline_edit()
+        finally:
+            self._caption_submit_trigger = previous
+
+    def _caption_edit_context(self, draft, value=None):
+        from ..diagnostics.studio_events import revision
+        project = self.project
+        cue = draft.target.resolve(project)
+        current = draft.target.read(project)
+        runtime = getattr(project, '_studio_state_runtime', None)
+        scene=getattr(self,'_caption_scene',None)
+        locks = self.timeline.locked_speakers
+        lock_sources = [key for key in (cue.speaker_id if cue else draft.target.track_id,
+                       'translation' if draft.target.layer == 'translation' else None) if key in locks]
+        def text_summary(text):
+            return dict(length=len(text), digest=digest(text)) if text is not None else None
+        return dict(edit_session_id=draft.edit_session_id, **draft.target.__dict__,
+                    project_format_version=getattr(project,'schema_version',None),
+                    session_generation=self.session.generation, opened_generation=draft.session_generation,
+                    opened_revision=draft.opened_revision, revision_current=revision(project),
+                    render_revision=getattr(runtime, 'playback_revision', None),
+                    opened_entity_epoch=draft.entity_epoch,
+                    entity_epoch=getattr(runtime, 'entity_epochs', {}).get(draft.target.cue_id, 0),
+                    target_resolved=cue is not None, current_track_id=cue.speaker_id if cue else None,
+                    track_locked=bool(lock_sources), lock_sources=lock_sources,
+                    baseline_summary=text_summary(draft.before), current_summary=text_summary(current),
+                    submitted_summary=text_summary(value),
+                    trigger=getattr(self, '_caption_submit_trigger', None) or 'project_save',
+                    autosave_generation=getattr(self, '_autosave_generation', None),
+                    scene_generation=scene.token[3] if scene is not None and scene.token is not None else None,
+                    playback_generation=getattr(getattr(self.video,'_playback_clock',None),'generation',None))
+
+    def _reload_current_caption_text(self):
+        draft = getattr(self, '_caption_draft', None)
+        if not self._caption_owns_draft(draft) or draft.target.read(self.project) is None:
+            return
+        # This explicit action gives the user a recoverable copy before rebase.
+        QApplication.clipboard().setText(self.subtitle_edit_input.toPlainText())
+        self._bind_caption_editor(draft.target, edit_session_id=draft.edit_session_id)
+        self._lock_caption_editor()
+        self.save_state.setText('草稿已复制；已载入当前文本，可继续编辑。')
 
     def _lock_caption_editor(self):
         draft = getattr(self, '_caption_draft', None)
         if draft is not None and not getattr(self, '_caption_editor_opening', False):
             self._caption_edit_locked = True
-            self._review_edit_lock = dict(cue_id=draft.target.cue_id, project=draft.project, layer=draft.target.layer)
+            self._review_edit_lock = dict(cue_id=draft.target.cue_id, project=self.project, layer=draft.target.layer)
             self.subtitle_edit_card.title.setText('编辑译文' if draft.target.role == 'translation' else '编辑原文')
 
     def _follow_caption_editor(self, milliseconds, *, force=False):
@@ -274,7 +355,7 @@ class CaptionEditorMixin:
             target = self._resolve_caption_edit_target(cue.id, 'original')
         draft = getattr(self, '_caption_draft', None)
         if not force and ((draft is None and target is None) or
-                          (draft is not None and draft.project is self.project and draft.target == target)):
+                          (self._caption_owns_draft(draft) and draft.target == target)):
             return
         self._clear_caption_binding()
         if target is not None:
@@ -328,8 +409,10 @@ class CaptionEditorMixin:
             # Native IME candidate windows never reach this QWidget branch.
             self._end_caption_editor(keep_open=False, restore_focus=False)
 
-    def _clear_caption_binding(self):
+    def _clear_caption_binding(self, *, terminal_state='retired'):
         draft = getattr(self, '_caption_draft', None)
+        if draft is not None:
+            draft.state = terminal_state
         self._edit_preview_timer.stop()
         self._draft_recovery.discard()
         if draft is not None:
@@ -340,8 +423,33 @@ class CaptionEditorMixin:
         self._caption_edit_locked = False
         self._reset_caption_input_method()
         self._caption_editor_opening = True
-        self.subtitle_edit_input.clear()
-        self._caption_editor_opening = False
+        blocker = QSignalBlocker(self.subtitle_edit_input)
+        try:
+            self.subtitle_edit_input.clear()
+        finally:
+            del blocker
+            self._caption_editor_opening = False
+
+    def _cancel_bound_caption_editor(self, *, trigger='cancel'):
+        """Retire the draft before hiding/resetting widgets can dispatch events."""
+        draft = getattr(self, '_caption_draft', None)
+        if draft is None and not getattr(self, '_caption_following', False):
+            return False
+        context = self._caption_edit_context(draft, self.subtitle_edit_input.toPlainText()) if draft else {}
+        undo_index, undo_count = self.undo_stack.index(), self.undo_stack.count()
+        self._caption_following = False
+        self._caption_disk_pending = None
+        self._clear_caption_binding(terminal_state='cancelled')
+        self.position_overlay._inline_editing = False
+        self._set_subtitle_editor_visible(False)
+        self._refresh_ass_preview()
+        self.timeline.setFocus(Qt.FocusReason.OtherFocusReason)
+        from ..diagnostics.event_log import emit
+        context['trigger'] = trigger
+        emit('caption.edit_cancelled', **context, result='discarded', stage='closed',
+             undo_index_before=undo_index, undo_index_after=self.undo_stack.index(),
+             undo_count_before=undo_count, undo_count_after=self.undo_stack.count())
+        return True
 
     def _end_caption_editor(self, *, keep_open, restore_focus=True):
         if getattr(self, '_caption_ending', False):
@@ -387,7 +495,7 @@ class CaptionEditorMixin:
 
     def _refresh_editor_suggestions(self):
         draft = getattr(self, "_caption_draft", None)
-        if draft is None or self.project is not draft.project:
+        if not self._caption_owns_draft(draft):
             return
         text = self.subtitle_edit_input.toPlainText()
         if draft.suggestion_text and text!=draft.suggestion_text:
@@ -403,7 +511,7 @@ class CaptionEditorMixin:
                 rows.extend(issue.suggestions)
             if draft.target.layer=='original':
                 from ..subtitle_rules.studio_qc import review_candidates
-                cue=self._cue_lookup.get(draft.target.cue_id)
+                cue=draft.target.resolve(self.project)
                 if cue is not None:
                     rows.extend(r for r in self._review_suggestions_for(cue,review_candidates(self.project,cue)) if r.kind!=PRONOUN)
         if draft.target.layer!='original' or text!=draft.target.read(self.project):
@@ -426,7 +534,7 @@ class CaptionEditorMixin:
 
     def _apply_editor_suggestion(self, mark=None, option=None):
         draft = getattr(self, "_caption_draft", None)
-        if draft is None or self.project is not draft.project or getattr(self.subtitle_edit_input, '_preediting', False):
+        if not self._caption_owns_draft(draft) or getattr(self.subtitle_edit_input, '_preediting', False):
             return False
         text = self.subtitle_edit_input.toPlainText()
         if text != draft.suggestion_text:
@@ -446,7 +554,7 @@ class CaptionEditorMixin:
     def _stage_caption_patch(self,start,end,replacement,*,kind='model',options=()):
         self._lock_caption_editor()
         draft=getattr(self,'_caption_draft',None)
-        if draft is None or self.project is not draft.project:
+        if not self._caption_owns_draft(draft):
             return False
         editor=self.subtitle_edit_input;text=editor.toPlainText()
         if text!=draft.suggestion_text:self._refresh_editor_suggestions()
@@ -547,7 +655,7 @@ class CaptionEditorMixin:
         candidate_focus = suggestions.owns_focus()
         if shifted and key == Qt.Key.Key_R:
             self._caption_consumed_commit_key = key
-            self._commit_canvas_inline_edit()
+            self._caption_trigger_commit('shift_r')
             return True
         if getattr(self, '_caption_draft', None) is None:
             if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter} and not shifted:
@@ -584,22 +692,27 @@ class CaptionEditorMixin:
             if text_focus and key != Qt.Key.Key_Escape and mods & Qt.KeyboardModifier.ShiftModifier:
                 return False
             self._caption_consumed_commit_key = key
-            (self._cancel_canvas_inline_edit if key == Qt.Key.Key_Escape else self._commit_canvas_inline_edit)()
+            if key == Qt.Key.Key_Escape:
+                self._cancel_canvas_inline_edit()
+            else:
+                self._caption_trigger_commit('keypad_enter' if key == Qt.Key.Key_Enter else 'enter')
             return True
         return False
 
     def _flush_caption_editor_preview(self):
         draft = getattr(self, "_caption_draft", None)
-        if draft is None or self.project is not draft.project:
+        if not self._caption_owns_draft(draft):
             return
         self._live_edit_text_overrides[draft.target.render_id] = self.subtitle_edit_input.toPlainText()
         self._refresh_ass_preview()
 
     def _finish_caption_draft(self):
         if getattr(self, '_caption_following', False):
-            self._clear_caption_binding()
+            self._clear_caption_binding(terminal_state='applied')
             return
         draft = getattr(self, "_caption_draft", None)
+        if draft:
+            draft.state = 'applied'
         self._edit_preview_timer.stop()
         self._draft_recovery.discard()
         if draft:
@@ -621,13 +734,13 @@ class CaptionEditorMixin:
         position = self.subtitle_edit_input.textCursor().position()
         if not self._submit_caption_draft():
             return False
-        if not self._bind_caption_editor(draft.target):
+        if not self._bind_caption_editor(draft.target, edit_session_id=draft.edit_session_id):
             return False
         cursor = self.subtitle_edit_input.textCursor()
         cursor.setPosition(min(position, self.subtitle_edit_input.document().characterCount()-1))
         self.subtitle_edit_input.setTextCursor(cursor)
         self._lock_caption_editor()
-        return (draft.project, draft.target, self.session.generation, self._caption_draft)
+        return (self.project, self._caption_draft.target, self.session.generation, self._caption_draft)
 
     def _finish_caption_manual_save(self, token, *, error=None):
         if (not token or self.project is not token[0] or self.session.generation != token[2]
@@ -638,7 +751,12 @@ class CaptionEditorMixin:
             self._caption_disk_pending = token[1]
             self._lock_caption_editor()
             self.subtitle_edit_card.set_error('工程尚未写入磁盘，修改和编辑对象已保留，可重试保存。',str(error))
+            from ..diagnostics.event_log import emit, exception_info
+            emit('caption.persistence', **self._caption_edit_context(token[3]), result='failed',
+                 stage='persist', reason_code='disk_write_failed', exception=exception_info(error))
             return
+        from ..diagnostics.event_log import emit
+        emit('caption.persistence', **self._caption_edit_context(token[3]), result='completed', stage='persist')
         self._caption_disk_pending = None
         if getattr(self, '_caption_close_on_save', False):
             self._caption_following = False
@@ -671,7 +789,7 @@ class CaptionEditorMixin:
         from ..diagnostics.studio_events import revision
         draft=getattr(self,'_caption_draft',None)
         before_revision=revision(self.project)
-        context=dict(draft.target.__dict__) if draft else {}
+        context=self._caption_edit_context(draft, self.subtitle_edit_input.toPlainText()) if draft else {}
         context.update(revision_before=before_revision,source='caption_editor')
         if draft:
             value=self.subtitle_edit_input.toPlainText()
@@ -681,30 +799,45 @@ class CaptionEditorMixin:
             with operation('cue.editor_commit',**context):
                 result=self._submit_caption_draft_impl()
                 emit('caption.edit_result',result='applied' if result else 'retained',
+                    edit_session_id=draft.edit_session_id if draft else None,
                     revision_before=before_revision,revision_after=revision(self.project),
                     duration_ms=(perf_counter()-started)*1000,
                     text_digest=digest(self.subtitle_edit_input.toPlainText()) if not result else None,
                     stage='memory_applied' if result else 'draft_retained')
                 return result
         except Exception as exc:
-            import traceback
             emit('caption.edit_failed',level='ERROR',result='failed',**context,
                 revision_after=revision(self.project),duration_ms=(perf_counter()-started)*1000,
-                exception={**exception_info(exc),'traceback':traceback.format_exc()},stage='edit_command')
+                exception=exception_info(exc),stage='edit_command')
             self._caption_editor_failed(f'字幕未提交：{exc}')
             return False
         finally:
             self._caption_submitting = False
 
-    def _caption_editor_failed(self, message):
+    def _caption_editor_failed(self, message, *, reason_code=None):
         self._lock_caption_editor()
         summary = '本次修改未提交，输入内容已保留。可直接重试，或取消。'
-        if '目标已变化' in message or '轨道已锁定' in message:
-            summary = '编辑目标已变化或轨道已锁定，输入已保留；请取消后重新打开。'
-        elif '输入法候选' in message:
+        if '输入法候选' in message:
             summary = '请先确认输入法候选；当前输入已保留。'
+            reason_code = reason_code or 'ime_unconfirmed'
+        if reason_code:
+            summary = message
+        draft = getattr(self, '_caption_draft', None)
+        details = str(message)
+        if draft:
+            draft.state = 'rejected'
+            from ..diagnostics.event_log import emit
+            context = self._caption_edit_context(draft, self.subtitle_edit_input.toPlainText())
+            context.update(reason_code=reason_code or 'edit_command_failed', stage='validate')
+            emit('caption.edit_rejected', **context, result='retained', level='WARN')
+            details += '\n' + json.dumps(context, ensure_ascii=False, indent=2)
         self.save_state.setText(summary)
-        self.subtitle_edit_card.set_error(summary, str(message))
+        self.subtitle_edit_card.set_error(summary, details)
+        self.subtitle_edit_card.reload_current_button.setVisible(reason_code == 'text_conflict')
+        if reason_code == 'text_conflict' and draft:
+            current=draft.target.read(self.project)
+            self.subtitle_edit_card.reference.setText('当前文本（只读）：'+str(current or ''))
+            self.subtitle_edit_card.reference.show()
         self.subtitle_edit_card.updateGeometry()
 
     def _submit_caption_draft_impl(self):
@@ -717,14 +850,28 @@ class CaptionEditorMixin:
             if getattr(self.subtitle_edit_input,'_preediting',False):
                 self._caption_editor_failed('输入法候选尚未确认，请先确认候选再提交')
                 return False
-        if (self.project is not draft.project or draft.target.read(self.project) != draft.before
-                or draft.target.track_id in self.timeline.locked_speakers
-                or draft.target.layer == 'translation' and 'translation' in self.timeline.locked_speakers):
-            self._caption_editor_failed("编辑目标已变化或轨道已锁定；草稿未提交，请取消后重新打开")
-            return False
         value = self.subtitle_edit_input.toPlainText()
+        def reject(code, message):
+            self._caption_editor_failed(message, reason_code=code)
+            return False
+        if not self._caption_owns_draft(draft):
+            return reject('session_changed', '工程会话已切换，输入已保留；可复制草稿到当前工程。')
+        cue = draft.target.resolve(self.project)
+        if cue is None:
+            return reject('target_deleted', '这条字幕已删除或被合并，输入已保留；可复制草稿。')
+        from ..projects.studio_runtime_state import state_for
+        if state_for(self.project).entity_epochs.get(cue.id, 0) != draft.entity_epoch:
+            return reject('entity_restructured', '这条字幕已拆分、合并或重新建立，输入已保留；可复制草稿。')
+        current = draft.target.read(self.project)
+        if current is None:
+            return reject('translation_language_changed', '译文目标语言已变化，输入已保留；可复制草稿。')
+        if (cue.speaker_id in self.timeline.locked_speakers or draft.target.layer == 'translation'
+                and 'translation' in self.timeline.locked_speakers):
+            return reject('track_locked', '当前字幕轨道已锁定，输入已保留；解锁后可直接重试。')
+        if current != draft.before and current != value:
+            return reject('text_conflict', '同一文本已有其他修改，草稿已保留；请比较当前文本后再保存。')
         changes = self._draft_patch_decisions(draft,value)
-        changed = value != draft.before
+        changed = value != current
         cue_id = draft.target.cue_id
         applied = True
         if changed or changes:

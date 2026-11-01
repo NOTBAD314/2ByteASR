@@ -27,7 +27,9 @@ def row_record(row):
         return value
     for issue in row['issues']:
         issue.setdefault('proposal_id', uuid4().hex)
-    return dict(cue_id=row['cue_id'], layer='original', origin=row['origin'], base=row['base'],
+    target=row.get('target')
+    return dict(cue_id=row['cue_id'], layer=target.layer if target else 'original',
+                target=target.to_dict() if target else None, origin=row['origin'], base=row['base'],
                 text_sha=text_version(row['base']),
                 retained=bool(row.get('review_retained')), dismissed=bool(row.get('review_dismissed')),
                 issues=[{key: plain(issue[key]) for key in ISSUE_FIELDS if key in issue}
@@ -36,7 +38,12 @@ def row_record(row):
 
 def restore_row(project, row):
     saved = review_state(project)['rows'].get(row['cue_id'])
-    if not isinstance(saved, dict) or saved.get('layer') != 'original':
+    if not isinstance(saved, dict):
+        return False
+    target=row.get('target')
+    if saved.get('target'):
+        if target is None or saved['target']!=target.to_dict():return False
+    elif saved.get('layer')!='original' or target is not None and (target.layer!='original' or target.storage!='cue'):
         return False
     row['origin'] = str(saved.get('origin', row['origin']))
     row['review_retained'] = bool(saved.get('retained'))

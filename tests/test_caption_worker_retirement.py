@@ -157,9 +157,34 @@ class Page(QObject):
         self.video = SimpleNamespace(_compositor_overlay_dir=folder)
 
 
+def test_closing_scene_discards_inflight_motion_preheat(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    page = Page(tmp_path)
+    scene = scene_module.CaptionScene(page)
+    warmer = scene._motion_preheater
+    def build(_item):
+        entered.set()
+        assert release.wait(3)
+        return (None, None, Image())
+    warmer._builder = build
+    warmer.set_epoch(('project', 1))
+    warmer.request(('project', 1), [('one',)])
+    try:
+        assert entered.wait(2)
+        scene.close()
+        release.set()
+        warmer.thread.join(3)
+        scene.thread.join(3)
+        assert not warmer.thread.is_alive() and not scene.thread.is_alive()
+        assert warmer.take(('project', 1), ['one']) == ()
+    finally:
+        release.set()
+        scene.close()
+
+
 def start_scene(monkeypatch, tmp_path, frame, pack):
     class Rasterizer:
-        def __init__(self, *a): pass
+        def __init__(self, *a): self.rasters={}
         def frame(self, *a, **k): return frame()
         def close(self): pass
     monkeypatch.setattr(scene_module, "SceneRasterizer", Rasterizer)
@@ -173,7 +198,7 @@ def start_scene(monkeypatch, tmp_path, frame, pack):
     scene.ready.connect(lambda *a: notifications.append(a), Qt.DirectConnection)
     token = (id(page.project), 1, 1, 1, ("A",), "", (64, 32, True), 0, 0, 64, 32)
     with scene.lock:
-        scene.pending = (token, (("A", object()),), 0, 64, 32)
+        scene.pending = (token, (("A", object()),), 0, 64, 32, True)
         scene.wake.set()
     return page, scene, notifications
 

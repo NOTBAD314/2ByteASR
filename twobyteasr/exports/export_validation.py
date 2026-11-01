@@ -42,7 +42,8 @@ def record_completion(function):
     parameters = signature(function)
     @wraps(function)
     def run(*args, **kwargs):
-        job = parameters.bind(*args, **kwargs).arguments['job']
+        arguments=parameters.bind(*args,**kwargs).arguments
+        job = arguments['job']
         receipt = job.completion_metadata
         nested = receipt.get('_receipt_active', False)
         if not nested:
@@ -53,6 +54,14 @@ def record_completion(function):
         log = token = None
         error = None
         from .export_run_log import begin_export_log, end_export_log, note_export
+        def event(name,**fields):
+            if nested:return
+            try:
+                from ..diagnostics.event_log import emit
+                project=arguments.get('project')
+                emit(name,task_id=(getattr(job,'export_context',None) or {}).get('job_id'),
+                     project_id=getattr(project,'project_id',None),backend=function.__name__,**fields)
+            except Exception:pass
         try:
             if not nested and 'ffmpeg_path' in parameters.parameters:
                 ffmpeg = parameters.bind(*args, **kwargs).arguments['ffmpeg_path']
@@ -63,12 +72,24 @@ def record_completion(function):
             if log is not None:
                 receipt['diagnostics_path'] = str(log.path)
             note_export('render_backend', {'function': function.__name__, 'module': function.__module__})
-            return function(*args, **kwargs)
+            from contextlib import nullcontext
+            from ..diagnostics.event_log import operation
+            event('video.export.started',result='started')
+            context=nullcontext() if nested else operation('video.export',task_id=(getattr(job,'export_context',None) or {}).get('job_id'),
+                    project_id=getattr(arguments.get('project'),'project_id',None))
+            with context:result=function(*args,**kwargs)
+            event('video.export.completed',result='completed',stage='published')
+            return result
         except BaseException as exc:
             error = exc
             # Once validated bytes have been committed, a late observer or
             # temporary-directory cleanup failure cannot undo that fact.
             published = published_output_path(job)
+            from ..diagnostics.event_log import exception_info
+            event('video.export.warning' if published is not None else 'video.export.failed',
+                  level='WARN' if published is not None else 'ERROR',result='completed' if published is not None else 'failed',
+                  stage='after_publication' if published is not None else function.__name__,
+                  exception=exception_info(exc))
             if published is not None:
                 if isinstance(exc, Exception):
                     _completion_warning(job, 'after_publication', exc)

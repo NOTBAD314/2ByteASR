@@ -24,8 +24,9 @@ def _save(path, value):
 
 def identity_for(audio, language, media_identity=None):
     import numpy as np
+    from .alignment_audio import pcm_digest
     return dict(version=VERSION, requested_language=language, sample_rate=16000, samples=len(audio),
-                pcm_sha256=hashlib.sha256(np.asarray(audio, dtype='<f4').tobytes()).hexdigest(),
+                pcm_sha256=pcm_digest(audio),
                 media_fingerprint=(media_identity or {}).get('fingerprint', ''))
 
 

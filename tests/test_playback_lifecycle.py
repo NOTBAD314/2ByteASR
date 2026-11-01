@@ -268,7 +268,7 @@ def test_dead_pause_click_is_recorded_not_faked():
     canvas.deleteLater()
 
 
-def test_toggle_playback_routes_revive_when_dead():
+def test_toggle_playback_waits_for_current_source_after_revive_submission():
     _app()
     from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
 
@@ -299,5 +299,5 @@ def test_toggle_playback_routes_revive_when_dead():
     )
     StudioPlaybackFlowMixin._toggle_playback(owner)
     assert revive_calls == [False], "play click on dead source must attempt revive"
-    assert sync_calls == [False], "successful revive must show the playing state"
-    assert status == ["播放已恢复"], "successful revive must clear the dead status"
+    assert sync_calls == [True], "a submitted asynchronous revive has no playing evidence yet"
+    assert status == ["正在恢复播放器…"], "submission must not be reported as completed recovery"

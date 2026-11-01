@@ -11,7 +11,7 @@ from ..rendering.latest_work import LatestWork
 from ..subtitle_rules.qc_process import read_packet,write_packet
 
 class StudioQCWorker(QObject):
-    ready=Signal(object,object,object)
+    ready=Signal(object,object,object,object)
     failed=Signal(object,str)
     def __init__(self,parent=None):
         super().__init__(parent)
@@ -64,7 +64,8 @@ class StudioQCWorker(QObject):
             if 'error' in reply:raise RuntimeError(reply['error'])
             self.completed+=1
             self.ready.emit(token,reply['result'],{'queue_ms':(begin-submitted)*1000,
-                'roundtrip_ms':(time.perf_counter()-begin)*1000,'compute_ms':reply['compute_ms'],'pid':process.pid})
+                'roundtrip_ms':(time.perf_counter()-begin)*1000,'compute_ms':reply['compute_ms'],'pid':process.pid},
+                reply.get('issue_cache'))
         except Exception as error:
             with self._lock:
                 process,self._process=self._process,None

@@ -83,6 +83,18 @@ def test_requests_are_about_twenty_minutes(minutes, count):
     assert all(end - start <= 25 * 60 * 16000 for start, end in ranges)   # one request up to 25 min, parts at most 22.5 + 2
 
 
+def test_resume_only_never_submits_missing_audio_but_reuses_saved_result(tmp_path,monkeypatch):
+    mosi_asr=small_requests(monkeypatch)
+    audio=np.zeros(16000,dtype=np.float32);client=ScriptedMosi({1:['SUCCESS']})
+    first=mosi_asr.transcribe(audio,mosi_endpoint(),tmp_path,client=client,sleep=tiny_sleep)
+    monkeypatch.setenv('TWOBYTEASR_MOSS_RESUME_ONLY','1')
+    second=mosi_asr.transcribe(audio,mosi_endpoint(),tmp_path,client=client,sleep=tiny_sleep)
+    assert first==second and len(client.posts)==1
+    with pytest.raises(ASRProtocolError,match='只允许恢复'):
+        mosi_asr.transcribe(np.ones(16000,dtype=np.float32),mosi_endpoint(),tmp_path,client=client,sleep=tiny_sleep)
+    assert len(client.posts)==1
+
+
 def test_each_cut_moves_to_the_quietest_second_nearby():
     from twobyteasr.providers import mosi_asr
     rate = 16000

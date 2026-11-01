@@ -39,6 +39,13 @@ class TextOccurrence:
     source: str = ""
     evidence: str = ""
     missing_evidence: str = ""
+    target: object = None
+    baseline: str | None = None
+    context_snapshot: object = None
+
+    @property
+    def target_key(self):
+        return self.target.key if self.target is not None else self.cue_id
 
 
 def cue_locked(cue: StudioCue, locked_ids: Iterable[str] | None = None) -> bool:
@@ -94,7 +101,7 @@ def scope_cue_ids(page, scope: str) -> list[str]:
         cue = lookup.get(current)
         if cue is None:
             return []
-        return [item.id for item in cues if item.style_id == cue.style_id]
+        return [item.id for item in cues if item.speaker_id == cue.speaker_id]
     if scope == SCOPE_RANGE:
         if len(selected) >= 2:
             chosen = [lookup[cue_id] for cue_id in selected if cue_id in lookup]
@@ -137,6 +144,7 @@ def find_occurrences(
     body_only: bool = False,
     skip_locked: bool = True,
     locked_ids: Iterable[str] | None = None,
+    entries=None,
 ) -> list[TextOccurrence]:
     if not needle:
         return []
@@ -148,13 +156,24 @@ def find_occurrences(
         return []
     wanted = set(cue_ids)
     hits: list[TextOccurrence] = []
-    for cue in project.cues:
-        if cue.id not in wanted:
+    if entries is None:
+        from .subtitle_text_targets import text_entries
+        entries = text_entries(project, mode="original", cue_ids=wanted)
+    lookup = {cue.id: cue for cue in project.cues}
+    locked_ids = set(locked_ids or ())
+    for entry in entries:
+        cue = lookup.get(entry.target.cue_id)
+        if cue is None or cue.id not in wanted:
             continue
         if skip_locked and cue_locked(cue, locked_ids):
             continue
-        source = _body_text(cue.text) if body_only else cue.text
+        source = entry.text
+        # Keep offsets in the real stored string; stripping ASS tags shifted
+        # subsequent matches and could make preview/write disagree.
+        protected = [(m.start(), m.end()) for m in re.finditer(r"\{[^}]*\}", source)] if body_only else []
         for match in pattern.finditer(source):
+            if any(match.start() < b and a < match.end() or a <= match.start() < b for a, b in protected):
+                continue
             if regex:
                 try:
                     replaced = match.expand(replacement)
@@ -168,23 +187,34 @@ def find_occurrences(
                 original=match.group(0),
                 replacement=replaced,
                 span=(match.start(), match.end()),
+                target=entry.target,
+                baseline=entry.text,
+                context_snapshot=entry,
             ))
     return hits
 
 
-def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurrence], *, strict=False) -> dict[str, str]:
+def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurrence], *, strict=False, entries=None) -> dict[str, str]:
+    hits = list(hits)
     grouped: dict[str, list[TextOccurrence]] = {}
     for hit in hits:
-        grouped.setdefault(hit.cue_id, []).append(hit)
-    lookup = {cue.id: cue for cue in project.cues}
+        grouped.setdefault(hit.target_key, []).append(hit)
+    from .subtitle_text_targets import entry_lookup
+    lookup = entries if entries is not None else entry_lookup(project, targets=[hit.target for hit in hits])
     values: dict[str, str] = {}
     for cue_id, items in grouped.items():
-        cue = lookup.get(cue_id)
-        if cue is None:
+        entry = lookup.get(cue_id)
+        if entry is None:
             if strict:
-                raise ValueError("字幕已删除，整批清理没有应用。")
+                raise ValueError("字幕已删除，本次预览没有应用。")
             continue
-        text = cue.text
+        text = entry.text
+        if any(hit.target is not None and hit.target != entry.target or
+               hit.baseline is not None and hit.baseline != entry.text or
+               hit.context_snapshot is not None and hit.context_snapshot != entry for hit in items):
+            if strict:
+                raise ValueError("字幕或译文已改变，请重新预览；本次没有应用。")
+            continue
         for hit in sorted(items, key=lambda item: item.span[0], reverse=True):
             start, end = hit.span
             if not 0 <= start <= end <= len(text) or text[start:end] != hit.original:
@@ -192,7 +222,7 @@ def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurre
                     raise ValueError("字幕原文已改变，整批清理没有应用。")
                 continue
             text = text[:start] + hit.replacement + text[end:]
-        if text != cue.text:
+        if text != entry.text:
             values[cue_id] = text
     return values
 
@@ -201,7 +231,7 @@ def occurrence_conflicts(hits: Iterable[TextOccurrence]) -> bool:
     """Competing proposals for one span require an explicit choice."""
     grouped = {}
     for hit in hits:
-        grouped.setdefault(hit.cue_id, []).append(hit)
+        grouped.setdefault(hit.target_key, []).append(hit)
     for items in grouped.values():
         ordered = sorted(items, key=lambda hit: hit.span)
         for first, second in zip(ordered, ordered[1:]):

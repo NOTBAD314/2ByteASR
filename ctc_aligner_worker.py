@@ -111,7 +111,7 @@ def main() -> None:
         for done, job in enumerate(jobs, 1):
             text = str(job.get("text") or "")
             start = max(0, int(job["window_start_ms"]) * sample_rate // 1000)
-            end = min(pcm.size, int(job["window_end_ms"]) * sample_rate // 1000)
+            end = min(pcm.size,int(audio_spec.get('valid_samples',pcm.size)), int(job["window_end_ms"]) * sample_rate // 1000)
             row = {"id": str(job["id"]), "text": text, "window_start_ms": int(job["window_start_ms"]),
                    "window_end_ms": int(job["window_end_ms"])}
             ids, positions = alignable(text, vocab)

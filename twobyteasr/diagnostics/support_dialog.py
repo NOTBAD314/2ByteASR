@@ -389,8 +389,9 @@ def open_support_dialog(owner, page=None):
             self.start.setVisible(custom);self.end.setVisible(custom);self._load()
 
         def _options(self):
-            return dict(scope=self.scope.currentData(),start=self.start.dateTime().toUTC().toString(Qt.DateFormat.ISODateWithMs),
-                        end=self.end.dateTime().toUTC().toString(Qt.DateFormat.ISODateWithMs),report=marked)
+            scope=self.scope.currentData()
+            return dict(scope=scope,start=self.start.dateTime().toUTC().toString(Qt.DateFormat.ISODateWithMs) if scope=='range' else None,
+                        end=self.end.dateTime().toUTC().toString(Qt.DateFormat.ISODateWithMs) if scope=='range' else None,report=marked)
 
         def _load(self):
             if self._closed:return
@@ -657,7 +658,8 @@ def open_support_dialog(owner, page=None):
                     result=export_report(target,root=instance.root if instance else editor_diagnostics.root_dir(),instance=instance,**options)
                     emit("export.end",result=result["status"],report_id=report_id,bytes=result["bytes"])
                 except Exception as exc:
-                    result={"error":type(exc).__name__}
+                    from .support_bundle import export_failure_details
+                    result=export_failure_details(exc)
                     from .event_log import exception_info
                     emit("export.end",level="ERROR",result="failed",report_id=report_id,exception=exception_info(exc))
                 try:self._signals.exported.emit(result)
@@ -672,7 +674,8 @@ def open_support_dialog(owner, page=None):
             if self._job_finished():return
             self.export.setEnabled(True);self._result=result
             if result.get("error"):
-                bind_text(self.note,tr("导出失败（{error}），旧文件没有被替换。请换一个可写入且有空间的文件夹，或缩小时间范围重试。",error=result["error"]))
+                bind_text(self.note,tr("导出失败（{error}，阶段 {stage}），旧文件没有被替换。可复制摘要中的技术详情。",error=result["error"],stage=result.get('stage','export')))
+                self.summary.setPlainText(self.summary.toPlainText()+'\n\n'+result.get('details',result['error']))
                 return
             self.summary.setPlainText(result["summary"])
             self.folder.setEnabled(True);self.folder.show();self.folder_action.setEnabled(True)
@@ -687,6 +690,8 @@ def open_support_dialog(owner, page=None):
             self._refresh_summary()
             # Per-line sanitization avoids the free-text size limit cutting a full summary.
             value=self._result.get("summary") if self._result and not self._result.get("error") else self.summary.toPlainText()
+            if self._result and self._result.get('error'):
+                value+='\n\n'+self._result.get('details',self._result['error'])
             QApplication.clipboard().setText("\n".join(sanitizer.string(line) for line in value.splitlines()))
             bind_text(self.note,tr("已复制诊断摘要；没有自动上传。"))
 

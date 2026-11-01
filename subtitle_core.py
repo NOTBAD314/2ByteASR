@@ -2098,7 +2098,7 @@ CACHE_STAGE_VERSIONS = {
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
 GROUP_LOGIC_VERSION = "group-v59-word-safe-comfort-length"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
-TIMING_LOGIC_VERSION = "timing-v13-overlapping-source-turns"
+TIMING_LOGIC_VERSION = "timing-v14-positive-acoustic-cut-edges"
 
 
 # 复核清单只打印在运行窗口，不增加第三个输出文件。

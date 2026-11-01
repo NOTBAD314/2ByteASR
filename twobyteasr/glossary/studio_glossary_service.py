@@ -25,6 +25,64 @@ def _optional_metadata_review(details, unassigned):
 
 
 def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_token=None, use_ai=True, progress=None):
+    from ..studio.subtitle_text_targets import text_entries, review_project, bind_occurrence
+    from ..recognition.service import CancellationToken
+    token = cancel_token or CancellationToken()
+    token.raise_if_cancelled()
+    supplied = getattr(project, '_review_text_entries', None)
+    if supplied is None:
+        entries = text_entries(project, mode='original', cue_ids=cue_ids)
+    else:
+        entries = [supplied[key] for key in cue_ids if key in supplied]
+    # Preserve the established Chinese source/ASR adjudication unchanged.
+    original = [entry for entry in entries if entry.target.layer == 'original'
+                and entry.target.language.split('-')[0] in {'zh', ''}]
+    original_keys = {entry.key for entry in original}
+    other = [entry for entry in entries if entry.key not in original_keys]
+    results = []
+    if original:
+        view = __import__('copy').copy(project)
+        wanted = {entry.key for entry in original}
+        view.cues = [cue for cue in project.cues if cue.id in wanted]
+        result = _preview_original_glossary_correction(view, wanted, snapshot, settings,
+                    cancel_token=token, use_ai=use_ai, progress=progress)
+        lookup = {entry.key: entry for entry in original}
+        results.append(GlossaryReviewPreview(tuple(bind_occurrence(hit, lookup[hit.cue_id]) for hit in result.hits), result.receipt))
+    if other:
+        from .translation_review import preview_language_correction
+        results.append(preview_language_correction(project, other, snapshot, settings, token=token, use_ai=use_ai, progress=progress))
+    if not results:
+        from .translation_review import preview_language_correction
+        results.append(preview_language_correction(project, [], snapshot, settings, token=token, use_ai=False))
+    receipt = dict(results[0].receipt)
+    for result in results[1:]:
+        for key in ('checked_cues','requested_cues','successful_cues','fallback_cues','proposed_changes','proposed_cues',
+                    'automatic_changes','confirmation_changes','rejected_changes','missing_associations'):
+            receipt[key] = receipt.get(key, 0) + result.receipt.get(key, 0)
+        for key in ('segments','pending_rows','failed_cues','request_errors'):
+            receipt[key] = [*receipt.get(key, ()), *result.receipt.get(key, ())]
+    receipt['text_targets'] = [{'key': entry.key, **entry.target.to_dict(), 'baseline': entry.text} for entry in entries]
+    receipt['empty_state'] = ('request_failed' if receipt.get('request_errors') else
+                              'needs_confirmation' if receipt.get('confirmation_changes') else
+                              'changes_ready' if any(result.hits for result in results) else receipt.get('empty_state', 'no_changes'))
+    import uuid
+    receipt.setdefault('job_id', uuid.uuid4().hex)
+    from ..runtime_paths import user_data_root
+    from ..recognition.cache import atomic_write_json
+    diagnostic = user_data_root() / 'logs' / 'glossary-review' / f"{receipt['job_id']}.json"
+    receipt['diagnostic_path'] = str(diagnostic)
+    token.raise_if_cancelled()
+    try:
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(str(diagnostic), receipt)
+        from ..storage.storage_service import register_cache
+        register_cache(diagnostic, 'log', producer='studio_glossary_review', rebuild='local')
+    except OSError as exc:
+        receipt['diagnostic_error'] = str(exc)
+    return GlossaryReviewPreview(tuple(hit for result in results for hit in result.hits), receipt)
+
+
+def _preview_original_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_token=None, use_ai=True, progress=None):
     import subtitle_core  # Initialize the legacy facade before its correction re-exports.
     from ..recognition.service import CancellationToken
     from ..recognition.run_context import RuntimeContext, activate_runtime_context

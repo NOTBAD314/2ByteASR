@@ -387,6 +387,8 @@ def align_language(prepared: list, language: str, model_dir: Path, work: Path, j
             stream.writeframes(pcm)
         (target / f"{name}.lab").write_text(text, encoding="utf-8")
     env = activated_environment(Path(sys.prefix))
+    from twobyteasr.system.compute_cache import environment as compute_environment
+    env = compute_environment(env)
     env["MFA_ROOT_DIR"] = str(work / "mfa-root")
     # -I and cwd=work: the app's folder (cwd) holds PyInstaller's 3.10 .pyd files (2026-10-19).
     command = [sys.executable, "-I", "-m", "montreal_forced_aligner", "align", str(corpus), str(dictionary), str(acoustic),
@@ -467,7 +469,7 @@ def main() -> None:
         text = str(job.get("text") or "")
         language = str(job.get("language") or "")
         start = max(0, int(job["window_start_ms"]) * sample_rate // 1000)
-        end = min(pcm.size, int(job["window_end_ms"]) * sample_rate // 1000)
+        end = min(pcm.size,int(audio_spec.get('valid_samples',pcm.size)), int(job["window_end_ms"]) * sample_rate // 1000)
         row = {"id": job["id"], "text": text, "language": language,
                "window_start_ms": int(job["window_start_ms"]), "window_end_ms": int(job["window_end_ms"])}
         results[str(job["id"])] = row
@@ -493,7 +495,9 @@ def main() -> None:
                 if not path.exists():
                     raise RuntimeError(f"MFA model file missing: {path}")
             work = Path(temp) / language
-            _emit("aligning", language=language, utterances=len(items))
+            _emit("aligning", language=language, utterances=len(items),
+                  range_start_ms=min(row['window_start_ms'] for *_x,row,_s in items),
+                  range_end_ms=max(row['window_end_ms'] for *_x,row,_s in items))
             found, quality = align_language([(n, g, b, t) for n, g, b, t, _r, _s in items], language,
                                             model_dirs[language], work, jobs_count)
             readings = (load_pronunciations(model_paths(model_dirs[language], language)[1])
@@ -503,7 +507,7 @@ def main() -> None:
                           quality=quality.get(name), pronunciations=readings)
                 aligned += row.get("status") == "aligned"
             _emit("progress", language=language, aligned=sum(1 for *_x, r, _s in items if r.get("status") == "aligned"),
-                  total=len(items))
+                  done=len(items), total=len(items))
     inference_ms = (time.perf_counter() - started) * 1000.0
     languages = sorted(by_language)
     _atomic_write(Path(args.output), {

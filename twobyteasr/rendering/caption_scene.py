@@ -11,7 +11,7 @@ import math
 import threading
 import time
 
-from PySide6.QtCore import QEvent, QObject, Signal, QRect, Qt
+from PySide6.QtCore import QEvent, QCoreApplication, QObject, Signal, QRect, Qt
 from PySide6.QtGui import QImage, QPainter
 
 from ..i18n import bind_text
@@ -29,6 +29,12 @@ PREHEAT_AHEAD_WALL_S = 1.5
 PREHEAT_MIN_BOUNDARIES = 2
 PREHEAT_MAX_BOUNDARIES = 6
 FRAME_CACHE_BYTES = 64 * 1024 * 1024
+GLYPH_CACHE_BYTES = 96 * 1024 * 1024
+_FRAME_READY_EVENT=QEvent.Type(QEvent.registerEventType())
+
+
+class _FrameReadyEvent(QEvent):
+    def __init__(self):super().__init__(_FRAME_READY_EVENT)
 
 
 def active_cues(page, milliseconds):
@@ -177,7 +183,17 @@ class SceneRasterizer:
         self.pages = OrderedDict()
         self.web_cache = web_cache
 
-    def frame(self, prepared_cues, milliseconds, width, height, generation=0, retire_web=True):
+    def insert_raster(self, key, value):
+        """Adopt a completed worker-owned raster under the existing budget."""
+        if key in self.rasters:
+            return
+        from .caption_motion_preheater import raster_bytes
+        self.rasters[key] = value
+        while len(self.rasters) > 1 and sum(raster_bytes(v) for v in self.rasters.values()) > GLYPH_CACHE_BYTES:
+            self.rasters.popitem(last=False)
+
+    def frame(self, prepared_cues, milliseconds, width, height, generation=0, retire_web=True,
+              measure_cue_geometry=True):
         from .advanced_live_renderer import (render_live_snapshot, render_live_layers,
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
@@ -257,14 +273,12 @@ class SceneRasterizer:
                         paint.translate(-snapshot.position_x*px,-snapshot.position_y*py)
                     paint.drawImage(output.rect(), image)
                     paint.restore()
-                import numpy as np
-                packed = image.convertToFormat(QImage.Format_RGBA8888)
-                alpha = np.ndarray((packed.height(), packed.width(), 4), dtype=np.uint8,
-                    buffer=packed.constBits(), strides=(packed.bytesPerLine(), 4, 1))[:, :, 3]
-                row.update(status='rendered', alpha_nonzero=int(np.count_nonzero(alpha)))
-                ys=np.flatnonzero(np.any(alpha,axis=1));xs=np.flatnonzero(np.any(alpha,axis=0))
-                row.update(bounds=[int(xs[0]),int(ys[0]),int(xs[-1]-xs[0]+1),int(ys[-1]-ys[0]+1)] if len(xs) and len(ys) else None,
-                           viewport=[packed.width(),packed.height()])
+                row.update(status='rendered', viewport=[image.width(),image.height()])
+                if measure_cue_geometry:
+                    from .alpha_geometry import alpha_metrics
+                    bounds, alpha_nonzero = alpha_metrics(image)
+                    row.update(alpha_nonzero=alpha_nonzero,
+                               bounds=list(bounds) if bounds is not None else None)
                 if prepared.preview_error:
                     row.update(status='fallback', error=prepared.preview_error)
             except Exception as exc:
@@ -304,11 +318,7 @@ class SceneRasterizer:
             if layers is not None and uniform is not None:layers.uniform_unit=uniform
             image = render_live_snapshot(snapshot, width=width, height=height, word_time_ms=relative) if layers is None else None
             cached = (scene, layers, image)
-            self.rasters[key] = cached
-            def size(value):
-                return sum(i.sizeInBytes() for i in value[1].values()) if value[1] else value[2].sizeInBytes()
-            while len(self.rasters) > 1 and sum(size(v) for v in self.rasters.values()) > 64*1024*1024:
-                self.rasters.popitem(last=False)
+            self.insert_raster(key, cached)
         self.rasters.move_to_end(key)
         scene, layers, image = cached
         if layers is not None:
@@ -361,6 +371,7 @@ def scene_raster_geometry(page, rect, prepared):
 class CaptionScene(QObject):
     ready = Signal(object, object, object)
     web_ready = Signal()
+    warm_ready = Signal()
 
     def __init__(self, page):
         super().__init__(page)
@@ -377,17 +388,26 @@ class CaptionScene(QObject):
         self.published = None
         self.failures = {}
         self.metrics = []
+        self._delivery_pending=None
+        self._delivery_scheduled=False
+        self.schedule_counts = dict(replaced=0, stale_before_raster=0, stale_at_gui=0)
         self._hold = None
         self._cleared_token = None
         self._last_preheat = 0.0
+        self._glyph_ready_keys=frozenset()
+        self._media_ms=0.
+        self._short_active=False
+        from .caption_motion_preheater import CaptionMotionPreheater
+        self._motion_preheater = CaptionMotionPreheater(ready=self._motion_ready)
+        self._motion_warm_epoch = None
         from PySide6.QtCore import QTimer
         self._hold_timer = QTimer(self)
         self._hold_timer.setSingleShot(True)
         self._hold_timer.timeout.connect(self._hold_expired)
         self.lock = threading.RLock()
         self.wake = threading.Event()
-        self.ready.connect(self.accept)
         self.web_ready.connect(self.refresh_web)
+        self.warm_ready.connect(self.warm_current)
         self.web_cache = WebSceneCache(self._notify_web_ready)
         self.thread = threading.Thread(target=self.work, name='caption-scene', daemon=True)
         overlay_folder = getattr(self.page.video, '_compositor_overlay_dir', None)
@@ -400,6 +420,12 @@ class CaptionScene(QObject):
         self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
 
     def event(self, event):
+        if event.type()==_FRAME_READY_EVENT:
+            with self.lock:
+                pending,self._delivery_pending=self._delivery_pending,None
+                self._delivery_scheduled=False
+            if pending is not None and not self.closed:self.accept(*pending)
+            return True
         if event.type() == QEvent.Type.DeferredDelete:
             self.close()
         return super().event(event)
@@ -408,10 +434,23 @@ class CaptionScene(QObject):
         with self.lock:
             if self.closed:
                 return
-            try:
-                self.web_ready.emit()
-            except RuntimeError:
-                return
+            try:self.web_ready.emit()
+            except RuntimeError:return
+
+    def _motion_ready(self):
+        with self.lock:
+            if not self.closed:self.wake.set()
+
+    def _adopt_idle_motion(self,rasterizer):
+        if self.closed or self._short_active:return
+        values=self._motion_preheater.take(self._motion_warm_epoch,None)
+        for key,value in values:rasterizer.insert_raster(key,value)
+        if values:
+            with self.lock:
+                if self.closed:return
+                self._glyph_ready_keys=frozenset(rasterizer.rasters)
+                try:self.warm_ready.emit()
+                except RuntimeError:return
 
     def _notify_ready(self, token, pixels, trace):
         # close()/DeferredDelete and worker emission share one short gate.
@@ -420,7 +459,20 @@ class CaptionScene(QObject):
             if self.closed:
                 return False
             try:
-                self.ready.emit(token, pixels, trace)
+                # Observers still see worker readiness; widgets consume one
+                # guarded, coalesced GUI event instead of a second signal slot.
+                self.ready.emit(token,pixels,trace)
+                if self.closed:return False
+                if token!=self.token:
+                    if trace.get('request_kind')=='current':self.schedule_counts['stale_at_gui']+=1
+                    return True
+                pending=self._delivery_pending
+                if pending is not None and float(pending[2].get('sample_ms',0))>float(trace.get('sample_ms',0)):
+                    return True
+                self._delivery_pending=(token,pixels,trace)
+                if not self._delivery_scheduled:
+                    self._delivery_scheduled=True
+                    QCoreApplication.postEvent(self,_FrameReadyEvent(),Qt.HighEventPriority.value)
             except RuntimeError:
                 return False
             return not self.closed
@@ -433,6 +485,9 @@ class CaptionScene(QObject):
 
     def present(self, cues, milliseconds):
         page = self.page
+        self._media_ms=float(milliseconds)
+        speed=max(1.,float(getattr(page.video,'_playback_rate',1.) or 1.))
+        self._short_active=not bool(getattr(page.video,'_paused',True)) and any((c.end_ms-c.start_ms)/speed<=140 for c in cues)
         if self.closed or page.project is not self.project:
             return False
         panel=getattr(page,'caption_transform_panel',None)
@@ -456,14 +511,19 @@ class CaptionScene(QObject):
             return True
         generation = page.video.playback_position_snapshot().playback_generation
         token = self.scene_token(cues,rect,generation)
-        if token != self.token:
+        token_changed = token != self.token
+        warm_epoch = None if bool(getattr(page.video, '_paused', True)) else self.motion_epoch(token)
+        if warm_epoch != self._motion_warm_epoch:
+            self._motion_warm_epoch = warm_epoch
+            self._motion_preheater.set_epoch(warm_epoch)
+        if token_changed:
             previous, self.token = self.token, token
             self.published = None
             with self.lock:
                 # Preheat is optional. Old visual revisions/viewport sizes can
                 # never be published and must not queue behind an active edit.
                 self.warm_pending = OrderedDict((key,value) for key,value in self.warm_pending.items()
-                    if key[:3]==token[:3] and key[-4:]==token[-4:])
+                    if value[0][:3]==token[:3] and value[0][-4:]==token[-4:])
             # A chain of holds (a short cue whose raster was never shown) keeps
             # one deadline: the time the bitmap on screen first went stale.
             stale_since = self._hold[1] if self._hold is not None else None
@@ -473,7 +533,8 @@ class CaptionScene(QObject):
             if previous is not None and self.shows_other_content(previous, token):
                 with self.lock:
                     ready = self.frames.get(self.frame_key(token))
-                if ready is None and cues and self.continuous_handoff(previous, token):
+                if (ready is None and cues and self.continuous_handoff(previous, token)
+                        and float(getattr(page.video,'_playback_rate',1.) or 1.)<=1.):
                     # 2026-10-12: ordinary playback reached the next cue set
                     # before its raster was ready. Withdrawing the old bitmap
                     # first showed an empty frame between back-to-back cues;
@@ -523,7 +584,11 @@ class CaptionScene(QObject):
             return True
         complete = tuple(p.error if isinstance(p,FailedCaption) else p.snapshot_hash if p else None for _, p in prepared)
         animated = any(animated_caption(p) for _,p in prepared)
-        request_key = (token, complete, milliseconds if animated else None)
+        # Per-cue pixel bounds are used by paused selection handles. During
+        # animation playback they do not affect the composed image or its
+        # overall upload bounds, so defer their full-image scans until pause.
+        measure_geometry = not animated or bool(getattr(page.video, '_paused', True))
+        request_key = (token, complete, milliseconds if animated else None, measure_geometry)
         if request_key == self.last_request:
             # Keep the next boundaries warm while one long cue stays on screen.
             if time.perf_counter() - self._last_preheat >= PREHEAT_INTERVAL_S:
@@ -533,12 +598,20 @@ class CaptionScene(QObject):
         self.last_request = request_key
         width,height=token[6][:2]
         with self.lock:
-            cached=self.frames.get(self.frame_key(token)) if not animated else None
+            if animated and not measure_geometry:
+                cached=self.frames.get(self.animation_key(token,prepared,milliseconds))
+            else:cached=self.frames.get(self.frame_key(token)) if not animated else None
             if cached is None:
-                self.pending = (token, prepared, milliseconds, width, height)
+                if self.pending is not None:self.schedule_counts['replaced']+=1
+                self.pending = (token, prepared, milliseconds, width, height, measure_geometry, time.perf_counter())
                 self.wake.set()
-        if cached is not None:self.accept(token,cached[0],dict(cached[1],sample_ms=float(milliseconds),cache_hit=True))
-        self.preheat(milliseconds,rect,generation,width,height)
+        if cached is not None:self.accept(token,cached[0],dict(cached[1],sample_ms=float(milliseconds),cache_hit=True,
+            ready_at=time.perf_counter(),queue_wait_ms=0,raster_ms=0,pixel_pack_ms=0))
+        # Animated request times change every frame; the look-ahead boundaries
+        # do not. Refresh at a bounded cadence, but never delay the first
+        # preheat after a cue, seek, revision or geometry change.
+        if token_changed or time.perf_counter() - self._last_preheat >= PREHEAT_INTERVAL_S:
+            self.preheat(milliseconds,rect,generation,width,height)
         return True
 
     def pixel_size(self,rect):
@@ -546,6 +619,10 @@ class CaptionScene(QObject):
         height=max(1,round(rect.height()*self.page.video.devicePixelRatioF()))
         factor=min(1.,(1_200_000/(width*height))**.5)
         return max(1,round(width*factor)),max(1,round(height*factor))
+
+    @staticmethod
+    def motion_epoch(token):
+        return tuple(token[:4]) + tuple(token[6][:2])
 
     def warm_current(self):
         if self.closed or self.page.project is not self.project:return
@@ -565,6 +642,12 @@ class CaptionScene(QObject):
     def shows_other_content(previous, token):
         """The published raster would show other cues, or sit at the old geometry."""
         return previous[4] != token[4] or tuple(previous[-4:]) != tuple(token[-4:])
+
+    def animation_key(self,token,prepared,milliseconds):
+        from ..timeline.caption_frame_time import project_frame_rate
+        rate=project_frame_rate(self.project)
+        frame=round(float(milliseconds)*float(rate)/1000) if rate is not None else float(milliseconds)
+        return (self.frame_key(token),tuple(getattr(p,'snapshot_hash',None) for _,p in prepared),'animation',frame)
 
     def continuous_handoff(self, previous, token):
         """Playback advanced into the next cue set: same project, revisions,
@@ -612,11 +695,14 @@ class CaptionScene(QObject):
             if any(animated_caption(p) for _, p in prepared):
                 continue
             with self.lock:
-                self.warm_pending[token] = (token, prepared, int(at), width, height)
-                while len(self.warm_pending) > 12:
-                    self.warm_pending.popitem(last=False)
+                self.warm_pending[token] = (token, prepared, int(at), width, height, True)
+                self._limit_warm_pending()
                 self.wake.set()
         self.wanted_times = waiting[-6:]
+
+    def _limit_warm_pending(self):
+        self.warm_pending=OrderedDict(sorted(self.warm_pending.items(),key=lambda row:row[1][2]))
+        while len(self.warm_pending)>32:self.warm_pending.popitem(last=True)
 
     def scene_items(self, cues):
         """Prepared captions of one scene: every cue, then (bilingual display)
@@ -653,7 +739,7 @@ class CaptionScene(QObject):
 
     def preheat(self,milliseconds,rect,generation,width,height):
         """Prepare upcoming static active sets before their first visible tick."""
-        if getattr(self.page.video,'_paused',True):
+        if getattr(self.page.video,'_paused',True) or getattr(self,'_audit_preheat_mode','normal')=='off':
             return
         from bisect import bisect_right
         self._last_preheat=time.perf_counter()
@@ -670,6 +756,11 @@ class CaptionScene(QObject):
                        for t in (cue.start_ms,cue.end_ms) if t>milliseconds})
         boundaries=[t for index,t in enumerate(future)
                     if index<PREHEAT_MIN_BOUNDARIES or t<=milliseconds+ahead][:PREHEAT_MAX_BOUNDARIES]
+        motion_items=[];motion_keys=set()
+        current_ids = {cue.id for cue in active_cues(self.page, milliseconds)}
+        from ..caption_style.bilingual_layout import companion_id
+        current_ids.update(companion_id(key) for key in tuple(current_ids))
+        from .caption_motion_preheater import motion_raster_key
         for at in boundaries:
             cues=active_cues(self.page,at)
             if not cues:continue
@@ -683,11 +774,46 @@ class CaptionScene(QObject):
                 if getattr(p, 'web', None):
                     self.web_cache.prefetch((p.snapshot_hash,generation,width,height),p.web,
                         max(0,at-p.snapshot.start_ms),at,width,height)
-            if any(animated_caption(p) for _,p in prepared):continue
+            if any(animated_caption(p) for _,p in prepared):
+                for cue_id,p in prepared:
+                    key=motion_raster_key(p,width,height)
+                    if cue_id not in current_ids and key is not None and key not in motion_keys:
+                        motion_items.append((key,p,at,width,height));motion_keys.add(key)
+                # A 400ms cue has only 100ms at 4x. Prepare its actual media
+                # frames ahead of the boundary, including transparent phases;
+                # playback never reuses one sample for the whole animation.
+                short=any((cue.end_ms-cue.start_ms)/rate<=140 for cue in cues)
+                keys=[motion_raster_key(p,width,height) for _,p in prepared]
+                raw=callable(getattr(getattr(self.page.video,'controller',None),'post_raw_overlay',None))
+                if short and raw and all(key is not None and key in self._glyph_ready_keys for key in keys):
+                    from ..timeline.caption_frame_time import project_frame_rate
+                    fps=project_frame_rate(self.project)
+                    if fps is not None:
+                        fps=float(fps);end=min(c.end_ms for c in cues)
+                        first=math.ceil(at*fps/1000-1e-7);last=math.ceil(end*fps/1000-1e-7)
+                        for frame in range(first,min(last,first+32)):
+                            sample=frame*1000/fps
+                            key=self.animation_key(token,prepared,sample)
+                            with self.lock:
+                                if key in self.frames or key in self.warm_pending:continue
+                                self.warm_pending[key]=(token,prepared,sample,width,height,False,time.perf_counter(),'short-frame')
+                                self._limit_warm_pending()
+                                self.wake.set()
+                continue
             with self.lock:
-                self.warm_pending[token]=(token,prepared,at,width,height)
-                while len(self.warm_pending)>12:self.warm_pending.popitem(last=False)
+                self.warm_pending[token]=(token,prepared,at,width,height,True,time.perf_counter())
+                self._limit_warm_pending()
                 self.wake.set()
+        if motion_items and getattr(self,'_audit_preheat_mode','normal')!='motion-off':
+            from .caption_motion_preheater import MAX_ITEMS
+            short=[cue for cue in [*runtime.cues_at(milliseconds),*upcoming]
+                        if cue.end_ms>milliseconds and (cue.end_ms-cue.start_ms)/rate<=220
+                        and (cue.start_ms-milliseconds)/rate<=500]
+            protected_end=max(c.end_ms for c in short) if short else None
+            protect=(protected_end,max(0,(protected_end-milliseconds)/rate/1000)) if short else None
+            limit=MAX_ITEMS if rate>1 else 2
+            self._motion_preheater.request(self.motion_epoch(self.token or token),motion_items[:limit],
+                                          current_ms=milliseconds,protect=protect)
 
     def prepare(self,cue):
         page=self.page;prepared=page._prepared_caption(cue.id)
@@ -727,11 +853,30 @@ class CaptionScene(QObject):
                     current_task = task is not None
                     if task is None and self.warm_pending:_,task=self.warm_pending.popitem(last=False)
                     if not self.warm_pending:self.wake.clear()
+                if not current_task:self._adopt_idle_motion(rasterizer)
                 if task is None: continue
-                token, cues, milliseconds, width, height = task
+                token, cues, milliseconds, width, height, measure_geometry, *queued = task
+                short_warm=len(queued)>1 and queued[1]=='short-frame'
                 started = time.perf_counter()
+                if self.token is not None and (tuple(token[:4])!=tuple(self.token[:4]) or tuple(token[-4:])!=tuple(self.token[-4:])):
+                    self.schedule_counts['stale_before_raster']+=1
+                    continue
                 try:
-                    image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3], retire_web=current_task)
+                    if current_task and self._motion_preheater.has_ready(self.motion_epoch(token)):
+                        from .caption_motion_preheater import motion_raster_key
+                        keys = [motion_raster_key(p,width,height) for _,p in cues]
+                        rate=max(1.,float(getattr(self.page.video,'_playback_rate',1.) or 1.))
+                        short=any(p is not None and hasattr(p,'snapshot') and
+                                  (p.snapshot.end_ms-p.snapshot.start_ms)/rate<=220 for _,p in cues)
+                        # Adopt ready future glyphs while a long cue is on
+                        # screen. LRU retirement must not land in the 100ms
+                        # wall window of a 400ms cue played at 4x.
+                        for key,value in self._motion_preheater.take(self.motion_epoch(token), keys if short else None):
+                            rasterizer.insert_raster(key, value)
+                    raster_started=time.perf_counter()
+                    image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3],
+                        retire_web=current_task, measure_cue_geometry=measure_geometry)
+                    raster_finished=time.perf_counter()
                     if any(row['status']=='pending' for row in rows):
                         # A configured HTML page is not yet a rendered frame.
                         # Keep the last complete foreground until WebSceneCache
@@ -741,7 +886,8 @@ class CaptionScene(QObject):
                     with self.lock:
                         if self.closed:
                             return
-                    pixels = prepared_pixels(image, None, started, self._raw_folder)
+                    if short_warm:pixels=prepared_pixels(image,None,started,self._raw_folder,compact_image=True)
+                    else:pixels = prepared_pixels(image, None, started, self._raw_folder)
                 except Exception as exc:
                     # A transient raster/upload failure gets one retry, then
                     # yields native ownership for this revision instead of
@@ -749,7 +895,15 @@ class CaptionScene(QObject):
                     if not self._notify_ready(token, None, dict(error=f'{type(exc).__name__}: {exc}')):
                         return
                     continue
-                trace = dict(expected_cue_ids=[key for key, _ in cues], cue_pixels=rows,
+                ready_at=time.perf_counter()
+                trace = dict(expected_cue_ids=[key for key, _ in cues], cue_pixels=rows, geometry_complete=measure_geometry,
+                             animated=any(animated_caption(p) for _,p in cues),
+                             request_kind='current' if current_task else 'preheat',
+                             queue_wait_ms=(started-queued[0])*1000 if queued else 0,
+                             adopt_ms=(raster_started-started)*1000,
+                             raster_ms=(raster_finished-raster_started)*1000,
+                             pixel_pack_ms=(ready_at-raster_finished)*1000, ready_at=ready_at,
+                             packing=getattr(pixels,'timings',None),
                              sample_ms=float(milliseconds), duration_ms=(time.perf_counter()-started)*1000)
                 with self.lock:
                     if self.closed:
@@ -757,12 +911,14 @@ class CaptionScene(QObject):
                         # file lease; an IPC-owned earlier frame keeps its own
                         # reference until ACK and is unaffected.
                         return
-                    if all(row['status']!='pending' for row in rows) and not any(animated_caption(p) for _,p in cues):
-                        key=self.frame_key(token)
+                    self._glyph_ready_keys=frozenset(rasterizer.rasters)
+                    if all(row['status']!='pending' for row in rows) and (short_warm or not any(animated_caption(p) for _,p in cues)):
+                        key=self.animation_key(token,cues,milliseconds) if short_warm else self.frame_key(token)
                         self.frames[key]=(pixels,trace)
                         self.frames.move_to_end(key)
                         while len(self.frames)>1 and (len(self.frames)>32 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>FRAME_CACHE_BYTES):
                             self.frames.popitem(last=False)
+                if short_warm:continue
                 if not self._notify_ready(token, pixels, trace):
                     return
         finally:
@@ -771,6 +927,7 @@ class CaptionScene(QObject):
     def accept(self, token, pixels, trace):
         page = self.page
         if not self.still_current(token):
+            self.schedule_counts['stale_at_gui']+=1
             return
         if pixels is None:
             count = self.failures.get(token, 0) + 1
@@ -787,13 +944,24 @@ class CaptionScene(QObject):
                 page.video.set_native_subtitle_visible(not independent_captions(page.project))
                 bind_text(page.save_state, '字幕合成暂不可用 · 特效字幕等待恢复')
             return
-        cues = active_cues(page, page._caption_sample_ms())
+        if (trace.get('animated') and not getattr(page.video,'_paused',True)
+                and getattr(self,'_last_published_token',None)==token
+                and trace.get('sample_ms',0)<getattr(self,'_last_published_sample_ms',-1)):
+            self.schedule_counts['stale_at_gui']+=1
+            return
+        gui_received=time.perf_counter()
+        current_media_ms=page._caption_sample_ms()
+        cues = active_cues(page, current_media_ms)
         if tuple(c.id for c in cues) != token[4]:
             return
         context = dict(caller='CaptionScene', cue_id='scene:'+hashlib.sha1('|'.join(token[4]).encode()).hexdigest()[:16],
                        expected_cue_ids=list(token[4]), scene_token=token)
         accepted = page.video.publish_compositor_overlay(page.video.ADVANCED_OVERLAY_ID,
             pixels.image, QRect(*token[-4:]), prepared_pixels=pixels, context=context)
+        trace=dict(trace,gui_delivery_ms=(gui_received-trace['ready_at'])*1000 if 'ready_at' in trace else 0,
+                   submit_ms=(time.perf_counter()-gui_received)*1000,
+                   media_age_ms=float(current_media_ms)-float(trace.get('sample_ms',current_media_ms)),
+                   schedule_counts=dict(self.schedule_counts))
         self.published = pixels if accepted else None
         hold = self._hold
         if hold is not None and hold[0] == token:
@@ -805,6 +973,9 @@ class CaptionScene(QObject):
                                      cue_id=context['cue_id'] if accepted else '')
         self.metrics.append({**trace, 'posted': accepted})
         self.last_result_token = token
+        if accepted:
+            self._last_published_token=token
+            self._last_published_sample_ms=trace.get('sample_ms',0)
         geometry=getattr(page,'_selection_geometry',None)
         selected=getattr(page,'_cue_lookup',{}).get(getattr(page,'selected_cue_id',''))
         if geometry is not None and selected is not None:
@@ -819,9 +990,16 @@ class CaptionScene(QObject):
             page.save_state.setToolTip('')
         del self.metrics[:-128]
         previous = getattr(self, '_last_trace', None)
-        if previous is None or previous[0] != token or abs(trace['sample_ms'] - previous[1]) >= 100:
-            self._last_trace = (token, trace['sample_ms'])
+        now=time.perf_counter()
+        if previous is None or previous[0] != token or now-previous[2]>=.25:
+            self._last_trace = (token, trace['sample_ms'],now)
             page._studio_trace('CAPTION_SCENE', **trace, posted=accepted)
+        if getattr(page.video, '_paused', True) and not trace.get('geometry_complete', True):
+            # A frame requested just before pause may arrive after the pause
+            # event. Request paused geometry from the current media time, not
+            # from the stale in-flight playback frame.
+            self.last_request = None
+            page._present_caption_scene()
 
     def still_current(self, token):
         """Python-only guard also checked by the asynchronous mpv uploader."""
@@ -842,11 +1020,13 @@ class CaptionScene(QObject):
                     owner='caption_scene')
 
     def close(self, *_):
+        self._motion_preheater.close()
         with self.lock:
             self.closed = True
             self.active = False
             self._hold = None
             self.pending = None
+            self._delivery_pending=None
             self.warm_pending.clear();self.frames.clear()
             self.published = None
             # Every guard checks `closed` first; dropping the project lets a

@@ -618,6 +618,28 @@ ALIGNER_PROTOCOL = "qwen-aligner-units-v1"
 
 
 def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=8, engine=None):
+    from .alignment_audio import bounded_jobs
+    jobs=bounded_jobs(jobs)
+    from .run_context import get_runtime_context
+    context = get_runtime_context()
+    backend = str(((context.asr_settings_snapshot or {}).get('models') or {}).get('firered_asr_backend'))
+    def execute(missing):
+        from ..system.task_resources import LOCAL_ALIGNMENT_GATE
+        if backend=='mfa_aligner' and engine!='qwen3':
+            return _run_qwen_aligner_worker_once(audio,missing,passes=passes,batch_size=batch_size,engine=engine)
+        with LOCAL_ALIGNMENT_GATE.lease(_raise_if_queue_cancelled):
+            return _run_qwen_aligner_worker_once(audio,missing,passes=passes,batch_size=batch_size,engine=engine)
+    if not context.alignment_checkpoint_dir or backend=='mlx_qwen_aligner' or (backend=='mfa_aligner' and engine!='qwen3'):
+        return execute(jobs)
+    from ..forced_alignment import ALIGNER_REPO, ALIGNER_REVISION, ALIGNER_CODE, UNIT_POLICY_VERSION
+    from .alignment_checkpoints import run_cached
+    return run_cached(audio, jobs, identity=dict(engine='qwen3', model=ALIGNER_REPO,
+        revision=ALIGNER_REVISION, code=ALIGNER_CODE, unit_policy=UNIT_POLICY_VERSION,
+        passes=list(passes), batch_size=batch_size, device=os.environ.get('TWOBYTEASR_ALIGNER_DEVICE', 'auto')),
+        runner=execute, check=_raise_if_queue_cancelled)
+
+
+def _run_qwen_aligner_worker_once(audio, jobs, *, passes=("word", "char"), batch_size=8, engine=None):
     """Run ``qwen_aligner_worker.py`` in the main managed runtime and validate its receipt.
 
     ``jobs`` are ``{id, window_start_ms, window_end_ms, text, language}`` on the
@@ -652,31 +674,33 @@ def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=
     worker = os.path.join(os.path.abspath(SCRIPT_DIR), "qwen_aligner_worker.py")
     if not os.path.isfile(runtime) or not os.path.isfile(worker):
         raise RuntimeError(f"Qwen3-ForcedAligner worker runtime missing: python={runtime}, worker={worker}")
-    pcm = np.ascontiguousarray(audio, dtype=np.float32)
-    if pcm.ndim != 1 or not np.isfinite(pcm).all():
-        raise RuntimeError("对齐 worker 需要有限值单声道 float32 PCM")
-    digest = hashlib.sha256(pcm.tobytes()).hexdigest()
     policy = {"version": ALIGNER_PROTOCOL, "audio_format": "float32-mono-npy-v1", "sample_rate": AUDIO_SAMPLE_RATE,
               "batch_size": max(1, min(16, int(batch_size))), "passes": list(passes)}
     jobs = [dict(job, id=str(job["id"])) for job in jobs]
     with tempfile.TemporaryDirectory(prefix="qwen_aligner_worker_") as temp_dir:
-        audio_path = os.path.join(temp_dir, "audio.npy")
-        np.save(audio_path, pcm, allow_pickle=False)
+        from .alignment_audio import prepare_audio
+        audio_spec = prepare_audio(audio, temp_dir, check=_raise_if_queue_cancelled,jobs=jobs)
+        digest = audio_spec['sha256']
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
-        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": {
-            "path": audio_path, "samples": int(pcm.size), "sha256": digest}}, ensure_ascii=False), encoding="utf-8")
-        payload = _run_isolated_asr_worker(
-            python_utf8_command([runtime, "-I", worker, "--manifest", manifest, "--output", output,
-                                 "--model-dir", model_path]),
-            output, model_id="QWEN3-ALIGNER", audio_input="shared_audio", model_path=model_path,
-            entrypoint="qwen_aligner_worker.py")
+        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": audio_spec}, ensure_ascii=False), encoding="utf-8")
+        command = python_utf8_command([runtime, "-I", worker, "--manifest", manifest, "--output", output,
+                                      "--model-dir", model_path])
+        if get_runtime_context().alignment_checkpoint_dir:
+            from .resident_aligner import run_resident
+            payload = run_resident(command, manifest, output, check=_raise_if_queue_cancelled)
+        else:
+            payload = _run_isolated_asr_worker(command,
+                output, model_id="QWEN3-ALIGNER", audio_input="shared_audio", model_path=model_path,
+                entrypoint="qwen_aligner_worker.py")
     results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list) or [str(row.get("id")) for row in results] != [job["id"] for job in jobs]:
         raise RuntimeError("对齐 worker 返回的任务缺失、重复或乱序")
     if (payload.get("policy") != policy or payload.get("audio_sha256") != digest
             or payload.get("protocol") != ALIGNER_PROTOCOL):
         raise RuntimeError("对齐 worker 回执与输入不一致")
+    if audio_spec.get('audio_clock_identity'):
+        payload.update(audio_clock_identity=audio_spec['audio_clock_identity'],window_hashes=audio_spec['window_hashes'])
     for job, row in zip(jobs, results):
         if row.get("text") != job["text"]:
             raise RuntimeError("对齐 worker 改写了输入文字")
@@ -778,7 +802,7 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
         else:
             add_review_item(0.0, "时间轴模型失败", str(exc)[:160], priority=2)
         return []
-    if not owns_audio and str(language).casefold() == 'english':
+    if not owns_audio and str(language).casefold() in {'english', 'japanese'}:
         # Reuse is task-private and checked again against the exact PCM hash,
         # model receipt, source text and speaker before any cue is attached.
         context = get_runtime_context()
@@ -2804,7 +2828,8 @@ def write_pcm16_wav(path, audio):
 def _reported_worker_device(stdout):
     """Device actually reported by a worker; never infer CUDA from success."""
     device='unknown'
-    prefixes=('[2BYTEASR_FUNASR] ', '[2BYTEASR_FIRERED_AED] ', '[2BYTEASR_QWEN] ')
+    prefixes=('[2BYTEASR_FUNASR] ', '[2BYTEASR_FIRERED_AED] ', '[2BYTEASR_QWEN] ',
+              '[2BYTEASR_QWEN3_ALIGNER] ','[2BYTEASR_MFA_ALIGNER] ','[2BYTEASR_JA_CTC_ALIGNER] ')
     for line in stdout.splitlines():
         if not line.startswith(prefixes):
             continue
@@ -2866,6 +2891,7 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
              for pipe,kind in ((process.stdout,'stdout'),(process.stderr,'stderr'))]
     for reader in readers:reader.start()
     deadline=started_perf+max(60.,float(os.environ.get('TWOBYTEASR_ASR_WORKER_TIMEOUT',str(timeout_seconds or 3600))))
+    last_output=last_heartbeat=time.perf_counter()
     try:
         if input_text is not None:
             process.stdin.write(input_text)
@@ -2874,13 +2900,32 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             _raise_if_queue_cancelled()
             if time.perf_counter()>deadline:raise RuntimeError(f'{model_id} worker timeout')
             try:kind,line=lines.get(timeout=.1)
-            except queue.Empty:continue
+            except queue.Empty:
+                now=time.perf_counter()
+                if 'ALIGNER' in str(model_id).upper() and now-last_heartbeat>=5:
+                    last_heartbeat=now
+                    record_run_event('alignment_progress',engine=model_id,worker_pid=process.pid,
+                        label={'MFA-ALIGNER':'MFA 切点复核','QWEN3-ALIGNER':'Qwen3 字级对齐',
+                               'JA-CTC-ALIGNER':'日语 CTC 句首复核'}.get(model_id,str(model_id)),
+                        worker_state='running',heartbeat=True,process_alive=process.poll() is None,
+                        last_output_seconds=round(now-last_output,1))
+                continue
+            last_output=time.perf_counter()
             if event_handler is not None and line.startswith('[2BYTEASR_API] '):
                 # Already in the run record; kept out of the failure text, where
                 # whole result batches buried the real error (2026-10-23).
                 event_handler(json.loads(line[len('[2BYTEASR_API] '):]))
                 continue
             captured[kind].append(line)
+            for marker, engine_label in (('[2BYTEASR_QWEN3_ALIGNER] ', 'Qwen3 字级对齐'),
+                                         ('[2BYTEASR_MFA_ALIGNER] ', 'MFA 切点复核'),
+                                         ('[2BYTEASR_JA_CTC_ALIGNER] ', '日语 CTC 句首复核')):
+                if line.startswith(marker):
+                    detail = json.loads(line[len(marker):])
+                    record_run_event('alignment_progress', engine=model_id, label=engine_label,
+                        worker_pid=process.pid, worker_state=detail.get('event'),
+                        **{key: value for key, value in detail.items() if key != 'event'})
+                    break
             if line.startswith('[2BYTEASR_QWEN3_ASR] '):
                 event = json.loads(line[len('[2BYTEASR_QWEN3_ASR] '):])
                 record_run_event('asr_worker_progress', backend='qwen_local', worker_pid=process.pid,

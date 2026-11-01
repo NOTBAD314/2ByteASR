@@ -3032,11 +3032,17 @@ class SubtitleStudioPage(
         total = len(view_cues)
         # 2026-10-18 (user): 跳转 numbers the captions as listed here and
         # follows the selection (see _sync_jump_position).
-        self._cue_jump_order = list(view_cues)
-        self._cue_jump_index = {}
-        for index, cue in enumerate(view_cues):
-            self._cue_jump_index.setdefault(str(cue.id), index)
-            self._cue_jump_index.setdefault(_source_key(cue), index)
+        store=getattr(self,'_revision_store',None)
+        jump_key=((id(self.project),id(self.project.cues),len(self.project.cues),store.mapping_revision)
+                  if self.project is not None and self.project.render_settings.get('_cue_domain')=='timeline'
+                  and store is not None and store.project is self.project else None)
+        if jump_key is None or jump_key != getattr(self,'_cue_jump_cache_key',None):
+            self._cue_jump_order = list(view_cues)
+            self._cue_jump_index = {}
+            for index, cue in enumerate(view_cues):
+                self._cue_jump_index.setdefault(str(cue.id), index)
+                self._cue_jump_index.setdefault(_source_key(cue), index)
+            self._cue_jump_cache_key=jump_key
         self.jump_spin.blockSignals(True)  # a clamped value is not the user's number
         self.jump_spin.setRange(1, max(1, total))
         self.jump_spin.blockSignals(False)
@@ -3054,7 +3060,7 @@ class SubtitleStudioPage(
         risks = cached_review_risks(self.project)
         qc_result = cached_qc_result(self.project)
         for cue in view_cues:
-            status = _cue_status(self.project, cue)
+            status = _cue_status(self.project, cue, risks)
             counts[status] += 1
             if _cue_review_level(self.project, cue, risks) == "suggested":
                 counts["priority"] += 1

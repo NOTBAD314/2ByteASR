@@ -4,13 +4,14 @@ Only time-independent text graphs qualify. HTML, animation, decorations and
 effect layers retain the full authored production renderer.
 """
 from pathlib import Path
+import re
 import tempfile
 import time
 from .export_validation import record_completion, publish_output, notify_after_publication
 
 
 def _run_static_command(command, folder, runner, **kwargs):
-    """Keep filter text and repeated temporary paths out of CreateProcess argv.
+    """Keep filters and all caption inputs out of the Windows command line.
 
     Called after the preview transport appends its output branch. All external
     file inputs remain absolute when the child's working directory changes.
@@ -18,14 +19,42 @@ def _run_static_command(command, folder, runner, **kwargs):
     folder = Path(folder).resolve()
     command = [str(value) for value in command]
     command[0] = str(Path(command[0]).resolve())
+    from .ffmpeg_paths import filter_value
+    sources, labels, removed = [], {}, set()
+    input_count = 0
+    kept_count = 0
     for index, option in enumerate(command[:-1]):
         if option == '-i':
             path = Path(command[index + 1]).resolve()
-            command[index + 1] = path.name if path.parent == folder else str(path)
+            if path.parent == folder and path.suffix.lower() == '.png':
+                label = f'staticinput{input_count}'
+                sources.append(f'movie=filename={filter_value(path.name)}:dec_threads=1[{label}]')
+                labels[input_count] = label
+                removed.update((index, index + 1))
+            else:
+                command[index + 1] = str(path)
+                labels[input_count] = str(kept_count)
+                kept_count += 1
+            input_count += 1
+    command = [value for index, value in enumerate(command) if index not in removed]
     graph_at = command.index('-filter_complex')
     graph = folder / 'captions.ffgraph'
-    graph.write_text(command[graph_at + 1], encoding='utf-8')
+    def relabel(match):
+        original = int(match[1])
+        if original not in labels:
+            return match[0]
+        label = labels[original]
+        return f'[{label}{match[2] or ""}]' if label.isdigit() else f'[{label}]'
+    filters = re.sub(r'\[(\d+)(:[^\[\]]+)?\]', relabel, command[graph_at + 1])
+    graph.write_text(';'.join([*sources, filters]), encoding='utf-8')
     command[graph_at:graph_at + 2] = ['-/filter_complex', graph.name]
+    for index, option in enumerate(command[:-1]):
+        if option == '-map':
+            value = command[index + 1]
+            match = re.fullmatch(r'(\d+)(:[^\[\]]+)?', value)
+            if match and int(match[1]) in labels:
+                mapped = relabel(match)
+                command[index + 1] = mapped[1:-1] if labels[int(match[1])].isdigit() else mapped
     return runner(command, cwd=folder, **kwargs)
 
 
@@ -43,7 +72,6 @@ def static_graph_project(project):
 def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, trace=None):
     from ..caption_style.bilingual_layout import materialize_display_project
     project = materialize_display_project(project)
-    from PIL import Image
     from ..rendering.advanced_renderer import compile_composition_data, _run_streaming_process, _ffmpeg_filter_path, _native_segment_project
     from ..rendering.ass_compiler import compile_ass
     from .studio_render import select_encoder, _quality_arguments, encoder_preset, export_progress, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX, STAGE_VALIDATE
@@ -53,59 +81,138 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
     output.parent.mkdir(parents=True,exist_ok=True)
     started=time.perf_counter();timings={};start=float(job.start_seconds or 0)
     duration=float(job.duration_seconds or project.media.duration_ms/1000-start)
-    width=job.settings.width or project.media.width;height=job.settings.height or project.media.height
-    fps=job.settings.fps or 30
+    canvas=(job.export_context or {}).get('caption_canvas') or getattr(project,'_output_canvas',{})
+    output_size=canvas.get('output') or (0,0)
+    width=int(job.settings.width or output_size[0] or project.media.width or project.render_settings.get('play_res_x') or 1920)
+    height=int(job.settings.height or output_size[1] or project.media.height or project.render_settings.get('play_res_y') or 1080)
+    fps=job.settings.fps or getattr(project.media,'fps',0) or 30
     with tempfile.TemporaryDirectory(prefix='.static-captions-',dir=output.parent) as folder:
         temp=Path(folder);partial=temp/('output'+output.suffix)
         props=compile_composition_data(project,width=width,height=height,fps=fps,start_seconds=start,duration_seconds=duration)
         from ..caption_style.visual_snapshot import build_visual_cue_snapshot
         from ..rendering.advanced_live_renderer import render_live_snapshot
         layers=[]; raster_cache={}
-        if progress:progress(export_progress(STAGE_ADVANCED_RENDER,message=f'绘制 {len(props["cues"])} 张静态字幕并复用完整时段…'))
-        for i,cue in enumerate(props['cues']):
-            if cancelled and cancelled():raise InterruptedError('render cancelled')
-            snapshot=build_visual_cue_snapshot(project,cue['id'],width=width,height=height,fps=fps)
-            # This is the same canonical glyph-ink anchor as first-frame LIVE.
-            # Browser line-box metrics and effect padding cannot move it later.
-            key=snapshot.pixel_hash(renderer_version='qt-static-v1',resolution=(width,height),device_pixel_ratio=1.)
-            path=raster_cache.get(key)
-            if path is None:
-                path=temp/f'caption-{i}.png'
-                image=render_live_snapshot(snapshot,width=width,height=height)
-                if not image.save(str(path)):raise RuntimeError('Cannot write static caption raster')
-                raster_cache[key]=path
-            layers.append(dict(path=path,start=max(0,cue['startMs']/1000),end=min(duration,cue['endMs']/1000)))
+        by_id={cue.id:cue for cue in project.cues}
+        from .static_caption_preparation import StaticCaptionPreparation, retain_static_failure
+        from .static_caption_contract import intentional_empty_reason
+        from ..rendering.alpha_geometry import alpha_metrics
+        from ..subtitle_rules.current_issues import digest
+        from PySide6.QtCore import QRect
+        invisible_count=0
+        with StaticCaptionPreparation(len(props['cues']),progress,trace,identity=dict(
+                job_id=(job.export_context or {}).get('job_id'),project_id=project.project_id,
+                project_revision=(job.export_context or {}).get('project_revision'))) as preparation:
+            for i,cue in enumerate(props['cues']):
+                if cancelled and cancelled():raise InterruptedError('render cancelled')
+                preparation.task(i,cue['id'])
+                snapshot=None
+                detail=dict(task_index=i,cue_id=cue['id'],output=[width,height],dpr=1,
+                            stable_cue_id=cue['id'].removesuffix('#tr'),
+                            layer='translation' if cue['id'].endswith('#tr') else 'original',
+                            start_ms=cue['startMs'],end_ms=cue['endMs'],renderer='render_static_graph/qt-static',
+                            requested_size=[job.settings.width,job.settings.height],
+                            media_size=[project.media.width,project.media.height])
+                try:
+                    snapshot=build_visual_cue_snapshot(project,cue['id'],width=width,height=height,fps=fps,resolved_cue=by_id[cue['id']])
+                    key=snapshot.pixel_hash(renderer_version='qt-static-v1',resolution=(width,height),device_pixel_ratio=1.)
+                    detail.update(snapshot_hash=snapshot.stable_hash(),cache_identity=key,
+                        text_length=len(snapshot.text),text_digest=digest(snapshot.text),
+                        display_summary=dict(length=len(snapshot.text),digest=digest(snapshot.text)),
+                        font_family=snapshot.font_family,font_size=snapshot.font_size,
+                        font_weight=snapshot.font_weight,italic=snapshot.italic,
+                        resolved_style_hash=getattr(snapshot.resolved_caption,'style_hash',None),
+                        playres=[snapshot.playres_x,snapshot.playres_y],position=[snapshot.position_x,snapshot.position_y],
+                        scale=[snapshot.scale_x,snapshot.scale_y],rotation=snapshot.rotation,
+                        sample='time_independent',appearance_generation=snapshot.appearance_generation)
+                    import json
+                    detail['resolved_font']=json.loads(getattr(snapshot.resolved_caption,'font_face_json','{}'))
+                    layout=json.loads(getattr(snapshot.resolved_caption,'layout_json','{}'))
+                    detail['layout']={name:value for name,value in layout.items() if name in
+                                      {'line_widths','line_heights','line_ascents','ink_bounds','max_width'}}
+                    cached=raster_cache.get(key)
+                    reused=cached is not None
+                    if cached is None:
+                        preparation.step('raster')
+                        geometry={}
+                        image=render_live_snapshot(snapshot,width=width,height=height,diagnostics=geometry)
+                        detail['raster_geometry']=geometry
+                        preparation.step('alpha')
+                        bounds,nonzero=alpha_metrics(image)
+                        detail.update(image_mode=str(image.format()),image_size=[image.width(),image.height()],
+                                      alpha_nonzero=nonzero,alpha_bounds=bounds)
+                        empty_reason=intentional_empty_reason(snapshot) if bounds is None else None
+                        if bounds is None:
+                            detail['reason_code']=empty_reason or 'unexpected_empty_raster'
+                            if trace:trace('static_caption_empty',detail)
+                            from ..diagnostics.event_log import emit
+                            emit('video.export.caption_pixels',level='INFO' if empty_reason else 'ERROR',
+                                 result='intentionally_invisible' if empty_reason else 'failed',**detail)
+                            if not empty_reason:
+                                detail['first_empty_stage']=('glyph_layout' if geometry.get('glyph_path_empty') else
+                                    'transform_or_clip' if geometry.get('glyph_intersects_canvas') is False else 'paint_or_composite')
+                                raise RuntimeError(f"静态字幕 {i}（ID {cue['id']}）的生产像素为空；"
+                                                   f"原因 unexpected_empty_raster，画布 {width}×{height}。")
+                            cached=(None,None,empty_reason)
+                        else:
+                            preparation.step('save')
+                            path=temp/f'caption-{i}.png'
+                            # Crop once in memory, preserving canonical full-canvas
+                            # coordinates. Avoid writing and decoding a full PNG
+                            # for every cue before discovering the first failure.
+                            if not image.copy(QRect(*bounds)).save(str(path)):
+                                raise RuntimeError('Cannot write static caption raster')
+                            x,y,w,h=bounds
+                            cached=(path,(x,y,x+w,y+h),None)
+                        raster_cache[key]=cached
+                    if cancelled and cancelled():raise InterruptedError('render cancelled')
+                    path,box,empty_reason=cached
+                    if empty_reason:
+                        invisible_count+=1
+                        if reused and trace:trace('static_caption_empty',dict(detail,reason_code=empty_reason))
+                    else:
+                        layers.append(dict(path=path,bounds=box,start=max(0,cue['startMs']/1000),
+                                           end=min(duration,cue['endMs']/1000),raster_detail=detail))
+                    preparation.done(reused=reused)
+                except InterruptedError:
+                    raise
+                except Exception as exc:
+                    preparation.failed+=1
+                    detail.update(failed_step=preparation.stage,task_elapsed_ms=(time.perf_counter()-preparation.task_started)*1000)
+                    preparation.step('failed');preparation.report(force=True)
+                    try:
+                        folder=retain_static_failure(project,props,job,i,snapshot,detail,exc)
+                        if trace:trace('static_caption_failure_artifact',dict(detail,local_artifact=str(folder)))
+                    except Exception as artifact_error:
+                        if trace:trace('static_caption_evidence_failed',dict(task_index=i,error_type=type(artifact_error).__name__))
+                    raise
         timings['subtitle_stills']=time.perf_counter()-started
         filters=[];inputs=[];native_filter=None
         native=_native_segment_project(project,round(start*1000),round((start+duration)*1000))
         base='[0:v]'
         # The source was proved identical by prepared_video_job; non-identity
         # graphs arrive as the existing composition at the requested range.
-        if job.settings.width and job.settings.height:filters.append(f'{base}scale={width}:{height}[scaled]');base='[scaled]'
+        filters.append(f'{base}scale={width}:{height}[scaled]');base='[scaled]'
         if native.cues:
             ass=temp/'native.ass';ass.write_text(compile_ass(native),encoding='utf-8-sig')
             fonts = Path(__file__).resolve().parents[2]/'assets/fonts'
             native_filter=f'ass=filename={_ffmpeg_filter_path(ass)}:fontsdir={_ffmpeg_filter_path(fonts)}'
             filters.append(f'{base}{native_filter}[native]');base='[native]'
-        total_png=0; cropped_bounds={}
-        for i,layer in enumerate(layers):
-            box=cropped_bounds.get(layer['path'])
-            if box is None:
-                with Image.open(layer['path']) as im:
-                    box=im.getchannel('A').getbbox()
-                    if box is None:raise RuntimeError(f'静态字幕 {i} 的生产像素为空')
-                    im.crop(box).save(layer['path'])
-                cropped_bounds[layer['path']]=box
+        total_png=0
+        for layer in layers:
+            i=len(inputs)//2
             total_png+=layer['path'].stat().st_size
-            layer['bounds']=box
+            box=layer['bounds']
             inputs.extend(['-i',str(layer['path'])])
             filters.append(f"{base}[{i+1}:v]overlay=x={box[0]}:y={box[1]}:eof_action=repeat:format=auto:enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'[s{i}]")
             base=f'[s{i}]'
+        if not filters:filters.append('[0:v]null[staticbase]');base='[staticbase]'
         encoder=select_encoder(ffmpeg,job.settings)
         command=[str(ffmpeg),'-hide_banner','-loglevel','info','-y','-benchmark','-filter_complex_threads','2']
         if job.direct_video_graph:
+            from dataclasses import replace
             from .export_filtergraph import compile_video_filtergraph
-            command+=compile_video_filtergraph(ffmpeg,job,'null',caption_overlays=layers,caption_filter=native_filter)
+            effective=replace(job,settings=replace(job.settings,width=width,height=height))
+            command+=compile_video_filtergraph(ffmpeg,effective,'null',caption_overlays=layers,caption_filter=native_filter)
         else:
             if start>0 and not job.composition_resolved:command+=['-ss',f'{start:.9f}']
             command+=['-i',job.media_path,*inputs,'-t',f'{duration:.9f}','-filter_complex',';'.join(filters),'-map',base,'-map','0:a?']
@@ -151,7 +258,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         validate_start=time.perf_counter();metadata=validate_output(ffmpeg,partial,duration=duration,fps=fps,cancelled=cancelled,preview_path=job.completion_preview_path)
         timings['validate']=time.perf_counter()-validate_start
         publish_output(partial, output, job, metadata, cancelled=cancelled)
-        timings.update(wall=time.perf_counter()-started,static_images=len(layers),temporary_png_bytes=total_png,encoder=encoder)
+        timings.update(wall=time.perf_counter()-started,static_images=len(layers),intentionally_invisible=invisible_count,temporary_png_bytes=total_png,encoder=encoder)
         notify_after_publication(job, trace, 'static_caption_timings', timings)
         notify_after_publication(job, trace, 'validated_output', metadata)
         notify_after_publication(job, progress, export_progress(STAGE_VALIDATE,message='导出完成',percent=100))

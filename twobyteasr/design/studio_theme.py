@@ -209,15 +209,15 @@ QDialog#toolDialog QGroupBox, QDialog#toolDialog QFrame#findResultFrame {{
     border: 1px solid {theme.border_strong}; border-radius: 4px;
 }}
 QDialog#toolDialog QLabel#findResultTitle {{ color: {theme.text}; font-weight: 750; }}
-QDialog#toolDialog QListWidget#findResultList {{
+QDialog#toolDialog QListView#findResultList {{
     background: {theme.input_surface}; color: {theme.text};
     border: 1px solid {theme.border}; border-radius: 4px;
 }}
-QDialog#toolDialog QListWidget#findResultList::item {{
+QDialog#toolDialog QListView#findResultList::item {{
     padding: 7px 10px; margin: 0; border: 0; border-bottom: 1px solid {theme.border}; border-radius: 0;
     background: transparent;
 }}
-QDialog#toolDialog QListWidget#findResultList::item:selected {{
+QDialog#toolDialog QListView#findResultList::item:selected {{
     background: {theme.selected}; color: {theme.text};
 }}
 QDialog#toolDialog QLabel#findFieldLabel {{ color: {theme.text_secondary}; }}

@@ -15,6 +15,7 @@ from .studio_helpers import _format_ms
 from ..projects.studio_project import StudioCue, SubtitleProject
 from ..subtitle_rules.studio_qc import QCSeverity
 from ..subtitle_rules.studio_review import cached_qc_result, cached_review_risks
+from ..subtitle_rules.current_issues import DECISIONS, reviewed_version
 from ..design.studio_theme import studio_status_colors
 from ..design.timeline_theme import TimelinePalette, timeline_palette
 from ..design.ui_theme import GREEN
@@ -72,11 +73,10 @@ def _review_key(project, cue):
     return _source_key(cue)
 
 
-def _cue_status(project: SubtitleProject | None, cue: StudioCue) -> str:
-    if project and _cue_review_level(project, cue) != 'confident':
+def _cue_status(project: SubtitleProject | None, cue: StudioCue, risks: dict | None = None) -> str:
+    if project and _cue_review_level(project, cue, risks) != 'confident':
         return 'issue'
     if project:
-        from ..subtitle_rules.current_issues import DECISIONS, reviewed_version
         reviewed = project.studio_state.get(DECISIONS, {}).get('reviewed:'+cue.id, {})
         if reviewed and reviewed.get('input_version') == reviewed_version(project, cue):
             return 'done'
@@ -121,12 +121,14 @@ def _cue_status_label(project, cue):
 
 class CueTableModel(QAbstractTableModel):
     text_edit_requested = Signal(str, str)
+    translation_edit_requested = Signal(str, str)
     ActiveCueRole = int(Qt.ItemDataRole.UserRole) + 1
     HEADERS = ("#", "开始时间", "说话人", "文本", "状态")
 
     def __init__(self, project: SubtitleProject | None = None, parent=None):
         super().__init__(parent)
         self.project = project
+        self.text_layer = 'original'
         self.filter_status = "all"
         self.query = ""
         self._rows: list[int] = []
@@ -151,12 +153,12 @@ class CueTableModel(QAbstractTableModel):
         self._view_cues = view
         needle = self.query.casefold().strip()
         scope = set(self.scope_ids) if self.scope_ids is not None else None
-        risks = cached_review_risks(self.project) if self.filter_status in {"priority", "critical"} else None
+        risks = cached_review_risks(self.project)
         for row, cue in enumerate(view):
             if scope is not None:
                 if cue.id not in scope:
                     continue
-            status = _cue_status(self.project, cue)
+            status = _cue_status(self.project, cue, risks)
             speaker = _speaker_name(self.project, cue.speaker_id)
             if cue.id == self.review_anchor_id:
                 self._rows.append(row)
@@ -169,7 +171,7 @@ class CueTableModel(QAbstractTableModel):
                     continue
             elif self.filter_status != "all" and status != self.filter_status:
                 continue
-            if needle and needle not in f"{cue.text} {cue.speaker_id} {speaker}".casefold():
+            if needle and needle not in f"{self.display_text(cue)} {cue.speaker_id} {speaker}".casefold():
                 continue
             self._rows.append(row)
         # Filters change visibility only. Every visible list, including
@@ -191,6 +193,34 @@ class CueTableModel(QAbstractTableModel):
         self.filter_status = status if status in {"all", "priority", "critical", "pending", "issue", "done"} else "all"
         self._rebuild_rows()
         self.endResetModel()
+
+    def editing_translation(self, cue):
+        if self.text_layer != 'translation' or self.project is None:
+            return False
+        key = _source_key(cue)
+        meta = self.project.generation_metadata
+        if key in (meta.get('translations') or {}):
+            return True
+        # Imported tracks own cue.text. Generated translation lanes own records,
+        # including currently empty records that can be edited manually.
+        return cue.speaker_id not in meta.get('subtitle_imports', {}).get('tracks', {})
+
+    def display_text(self, cue):
+        if self.editing_translation(cue):
+            return str(self.project.generation_metadata.get('translations', {}).get(_source_key(cue), '') or '')
+        return cue.text
+
+    def set_text_layer(self, layer):
+        layer = 'translation' if layer == 'translation' else 'original'
+        if self.text_layer == layer:
+            return
+        self.text_layer = layer
+        if self.query:
+            self.beginResetModel()
+            self._rebuild_rows()
+            self.endResetModel()
+        elif self.rowCount():
+            self.dataChanged.emit(self.index(0,3),self.index(self.rowCount()-1,3),[Qt.DisplayRole,Qt.EditRole])
 
     def set_query(self, query: str) -> None:
         self.beginResetModel()
@@ -220,6 +250,7 @@ class CueTableModel(QAbstractTableModel):
         self.beginResetModel()
         self.project = project
         self.review_anchor_id = ''
+        self.text_layer = 'original'
         self.active_cue_ids = frozenset()
         self._rebuild_rows()
         self.endResetModel()
@@ -293,12 +324,14 @@ class CueTableModel(QAbstractTableModel):
         status = _cue_status(self.project, cue)
         if role == Qt.ItemDataRole.UserRole:
             return cue.id
+        if role == Qt.ItemDataRole.EditRole and index.column() == 3:
+            return self.display_text(cue)
         if role == Qt.ItemDataRole.DisplayRole:
             values = (
                 self.source_row(index.row()) + 1,
                 _format_ms(cue.start_ms),
                 _speaker_name(self.project, cue.speaker_id),
-                cue.text,
+                self.display_text(cue),
                 _cue_status_label(self.project, cue),
             )
             if index.column() == 4 and _cue_review_level(self.project, cue) != 'confident':
@@ -327,10 +360,10 @@ class CueTableModel(QAbstractTableModel):
         return None
 
     def flags(self, index):
-        flags = super().flags(index)
-        if index.isValid() and index.column() == 3:
-            flags |= Qt.ItemFlag.ItemIsEditable
-        return flags
+        # Double-click belongs to the bound caption window. Qt's native
+        # delegate would otherwise open a second editor with an empty EditRole
+        # and write that empty value back when the floating window takes focus.
+        return super().flags(index)
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if (
@@ -342,8 +375,11 @@ class CueTableModel(QAbstractTableModel):
             return False
         cue = self.cue_at(index.row())
         text = str(value)
-        if text != cue.text:
-            self.text_edit_requested.emit(cue.id, text)
+        if text != self.display_text(cue):
+            if self.editing_translation(cue):
+                self.translation_edit_requested.emit(_source_key(cue), text)
+            else:
+                self.text_edit_requested.emit(cue.id, text)
         return True
 
 
@@ -590,7 +626,7 @@ class CueReadingDelegate(QStyledItemDelegate):
         painter.setFont(text_font)
         painter.setPen(text_color)
         spacing = QFontMetrics(text_font).lineSpacing()
-        for number_line, line in enumerate(self._wrapped(" ".join(str(cue.text).split()), text_font,
+        for number_line, line in enumerate(self._wrapped(" ".join(str(model.display_text(cue)).split()), text_font,
                                                          max(40, text_rect.width()))):
             painter.drawText(QRectF(text_rect.left(), text_rect.top() + number_line * spacing, text_rect.width(), spacing),
                              int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), line)

@@ -18,6 +18,7 @@ from enum import IntFlag, auto
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from ..timeline.studio_edit_sequence import EditSequence, sequence_of
+from ..timeline.interval_end_index import IntervalEndIndex
 
 if TYPE_CHECKING:
     from .studio_project import StudioCue, SubtitleProject
@@ -168,9 +169,13 @@ class ProjectStateRuntime:
         self.language_source_revision = 0
         self.presentation_revision = 0
         self.playback_revision = 0
+        self.qc_revision = 0
         self.playback_invalidation = 'project_open'
         self._playback_plan = None
         self.content_revisions: dict[str, int] = {}
+        # Transient entity lifecycle, separate from visual/content revisions.
+        self.entity_epochs: dict[str, int] = {}
+        self.entity_epoch_sequence = 0
         self.commit_count = 0
         self.last_delta: StateDelta | None = None
         self.delta_history: list[StateDelta] = []
@@ -182,6 +187,7 @@ class ProjectStateRuntime:
         self._cue_starts: tuple[int, ...] = ()
         self._cue_order: tuple[str, ...] = ()
         self._cue_prefix_max_end: tuple[int, ...] = ()
+        self._cue_interval_index = IntervalEndIndex()
         self._sequence_runtime = getattr(project, "_edit_sequence_runtime", None)
         self.reindex_cues(project)
 
@@ -192,9 +198,12 @@ class ProjectStateRuntime:
         clone.language_source_revision = self.language_source_revision
         clone.presentation_revision = self.presentation_revision
         clone.playback_revision = self.playback_revision
+        clone.qc_revision = self.qc_revision
         clone.playback_invalidation = 'project_copy'
         clone._playback_plan = None
         clone.content_revisions = dict(self.content_revisions)
+        clone.entity_epochs = dict(self.entity_epochs)
+        clone.entity_epoch_sequence = self.entity_epoch_sequence
         clone.commit_count = self.commit_count
         clone.last_delta = self.last_delta
         clone.delta_history = list(self.delta_history)
@@ -208,6 +217,7 @@ class ProjectStateRuntime:
         clone._cue_starts = ()
         clone._cue_order = ()
         clone._cue_prefix_max_end = ()
+        clone._cue_interval_index = IntervalEndIndex()
         clone._cue_ends = ()
         clone._cue_end_order = ()
         clone._sequence_runtime = copy.deepcopy(self._sequence_runtime, memo)
@@ -228,24 +238,22 @@ class ProjectStateRuntime:
 
     def cues_at(self, milliseconds: int) -> tuple["StudioCue", ...]:
         value = int(milliseconds)
-        index = bisect.bisect_right(self._cue_starts, value) - 1
-        matches: list[StudioCue] = []
-        while index >= 0 and self._cue_prefix_max_end[index] > value:
-            cue = self._view_by_id[self._cue_order[index]]
-            if cue.start_ms <= value < cue.end_ms:
-                matches.append(cue)
-            index -= 1
-        matches.reverse()
-        return tuple(matches)
+        stop = bisect.bisect_right(self._cue_starts, value)
+        left = bisect.bisect_right(self._cue_prefix_max_end, value, 0, stop)
+        index = getattr(self, '_cue_interval_index', None)
+        candidates = (index.before_with_end_after(stop, value)
+                      if index is not None and stop-left > 32 else range(left, stop))
+        return tuple(cue for i in candidates
+                     if (cue := self._view_by_id[self._cue_order[i]]).start_ms <= value < cue.end_ms)
 
     def visible_cues(self, start_ms: int, end_ms: int) -> tuple["StudioCue", ...]:
         start, end = int(start_ms), int(end_ms)
         stop = bisect.bisect_left(self._cue_starts, end)
-        return tuple(
-            self._view_by_id[cue_id]
-            for cue_id in self._cue_order[:stop]
-            if self._view_by_id[cue_id].end_ms > start
-        )
+        left = bisect.bisect_right(self._cue_prefix_max_end, start, 0, stop)
+        index = getattr(self, '_cue_interval_index', None)
+        candidates = (index.before_with_end_after(stop, start)
+                      if index is not None and stop-left > 32 else range(left, stop))
+        return tuple(cue for i in candidates if (cue := self._view_by_id[self._cue_order[i]]).end_ms > start)
 
     def cues_before(self, milliseconds: int):
         """Nearest completed timeline cues first, without scanning future cues."""
@@ -282,6 +290,7 @@ class ProjectStateRuntime:
             running_end = max(running_end, int(cue.end_ms))
             prefix.append(running_end)
         self._cue_prefix_max_end = tuple(prefix)
+        self._cue_interval_index = IntervalEndIndex(cue.end_ms for cue in ordered)
         ended = sorted(view, key=lambda cue: (cue.end_ms, cue.start_ms, cue.id))
         self._cue_ends = tuple(int(cue.end_ms) for cue in ended)
         self._cue_end_order = tuple(cue.id for cue in ended)
@@ -409,6 +418,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._video_tracks_snapshot = None
         self._audio_tracks_snapshot = None
         self._av_track_groups_snapshot = None
+        self._entity_epoch_snapshot = None
 
     def mark_dirty(
         self,
@@ -474,6 +484,12 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 else:state.pop(key,None)
 
     def _capture_domains(self, domains: DirtyDomain) -> None:
+        if domains & DirtyDomain.CUE_MODEL:
+            if self._entity_epoch_snapshot is None:self._entity_epoch_snapshot={}
+            keys=self.affected_cue_ids or set(self.state.entity_epochs)
+            for key in keys:
+                if key not in self._entity_epoch_snapshot:
+                    self._entity_epoch_snapshot[key]=self.state.entity_epochs.get(key)
         if domains & SEQUENCE_DOMAINS and self._sequence_snapshot is None:
             current = sequence_of(self.project)
             self._sequence_snapshot = copy.deepcopy(current)
@@ -537,6 +553,10 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 self._av_track_groups_snapshot = copy.deepcopy(self.project.av_track_groups)
 
     def _rollback(self) -> None:
+        if self._entity_epoch_snapshot is not None:
+            for key,value in self._entity_epoch_snapshot.items():
+                if value is None:self.state.entity_epochs.pop(key,None)
+                else:self.state.entity_epochs[key]=value
         if self._studio_key_snapshot is not None:
             for key,(present,value) in self._studio_key_snapshot.items():
                 if present:self.project.studio_state[key]=copy.deepcopy(value)
@@ -635,6 +655,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
                          | SEQUENCE_DOMAINS):
             self.state.language_source_revision += 1
+        if self.dirty & (CUE_DOMAINS | SEQUENCE_DOMAINS | MEDIA_DOMAINS | DirtyDomain.PROJECT_METADATA):
+            self.state.qc_revision += 1
         # A committed edit is the invalidation boundary, including undo/redo.
         # Selection, paint, QC and autosave alone do not rebuild media indexes.
         if self.dirty & (MEDIA_DOMAINS | SEQUENCE_DOMAINS | CUE_DOMAINS

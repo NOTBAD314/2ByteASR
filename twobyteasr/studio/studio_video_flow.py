@@ -1668,6 +1668,8 @@ class StudioVideoFlowMixin:
             self.audio_engine.synchronize(layers[0] if layers else None, audible=bool(layers), **args)
 
     def _sync_video_compositor(self, timeline_ms: int, *, layers=None, audio_layers=None) -> None:
+        if getattr(self, '_closing_project', False):
+            return
         scene = getattr(self, "video_compositor", None)
         if scene is not None and self.project is not None:
             from ..playback.playback_plan import playback_plan
@@ -1810,7 +1812,7 @@ class StudioVideoFlowMixin:
         self,
         timeline_ms: int,
     ) -> tuple[dict[str, object], bool] | None:
-        if self.project is None:
+        if self.project is None or getattr(self, '_closing_project', False):
             return None  # A queued playback callback may arrive after returning to Library.
         # One resolved sample is shared by route selection and composition.
         # Continuous transforms/envelopes are still sampled at this exact time.
@@ -2290,6 +2292,10 @@ class StudioVideoFlowMixin:
         self._sync_multitrack_preview_at(int(self.timeline.playhead_ms))
 
     def _sync_multitrack_preview_at(self, timeline_ms: int) -> None:
+        if (getattr(self, '_closing_project', False)
+                or getattr(self.video, '_recovery_request', None) is not None
+                or getattr(self.video, '_recovery_installing', False)):
+            return
         self._maybe_apply_av_sync_map()
         intended = getattr(self.video, 'playback_intended', None)
         if intended is None:

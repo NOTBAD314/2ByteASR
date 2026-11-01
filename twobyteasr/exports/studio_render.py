@@ -589,9 +589,8 @@ def build_concat_filter_complex(
 
 
 def _filter_path(path: str | os.PathLike[str]) -> str:
-    value = str(Path(path).resolve()).replace("\\", "/")
-    value = value.replace(":", r"\:").replace("'", r"\'")
-    return f"'{value}'"
+    from .ffmpeg_paths import filter_path
+    return filter_path(path)
 
 
 def encoder_preset(encoder: str, preset: str) -> str:

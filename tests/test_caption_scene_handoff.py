@@ -155,6 +155,72 @@ def _slow_frames(monkeypatch, seconds):
     monkeypatch.setattr(scene_module.SceneRasterizer, "frame", frame)
 
 
+def test_pause_refreshes_precise_geometry_even_if_playback_frame_is_in_flight(app, monkeypatch):
+    page = _page()
+    monkeypatch.setattr(scene_module, 'animated_caption', lambda prepared: prepared is not None)
+    scene = CaptionScene(page)
+    scene.active = True
+    page._present_caption_scene = lambda: _present(scene, page, page.now_ms)
+    entered, release = threading.Event(), threading.Event()
+    original = scene_module.SceneRasterizer.frame
+    calls = []
+
+    def delayed(self, *args, **kwargs):
+        measured = kwargs.get('measure_cue_geometry', True)
+        calls.append(measured)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(3)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(scene_module.SceneRasterizer, 'frame', delayed)
+    try:
+        _present(scene, page, 500)
+        assert entered.wait(2)
+        page.video._paused = True
+        _present(scene, page, 500)  # Same media time must request geometry after pause.
+        release.set()
+        assert _until(lambda: any(m.get('geometry_complete') for m in scene.metrics))
+        current = next(m for m in reversed(scene.metrics) if m.get('geometry_complete'))
+        assert calls[0] is False and True in calls
+        assert current['cue_pixels'][0]['bounds'] and current['cue_pixels'][0]['alpha_nonzero'] > 0
+    finally:
+        release.set()
+        scene.close()
+        scene.thread.join(3)
+
+
+def test_animated_playback_bounds_preheat_cadence_and_refreshes_new_cue(app, monkeypatch):
+    page = _page()
+    monkeypatch.setattr(scene_module, 'animated_caption', lambda prepared: prepared is not None)
+    scene = CaptionScene(page)
+    scene.active = True
+    now = [100.0]
+    monkeypatch.setattr(scene_module.time, 'perf_counter', lambda: now[0])
+    calls = []
+
+    def preheat(ms, *_args):
+        calls.append(ms)
+        scene._last_preheat = now[0]
+
+    monkeypatch.setattr(scene, 'preheat', preheat)
+    try:
+        _present(scene, page, 100)
+        for ms in (120, 140, 160, 180):
+            now[0] += .02
+            _present(scene, page, ms)
+        assert calls == [100]
+        now[0] += .2
+        _present(scene, page, 200)
+        assert calls == [100, 200]
+        now[0] += .01
+        _present(scene, page, 1000)
+        assert calls == [100, 200, 1000]
+    finally:
+        scene.close()
+        scene.thread.join(3)
+
+
 def test_pending_html_never_replaces_complete_scene_with_blank(app,monkeypatch):
     page=_page();page.video._paused=True
     scene=CaptionScene(page)

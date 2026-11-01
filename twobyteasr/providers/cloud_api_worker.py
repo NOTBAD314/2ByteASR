@@ -37,7 +37,13 @@ def run(request: dict) -> list:
     from ..recognition import asr
     from ..recognition.run_context import RuntimeContext, activate_runtime_context
     from ..recognition.cache import run_event_observer
-    audio = np.load(request['audio_array'], mmap_mode='r')
+    if request.get('prepared_source'):
+        from ..recognition.streaming_audio import PreparedPCMReader
+        def source_check():
+            if Path(request['cancel_file']).exists():raise RuntimeError('本地识别已取消，远端任务可能继续。')
+        audio=PreparedPCMReader(request['prepared_source'],check=source_check)
+    else:
+        audio = np.load(request['audio_array'], mmap_mode='r')
     chunks = [dict(audio=(audio[row['offset']:row['offset'] + row['samples']], 16000),
                    start=row['start'], end=row['end']) for row in request['chunks']]
     asr.CLOUD_BATCH_WORKERS = request['workers']
@@ -48,7 +54,8 @@ def run(request: dict) -> list:
 
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
-                        'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing', 'asr_language_request'}:
+                        'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing', 'asr_language_request',
+                        'asr_shard_ready', 'mosi_scheduler'}:
             return
         if kind == 'api_usage' and payload.get('stage') == 'asr':
             payload = dict(payload, stage=usage_stage)
@@ -106,6 +113,8 @@ def run(request: dict) -> list:
                 partial['tracker'] = PrimaryProgress(request['source_path'], total, backend=endpoint['provider'],
                                                      publish_primary=bool(request.get('publish_primary')))
             partial['tracker'].complete(index, rows, force=True)
+            if request.get('publish_primary'):
+                event('asr_shard_ready', dict(request_index=index, request_total=total, rows=rows))
 
         if is_filetrans_model(endpoint['model']):
             storage = filetrans_storage(request, endpoint)
@@ -116,8 +125,12 @@ def run(request: dict) -> list:
             # The user's explicit "重新提交" confirmation (completion page) must
             # reach MOSS Pro too; without it a saved terminal/uncertain task is
             # never resubmitted (no double charge).
+            from ..system.task_resources import task_budget
+            budget = task_budget()
             return mosi_transcribe(audio, endpoint, cache, progress=progress, check=check,
                                    restart_terminal=bool(request.get('restart_terminal')), on_rows=on_rows,
+                                   parallel=budget.moss_active, upload_parallel=budget.upload_workers,
+                                   adaptive_ceiling=max(budget.moss_active,budget.moss_ceiling),
                                    resplit_blocked=bool(request.get('resplit_blocked')),
                                    on_timing=lambda data: event('asr_phase_timing', data))
         return transcribe_chunks(audio, endpoint, cache, progress=progress, check=check, on_rows=on_rows)

@@ -15,11 +15,11 @@ class PresentationScope:
     missing_layer_ids: tuple[str,...]=()
 
 
-def _speaker_owners(project):
+def _speaker_owners(project, cues=None):
     roles=project.generation_metadata.get('speaker_recovery',{}).get('roles',{})
     decisions=project.generation_metadata.get('speaker_organization',{}).get('decisions',{})
     result={}
-    for original in {cue.speaker_id for cue in project.cues}:
+    for original in {cue.speaker_id for cue in (project.cues if cues is None else cues)}:
         identity=original;seen=set()
         while identity not in seen:
             seen.add(identity)
@@ -41,8 +41,28 @@ def capture_scope(page, *, scope=None, layer=None, ids=None):
     if language not in {'original','translation','group'}:raise ValueError('Unknown presentation layer')
     if project is None:return PresentationScope('',kind,language,())
     cues=project.cues;current=str(getattr(page,'selected_cue_id','') or '')
-    owners=_speaker_owners(project)
-    if ids is not None:wanted=target_ids(project,ids)
+    # A single inspector target has no ordering ambiguity. Reuse the canonical
+    # runtime lookup instead of constructing all IDs/speaker owners eight times
+    # per click. Detached projections and bulk scopes retain the full path.
+    single=None
+    if ids is None and kind=='current':single=(current,) if current else ()
+    elif ids is None and kind=='selected':
+        selection=getattr(getattr(page,'selection_model',None),'scope',None)
+        from ..timeline.selection_scope import SelectionMode
+        if selection is not None and selection.mode==SelectionMode.EMPTY:single=()
+        elif (selection is not None and selection.mode==SelectionMode.EXPLICIT_IDS
+              and len(selection.explicit_ids)==1):single=tuple(selection.explicit_ids)
+    runtime=getattr(project,'_studio_state_runtime',None)
+    bounded=single is not None and getattr(runtime,'_view_cues',None) is project.cues
+    if bounded:
+        lookup=runtime.cue_by_id
+        found=[lookup[key] for key in single if key in lookup]
+        bounded=len(found)==len(single)
+    if bounded:
+        cues=found;wanted={c.id for c in cues}
+    owners=_speaker_owners(project,cues)
+    if bounded:pass
+    elif ids is not None:wanted=target_ids(project,ids)
     elif kind=='all':wanted={c.id for c in cues}
     elif kind=='current':wanted=target_ids(project,[current]) if current else set()
     elif kind=='speaker':

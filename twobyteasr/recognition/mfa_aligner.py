@@ -129,6 +129,21 @@ def missing_message() -> str:
 
 
 def run_aligner(audio, jobs, *, passes=("word", "char"), batch_size=8) -> dict:
+    from .alignment_audio import bounded_jobs
+    jobs=bounded_jobs(jobs)
+    from .alignment_checkpoints import run_cached
+    from .asr import _raise_if_queue_cancelled
+    def execute(missing):
+        from ..system.task_resources import CPU_ALIGNMENT_GATE
+        with CPU_ALIGNMENT_GATE.lease(_raise_if_queue_cancelled):
+            return _run_aligner_once(audio,missing,passes=passes,batch_size=batch_size)
+    return run_cached(audio, jobs, identity=dict(engine='mfa', protocol=PROTOCOL,
+        models=sorted(LANGUAGE_MODELS.items()), revision='3.4.3', beam=100, retry_beam=400),
+        runner=execute,
+        check=_raise_if_queue_cancelled)
+
+
+def _run_aligner_once(audio, jobs, *, passes=("word", "char"), batch_size=8) -> dict:
     """Same jobs and result rows as ``asr.run_qwen_aligner_worker`` (``passes`` and ``batch_size`` unused)."""
     import numpy as np
     from .asr import AUDIO_SAMPLE_RATE, _run_isolated_asr_worker
@@ -139,19 +154,16 @@ def run_aligner(audio, jobs, *, passes=("word", "char"), batch_size=8) -> dict:
     worker = worker_path()
     if not os.path.isfile(worker):
         raise RuntimeError(f"MFA aligner worker missing: {worker}")
-    pcm = np.ascontiguousarray(audio, dtype=np.float32)
-    if pcm.ndim != 1 or not np.isfinite(pcm).all():
-        raise RuntimeError("对齐 worker 需要有限值单声道 float32 PCM")
-    digest = hashlib.sha256(pcm.tobytes()).hexdigest()
     policy = {"version": PROTOCOL, "audio_format": "float32-mono-npy-v1", "sample_rate": AUDIO_SAMPLE_RATE}
     jobs = [dict(job, id=str(job["id"])) for job in jobs]
     with tempfile.TemporaryDirectory(prefix="mfa_aligner_worker_") as temp_dir:
-        audio_path = os.path.join(temp_dir, "audio.npy")
-        np.save(audio_path, pcm, allow_pickle=False)
+        from .alignment_audio import prepare_audio
+        from .asr import _raise_if_queue_cancelled
+        audio_spec = prepare_audio(audio, temp_dir, check=_raise_if_queue_cancelled,jobs=jobs)
+        digest = audio_spec['sha256']
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
-        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": {
-            "path": audio_path, "samples": int(pcm.size), "sha256": digest}}, ensure_ascii=False), encoding="utf-8")
+        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": audio_spec}, ensure_ascii=False), encoding="utf-8")
         payload = _run_isolated_asr_worker(
             python_utf8_command([python, "-I", worker, "--manifest", manifest, "--output", output,
                                  *[f"--model-dir={language}={path}" for language, path in sorted(models.items())]]),

@@ -91,6 +91,10 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         if snapshot is None:
             snapshot = resolve_provider_snapshot(settings, stage="polish")
         provider = provider_for_stage(snapshot.execution_settings(), "polish", sender=post_chat_completion)
+    from ..providers.provider_service import AIClient
+    if isinstance(provider,AIClient):
+        provider=provider.concurrent_client()
+        provider.scheduling_lane='translation'
     token = getattr(runtime_context, "cancellation_token", None)
     cache = load_cache()
     from .european_text import LABELS as european_labels
@@ -110,7 +114,8 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     workers = 1
     if getattr(legacy, "PARALLEL_CLOUD_BATCHES", False):
         from ..providers.provider_service import GLOBAL_PROVIDER_SERVICE
-        workers = max(1, min(int(getattr(legacy, "CLOUD_BATCH_WORKERS", 1) or 1),
+        from ..system.task_resources import cloud_request_workers
+        workers = max(1, min(cloud_request_workers(snapshot,int(getattr(legacy, "CLOUD_BATCH_WORKERS", 1) or 1)),
                              int(GLOBAL_PROVIDER_SERVICE.scheduling_capacity()["effective_workers"])))
     result = translate(translation_source(fake), None, provider, target=target,
                        max_items=RECOMMENDED_BATCH_ITEMS,

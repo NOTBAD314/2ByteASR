@@ -122,10 +122,12 @@ class RuntimeCacheManager:
         memory_budget_bytes: int = 256 * 1024 * 1024,
         disk_budget_bytes: int = 4 * 1024 * 1024 * 1024,
         telemetry: CacheTelemetry | None = None,
+        memory_budget_provider: Callable[[], int] | None = None,
     ) -> None:
         self.memory_budget_bytes = max(1, int(memory_budget_bytes))
         self.disk_budget_bytes = max(1, int(disk_budget_bytes))
         self.telemetry = telemetry or CacheTelemetry()
+        self._memory_budget_provider = memory_budget_provider
         self._lock = threading.RLock()
         self._memory: OrderedDict[str, _MemoryEntry] = OrderedDict()
         self._artifacts: OrderedDict[str, _ArtifactEntry] = OrderedDict()
@@ -138,6 +140,7 @@ class RuntimeCacheManager:
     def get_memory(self, identity: CacheIdentity | str) -> object | None:
         key = self._key(identity)
         with self._lock:
+            self._refresh_memory_budget_locked()
             entry = self._memory.get(key)
             if entry is None:
                 self.telemetry.record("miss", key=key, tier="memory")
@@ -295,6 +298,8 @@ class RuntimeCacheManager:
         self.telemetry.record("stale_drop" if stale else "cancel", key=self._key(identity))
 
     def _evict_memory_locked(self) -> None:
+        if self._memory_budget_provider is not None:
+            self.memory_budget_bytes=max(1,int(self._memory_budget_provider()))
         total = sum(entry.size for entry in self._memory.values())
         for key in list(self._memory):
             if total <= self.memory_budget_bytes:
@@ -305,6 +310,11 @@ class RuntimeCacheManager:
             total -= entry.size
             self._memory.pop(key, None)
             self.telemetry.record("evict", key=key, tier="memory", bytes=entry.size)
+
+    def _refresh_memory_budget_locked(self) -> None:
+        if (self._memory_budget_provider is not None
+                and int(self._memory_budget_provider()) != self.memory_budget_bytes):
+            self._evict_memory_locked()
 
     def _evict_disk_locked(self) -> None:
         total = sum(entry.size for entry in self._artifacts.values())
@@ -324,7 +334,9 @@ class RuntimeCacheManager:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
+            self._refresh_memory_budget_locked()
             return {
+                "memory_budget_bytes": self.memory_budget_bytes,
                 "memory_entries": len(self._memory),
                 "memory_bytes": sum(entry.size for entry in self._memory.values()),
                 "artifact_entries": len(self._artifacts),
@@ -334,7 +346,12 @@ class RuntimeCacheManager:
             }
 
 
-GLOBAL_RUNTIME_CACHE = RuntimeCacheManager()
+def _shared_memory_budget():
+    from ..system.task_resources import cached_cache_budget
+    return cached_cache_budget(256*1024**2,share=.5)
+
+
+GLOBAL_RUNTIME_CACHE = RuntimeCacheManager(memory_budget_provider=_shared_memory_budget)
 
 
 __all__ = [

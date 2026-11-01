@@ -68,6 +68,13 @@ class StudioProjectFlowMixin:
 
     @observed('project.close')
     def _close_project_session(self, reason: str = "") -> int:
+        self._closing_project = True
+        try:
+            return StudioProjectFlowMixin._close_project_session_owned(self, reason)
+        finally:
+            self._closing_project = False
+
+    def _close_project_session_owned(self, reason: str = "") -> int:
         """Explicit project-close / replacement boundary; page services persist."""
         from time import perf_counter
 

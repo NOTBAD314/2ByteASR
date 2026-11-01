@@ -579,11 +579,24 @@ class StudioReviewMixin:
                 )
             # One context build over the union of the edited windows; folding
             # analyze_incremental() per cue rebuilt it for every cue.
+            # The worker already indexed all acoustic rows. Local caption
+            # changes do not change that evidence; reuse it until mapping/
+            # metadata/structure or its backing dictionary changes.
+            store=getattr(self,'_revision_store',None)
+            token=(store.mapping_revision,len(self.project.asr_evidence)) if store is not None and store.project is self.project else None
+            cached=getattr(self.project,'_qc_evidence_index_cache',None)
+            index=(cached[2] if token is not None and cached is not None
+                   and cached[0] is self.project.asr_evidence and cached[1]==token else None)
+            if token is not None and index is None and self.project.asr_evidence:
+                from ..subtitle_rules.studio_qc import _EvidenceTimeIndex
+                index=_EvidenceTimeIndex(self.project.asr_evidence)
+                self.project._qc_evidence_index_cache=(self.project.asr_evidence,token,index)
             result = self._qc_engine.analyze_incremental_many(
                 self.project,
                 present,
                 result,
                 terminology=self._qc_terminology,
+                **({'evidence_index':index} if index is not None else {}),
             )
             # Risks derive purely from each cue's own issues, so recompute
             # exactly the edited window instead of rebuilding the cached
@@ -647,9 +660,9 @@ class StudioReviewMixin:
                 worker.ready.connect(self._background_qc_ready)
                 worker.failed.connect(self._background_qc_failed)
             capture_started = perf_counter()
-            snapshot = store.persistence
+            snapshot = store.qc_snapshot()
             identity = (id(project), self.session.generation,
-                        state_for(project).playback_revision, token)
+                        state_for(project).qc_revision, token)
             self._qc_worker_snapshot_ms = (perf_counter()-capture_started)*1000
             worker.submit(snapshot,engine.config,terminology,identity)
             return
@@ -705,17 +718,35 @@ class StudioReviewMixin:
                 and identity[1] == self.session.generation
                 and identity[3] == getattr(self, '_qc_scan_token', 0))
 
-    def _background_qc_ready(self, identity, result, timings):
+    def _background_qc_ready(self, identity, result, timings, prepared=None):
         if not self._background_qc_current(identity):
             return
         from ..projects.studio_runtime_state import state_for
-        if identity[2] != state_for(self.project).playback_revision:
+        # Selection/overlay transforms also advance the playback plan token,
+        # but do not change QC input. Do not discard a full long-project scan
+        # merely because the user picked another caption while it ran.
+        if identity[2] != state_for(self.project).qc_revision:
             self._start_chunked_qc_scan()
             return
         began = perf_counter()
+        issue_cache_adopted = False
+        evidence_index_adopted = False
+        if prepared is not None:
+            from ..subtitle_rules.current_issues import adopt_issue_cache
+            issue_cache_adopted = adopt_issue_cache(self.project, result, prepared)
+            store=getattr(self,'_revision_store',None)
+            if store is not None and store.project is self.project:
+                from ..subtitle_rules.studio_qc import _EvidenceTimeIndex
+                index=_EvidenceTimeIndex.bind_compact(self.project.asr_evidence,prepared.get('evidence_index'))
+                if index is not None:
+                    token=(store.mapping_revision,len(self.project.asr_evidence))
+                    self.project._qc_evidence_index_cache=(self.project.asr_evidence,token,index)
+                    evidence_index_adopted=True
         self._finish_chunked_qc_scan(self.project,result)
         self._qc_worker_timings = {**timings,'snapshot_ms':self._qc_worker_snapshot_ms,
-                                   'gui_commit_ms':(perf_counter()-began)*1000}
+                                   'gui_commit_ms':(perf_counter()-began)*1000,
+                                   'issue_cache_adopted':issue_cache_adopted,
+                                   'evidence_index_adopted':evidence_index_adopted}
 
     def _background_qc_failed(self, identity, error):
         if not self._background_qc_current(identity):

@@ -225,6 +225,12 @@ def record_run_event(event, **payload):
 def _record_run_event(event, payload):
     payload.setdefault("monotonic_seconds", time.monotonic())
     context = get_runtime_context()
+    from .pipeline_activity import current_phase
+    phase=current_phase()
+    if phase:payload.setdefault('phase',phase)
+    if getattr(context,'shard_id',''):
+        payload.setdefault('shard_id',context.shard_id)
+        payload.setdefault('input_version',context.shard_input_version)
     if context.identity_task_active:
         payload.setdefault("job_id", context.job_id)
     from ..diagnostics.event_bridge import legacy_event
@@ -474,9 +480,8 @@ def load_shared_audio(media_path, cache_context):
         )
         temp_audio_path = audio_path + ".tmp"
         try:
-            buffer = io.BytesIO()
-            np.save(buffer, decoded, allow_pickle=False)
-            Path(temp_audio_path).write_bytes(buffer.getvalue())
+            with open(temp_audio_path,'wb') as stream:
+                np.save(stream, decoded, allow_pickle=False)
             os.replace(temp_audio_path, audio_path)
             atomic_write_json(
                 meta_path,
@@ -741,7 +746,8 @@ def run_cached_stage(
     from ..subtitle_rules.grouping_contract import runtime_task_binding
     task_binding = runtime_task_binding(owner)
     def require_current():
-        if (get_runtime_context() is not owner or bool(getattr(owner.cancellation_token,'is_cancelled',False))
+        from .run_context import context_is_current
+        if (get_runtime_context() is not owner or not context_is_current(owner) or bool(getattr(owner.cancellation_token,'is_cancelled',False))
                 or stage in {"grouped", "grouped_local"} and runtime_task_binding(owner) != task_binding):
             from .service import CancelledError
             raise CancelledError('阶段缓存任务已取消，拒绝迟到结果。')

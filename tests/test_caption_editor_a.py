@@ -196,16 +196,19 @@ def test_mouse_exit_works_during_preedit_without_result_page(page, button):
     assert not page.subtitle_edit_dock.isVisible()
 
 
-def test_close_cannot_discard_uncommitted_composition(page):
+def test_explicit_close_discards_composition_and_late_commit_has_no_model_target(page):
     editor = page.subtitle_edit_input
+    before=page.project.cues[0].text
+    index=page.undo_stack.index()
     editor.setPlainText('需要保存')
     QApplication.sendEvent(editor, QInputMethodEvent('ni', []))
     QTest.mouseClick(page.caption_close_button, Qt.MouseButton.LeftButton)
-    assert page._caption_draft is not None and editor.toPlainText() == '需要保存'
+    assert page._caption_draft is None and page.project.cues[0].text == before
     commit = QInputMethodEvent();commit.setCommitString('你')
     QApplication.sendEvent(editor, commit)
     QTest.mouseClick(page.caption_close_button, Qt.MouseButton.LeftButton)
-    assert page._caption_draft is None and '你' in page.project.cues[0].text
+    assert page._caption_draft is None and page.project.cues[0].text == before
+    assert page.undo_stack.index()==index
 
 
 def test_pronoun_target_is_whole_draft_even_away_from_caret(page):

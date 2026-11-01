@@ -165,7 +165,7 @@ def test_real_worker_caches_share_buffers_and_cancelled_generation_cannot_publis
         for index,item in enumerate(prepared):
             token=(id(project),1,1,1,(item[0],),index,(640,360,False,None),0,0,640,360)
             ready.clear()
-            with scene.lock:scene.pending=(token,(item,),500,640,360);scene.token=token;scene.wake.set()
+            with scene.lock:scene.pending=(token,(item,),500,640,360,True);scene.token=token;scene.wake.set()
             assert ready.wait(3)
             with scene.lock:pass
         rasterizer=observed[0]()
@@ -196,7 +196,7 @@ def test_close_during_real_render_rejects_late_result_and_retires_inner_cache(ap
     scene.ready.connect(received,Qt.DirectConnection)
     token=(id(project),1,1,1,(prepared[0][0],),0,(640,360,False,None),0,0,640,360)
     try:
-        with scene.lock:scene.pending=(token,prepared,500,640,360);scene.token=token;scene.wake.set()
+        with scene.lock:scene.pending=(token,prepared,500,640,360,True);scene.token=token;scene.wake.set()
         assert entered.wait(3)
         scene.close();release.set();scene.thread.join(3)
         assert not scene.thread.is_alive() and delivered==[] and not scene.frames

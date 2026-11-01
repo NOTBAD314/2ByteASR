@@ -6,6 +6,7 @@ from .studio_track_header import ACTIONS, CONTROL_LEFT, action_at, button_rect, 
 from .timeline_feedback import TimelineFeedbackMixin
 from .media_clip_shape import media_clip_shape
 from ..diagnostics.playback_probe import ENABLED as PLAYBACK_PROBE_ENABLED, measured, mark as playback_mark
+from ..timeline.interval_end_index import IntervalEndIndex
 
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
@@ -232,6 +233,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     cue_selected = Signal(str)
     seek_requested = Signal(float)
     scrub_finished = Signal(float)
+    scrub_cancelled = Signal()
     timing_changed = Signal(str, int, int)
     timing_preview_changed = Signal(object)
     timing_edit_started = Signal(object)
@@ -347,6 +349,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self._track_resize_hover = False
         self._pan_drag_moved = False
         self._scrub_drag = False
+        self._scrub_interrupt_timer = QTimer(self)
+        self._scrub_interrupt_timer.setSingleShot(True)
+        self._scrub_interrupt_timer.timeout.connect(
+            lambda: self.finish_scrub(commit=self.isVisible()))
         self.snap_enabled = True
         self._resize_hover = None
         self._snap_target = None
@@ -413,6 +419,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self._timeline_row_by_id: dict[str, int] = {}
         self._cue_starts: list[int] = []
         self._cue_prefix_max_ends: list[int] = []
+        self._cue_interval_index = IntervalEndIndex()
         self._speaker_ids: list[str] = []
         # 2026-10-12 speaker roles: secondary speakers share one row
         # (studio_speaker_roles); overlapping lines get sub-lanes there.
@@ -671,6 +678,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         for cue in cues:
             maximum_end = max(maximum_end, cue.end_ms)
             self._cue_prefix_max_ends.append(maximum_end)
+        self._cue_interval_index = IntervalEndIndex(cue.end_ms for cue in cues)
         speaker_ids = list(dict.fromkeys([*(s.id for s in self.project.speakers)] + [cue.speaker_id for cue in cues])) if self.project else []
         if self.project:
             saved_order = self.project.studio_state.get("speaker_track_order", [])
@@ -810,8 +818,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return []
         left = bisect_right(self._cue_prefix_max_ends, int(start_ms))
         right = bisect_left(self._cue_starts, int(end_ms))
-        result = [cue for cue in self._cues_by_start[left:right]
-                  if cue.end_ms > start_ms and cue.id not in self._timing_preview]
+        candidates = (self._cue_interval_index.before_with_end_after(right, int(start_ms))
+                      if right-left > 32 else range(left, right))
+        result = [cue for i in candidates if (cue := self._cues_by_start[i]).end_ms > start_ms
+                  and cue.id not in self._timing_preview]
         for cue_id, value in self._timing_preview.items():
             cue = self._timeline_cue_by_id.get(cue_id)
             if cue is not None and value.end_ms > start_ms and value.start_ms < end_ms:
@@ -1554,9 +1564,32 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             # Clear any leftover cut line / anchor highlight from the tool.
             self.update()
 
+    def finish_scrub(self, *, commit: bool = True) -> bool:
+        """Release pointer ownership even when Qt cannot deliver mouse-up."""
+        if not self._scrub_drag:
+            return False
+        self._scrub_interrupt_timer.stop()
+        self._scrub_drag = False
+        if commit:
+            self.scrub_finished.emit(self.playhead_ms / 1000.0)
+        else:
+            self.scrub_cancelled.emit()
+        self.interaction_changed.emit(False)
+        self.unsetCursor()
+        return True
+
+    def event(self, event) -> bool:
+        if (event.type() in {QEvent.Type.WindowDeactivate, QEvent.Type.UngrabMouse}
+                and getattr(self, '_scrub_drag', False)):
+            # Hiding can deliver deactivate/ungrab before hideEvent. Let
+            # hideEvent cancel first, so navigation never resumes playback.
+            self._scrub_interrupt_timer.start(0)
+        return super().event(event)
+
     def set_project(self, project: SubtitleProject | None) -> None:
         new_project = project is not self.project
         if new_project:
+            self.finish_scrub(commit=False)
             # Invalidate in-flight demand immediately, including while the
             # next project is hidden and has not painted its viewport yet.
             # Valid content-addressed images remain reusable in memory.
@@ -4388,6 +4421,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         middle_pan = event.button() == Qt.MouseButton.MiddleButton and cue is None
         if ruler_area and not ruler_pan:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self._scrub_interrupt_timer.stop()
             self._scrub_drag = True
             self.interaction_changed.emit(True)
             self.setCursor(Qt.CursorShape.SizeHorCursor)
@@ -5112,6 +5146,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             event.accept()
             return
         if self._scrub_drag:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                # Mouse-up may have happened outside the application. Keep
+                # the last dragged time, not this unrelated hover position.
+                self.finish_scrub()
+                event.accept()
+                return
             point = event.position().toPoint()
             if point.x() >= self.TRACK_HEADER_WIDTH:
                 milliseconds = self._bounded_time_ms(self._x_to_time(point.x()))
@@ -5344,6 +5384,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.update()
 
     def cancel_selection_gesture(self) -> bool:
+        if self.finish_scrub():
+            return True
         if self._razor_drag is not None:
             # Esc during a pressed cut: nothing is written; the release that
             # follows is swallowed. (The page routes Esc here first.)
@@ -5451,6 +5493,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         super().keyReleaseEvent(event)
 
     def hideEvent(self, event) -> None:
+        # Navigation/export must not resume or seek into the next project.
+        self.finish_scrub(commit=False)
         self._range_release(cancel=True)
         self._clear_media_razor()
         self.cancel_timing_edit()
@@ -5499,10 +5543,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self._scrub_drag:
-            self._scrub_drag = False
             self._paint_playhead_at(self._x_to_time(max(self.TRACK_HEADER_WIDTH, event.position().x())))
-            self.scrub_finished.emit(self.playhead_ms / 1000.0)
-            self.interaction_changed.emit(False)
+            self.finish_scrub()
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
             return

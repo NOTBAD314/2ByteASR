@@ -22,6 +22,7 @@ class PreparedPixels:
     raw_path: object = None
     raw_geometry: object = None
     raw_lease: object = None
+    timings: object = None
 
     def __del__(self):
         # The actor callback retains this object until the immutable file has
@@ -34,30 +35,35 @@ class PreparedPixels:
             except OSError:pass
 
 
-def prepared_pixels(image, png, started, raw_folder=None):
+def prepared_pixels(image, png, started, raw_folder=None, *, compact_image=False):
     """Pack immutable pixels on a worker before a GUI/actor handoff."""
     raw_path = geometry = lease = None
+    timings={}
     if raw_folder is not None:
-        import numpy as np
         from PySide6.QtCore import QRect
+        from .alpha_geometry import alpha_metrics
+        began=time.perf_counter()
         packed = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-        alpha = np.ndarray((packed.height(), packed.width(), 4), dtype=np.uint8,
-            buffer=packed.constBits(), strides=(packed.bytesPerLine(), 4, 1))[:, :, 3]
-        rows = np.flatnonzero(np.any(alpha, axis=1)); cols = np.flatnonzero(np.any(alpha, axis=0))
-        bounds = QRect(int(cols[0]), int(rows[0]), int(cols[-1]-cols[0]+1), int(rows[-1]-rows[0]+1)) if rows.size and cols.size else QRect(0, 0, 1, 1)
+        bbox, alpha_nonzero = alpha_metrics(packed)
+        measured=time.perf_counter();timings['alpha_ms']=(measured-began)*1000
+        bounds = QRect(*bbox) if bbox is not None else QRect(0, 0, 1, 1)
         cropped = packed.copy(bounds)
+        copied=time.perf_counter();timings['crop_ms']=(copied-measured)*1000
         Path(raw_folder).mkdir(parents=True, exist_ok=True)
         raw_path = Path(raw_folder)/(uuid.uuid4().hex+'.rgba')
         raw_path.write_bytes(cropped.constBits())
+        written=time.perf_counter();timings['file_ms']=(written-copied)*1000
         from .overlay_session import lease_overlay_deferred
         # The active session marker already protects these owned pixels.
         # SQLite/path validation belongs to the existing storage queue, not
         # the latency-critical frame handoff (even on a render worker).
         lease = lease_overlay_deferred(raw_path, 'caption_pixel_cache')
+        timings['lease_ms']=(time.perf_counter()-written)*1000
         geometry = dict(bounds=bounds.getRect(), source_width=packed.width(), source_height=packed.height(),
             width=cropped.width(), height=cropped.height(), stride=cropped.bytesPerLine(),
-            bytes=cropped.sizeInBytes(), alpha_nonzero=int(np.count_nonzero(alpha)))
-    return PreparedPixels(image, png, started, time.perf_counter(), raw_path, geometry, lease)
+            bytes=cropped.sizeInBytes(), alpha_nonzero=alpha_nonzero)
+        if compact_image:image=cropped
+    return PreparedPixels(image, png, started, time.perf_counter(), raw_path, geometry, lease,timings)
 
 
 class CaptionPixelCache(QObject):
@@ -125,12 +131,11 @@ class CaptionPixelCache(QObject):
                     if image.isNull():raise ValueError('Empty prepared caption raster')
                     raw_path=None;geometry=None;lease=None
                     if self.raw_folder is not None:
-                        import numpy as np
                         from PySide6.QtCore import QRect
+                        from .alpha_geometry import alpha_metrics
                         packed=image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                        alpha=np.ndarray((packed.height(),packed.width(),4),dtype=np.uint8,buffer=packed.constBits(),strides=(packed.bytesPerLine(),4,1))[:,:,3]
-                        rows=np.flatnonzero(np.any(alpha,axis=1));cols=np.flatnonzero(np.any(alpha,axis=0))
-                        bounds=QRect(int(cols[0]),int(rows[0]),int(cols[-1]-cols[0]+1),int(rows[-1]-rows[0]+1)) if rows.size and cols.size else QRect(0,0,1,1)
+                        bbox,alpha_nonzero=alpha_metrics(packed)
+                        bounds=QRect(*bbox) if bbox is not None else QRect(0,0,1,1)
                         cropped=packed.copy(bounds)
                         self.raw_folder.mkdir(parents=True,exist_ok=True)
                         raw_path=self.raw_folder/(uuid.uuid4().hex+'.rgba')
@@ -139,7 +144,7 @@ class CaptionPixelCache(QObject):
                         lease=lease_overlay(raw_path, 'caption_pixel_cache')
                         geometry=dict(bounds=bounds.getRect(),source_width=packed.width(),source_height=packed.height(),
                             width=cropped.width(),height=cropped.height(),stride=cropped.bytesPerLine(),bytes=cropped.sizeInBytes(),
-                            alpha_nonzero=int(np.count_nonzero(alpha)))
+                            alpha_nonzero=alpha_nonzero)
                     value=PreparedPixels(image,png,started,time.perf_counter(),raw_path,geometry,lease)
                     with self._lock:
                         if self._closed:return

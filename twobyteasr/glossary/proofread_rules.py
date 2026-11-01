@@ -77,9 +77,12 @@ def text_version(text):
 
 
 def decision_for(row, issue):
-    return {"state": "ignored", "text_sha": text_version(row["base"]),
+    decision = {"state": "ignored", "text_sha": text_version(row["base"]),
             "kind": "word" if issue["kind"] in WORD_DECISION_KINDS else issue["kind"],
             "span": list(issue["span"]), "original": issue["original"], "replacement": issue["replacement"]}
+    if row.get('target') is not None:
+        decision['target'] = row['target'].to_dict()
+    return decision
 
 
 def is_ignored(project, row, issue):
@@ -92,5 +95,15 @@ def is_ignored(project, row, issue):
     expected = decision_for(row, issue)
     # Same word pair remains the same decision when local vs AI provenance
     # changes. Independent evidence/stutter checks keep separate identities.
-    return any(expected == (dict(record, kind="word") if record.get("kind") in WORD_DECISION_KINDS else record)
-               for record in records if isinstance(record, dict))
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        candidate = dict(record, kind='word') if record.get('kind') in WORD_DECISION_KINDS else record
+        if 'target' not in candidate and 'target' in expected:
+            # Legacy decisions belonged to the original cue field only.
+            if row['target'].layer != 'original' or row['target'].storage != 'cue':
+                continue
+            candidate = dict(candidate, target=expected['target'])
+        if expected == candidate:
+            return True
+    return False

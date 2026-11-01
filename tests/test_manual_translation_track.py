@@ -64,17 +64,21 @@ def page(app, monkeypatch):
     timeline.set_bilingual(True)
     timeline.set_visible_window(630000, 26000)
     timeline.show()
-    session = SimpleNamespace(project=p, undo_stack=QUndoStack(), selected_cue_id="171")
+    session = SimpleNamespace(project=p, undo_stack=QUndoStack(timeline), selected_cue_id="171")
     page = SimpleNamespace(project=p, session=session, undo_stack=session.undo_stack, timeline=timeline,
-                           save_state=QLabel(), _editing_has_focus=lambda: False)
+                           save_state=QLabel(timeline), _editing_has_focus=lambda: False)
     controller = StudioCueController(page, session)
     monkeypatch.setattr(StudioCueController, "cue_changed", lambda *args, **kwargs: timeline.update())
     page.cue_controller = controller
     timeline.text_edit_committed.connect(lambda cue, translation, text: controller.set_translation(cue, text))
     yield page
     timeline._cancel_inline_edit()
+    timeline.text_edit_committed.disconnect()
+    session.undo_stack.clear()
+    page.cue_controller = None
     timeline.close()
     timeline.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
 
 

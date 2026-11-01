@@ -814,6 +814,7 @@ def render_live_snapshot(
     layers: frozenset[str] | None = None,
     graph_layer_ids: frozenset[str] | None = None,
     word_time_ms: float | None = None,
+    diagnostics: dict | None = None,
 ) -> QImage:
     """Render an immediately correct gradient/layout approximation."""
     dpr = max(0.5, float(device_pixel_ratio))
@@ -856,6 +857,9 @@ def render_live_snapshot(
         from .marked_glyphs import shape_marked_text
         path, marked_pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x), line_height)
     bounds = path.boundingRect()
+    if diagnostics is not None:
+        diagnostics.update(glyph_path_empty=path.isEmpty(),
+            glyph_bounds=[bounds.x(),bounds.y(),bounds.width(),bounds.height()])
     local_x = -bounds.left() - bounds.width() * float(snapshot.anchor_x)
     local_y = -bounds.top() - bounds.height() * float(snapshot.anchor_y)
     path.translate(local_x, local_y)
@@ -940,6 +944,13 @@ def render_live_snapshot(
     )
     painter.rotate(float(snapshot.rotation))
     painter.scale(float(snapshot.scale_x), float(snapshot.scale_y))
+    if diagnostics is not None:
+        transformed=painter.worldTransform().mapRect(local_bounds)
+        diagnostics.update(local_glyph_bounds=[local_bounds.x(),local_bounds.y(),local_bounds.width(),local_bounds.height()],
+            transformed_glyph_bounds=[transformed.x(),transformed.y(),transformed.width(),transformed.height()],
+            glyph_intersects_canvas=transformed.intersects(QRectF(0,0,logical_width,logical_height)),
+            qt_font_family=font.family(),qt_font_style=font.styleName(),qt_pixel_size=font.pixelSize(),
+            paint_device_active=painter.isActive())
 
     graph = _graph_for_snapshot(snapshot)
     all_layers = layers is None

@@ -63,6 +63,38 @@ def test_whole_line_loop_does_not_rebuild_paths_each_tick(qapp,monkeypatch):
 
 def test_word_modes_do_not_enter_whole_line_cache(qapp):
     from twobyteasr.caption_style.word_animation import uniform_line_unit
+    from twobyteasr.rendering.caption_motion_preheater import motion_raster_key
     s=snapshot();assert uniform_line_unit(s.word_animation)
     assert uniform_line_unit(dict(s.word_animation,mode='word_reveal')) is None
     assert uniform_line_unit(dict(s.word_animation,rich_entry={'type':'char_reveal'})) is None
+    assert motion_raster_key(prepared(replace(s,word_animation=dict(s.word_animation,mode='word_reveal'))),960,540) is None
+
+
+def test_preheated_affine_raster_matches_fresh_pixels_and_is_released(qapp):
+    import time
+    from twobyteasr.rendering.caption_motion_preheater import CaptionMotionPreheater, motion_raster_key
+    p = prepared(snapshot())
+    key = motion_raster_key(p, 960, 540)
+    assert key is not None
+    warmer = CaptionMotionPreheater()
+    warmer.set_epoch(('project', 1))
+    warmer.request(('project', 1), [(key, p, 1200, 960, 540)])
+    try:
+        end = time.monotonic()+5
+        while time.monotonic() < end and not warmer.stats()['ready']:
+            time.sleep(.01)
+        cached = warmer.take(('project', 1), [key])
+        assert len(cached) == 1
+        actual, fresh = SceneRasterizer(), SceneRasterizer()
+        try:
+            actual.insert_raster(*cached[0])
+            for ms in (90, 600, 1200, 2600, 4900):
+                preheated = actual.native_frame(p, ms, 960, 540)
+                original = fresh.native_frame(p, ms, 960, 540)
+                assert bytes(preheated.constBits()) == bytes(original.constBits())
+        finally:
+            actual.close();fresh.close()
+    finally:
+        warmer.close()
+        warmer.thread.join(3)
+        assert not warmer.thread.is_alive()

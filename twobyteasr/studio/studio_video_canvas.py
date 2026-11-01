@@ -51,6 +51,7 @@ class MpvCanvas(QFrame):
     video_display_size_changed = Signal(int, int)
     error = Signal(str)
     workshop_requested = Signal(str)
+    _player_recovered = Signal(object, object, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -168,6 +169,12 @@ class MpvCanvas(QFrame):
         self._startup_state = "READY"
         self._startup_play_requested = False
         self._startup_started_at = 0.0
+        self._recovery_request = None
+        self._recovery_attempts = 0
+        self._recovery_deadline = 0.0
+        self._recovery_installing = False
+        self._last_load_error = ''
+        self._player_recovered.connect(self._receive_player_recovery, Qt.ConnectionType.QueuedConnection)
         # Playback truth contract: the mpv media clock is the only playback
         # truth. When its transport dies (process exit or wedged IPC) the
         # canvas enters an explicit dead state instead of letting the local
@@ -288,6 +295,134 @@ class MpvCanvas(QFrame):
         self._playback_source_dead = False
         if self._preview_scale < 1.0:
             self._apply_preview_scale()
+
+    PLAYER_REBUILD_LIMIT = 2
+    PLAYER_RECOVERY_BUDGET_S = 15.0
+
+    def _recovery_load_intent(self):
+        seconds = self._base_time
+        if self._project_time_mapping_enabled:
+            seconds = self._media_time_mapping.project_to_source_ms(seconds * 1000,
+                timeline_in_ms=self._project_timeline_in_ms, source_in_ms=self._project_source_in_ms,
+                playback_rate=self._project_playback_rate) / 1000
+        page = self._studio_page()
+        request = getattr(page, '_readiness', None)
+        return dict(path=self._media_path, ass=self._ass_path, seconds=seconds,
+            playing=bool(self._startup_play_requested or self.playback_intended),
+            generation=getattr(self, '_load_generation', 0),
+            project=getattr(page, 'project', None), request=request,
+            open_generation=getattr(request, 'generation', None))
+
+    def _fail_player_recovery(self, detail):
+        self._last_load_error = detail
+        self._playback_source_dead = True
+        self._media_attached = False
+        self._set_startup_state('FAILED')
+        self._timer.stop()
+        self._sync_timer.stop()
+        self.error.emit(detail)
+
+    def _request_player_recovery(self, reason):
+        """One worker owns shutdown/start; only the GUI installs its result."""
+        if self._recovery_request is not None:
+            self._recovery_request['intent'] = self._recovery_load_intent()
+            return True
+        old = self.controller
+        if not isinstance(old, MpvController) or not self._media_path:
+            return False
+        now = time.monotonic()
+        if self._recovery_attempts == 0:
+            self._recovery_deadline = now + self.PLAYER_RECOVERY_BUDGET_S
+        if self._recovery_attempts >= self.PLAYER_REBUILD_LIMIT or now >= self._recovery_deadline:
+            self._fail_player_recovery('播放器通信恢复失败。请点击重试，或返回工程库后重新打开。')
+            return False
+        self._recovery_attempts += 1
+        token = dict(intent=self._recovery_load_intent(), cancel=threading.Event(), previous=old)
+        self._recovery_request = token
+        self._submitted_load_position = None
+        self._media_attached = False
+        self.clear_caption_boundaries()
+        self.stop_web_live_overlays()
+        self._video_overlay_epoch += 1
+        self._active_compositor_overlays.clear()
+        old._begin_subtitle_media('')  # Revoke old actor work before detaching it.
+        self.controller = None
+        self._video_display_size = (0, 0)
+        self._set_startup_state('RECOVERING')
+        self.set_presentation_blocked('player-recovery', True)
+        self._set_interpolation_base(self._base_time, paused=True, reason='player_recovery')
+        self._startup_play_requested = token['intent']['playing']
+        from ..diagnostics.event_log import emit
+        emit('player.recovery', module='video_canvas', result='started', reason=reason,
+             instance_id=old.instance_id, attempt=self._recovery_attempts,
+             load_generation=getattr(self, '_load_generation', 0), media_path=self._media_path)
+        self.error.emit('播放器通信无响应，正在重新初始化。')
+        loading = getattr(getattr(self._studio_page(), '_readiness', None), 'loading', None)
+        if loading is not None and loading.active:
+            loading.stage('准备播放器', '播放器通信无响应，正在重新初始化。')
+        hwnd = int(self.winId())
+        self._embed_hwnd = hwnd
+        log_path = studio_data_root() / 'logs' / 'mpv.log'
+        completed = self._player_recovered
+        def recover():
+            replacement = None
+            try:
+                emit('player.recovery_snapshot', module='mpv', result='observed',
+                     diagnostic=old.recovery_diagnostics())
+                old.close()
+                if token['cancel'].is_set():
+                    return
+                replacement = MpvController(old.executable, process_factory=old._process_factory)
+                replacement.start(hwnd, log_path=str(log_path))
+                if token['cancel'].is_set():
+                    replacement.close()
+                    return
+                completed.emit(token, replacement, '')
+            except Exception as exc:
+                if replacement is not None:
+                    replacement.close()
+                try:
+                    completed.emit(token, None, type(exc).__name__)
+                except RuntimeError:
+                    pass
+        threading.Thread(target=recover, name='studio-player-recovery', daemon=True).start()
+        return True
+
+    def _receive_player_recovery(self, token, controller, error):
+        if self._recovery_request is not token or token['cancel'].is_set():
+            if controller is not None:
+                threading.Thread(target=controller.close, daemon=True).start()
+            return
+        self._recovery_request = None
+        from ..diagnostics.event_log import emit
+        emit('player.recovery', module='video_canvas', result='failed' if error else 'completed',
+             instance_id=getattr(controller, 'instance_id', None), attempt=self._recovery_attempts,
+             error_code=error or None, load_generation=getattr(self, '_load_generation', 0))
+        if error:
+            self.controller = token['previous']
+            self._fail_player_recovery('播放器重新初始化失败。请重试或返回工程库。')
+            return
+        self.controller = controller
+        self._native_subtitle_visibility_controller = None
+        self._playback_source_dead = False
+        self._request_native_region_sync(recheck=True)
+        intent = token['intent']
+        page = self._studio_page()
+        request = getattr(page, '_readiness', None)
+        if (intent is None or intent['generation'] != getattr(self, '_load_generation', 0)
+                or intent['path'] != self._media_path or intent['project'] is not getattr(page, 'project', None)
+                or request is not intent['request'] or getattr(request, 'generation', None) != intent['open_generation']):
+            self.set_presentation_blocked('player-recovery', False)
+            return  # Retain an idle instance, never reopen a cancelled project.
+        self._recovery_installing = True
+        try:
+            self.load(intent['path'], intent['ass'], start_seconds=intent['seconds'])
+            self._startup_play_requested = intent['playing']
+            controller.post_set_subtitle_visible(self._native_subtitle_visible)
+        finally:
+            self._recovery_installing = False
+        if page is not None:
+            page._preview_timer.start(0)
 
     def set_preview_scale(self, value: float) -> None:
         """Show playback at full, 1/2 or 1/4 of the source size (preview only)."""
@@ -1007,6 +1142,10 @@ class MpvCanvas(QFrame):
         # Opening media is a paused preview. Only a transport/audition action
         # may request playback; readiness itself must never create that intent.
         self._load_generation = getattr(self, '_load_generation', 0) + 1
+        self._last_load_error = ''
+        if not self._recovery_installing:
+            self._recovery_attempts = 0
+            self._recovery_deadline = 0.0
         self._submitted_load_position = None
         self._startup_play_requested = False
         self._buffered_play_pending = False
@@ -1024,12 +1163,31 @@ class MpvCanvas(QFrame):
         self._ass_path = ass_path
         self._video_display_size = (0, 0)
         try:
+            self._startup_started_at = perf_counter()
+            self._set_startup_state('MEDIA_OPENING')
+            self._set_interpolation_base(max(0., float(start_seconds or 0.)),
+                                         paused=True, reason='media_opening')
+            if self._recovery_request is not None:
+                # The existing cleanup worker is shared, but this is a new
+                # load's independent opportunity, not an expired old deadline.
+                self._recovery_attempts = 1
+                self._recovery_deadline = time.monotonic() + self.PLAYER_RECOVERY_BUDGET_S
+                self._recovery_request['intent'] = self._recovery_load_intent()
+                return
+            if isinstance(self.controller, MpvController):
+                status = self.controller.actor_status()
+                if not self.controller.running or status.get('recovery_exhausted'):
+                    self._request_player_recovery('unhealthy_instance_on_load')
+                    return
             self._ensure_controller_started()
             self._publish_first_picture(media_path)
             self._startup_play_requested = False
             self._startup_started_at = perf_counter()
             self._set_startup_state("MEDIA_OPENING")
-            self.controller.set_paused(True)
+            native_mpv = isinstance(self.controller, MpvController)
+            if not native_mpv:
+                # QMediaPlayer is GUI-owned and this operation performs no IPC.
+                self.controller.set_paused(True)
             # Restore the clock before posting loadfile. Resetting it to zero
             # afterwards makes the initial media-graph binding seek back to
             # zero, while the saved timeline still selects its themed cue.
@@ -1038,6 +1196,8 @@ class MpvCanvas(QFrame):
                 max(0.0, float(start_seconds or 0.0)),
                 paused=True, reason="media_opening",
             )
+            if native_mpv and start_seconds is None:
+                start_seconds = 0.0
             if start_seconds is None:
                 self.controller.load(media_path)
             else:
@@ -1054,9 +1214,10 @@ class MpvCanvas(QFrame):
                 )
                 snapshot = self._playback_clock.begin_seek(int(start_content * 1000))
                 self._adopt_playback_snapshot(snapshot, emit=False)
-                if self.controller.post_load_at(
-                    media_path, target, generation=self._playback_clock.generation
-                ):
+                options = dict(generation=self._playback_clock.generation)
+                if native_mpv:
+                    options['paused'] = True
+                if self.controller.post_load_at(media_path, target, **options):
                     # The first media-graph bind runs before file-loaded can
                     # arrive. Reuse this exact submitted positioning request
                     # once; posting a second seek can be rejected by mpv while
@@ -1076,6 +1237,9 @@ class MpvCanvas(QFrame):
                             'open_generation': getattr(request, 'generation', None),
                         }
                 else:
+                    if native_mpv:
+                        self._request_player_recovery('load_submission_rejected')
+                        return
                     self.controller.load(media_path)
             self._media_attached = True
             # 控制器跨 reload 存活且 loadfile 不重置 speed：把传输速率显式
@@ -1095,6 +1259,7 @@ class MpvCanvas(QFrame):
             # does not stay stuck on PlayRes fallback while the first reconcile is pending.
             self._defer_media_callback(80, self._emit_initial_video_size, source="initial_size")
         except (MpvUnavailableError, RuntimeError, OSError) as exc:
+            self._last_load_error = '播放器启动失败：' + str(exc)
             self.error.emit(str(exc))
 
     def consume_initial_load_position(self, media_path: str, seconds: float, *, project_ms: int) -> bool:
@@ -1590,6 +1755,11 @@ class MpvCanvas(QFrame):
 
     def unload_project_media(self) -> None:
         """Release project state while retaining the one reusable mpv actor."""
+        self._load_generation = getattr(self, '_load_generation', 0) + 1
+        if self._recovery_request is not None:
+            self._recovery_request['intent'] = None
+        self._last_load_error = ''
+        self.set_presentation_blocked('player-recovery', False)
         self.set_external_clock_enabled(False)
         self.set_project_time_mapping(enabled=False)
         self.enter_empty_playback_state()
@@ -1662,6 +1832,9 @@ class MpvCanvas(QFrame):
 
     def restore_after_empty(self, media_path: str, ass_path: str = "") -> None:
         """Reattach media to the existing mpv child; never starts a process."""
+        if isinstance(self.controller, MpvController):
+            self.load(str(media_path or self._media_path), str(ass_path or ''), start_seconds=0.)
+            return
         self._media_path = str(media_path or self._media_path)
         self._ass_path = str(ass_path or "")
         if not self.controller or not self.controller.running:
@@ -1696,6 +1869,11 @@ class MpvCanvas(QFrame):
         if not self._media_path:
             self.error.emit("播放器恢复失败：当前工程没有已加载的媒体，请重新打开工程。")
             return False
+        if isinstance(self.controller, MpvController):
+            self._recovery_attempts = 0
+            self._recovery_deadline = 0.
+            self._startup_play_requested = not bool(paused)
+            return self._request_player_recovery('user_retry')
         resume_seconds = self._base_time
         if self._duration > 0.0:
             resume_seconds = min(resume_seconds, self._duration)
@@ -2481,9 +2659,39 @@ class MpvCanvas(QFrame):
         if self._external_clock_active():
             self._observe_external_clock()
             return
+        if self._recovery_request is not None:
+            if time.monotonic() >= self._recovery_deadline:
+                token, self._recovery_request = self._recovery_request, None
+                token['cancel'].set()
+                self._fail_player_recovery('播放器重新初始化超时。请重试或返回工程库。')
+            return
         if not self.controller or not self.controller.running:
+            if self._media_path and isinstance(self.controller, MpvController):
+                self._request_player_recovery('mpv_process_exited')
+                return
             self._enter_playback_source_dead("mpv_process_exited")
             return
+        if isinstance(self.controller, MpvController):
+            status = self.controller.actor_status()
+            if (status.get('recovery_exhausted') or not status.get('thread_alive')
+                    or getattr(self.controller, '_needs_media_reload', False)):
+                self._request_player_recovery('mpv_transport_stalled')
+                return
+            if status.get('degraded'):
+                if self._startup_state == 'READY':
+                    self._startup_play_requested = self.playback_intended
+                    self._set_startup_state('RECOVERING')
+                    self._set_interpolation_base(self._base_time, paused=True, reason='transport_hold')
+                return
+            failure = getattr(self.controller, '_last_media_failure', None)
+            if failure and failure['media_epoch'] == self.controller._subtitle_binding_epoch:
+                self._fail_player_recovery('媒体读取失败，播放器无法解码当前素材。请重新定位或检查素材文件。')
+                return
+            failure = getattr(self.controller, '_last_async_failure', None)
+            if (failure and failure['media_epoch'] == self.controller._subtitle_binding_epoch
+                    and failure['command_id'] == 'loadfile' and failure['category'] == 'command_rejected'):
+                self._fail_player_recovery('媒体加载命令失败。请检查素材是否存在并可读取。')
+                return
         if (
             self._media_attached
             and self._startup_state == "READY"
@@ -2538,11 +2746,12 @@ class MpvCanvas(QFrame):
                 self._last_audio_pts_ms = (
                     float(audio_pts) * 1000.0 if audio_pts is not None else None
                 )
-                if page is not None and isinstance(frame_info, Mapping) and (
-                    frame_info.get("pts") is not None
-                    or frame_info.get("estimated-frame-number") is not None
-                    or bool(frame_info.get("picture-type"))
-                ):
+                from ..playback.frame_readiness import video_frame_witness
+                current_frame = (video_frame_witness(self) if isinstance(self.controller, MpvController)
+                                 else {'ready': bool(frame_info)})
+                if page is not None and current_frame['ready']:
+                    page._studio_mark_startup_milestone('MPV_FILE_LOADED',
+                        media_path=self._media_path, instance_id=getattr(self.controller, 'instance_id', None))
                     page._studio_mark_startup_milestone(
                         "FIRST_FRAME_READY",
                         frame_info={
@@ -2606,6 +2815,9 @@ class MpvCanvas(QFrame):
             frame_ready = bool(isinstance(frame_info, Mapping) and any(
                 frame_info.get(key) is not None
                 for key in ("pts", "estimated-frame-number", "picture-type")))
+            if isinstance(self.controller, MpvController):
+                from ..playback.frame_readiness import video_frame_witness
+                frame_ready = video_frame_witness(self)['ready']
             audio_ready = bool(
                 not self._media_has_video
                 and value is not None
@@ -2620,6 +2832,15 @@ class MpvCanvas(QFrame):
                     play_requested = self._startup_play_requested
                     paused = True
                     self._set_startup_state("READY", media_clock_seconds=float(value))
+                    if self._recovery_attempts and page is not None and hasattr(page, 'save_state'):
+                        page.save_state.setText('播放器已恢复')
+                        self.setToolTip('')
+                    # A newly proven usable media ends this outage. A later,
+                    # independent fault gets its own budget; a replacement
+                    # that never produces a current frame cannot reset it.
+                    self._recovery_attempts = 0
+                    self._recovery_deadline = 0.0
+                    self.set_presentation_blocked('player-recovery', False)
                     if play_requested:
                         # Cold-open Play goes through the same PCM/frame gate
                         # as a normal pause→play transition.
@@ -3145,6 +3366,11 @@ class MpvCanvas(QFrame):
              caller_frames=[dict(module=Path(f.filename).name,function=f.name,line=f.lineno) for f in traceback.extract_stack(limit=7)[:-1]])
         if not paused and not self._navigation_visible:
             return
+        if self._recovery_request is not None:
+            self._startup_play_requested = not bool(paused)
+            if self._recovery_request['intent'] is not None:
+                self._recovery_request['intent']['playing'] = not bool(paused)
+            return
         if paused:
             self._startup_play_requested = False
         elif bool(getattr(getattr(page, '_readiness', None), 'active', False)):
@@ -3285,6 +3511,9 @@ class MpvCanvas(QFrame):
 
     def detach_player_for_close(self) -> MpvController | None:
         """Stop Qt activity and detach the process owner for background shutdown."""
+        token, self._recovery_request = self._recovery_request, None
+        if token is not None:
+            token['cancel'].set()
         self._submitted_load_position = None
         self._retire_native_presentation()
         self._buffered_play_pending = False

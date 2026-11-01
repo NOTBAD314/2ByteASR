@@ -388,6 +388,7 @@ class StudioRevisionStore:
         self._effects = freeze_json(project.effects)
         self._recipes = freeze_json(project.style_recipes)
         self._persistence = self._capture_persistence(revision)
+        self._qc_base_current = True
         self._persistence_pending = None
         self.render = self._capture_render(revision)
 
@@ -510,7 +511,10 @@ class StudioRevisionStore:
             prior = getattr(self, "_source_archive_freeze_memo", None)
             if prior is not None and prior[0] == data:
                 return prior[1]
-            frozen = freeze_json(item)
+            # The archive is opaque evidence to live captions. Keep one byte
+            # blob instead of thousands of GC-tracked dict/tuple trees. Its
+            # persisted JSON is unchanged and formal saves still compare bytes.
+            frozen = FrozenBlob.capture(item, data)
             self._source_archive_freeze_memo = (data, frozen)
             return frozen
 
@@ -522,7 +526,63 @@ class StudioRevisionStore:
             (str(key), frozen_timeline() if key == KEY else frozen_state_item(key, item))
             for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
 
-    def _capture_render(self, revision: int, *, style_only: bool = False) -> SubtitleRenderRevision:
+    def _cue_edit_studio_state(self, affected: frozenset[str]) -> FrozenJSON:
+        """Capture a typed content edit without hashing unrelated word receipts.
+
+        Content-only commands may update the target's word override/receipt
+        and small bookkeeping maps. They do not rewrite the source archive or
+        unrelated receipts. Structure, timing, metadata and formal saves keep
+        the full content check. No mutable project objects enter the revision.
+        """
+        from ..timeline.studio_caption_timeline import KEY
+        previous = self.render.studio_state
+        if not isinstance(previous, FrozenMap):
+            return self._frozen_studio_state()
+        old_state = dict(previous.items)
+
+        def rows(value, before):
+            if not isinstance(value, Mapping) or not isinstance(before, FrozenMap):
+                return freeze_json(value)
+            frozen = dict(before.items)
+            changed = False
+            for cue_id in affected:
+                if cue_id not in value:
+                    changed |= cue_id in frozen
+                    frozen.pop(cue_id, None)
+                    continue
+                row = FrozenBlob.capture(value[cue_id])
+                prior = frozen.get(cue_id)
+                frozen[cue_id] = prior if row == prior else row
+                changed |= row != prior
+            if not changed:
+                return before
+            return FrozenMap(tuple(sorted(frozen.items())))
+
+        captured = []
+        for name, value in sorted((self.project.studio_state or {}).items()):
+            before = old_state.get(name)
+            if name == KEY and isinstance(value, Mapping) and isinstance(before, FrozenMap):
+                old_timeline = dict(before.items)
+                timeline = []
+                for key, item in sorted(value.items()):
+                    prior = old_timeline.get(key)
+                    if key == 'instances':
+                        frozen = rows(item, prior)
+                    elif key == 'source_archive' and prior is not None:
+                        frozen = prior
+                    else:
+                        frozen = freeze_json(item)
+                    timeline.append((key, frozen))
+                frozen = FrozenMap(tuple(timeline))
+            elif name == 'term_word_overrides':
+                frozen = rows(value, before)
+            else:
+                frozen = freeze_json(value)
+            captured.append((name, frozen))
+        return FrozenMap(tuple(captured))
+
+    def _capture_render(self, revision: int, *, style_only: bool = False,
+                        content_ids: frozenset[str] = frozenset()) -> SubtitleRenderRevision:
         settings = self.project.render_settings
         from ..timeline.caption_frame_time import project_frame_rate
         from ..caption_style.word_animation import build_word_animation, needs_word_plan
@@ -561,11 +621,13 @@ class StudioRevisionStore:
             # ASS/CaptionScene consume only translations from generation
             # metadata. Recognition histories and terminology/source receipts
             # belong to persistence, not every live visual revision.
-            generation_metadata=freeze_json({
+            generation_metadata=(self.render.generation_metadata if content_ids else freeze_json({
                 'translations': (self.project.generation_metadata or {}).get('translations', {}),
                 'speaker_names': (self.project.generation_metadata or {}).get('speaker_names', {}),
-            }),
-            studio_state=(self.render.studio_state if style_only else self._frozen_studio_state()),
+            })),
+            studio_state=(self.render.studio_state if style_only else
+                          self._cue_edit_studio_state(content_ids) if content_ids else
+                          self._frozen_studio_state()),
             frame_rate=project_frame_rate(self.project),
             timeline_cues=self._timeline_cues,
             word_animations=freeze_json(word_plans),
@@ -682,10 +744,28 @@ class StudioRevisionStore:
             report_path=str(project.report_path),
             original_outputs=self._frozen_metadata("original_outputs"),
             # Same content as the render revision's copy; usually a memo hit.
-            studio_state=(self._frozen_studio_state() if project.studio_state is not None
-                          else freeze_json(None)),
+            studio_state=(self._autosave_studio_state() if not deep else self._frozen_studio_state()),
             edit_sequence=freeze_json(sequence_of(project).to_dict()),
         )
+
+    def _autosave_studio_state(self):
+        """Use committed immutable word data; capture current view/decision state.
+
+        Caption/word mutations belong to content/timing/model/metadata commands,
+        which already captured their render revision. Save-only commands and
+        viewport capture change the other keys. An initial/hidden revision and
+        every explicit deep save retain the full compatibility content check.
+        This is the same typed-input trust boundary used for ASR evidence rows.
+        """
+        state=self.project.studio_state
+        previous=getattr(getattr(self,'render',None),'studio_state',None)
+        if (not isinstance(state,Mapping) or not isinstance(previous,FrozenMap)
+                or getattr(self,'_render_pending_revision',None) is not None):
+            return self._frozen_studio_state() if state is not None else freeze_json(None)
+        old=dict(previous.items)
+        heavy={'caption_timeline','term_word_overrides'}
+        return FrozenMap(tuple((key, old[key] if key in heavy and key in old else freeze_json(value))
+                               for key,value in sorted(state.items())))
 
     @property
     def persistence(self) -> PersistenceRevision:
@@ -693,9 +773,33 @@ class StudioRevisionStore:
             self.refresh_persistence(self._persistence_pending)
         return self._persistence
 
+    def qc_snapshot(self) -> PersistenceRevision:
+        """Current QC inputs without recapturing a save on every local edit.
+
+        Content/presentation commands change cue DTOs and scoped studio state;
+        their recognition evidence, source media and model metadata are shared
+        immutable inputs. Other mutations invalidate that base. Formal saves
+        and autosaves still use their own complete persistence boundary.
+        """
+        if not self._qc_base_current:
+            runtime = getattr(self.project, '_studio_state_runtime', None)
+            self.refresh_persistence(getattr(runtime, 'revision', self._persistence.generation))
+        render = self.materialize_render()
+        return replace(self._persistence, generation=render.revision_id,
+                       cues=self._cues, speakers=self._speakers, styles=self._styles,
+                       effects=self._effects, style_recipes=self._recipes,
+                       studio_state=render.studio_state,
+                       glossary_ids=tuple(str(item) for item in self.project.glossary_ids))
+
     def consume(self, delta: StateDelta, *, prepare_render: bool = True) -> None:
         project = self.project
         dirty = delta.dirty
+        local_domains = (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_STYLE | DirtyDomain.CUE_SELECTION
+                         | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
+                         | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM
+                         | DirtyDomain.QC | DirtyDomain.AUTOSAVE)
+        if dirty & ~local_domains:
+            self._qc_base_current = False
         if dirty == DirtyDomain.AUTOSAVE:
             # Review retention/ignore and panel state are save-only. They
             # cannot invalidate the visible caption/geometry revision.
@@ -750,11 +854,17 @@ class StudioRevisionStore:
         style_domains = (DirtyDomain.CUE_STYLE | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
                          | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM | DirtyDomain.AUTOSAVE)
         style_only = bool(dirty & DirtyDomain.CUE_STYLE) and not bool(dirty & ~style_domains)
+        content_domains = (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_STYLE | DirtyDomain.TIMELINE_PIXELS
+                           | DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW
+                           | DirtyDomain.TRANSFORM | DirtyDomain.QC | DirtyDomain.AUTOSAVE)
+        content_ids = (delta.affected_cue_ids if delta.affected_cue_ids
+                       and dirty & DirtyDomain.CUE_CONTENT and not dirty & ~content_domains
+                       and project.render_settings.get('_cue_domain') == 'timeline' else frozenset())
         # A field-only presentation transaction changes no caption receipts or
         # other studio metadata. Reuse the immutable state for that exact set
         # of typed domains; text/timing/structure/metadata changes recapture.
         if prepare_render:
-            self.render = self._capture_render(delta.revision, style_only=style_only)
+            self.render = self._capture_render(delta.revision, style_only=style_only, content_ids=content_ids)
         else:
             self._render_pending_revision = delta.revision
         if dirty & DirtyDomain.AUTOSAVE:
@@ -778,6 +888,7 @@ class StudioRevisionStore:
         self._persistence = (self._capture_persistence(generation, deep=True) if deep
                              else self._capture_persistence(generation))
         self._persistence_pending = None
+        self._qc_base_current = True
         return self._persistence
 
 

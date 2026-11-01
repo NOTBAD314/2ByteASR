@@ -4,7 +4,8 @@ param(
     [string]$ReleaseDir = "",
     [switch]$QA,
     [ValidatePattern('^[a-z0-9-]{1,64}$')]
-    [string]$CandidateId = ''
+    [string]$CandidateId = '',
+    [string]$InnoSetupPath = ''
 )
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -34,10 +35,12 @@ if ($settings.models.oss_bucket -or $settings.models.ai_service -or @($settings.
     throw "Payload must contain factory settings with no personal providers/bucket"
 }
 $compiler = @(
+    $InnoSetupPath,
+    $env:TWOBYTEASR_INNO_SETUP,
     (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
     (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
     (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $compiler) { throw "Inno Setup 6 ISCC.exe not found" }
 New-Item -ItemType Directory -Path $release -Force | Out-Null
 $baseName = if ($QA) { "2ByteASR-QA-Setup-$version" } else { "2ByteASR-Setup-$version" }
@@ -54,7 +57,10 @@ $numericVersion = ($version -split "[-+]")[0]
 $compilerArgs += @("/DPayloadDir=$payload", "/DReleaseDir=$release", "/DMyAppVersion=$version", "/DMyAppNumericVersion=$numericVersion", (Join-Path $projectRoot 'installer\2ByteASR-frozen.iss'))
 & $compiler @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
-$hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+$hashStream = [IO.File]::OpenRead($output)
+$hashAlgorithm = [Security.Cryptography.SHA256]::Create()
+try { $hash = [BitConverter]::ToString($hashAlgorithm.ComputeHash($hashStream)).Replace('-', '').ToLowerInvariant() }
+finally { $hashStream.Dispose(); $hashAlgorithm.Dispose() }
 "$hash  $([IO.Path]::GetFileName($output))" | Set-Content -LiteralPath "$output.sha256" -Encoding ascii
 Write-Host "Setup: $output"
 Write-Host "SHA256: $hash"

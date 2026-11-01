@@ -207,7 +207,10 @@ def pretty_map_pieces(value: FrozenMap, cache: FrozenTextCache, level: int) -> l
         if index:
             pieces.append(",\n")
         pieces.append(pad + json.dumps(key, ensure_ascii=False) + ": ")
-        pieces.append(cache.frozen(item).replace("\n", "\n" + pad))
+        if isinstance(item, FrozenMap):
+            pieces.extend(pretty_map_pieces(item, cache, level + 1))
+        else:
+            pieces.append(cache.frozen(item).replace("\n", "\n" + pad))
     pieces.append("\n" + "  " * level + "}")
     return pieces
 

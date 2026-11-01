@@ -371,6 +371,10 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         editor.setGeometry(rect)
 
     def _commit_canvas_inline_edit(self, *, advance: bool = False) -> None:
+        if (getattr(self, '_canvas_editor', None) is None
+                and getattr(self, '_caption_draft', None) is None
+                and not getattr(self, '_caption_following', False)):
+            return False
         if getattr(self, '_caption_following', False) or getattr(self, "_caption_draft", None) is not None:
             return self._end_caption_editor(keep_open=False)
         try:
@@ -380,8 +384,6 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
 
     def _commit_canvas_inline_edit_impl(self, *, advance: bool = False, play_next: bool = False) -> None:
         editor = getattr(self, "_canvas_editor", None)
-        if editor is None and hasattr(self, "subtitle_edit_input"):
-            editor = self.subtitle_edit_input
         if editor is None:
             return
         self._review_fast_select=bool(advance and self._review_mode)
@@ -460,6 +462,8 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         self._studio_trace("INLINE_END", cue_id=cue_id, result="committed")
 
     def _cancel_canvas_inline_edit(self) -> None:
+        if self._cancel_bound_caption_editor():
+            return
         self._caption_following = False
         self._caption_edit_locked = False
         self._set_subtitle_editor_visible(False)

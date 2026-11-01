@@ -691,7 +691,7 @@ def call_grouping_api(
                 abort_event=abort_event,batch_index=child_id,batch_total=batch_total,
                 _split_depth=_split_depth+1,provider_snapshot=snapshot,
                 batch_diagnostics=batch_diagnostics,_retry_budget=_retry_budget,
-                _cache_context=_cache_context)
+                _cache_context=_cache_context,_read_only_context=_read_only_context)
         if _cache_context is None:
             return execute()
         return run_cached_api_batch('grouped',_cache_context,
@@ -708,7 +708,8 @@ def call_grouping_api(
             protect_all_source_boundaries=protect_all_source_boundaries,
             protected_after_segment_ids=protected_after_segment_ids,
             firered_tokens=firered_tokens,speech_regions=speech_regions,
-            provider_snapshot=snapshot,_messages_only=True,_retry_budget=_retry_budget)
+            provider_snapshot=snapshot,_messages_only=True,_retry_budget=_retry_budget,
+            _read_only_context=_read_only_context)
 
     if not _packed:
         from ..providers.provider_input_budget import pack_items
@@ -1018,6 +1019,11 @@ def call_grouping_api(
                 "structured_output_truncated_before_answer",
             }:
                 break
+            if (last_category in {'text_mutation_rejected','format_mismatch'}
+                    and len(segment_batch)>16 and _split_depth==0):
+                # A large rejected answer gets one bounded smaller attempt.
+                # Never keep resending the same large, invalid text response.
+                break
             from ..providers.provider_input_budget import retry_delay, wait_retry
             delay=retry_delay(exc,attempt)
             if delay is None:
@@ -1050,7 +1056,9 @@ def call_grouping_api(
                     from ..recognition.service import CancelledError
                     raise CancelledError('断句任务已取消。')
 
-    if (
+    quality_rebatch=(last_category in {'text_mutation_rejected','format_mismatch'}
+                     and len(segment_batch)>16 and _split_depth==0)
+    if quality_rebatch or (
         last_category in {
             "structured_output_truncated",
             "structured_output_truncated_before_answer",
@@ -1073,7 +1081,7 @@ def call_grouping_api(
         child_cues = []
         all_validated=True
         for part,child in enumerate((segment_batch[:midpoint],segment_batch[midpoint:]),1):
-            child_result=run_child(child,f'{batch_index}.{part}',retry_child=True)
+            child_result=run_child(child,f'{batch_index}.{part}',retry_child=not quality_rebatch)
             all_validated=all_validated and bool(getattr(child_result,'validated',False))
             child_cues.extend(child_result)
         return GroupedBatchResult(child_cues,validated=all_validated,origin='ai' if all_validated else 'fallback')
@@ -1214,6 +1222,8 @@ def group_subtitles(
         batches.extend(('mixed', part, False) for part in split_items_for_api(remote_rows,
             max_cues=max_rows,max_chars=max_chars))
     jobs = []
+    from ..recognition.evidence_windows import EvidenceWindows
+    token_windows, speech_windows = EvidenceWindows(firered_tokens), EvidenceWindows(speech_regions)
     grouping_abort_event = threading.Event()
     from ..providers.provider_input_budget import RetryBudget
     retry_budget=RetryBudget(GROUPING_API_RETRIES-1)
@@ -1221,6 +1231,9 @@ def group_subtitles(
         # Alignment diagnostics are observations, not semantic cache inputs.
         # The first unaligned run may add one without changing text or timing.
         serialized_batch = _grouping_dependency_segments(batch)
+        local_tokens=token_windows.between(min(row.start for row in batch)-2.,max(row.end for row in batch)+2.)
+        local_speech=speech_windows.between(min(row.start for row in batch)-2.,max(row.end for row in batch)+2.)
+        local_protected=interrupted_after & {row.segment_id for row in batch}
         dependency = {
             "use_ai": use_ai,
             "batch_protocol": prompt_key,
@@ -1229,18 +1242,21 @@ def group_subtitles(
             "speaker": speaker,
             "batch": serialized_batch,
             "protect_all": bool(protect_all_source_boundaries),
-            "protected_after": sorted(interrupted_after),
-            "firered_tokens": firered_tokens,
-            "speech_regions": speech_regions,
+            "protected_after": sorted(local_protected),
+            "firered_tokens": local_tokens,
+            "speech_regions": local_speech,
             "input_content_hash": digest([item.text for item in batch]),
             "boundaries_hash": digest({"protect_all": bool(protect_all_source_boundaries),
-                                       "protected_after": sorted(interrupted_after),
+                                       "protected_after": sorted(local_protected),
                                        "source_boundaries": sorted(source_segment_character_offsets(batch))}),
         }
         jobs.append((index, speaker, batch, dependency, local_fast))
 
     def run_job(job):
         index, speaker, batch, dependency, local_fast = job
+        batch_tokens=dependency['firered_tokens']
+        batch_speech=dependency['speech_regions']
+        batch_protected=set(dependency['protected_after'])
         print(f"   断句批次 {index}/{len(batches)}，说话人 {speaker}")
         record_run_event("cloud_batch_started", stage="grouped" if use_ai else "grouped_local",
                          batch_index=index, batch_total=len(batches), cue_count=len(batch))
@@ -1251,7 +1267,7 @@ def group_subtitles(
 
         def run_group_batch():
             if local_fast:
-                result = fallback_group(batch, firered_tokens, speech_regions)
+                result = fallback_group(batch, batch_tokens, batch_speech)
                 _bind_cue_speakers(result, batch)
                 if not _restore_grouped_source(batch, result):
                     raise ValueError('本地断句未保持来源正文。')
@@ -1259,7 +1275,7 @@ def group_subtitles(
                     reason='finished_short_protected_utterance', input_characters=sum(display_length(x.text) for x in batch))
                 return GroupedBatchResult(result, origin='local_fast', validated=True)
             if not use_ai:
-                result = fallback_group(batch, firered_tokens, speech_regions)
+                result = fallback_group(batch, batch_tokens, batch_speech)
                 if not _restore_grouped_source(batch, result):
                     raise ValueError('本地断句未保持来源正文。')
                 return result
@@ -1271,9 +1287,9 @@ def group_subtitles(
             return call_grouping_api(
                 batch,
                 protect_all_source_boundaries=protect_all_source_boundaries,
-                protected_after_segment_ids=interrupted_after,
-                firered_tokens=firered_tokens,
-                speech_regions=speech_regions,
+                protected_after_segment_ids=batch_protected,
+                firered_tokens=batch_tokens,
+                speech_regions=batch_speech,
                 abort_event=grouping_abort_event,
                 batch_index=index,
                 batch_total=len(batches),
@@ -1333,8 +1349,9 @@ def group_subtitles(
         return index, batch_cues, review_items
 
     results = {}
+    from ..system.task_resources import cloud_request_workers
     workers = (
-        min(CLOUD_BATCH_WORKERS, len(jobs))
+        min(cloud_request_workers(snapshot,CLOUD_BATCH_WORKERS), len(jobs))
         if use_ai and PARALLEL_CLOUD_BATCHES
         else 1
     )
@@ -1351,7 +1368,7 @@ def group_subtitles(
 
     dispatched_at = time.perf_counter()
     if workers > 1:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from ..recognition.run_context import ContextExecutor as ThreadPoolExecutor, bounded_results
 
         print(f"   [并行加速] {len(jobs)} 个断句批次，最多 {workers} 路并发。")
         record_run_event(
@@ -1361,9 +1378,7 @@ def group_subtitles(
             workers=workers,
         )
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="glm-group") as pool:
-            futures = {pool.submit(run_job, job): job[0] for job in jobs}
-            for future in as_completed(futures):
-                index, batch_cues, review_items = future.result()
+            for index, batch_cues, review_items in bounded_results(pool,run_job,jobs,limit=workers):
                 results[index] = batch_cues
                 extend_review_items(review_items)
     else:

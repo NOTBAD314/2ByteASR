@@ -85,15 +85,17 @@ def main():
         if digest(ROOT/rel) != item['sha256']: raise ValueError(f'Wheel mismatch: {rel}')
         selected.add(rel)
     selected = {rel for rel in selected if is_current_delivery_file(rel.as_posix())}
-    records = []
-    for rel in sorted(selected):
+    def copy_selected(rel):
         source = ROOT / rel
         if not source.is_file(): raise FileNotFoundError(rel)
         target = stage / rel; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         before = digest(source); after = digest(target)
         if before != after: raise ValueError(f'Input changed during snapshot: {rel}')
-        records.append(dict(path=rel.as_posix(),bytes=target.stat().st_size,sha256=after))
+        return dict(path=rel.as_posix(),bytes=target.stat().st_size,sha256=after)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        records = list(pool.map(copy_selected, sorted(selected)))
     # Only source inventory is indexed. No Git commit or history is copied.
     flags = dict(cwd=stage,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     subprocess.run(['git','init','-q'], **flags)

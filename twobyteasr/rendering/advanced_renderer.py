@@ -176,9 +176,8 @@ def cue_visual_cache_key(snapshot: VisualCueSnapshot) -> str:
 
 
 def _ffmpeg_filter_path(path: str | os.PathLike[str]) -> str:
-    value = str(Path(path).resolve()).replace("\\", "/")
-    value = value.replace(":", r"\:").replace("'", r"\'")
-    return f"'{value}'"
+    from ..exports.ffmpeg_paths import filter_path
+    return filter_path(path)
 
 
 def _native_segment_project(project: SubtitleProject, start_ms: int, end_ms: int) -> SubtitleProject:
@@ -1163,6 +1162,9 @@ class AdvancedRendererBackend:
         from ..exports.static_caption_export import static_graph_project, render_static_graph
         from ..exports.export_filtergraph import simple_video_clips
         from ..caption_style.bilingual_layout import materialize_display_project
+        from ..exports.caption_integrity import require_confirmed_empty_sources
+        require_confirmed_empty_sources(project,start_ms=round((job.start_seconds or 0)*1000),
+            end_ms=round(((job.start_seconds or 0)+job.duration_seconds)*1000) if job.duration_seconds is not None else None)
         project = materialize_display_project(project)
         if job.video_graph:
             from dataclasses import replace
@@ -1180,6 +1182,10 @@ class AdvancedRendererBackend:
             prepared=replace(job,direct_video_graph=job.video_graph,video_graph=None,edit_segments=(),
                              settings=replace(job.settings,fps=float(source_fps)))
             return render_static_graph(project,ffmpeg_path,prepared,progress=progress,cancelled=cancelled,trace=trace)
+        # The canonical static Qt path does not use Node/Remotion. Its direct
+        # video-graph sibling above already works without that optional runtime.
+        if not job.video_graph and not job.edit_segments and static_graph_project(project):
+            return render_static_graph(project,ffmpeg_path,job,progress=progress,cancelled=cancelled,trace=trace)
         self.require_available()
         if job.video_graph:
             from ..exports.video_export import prepared_video_job

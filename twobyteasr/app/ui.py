@@ -11172,6 +11172,11 @@ class MainWindow(QWidget):
     def _reset_progress_presentation(self):
         """Fresh per-run presentation state (2026-10-08, M12)."""
         self._stage_live = {}
+        self._parallel_work = {}
+        self._parallel_counts = {}
+        self._parallel_phase_nodes = {}
+        self._parallel_versions = {}
+        self._parallel_node_count = (0,0)
         self._stage_partial = {}
         self._stopped_stages = set()
         self._last_completed_stage = None
@@ -11311,10 +11316,64 @@ class MainWindow(QWidget):
             self._render_preparing_step()
         self._render_preview()
 
+        ongoing = [value for value in getattr(self, '_parallel_work', {}).values()
+                   if value.get('state') in {'queued', 'running', 'retry'}]
+        if ongoing and not terminal and not cancelling:
+            lines = []
+            counters=getattr(self,'_parallel_counts',{})
+            moss=counters.get('mosi') or {}
+            if moss:
+                lines.append(tr('MOSS：{done}/{total} 返回 · 上传 {upload} · 云端 {remote} · 等待 {queued}',
+                    done=moss.get('done',0),total=moss.get('total',0),upload=moss.get('uploading',0),
+                    remote=moss.get('polling',0),queued=moss.get('queued',0)))
+            nodes=getattr(self,'_parallel_phase_nodes',{})
+            total_shards=int(counters.get('shards') or 0)
+            if total_shards:
+                initial=len(nodes.get('initial-alignment',()))+len(nodes.get('local-gap-fill',()))
+                extras=max(0,getattr(self,'_parallel_node_count',(0,0))[1]-6*total_shards)
+                post_phases=('grouped','text-stable','final-alignment','translation')
+                phases=[(initial,total_shards+extras,{'initial-alignment','local-gap-fill','mosi'}),
+                        (len(nodes.get('polished',())),total_shards,{'polished'}),
+                        (sum(len(nodes.get(phase,())) for phase in post_phases),4*total_shards,set(post_phases))]
+                for index,(done,count,owned_phases) in enumerate(phases):
+                    started=bool(done or index==0 and moss or any(row.get('phase') in owned_phases for row in ongoing))
+                    state=('degraded' if index in degraded else 'done') if done>=count else 'active' if started else 'pending'
+                    card=self.phase_cards[index];card.set_state(state);card.set_steps(done,count)
+                    card.set_detail(degraded.get(index,'') if state=='degraded' else '')
+                lines.append(tr('校对 {polish}/{total} 片 · 断句 {group}/{total} 片 · 翻译 {translation}/{total} 片',
+                    polish=len(nodes.get('polished',())),group=len(nodes.get('grouped',())),
+                    translation=len(nodes.get('translation',())),total=total_shards))
+                lines.append(tr('最终字级对齐及复核：{done}/{total} 片',
+                    done=len(nodes.get('final-alignment',())),total=total_shards))
+            workers=[row for row in ongoing if row.get('engine')]
+            selected=workers[-1:] if lines else ongoing[-3:]
+            for item in selected:
+                count = f" · {item.get('done', 0)}/{item['total']}" if item.get('total') else ''
+                if item.get('range_start_ms') is not None and item.get('range_end_ms') is not None:
+                    from .progress_model import clock
+                    count += tr(' · 范围 {start}–{end}',start=clock(item['range_start_ms']/1000),
+                                end=clock(item['range_end_ms']/1000))
+                quiet = max(0, int(time.perf_counter() - item['at']))
+                lines.append(str(item.get('label') or '') + count + tr(' · {seconds} 秒前有进展', seconds=quiet))
+            bind_text(self.active_tasks_label, '\n'.join(lines))
+            self.active_tasks_label.show()
+            if total_shards and focus_id is not None:
+                bind_text(self.progress_stage, '分片并行处理中')
+                bind_text(self.stage_step_label,'按就绪片段推进')
+                self.stage_metrics.hide()
+            if focus_id is None:
+                bind_text(self.progress_stage, ongoing[-1].get('label') or '')
+                self.running_indicator.set_status('处理中', 'accent')
+                self.progress_resource.show()
+                bind_text(self.progress_resource, '已完成量与最后活动时间见下方')
+
         media_total = max(1, self._current_media_total)
         media_index = max(1, self._current_media_index)
         partial = {stage: value for stage, value in getattr(self, '_stage_partial', {}).items() if stage in active_ids}
         fraction = overall_fraction(total, ended, partial, media_index, media_total)
+        node_done,node_total=getattr(self,'_parallel_node_count',(0,0))
+        if node_total and not terminal:
+            fraction=max(fraction,((media_index-1)+min(.96,.96*node_done/node_total))/media_total)
         if succeeded and getattr(self, '_delivery_verified', False):
             fraction = 1.0
         value = max(0, min(1000, int(round(fraction * 1000))))
@@ -11331,7 +11390,10 @@ class MainWindow(QWidget):
         done = len(ended)
         steps = getattr(self, 'progress_steps', None)
         if steps is not None:
-            bind_text(steps, '{done} / {total} 步', done=done, total=total)
+            if node_total and not terminal:
+                bind_text(steps,'{done} / {total} 项任务',done=node_done,total=node_total)
+            else:
+                bind_text(steps, '{done} / {total} 步', done=done, total=total)
         if terminal:
             if succeeded:
                 bind_text(self.progress_context, '已完成 {done} / {total} 步 · 工程已保存' if fraction >= 1
@@ -11748,6 +11810,52 @@ class MainWindow(QWidget):
         if active_job and str(getattr(event, 'job_id', '') or '') != active_job:
             return
         degraded = self.__dict__.setdefault('_phase_degraded', {})
+        payload=event.payload or {}
+        shard=str(payload.get('shard_id') or '')
+        version=str(payload.get('input_version') or '')
+        versions=self.__dict__.setdefault('_parallel_versions',{})
+        if event.kind=='ready_shard_queued':
+            if versions.get(shard) and versions[shard]!=version:
+                for values in self.__dict__.get('_parallel_phase_nodes',{}).values():values.discard(shard)
+                works=self.__dict__.get('_parallel_work',{})
+                for key in [key for key,row in works.items() if row.get('shard_id')==shard or key.startswith(shard+':')]:
+                    works.pop(key,None)
+            versions[shard]=version
+        elif shard and version and versions.get(shard) and versions[shard]!=version:
+            return
+        counts=self.__dict__.setdefault('_parallel_counts',{})
+        if event.kind=='long_pipeline_progress':
+            self._parallel_node_count=(int(payload.get('completed') or 0),int(payload.get('total') or 0))
+            counts['shards']=int(payload.get('shards') or 0)
+            self.__dict__.setdefault('_parallel_phase_nodes',{}).setdefault(str(payload.get('phase')),set()).add(
+                str(payload.get('shard_id') or f"r{int(payload.get('request_index') or 0)+1:03}"))
+        elif event.kind=='mosi_scheduler':
+            counts.setdefault('mosi',{}).update(uploading=int(payload.get('uploading') or 0),
+                polling=int(payload.get('polling') or 0),queued=int(payload.get('queued') or 0),
+                total=int(payload.get('request_total') or 0))
+        elif event.kind=='asr_progress' and (payload.get('backend')=='mosi_moss_pro' or
+                payload.get('model')=='moss-transcribe-diarize-pro'):
+            counts.setdefault('mosi',{}).update(done=int(payload.get('completed_batches') or 0),
+                total=int(payload.get('total_batches') or 0))
+        if event.kind in {'pipeline_work_progress', 'alignment_progress'}:
+            payload = dict(event.payload)
+            if event.kind == 'alignment_progress':
+                payload['work_id'] = 'worker:' + str(payload.get('worker_pid') or payload.get('engine'))
+                payload['state'] = ('completed' if payload.get('worker_state') in {'completed','request_completed'}
+                                    else 'failed' if payload.get('worker_state') == 'failed' else 'running')
+                if not payload.get('total') and payload.get('jobs'):
+                    payload['total'] = payload['jobs']
+            works = self.__dict__.setdefault('_parallel_work', {})
+            key = str(payload.get('work_id') or '')
+            payload['at'] = ((works.get(key) or {}).get('at',time.perf_counter()) if payload.get('heartbeat')
+                             else time.perf_counter())
+            works[key] = dict(works.get(key) or {}, **payload)
+            # Retain active work and a small recent terminal history only.
+            ended = [key for key, row in works.items() if row.get('state') not in {'queued','running','retry'}]
+            for key in ended[:-8]:
+                works.pop(key, None)
+            if isinstance(self.progress_bar, StageProgressBar):
+                self.progress_bar.note_activity()
         if event.kind in {'asr_evidence_delta', 'cue_delta', 'terminology_polish_final',
                           'cloud_batch_preview'} and hasattr(self, 'recognition_preview'):
             self._push_preview(event.kind, event.payload)
@@ -11912,7 +12020,7 @@ class MainWindow(QWidget):
             stage = event.payload.get("stage", "")
             self._append_feed("缓存", tr('复用 {stage}，跳过重复计算', stage=tr(stage)), BLUE)
         elif event.kind == "cloud_batches_parallel":
-            stage = max(self._active_stages) if self._active_stages else None
+            stage = max(self._active_stages) if self._active_stages and not shard else None
             if stage is not None:
                 self.__dict__.setdefault('_cloud_batches', {})[stage] = {
                     'done': 0, 'total': int(event.payload.get('batches') or 0)}
@@ -11923,7 +12031,7 @@ class MainWindow(QWidget):
             )
         elif event.kind == "cloud_batch_started":
             # 2026-10-15: which batches are with the provider right now.
-            stage = max(self._active_stages) if self._active_stages else None
+            stage = max(self._active_stages) if self._active_stages and not shard else None
             if stage is not None:
                 self.__dict__.setdefault('_cloud_inflight', {}).setdefault(stage, set()).add(
                     int(event.payload.get('batch_index') or 0))
@@ -11951,7 +12059,7 @@ class MainWindow(QWidget):
         elif event.kind == 'api_usage':
             payload = event.payload
             active = getattr(self, '_active_stages', {}) or {}
-            stage = (2 if payload.get('stage') == 'asr_primary' and 2 in active
+            stage = (None if shard else 2 if payload.get('stage') == 'asr_primary'
                      else max(active) if active else None)
             from ..providers.api_usage import UsageTotals
             if stage is not None:
@@ -11961,7 +12069,15 @@ class MainWindow(QWidget):
                 total = self._usage_total = UsageTotals()
             total.add(payload)
         elif event.kind == 'subtitle_translation_progress':
-            stage = max(self._active_stages) if self._active_stages else None
+            stage = max(self._active_stages) if self._active_stages and not shard else None
+            if shard:
+                key=f'{shard}:translation';works=self.__dict__.setdefault('_parallel_work',{})
+                done,total=int(payload.get('done') or 0),int(payload.get('total') or 0)
+                if total and done>=total:
+                    self.__dict__.setdefault('_parallel_phase_nodes',{}).setdefault('translation',set()).add(shard)
+                works[key]=dict(works.get(key) or {},work_id=key,label='字幕翻译',phase='translation',
+                    state='completed' if total and done>=total else 'running',
+                    done=int(payload.get('done') or 0),total=int(payload.get('total') or 0),at=time.perf_counter())
             if stage is not None:
                 done, total = int(event.payload.get('done') or 0), int(event.payload.get('total') or 0)
                 self.__dict__.setdefault('_stage_live', {})[stage] = {
@@ -11971,7 +12087,7 @@ class MainWindow(QWidget):
                 if isinstance(self.progress_bar, StageProgressBar):
                     self.progress_bar.note_activity()
         elif event.kind == "cloud_batch_completed":
-            stage = max(self._active_stages) if self._active_stages else None
+            stage = max(self._active_stages) if self._active_stages and not shard else None
             if stage is not None:
                 self.__dict__.setdefault('_cloud_inflight', {}).get(stage, set()).discard(
                     int(event.payload.get('batch_index') or 0))

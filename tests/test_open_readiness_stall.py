@@ -17,6 +17,15 @@ from twobyteasr.studio.studio_readiness import StudioReadiness, caption_rows_pre
 APP = QApplication.instance() or QApplication([])
 
 
+def test_exited_old_player_cannot_fail_pending_replacement():
+    gate = SimpleNamespace(player_ready=False,
+        page=SimpleNamespace(video=SimpleNamespace(controller=SimpleNamespace(exit_code=0xC0000135),
+                                                  _last_load_error='')))
+    assert StudioReadiness._player_start_failure(gate) == ''
+    gate.player_ready = True
+    assert '0xC0000135' in StudioReadiness._player_start_failure(gate)
+
+
 def _gate(*, last_progress_age, completed=(), reader=None):
     now = time.perf_counter()
     failures = []

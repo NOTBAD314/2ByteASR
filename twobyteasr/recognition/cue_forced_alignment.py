@@ -18,6 +18,7 @@ traced to the model.
 from __future__ import annotations
 
 import copy
+import bisect
 
 CUE_ALIGNMENT_PREFIX = "cue-align:"
 UNIT_FIELDS = ("text", "char_start", "char_end", "kind", "word_index", "raw_start_ms", "raw_end_ms",
@@ -28,6 +29,7 @@ WINDOW_PAD_MS = 300
 RUN_GAP_MS = 2 * WINDOW_PAD_MS
 RUN_MAX_MS = 30_000
 RUN_MAX_CUES = 8
+RUN_MAX_CHARACTERS = 600
 RUN_SEPARATOR = " "
 # A pause of this length (voice activity) between two lines ends a run even
 # when display tails and short-gap bridging made the lines touch.
@@ -76,21 +78,24 @@ def plan_runs(rows, *, pad_ms=WINDOW_PAD_MS):
         last = runs[-1] if runs else None
         if (last and last["speaker"] == row["speaker"] and int(row["start_ms"]) - last["end_ms"] <= RUN_GAP_MS
                 and not row.get("break_before")
-                and len(last["members"]) < RUN_MAX_CUES and int(row["end_ms"]) - last["start_ms"] <= RUN_MAX_MS):
+                and len(last["members"]) < RUN_MAX_CUES and int(row["end_ms"]) - last["start_ms"] <= RUN_MAX_MS
+                and last['characters'] + len(str(row['text'])) + len(RUN_SEPARATOR) <= RUN_MAX_CHARACTERS):
             last["members"].append(row)
             last["end_ms"] = max(last["end_ms"], int(row["end_ms"]))
+            last['characters'] += len(str(row['text'])) + len(RUN_SEPARATOR)
         else:
             runs.append({"speaker": row["speaker"], "members": [row], "start_ms": int(row["start_ms"]),
-                         "end_ms": int(row["end_ms"])})
+                         "end_ms": int(row["end_ms"]), 'characters': len(str(row['text']))})
+    starts = sorted(run['start_ms'] for run in runs)
+    ends = sorted(run['end_ms'] for run in runs)
     for run in runs:
         left, right = max(0, run["start_ms"] - pad_ms), run["end_ms"] + pad_ms
-        for other in runs:
-            if other is run:
-                continue
-            if left < other["end_ms"] <= run["start_ms"]:
-                left = other["end_ms"]
-            if run["end_ms"] <= other["start_ms"] < right:
-                right = other["start_ms"]
+        before = bisect.bisect_right(ends, run['start_ms']) - 1
+        after = bisect.bisect_left(starts, run['end_ms'])
+        if before >= 0:
+            left = max(left, ends[before])
+        if after < len(starts):
+            right = min(right, starts[after])
         run["window_start_ms"], run["window_end_ms"] = left, right
         texts, spans, cursor = [], [], 0
         for member in run["members"]:
@@ -181,6 +186,31 @@ def longest_silence_ms(speech_regions, start_ms, end_ms):
     return max(longest, end_ms - cursor)
 
 
+class _SpeechIntervals:
+    """One merged VAD index for all neighbor-gap queries in a task."""
+    def __init__(self, regions):
+        self.rows = []
+        for start, end in sorted((round(float(row['start']) * 1000), round(float(row['end']) * 1000))
+                                 for row in regions):
+            if end <= start:
+                continue
+            if self.rows and start <= self.rows[-1][1]:
+                self.rows[-1] = (self.rows[-1][0], max(end, self.rows[-1][1]))
+            else:
+                self.rows.append((start, end))
+        self.ends = [row[1] for row in self.rows]
+
+    def longest_silence(self, start, end):
+        longest, cursor = 0, start
+        for index in range(bisect.bisect_right(self.ends, start), len(self.rows)):
+            a, b = self.rows[index]
+            if a >= end:
+                break
+            longest = max(longest, a - cursor)
+            cursor = max(cursor, min(end, b))
+        return max(longest, end - cursor)
+
+
 def alignment_jobs(cues, *, language="Japanese", pad_ms=WINDOW_PAD_MS, speech_regions=None):
     """Worker jobs (one per run) and the runs they came from (for ``attach_results``).
 
@@ -192,11 +222,12 @@ def alignment_jobs(cues, *, language="Japanese", pad_ms=WINDOW_PAD_MS, speech_re
              "speaker": str(getattr(cue, "speaker", "") or "S00"), "text": str(getattr(cue, "text", "") or "")}
             for index, cue in enumerate(cues, 1)]
     if speech_regions:
+        speech = _SpeechIntervals(speech_regions)
         ordered = sorted(rows, key=lambda row: (row["start_ms"], row["end_ms"]))
         for left, right in zip(ordered, ordered[1:]):
             if left["speaker"] == right["speaker"]:
                 middle = (left["start_ms"] + left["end_ms"]) // 2
-                right["break_before"] = longest_silence_ms(speech_regions, middle, right["start_ms"] + 150) >= RUN_PAUSE_BREAK_MS
+                right["break_before"] = speech.longest_silence(middle, right["start_ms"] + 150) >= RUN_PAUSE_BREAK_MS
     runs = plan_runs(rows, pad_ms=pad_ms)
     jobs = [{"id": f"run-{number}", "window_start_ms": run["window_start_ms"], "window_end_ms": run["window_end_ms"],
              "text": run["text"], "language": language} for number, run in enumerate(runs, 1)]
@@ -279,6 +310,37 @@ def attach_results(cues, runs, payload, *, target_keys=None):
 
 
 def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions=None, evidence_dir=None):
+    from .pipeline_activity import work
+    cues = list(cues)
+    label = {'Japanese':'日语','Chinese':'中文','English':'英语','Korean':'韩语'}.get(language,language)
+    with work(legacy, 'final-word-alignment', f'{label}最终字级对齐', total=len(cues)) as progress:
+        result = _align_final_cues(cues, audio, legacy, language=language,
+                                  speech_regions=speech_regions, evidence_dir=evidence_dir)
+        progress(result, 'completed' if result == len(cues) else 'partial')
+        return result
+
+
+def caption_speech_band(audio,cues):
+    """Use the same minute/hop grid, processing only the owned caption range."""
+    from .boundary_grades import SpeechBand,PAUSE_CONTEXT_MS
+    from types import SimpleNamespace
+    cues=list(cues)
+    if not cues:return SpeechBand(audio)
+    left=max(0,(int(min(c.start for c in cues)*1000)-PAUSE_CONTEXT_MS-400)//60000*60000)
+    right=min(len(audio)//16,((int(max(c.end for c in cues)*1000)+PAUSE_CONTEXT_MS+400+59999)//60000)*60000)
+    from .run_context import get_runtime_context
+    preparation=getattr(get_runtime_context(),'streaming_preparation',None)
+    if preparation is not None and preparation.owns(audio):
+        preparation.wait_ready(min(right*16,preparation.expected_samples))
+        right=min(right,preparation.valid_samples//16)
+    band=SpeechBand(audio[left*16:right*16])
+    def pause(a,b,side='gap'):
+        value=band.pause(a-left,b-left,side)
+        return (value[0]+left,value[1]+left) if value is not None else None
+    return SimpleNamespace(pause=pause)
+
+
+def _align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions=None, evidence_dir=None):
     """Align every final cue's own text; failures leave cues without words.
 
     ``evidence_dir``: where the whole worker receipt is kept (``timing_evidence``).
@@ -287,12 +349,23 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
     jobs, runs = alignment_jobs(cues, language=language, speech_regions=speech_regions)
     if not jobs:
         return 0
-    from concurrent.futures import ThreadPoolExecutor
+    from .run_context import ContextExecutor as ThreadPoolExecutor
     from twobyteasr.recognition.asr import AlignerUnavailableError, run_qwen_aligner_worker, summarize_aligner_payload
     from twobyteasr.recognition.service import CancelledError
     from .run_context import get_runtime_context
     context = get_runtime_context()
     evidence = getattr(context, 'segment_alignment_evidence', None)
+    if evidence is None and evidence_dir:
+        # A valid upstream stage cache does not rerun the initial aligner.
+        # Its saved receipt is still checked against exact PCM/model/text.
+        from .timing_evidence import load_receipt
+        from pathlib import Path
+        try:
+            saved = load_receipt(Path(evidence_dir) / f'segments-{language.lower()}-qwen3.json.gz')
+            if saved.get('stage') == 'segments' and saved.get('language') == language:
+                evidence = dict(audio=audio, payload=saved.get('payload'), job_id=context.job_id, language=language)
+        except (OSError, ValueError, TypeError, EOFError):
+            pass
     context.segment_alignment_evidence = None  # never leak a receipt into another media item
     reusable, reasons, targets = {}, {}, None
     def require_current():
@@ -305,8 +378,13 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
             and str(evidence.get('language', '')).casefold() == str(language).casefold()):
         from .word_evidence_reuse import audio_sha256, plan_reuse
         try:
+            preparation=getattr(context,'streaming_preparation',None)
+            streaming=preparation is not None and preparation.owns(audio)
             reusable, reasons = plan_reuse(cues, evidence.get('payload'), language=language,
-                                           audio_digest=audio_sha256(audio), cancel_check=require_current)
+                audio_digest=None if streaming else audio_sha256(audio),cancel_check=require_current,
+                audio=audio if streaming else None,
+                audio_clock_identity=preparation.clock_identity if streaming else None,
+                valid_samples=preparation.valid_samples if streaming else None)
         except CancelledError:
             raise
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -330,7 +408,7 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
         if not reusable:
             return band
         from .boundary_grades import GRADES, POLICY, SpeechBand, grade_caption
-        band = band or SpeechBand(audio)
+        band = band or caption_speech_band(audio,cues)
         totals = {grade: 0 for grade in GRADES}
         for key, alignment in reusable.items():
             require_current()
@@ -421,8 +499,16 @@ def _second_attempt(engine, audio, jobs):
     if engine == "mfa" and not (mfa_aligner.handles(jobs) and mfa_aligner.runtime_python()):
         return "not_installed", None
     try:
-        return "ok", (run_qwen_aligner_worker(audio, jobs, engine="qwen3") if engine == "qwen3"
-                      else mfa_aligner.run_aligner(audio, jobs))
+        from ..system.task_resources import CPU_ALIGNMENT_GATE
+        from .asr import _raise_if_queue_cancelled
+        from .cache import record_run_event
+        from types import SimpleNamespace
+        from .pipeline_activity import work
+        legacy = SimpleNamespace(record_run_event=record_run_event)
+        with work(legacy, 'second-alignment', 'MFA 切点复核' if engine == 'mfa' else 'Qwen3 切点复核', total=len(jobs)):
+            if engine == 'qwen3':
+                return 'ok', run_qwen_aligner_worker(audio, jobs, engine='qwen3')
+            return 'ok', mfa_aligner.run_aligner(audio, jobs)
     except CancelledError as exc:
         return "cancelled", exc
     except (AlignerUnavailableError, mfa_aligner.MfaUnavailableError) as exc:
@@ -466,7 +552,7 @@ def second_opinion(audio, jobs, payload, legacy, *, attempt=None):
 def grade_final_cues(cues, runs, second, audio, legacy, *, target_keys=None, band=None):
     """Grade every cut position of the aligned captions (``boundary_grades``) into ``cue.forced_alignment``."""
     from .boundary_grades import GRADES, POLICY, SpeechBand, grade_caption
-    band = band or SpeechBand(audio)
+    band = band or caption_speech_band(audio,cues)
     by_id = {str(row.get("id")): row for row in (second or {}).get("results") or ()}
     engine = ("" if second is None else "mfa" if str(second.get("protocol") or "").startswith("mfa-") else "qwen3")
     totals, reasons = {grade: 0 for grade in GRADES}, {}

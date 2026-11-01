@@ -150,7 +150,7 @@ def ctc_starts(jobs, payload) -> dict[str, int]:
 
 
 def propose(rows, starts: dict[str, int], measured_start, *, frame_ms: float | None = None,
-            alternate_start=None) -> list[StartChange]:
+            alternate_start=None, edge_valid=None) -> list[StartChange]:
     """Apply the agreement rule; rows sorted by time, one change per line at most.
 
     ``frame_ms`` (optional) places each new start on the frame grid.
@@ -201,6 +201,9 @@ def propose(rows, starts: dict[str, int], measured_start, *, frame_ms: float | N
                          and abs(end_of[other.id] - row.start_ms) <= CUT_TOLERANCE_MS]
         if any(new_ms - start_of[other.id] < MIN_LINE_MS for other in followers):
             continue
+        if edge_valid is not None and (not edge_valid(row,'start',new_ms)
+                or any(not edge_valid(other,'end',new_ms) for other in followers)):
+            continue
         start_of[row.id] = new_ms
         for other in followers:
             end_of[other.id] = new_ms
@@ -210,6 +213,21 @@ def propose(rows, starts: dict[str, int], measured_start, *, frame_ms: float | N
 
 
 def run_worker(audio, jobs) -> dict:
+    from .alignment_audio import bounded_jobs
+    jobs=bounded_jobs(jobs)
+    from .alignment_checkpoints import run_cached
+    from .asr import _raise_if_queue_cancelled
+    normalized = [dict(job, language='Japanese') for job in jobs]
+    def execute(missing):
+        from ..system.task_resources import LOCAL_ALIGNMENT_GATE
+        with LOCAL_ALIGNMENT_GATE.lease(_raise_if_queue_cancelled):
+            return _run_worker_once(audio,missing)
+    return run_cached(audio, normalized, identity=dict(engine='japanese-ctc', protocol=PROTOCOL,
+        model='jonatasgrosman/wav2vec2-large-xlsr-53-japanese', policy=POLICY),
+        runner=execute, check=_raise_if_queue_cancelled)
+
+
+def _run_worker_once(audio, jobs) -> dict:
     """``ctc_aligner_worker.py`` in the main managed runtime; the GUI never imports torch."""
     import numpy as np
     from .asr import AUDIO_SAMPLE_RATE, SCRIPT_DIR, _main_worker_python, _run_isolated_asr_worker
@@ -223,20 +241,17 @@ def run_worker(audio, jobs) -> dict:
         worker = os.path.join(os.path.abspath(SCRIPT_DIR), "workers", "ctc_aligner_worker.py")
     if not os.path.isfile(runtime) or not os.path.isfile(worker):
         raise RuntimeError(f"CTC aligner runtime missing: python={runtime}, worker={worker}")
-    pcm = np.ascontiguousarray(audio, dtype=np.float32)
-    if pcm.ndim != 1 or not np.isfinite(pcm).all():
-        raise RuntimeError("CTC 对齐需要有限值单声道 float32 PCM")
-    digest = hashlib.sha256(pcm.tobytes()).hexdigest()
     policy = {"version": PROTOCOL, "audio_format": "float32-mono-npy-v1", "sample_rate": AUDIO_SAMPLE_RATE}
     worker_jobs = [dict(id=job["id"], text=job["text"], window_start_ms=job["window_start_ms"],
                         window_end_ms=job["window_end_ms"]) for job in jobs]
     with tempfile.TemporaryDirectory(prefix="ja_ctc_aligner_") as temp_dir:
-        audio_path = os.path.join(temp_dir, "audio.npy")
-        np.save(audio_path, pcm, allow_pickle=False)
+        from .alignment_audio import prepare_audio
+        from .asr import _raise_if_queue_cancelled
+        audio_spec = prepare_audio(audio, temp_dir, check=_raise_if_queue_cancelled,jobs=worker_jobs)
+        digest = audio_spec['sha256']
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
-        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": worker_jobs, "audio": {
-            "path": audio_path, "samples": int(pcm.size), "sha256": digest}}, ensure_ascii=False), encoding="utf-8")
+        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": worker_jobs, "audio": audio_spec}, ensure_ascii=False), encoding="utf-8")
         payload = _run_isolated_asr_worker(
             python_utf8_command([runtime, "-I", worker, "--manifest", manifest, "--output", output, "--model-dir", path]),
             output, model_id="JA-CTC-ALIGNER", audio_input="shared_audio", model_path=path,
@@ -248,6 +263,8 @@ def run_worker(audio, jobs) -> dict:
         raise RuntimeError("CTC 对齐 worker 回执与输入不一致")
     if any(r.get("text") != j["text"] for r, j in zip(results, worker_jobs)):
         raise RuntimeError("CTC 对齐 worker 改写了输入文字")
+    for row in results:
+        row['language']='Japanese'
     return payload
 
 
@@ -330,6 +347,8 @@ def apply_to_runtime_cues(cues, audio, legacy, *, fps: float | None = None) -> l
     try:
         payload = run_worker(audio, jobs)
     except Exception as exc:  # noqa: BLE001 - optional refinement; recognition result stays as aligned
+        if exc.__class__.__name__ == 'CancelledError':
+            raise
         legacy.record_run_event("ctc_start_refine", policy=POLICY, failed=f"{type(exc).__name__}: {exc}"[:400])
         return []
     by_id = {row.id: row for row in rows}
@@ -338,9 +357,11 @@ def apply_to_runtime_cues(cues, audio, legacy, *, fps: float | None = None) -> l
     def seconds(ms):
         return round(ms * fps / 1000) / fps if fps else ms / 1000.0
 
+    from .cue_boundary_refine import preserves_edge_piece
     changes = propose(rows, ctc_starts(jobs, payload), lambda r: _runtime_measured_start(r.cue),
                       frame_ms=1000.0 / fps if fps else None,
-                      alternate_start=lambda r: disputed_char_start(getattr(r.cue, 'forced_alignment', None) or {}))
+                      alternate_start=lambda r: disputed_char_start(getattr(r.cue, 'forced_alignment', None) or {}),
+                      edge_valid=lambda row,side,value:preserves_edge_piece(row.cue,side,value))
     for change in changes:
         cue = by_id[change.cue_id].cue
         cue.start = seconds(change.new_ms)

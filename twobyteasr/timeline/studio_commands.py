@@ -568,6 +568,10 @@ class SpliceCuesCommand(QUndoCommand):
             for cue in project.cues[self.index:self.index + self.removed_count]
         ]
         self._after_cues = [copy.deepcopy(cue) for cue in inserted]
+        runtime=state_for(project)
+        self._entity_epochs_before={cue.id:runtime.entity_epochs.get(cue.id,0) for cue in self._before_cues}
+        runtime.entity_epoch_sequence+=1
+        self._entity_epoch_after=runtime.entity_epoch_sequence
         from .caption_translation_splice import TranslationSplice
         self._translations = TranslationSplice(project, self._before_cues, self._after_cues)
         from .studio_caption_timeline import caption_replacement_receipts
@@ -627,6 +631,13 @@ class SpliceCuesCommand(QUndoCommand):
 
         def mutate() -> None:
             self.project.cues[start:start + replacing_count] = inserted
+            # A split/merge/delete can retain an ID. Existing drafts must not
+            # mistake that new entity lifetime for a harmless object rebuild.
+            for cue_id in affected:
+                epoch=(self._entity_epoch_after if inserted_source is self._after_cues
+                       else self._entity_epochs_before.get(cue_id,0)) if cue_id in after_ids else 0
+                if epoch:state.entity_epochs[cue_id]=epoch
+                else:state.entity_epochs.pop(cue_id,None)
             states = getattr(self, '_translation_states', None)
             if states is not None:
                 from ..subtitle_rules.subtitle_translation import restore_snapshot
@@ -1608,6 +1619,7 @@ class BatchReplaceTextCommand(QUndoCommand):
         glossary_ids: Iterable[str] | None = None,
         review_receipt: Mapping[str, object] | None = None,
         proofread_records: Mapping[str, object] | None = None,
+        translation_values=None,
     ) -> None:
         super().__init__(f"批量替换“{needle}”" if needle else "Batch replace text")
         self.project = project
@@ -1624,6 +1636,11 @@ class BatchReplaceTextCommand(QUndoCommand):
             if self.before[key] != self.after[key]:
                 override['text_alignment']={'text':self.after[key],'status':'needs_alignment'}
         self.changed = changed
+        self.translation_values = dict(translation_values or {})
+        self.translation_before = self.translation_after = None
+        if self.translation_values:
+            from ..subtitle_rules.subtitle_translation import manual_batch_state
+            self.translation_before, self.translation_after = manual_batch_state(project, self.translation_values, source_values=self.after)
         self.origin = MutationOrigin(origin)
         self.needle = str(needle or "")
         self.learning_observer = learning_observer
@@ -1646,6 +1663,12 @@ class BatchReplaceTextCommand(QUndoCommand):
             receipt = copy.deepcopy(dict(review_receipt))
             receipt['applied_cue_ids'] = list(self.after)
             receipt['applied_texts'] = dict(self.after)
+            if self.translation_values:
+                from ..studio.subtitle_text_targets import TextTarget
+                translated_texts = {TextTarget(key, 'translation', language, 'translation-records:' + language, 'translation').key: text
+                                    for key, (text, language) in self.translation_values.items()}
+                receipt['applied_cue_ids'] = list(dict.fromkeys([*self.after, *self.translation_values]))
+                receipt['applied_texts'].update(translated_texts)
             self.review_after = [*(self.review_before or []), receipt]
             if receipt.get('source') == 'user_confirmed':
                 self.manual_confirmations_after = {**self.manual_confirmations_before, **self.after}
@@ -1731,6 +1754,9 @@ class BatchReplaceTextCommand(QUndoCommand):
                 from ..glossary.proofread_retention import review_state, put_records
                 if review_state(self.project)['round_id'] == self.proofread_round:
                     put_records(self.project, self.proofread_after if values is self.after else self.proofread_before)
+            if self.translation_after is not None:
+                from ..subtitle_rules.subtitle_translation import restore_snapshot
+                restore_snapshot(self.project, self.translation_after if values is self.after else self.translation_before)
             if self.manual_confirmations_after is not None:
                 self.project.studio_state['manual_caption_text'] = copy.deepcopy(
                     self.manual_confirmations_after if values is self.after else self.manual_confirmations_before)
@@ -1758,14 +1784,27 @@ class BatchReplaceTextCommand(QUndoCommand):
                     cue.text = values[cue.id]
                     cue.appearance_override = copy.deepcopy((self.appearance_after if values is self.after else self.appearance_before)[cue.id])
 
-        _commit_mutation(
-            self.project,
-            action_id=self.text(),
-            dirty=_field_domains(("text",)),
-            cue_ids=values.keys(),
-            mutate=mutate,
-            changed=self.changed,
-        )
+        dirty = _field_domains(("text",))
+        if self.translation_values:
+            # Translation records live in generation_metadata. Local source
+            # content revisions may reuse that immutable branch, so declare
+            # its mutation for render/QC/persistence and undo/redo alike.
+            dirty |= DirtyDomain.PROJECT_METADATA
+        if not values and self.translation_values:
+            # Translation records do not change ASR/source-text quality.
+            # Running a whole-source QC scan here blocked the bulk operation.
+            dirty &= ~DirtyDomain.QC
+        try:
+            _commit_mutation(
+                self.project, action_id=self.text(), dirty=dirty,
+                cue_ids=set(values) | set(self.translation_values), mutate=mutate,
+                changed=self.changed, snapshot_cues=bool(values),
+            )
+        except Exception:
+            if self.translation_before is not None:
+                from ..subtitle_rules.subtitle_translation import restore_snapshot
+                restore_snapshot(self.project, self.translation_before if values is self.after else self.translation_after)
+            raise
         if (
             values
             and self.learning_observer is not None
