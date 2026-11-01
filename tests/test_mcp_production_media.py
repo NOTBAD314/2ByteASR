@@ -232,6 +232,7 @@ def test_apply_uses_one_native_undoable_command(tmp_path, monkeypatch):
     host = pause_host(tmp_path)
     command = object()
     calls = []
+    monkeypatch.setattr(media, '_check_pause_input', lambda project, analysis: None)
     monkeypatch.setattr(studio_clip_edit, 'ripple_ranges_command',
                         lambda project, ranges, **kwargs: calls.append(ranges) or command)
     monkeypatch.setattr(studio_edit_sequence, 'timeline_duration_ms', lambda project: 10000 - len(host.pushed) * 1000)

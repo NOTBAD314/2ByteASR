@@ -338,7 +338,8 @@ class ProductionCore(QObject):
             kind = job["kind"]
             export_revoked = (kind == "export_video" and (not current.get("allow_export")
                               or previous.get("export_dir") != current.get("export_dir")))
-            text_revoked = kind == "glossary_proofread" and not current.get("allow_glossary")
+            text_revoked = (previous.get("allow_glossary") and not current.get("allow_glossary")
+                            and kind in ("glossary_proofread", "stutter_cleanup", "recognition"))
             write_revoked = edits_revoked and kind != "detect_speech_pauses" and kind != "export_video"
             if job.get("status") in ACTIVE and (access_changed or export_revoked or text_revoked or write_revoked):
                 self.update_job(job, status="cancelling", message="原生MCP权限或范围已变化，正在取消任务。")

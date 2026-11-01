@@ -131,9 +131,11 @@ def test_shutdown_cancels_without_applying_worker_result(service):
 def test_cancelled_ai_receipt_survives_restart_without_applying(service):
     core, page, bridge = service
     released = threading.Event()
+    entered = threading.Event()
     applied = []
     native_result = object()
     def work(token, progress):
+        entered.set()
         released.wait(3)
         return native_result
     def summarize(result, job):
@@ -141,6 +143,7 @@ def test_cancelled_ai_receipt_survives_restart_without_applying(service):
         return {"api_status": "partial", "request_count": 1, "failed_cue_ids": ["a"]}
     started = core.run_job("sentence_refine", core.snapshot(page, page.project), work,
                            lambda result, job: applied.append(result), summarize_cancelled=summarize)
+    assert entered.wait(3), 'The native result must be in flight before this cancellation case'
     core.op_cancel_job(started["job_id"])
     released.set()
     wait_until(lambda: core.jobs[started["job_id"]]["status"] == "cancelled")

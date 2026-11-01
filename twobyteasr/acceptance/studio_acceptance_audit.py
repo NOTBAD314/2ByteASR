@@ -76,6 +76,10 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mcp-production':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('studio-surface','font-picker','style-bilingual-motion','editor-bilingual','daily-regressions','home-timeline-float','timeline-operations','editor-runtime-tail'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -466,6 +470,12 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mcp-production':
+        from .mcp_production_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-surface':
         from .studio_surface_audit import start
         output=audit_directory()

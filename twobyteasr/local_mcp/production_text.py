@@ -147,8 +147,11 @@ class TextOperations:
         self.check_snapshot(payload['snapshot'])
         if payload.get('applicable') is False:
             raise BridgeError('job_not_ready', '原生 AI 没有成功完成可采用的结果。')
-        if 'glossary_digest' in payload and _glossary(project, payload['library_ids']).digest != payload['glossary_digest']:
-            raise BridgeError('stale', '词库已改变，请重新生成建议。')
+        if 'glossary_digest' in payload:
+            if payload['library_ids']:
+                self.bridge._require_glossary()
+            if _glossary(project, payload['library_ids']).digest != payload['glossary_digest']:
+                raise BridgeError('stale', '词库已改变，请重新生成建议。')
         if kind == 'sentence_refine':
             from ..subtitle_rules.sentence_refine import build_replacement_cues
             from ..timeline.studio_commands import SpliceCuesCommand
@@ -278,6 +281,8 @@ class TextOperations:
         if action != 'preview' or job_id:
             raise BridgeError('bad_params', 'action 必须为 preview，或指定 job_id 采用已有结果。')
         page, project = self.require_project(project_id, revision)
+        if project.glossary_ids:
+            self.bridge._require_glossary()
         cues = [c for c in _cues(project, cue_ids) if not _locked(page, project, c)]
         snapshot = self.snapshot(page, project)
         frozen, ids = copy.deepcopy(project), [c.id for c in cues]

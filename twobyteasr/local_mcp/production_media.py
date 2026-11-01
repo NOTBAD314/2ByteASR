@@ -49,6 +49,20 @@ def _check_output(root, target):
         raise BridgeError('output_exists', '成片已存在，请使用其他名称；不会覆盖')
 
 
+def _check_pause_input(project, analysis):
+    """A project revision alone does not detect a replaced source file."""
+    from ..recognition.recognition_input import capture_recognition_snapshot
+    expected = analysis.get('fingerprint')
+    if not isinstance(expected, str) or not expected:
+        raise BridgeError('invalid_job', '停顿结果缺少原生素材身份，请重新检测')
+    try:
+        current = capture_recognition_snapshot(project)['fingerprint']
+    except (OSError, ValueError) as exc:
+        raise BridgeError('input_changed', '检测使用的素材已不可用，请重新关联后检测；未执行剪切') from exc
+    if current != expected:
+        raise BridgeError('input_changed', '检测后素材或音频输入已变化，请重新检测；未执行剪切')
+
+
 def _render(project, project_path, root, target, token, progress):
     from ..exports.export_timeline import write_export_ass
     from ..exports.studio_render import RenderJob, RenderSettings, run_render_job, validate_export_config
@@ -424,6 +438,7 @@ class MediaOperations:
         lookup = {c['candidate_id']: c for c in data['analysis']['candidates']}
         if len(set(candidate_ids)) != len(candidate_ids) or not set(candidate_ids) <= lookup.keys():
             raise BridgeError('bad_params', '候选ID重复或不属于指定检测任务')
+        _check_pause_input(project, data['analysis'])
         ranges = [(lookup[i]['start_ms'], lookup[i]['end_ms']) for i in candidate_ids]
         before = timeline_duration_ms(project)
         command = ripple_ranges_command(project, ranges, page=page)

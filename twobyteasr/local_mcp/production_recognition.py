@@ -21,6 +21,11 @@ class RecognitionOperations:
     def op_start_recognition(self, project_id: str, revision: int):
         page, project = self.require_project(project_id, revision)
         window = self.window
+        saved = getattr(getattr(window, 'legacy', None), 'RUNTIME_SETTINGS', {}) or {}
+        glossary = saved.get('glossary') or {}
+        if (glossary.get('enable_domain_terms') and
+                (project.glossary_ids or glossary.get('enabled_glossary_ids'))):
+            self.bridge._require_glossary()
         if getattr(window, '_run_in_progress', False):
             raise BridgeError('busy', '已有原生识别任务正在运行。')
         if getattr(window, '_asr_config_dirty', False):
