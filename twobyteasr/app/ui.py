@@ -867,6 +867,7 @@ def persist_asr_configuration(
     *,
     qwen_key: str = "",
     require_ready: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """Validate and persist local/API ASR backend choices."""
     models = {
@@ -934,7 +935,8 @@ def persist_asr_configuration(
         )
         if not effective_key or (spark and not all(spark.values())):
             missing_keys.append("ASR API Key")
-    legacy.configure_runtime_asr(models, qwen_asr_key=qwen_key)
+    if not dry_run:
+        legacy.configure_runtime_asr(models, qwen_asr_key=qwen_key)
     return {"models": models, "missing_keys": tuple(missing_keys)}
 
 
@@ -954,6 +956,28 @@ def api_help_popover_qss(theme) -> str:
 # Role-card statuses meaning "this computer cannot run it" (recognition_choices.unavailable_on_host).
 _HOST_LIMIT_STATUSES = frozenset({"需要 NVIDIA 显卡", "只能在 Apple Silicon Mac 上运行"})
 _HOST_LIMIT_RECOVERY = "换成能用的方式"
+
+
+def _noninteractive_recognition_options(project, settings: dict) -> dict:
+    """Use saved glossary settings, preferring libraries attached to this project."""
+    glossary = (settings or {}).get('glossary') or {}
+    enabled = bool(glossary.get('enable_domain_terms', False))
+    selected = (getattr(project, 'glossary_ids', None) or glossary.get('enabled_glossary_ids') or ()) if enabled else ()
+    identities = list(dict.fromkeys(str(item).strip() for item in selected if str(item).strip()))
+    return {'enabled_glossary_ids': identities, 'enable_domain_terms': enabled}
+
+
+def _validate_saved_text_ai_configuration(settings: dict) -> None:
+    """Check enabled saved endpoints locally, without a provider probe or save."""
+    from ..providers.asr_provider_snapshot import resolve_provider_snapshot
+    from ..providers.llm_config import validate_endpoint
+    switches = (settings or {}).get('switches') or {}
+    for stage, switch in (('polish', 'enable_ai_polish'), ('group', 'use_ai_grouping')):
+        if not switches.get(switch):
+            continue
+        snapshot = resolve_provider_snapshot(settings, stage=stage)
+        if snapshot.transport == 'openai_compatible':
+            validate_endpoint(snapshot.endpoint(), '字幕校对模型' if stage == 'polish' else '全文断句模型')
 
 
 def studio_translation_choice(language_options: dict, studio_context: dict, ai_ready: bool) -> dict:
@@ -1997,6 +2021,9 @@ class MainWindow(QWidget):
         if proofread is not None and project_path and not proofread.settle_writes(project_path):
             # The proofreading edits of this file are not saved yet; Studio
             # would load (and later save over) the older file.
+            if studio is not None and getattr(studio, '_mcp_project_handoff', None):
+                from ..studio.studio_readiness import mcp_handoff_done
+                mcp_handoff_done(studio, project_path)
             loading = self.__dict__.get('_studio_loading_session')
             if loading is not None and loading.active and loading.path == str(Path(project_path).resolve()):
                 self._reject_studio_loading()
@@ -2520,13 +2547,18 @@ class MainWindow(QWidget):
             pass
 
     def _handle_studio_recognition_request(
-        self, action: str, media_path: str, project_path: str
+        self, action: str, media_path: str, project_path: str, *, noninteractive: bool = False,
+        handoff_guard=None, handoff_done=None,
     ) -> None:
         self._ensure_recognition_page()
         media = Path(str(media_path or ""))
         project = Path(str(project_path or ""))
         if not media.is_file() or not project.is_file():
             self.studio_page.fail_recognition_runtime('当前工程或媒体文件已移动，请重新关联后再试。')
+            if noninteractive:
+                self._run_block_reason = '当前工程或媒体文件已移动，请重新关联后再试。'
+                self._run_block_code = 'configuration_required'
+                return
             QMessageBox.warning(
                 self,
                 tr('无法开始识别'),
@@ -2540,12 +2572,31 @@ class MainWindow(QWidget):
             self._switch_page(self.settings_scroll)
             return
         try:
-            self.studio_page.save()
+            if noninteractive:
+                timeline = getattr(self.studio_page, 'timeline', None)
+                if (not self.studio_page.undo_stack.isClean()
+                        or getattr(self.studio_page, '_canvas_editor', None) is not None
+                        or getattr(timeline, '_inline_editor', None) is not None):
+                    self._run_block_reason = '工程有未保存修改，请先保存工程。'
+                    self._run_block_code = 'unsaved_project'
+                    return
+            else:
+                self.studio_page.save()
         except Exception as exc:
             self.studio_page.fail_recognition_runtime('工程保存失败：' + str(exc))
+            if noninteractive:
+                self._run_block_reason = '工程保存状态检查失败。'
+                self._run_block_code = 'not_ready'
+                return
             QMessageBox.critical(self, tr('工程保存失败'), str(exc))
             return
-        request_options = self.studio_page.recognition_request_options()
+        if noninteractive:
+            request_options = _noninteractive_recognition_options(
+                self.studio_page.project, getattr(self.legacy, 'RUNTIME_SETTINGS', {}))
+            # A prior GUI range selection belongs to that earlier request.
+            self.studio_page._recognition_range = None
+        else:
+            request_options = self.studio_page.recognition_request_options()
         plan_key = str(request_options.get("recognition_plan") or "home")
         index = self.recognition_mode_combo.findData(plan_key)
         if index >= 0:
@@ -2564,6 +2615,8 @@ class MainWindow(QWidget):
             "media_path": str(media.resolve()),
             "project_path": str(project.resolve()),
             "project_id": str(self.studio_page.project.project_id),
+            "handoff_guard": handoff_guard,
+            "handoff_done": handoff_done,
             "recognition_purpose": "analysis" if str(action) == "start_analysis" else "final",
             "enabled_glossary_ids": list(request_options.get("enabled_glossary_ids") or []),
             "replace_policy": str(request_options.get("replace_policy") or "replace_cues"),
@@ -2574,6 +2627,8 @@ class MainWindow(QWidget):
             "subtitle_output": str(request_options.get("subtitle_output") or ""),
             "translation_script": str(request_options.get("translation_script") or ""),
         }
+        if noninteractive:
+            self._studio_recognition_context["enable_domain_terms"] = request_options["enable_domain_terms"]
         # 2026-10-25: 只重新识别这一段 hears only this stretch of the timeline.
         range_ms = request_options.get("recognition_range_ms")
         if range_ms:
@@ -2599,6 +2654,10 @@ class MainWindow(QWidget):
         except (OSError, ValueError, RuntimeError) as exc:
             self._studio_recognition_context = None
             self.studio_page.fail_recognition_runtime(str(exc))
+            if noninteractive:
+                self._run_block_reason = str(exc)
+                self._run_block_code = 'not_ready'
+                return
             QMessageBox.warning(self, tr('无法开始识别'), str(exc))
             return
         self._studio_recognition_context["snapshot"] = snapshot
@@ -2612,10 +2671,17 @@ class MainWindow(QWidget):
             # 警告框正常可见；未启动成功则把原因落到左侧字幕列表芯片。
             self._run_block_reason = ""
             try:
-                self._start_run()
+                if noninteractive:
+                    self._start_run(noninteractive=True)
+                else:
+                    self._start_run()
             except Exception as exc:
                 self._studio_recognition_context = None
                 self.studio_page.fail_recognition_runtime('启动识别失败：' + str(exc))
+                if noninteractive:
+                    self._run_block_reason = str(exc)
+                    self._run_block_code = 'not_ready'
+                    return
                 QMessageBox.critical(self, tr('无法开始识别'), str(exc))
                 return
             if not self._run_in_progress:
@@ -2625,12 +2691,21 @@ class MainWindow(QWidget):
 
     def _finish_studio_recognition(self, project_path: str, expected_result_ref=None) -> None:
         context = getattr(self, "_studio_recognition_context", None) or {}
+        guard, done = context.get('handoff_guard'), context.get('handoff_done')
+        if callable(guard) and not guard():
+            self._studio_recognition_context = None
+            if callable(done):
+                done(False)
+            self.studio_page.fail_recognition_runtime('识别结果已保存；任务已取消或编辑权限已撤销，未载入工程。')
+            return
         snapshot = context.get("snapshot")
         if snapshot and snapshot.get("range_ms"):
             # Only one stretch was recognized: the Studio splices it into the
             # open project as one undo step instead of opening the result.
             self._studio_recognition_context = None
             self.studio_page.apply_range_recognition_result(project_path, snapshot)
+            if callable(done):
+                done(True)
             return
         if snapshot:
             from ..recognition.recognition_input import project_content_revision
@@ -2641,9 +2716,23 @@ class MainWindow(QWidget):
             studio.note_recognition_kept_in_memory()
             self._studio_recognition_context = None
             if unchanged:
+                if callable(guard):
+                    target = str(Path(project_path).resolve())
+                    source = current
+                    source_revision = project_content_revision(source.to_dict())
+                    def guarded_handoff():
+                        if not guard():
+                            return False
+                        if studio.project is source:
+                            return project_content_revision(source.to_dict()) == source_revision
+                        loaded_path = getattr(studio.session, 'project_path', None)
+                        return bool(loaded_path and str(Path(loaded_path).resolve()) == target)
+                    studio._mcp_project_handoff = (target, guarded_handoff, done)
                 self.open_studio_project(project_path, mode="edit", source="studio_recognition",
                     expected_result_ref=expected_result_ref)
             else:
+                if callable(done):
+                    done(False)
                 self._show_task_notification("识别结果已保存", "当前工程已有变化；请从完成页打开独立识别结果。", QMessageBox.Icon.Information)
             return
         target = Path(str(project_path or ""))
@@ -5876,7 +5965,7 @@ class MainWindow(QWidget):
             return tr("AI 校对没填 API Key：这次不做 AI 校对，字幕照常生成")
         return ""
 
-    def _confirm_run_disclosure(self) -> bool:
+    def _confirm_run_disclosure(self, *, noninteractive=False) -> bool:
         """State what this run will use; ask once before audio goes to a cloud service (2026-10-13).
 
         Every run logs engine, speaker source, timestamp source, uploads and
@@ -5892,15 +5981,23 @@ class MainWindow(QWidget):
             info = run_disclosure(settings)
         except Exception as exc:
             self._append_console_line(f"[本次识别] 无法生成使用摘要：{exc}")
+            if noninteractive:
+                self._run_block_reason = "无法读取本次识别的外发配置，请检查软件设置。"
+                self._run_block_code = "configuration_required"
+                return False
             return True
         self._append_console_line("[本次识别] " + text.replace("\n", "；"))
         audio_uploads = [item for item in info["uploads"] if item.startswith("音频")]
-        if not audio_uploads or os.environ.get("TWOBYTEASR_TEST_ROOT"):
+        if not audio_uploads or (not noninteractive and os.environ.get("TWOBYTEASR_TEST_ROOT")):
             return True
         signature = hashlib.sha256("|".join([info["engine"], *audio_uploads]).encode("utf-8")).hexdigest()[:24]
         store = self._progress_settings()
         if store.value(f"cloud_upload_ack/{signature}", False, type=bool):
             return True
+        if noninteractive:
+            self._run_block_reason = "本次云端音频外发尚未在软件中确认，请在软件内确认该服务后重试。"
+            self._run_block_code = "native_confirmation_required"
+            return False
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(tr("本次识别会上传音频"))
@@ -5947,7 +6044,7 @@ class MainWindow(QWidget):
                             "要更准，请在首页「字幕时间轴」选 FireRed 或 Qwen3 对齐模型。"))
         return lines
 
-    def _confirm_run_limits(self) -> bool:
+    def _confirm_run_limits(self, *, noninteractive=False) -> bool:
         """Ask “确定要继续吗” when this run cannot use AI 断句 / 校对 or word times (2026-10-21).
 
         User: many people do not fill in a key, and some setups have only the
@@ -5963,7 +6060,7 @@ class MainWindow(QWidget):
             return True
         for line in lines:
             self._append_console_line("[开始前提醒] " + line)
-        if os.environ.get("TWOBYTEASR_TEST_ROOT"):
+        if not noninteractive and os.environ.get("TWOBYTEASR_TEST_ROOT"):
             return True
         import hashlib
         roles = sorted(getattr(self, "_text_ai_local_roles", ()) or ())
@@ -5972,6 +6069,10 @@ class MainWindow(QWidget):
         store = self._progress_settings()
         if store.value(f"run_limits_ack/{signature}", False, type=bool):
             return True
+        if noninteractive:
+            self._run_block_reason = "本次识别存在尚未确认的功能限制，请在软件中确认或完善配置后重试。"
+            self._run_block_code = "native_confirmation_required"
+            return False
         box = QMessageBox(self)
         box.setObjectName("runLimitsBox")
         box.setIcon(QMessageBox.Icon.Warning)
@@ -10642,28 +10743,43 @@ class MainWindow(QWidget):
         finally:
             self._preparing_glossary_for_task = False
 
-    def _start_run(self):
+    def _start_run(self, *, noninteractive=False):
         # P1-4 重入守卫：任意时刻最多一个 active run。必须在任何耗时准备
         # （CUDA 探测、配置保存、文件检查、token/worker 构建）之前声明占用；
         # 重复调用为 no-op（不创建 token、不覆盖 worker、不重置 UI）。
+        if noninteractive:
+            self._run_block_code = 'not_ready'
         if getattr(self, '_completion_retry_in_progress', False):
             self._run_block_reason = "已有校对或核验预览在进行中，请先完成或取消预览。"
             return
         if self._run_in_progress:
             self._run_block_reason = "已有识别任务在进行中，请等待完成或先取消。"
             return
-        if getattr(self, '_retry_run_options', None) is None and not self._prepare_glossary_for_task():
+        if noninteractive and getattr(self, '_retry_run_options', None) is not None:
+            self._run_block_reason = '软件中仍有待处理的重试任务，请先处理原任务。'
+            return
+        dialog = getattr(self, '_term_library_dialog', None)
+        if noninteractive and dialog is not None and getattr(dialog, 'isVisible', lambda: True)():
+            self._run_block_reason = '词库编辑器仍打开，请先保存或关闭。'
+            self._run_block_code = 'not_ready'
+            return
+        if (not noninteractive and getattr(self, '_retry_run_options', None) is None
+                and not self._prepare_glossary_for_task()):
             self._run_block_reason = '词库编辑尚未提交；请保存或取消编辑后继续。'
             return
         # 四十二轮：早退分支的原因都记录在 _run_block_reason，供 Studio 后台
         # 识别把失败原因显示到字幕列表芯片（弹窗已关，看不到对话框的场景）。
         self._run_block_reason = ""
+        self._run_block_code = "not_ready"
         self._run_in_progress = True
         self.start_button.setEnabled(False)
         launched = False
         try:
             if not self.media_paths:
                 self._run_block_reason = "还没有素材：请先拖入或选择视频 / 音频文件。"
+                if noninteractive:
+                    self._run_block_code = 'configuration_required'
+                    return
                 QMessageBox.information(self, tr('还没有素材'), tr('请先拖入或选择视频 / 音频文件。'))
                 return
             retry_options = getattr(self, '_retry_run_options', None)
@@ -10679,6 +10795,9 @@ class MainWindow(QWidget):
                 self._run_block_reason = (
                     "当前没有可运行的主力转写模型：请到模型工坊下载并选择模型，或配置在线 ASR API。"
                 )
+                if noninteractive:
+                    self._run_block_code = 'configuration_required'
+                    return
                 message = QMessageBox(self)
                 message.setIcon(QMessageBox.Icon.Information)
                 bind_text(message, '请先选择主力模型', property='windowTitle')
@@ -10695,6 +10814,9 @@ class MainWindow(QWidget):
             missing_models = missing_selected_local_models(effective)
             if missing_models:
                 self._run_block_reason = "所选模型尚未下载完整：" + "、".join(missing_models)
+                if noninteractive:
+                    self._run_block_code = 'configuration_required'
+                    return
                 message = QMessageBox(self)
                 message.setIcon(QMessageBox.Icon.Warning)
                 bind_text(message, '所选模型尚未下载完整', property='windowTitle')
@@ -10718,7 +10840,15 @@ class MainWindow(QWidget):
                     if ask_audio_tracks(self, self._resume_with_audio_tracks):
                         self._run_block_reason = '正在选择要识别的音轨。'
                         return
-            if not self._save_asr_configuration(show_feedback=True, require_ready=True):
+            if noninteractive:
+                try:
+                    persist_asr_configuration(self.legacy, self.legacy.RUNTIME_SETTINGS.get('models', {}),
+                                              require_ready=True, dry_run=True)
+                except Exception as exc:
+                    self._run_block_code = 'configuration_required'
+                    self._run_block_reason = f'识别配置不可用：{exc}'
+                    return
+            elif not self._save_asr_configuration(show_feedback=True, require_ready=True):
                 return
             # 方案身份 + 脱敏生效参数留痕：验证"用 A/B 启动识别实际参数不同"。
             try:
@@ -10782,14 +10912,26 @@ class MainWindow(QWidget):
             local_analysis=(getattr(self,'_studio_recognition_context',None) or {}).get('recognition_purpose')=='analysis'
             # 2026-10-15: a text-AI step without a key runs on the local rules
             # (users who never fill in a key still get exportable subtitles).
-            if not self._save_ai_configuration(show_feedback=True, require_ready=not local_analysis,
-                                               local_without_key=True):
+            if noninteractive:
+                try:
+                    _validate_saved_text_ai_configuration(self.legacy.RUNTIME_SETTINGS)
+                    self._text_ai_local_roles = ()
+                except Exception as exc:
+                    self._run_block_code = 'configuration_required'
+                    self._run_block_reason = f'文字 AI 配置不可用：{exc}'
+                    return
+            elif not self._save_ai_configuration(show_feedback=True, require_ready=not local_analysis,
+                                                 local_without_key=True):
                 return
             if local_analysis:
                 self._text_ai_local_roles = ()   # an analysis run has no text-AI steps at all
-            if not self._confirm_run_limits():
+            if noninteractive and getattr(self, '_text_ai_local_roles', ()):
+                self._run_block_reason = '文字 AI 配置缺失，请在软件设置中配置后重试。'
+                self._run_block_code = 'configuration_required'
                 return
-            if not self._confirm_run_disclosure():
+            if not (self._confirm_run_limits(noninteractive=True) if noninteractive else self._confirm_run_limits()):
+                return
+            if not (self._confirm_run_disclosure(noninteractive=True) if noninteractive else self._confirm_run_disclosure()):
                 return
             game_name = self.legacy.canonicalize_runtime_game_name(self.game_box.currentText())
             if game_name:
@@ -10811,9 +10953,10 @@ class MainWindow(QWidget):
             # between runs (merged SRT is always written; txt/per-speaker opt-in).
             try:
                 switches = self.legacy.RUNTIME_SETTINGS.setdefault("switches", {})
-                switches["output_jianying_txt"] = self.jianying_txt.isChecked()
-                switches["output_speaker_tracks"] = self.speaker_tracks.isChecked()
-                save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+                if not noninteractive:
+                    switches["output_jianying_txt"] = self.jianying_txt.isChecked()
+                    switches["output_speaker_tracks"] = self.speaker_tracks.isChecked()
+                    save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
             except Exception:
                 pass
             from ..glossary.terminology import snapshot_glossaries
@@ -11702,7 +11845,9 @@ class MainWindow(QWidget):
             context = getattr(self, "_studio_recognition_context", None)
             # Picked tracks are combined at the end; one track's live rows
             # must not stand in for the captions of the others meanwhile.
-            if context and not context.get("audio_lanes") and not context.get("recognition_range_ms"):
+            guard = context.get('handoff_guard') if context else None
+            if (context and (not callable(guard) or guard()) and not context.get("audio_lanes")
+                    and not context.get("recognition_range_ms")):
                 self.studio_page.apply_recognition_cue_delta(event.payload)
             cue_count = len(event.payload.get("cues", ()) or ())
             label = "最终字幕" if event.payload.get("state") == "final" else "临时转写（待校对）"

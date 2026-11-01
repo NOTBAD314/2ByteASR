@@ -463,6 +463,7 @@ def refine_cues_with_llm(
     provider_post: Callable[..., str] | None = None,
     batch_size: int = 40,
     max_attempts: int = 2,
+    operation_kind: str | None = None,
 ) -> RefineOutcome:
     """对给定 cue 执行 LLM 断句/节奏优化。失败抛出；拒绝项计入 rejected。"""
     from ..providers.ai_providers import provider_for_stage
@@ -495,7 +496,7 @@ def refine_cues_with_llm(
     # tagger is unavailable.
     document = document_for_texts([cue.text for cue in cues]) if language == "ja" else None
     with language_scope(language or None), phrase_scope(document):
-        return _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language)
+        return _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language, operation_kind)
 
 
 def _cuts_a_formula(action, spans) -> bool:
@@ -503,7 +504,7 @@ def _cuts_a_formula(action, spans) -> bool:
     return any(start < position < end for start, end, body in spans if body is not None for position in positions)
 
 
-def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language):
+def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language, operation_kind=None):
     from .math_text import math_spans, project_enabled
     math_spans_of = math_spans if project is not None and project_enabled(project) else None
     by_id = {cue.id: cue for cue in cues}
@@ -549,6 +550,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             stage="sentence_refine",
             json_schema=REFINE_SCHEMA,
             cancel_check=cancel_check,
+            **({'operation_kind': operation_kind} if operation_kind else {}),
                 )
                 from ..providers.provider_diagnostics import redact_diagnostics
                 receipt['raw_response'] = str(redact_diagnostics(content))[:24000]
@@ -602,7 +604,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         # invalid subset. A bad field must not discard an otherwise good batch.
         if invalid_ids and attempt+1<max(1,min(2,int(max_attempts))):
             retry=_refine_cues([by_id[k] for k in invalid_ids],project,provider,cancel_check,
-                              batch_size,1,language)
+                              batch_size,1,language,operation_kind)
             outcome.requests.extend(retry.requests);outcome.actions.extend(retry.actions)
             if retry.llm_status=='cancelled':
                 outcome.llm_status='cancelled';outcome.actions.clear();return outcome

@@ -19,6 +19,14 @@ from time import perf_counter
 from pathlib import Path
 
 
+def _queue_ai_provider_refresh(page):
+    """Keep MCP navigation from starting an unrelated provider request."""
+    owner = page.window()
+    suppressed = bool(getattr(page, '_mcp_project_handoff', None)
+                      or getattr(owner, '_mcp_studio_probe_suppressed', None))
+    QTimer.singleShot(0, lambda: page._reload_ai_provider_selection(probe=not suppressed))
+
+
 from ..design.themed_icons import install_themed_icon
 from PySide6.QtCore import (
     QEvent,
@@ -3451,7 +3459,7 @@ class SubtitleStudioPage(
         if getattr(self, '_navigation_publish_running', False):
             self._navigation_publish_running = False
             self._advanced_preview_publish_timer.start()
-        QTimer.singleShot(0,self._reload_ai_provider_selection)
+        _queue_ai_provider_refresh(self)
         # Initial project selection often happens before this page is shown;
         # always recompute visibility instead of relying on a prior-visible flag.
         restore = bool(getattr(self, "_advanced_overlay_restore", False))

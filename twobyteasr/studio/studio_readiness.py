@@ -18,6 +18,26 @@ from ..i18n import bind_text
 from .studio_loading import StudioLoadingSession, ReadinessSteps, TASKS
 
 
+def mcp_handoff_allowed(page, path):
+    """Check an internal, path-bound production handoff; ordinary opens are unchanged."""
+    handoff = getattr(page, '_mcp_project_handoff', None)
+    if not handoff or str(Path(path).resolve()) != handoff[0]:
+        return True
+    try:
+        return bool(handoff[1]())
+    except Exception:
+        return False
+
+
+def mcp_handoff_done(page, path, *, committed=False):
+    handoff = getattr(page, '_mcp_project_handoff', None)
+    if not handoff or str(Path(path).resolve()) != handoff[0]:
+        return
+    page._mcp_project_handoff = None
+    if callable(handoff[2]):
+        handoff[2](committed)
+
+
 def project_file_identity(path):
     """Atomic saves at the same path invalidate a previously loaded project."""
     try:
@@ -305,6 +325,9 @@ class StudioReadiness(QObject):
         intent_generation = self.loading.generation
         self.expected_result_ref = expected_result_ref
         path = str(Path(path).resolve())
+        handoff = getattr(page, '_mcp_project_handoff', None)
+        if handoff and handoff[0] != path:
+            mcp_handoff_done(page, handoff[0])
         file_identity = project_file_identity(path)
         if (self.active and StudioReadiness._owns_request(self) and self.path == path
                 and getattr(self, 'requested_file_identity', None) == file_identity):
@@ -470,6 +493,10 @@ class StudioReadiness(QObject):
     def _loaded(self, epoch, project, error):
         if not self._owns_request(epoch):
             return
+        if getattr(self.page, '_mcp_project_handoff', None) and not mcp_handoff_allowed(self.page, self.path):
+            mcp_handoff_done(self.page, self.path)
+            self.cancel()
+            return
         if error:
             self.fail('读取工程', error)
             from ..projects.studio_project import ProjectValidationError
@@ -488,6 +515,10 @@ class StudioReadiness(QObject):
         if not self._owns_request():
             if self.active:
                 self._retire_preparation()
+            return
+        if getattr(self.page, '_mcp_project_handoff', None) and not mcp_handoff_allowed(self.page, self.path):
+            mcp_handoff_done(self.page, self.path)
+            self.cancel()
             return
         tick_epoch = self.generation
         now = time.perf_counter()
@@ -728,6 +759,8 @@ class StudioReadiness(QObject):
             pass  # Diagnostics never alter readiness or the failure being reported.
 
     def fail(self, stage, error):
+        if getattr(self.page, '_mcp_project_handoff', None):
+            mcp_handoff_done(self.page, self.path)
         if stage == '准备播放器':
             StudioReadiness._record_player_wait(self, failed=True)
         self.page.video.set_paused(True)
@@ -756,6 +789,8 @@ class StudioReadiness(QObject):
                 notifier('工程载入未完成，字幕已写入工程文件；返回 Studio 将自动重载')
 
     def cancel(self, *, navigate: bool = True, reveal=None):
+        if getattr(self.page, '_mcp_project_handoff', None):
+            mcp_handoff_done(self.page, self.path)
         self.page.video.set_paused(True)
         self.page.timeline.setUpdatesEnabled(True)
         heap = getattr(self.page, '_project_heap', None)
@@ -807,6 +842,8 @@ class StudioReadiness(QObject):
         # then has no right to resume playback or reclaim window focus.
         if not self._owns_request(allow_ready=True):
             return
+        if getattr(self.page, '_mcp_project_handoff', None):
+            mcp_handoff_done(self.page, self.path, committed=True)
         self.finished.emit()
         if not self._owns_request(allow_ready=True):
             return
