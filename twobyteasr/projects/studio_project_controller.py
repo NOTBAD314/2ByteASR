@@ -431,6 +431,8 @@ class StudioProjectController:
             page._studio_trace("UI_READY", upper_sizes=page.upper_splitter.sizes(),
                                workspace_sizes=page.workspace_splitter.sizes())
             reveal_cue(page.studio_toolbar)
+            from ..studio.studio_readiness import mcp_handoff_done
+            mcp_handoff_done(page, path, committed=True)
         return result
 
     def _open_project_contents(self, path, *, single_shot_fn, skip_dirty_guard=False,expected_result_ref=None):
@@ -607,6 +609,12 @@ class StudioProjectController:
         profile["工程反序列化"] = perf_counter() - profile_mark
         profile_mark = perf_counter()
         yield '建立时间轴'
+        from ..studio.studio_readiness import mcp_handoff_allowed, mcp_handoff_done
+        if not mcp_handoff_allowed(page, requested_path):
+            mcp_handoff_done(page, requested_path)
+            page._project_view_state = previous_view_state
+            page._project_opening_path = ""
+            return
         if self.session.project is not None:
             page._close_project_session("project_switch")
         # Never carry a generated ASS across project boundaries.

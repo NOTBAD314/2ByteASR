@@ -200,7 +200,7 @@ def test_permissions_scope_and_export_paths(bridge, tmp_path):
     first = call("export", layers=["original", "bilingual"], name="ep")
     second = call("export", layers=["original"], name="ep")
     folder = path.parent / common.EXPORT_FOLDER
-    names = sorted(p.name for p in folder.iterdir())
+    names = sorted(p.name for p in folder.iterdir() if p.suffix == ".srt")
     assert first["files"][0]["file"] != second["files"][0]["file"] and len(names) == 3
     for bad in ("..\\x", "a/b", "CON", "   "):
         with pytest.raises(RuntimeError, match="bad_name"):
@@ -278,7 +278,7 @@ def test_official_sdk_client_full_flow(bridge):
         time.sleep(0.01)
     thread.join(5)
     assert log.get("done"), (log.get("error"), sorted(log))
-    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 18
+    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 31
     assert {"preview_replace", "preview_punctuation_style"} <= set(log["tools"])
     assert {"list_glossaries", "search_glossary", "preview_glossary_changes"} <= set(log["tools"])
     # A real handshake plus tool calls: the app now knows the client actually connected.

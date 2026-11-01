@@ -477,7 +477,7 @@ class ApplicationSettingsDialog(SpringDialog):
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
         from ..local_mcp import mcp_clients, mcp_common
-        lay = page('外部 AI（MCP）', '让 Claude 等 AI 客户端帮你查字幕、改字幕、导出。每次修改都要你批准，可以撤销。')
+        lay = page('外部 AI（MCP）', '让 AI 客户端查字幕、制作工程和导出。制作工具按下方权限直接执行；旧版预览计划仍需逐次批准。')
         mcp_page = self._section_page
         values = mcp_common.read_settings()
         self._mcp_acknowledged = bool(values.get('acknowledged') or values.get('enabled'))
@@ -498,11 +498,11 @@ class ApplicationSettingsDialog(SpringDialog):
         self.mcp_scope.addItem(tr('仅当前打开的工程'), 'current')
         self.mcp_scope.addItem(tr('工程库目录内的工程'), 'library')
         self.mcp_scope.setCurrentIndex(max(0, self.mcp_scope.findData(values['scope'])))
-        row(access, '授权范围', self.mcp_scope, '读取和修改只针对工作台当前打开的工程')
+        row(access, '授权范围', self.mcp_scope, '当前工程范围不切换工程；工程库范围可创建和打开库内工程')
         self.mcp_allow_edits = toggle(values['allow_edits'])
-        row(access, '允许提出修改', self.mcp_allow_edits, '每次都要你在兔白里批准，可以撤销')
+        row(access, '允许制作和修改', self.mcp_allow_edits, '可直接创建、打开、保存工程、识别和编辑；字幕与剪切可撤销，旧预览计划仍需批准')
         self.mcp_allow_export = toggle(values['allow_export'])
-        row(access, '允许导出字幕', self.mcp_allow_export, '只写到“MCP 导出”或下面的文件夹，不覆盖')
+        row(access, '允许导出字幕和视频', self.mcp_allow_export, '只写到“MCP 导出”或下面的文件夹，不覆盖')
         self.mcp_allow_glossary = toggle(values['allow_glossary'])
         row(access, '允许查看和修改术语库', self.mcp_allow_glossary, '术语库对所有工程通用；修改同样要你在兔白里批准')
         folder = QWidget()
@@ -567,7 +567,7 @@ class ApplicationSettingsDialog(SpringDialog):
         revoke_line.addWidget(self.mcp_revoke)
         revoke_line.addStretch(1)
         connect.addLayout(revoke_line)
-        tools = QLabel(tr('能做：查字幕、改字幕（要你批准）、导出；单独允许后可查和改术语库（要你批准）。不能：执行命令或读写其他文件。'))
+        tools = QLabel(tr('制作工具可独立识别、AI校对、断句、文字口吃整理、检测与剪切停顿；AI使用软件中已保存的服务配置。术语库条目修改和旧预览计划仍需批准。不能执行命令或任意写入文件。'))
         tools.setObjectName('settingsDescription')
         tools.setWordWrap(True)
         lay.addWidget(tools)

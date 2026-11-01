@@ -263,6 +263,8 @@ def main() -> int:
 
     multiprocessing.freeze_support()
     os.environ["TWOBYTEASR_PROCESS_ROLE"] = "main-gui"
+    from twobyteasr.app.settings_profile import configure_gui_settings_profile
+    configure_gui_settings_profile()
     from twobyteasr.media.media_intake import parse_media_arguments
     media_arguments = parse_media_arguments(sys.argv[1:])
     _startup_mark("PYTHON_ENTRY")

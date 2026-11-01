@@ -100,7 +100,10 @@ class McpBridge(QObject):
 
     # ------------------------------------------------------------ lifecycle
     def apply_settings(self, settings: dict | None = None) -> None:
+        previous = self.settings
         self.settings = dict(settings or common.read_settings())
+        if getattr(self, "_production", None) is not None:
+            self._production.permissions_changed(previous, self.settings)
         if self.settings.get("enabled"):
             self.start()
         else:
@@ -110,6 +113,8 @@ class McpBridge(QObject):
         return self.server is not None and self.server.isListening()
 
     def start(self) -> None:
+        if getattr(self, "_production", None) is not None:
+            self._production._closed = False
         if self.listening():
             return
         server = QLocalServer(self)
@@ -129,6 +134,8 @@ class McpBridge(QObject):
         self.status_changed.emit()
 
     def stop(self, reason: str = "") -> None:
+        if getattr(self, "_production", None) is not None:
+            self._production.stop(reason)
         self._key = ""
         common.delete_key()
         for plan_id, dialog in list(self._dialogs.items()):
@@ -210,6 +217,10 @@ class McpBridge(QObject):
         self.status_changed.emit()
         handler = getattr(self, "op_" + method, None) if method.isidentifier() else None
         if handler is None:
+            from .production import OPERATIONS
+            if method in OPERATIONS:
+                handler = lambda socket=None, **values: self._production_call(method, values)
+        if handler is None:
             self._send(socket, dict(ok=False, error=dict(code="unknown_method", message=method)))
             return
         try:
@@ -225,6 +236,12 @@ class McpBridge(QObject):
             return
         if result is not None:   # None: answered later (approval)
             self._send(socket, dict(ok=True, result=result))
+
+    def _production_call(self, method: str, params: dict):
+        if getattr(self, "_production", None) is None:
+            from .production import make_production_service
+            self._production = make_production_service(self)
+        return self._production.dispatch(method, **params)
 
     # ------------------------------------------------------------ project access
     def _page(self):
