@@ -1,0 +1,4 @@
+{
+  "zh": "· 修正特殊字符路径与大量静态字幕导出触发WinError206。\n· 补齐原译文词库校对/批量替换与双击编辑保护。\n· 改进长工程局部更新；相容日语方案支持分片识别、增量对齐及缺失节点恢复。\n· 保留忙机长尾、AI失败/回退与冷跑验收限制；本次仅Windows，Mac保持0.8.8。",
+  "en": "Special-path and large-caption export fixes, original/translation proofreading and batch replacement, safe double-click editing, long-project updates and compatible Japanese recognition checkpoint recovery. Windows only; Mac remains on 0.8.8. Busy-machine and AI validation limits remain."
+}
