@@ -1,0 +1,4 @@
+{
+  "zh": "· 改善工程库首屏、返回与缓存重开，减少大工程重复读取和复制。\n· 改善大量静态字幕导出的内存占用和错误提示。\n· 修订旧工程导出、MOSS候选恢复/手动源语言及加载中seek。\n· 保留首次加载、保存长尾、60fps和原生闪退根因的验收限制；仅Windows，Mac保持0.8.8。",
+  "en": "Faster library summaries and cached reopening; lower-overhead static-caption export; MOSS recovery and language precedence; old-project export and loading-seek fixes. Windows only; Mac stays on 0.8.8. Cold-load, frame-time and native crash limitations remain."
+}
