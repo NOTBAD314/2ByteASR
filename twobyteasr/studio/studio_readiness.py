@@ -430,10 +430,15 @@ class StudioReadiness(QObject):
                     self._player_loaded(epoch, None, str(exc))
             else:
                 self._start_mpv_player(epoch)
+        expected_result_ref = self.expected_result_ref
         def read():
             try:
                 from ..projects.studio_project import load_project
-                value, error = load_project(path), ''
+                from ..projects.project_read_cache import take
+                value = take(path)
+                reused = value is not None
+                if value is None:value = load_project(path)
+                error = ''
                 from ..media.media_availability import apply_availability, stat_sources_in_reader
                 results = stat_sources_in_reader(
                     [a.canonical_source for a in value.media_pool],
@@ -443,9 +448,15 @@ class StudioReadiness(QObject):
                     cancel_check=lambda: epoch != self.generation or not self.active,
                 )
                 apply_availability(value, results)
-                if not self.expected_result_ref and epoch == self.generation and self.active:
+                if not expected_result_ref and epoch == self.generation and self.active:
                     from ..projects.project_recovery_inspection import inspect_recovery
                     value._recovery_inspection = inspect_recovery(path, value)
+                if epoch == self.generation and self.active:
+                    from ..projects.project_open_preparation import prepare
+                    if not reused:prepare(value)
+                    inspection = getattr(value, '_recovery_inspection', None)
+                    if inspection is not None and inspection.recovered is not None:
+                        prepare(inspection.recovered)
             except Exception as exc:
                 value, error = exc, str(exc)
             try:
@@ -839,6 +850,9 @@ class StudioReadiness(QObject):
                 self.fail('核对识别结果', str(exc))
                 return
         callback, self.on_ready = self.on_ready, None
+        app=QApplication.instance()
+        if app is not None and not getattr(self.page,'_event_filter_installed',False):
+            app.installEventFilter(self.page);self.page._event_filter_installed=True
         if self.loading.active:
             if not self.loading.deliver(self.loading_generation):
                 return

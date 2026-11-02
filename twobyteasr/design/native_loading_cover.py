@@ -11,7 +11,7 @@ import os
 import sys
 import weakref
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, QEvent
 from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 from shiboken6 import isValid
@@ -154,11 +154,28 @@ def native_cover_state(view, owner, *, requested, supported, complete_paint,
     return result
 
 
-class InputHostLease:
+class InputHostLease(QObject):
     """Remember explicit enabled state once, including across loading generations."""
     def __init__(self, host=None):
+        super().__init__()
         self._host = weakref.ref(host) if host is not None else None
         self._restore = None
+        self._input_types = {QEvent.Type.MouseButtonPress,QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,QEvent.Type.MouseMove,QEvent.Type.Wheel,
+            QEvent.Type.KeyPress,QEvent.Type.KeyRelease,QEvent.Type.Shortcut,
+            QEvent.Type.ShortcutOverride,QEvent.Type.InputMethod,QEvent.Type.TouchBegin,
+            QEvent.Type.TouchUpdate,QEvent.Type.TouchEnd,QEvent.Type.ContextMenu}
+
+    def eventFilter(self, watched, event):
+        if self._restore is None or event.type() not in self._input_types:return False
+        host=self._restore[0]()
+        if host is None or not isValid(host):return False
+        current=watched
+        while current is not None:
+            if current is host:
+                event.accept();return True
+            current=current.parent()
+        return False
 
     @property
     def held(self):
@@ -175,13 +192,15 @@ class InputHostLease:
             # Preserve the host's own setting rather than an ancestor's modal
             # disabled state. False is a real original value, not a sentinel.
             self._restore = (weakref.ref(host), not host.testAttribute(Qt.WidgetAttribute.WA_ForceDisabled))
-        host.setEnabled(False)
+            QApplication.instance().installEventFilter(self)
+        # Do not toggle the entire editor's enabled state: that repolishes
+        # thousands of descendants on both entry and exit (seconds on Windows).
+        # The native cover owns mouse input; this lease also blocks keyboard,
+        # IME, shortcuts and programmatically sent input to the covered subtree.
         return True
 
     def release(self, *_):
         restore, self._restore = self._restore, None
-        if restore is not None:
-            host = restore[0]()
-            if host is not None and isValid(host):
-                host.setEnabled(restore[1])
+        if restore is not None and QApplication.instance() is not None:
+            QApplication.instance().removeEventFilter(self)
 

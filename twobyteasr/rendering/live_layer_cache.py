@@ -21,7 +21,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QImage, QPainter, QPixmap, QRegion
+from PySide6.QtGui import QImage, QPainter
 
 from .advanced_live_renderer import LIVE_RENDERER_VERSION, LiveLayerImages
 
@@ -110,7 +110,9 @@ class LiveLayerCache:
         canvas_size = getattr(layers, "canvas_size", None) or source.size()
         bbox = QRect()
         for image in images.values():
-            layer_bounds = QRegion(QPixmap.fromImage(image).mask()).boundingRect()
+            from .alpha_geometry import alpha_metrics
+            bounds,_count=alpha_metrics(image)
+            layer_bounds=QRect(*bounds) if bounds is not None else QRect()
             if not layer_bounds.isEmpty():
                 bbox = layer_bounds.united(bbox) if not bbox.isNull() else layer_bounds
         if bbox.isNull() or bbox.isEmpty():
@@ -180,6 +182,10 @@ class LiveLayerCache:
         with self._lock:
             self._entries.clear()
 
+    def trim(self) -> None:
+        """Reclaim to the current budget without discarding reusable pixels."""
+        with self._lock:self._evict_locked()
+
     def stats(self) -> dict[str, int]:
         with self._lock:
             return {
@@ -198,7 +204,7 @@ class LiveLayerCache:
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
         total = sum(entry.weight_bytes for entry in self._entries.values())
-        while total > self._max_bytes and len(self._entries) > 1:
+        while total > self._max_bytes and self._entries:
             _key, evicted = self._entries.popitem(last=False)
             total -= evicted.weight_bytes
 

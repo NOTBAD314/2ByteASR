@@ -366,7 +366,9 @@ def renderer_node_command(renderer_root, *arguments):
         raise RuntimeError(f'程序自带 Node Runtime 缺失或损坏：{node}；请修复安装后重试预览')
     policy=root/'process_policy.cjs'
     if not policy.is_file():raise RuntimeError(f'渲染进程启动策略缺失：{policy}')
-    return [str(node),'--require',str(policy),*map(str,arguments)]
+    bootstrap=root/'export_bootstrap.cjs'
+    if not bootstrap.is_file():raise RuntimeError(f'渲染导航策略缺失：{bootstrap}')
+    return [str(node),'--require',str(policy),'--require',str(bootstrap),*map(str,arguments)]
 
 
 def renderer_child_environment():

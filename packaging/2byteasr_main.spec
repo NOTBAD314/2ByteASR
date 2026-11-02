@@ -21,6 +21,8 @@ build_metadata = Path(
 if not build_metadata.is_file():
     raise RuntimeError(f"Build identity metadata is missing: {build_metadata}")
 datas.append((str(build_metadata), "."))
+# Keep the pinned browser font contract with the exact distributed source.
+datas.append((str(ROOT / 'packaging/renderer_fonts.json'), 'packaging'))
 # Public bundles always ship factory defaults, never this machine's settings.
 sys.path.insert(0, str(ROOT))
 from twobyteasr.storage.settings import DEFAULT_SETTINGS

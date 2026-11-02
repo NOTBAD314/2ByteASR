@@ -7,7 +7,7 @@ import os
 import re
 import threading
 
-_LIBRARY_INDEX_LOCK = threading.RLock()
+from ..projects.studio_project import _LIBRARY_INDEX_LOCK
 from ..i18n import tr, user_text, current_language, join_text
 from ..projects.project_display_name import display_project_name
 
@@ -135,7 +135,7 @@ def _library_display_signature(records: list[dict[str, object]]) -> tuple:
     """
     return tuple(
         tuple(sorted((str(key), repr(value)) for key, value in record.items()
-                     if not str(key).startswith("_") and key != "status"))
+                     if not str(key).startswith("_") and key not in {"status", "summary_version", "last_opened", "modified"}))
         for record in records
     )
 
@@ -359,6 +359,12 @@ class StudioHubMixin:
             return False
 
     def _library_scan_ready(self, records, scan_generation: int = -1) -> None:
+        if isinstance(records, dict) and 'partial' in records:
+            if scan_generation == int(getattr(self, '_hub_scan_generation', 0)):
+                self._hub_library_records = records['partial']
+                if self.project is None and self._hub_on_screen():
+                    self._rebuild_project_library()
+            return
         self._hub_scan_pending = False
         presence = getattr(self, "_library_presence_next", None)
         self._library_presence_next = None
@@ -407,11 +413,11 @@ class StudioHubMixin:
         records = list(self.recent_project_records() if records is None else records)
         query = self.project_search.text().strip().casefold() if hasattr(self, "project_search") else ""
         if query:
-            records = [record for record in records if query in str(display_project_name(record)).casefold()
+            records = [record for record in records if query in str(display_project_name(record, read=False)).casefold()
                        or query in Path(str(record.get("source_media", ""))).name.casefold()]
         sort_mode = str(self.project_sort.currentData() or "recent") if hasattr(self, "project_sort") else "recent"
         if sort_mode == "name":
-            records.sort(key=lambda record: str(display_project_name(record)).casefold())
+            records.sort(key=lambda record: str(display_project_name(record, read=False)).casefold())
         elif sort_mode == "created":
             records.sort(key=lambda record: str(record.get("created_at", "")), reverse=True)
         else:
@@ -426,6 +432,12 @@ class StudioHubMixin:
             # Same cards: keep them (and their scroll); newer bookkeeping
             # fields of the same projects are adopted without a rebuild.
             self._hub_display_records = records
+            self._update_resume_project(records[0] if records and not query else None)
+            by_path={str(record.get('path')):record for record in records}
+            for row in getattr(self,'_hub_row_widgets',()):
+                record=by_path.get(getattr(row,'_library_item_path',''))
+                meta=row.findChild(QLabel,'projectListMeta')
+                if record is not None and meta is not None:bind_text(meta,self._library_row_meta(record))
             self._sync_resume_hero_geometry()
             return
         if (current is not None and getattr(self, "_hub_card_widgets", None)
@@ -457,6 +469,21 @@ class StudioHubMixin:
         saved_scroll = None
         if hasattr(self, "project_library_scroll"):
             saved_scroll = self.project_library_scroll.verticalScrollBar().value()
+        # Keep unchanged cards when one summary changes or ordering changes.
+        # Only current records can survive; the small pool is bounded by the
+        # previously built viewport (at most 64 cards).
+        eligible={self._library_card_key(record,card_width) for record in records}
+        pool={}
+        old_cards=list(getattr(self,'_hub_card_widgets',()))+list(getattr(self,'_hub_reusable_cards',{}).values())
+        for card in old_cards:
+            key=getattr(card,'_library_card_key',None)
+            if key in eligible and key not in pool and len(pool)<64:
+                parent=card.parentWidget()
+                if parent is not None and parent.layout() is not None:parent.layout().removeWidget(card)
+                card.hide();card.setParent(self.all_projects_host);pool[key]=card
+            elif card.parentWidget() is self.all_projects_host:
+                card.hide();card.deleteLater()
+        self._hub_reusable_cards=pool
         while self.all_projects_layout.count():
             item = self.all_projects_layout.takeAt(0)
             if item and item.widget() is not None:
@@ -496,9 +523,10 @@ class StudioHubMixin:
     def _build_library_view(self, view: str, *, saved_scroll=None) -> None:
         """Create one view's widgets for the displayed records in batches.
 
-        2026-09-18 III 工程库懒加载：每批 8 个（QTimer(0) 链），首屏立即可操作，
-        后续滚动中补齐；重建/筛选/切管理态通过 generation 失效旧批次。封面解码在
-        后台线程出 QImage。
+        Each turn has a 6 ms elapsed budget as well as a count bound. Build
+        the visible rows first and extend near the scroll boundary. Unchanged
+        cards and decoded covers survive data refreshes; generations reject
+        superseded batches. Only the GUI creates widgets and QPixmaps.
         """
         records = list(getattr(self, "_hub_display_records", ()) or ())
         generation = getattr(self, "_library_build_generation", 0)
@@ -566,9 +594,10 @@ class StudioHubMixin:
                 return  # 新一次重建/筛选已接管，本批作废
             # No more than the page still needs (a started row is completed).
             size = max(1, min(self._LIBRARY_BUILD_BATCH, target[0] - built_count()))
-            batch = pending_records[:size]
-            del pending_records[:size]
-            for record in batch:
+            batch_started = perf_counter()
+            for _ in range(size):
+                if not pending_records:break
+                record = pending_records.pop(0)
                 if view == "card":
                     card = self._build_project_card(record, card_width)
                     self._hub_card_widgets.append(card)
@@ -576,6 +605,7 @@ class StudioHubMixin:
                 else:
                     self._add_project_list_row(record)
                 self._queue_library_maintenance(record, auto_cover)
+                if perf_counter() - batch_started >= .006:break
             if view != "card":
                 self.project_list_layout.activate()
                 restore_scroll_once()
@@ -597,6 +627,7 @@ class StudioHubMixin:
                 row_layout.setSpacing(gap)
                 for card in row_cards:
                     row_layout.addWidget(card)
+                    card.show()
                 row_layout.addStretch(1)
                 self.all_projects_layout.addWidget(
                     row_host, self.all_projects_layout.count(), 0)
@@ -617,6 +648,7 @@ class StudioHubMixin:
                 row_layout.setSpacing(gap)
                 for card in pending_cards:
                     row_layout.addWidget(card)
+                    card.show()
                 row_layout.addStretch(1)
                 self.all_projects_layout.addWidget(
                     row_host, self.all_projects_layout.count(), 0)
@@ -626,7 +658,7 @@ class StudioHubMixin:
 
         batch_timer.timeout.connect(build_batch)
         slots[view] = build_batch
-        build_batch()
+        batch_timer.start(0)
 
     def _library_scrolled(self, _value=None) -> None:
         """Near the end of the built cards: build the next rows."""
@@ -658,6 +690,8 @@ class StudioHubMixin:
         Until it is read the card shows the library index's name."""
         from ..projects.project_display_name import name_needs_read
         path = str(record.get("path", "") or "")
+        if record.get("summary_version") or record.get("_summary_loaded"):
+            return
         if not path or not name_needs_read(record):
             return
         waiting = self.__dict__.setdefault("_hub_name_waiting", {})
@@ -787,27 +821,12 @@ class StudioHubMixin:
     def _hero_cover_pixmap(self, record: dict[str, object]) -> QPixmap:
         """The hero's cover, decoded once per file version at a bounded width."""
         if not str(record.get('cover_path') or ''):
+            self.resume_preview_image._library_cover_request = None
             return QPixmap()
-        cover = self._library_cover_path(record)
-        try:
-            stat = cover.stat()
-        except OSError:
-            return QPixmap()
-        key = (str(cover), stat.st_mtime_ns, stat.st_size)
-        cached = getattr(self, "_hero_cover_cache", None)
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        from PySide6.QtGui import QImageReader
-        reader = QImageReader(str(cover))
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if size.isValid() and size.width() > _HERO_COVER_MAX_WIDTH:
-            reader.setScaledSize(QSize(_HERO_COVER_MAX_WIDTH,
-                                       max(1, round(size.height() * _HERO_COVER_MAX_WIDTH / size.width()))))
-        image = reader.read()
-        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
-        self._hero_cover_cache = (key, pixmap)
-        return pixmap
+        self._enqueue_library_cover(record, _HERO_COVER_MAX_WIDTH, round(_HERO_COVER_MAX_WIDTH*9/16), self.resume_preview_image)
+        key=getattr(self.resume_preview_image, '_library_cover_request', None)
+        cached=getattr(self, '_library_cover_images', {}).get(key) if key else None
+        return QPixmap.fromImage(cached[1]) if cached is not None else QPixmap()
 
     # 2026-09-18 III：工程库封面解码/缩放移出 GUI 线程。worker 产出目标
     # 尺寸 QImage（文件 IO+平滑缩放都在后台），GUI 侧只 fromImage 贴 label。
@@ -823,15 +842,16 @@ class StudioHubMixin:
         if not str(record.get('cover_path') or ''):
             return
         cover = self._library_cover_path(record)
-        try:
-            stat = cover.stat()
-        except OSError:
-            return
-        key = (str(cover), int(width), int(height))
-        stamp = (stat.st_mtime_ns, stat.st_size)
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        key = (str(cover), round(width*dpr), round(height*dpr))
+        stamp = (record.get('cover_mtime_ns'), record.get('cover_size'))
+        label._library_cover_request = key
+        if getattr(label,'_library_cover_stamp',None)!=stamp:label._library_cover_rechecked=None
+        label._library_cover_stamp=stamp
+        label._library_cover_dpr = dpr
         cached = getattr(self, '_library_cover_images', {}).get(key)
-        if cached is not None and cached[0] == stamp:
-            label.setPixmap(QPixmap.fromImage(cached[1]))
+        if cached is not None and (stamp[0] is None or cached[0] == stamp):
+            self._set_library_cover(label, cached[1])
             return
         self._library_cover_labels.setdefault(key, []).append(label)
         queue = getattr(self, "_library_cover_queue", None)
@@ -872,6 +892,10 @@ class StudioHubMixin:
                             _Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                             _Qt.TransformationMode.SmoothTransformation,
                         )
+                        after=Path(path).stat()
+                        if stamp!=f'{after.st_mtime_ns}:{after.st_size}':
+                            queue.put(key)
+                            continue
                         image.setText('source_stamp', stamp)
                     self.library_cover_ready_signal.emit(path, width, height, image)
                 except OSError:
@@ -893,31 +917,43 @@ class StudioHubMixin:
             return
         from collections import OrderedDict
         try:
-            stat = Path(path).stat()
-        except OSError:
+            modified,size=map(int,image.text('source_stamp').split(':'))
+        except (ValueError,TypeError):
             getattr(self, '_library_cover_labels', {}).pop(key, None)
-            return
-        stamp = image.text('source_stamp')
-        if stamp and stamp != f'{stat.st_mtime_ns}:{stat.st_size}':
-            # The custom cover changed while this decode was in flight.
-            self._library_cover_queued.add(key)
-            self._library_cover_queue.put(key)
             return
         cache = getattr(self, '_library_cover_images', None)
         if cache is None:
             cache = self._library_cover_images = OrderedDict()
-        cache[key] = ((stat.st_mtime_ns, stat.st_size), image)
+        cache[key] = ((modified, size), image)
         cache.move_to_end(key)
         self._library_cover_bytes = sum(int(entry[1].sizeInBytes()) for entry in cache.values())
         while cache and (len(cache) > _COVER_CACHE_ENTRIES or self._library_cover_bytes > _COVER_CACHE_BYTES):
             _old_key, (_stamp, old_image) = cache.popitem(last=False)
             self._library_cover_bytes -= int(old_image.sizeInBytes())
         labels = getattr(self, "_library_cover_labels", {}).pop(key, None) or []
-        pixmap = QPixmap.fromImage(image)
         from shiboken6 import isValid
+        retry=[]
         for label in labels:
-            if isValid(label):
-                label.setPixmap(pixmap)
+            if isValid(label) and getattr(label, '_library_cover_request', None) == key:
+                expected=getattr(label,'_library_cover_stamp',None)
+                if (expected and expected[0] and expected!=(modified,size)
+                        and getattr(label,'_library_cover_rechecked',None)!=expected):
+                    label._library_cover_rechecked=expected;retry.append(label);continue
+                self._set_library_cover(label, image)
+        if retry:
+            self._library_cover_labels[key]=retry
+            if key not in self._library_cover_queued:
+                self._library_cover_queued.add(key);self._library_cover_queue.put(key)
+
+    def _set_library_cover(self, label, image):
+        pixmap=QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(getattr(label, '_library_cover_dpr', 1.0))
+        if label is getattr(self, 'resume_preview_image', None):
+            self._resume_has_cover=True
+            self._resume_cover_aspect=max(.5,image.width()/max(1,image.height()))
+            label.set_cover(pixmap)
+            self._sync_resume_hero_geometry()
+        else:label.setPixmap(pixmap)
 
     @staticmethod
     def _placeholder_cover(width: int, height: int) -> QPixmap:
@@ -942,7 +978,27 @@ class StudioHubMixin:
             Qt.TransformationMode.SmoothTransformation,
         )
 
+    def _library_card_key(self,record,width):
+        return (_library_display_signature([record]),width,theme_key(),current_language(),
+                bool(getattr(self,'_library_selection_mode',False)))
+
+    def _library_row_meta(self,record):
+        bits=[tr('{count} 条字幕',count=int(record.get('cue_count') or 0)),
+              _library_duration(int(record.get('duration_ms') or 0)),
+              Path(str(record.get('source_media') or '')).name or tr('无源媒体')]
+        edited=self._library_edited_time(record)
+        if edited:bits.append(tr('编辑 {time}',time=edited))
+        return join_text(bits)
+
     def _build_project_card(self, record: dict[str, object], card_width: int) -> QToolButton:
+        key=self._library_card_key(record,card_width)
+        reused=getattr(self,'_hub_reusable_cards',{}).pop(key,None)
+        if reused is not None:
+            status=reused.findChild(QLabel,'projectCardStatus')
+            if status is not None:self._register_status_widget(record,'card',status,reused)
+            cover=reused.findChild(QLabel,'projectCardCover')
+            if cover is not None:self._enqueue_library_cover(record,cover.width(),cover.height(),cover)
+            return reused
         path = Path(str(record.get("path", "")))
         source_path = Path(str(record.get("source_media") or ""))
         name = display_project_name(record, read=False)
@@ -954,6 +1010,7 @@ class StudioHubMixin:
         # Thumbnail keeps 16:9 and lands at ~58% of the fixed card height;
         # the remaining block holds the two-line title, meta and actions.
         card = _ProjectCard()
+        card._library_card_key=key
         card.setObjectName("recentProjectCard")
         card.setCursor(Qt.CursorShape.PointingHandCursor)
         card.setFixedSize(card_width, cover_height + 168)
@@ -1155,6 +1212,7 @@ class StudioHubMixin:
         if not hasattr(self, "resume_title"):
             return
         if not record:
+            self.resume_preview_image._library_cover_request = None
             self._resume_has_cover = False
             self._resume_target = ""
             bind_text(self.resume_title, '还没有打开过工程')
@@ -1170,7 +1228,7 @@ class StudioHubMixin:
             return
         path = Path(str(record.get("path", "")))
         source_path = Path(str(record.get("source_media") or ""))
-        name = display_project_name(record)
+        name = display_project_name(record, read=False)
         count = int(record.get("cue_count", 0) or 0)
         duration = max(0, int(record.get("duration_ms", 0) or 0))
         status_text, status_key = self._project_status(record)
@@ -1249,7 +1307,7 @@ class StudioHubMixin:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         bind_text(box, '工程详情', property='windowTitle')
-        box.setText(display_project_name(record))
+        box.setText(display_project_name(record, read=False))
         bind_text(box, '媒体：{value0}\n分辨率：{value1}\n视频时长：{value2}\n字幕条数：{value3}\n最后编辑：{value4}\n工程路径：{value5}', property='informativeText', value0=Path(source).name if source != '无源媒体' else tr(source), value1=resolution, value2=_library_duration(duration), value3=count, value4=updated, value5=path)
         apply_secondary_surface_theme(box)
         box.exec()
@@ -1257,10 +1315,10 @@ class StudioHubMixin:
     def _project_library_records(self) -> list[dict[str, object]]:
         """Merge recent metadata with every project in the canonical library.
 
-        2026-09-19：持久化摘要索引（library-index.json）驱动。卡片摘要命中
-        (mtime_ns+size) 时零解析直接复用，只有真实变化过的工程才走全量
-        snapshot；扫描结束把更新写回索引。首屏在 _rebuild_project_library
-        里直接读索引，不再等扫描。
+        Versioned summaries are reused by file stamp. Missing/old summaries
+        are projected without constructing captions, evidence or recovery
+        documents. The first screen can show provisional filenames while
+        backfill runs; restoration decisions belong to opening the project.
         """
         self._library_read_warnings = []
         scan_generation = int(getattr(self, '_hub_scan_generation', 0))
@@ -1269,11 +1327,12 @@ class StudioHubMixin:
 
         def cached_summary(resolved: str, stat) -> dict[str, object] | None:
             entry = index.get(resolved)
-            if library_index_entry_stale(entry, stat):
+            if library_index_entry_stale(entry, stat) or not entry.get("summary_version"):
                 return None
             summary = {key: entry[key] for key in _LIBRARY_INDEX_SUMMARY_KEYS if key in entry}
             summary["_needs_metadata_repair"] = bool(entry.get("needs_metadata_repair"))
             summary["_summary_loaded"] = True
+            summary["_file_version"] = (int(stat.st_size),int(stat.st_mtime_ns))
             return summary
 
         recent = self.recent_project_records()
@@ -1300,12 +1359,25 @@ class StudioHubMixin:
             cached = cached_summary(resolved, stat)
             if cached is not None:
                 record.update(cached)
+                cover = self._library_cover_path(record)
+                try:
+                    if not record.get("cover_path"):raise FileNotFoundError()
+                    cover_stat=cover.stat()
+                    record.update(cover_mtime_ns=cover_stat.st_mtime_ns,cover_size=cover_stat.st_size)
+                except OSError:record.update(cover_mtime_ns=0,cover_size=0)
                 return record
-            _project, summary, needs_repair = library_project_snapshot(project_path, record)
+            from ..projects.project_summary import read_project_summary
+            summary = read_project_summary(project_path, record)
+            needs_repair = False
+            after = project_path.stat()
+            if stat is None or (stat.st_ino, stat.st_mtime_ns, stat.st_size) != (after.st_ino, after.st_mtime_ns, after.st_size):
+                self._hub_scan_again = True
+                return record
             record.update(summary)
             record["_needs_metadata_repair"] = bool(needs_repair)
             record["_summary_loaded"] = True
             if stat is not None:
+                record['_file_version']=(int(stat.st_size),int(stat.st_mtime_ns))
                 entry = {
                     "mtime_ns": int(stat.st_mtime_ns),
                     "size": int(stat.st_size),
@@ -1315,6 +1387,19 @@ class StudioHubMixin:
                 index[resolved] = entry
                 index_dirty = True
             return record
+
+        provisional = [dict(row) for row in recent]
+        provisional_seen = {str(row.get('path')) for row in provisional}
+        if not index:
+            for folder, dirs, names in os.walk(library_root):
+                dirs[:] = [d for d in dirs if d.casefold() not in _INTERNAL_PROJECT_DIRS]
+                for name in names:
+                    path = Path(folder) / name
+                    if name.lower().endswith('.2byteproj') and str(path) not in provisional_seen:
+                        provisional.append({'path': str(path), 'name': path.stem, '_summary_pending': True})
+            if provisional:
+                try:self.library_records_ready_signal.emit({'partial': provisional}, scan_generation)
+                except (AttributeError, RuntimeError):pass
 
         for recent_index, item in enumerate(recent):
             path = str(item.get("path", ""))
@@ -1377,7 +1462,12 @@ class StudioHubMixin:
         if index_dirty and not self._library_read_warnings:
             with _LIBRARY_INDEX_LOCK:
                 if scan_generation == int(getattr(self, '_hub_scan_generation', 0)):
-                    save_library_index(index)
+                    latest=load_library_index()
+                    for path, entry in index.items():
+                        try:stat=Path(path).stat()
+                        except OSError:continue
+                        if not library_index_entry_stale(entry,stat):latest[path]=entry
+                    save_library_index(latest)
         return deduplicated
 
     def _library_records_from_index(self) -> list[dict[str, object]] | None:
@@ -1401,6 +1491,7 @@ class StudioHubMixin:
             values = {key: entry[key] for key in _LIBRARY_INDEX_SUMMARY_KEYS if key in entry}
             values["_needs_metadata_repair"] = bool(entry.get("needs_metadata_repair"))
             values["_summary_loaded"] = True
+            values['_file_version']=(int(entry.get('size',-1)),int(entry.get('mtime_ns',-1)))
             return values
 
         merged: list[dict[str, object]] = []
@@ -1496,6 +1587,13 @@ class StudioHubMixin:
 
     def _set_hub_toolbar_mode(self, hub: bool) -> None:
         """Keep project-only actions out of the project-free Hub header."""
+        app=QApplication.instance()
+        gate=getattr(self,'_readiness',None)
+        if app is not None:
+            if hub and getattr(self,'_event_filter_installed',False):
+                app.removeEventFilter(self);self._event_filter_installed=False
+            elif not hub and not getattr(gate,'active',False) and not getattr(self,'_event_filter_installed',False):
+                app.installEventFilter(self);self._event_filter_installed=True
         layers = getattr(self, "workspace_layers", None)
         if layers is not None:
             layers.setCurrentWidget(self.studio_empty if hub else self.workspace_splitter)
@@ -1504,7 +1602,7 @@ class StudioHubMixin:
             video.set_navigation_visible(not hub and self.isVisible())
         if hub and hasattr(self, "teach_banner"):
             self.teach_banner.hide()
-        if hasattr(self, "studio_toolbar"):
+        if hasattr(self, "studio_toolbar") and self.studio_toolbar.property("hubMode") != bool(hub):
             self.studio_toolbar.setProperty("hubMode", bool(hub))
             self.studio_toolbar.style().unpolish(self.studio_toolbar)
             self.studio_toolbar.style().polish(self.studio_toolbar)
@@ -1517,8 +1615,9 @@ class StudioHubMixin:
             (getattr(self, "studio_open_button", None), "fa5s.folder-open"),
             (getattr(self, "studio_hub_settings_button", None), "fa5s.cog"),
         ):
-            if button is not None:
+            if button is not None and button.property("hubIconRole") != theme_key()+":"+icon_role:
                 install_themed_icon(button, icon_name, icon_role)
+                button.setProperty("hubIconRole", theme_key()+":"+icon_role)
         hidden = getattr(self, "_hub_toolbar_hidden", ())
         for widget in hidden:
             if widget is not None:

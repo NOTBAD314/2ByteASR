@@ -111,6 +111,8 @@ class LiveInput:
 
 
 def create_live_input(context,legacy,pipeline,media,cache,fps,paths,text_plan):
+    if (context.recognition_snapshot.get('language_recovery_policy') or {}).get('reuse_candidates'):
+        return None
     from ..providers.mosi_asr import MODEL
     if ((context.asr_endpoint_snapshot or {}).get('model')!=MODEL
             or context.audio_stream or os.environ.get('TWOBYTEASR_STREAM_AUDIO')=='0'):

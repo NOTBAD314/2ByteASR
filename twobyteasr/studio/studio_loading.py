@@ -8,91 +8,49 @@ import time
 import weakref
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRegion
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QProgressBar, QVBoxLayout, QHBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QStackedLayout, QVBoxLayout, QHBoxLayout, QWidget
 from ..i18n import bind_text
+from .loading_faces import ReadinessSteps
 
 TASKS = ('创建工作台界面', '读取工程', '建立时间轴', '准备播放器', '准备音频', '准备字幕', '首屏绘制')
 NATIVE_COVER_PENDING_TIMEOUT_MS = 3000  # Failure watchdog, never a successful-handoff delay.
 
-class ReadinessSteps(QWidget):
-    """The real opening stages: done ✓, current ●, waiting ○, failed ✕."""
+LIBRARY_TASKS = ('搭工作台框架', '装工具面板', '铺时间轴', '摆工程库', '读取工程列表')
+# The workspace builder's progress names (SubtitleStudioPage deferred build),
+# in order, grouped into the library face's first four steps.
+LIBRARY_BUILD_PARTS = (
+    ('工作台工具栏', 0), ('字幕列表', 0), ('视频承载区', 0), ('字幕编辑区', 0),
+    ('AI 工具', 1), ('字幕样式', 1), ('动效面板', 1), ('视频面板', 1), ('剪辑助手面板', 1), ('素材面板', 1), ('工具面板', 1),
+    ('时间轴工具栏', 2), ('时间轴', 2),
+    ('工程库布局', 3), ('工程库标题', 3), ('工程库导航', 3),
+)
 
-    ROW = 30
 
-    def __init__(self, tasks, parent=None):
-        super().__init__(parent)
-        self.tasks = tuple(tasks)
-        self.completed: set[str] = set()
-        self.current = ''
-        self.failed = ''
-        self.skipped = {}
-        self.setMinimumHeight(self.ROW * len(self.tasks))
-
-    def sizeHint(self):
-        return QSize(360, self.ROW * len(self.tasks))
-
-    def set_state(self, completed, current='', failed=''):
-        self.completed, self.current, self.failed = set(completed), str(current or ''), str(failed or '')
-        self.update()
-
-    def paintEvent(self, _event):
-        from ..i18n import current_language, translate
-        from ..design.theme_manager import theme_key
-        from ..design.ui_theme import theme_definition
-        theme = theme_definition(theme_key())
-        language = current_language()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for index, task in enumerate(self.tasks):
-            top = index * self.ROW
-            dot = QRectF(4, top + (self.ROW - 16) / 2, 16, 16)
-            if task == self.failed:
-                state, color = 'failed', QColor(theme.danger)
-            elif task in self.completed:
-                state, color = 'done', QColor(theme.success)
-            elif task == self.current:
-                state, color = 'active', QColor(theme.accent_text)
-            else:
-                state, color = 'waiting', QColor(theme.border_strong)
-            if state == 'waiting':
-                painter.setPen(QPen(color, 1.6))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(dot.adjusted(1.5, 1.5, -1.5, -1.5))
-            else:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(color)
-                painter.drawEllipse(dot)
-                painter.setPen(QPen(QColor(theme.on_vivid), 1.8, Qt.PenStyle.SolidLine,
-                                    Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-                c = dot.center()
-                if state == 'done':
-                    painter.drawLine(c.x() - 3.8, c.y() + 0.2, c.x() - 1.0, c.y() + 3.0)
-                    painter.drawLine(c.x() - 1.0, c.y() + 3.0, c.x() + 4.0, c.y() - 2.6)
-                elif state == 'failed':
-                    painter.drawLine(c.x() - 3, c.y() - 3, c.x() + 3, c.y() + 3)
-                    painter.drawLine(c.x() - 3, c.y() + 3, c.x() + 3, c.y() - 3)
-                else:
-                    painter.setBrush(QColor(theme.on_vivid))
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawEllipse(c, 3, 3)
-            font = QFont(self.font())
-            font.setPixelSize(14)
-            font.setWeight(QFont.Weight.DemiBold if state == 'active' else QFont.Weight.Medium)
-            painter.setFont(font)
-            painter.setPen(QColor(theme.text if state in {'active', 'failed'} else
-                                  theme.text_secondary if state == 'done' else theme.text_muted))
-            label = translate(task, language) if language != 'zh' else task
-            if task in self.skipped:
-                label += ' · ' + (translate('无需准备', language) if language != 'zh' else '无需准备')
-            painter.drawText(QRectF(32, top, self.width() - 32, self.ROW),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label)
+def library_step_state(completed, detail=''):
+    """(done groups, current group) of the library face from the real build reports."""
+    if '首屏绘制' in completed:
+        return set(LIBRARY_TASKS), ''
+    if '创建工作台界面' in completed:
+        return set(LIBRARY_TASKS[:4]), LIBRARY_TASKS[4]
+    names = [name for name, _group in LIBRARY_BUILD_PARTS]
+    built = set(names[:names.index(detail) + 1]) if detail in names else set()
+    done = {LIBRARY_TASKS[group] for group in range(4)
+            if all(name in built for name, owner in LIBRARY_BUILD_PARTS if owner == group)}
+    current = next((task for task in LIBRARY_TASKS if task not in done), '')
+    return done, current
 
 
 class StudioLoadingView(QFrame):
-    """One light card, used as a real page by the main-window owner."""
+    """The loading page: a poster for a project, the bunny and recent projects for the library.
+
+    2026-11-02 redesign (user-approved drafts B and library 3). ``card`` stays
+    the same object for the whole request; the shared status label and
+    buttons move between the two faces.
+    """
     painted = Signal()
     geometry_changed = Signal()
     native_cover_changed = Signal()
+    pick_changed = Signal()
 
     def __init__(self, host, coverage=None, *, page_stack=False, native_cover=False, owner=None):
         from ..design.native_loading_cover import native_cover_supported
@@ -122,7 +80,12 @@ class StudioLoadingView(QFrame):
             self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self._surface_background = QColor('#18171c')
+        self.library_mode = False
+        self._ambient = None
+        self._line_key = ''
+        self._progress_signature = None
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
         self.window_title_bar = None
         if self.uses_native_cover:
             from ..app.window_chrome_widgets import WindowTitleBar
@@ -132,46 +95,20 @@ class StudioLoadingView(QFrame):
         outer.addStretch(1)
         self.card = QFrame(self)
         self.card.setObjectName('studioLoadingCard')
-        self.card.setFixedWidth(460)
         outer.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter)
         outer.addStretch(1)
-        layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(28, 26, 28, 24)
-        layout.setSpacing(14)
-        head = QHBoxLayout()
-        head.setSpacing(14)
-        self.icon = QLabel(self.card)
-        self.icon.setObjectName('studioLoadingIcon')
-        self.icon.setFixedSize(48, 48)
-        self.icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        head.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
-        heading = QVBoxLayout()
-        heading.setSpacing(4)
-        title = QLabel(self.card)
-        bind_text(title, '准备工作台')
-        title.setObjectName('studioLoadingTitle')
-        from ..design.elided_label import ElidedLabel
-        self.project_name = ElidedLabel('', self.card, minimum=40)
-        self.project_name.setObjectName('studioLoadingProject')
-        heading.addWidget(title)
-        heading.addWidget(self.project_name)
-        head.addLayout(heading, 1)
-        layout.addLayout(head)
-        self.bar = QProgressBar(self.card)
-        self.bar.setRange(0, len(TASKS))
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(6)
-        layout.addWidget(self.bar)
-        self.steps_view = ReadinessSteps(TASKS, self.card)
-        layout.addWidget(self.steps_view)
+        self.faces = QStackedLayout(self.card)
+        self._build_project_face()
+        self._build_library_face()
+        self.faces.addWidget(self.project_face)
+        self.faces.addWidget(self.library_face)
+        # Shared status and actions; parented to whichever face is showing.
+        self.icon = QLabel(self.card)  # Kept for callers; the faces carry the art.
+        self.icon.hide()
         self.label = QLabel('', self.card)
         self.label.setObjectName('studioLoadingStatus')
         self.label.setTextFormat(Qt.TextFormat.PlainText)
         self.label.setWordWrap(True)
-        layout.addWidget(self.label)
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        actions.addStretch()
         self.back = QPushButton(self.card)
         self.back.setObjectName('studioLoadingBack')
         self.copy_error = QPushButton(self.card)
@@ -182,14 +119,293 @@ class StudioLoadingView(QFrame):
         bind_text(self.retry, '重试')
         self.retry.setObjectName('studioLoadingRetry')
         for button in (self.back, self.copy_error, self.retry):
-            actions.addWidget(button)
-        layout.addLayout(actions)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        from ..design.bunny_mascot import BunnyMascot
+        self.perch = BunnyMascot(self, height=150, motion='bob')
+        self.perch.setVisible(self.perch.available)
+        self.card.installEventFilter(self)
+        self._seat_shared(library=False)
         host.installEventFilter(self)
         if self.coverage is not host:
             self.coverage.installEventFilter(self)
         self.hide()
 
+    # ------------------------------------------------------------ the faces
+    def _build_project_face(self):
+        from .loading_faces import CoverPane, ReadinessSteps
+        from ..design.elided_label import ElidedLabel
+        face = self.project_face = QFrame(self.card)
+        face.setObjectName('studioLoadingPoster')
+        row = QHBoxLayout(face)
+        row.setContentsMargins(0, 0, 30, 24)
+        row.setSpacing(8)
+        self.cover = CoverPane(face)
+        self.bar = self.cover.scrubber
+        self.bar.setRange(0, len(TASKS))
+        row.addWidget(self.cover, 122)
+        info = QVBoxLayout()
+        info.setContentsMargins(8, 32, 0, 0)
+        info.setSpacing(0)
+        self.eyebrow = QLabel(face)
+        self.eyebrow.setObjectName('studioLoadingEyebrow')
+        info.addWidget(self.eyebrow, 0, Qt.AlignmentFlag.AlignLeft)
+        info.addSpacing(14)
+        self.project_name = ElidedLabel('', face, minimum=40)
+        self.project_name.setObjectName('studioLoadingProject')
+        info.addWidget(self.project_name)
+        info.addSpacing(12)
+        self.meta_row = QHBoxLayout()
+        self.meta_row.setSpacing(6)
+        self.meta_chips = []
+        for _index in range(3):
+            chip = QLabel(face)
+            chip.setObjectName('studioLoadingChip')
+            chip.hide()
+            self.meta_chips.append(chip)
+            self.meta_row.addWidget(chip)
+        self.meta_row.addStretch(1)
+        info.addLayout(self.meta_row)
+        info.addSpacing(20)
+        self.steps_view = ReadinessSteps(TASKS, face)
+        info.addWidget(self.steps_view)
+        info.addStretch(1)
+        self.project_status = QVBoxLayout()
+        self.project_status.setSpacing(12)
+        info.addLayout(self.project_status)
+        self.project_actions = QHBoxLayout()
+        self.project_actions.setSpacing(8)
+        self.project_actions.addStretch(1)
+        info.addSpacing(10)
+        info.addLayout(self.project_actions)
+        row.addLayout(info, 100)
+
+    def _build_library_face(self):
+        from .loading_faces import ReadinessSteps, RecentFan
+        from ..design.bunny_mascot import BunnyMascot
+        face = self.library_face = QFrame(self.card)
+        face.setObjectName('studioLoadingLibrary')
+        row = QHBoxLayout(face)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(40)
+        left = QVBoxLayout()
+        left.setSpacing(0)
+        left.addStretch(1)
+        who = QHBoxLayout()
+        who.setSpacing(0)
+        self.library_bunny = BunnyMascot(face, height=170, motion='bob')
+        self.library_bunny.setVisible(self.library_bunny.available)
+        who.addWidget(self.library_bunny, 0, Qt.AlignmentFlag.AlignBottom)
+        self.bubble = QLabel(face)
+        self.bubble.setObjectName('studioLoadingBubble')
+        who.addWidget(self.bubble, 0, Qt.AlignmentFlag.AlignTop)
+        who.addStretch(1)
+        who_box = QVBoxLayout()
+        who_box.setContentsMargins(0, 0, 0, 0)
+        who_box.addLayout(who)
+        left.addLayout(who_box)
+        left.addSpacing(10)
+        self.library_title = QLabel(face)
+        bind_text(self.library_title, '正在打开工程库')
+        self.library_title.setObjectName('studioLoadingLibraryTitle')
+        left.addWidget(self.library_title)
+        left.addSpacing(6)
+        self.library_status = QVBoxLayout()
+        left.addLayout(self.library_status)
+        left.addSpacing(18)
+        self.library_steps = ReadinessSteps(LIBRARY_TASKS, face, compact=True)
+        self.library_steps.setFixedWidth(340)
+        left.addWidget(self.library_steps)
+        left.addSpacing(16)
+        self.library_actions = QHBoxLayout()
+        self.library_actions.setSpacing(8)
+        self.library_actions.addStretch(1)
+        left.addLayout(self.library_actions)
+        left.addStretch(1)
+        left_host = QWidget(face)
+        left_host.setLayout(left)
+        left_host.setFixedWidth(420)
+        row.addWidget(left_host)
+        panel = self.recent_panel = QFrame(face)
+        panel.setObjectName('studioLoadingRecent')
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(28, 24, 28, 24)
+        header = QHBoxLayout()
+        title = QLabel(panel)
+        bind_text(title, '最近编辑')
+        title.setObjectName('studioLoadingRecentTitle')
+        header.addWidget(title)
+        header.addStretch(1)
+        column.addLayout(header)
+        self.fan = RecentFan(panel)
+        self.fan.picked.connect(lambda _index: self._sync_pick())
+        column.addWidget(self.fan, 1)
+        self.recent_empty = QLabel(panel)
+        bind_text(self.recent_empty, '还没有工程。进入工程库后可以新建或导入。')
+        self.recent_empty.setObjectName('studioLoadingRecentHint')
+        self.recent_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(self.recent_empty, 1)
+        footer = QHBoxLayout()
+        self.recent_hint = QLabel(panel)
+        bind_text(self.recent_hint, '点一张卡片，工作台好了就直接打开它；\n不选就照常进入工程库。')
+        self.recent_hint.setObjectName('studioLoadingRecentHint')
+        footer.addWidget(self.recent_hint, 1)
+        self.pick_toggle = QPushButton(panel)
+        self.pick_toggle.setObjectName('studioLoadingPick')
+        self.pick_toggle.setCheckable(True)
+        self.pick_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pick_toggle.toggled.connect(self._toggle_pick)
+        footer.addWidget(self.pick_toggle)
+        column.addLayout(footer)
+        row.addWidget(panel, 1)
+
+    def _seat_shared(self, *, library):
+        """Move the status label and the three buttons into the visible face."""
+        status = self.library_status if library else self.project_status
+        actions = self.library_actions if library else self.project_actions
+        for layout in (self.library_status, self.project_status, self.library_actions, self.project_actions):
+            for widget in (self.label, self.back, self.copy_error, self.retry):
+                layout.removeWidget(widget)
+        status.addWidget(self.label)
+        for index, button in enumerate((self.back, self.copy_error, self.retry)):
+            if library:
+                actions.insertWidget(index, button)
+            else:
+                actions.addWidget(button)
+
+    def _toggle_pick(self, checked):
+        self.fan.set_armed(checked)
+        self._sync_pick()
+
+    def _sync_pick(self):
+        entry = self.fan.selected_entry()
+        self.pick_toggle.blockSignals(True)
+        self.pick_toggle.setChecked(self.fan.armed)
+        self.pick_toggle.blockSignals(False)
+        from ..i18n import tr
+        self.pick_toggle.setText(('✓ ' if self.fan.armed else '') + tr('就绪后打开「{name}」', name=str(entry.get('name') or '')) if entry else '')
+        self.pick_changed.emit()
+
+    def picked_project(self) -> str:
+        entry = self.fan.selected_entry() if self.library_mode and self.fan.armed else None
+        return str(entry.get('path') or '') if entry else ''
+
+    def set_mode(self, *, library: bool, path: str = '', entries=()):
+        """Choose the face for a new request and fill it from the library records."""
+        self.library_mode = bool(library)
+        self.faces.setCurrentWidget(self.library_face if library else self.project_face)
+        self._seat_shared(library=library)
+        self.perch.setVisible(self.perch.available and not library)
+        self.bar.reset_progress()
+        self.cover.set_failed(False)
+        self._line_key = ''
+        self._progress_signature = None
+        for mascot in (self.perch, self.library_bunny):
+            mascot.set_mood('idle')
+        self.steps_view.times, self.library_steps.times = {}, {}
+        self.steps_view.failed_detail = ''
+        entries = [entry for entry in (entries or ()) if isinstance(entry, dict)]
+        if library:
+            self.fan.set_entries(entries)
+            has = bool(entries)
+            self.fan.setVisible(has)
+            self.recent_empty.setVisible(not has)
+            self.recent_hint.setVisible(has)
+            self.pick_toggle.setVisible(has)
+            self._sync_pick()
+            self.library_steps.set_state((), LIBRARY_TASKS[0])
+        else:
+            self._fill_poster(path, entries)
+        self._ambient = None
+        self.fit_card()
+        self.update()
+
+    def _fill_poster(self, path, entries):
+        from ..i18n import tr
+        key = str(Path(path).resolve()).casefold() if path else ''
+        entry = next((item for item in entries if item.get('path')
+                      and str(Path(str(item['path'])).resolve()).casefold() == key), {})
+        cover = str(entry.get('cover') or '')
+        if not cover and path:
+            canonical = Path(path).parent / 'preview' / 'project-cover.jpg'
+            cover = str(canonical) if canonical.is_file() else ''
+        from PySide6.QtGui import QPixmap
+        pixmap = QPixmap(cover) if cover and Path(cover).is_file() else QPixmap()
+        self.cover.set_cover(pixmap)
+        self.cover_pixmap = pixmap
+        if entry.get('name'):
+            self.project_name.setText(str(entry['name']))
+        duration = int(entry.get('duration_ms') or 0)
+        clock = ''
+        if duration > 0:
+            seconds = duration // 1000
+            clock = (f'{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}' if seconds >= 3600
+                     else f'{seconds // 60:02d}:{seconds % 60:02d}')
+        self.cover.right_chip = clock
+        self.cover.left_chip = tr('上次编辑 · {when}', when=entry['edited']) if entry.get('edited') else ''
+        chips = []
+        if entry.get('count'):
+            chips.append(tr('{count} 条字幕', count=entry['count']))
+        if clock:
+            chips.append(clock)
+        if entry.get('speakers'):
+            chips.append(tr('{count} 位说话人', count=entry['speakers']))
+        for chip, text in zip(self.meta_chips, chips + [''] * 3):
+            chip.setText(text)
+            chip.setVisible(bool(text))
+
+    # ------------------------------------------------------------- updates
+    def show_progress(self, completed, current, detail='', failed=''):
+        """Mirror the session's real state onto the active face."""
+        from ..i18n import current_language
+        signature=(frozenset(completed),current,detail,failed,self.library_mode,current_language())
+        if getattr(self,'_progress_signature',None)==signature:return
+        self._progress_signature=signature
+        from .loading_faces import FAILED_LINE, READY_LINE, STAGE_ICONS, STAGE_LINES, _tr
+        from ..i18n import tr
+        if self.library_mode:
+            done, group = library_step_state(completed, detail)
+            if failed:
+                self.library_steps.set_state(done, '', group or LIBRARY_TASKS[0])
+            else:
+                self.library_steps.set_state(done, group)
+            stage_for_line = group
+            bind_text(self.library_title, '没能打开工程库' if failed else '正在打开工程库')
+        else:
+            stage_for_line = current
+            self.bar.glyph = STAGE_ICONS.get(current, self.bar.glyph)
+            self.bar.failed = bool(failed)
+            self.bar.finished = len(completed) >= len(TASKS)
+            self.bar.update()
+        line = FAILED_LINE if failed else READY_LINE if not stage_for_line else STAGE_LINES.get(stage_for_line, '')
+        mascot = self.library_bunny if self.library_mode else self.perch
+        mascot.set_mood('sad' if failed else 'idle')
+        if line != self._line_key:
+            self._line_key = line
+            if not failed:
+                mascot.talk(.7)
+            if self.library_mode:
+                self.bubble.setText(_tr(line))
+            else:
+                self.cover.set_line(_tr(line))
+        self.cover.set_failed(bool(failed) and not self.library_mode)
+        state = 'failed' if failed else 'ready' if not current else 'loading'
+        if self.eyebrow.property('state') != state:
+            self.eyebrow.setProperty('state', state)
+            self.eyebrow.setText('●  ' + (tr('没能打开') if failed else tr('准备好了') if state == 'ready'
+                                          else tr('正在打开工程')))
+            self.eyebrow.style().unpolish(self.eyebrow)
+            self.eyebrow.style().polish(self.eyebrow)
+        if self.label.property('failed') != bool(failed):
+            self.label.setProperty('failed', bool(failed))
+            self.label.setContentsMargins(*((14, 10, 14, 10) if failed else (0, 0, 0, 0)))
+            self.label.style().unpolish(self.label)
+            self.label.style().polish(self.label)
+
+    # -------------------------------------------------------------- layout
     def eventFilter(self, watched, event):
+        if watched is self.card and event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
+            self._place_perch()
+            self._ambient = None
         if (self.page_stack and watched is self.parentWidget()
                 and event.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest)):
             # The owner commits hidden-page geometry after the stack has
@@ -204,6 +420,11 @@ class StudioLoadingView(QFrame):
             elif event.type() == QEvent.Type.Show:
                 self.native_cover_changed.emit()
         return False
+
+    def _place_perch(self):
+        card = self.card.geometry()
+        self.perch.move(card.right() - 64 - self.perch.width(), card.top() - self.perch.height() + 26)
+        self.perch.raise_()
 
     def sync_geometry(self):
         if self.page_stack:
@@ -227,6 +448,7 @@ class StudioLoadingView(QFrame):
     def resizeEvent(self, event):
         self._invalidate_native_paint()
         super().resizeEvent(event)
+        self.fit_card()
 
     def hideEvent(self, event):
         self._invalidate_native_paint()
@@ -248,9 +470,39 @@ class StudioLoadingView(QFrame):
             requested=self.native_cover_requested, supported=self.uses_native_cover,
             complete_paint=complete, opaque_background=self._surface_background.alpha() == 255)
 
+    def _ambient_pixmap(self):
+        """The poster's cover, blurred, as a soft glow behind the card."""
+        pixmap = getattr(self, 'cover_pixmap', None)
+        if self.library_mode or pixmap is None or pixmap.isNull() or self.width() <= 0:
+            return None
+        key = (pixmap.cacheKey(), self.width(), self.height())
+        if self._ambient is None or self._ambient[0] != key:
+            from PySide6.QtGui import QPixmap
+            tiny = pixmap.scaled(32, 18, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                 Qt.TransformationMode.SmoothTransformation)
+            glow = tiny.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+            self._ambient = (key, QPixmap(glow))
+        return self._ambient[1]
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), self._surface_background)
+        glow = self._ambient_pixmap()
+        if glow is not None:
+            from .loading_faces import active_theme
+            theme = active_theme()
+            painter.setOpacity(.36 if theme.is_light else .5)
+            painter.drawPixmap(QPoint((self.width() - glow.width()) // 2, (self.height() - glow.height()) // 2), glow)
+            painter.setOpacity(1.0)
+            from PySide6.QtGui import QRadialGradient
+            vignette = QRadialGradient(QRectF(self.rect()).center(), max(self.width(), self.height()) * .62)
+            clear = QColor(self._surface_background)
+            clear.setAlpha(0)
+            vignette.setColorAt(.35, clear)
+            vignette.setColorAt(1, QColor(self._surface_background.red(), self._surface_background.green(),
+                                          self._surface_background.blue(), 255))
+            painter.fillRect(self.rect(), vignette)
         painter.end()
         super().paintEvent(event)
         if self.uses_native_cover:
@@ -263,39 +515,73 @@ class StudioLoadingView(QFrame):
         self.painted.emit()
 
     def fit_card(self):
-        layout = self.card.layout()
-        width = self.card.width()
-        height = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else layout.totalSizeHint().height()
-        if height > 0:
-            self.card.setMinimumHeight(height)
+        """Size the card to the window: a poster up to 1160×580, the library up to 1180×600."""
+        title = self.window_title_bar.sizeHint().height() if self.window_title_bar is not None else 0
+        width, height = self.width(), self.height() - title
+        if width <= 0 or height <= 0:
+            return
+        if self.library_mode:
+            size = QSize(max(820, min(1180, width - 100)), max(480, min(600, height - 120)))
+        else:
+            size = QSize(max(760, min(1160, width - 120)), max(460, min(580, height - 190)))
+            failed = bool(self.label.text() and self.label.property('failed'))
+            self.steps_view.set_dense(failed)
+            info_width = max(1, (size.width() - 38) * 100 // 222 - 8)
+            # The card keeps one size while loading; only a failure message grows it.
+            status = self.label.heightForWidth(info_width) + 12 if failed else 32
+            # Header (eyebrow, name, chips) + steps + status + actions + margins.
+            needed = 200 + self.steps_view.minimumHeight() + status + 48 + 34
+            size.setHeight(max(size.height(), min(height - 40, needed)))
+        if self.card.size() != size:
+            self.card.setFixedSize(size)
+        self._place_perch()
 
     def apply_theme(self):
         from ..design.theme_manager import theme_key, theme_definition
         theme = theme_definition(theme_key())
+        signature=(theme_key(),self.uses_native_cover)
+        if getattr(self,'_applied_theme_signature',None)==signature:return
+        self._applied_theme_signature=signature
         self._surface_background = QColor(theme.app_background)
         if self.uses_native_cover:
             self._surface_background.setAlpha(255)
         background = self._surface_background.name() if self.uses_native_cover else theme.app_background
         self._invalidate_native_paint()
+        self._ambient = None
         self.setStyleSheet(
             f'QFrame#studioLoadingSurface {{background:{background};}}'
-            f'QFrame#studioLoadingCard {{background:{theme.surface};border:1px solid {theme.border};border-radius:16px;}}'
-            f'QLabel {{color:{theme.text};background:transparent;}}'
-            f'QLabel#studioLoadingIcon {{background:{theme.accent_tint};border-radius:12px;}}'
-            f'QLabel#studioLoadingTitle {{font-size:18px;font-weight:600;}}'
-            f'QLabel#studioLoadingProject {{color:{theme.text_secondary};font-size:13px;}}'
-            f'QLabel#studioLoadingStatus {{color:{theme.text_muted};font-size:13px;}}'
-            f'QProgressBar {{border:0;background:{theme.panel};border-radius:3px;}}'
-            f'QProgressBar::chunk {{background:{theme.accent};border-radius:3px;}}'
-            f'QPushButton {{background:transparent;color:{theme.text_secondary};border:1px solid {theme.border_strong};border-radius:8px;padding:6px 16px;}}'
-            f'QPushButton:hover {{background:{theme.selected};color:{theme.text};}}'
-            f'QPushButton#studioLoadingRetry {{background:{theme.accent};color:{theme.text_on_accent};border:0;font-weight:600;}}'
+            'QFrame#studioLoadingCard, QFrame#studioLoadingLibrary {background:transparent;border:0;}'
+            f'QFrame#studioLoadingPoster {{background:{theme.surface};border:1px solid {theme.border};border-radius:32px;}}'
+            f'QFrame#studioLoadingRecent {{background:{theme.surface};border:1px solid {theme.border};border-radius:32px;}}'
+            f'QLabel {{color:{theme.text};background:transparent;border:0;}}'
+            f'QLabel#studioLoadingEyebrow {{color:{theme.accent_text};background:{theme.accent_soft};border-radius:13px;'
+            'padding:4px 12px;font-size:12px;font-weight:700;}'
+            f'QLabel#studioLoadingEyebrow[state="failed"] {{color:{theme.danger};background:{theme.danger_soft};}}'
+            f'QLabel#studioLoadingEyebrow[state="ready"] {{color:{theme.success};}}'
+            'QLabel#studioLoadingProject {font-size:28px;font-weight:900;}'
+            f'QLabel#studioLoadingChip {{color:{theme.text_secondary};background:{theme.panel};border:1px solid {theme.border};'
+            'border-radius:13px;padding:3px 11px;font-size:12px;}'
+            f'QLabel#studioLoadingStatus {{color:{theme.text_muted};font-size:12px;}}'
+            f'QLabel#studioLoadingStatus[failed="true"] {{color:{theme.text_secondary};background:{theme.danger_soft};'
+            'border-radius:14px;padding:10px 14px;font-size:12px;}'
+            'QLabel#studioLoadingLibraryTitle {font-size:30px;font-weight:900;}'
+            f'QLabel#studioLoadingBubble {{background:{theme.surface};border:1px solid {theme.border};border-radius:18px;'
+            'border-bottom-left-radius:6px;padding:10px 16px;font-size:14px;font-weight:800;margin-top:28px;}'
+            'QLabel#studioLoadingRecentTitle {font-size:16px;font-weight:800;}'
+            f'QLabel#studioLoadingRecentHint {{color:{theme.text_muted};font-size:12px;}}'
+            f'QPushButton {{background:{theme.surface};color:{theme.text_secondary};border:1px solid {theme.border};'
+            'border-radius:19px;padding:0 18px;min-height:38px;font-weight:700;}'
+            f'QPushButton:hover {{border-color:{theme.border_strong};color:{theme.text};}}'
+            f'QPushButton#studioLoadingRetry {{background:{theme.accent};color:{theme.text_on_accent};border:0;}}'
+            f'QPushButton#studioLoadingRetry:hover {{background:{theme.accent_hover};}}'
+            f'QPushButton#studioLoadingPick {{background:{theme.panel};}}'
+            f'QPushButton#studioLoadingPick:checked {{background:{theme.accent_soft};color:{theme.accent_text};border-color:transparent;}}'
             + ('QFrame#windowTitleBar {background:transparent;border:0;}'
                'QPushButton#windowControl,QPushButton#windowControlClose '
-               '{padding:0;min-width:30px;max-width:30px;min-height:22px;max-height:22px;border:0;}'
+               '{padding:0;min-width:30px;max-width:30px;min-height:22px;max-height:22px;border:0;border-radius:6px;}'
                if self.uses_native_cover else ''))
-        import qtawesome as qta
-        self.icon.setPixmap(qta.icon('fa5s.closed-captioning', color=theme.accent_text).pixmap(QSize(22, 22)))
+        for widget in (self.steps_view, self.library_steps, self.cover, self.fan):
+            widget.update()
 
 
 class StudioLoadingSession(QObject):
@@ -337,6 +623,11 @@ class StudioLoadingSession(QObject):
         self.deliveries = 0
         self.on_cancel = self.on_retry = None
         self.return_target = 'home'
+        # Recent project entries (path/name/cover/count/edited/duration_ms),
+        # set by the owner before ``begin``; they fill both faces.
+        self.recent_entries = []
+        self._detail = ''
+        self._mark_at = self.started
         self._surfaces = []
         self.view.back.clicked.connect(self.request_cancel)
         self.view.retry.clicked.connect(self.request_retry)
@@ -494,6 +785,7 @@ class StudioLoadingSession(QObject):
         self._native_input_ready = input_ready
         self.view.steps_view.set_state(self.completed, '', '首屏绘制')
         bind_text(self.view.label, '准备工作台失败\n{error}', error=str(error))
+        self.view.show_progress(self.completed, '', self._detail, failed='首屏绘制')
         self.view.retry.setVisible(callable(self.on_retry))
         self.view.copy_error.show()
         self.view.fit_card()
@@ -540,7 +832,10 @@ class StudioLoadingSession(QObject):
         self.view.retry.hide()
         self.view.copy_error.hide()
         self.view.steps_view.skipped = {}
+        self._detail = ''
+        self._mark_at = self.started
         self.view.apply_theme()
+        self.view.set_mode(library=not path, path=self.path, entries=self.recent_entries)
         self.stage('创建工作台界面')
         self._record('begin')
         if present:
@@ -618,6 +913,9 @@ class StudioLoadingSession(QObject):
         from ..i18n import tr
         self.view.label.setText(f"{tr(stage)}{(' · ' + tr(detail)) if detail else ''} · {time.perf_counter()-self.started:.1f}s")
         self.view.steps_view.set_state(self.completed, task)
+        if stage == '创建工作台界面':
+            self._detail = str(detail or '')
+        self.view.show_progress(self.completed, task, self._detail)
         self.view.fit_card()
         if not self.events or self.events[-1].get('stage') != stage or self.events[-1].get('detail') != detail:
             self._record('stage', stage=stage, detail=detail)
@@ -625,8 +923,14 @@ class StudioLoadingSession(QObject):
     def mark(self, stage):
         if self.active and stage not in self.completed:
             self.completed.add(stage)
+            now = time.perf_counter()
+            self.view.steps_view.times[stage] = now - self._mark_at
+            self._mark_at = now
             self.view.bar.setValue(len(self.completed))
-            self.view.steps_view.set_state(self.completed, self.view.steps_view.current)
+            current = self.view.steps_view.current
+            current = '' if len(self.completed) >= len(TASKS) else current
+            self.view.steps_view.set_state(self.completed, current)
+            self.view.show_progress(self.completed, current, self._detail)
             self._record('complete_stage', stage=stage)
 
     def fail(self, stage, error):
@@ -635,6 +939,7 @@ class StudioLoadingSession(QObject):
         self.state, self.active = 'failed', False
         self.view.steps_view.set_state(self.completed, '', stage)
         bind_text(self.view.label, '{stage}失败\n{error}\n工程文件仍保留，可重试载入：\n{value2}', stage=stage, error=error, value2=self.path)
+        self.view.show_progress(self.completed, '', self._detail, failed=stage)
         self.view.retry.show()
         self.view.copy_error.show()
         self.view.fit_card()
@@ -706,6 +1011,10 @@ class StudioLoadingSession(QObject):
             return
         self.on_retry = None
         self._record('cancelled')
+
+    def picked_project(self) -> str:
+        """The recent project picked on the library face to open once the library is ready."""
+        return self.view.picked_project() if self.state in {'preparing', 'ready'} else ''
 
     def request_cancel(self):
         callback = self.on_cancel

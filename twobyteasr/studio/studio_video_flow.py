@@ -1324,6 +1324,7 @@ class StudioVideoFlowMixin:
                 "timeline_in_ms": int(audio_layer.get("timeline_in_ms") or 0),
                 "timeline_out_ms": int(audio_layer.get("timeline_out_ms") or 0),
                 "mode": "audio_only",
+                "playback_rate": float(audio_layer.get('playback_rate') or 1.0),
                 "audio_enabled": bool(audio_layer.get("audio_enabled", True)),
                 "track_muted": bool(audio_layer.get("track_muted", False)),
                 "audio_only_source": True,
@@ -1933,9 +1934,8 @@ class StudioVideoFlowMixin:
             and str(target['clip_id']) == str(self._active_video_preview_clip_id)
             and self._audio_tail_visual_active())
         self._audio_only_subtitle_active = target.get("mode") == "audio_only" or visual_tail
-        # mpv is the primary demux/decode/sync owner for both video and
-        # audio-only sources.  AudioEngine is reserved for a non-primary
-        # external lane and must never become a second master clock.
+        # mpv supplies video observations. All audible lanes belong to the
+        # existing PCM sink; a source with no video must not load into aid=no.
         mapping = dict(getattr(self.project, "studio_state", {}).get("media_time_mapping", {}))
         from ..playback.playback_plan import playback_plan
         asset = playback_plan(self.project).assets.get(str(target.get('asset_id') or ''))
@@ -1960,7 +1960,7 @@ class StudioVideoFlowMixin:
         )
         self.video.set_external_clock_enabled(target.get("mode") == "audio_only" or tail)
         self.video.set_project_time_mapping(
-            enabled=target.get("mode") == "multitrack",
+            enabled=target.get("mode") in {"multitrack", "audio_only"},
             timeline_in_ms=int(target.get("timeline_in_ms") or 0),
             source_in_ms=int(target.get("source_in_ms") or 0),
             playback_rate=float(target.get("playback_rate") or 1.0),
@@ -1977,6 +1977,19 @@ class StudioVideoFlowMixin:
             if asset is not None:
                 self.video._duration = asset.duration_ms / 1000.0
         switched = key != self._active_video_preview_key or source_path != self._active_video_preview_source_path
+        if target.get('mode') == 'audio_only':
+            # Publish ownership before position_changed can reenter this route.
+            self._active_video_preview_key = key
+            self._active_video_preview_track_id = str(target['track_id'])
+            self._active_video_preview_clip_id = str(target['clip_id'])
+            self._active_video_preview_source_path = source_path
+            self._active_video_preview_source_in_ms = int(target['source_in_ms'])
+            self._active_video_preview_timeline_in_ms = int(target['timeline_in_ms'])
+            self._playback_mode = 'multitrack'  # canvas publishes project time
+            if switched or not self.video._clock_only:
+                self.video.enter_audio_only_source(int(timeline_ms), timeline_duration_ms(self.project))
+            self._sync_video_compositor(timeline_ms, layers=layers, audio_layers=audio_layers)
+            return target, switched
         switch_seek_posted = False
         if switched:
             # 2026-09-18：精确 seek 挂起时，本函数拿到的 timeline_ms 可能是跟随

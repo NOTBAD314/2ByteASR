@@ -148,6 +148,8 @@ class StateDelta:
     revision: int
     sequence_before: SequenceState | None = None
     sequence_after: SequenceState | None = None
+    studio_state_fields: frozenset[str] | None = None
+    generation_metadata_fields: frozenset[str] = frozenset()
 
     def touches(self, domains: DirtyDomain) -> bool:
         return bool(self.dirty & domains)
@@ -323,6 +325,7 @@ class ProjectStateRuntime:
         selection_after: str | None = None,
         snapshot_cues: bool = True,
         studio_state_keys: Iterable[str] | None = None,
+        generation_metadata_keys: Iterable[str] = (),
     ) -> "StateTransaction":
         return StateTransaction(
             self,
@@ -336,6 +339,7 @@ class ProjectStateRuntime:
             selection_after=selection_after,
             snapshot_cues=snapshot_cues,
             studio_state_keys=studio_state_keys,
+            generation_metadata_keys=generation_metadata_keys,
         )
 
     def _emit(self, delta: StateDelta) -> None:
@@ -357,13 +361,24 @@ class ProjectStateRuntime:
 
 
 def _json_snapshot(value):
-    """Rollback copy of a JSON-shaped project dict (marshal: ~4x deepcopy)."""
-    if type(value) in (dict, list):
-        try:
-            return marshal.loads(marshal.dumps(value))
-        except (ValueError, TypeError):
-            pass
-    return copy.deepcopy(value)
+    """Copy data only; never call extension/Qt object's deepcopy hooks."""
+    try:
+        return marshal.loads(marshal.dumps(value))
+    except (ValueError, TypeError) as exc:
+        pending=[value];visited=set();bad=type(value).__name__
+        for _ in range(100000):
+            if not pending:break
+            item=pending.pop()
+            if id(item) in visited:continue
+            visited.add(id(item))
+            if type(item) is dict:pending.extend(item.values())
+            elif type(item) in (list,tuple):pending.extend(item)
+            elif item is not None and type(item) not in (str,int,float,bool,bytes):
+                bad=type(item).__module__+'.'+type(item).__qualname__;break
+        from ..diagnostics.event_log import emit
+        emit('snapshot.rejected',module='projects',result='failed',object_type=bad,
+             inspected_objects=len(visited),values_included=False)
+        raise TypeError("Project snapshot contains non-serializable runtime data: "+bad) from exc
 
 
 class StateTransaction(AbstractContextManager["StateTransaction"]):
@@ -383,6 +398,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         selection_after: str | None,
         snapshot_cues: bool = True,
         studio_state_keys: Iterable[str] | None = None,
+        generation_metadata_keys: Iterable[str] = (),
     ) -> None:
         self.state = state
         self.project = project
@@ -414,6 +430,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self._metadata_snapshot = None
         self._studio_state_keys=None if studio_state_keys is None else frozenset(studio_state_keys)
         self._studio_key_snapshot=None
+        self._generation_keys=frozenset(generation_metadata_keys)
+        self._generation_snapshot={}
         self._media_pool_snapshot = None
         self._video_tracks_snapshot = None
         self._audio_tracks_snapshot = None
@@ -445,6 +463,11 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             self._parent = active
             if self.dirty & DirtyDomain.PROJECT_METADATA:
                 active._adopt_metadata_scope(self._studio_state_keys)
+                for key in self._generation_keys:
+                    if key not in active._generation_snapshot:
+                        active._generation_snapshot[key]=(key in self.project.generation_metadata,
+                            _json_snapshot(self.project.generation_metadata.get(key)))
+                active._generation_keys |= self._generation_keys
             active.mark_dirty(
                 self.dirty,
                 cue_ids=self.affected_cue_ids,
@@ -461,6 +484,7 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             if self._studio_state_keys is not None:
                 self._capture_domains(DirtyDomain.PROJECT_METADATA)
         except BaseException:
+            self.state._active = None
             release_transaction(self._diagnostic)
             raise
         return self
@@ -471,10 +495,11 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             missing=set(keys)-self._studio_state_keys
             if self._studio_key_snapshot is not None:
                 for key in missing:
-                    self._studio_key_snapshot[key]=(key in self.project.studio_state,copy.deepcopy(self.project.studio_state.get(key)))
+                    self._studio_key_snapshot[key]=(key in self.project.studio_state,_json_snapshot(self.project.studio_state.get(key)))
             self._studio_state_keys|=frozenset(keys)
             return
         saved=self._studio_key_snapshot
+        generation_saved=dict(self._generation_snapshot)
         self._studio_state_keys=None
         self._capture_domains(DirtyDomain.PROJECT_METADATA)
         if saved is not None:
@@ -482,6 +507,11 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             for key,(present,value) in saved.items():
                 if present:state[key]=copy.deepcopy(value)
                 else:state.pop(key,None)
+        if generation_saved:
+            metadata=self._metadata_snapshot[2]
+            for key,(present,value) in generation_saved.items():
+                if present:metadata[key]=value
+                else:metadata.pop(key,None)
 
     def _capture_domains(self, domains: DirtyDomain) -> None:
         if domains & DirtyDomain.CUE_MODEL:
@@ -532,9 +562,13 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             self._recipes_snapshot = copy.deepcopy(self.project.style_recipes)
         if domains & DirtyDomain.PROJECT_METADATA and self._metadata_snapshot is None:
             if self._studio_state_keys is not None:
+                for key in self._generation_keys:
+                    if key not in self._generation_snapshot:
+                        self._generation_snapshot[key]=(key in self.project.generation_metadata,
+                            _json_snapshot(self.project.generation_metadata.get(key)))
                 if self._studio_key_snapshot is None:
                     self._studio_key_snapshot={key:(key in self.project.studio_state,
-                        copy.deepcopy(self.project.studio_state.get(key))) for key in self._studio_state_keys}
+                        _json_snapshot(self.project.studio_state.get(key))) for key in self._studio_state_keys}
             else:
                 self._metadata_snapshot = (
                     copy.deepcopy(self.project.media),
@@ -553,6 +587,9 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                 self._av_track_groups_snapshot = copy.deepcopy(self.project.av_track_groups)
 
     def _rollback(self) -> None:
+        for key,(present,value) in self._generation_snapshot.items():
+            if present:self.project.generation_metadata[key]=value
+            else:self.project.generation_metadata.pop(key,None)
         if self._entity_epoch_snapshot is not None:
             for key,value in self._entity_epoch_snapshot.items():
                 if value is None:self.state.entity_epochs.pop(key,None)
@@ -683,6 +720,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             revision=self.state.revision,
             sequence_before=self._sequence_before,
             sequence_after=sequence_after,
+            studio_state_fields=self._studio_state_keys,
+            generation_metadata_fields=self._generation_keys,
         )
 
     def __exit__(self, exc_type, exc, traceback) -> bool:

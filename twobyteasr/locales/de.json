@@ -8503,5 +8503,11 @@
   "+ 更多选项": "+ Weitere Optionen",
   "替换 {value0} 处": "{value0} ersetzen",
   "{value0} 处": "{value0} Treffer",
-  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zeitleisten-Zoom: links mehr sehen, rechts vergrößern (oder Strg+Mausrad)"
+  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zeitleisten-Zoom: links mehr sehen, rechts vergrößern (oder Strg+Mausrad)",
+  "{scope} · {count} 条文本": "{scope} · {count} Texte",
+  "正则表达式写法有误；关掉「正则表达式」就按普通文字查找。": "Der reguläre Ausdruck ist ungültig; schalte „Regulärer Ausdruck“ aus, um den Text wörtlich zu suchen.",
+  "切到替换": "zu Ersetzen",
+  "Enter": "Enter",
+  "Esc": "Esc",
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "Oder Text in einem Untertitel markieren und per Rechtsklick „Gleichen Text überall ersetzen…“ wählen"
 }

@@ -101,6 +101,9 @@ def apply_range_result(page, result_path, snapshot) -> bool:
         _note(page, tr("这一段的识别结果读取失败：{error}", error=str(exc)[:160]))
         return False
     info = (result.generation_metadata.get("timeline_recognition") or {}).get("range") or {}
+    if not result.cues:
+        _note(page, tr('这一段没有生成可用字幕，已保留原字幕和人工修改'))
+        return False
     from ..recognition.transcript_acceptance import pending_ranges
     if pending_ranges(result.generation_metadata.get('transcript_acceptance')):
         _note(page,tr('替代识别仍有未恢复范围；原工程和正常字幕保持，请检查模型或音轨后明确重试'))

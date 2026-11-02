@@ -76,6 +76,7 @@ STAGE_LABELS = {
     STAGE_ENCODE: "视频编码",
     STAGE_MUX: "封装收尾",
     STAGE_VALIDATE: "验证与发布",
+    "publish": "发布成片",
 }
 
 
@@ -659,7 +660,7 @@ def build_render_command(
     if output.suffix.lower() != f".{settings.container}":
         raise ValueError("output extension does not match container")
     encoder = select_encoder(ffmpeg_path, settings)
-    command = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "info", "-y"]
+    command = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-y"]
     slices = [(float(start), float(end)) for start, end in (job.edit_segments or ())]
     ass_filter = f"ass=filename={_filter_path(ass)}" if job.ass_path else 'null'
     # Qt's application fonts are process-local. libass in FFmpeg cannot see
@@ -790,7 +791,7 @@ def render_fallback_job(job: RenderJob, error: BaseException) -> tuple[RenderJob
         return (
             replace(job, settings=replace(job.settings, encoder=software,
                 preset=encoder_preset(software, preset))),
-            f"硬件编码不可用，已自动改用 {software}。",
+            f"硬件编码不可用，可选择改用 {software}。",
         )
     audio_markers = (
         "codec not currently supported", "could not find tag", "muxer does not support",
@@ -799,7 +800,7 @@ def render_fallback_job(job: RenderJob, error: BaseException) -> tuple[RenderJob
     if job.settings.audio_codec == "copy" and any(marker in message for marker in audio_markers):
         return (
             replace(job, settings=replace(job.settings, audio_codec="aac")),
-            "源音频不能直接复制，已自动改用 AAC。",
+            "源音频不能直接复制，可选择改用 AAC。",
         )
     return None
 
@@ -828,92 +829,31 @@ def _run_render_attempt(
     )
     if trace:
         trace("command_created", command)
-    process = popen_hidden_subprocess(
-        command,
-        purpose="ffmpeg studio render",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if trace:
-        trace("process_started", {"pid": process.pid})
+    from ..rendering.advanced_renderer import _run_streaming_process
+    from .export_failure import ffmpeg_failure
+    current = {}
+    def on_line(line):
+        key, separator, value = line.partition('=')
+        if separator:
+            current[key] = value
+            if key == 'progress':
+                payload = dict(current, stage=STAGE_ENCODE, stage_label=STAGE_LABELS[STAGE_ENCODE],
+                    message='正在编码视频…', indeterminate='0')
+                if trace: trace('progress_received', payload)
+                if progress: progress(payload)
+                current.clear()
     if progress:
-        progress(export_progress(
-            STAGE_ENCODE,
-            message="正在初始化编码器…",
-            duration_seconds=float(job.duration_seconds or 0.0) or None,
-        ))
-    current: dict[str, str] = {}
-    stderr_chunks: list[str] = []
-    first_stderr_seen = [False]
-
-    def drain_stderr() -> None:
-        first = True
-        if process.stderr:
-            for line in process.stderr:
-                if first and trace:
-                    trace("first_stderr_line", line.rstrip())
-                    first_stderr_seen[0] = True
-                    first = False
-                stderr_chunks.append(line)
-                if len(stderr_chunks) > 400:
-                    del stderr_chunks[:100]
-
-    stderr_thread = threading.Thread(
-        target=drain_stderr, daemon=True, name="studio-render-stderr"
-    )
-    stderr_thread.start()
-    stdout_lines = queue.Queue()
-    def drain_stdout():
-        try:
-            if process.stdout:
-                for value in process.stdout:
-                    stdout_lines.put(value)
-        finally:
-            stdout_lines.put(None)
-    stdout_thread = threading.Thread(target=drain_stdout, daemon=True, name='studio-render-progress')
-    stdout_thread.start()
+        progress(export_progress(STAGE_ENCODE, message='正在编码视频…',
+            duration_seconds=float(job.duration_seconds or 0) or None))
     try:
-        while True:
-            if cancelled and cancelled():
-                raise InterruptedError("render cancelled")
-            try:
-                line = stdout_lines.get(timeout=.1)
-            except queue.Empty:
-                continue
-            if line is None:
-                break
-            key, separator, value = line.strip().partition("=")
-            if separator:
-                current[key] = value
-                if key == "progress" and progress:
-                    stage = STAGE_MUX if value == 'end' else STAGE_ENCODE
-                    current["stage"] = stage
-                    current["stage_label"] = STAGE_LABELS[stage]
-                    if job.settings.fps and current.get('frame'):
-                        current['video_time_seconds'] = str(int(current['frame'])/job.settings.fps)
-                    current["indeterminate"] = "0"
-                    current["message"] = "正在封装收尾…" if stage == STAGE_MUX else "正在编码视频…"
-                    if trace:
-                        trace("progress_received", dict(current))
-                    progress(dict(current))
-                    current.clear()
-        return_code = process.wait()
-        if trace:
-            trace("exit_code", return_code)
-        stderr_thread.join(timeout=2.0)
-        if trace and not first_stderr_seen[0]:
-            trace("first_stderr_line", "")
-        if return_code != 0:
-            raise RuntimeError(f"FFmpeg render failed: {''.join(stderr_chunks)[-2000:]}")
+        code, output_log = _run_streaming_process(command, on_line=on_line, cancelled=cancelled, purpose="ffmpeg studio render")
+        if trace: trace('exit_code', code)
+        if code:
+            encoder = command[command.index('-c:v')+1]
+            raise ffmpeg_failure(code, output_log, encoder=encoder, fps=job.settings.fps)
     except BaseException:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
         try:
-            temporary.unlink()
+            temporary.unlink(missing_ok=True)
         except OSError:
             pass
         raise
@@ -993,43 +933,17 @@ def run_render_job(
     if current.settings.encoder == 'auto':
         current = replace(current, settings=replace(current.settings,
             encoder=select_encoder(ffmpeg_path, current.settings)))
-    attempted: set[tuple[str, str]] = set()
-    while True:
-        key = (current.settings.encoder, current.settings.audio_codec)
-        if key in attempted:
-            raise RuntimeError("render fallback repeated the same settings")
-        attempted.add(key)
-        try:
-            preview = None
-            try:
-                if current.preview_callback and not current.edit_segments:
-                    from .export_preview import ExportPreview
-                    preview = ExportPreview(current.preview_callback, current.start_seconds or 0)
-                    current = replace(current, preview_url=preview.url)
-                return _run_render_attempt(
-                    ffmpeg_path, current, progress=progress, cancelled=cancelled, trace=trace
-                )
-            finally:
-                if preview:
-                    preview.close()
-        except InterruptedError:
-            raise
-        except Exception as exc:
-            if published_output_path(current) is not None:
-                raise  # The outer receipt owner reports success; never encode again.
-            fallback = render_fallback_job(current, exc)
-            if fallback is None:
-                raise
-            current, notice = fallback
-            from .export_run_log import note_export
-            note_export('encoder_or_audio_fallback', {'reason': str(exc), 'notice': notice,
-                'actual_encoder': current.settings.encoder, 'rate_control': current.settings.quality_mode,
-                'target_video_bitrate_bps': current.settings.bitrate_kbps * 1000})
-            if trace:
-                trace('encoder_or_audio_fallback', {'reason':str(exc), 'notice':notice,
-                    'encoder':current.settings.encoder, 'preset':current.settings.preset})
-            if progress:
-                progress({"notice": notice})
+    preview = None
+    try:
+        if current.preview_callback and not current.edit_segments:
+            from .export_preview import ExportPreview
+            preview = ExportPreview(current.preview_callback, current.start_seconds or 0, job=current,
+                warning=(lambda text:progress({'notice':text})) if progress else None)
+            current = replace(current, preview_url=preview.url)
+        return _run_render_attempt(ffmpeg_path, current, progress=progress, cancelled=cancelled, trace=trace)
+    finally:
+        if preview:
+            preview.close()
 
 
 def preview_job(

@@ -35,6 +35,17 @@ def digest(path):
     return h.hexdigest()
 
 
+def validate_renderer_fonts(root):
+    """Fail before freezing if browser fonts were lost in a fresh checkout."""
+    contract = json.loads((root / 'packaging/renderer_fonts.json').read_text('utf8'))
+    for item in contract['fonts']:
+        path = root / 'renderer/public/fonts' / item['file']
+        if path.parent != root / 'renderer/public/fonts':
+            raise ValueError('Invalid renderer font path: ' + item['file'])
+        if not path.is_file() or digest(path) != item['sha256']:
+            raise ValueError('Required renderer font missing or checksum mismatch: ' + item['file'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -44,6 +55,7 @@ def main():
     out = args.output.resolve()
     if not out.is_relative_to(ROOT / 'tmp') or out.exists():
         raise ValueError('Choose a NEW directory under repository tmp; existing outputs are never overwritten')
+    validate_renderer_fonts(ROOT)
     # This is production input for the workshop's service test, not a private
     # recording. A source snapshot with the sample missing must not silently
     # build a package whose diagnostic entry can no longer run.

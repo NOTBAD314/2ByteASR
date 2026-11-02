@@ -1,8 +1,18 @@
 import numpy as np
+import pytest
 
 import subtitle_core
 from twobyteasr.recognition import asr
 from twobyteasr.recognition.asr import call_qwen_asr_api
+
+
+@pytest.fixture(autouse=True)
+def manual_chinese_source_choice():
+    # These legacy transport assertions exercise Chinese punctuation rules.
+    # An unresolved auto task now conservatively preserves source punctuation.
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    with activate_runtime_context(RuntimeContext(requested_language='zh')):
+        yield
 
 
 class FakeResponse:

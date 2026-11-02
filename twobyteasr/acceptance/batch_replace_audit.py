@@ -242,7 +242,12 @@ def run(output, *, window):
     found = {}
 
     def replace(dialog):
+        from PySide6.QtCore import Qt as _Qt
         found['size'] = (dialog.width(), dialog.height())
+        # 2026-11-02 (draft B): no Windows title bar; short until there is something to list.
+        found['frameless'] = bool(dialog.windowFlags() & _Qt.WindowType.FramelessWindowHint)
+        found['empty_height'] = dialog.height()
+        found['empty_list_hidden'] = dialog.preview.isHidden() and dialog._empty_row.isVisible()
         _capture(dialog, output / 'dialog-empty.png')
         dialog.find_edit.setFocus()
         dialog.find_edit.insert('尼奈')       # typing (keyClicks with Chinese crashes Qt)
@@ -255,7 +260,11 @@ def run(output, *, window):
         QTest.qWait(600)                      # the live preview
         found['rows'] = dialog.preview.count()
         found['status'] = dialog.status_label.text()
-        found['list_share'] = round(dialog.preview.height() / dialog.height(), 2)
+        found['badge'] = dialog.count_badge.label.text() if dialog.count_badge.label.isVisible() else None
+        found['preview_height'] = dialog.height()
+        rows_need = sum(dialog.preview.sizeHintForRow(i) + 2 * dialog.preview.spacing() for i in range(dialog.preview.count()))
+        found['list'] = dict(height=dialog.preview.viewport().height(), rows_need=rows_need,
+                             one_row=dialog.preview.sizeHintForRow(0))
         # 2026-10-30 (draft C): 仅正文 / 记录实体 wait behind 更多; measure the tags shown.
         chips = [chip for chip in (dialog.scope_combo, dialog.lock_box, dialog.case_box, dialog.word_box,
                                    dialog.regex_box, dialog.body_box, dialog.project_entity_box,
@@ -281,6 +290,11 @@ def run(output, *, window):
         found['undo_steps'] = page.undo_stack.count() - undo
         found['after_status'] = dialog.status_label.text()
         found['find_selected'] = dialog.find_edit.selectedText()
+        QTest.qWait(200)
+        found['after_list'] = dict(height=dialog.preview.viewport().height(), dialog=dialog.height(),
+                                   rows_need=sum(dialog.preview.sizeHintForRow(i) + 2 * dialog.preview.spacing()
+                                                 for i in range(dialog.preview.count())),
+                                   one_row=dialog.preview.sizeHintForRow(0) if dialog.preview.count() else 0)
         found['left_unticked'] = (dialog.preview.count() == 1
                                   and dialog.preview.item(0).checkState() == Qt.CheckState.Unchecked)
         QTest.keyClick(dialog.find_edit, Qt.Key.Key_Return)   # a second Enter
@@ -304,7 +318,17 @@ def run(output, *, window):
     check('↓ moves from 查找 to 替换, ↑ back', found.get('down') and found.get('up'), found)
     # One card per cue (2026-10-30): six matches in five cues.
     check('live preview lists every occurrence, one card per cue', found.get('rows') == 5, found.get('rows'))
-    check('the preview list takes over half the dialog', found.get('list_share', 0) >= 0.5, found.get('list_share'))
+    check('no Windows title bar; the empty window is short and shows one hint line',
+          found.get('frameless') and found.get('empty_list_hidden')
+          and found.get('empty_height', 9999) < found.get('preview_height', 0), found)
+    listing = found.get('list') or {}
+    check('the list holds its rows without a blank stretch (or scrolls when they do not fit)',
+          listing and (listing['height'] <= listing['rows_need'] + listing['one_row']), listing)
+    after_list = found.get('after_list') or {}
+    check('after applying, the window shrinks to the rows left', after_list
+          and after_list['height'] <= after_list['rows_need'] + after_list['one_row']
+          and after_list['dialog'] < found.get('preview_height', 0), after_list)
+    check('the find field ends in the match count', found.get('badge') == '6', found.get('badge'))
     check('option chips fit, wrap without overlapping', found.get('chips_fit') and not found.get('chips_overlap'),
           dict(chips=found.get('chips'), overlap=found.get('chips_overlap')))
     check('footer labels fit', all(found.get('labels_fit', {}).values()) and found.get('hint_fits'),

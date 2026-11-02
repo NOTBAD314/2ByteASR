@@ -76,6 +76,17 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'library-performance':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'old-project-export':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        if os.environ.get('OLD_EXPORT_HELD') == '1':
+            from ..rendering.ass_compile_actor import AssCompileActor
+            AssCompileActor.submit = lambda *args, **kwargs: None
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'mcp-production','long-pipeline-progress'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -84,7 +95,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'language-range-recovery':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'language-range-recovery', 'moss-empty-recovery','moss-real-language'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -231,7 +242,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading', 'caption-first-display'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -470,6 +481,16 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") == "library-performance":
+        from .library_performance_audit import start
+        output = audit_directory()
+        if output is not None:start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'old-project-export':
+        from .old_project_export_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'long-interactions':
         from .long_interactions_audit import start
         output = audit_directory()
@@ -514,6 +535,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-bilingual':
         from .editor_bilingual_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'moss-real-language':
+        from .moss_real_language_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'moss-empty-recovery':
+        from .moss_empty_recovery_audit import start
         output=audit_directory()
         if output is not None:start(window,output)
         return
@@ -641,6 +672,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-regression':
         from .perf_regression_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'loading-faces':
+        from .loading_faces_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

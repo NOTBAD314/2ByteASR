@@ -33,6 +33,20 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def dispose_studio_pages_after_each_test():
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    app=QApplication.instance()
+    if app is None:return
+    for widget in tuple(app.allWidgets()):
+        if isinstance(widget,SubtitleStudioPage):
+            widget.close_page()
+            app.removeEventFilter(widget)
+            widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+
+
 def _page(monkeypatch, tmp_path) -> SubtitleStudioPage:
     app = _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -283,7 +297,7 @@ def test_recognition_sheet_translation_needs_a_connected_ai(monkeypatch, tmp_pat
     page = _page(monkeypatch, tmp_path)
     page._subtitle_language_options = lambda: {"recognition_language": "ja", "chinese_script": "zh-Hans",
                                                "subtitle_output": "bilingual", "translation_script": "zh-Hans"}
-    monkeypatch.setattr(record, "feature_gate", lambda _settings: "no_key")
+    monkeypatch.setattr(record, "feature_gate", lambda *_args, **_kwargs: "no_key")
     controls = _open_sheet(page, tmp_path)
     output, target = controls["translation"], controls["translation_target"]
     assert output.currentData() == "original"
@@ -294,7 +308,7 @@ def test_recognition_sheet_translation_needs_a_connected_ai(monkeypatch, tmp_pat
     page = _page(monkeypatch, tmp_path)
     page._subtitle_language_options = lambda: {"recognition_language": "ja", "chinese_script": "zh-Hans",
                                                "subtitle_output": "bilingual", "translation_script": "zh-Hans"}
-    monkeypatch.setattr(record, "feature_gate", lambda _settings: "ready")
+    monkeypatch.setattr(record, "feature_gate", lambda *_args, **_kwargs: "ready")
     controls = _open_sheet(page, tmp_path)
     output, target = controls["translation"], controls["translation_target"]
     assert output.currentData() == "bilingual"
@@ -423,6 +437,10 @@ def test_studio_recognition_start_failure_lands_on_chip(monkeypatch, tmp_path):
         guides = []
         monkeypatch.setattr(win, "_open_api_setup_guide", lambda preset="", kind="asr": guides.append(preset))
         monkeypatch.setattr("twobyteasr.providers.llm_config.read_asr_api_key", lambda *a, **k: ("", ""))
+        # This case tests API preflight failure, not media ingestion. Its one-
+        # byte FLV otherwise opens a real modal for the invalid audio graph.
+        monkeypatch.setattr('twobyteasr.recognition.recognition_input.capture_recognition_snapshot',
+                            lambda *a, **kw: {'fixture': 'api-start-failure'})
         win._handle_studio_recognition_request("start_final", str(media), str(project_path))
         _app().processEvents()
         assert win._studio_recognition_context is not None

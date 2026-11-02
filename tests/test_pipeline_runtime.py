@@ -90,7 +90,10 @@ class _FinalizeLegacy:
 def test_finalize_cues_preserves_the_established_stage_order():
     legacy = _FinalizeLegacy()
     cues = [SimpleNamespace(cue_id=1, speaker='S01', text='原文字', start=0., end=1.)]
-    assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    # This Chinese stage-order fixture needs an explicit source choice.
+    with activate_runtime_context(RuntimeContext(requested_language='zh')):
+        assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
     assert legacy.calls == [
         "repair",
         "normalize",

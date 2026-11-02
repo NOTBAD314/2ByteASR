@@ -545,8 +545,15 @@ def test_mosi_failed_segment_names_itself_its_task_and_mosi_reason(tmp_path, mon
     class SecondFails(MosiClient):
         # Both requests are with MOSI at once since 2026-10-23: one task id per upload.
         def post(self, url, **kw):
-            super().post(url, **kw)
-            task = f'task-{len(self.posts)}'
+            # Identity belongs to the submitted waveform, not which upload
+            # thread happens to return first. Concurrent len(posts) gave both
+            # requests task-2 and made this test report the wrong range.
+            kw['form'] = mosi_form(kw['data'].read())
+            self.posts.append((url, kw))
+            import wave
+            with wave.open(io.BytesIO(kw['form']['file'][2]), 'rb') as wav:
+                sample = int.from_bytes(wav.readframes(1)[:2], 'little', signed=True)
+            task = 'task-1' if sample > 0 else 'task-2'
             return Response({'id': task, 'task_id': task, 'status': 'PENDING', 'retry_after': 2})
 
         def get(self, url, **kw):
@@ -558,7 +565,8 @@ def test_mosi_failed_segment_names_itself_its_task_and_mosi_reason(tmp_path, mon
             return Response({'id': task, 'status': 'FAILED', 'error': error})
 
     client, states = SecondFails(), []
-    audio = np.zeros(64000, dtype=np.float32)
+    audio = np.full(64000, .1, dtype=np.float32)
+    audio[32000:] = -.1
     with pytest.raises(ASRProtocolError) as failure:
         mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
                             progress=lambda *a: states.append(a))

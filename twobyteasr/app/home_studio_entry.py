@@ -36,7 +36,7 @@ def latest_studio_entry(records):
         if canonical.is_file():
             cover = canonical
         from ..projects.project_display_name import display_project_name
-        return display_project_name(record), str(cover) if cover else ""
+        return display_project_name(record, read=False), str(cover) if cover else ""
     return "", ""
 
 
@@ -67,7 +67,8 @@ def recent_studio_entries(records, limit=12):
         if not name:
             continue
         entries.append({"path": str(record.get("path") or ""), "name": name, "cover": cover,
-                        "count": int(record.get("cue_count", 0) or 0), "edited": _edited_text(record)})
+                        "count": int(record.get("cue_count", 0) or 0), "edited": _edited_text(record),
+                        "duration_ms": int(record.get("duration_ms", 0) or 0)})
         if len(entries) >= limit:
             break
     return entries

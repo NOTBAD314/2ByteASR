@@ -91,7 +91,7 @@ class EncodingObserver:
                         except psutil.Error: resources[name] = dict(pid=proc.pid, status='exited')
                     stage = 'encode'
                     if progress.get('progress') == 'end' or (video_seconds is not None and self.duration and video_seconds >= self.duration):
-                        stage = 'mux'
+                        stage = 'ffmpeg_finishing'  # End/time alone is not a successful exit.
                     row = dict(elapsed=now-self.started, monotonic=now, stage=stage, frame=frames,
                         video_seconds=video_seconds, ffmpeg_out_time_us=progress.get('out_time_us'),
                         window_seconds=now-previous_time,

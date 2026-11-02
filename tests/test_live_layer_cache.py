@@ -118,6 +118,21 @@ def test_cache_is_bbox_local_not_full_frame_mirror():
     assert stats["bytes"] < canvas_bytes
 
 
+def test_worker_cache_never_constructs_gui_pixmaps_and_pressure_can_evict_last_entry(monkeypatch):
+    import threading
+    from PySide6.QtGui import QPixmap
+    _app();snapshot=_snapshot()
+    layers=render_live_layers(snapshot,width=320,height=180,device_pixel_ratio=1.)
+    budget=[16*1024*1024];cache=LiveLayerCache(budget_provider=lambda:budget[0]);results=[]
+    monkeypatch.setattr(QPixmap,'fromImage',lambda *a,**kw:pytest.fail('worker used GUI QPixmap'))
+    worker=threading.Thread(target=lambda:results.append(cache.store('worker',layers)))
+    worker.start();worker.join(5)
+    assert not worker.is_alive() and results==[True]
+    cache.trim();assert cache.contains('worker')
+    budget[0]=1;cache.trim()
+    assert cache.stats()['entries']==0 and cache.stats()['bytes']==0
+
+
 def test_key_changes_with_cue_content_and_geometry():
     _app()
     base = _snapshot()

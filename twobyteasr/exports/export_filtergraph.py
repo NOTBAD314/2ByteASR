@@ -118,9 +118,12 @@ def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), c
     # one gradient does not force a full-film Python media raster pass.
     image_offset=inputs.count('-i')
     for i,layer in enumerate(caption_overlays):
-        inputs += ['-i',str(layer['path'])]
+        from .static_caption_timeline import caption_input, caption_filter
+        inputs += caption_input(layer)
         x,y,*_=layer['bounds']
-        filters.append(f"{video_label}[{image_offset+i}:v]overlay=x={x}:y={y}:eof_action=repeat:format=auto:enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'[static{i}]")
+        pre,label=caption_filter(layer,f'[{image_offset+i}:v]',fps)
+        enable='' if layer.get('sparse') else f":enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'"
+        filters.append(pre+f"{video_label}{label}overlay=x={x}:y={y}:eof_action=repeat:format=auto{enable}[static{i}]")
         video_label=f'[static{i}]'
     if job.preview_url:
         filters.append(f'{video_label}split=2[vfinal][previewfull]')

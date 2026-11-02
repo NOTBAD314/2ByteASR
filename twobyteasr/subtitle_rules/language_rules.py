@@ -192,50 +192,43 @@ def detect_language(texts) -> tuple[str, dict]:
 
 
 def resolve_task_language(requested, texts, *, asr_detected=None) -> tuple[str, dict]:
-    """The language one task runs with, plus how it was decided.
-
-    A manual choice wins. ``auto`` uses the transcript's scripts, then the
-    recognizer's own language identification. Undecidable non-empty foreign
-    text uses the conservative Unicode policy; empty legacy input stays Chinese.
-    """
+    """Canonical task decision: explicit choice wins; auto retains provenance."""
     from .segmentation_profiles import language_tag,PROFILES
-    texts=tuple(texts)
-    raw_requested=requested
-    requested = normalize_language(requested)
-    detected, evidence = detect_language(texts)
-    evidence = dict(evidence, requested=requested, asr_detected=asr_detected or "",requested_locale=language_tag(raw_requested))
+    texts=tuple(texts);raw_requested=requested;requested=normalize_language(requested)
+    automatic=str(raw_requested or '').strip().lower()=='auto'
+    if not automatic and requested==AUTO:
+        if str(raw_requested or '').strip():raise ValueError('不支持的手动源语言')
+        requested=ZH
+    detected,evidence=detect_language(texts)
+    evidence=dict(evidence,requested=requested,requested_language=str(raw_requested or ZH),
+        requested_locale=language_tag(raw_requested),asr_detected=asr_detected or '',
+        mode='auto' if automatic else 'manual',observed_text_language=detected or None,
+        provider_declared_language=asr_detected or None,acoustic_language=None,acoustic_language_verified=False)
+    def finish(code,basis,*,uncertain=False,locale=None):
+        legacy_basis={'transcript_heuristic':'transcript_scripts','script_heuristic':'transcript_scripts',
+            'uncertain_text':'unknown_conservative_policy','empty_legacy_default':'default_chinese'}.get(basis,basis)
+        evidence.update(adopted_language=code,decision_basis=basis,decided_by=legacy_basis,
+                        uncertain=uncertain,locale=locale or code)
+        return code,evidence
     if requested in PROFILES and requested!='und':
-        evidence["decided_by"] = "manual"
-        evidence['locale']=language_tag(raw_requested)
-        if detected and detected != requested:
-            evidence["disagrees_with_transcript"] = detected
-        return requested, evidence
-    from_asr = language_from_qwen_name(asr_detected) or normalize_language(asr_detected)
-    # Script evidence is strong for kana/Hangul/Han/Cyrillic. Latin names
-    # alone are not a reason to override a recognizer's declared language.
-    if from_asr in PROFILES and from_asr!='und' and detected not in (ZH,JA,KO,RU):
-        evidence.update(decided_by='asr_language_id',locale=language_tag(asr_detected))
-        return from_asr,evidence
+        if detected and detected!=requested:evidence['disagrees_with_transcript']=detected
+        code,evidence=finish(requested,'manual',locale=language_tag(raw_requested))
+        evidence['decision_basis']='user_selection'
+        return code,evidence
+    declaration=language_from_qwen_name(asr_detected) or normalize_language(asr_detected)
+    if declaration in PROFILES and declaration not in {AUTO,'und'}:
+        return finish(declaration,'recognizer_declaration',locale=language_tag(asr_detected))
     if detected:
-        evidence["decided_by"] = "transcript_scripts"
-        evidence['locale']=detected
-        return detected, evidence
-    if from_asr in PROFILES and from_asr!='und':
-        evidence["decided_by"] = "asr_language_id"
-        evidence['locale']=language_tag(asr_detected)
-        return from_asr, evidence
+        scores=evidence.get('latin_scores') or {}
+        weak=bool(scores and max(scores.values(),default=0)<3)
+        return finish('und' if weak else detected,'transcript_heuristic',uncertain=weak)
     joined=''.join(str(t) for t in texts)
     for code,low,high in (('ar',0x600,0x6ff),('hi',0x900,0x97f),('th',0xe00,0xe7f)):
-        letters=sum(ch.isalpha() for ch in joined)
-        count=sum(low<=ord(ch)<=high and ch.isalpha() for ch in joined)
+        letters=sum(ch.isalpha() for ch in joined);count=sum(low<=ord(ch)<=high and ch.isalpha() for ch in joined)
         if count>=6 and count>=letters*.5:
-            evidence.update(decided_by='script_generic_policy',locale=code)
-            return code,evidence
-    if any(ch.isalpha() for ch in joined):
-        evidence.update(decided_by='unknown_conservative_policy',locale='und')
-        return 'und',evidence
-    evidence["decided_by"] = "default_chinese"
-    return ZH, evidence
+            return finish(code,'script_heuristic')
+    if any(ch.isalpha() for ch in joined):return finish('und','uncertain_text',uncertain=True)
+    return finish(ZH,'empty_legacy_default',uncertain=True)
 
 
 _SCOPE = threading.local()
@@ -265,7 +258,8 @@ def active_task_language() -> str:
         return scoped
     try:
         from ..recognition.run_context import get_runtime_context
-        return str(getattr(get_runtime_context(), "task_language", "") or "")
+        context=get_runtime_context()
+        return str(context.task_language or context.requested_language or "")
     except Exception:
         return ""
 
@@ -274,7 +268,7 @@ def project_language(project) -> str:
     """The spoken language recorded for a project ('' for older projects = Chinese rules)."""
     metadata = getattr(project, "generation_metadata", None) or {}
     value = (metadata.get("language") or {}) if isinstance(metadata, dict) else {}
-    raw = value.get("code") if isinstance(value, dict) else value
+    raw = (value.get('requested') if value.get('requested') and str(value['requested']).lower()!='auto' else value.get('code')) if isinstance(value,dict) else value
     code = normalize_language(raw)
     from .segmentation_profiles import PROFILES
     if code == AUTO and raw:

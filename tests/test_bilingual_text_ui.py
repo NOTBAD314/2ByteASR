@@ -92,6 +92,24 @@ def test_dialog_translation_results_selected_apply_and_same_matching_rules(page)
         dialog.close()
 
 
+def test_dialog_segments_choose_translation_and_show_the_track(page):
+    dialog = FindReplaceDialog(page)
+    try:
+        dialog.show()
+        APP.processEvents()
+        targets = dialog.text_targets
+        assert all(button.isEnabled() for button in targets.segment_buttons.values())
+        assert not targets.track.isVisible()
+        targets.segment_buttons["translation"].click()
+        assert targets.mode_value() == "translation" and targets.track.isVisible()
+        targets.segment_buttons["both"].click()
+        assert targets.mode_value() == "both" and targets.track.isVisible()
+        targets.segment_buttons["original"].click()
+        assert targets.mode_value() == "original" and not targets.track.isVisible()
+    finally:
+        dialog.close()
+
+
 def test_entry_defaults_and_explicitly_hidden_track_scope(page):
     source = FindReplaceDialog(page)
     assert source.text_targets.mode_value() == 'original'

@@ -1,35 +1,83 @@
-"""Shared, always-visible object/language-track choice for text operations."""
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QWidget, QComboBox, QLabel, QHBoxLayout, QVBoxLayout
-from ..i18n import tr
+"""Shared, always-visible object/language-track choice for text operations.
+
+``compact=True`` (批量替换, 2026-11-02 draft B): the 原文 / 译文 / 原文＋译文
+choice is a row of segment buttons; the track list only shows when a
+translation is chosen; the note leaves the layout and becomes the buttons'
+tooltip, and :meth:`summary` gives the short "原文 · 148 条文本" line for the
+title bar. The ``mode`` and ``track`` combo boxes stay the model in both
+forms: callers, tests and acceptance scripts drive the selector through them.
+"""
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QWidget, QComboBox, QLabel, QHBoxLayout, QVBoxLayout, QPushButton, QFrame, QButtonGroup
+from ..i18n import bind_text, tr
 from .subtitle_text_targets import text_entries
 from ..projects.subtitle_import import language_label
+
+MODES = (("原文", "original"), ("译文", "translation"), ("原文＋译文", "both"))
 
 
 class TextTargetSelector(QWidget):
     changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, compact=False):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("操作对象")))
+        self.compact = compact
         self.mode = QComboBox()
-        for label, value in (("原文", "original"), ("译文", "translation"), ("原文＋译文", "both")):
+        for label, value in MODES:
             self.mode.addItem(tr(label), value)
-        row.addWidget(self.mode)
-        row.addWidget(QLabel(tr("译文语言 / 轨道")))
         self.track = QComboBox()
-        self.track.setMinimumWidth(170)
-        row.addWidget(self.track, 1)
-        layout.addLayout(row)
         self.note = QLabel()
         self.note.setWordWrap(True)
-        layout.addWidget(self.note)
+        if compact:
+            self._build_compact()
+        else:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+            row = QHBoxLayout()
+            row.addWidget(QLabel(tr("操作对象")))
+            row.addWidget(self.mode)
+            row.addWidget(QLabel(tr("译文语言 / 轨道")))
+            self.track.setMinimumWidth(170)
+            row.addWidget(self.track, 1)
+            layout.addLayout(row)
+            layout.addWidget(self.note)
         self.mode.currentIndexChanged.connect(self._changed)
         self.track.currentIndexChanged.connect(self._changed)
+
+    def _build_compact(self):
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.segments = QFrame()
+        self.segments.setObjectName("targetSegments")
+        segment_row = QHBoxLayout(self.segments)
+        segment_row.setContentsMargins(3, 3, 3, 3)
+        segment_row.setSpacing(2)
+        self.segment_group = QButtonGroup(self)
+        self.segment_group.setExclusive(True)
+        self.segment_buttons = {}
+        for index, (label, value) in enumerate(MODES):
+            button = QPushButton(tr(label))
+            button.setObjectName("targetSegment")
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, i=index: self.mode.setCurrentIndex(i))
+            self.segment_group.addButton(button, index)
+            self.segment_buttons[value] = button
+            segment_row.addWidget(button)
+        row.addWidget(self.segments)
+        self.track.setObjectName("targetTrackTag")
+        self.track.setProperty("fieldWidth", "tag")
+        self.track.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        bind_text(self.track, "译文语言 / 轨道", property="toolTip")
+        row.addWidget(self.track)
+        self.mode.setParent(self)
+        self.mode.hide()
+        self.note.setParent(self)
+        self.note.hide()
 
     def bind(self, project, page=None):
         self._project = project
@@ -76,17 +124,35 @@ class TextTargetSelector(QWidget):
     def entries(self, project=None):
         return text_entries(project or self._project, mode=self.mode_value(), tracks=self.tracks())
 
-    def _changed(self, *_args, emit=True):
-        self.track.setEnabled(self.mode_value() != "original" and self.track.count() > 1)
-        entries = self.entries() if hasattr(self, "_project") else []
+    def summary(self):
+        """(label, count): what the next operation reads, e.g. ("原文", 148)."""
         label = self.mode.currentText()
         if self.mode_value() != "original":
             label += " · " + self.track.currentText()
-        note = tr("当前对象：{scope} · {count} 条文本。", scope=label, count=len(entries))
+        return label, self._count
+
+    def _changed(self, *_args, emit=True):
+        has_translation = self.track.count() > 1
+        self.track.setEnabled(self.mode_value() != "original" and has_translation)
+        entries = self.entries() if hasattr(self, "_project") else []
+        self._count = len(entries)
+        label, count = self.summary()
+        note = tr("当前对象：{scope} · {count} 条文本。", scope=label, count=count)
         if self.mode_value() != 'original':
             note += tr('空译文已跳过；补译请使用翻译功能。')
-        if self.track.count() <= 1:
+        if not has_translation:
             note = tr("暂无译文；仍可校对或替换原文。") + " " + note
         self.note.setText(note)
+        if self.compact:
+            self._sync_segments(has_translation)
         if emit:
             self.changed.emit()
+
+    def _sync_segments(self, has_translation):
+        mode = self.mode_value()
+        for value, button in self.segment_buttons.items():
+            button.setChecked(value == mode)
+            # Translation segments wait for a translation, unless one is already chosen.
+            button.setEnabled(value == "original" or has_translation or value == mode)
+            button.setToolTip("" if button.isEnabled() else tr("暂无译文；仍可校对或替换原文。"))
+        self.track.setVisible(mode != "original" and has_translation)

@@ -133,6 +133,12 @@ def test_cover_backfill_updates_matching_card(tmp_path, monkeypatch, hub_project
         if before_pixmap is not None and not before_pixmap.isNull():
             before_key = before_pixmap.cacheKey()
         page._cover_backfill_ready(str(card.toolTip()).splitlines()[-1], str(fake_cover))
+        from PySide6.QtTest import QTest
+        for _ in range(100):
+            app.processEvents()
+            current=card.findChildren(QLabel,'projectCardCover')[0].pixmap()
+            if current is not None and current.cacheKey()!=before_key:break
+            QTest.qWait(5)
         app.processEvents()
         # The hub may have rebuilt during processEvents; look the card up again.
         cards = page.findChildren(QToolButton, "recentProjectCard")

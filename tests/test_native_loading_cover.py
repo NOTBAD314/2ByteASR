@@ -51,7 +51,7 @@ def native_session(monkeypatch):
 
 def test_verified_cover_is_painted_and_input_protected_before_showing_editor(native_session):
     env=native_session;session=env.session;calls=[]
-    session.on_present=lambda:calls.append((session.view.isVisible(),env.pages.isEnabled(),
+    session.on_present=lambda:calls.append((session.view.isVisible(),not session._input_lease.held,
                                           session.native_cover_state()['verified']))
     session.begin('A')
     assert calls==[(True,False,True)]
@@ -84,7 +84,7 @@ def test_warm_entry_does_not_blank_old_video_before_cover_has_authority(native_s
     env.other.blocks.update(loading=False,navigation=True)
     before=(dict(env.video.blocks),dict(env.other.blocks))
     env.evidence['valid']=False
-    session.on_present=lambda:calls.append((session.view.isVisible(),env.pages.isEnabled()))
+    session.on_present=lambda:calls.append((session.view.isVisible(),not session._input_lease.held))
     session.begin('new-project',present=False)
     assert (env.video.blocks,env.other.blocks)==before  # apply_theme/initial invalidation
     assert session.present() is False
@@ -99,7 +99,7 @@ def test_losing_cover_verification_blocks_native_video_again(native_session):
     env=native_session;session=env.session;session.begin('A')
     assert not env.video.blocks['loading']
     env.evidence['valid']=False;session._native_cover_updated()
-    assert env.video.blocks['loading'] and not env.pages.isEnabled()
+    assert env.video.blocks['loading'] and session._input_lease.held
     env.evidence['valid']=True;session._native_cover_updated()
     assert not env.video.blocks['loading']
 
@@ -161,10 +161,29 @@ def test_input_lease_preserves_original_setting_across_generations(native_sessio
     env=native_session;session=env.session;env.pages.setEnabled(initially_enabled)
     card=session.view.card
     session.begin('A');session.begin('B');session.fail('读取工程','fixture failure')
-    assert not env.pages.isEnabled() and session.view.card is card
+    assert session._input_lease.held and session.view.card is card
     session.begin('C');session.abort()
     assert env.pages.isEnabled() is initially_enabled
     assert not session._input_lease.held
+
+
+def test_loading_lease_blocks_real_key_and_mouse_input_without_repolishing(native_session):
+    from PySide6.QtWidgets import QPushButton,QLineEdit
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    env=native_session;session=env.session
+    button=QPushButton('covered',env.pages.currentWidget());button.show()
+    editor=QLineEdit(env.pages.currentWidget());editor.move(0,60);editor.show()
+    clicked=[];button.clicked.connect(lambda:clicked.append(True))
+    session.begin('A')
+    assert env.pages.isEnabled()
+    QTest.mouseClick(button,Qt.MouseButton.LeftButton)
+    QTest.keyClicks(editor,'blocked')
+    assert not clicked and editor.text()==''
+    session.abort()
+    QTest.mouseClick(button,Qt.MouseButton.LeftButton)
+    QTest.keyClicks(editor,'ok')
+    assert clicked==[True] and editor.text()=='ok'
 
 
 def test_retire_releases_input_then_paints_destination_inside_native_scope(native_session):
@@ -176,7 +195,7 @@ def test_retire_releases_input_then_paints_destination_inside_native_scope(nativ
         finally:events.append('hold-exit');inside['value']=False
     session.handoff_scope=handoff
     session.on_reveal=lambda:events.append('reveal')
-    session.on_retired=lambda:events.append(('retired',session.view.isVisible(),env.pages.isEnabled(),inside['value']))
+    session.on_retired=lambda:events.append(('retired',session.view.isVisible(),not session._input_lease.held,inside['value']))
     generation=session.begin('A')
     assert session.deliver(generation)
     assert events==['hold-enter','reveal',('retired',False,True,True),'hold-exit']
@@ -188,7 +207,7 @@ def test_reentrant_new_request_from_retired_callback_keeps_its_input_lease(nativ
     session.on_retired=lambda:session.begin('B')
     assert not session.deliver(old)
     assert session.path=='B' and session.active and session.view.isVisible()
-    assert not env.pages.isEnabled()
+    assert session._input_lease.held
     session.on_retired=None;session.abort()
     assert env.pages.isEnabled()
 
@@ -233,7 +252,7 @@ def test_callback_failure_keeps_same_cover_and_blocks_without_recursing(native_s
         with pytest.raises(RuntimeError,match='controlled paint failure'):session.deliver(epoch)
     assert calls==[callback]
     assert session.state=='failed' and session.view.isVisible()
-    assert not env.pages.isEnabled() and env.video.blocks['loading']
+    assert session._input_lease.held and env.video.blocks['loading']
     assert session.native_cover_state()['status']=='failed'
     assert session.deliveries==0
 
@@ -241,16 +260,16 @@ def test_callback_failure_keeps_same_cover_and_blocks_without_recursing(native_s
 def test_reentrant_request_during_input_restore_is_not_overwritten(native_session,monkeypatch):
     env=native_session;session=env.session;retired=[]
     epoch=session.begin('A');session.on_retired=lambda:retired.append(session.path)
-    original=env.pages.setEnabled;triggered={'value':False}
-    def enabled(value):
-        original(value)
-        if value and not triggered['value']:
+    original=session._input_lease.release;triggered={'value':False}
+    def released(*args):
+        original(*args)
+        if not triggered['value']:
             triggered['value']=True
             session.begin('B')
-    monkeypatch.setattr(env.pages,'setEnabled',enabled)
+    monkeypatch.setattr(session._input_lease,'release',released)
     assert not session.deliver(epoch)
     assert session.path=='B' and session.active and not retired
-    assert session.native_cover_state()['verified'] and not env.pages.isEnabled()
+    assert session.native_cover_state()['verified'] and session._input_lease.held
     session.on_retired=None;session.abort()
     assert env.pages.isEnabled()
 
@@ -275,7 +294,7 @@ def test_old_pending_callback_cannot_fail_a_reentrant_new_generation(native_sess
     session.on_present=old_callback;env.evidence['valid']=True
     session._native_cover_updated()
     assert session.path=='B' and session.active
-    assert not session._native_cover_fault and not env.pages.isEnabled()
+    assert not session._native_cover_fault and session._input_lease.held
 
 
 def test_unsupported_request_keeps_stack_parent_and_does_not_disable_card_host(monkeypatch):

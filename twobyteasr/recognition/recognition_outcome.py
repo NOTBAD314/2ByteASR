@@ -254,11 +254,14 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_errors.append(str(save_events[-1].get("error") or "识别结果工程保存失败"))
     latest_stages = {str(row.get("label") or row.get("index") or ""): row for row in stages}
     for row in latest_stages.values():
-        if row.get("status") == "failed" and not _optional_search(row) and not _polish_stage(row):
+        if raw_status != "no_speech" and row.get("status") == "failed" and not _optional_search(row) and not _polish_stage(row):
             core_errors.append(str(row.get("error") or f"{row.get('label', '核心处理')}未完成"))
-    if result.get("error"):
+    if result.get("error") and raw_status != "no_speech":
         core_errors.append(str(result["error"]))
-    usable_evidence = final_cues > 0 or bool(outputs.get("project") or outputs.get("srt"))
+    from .transcript_delivery import report_counts, RECOVERY_MESSAGE
+    transcript_counts = report_counts(payload)
+    pending = transcript_counts.get('pending_range_count', 0)
+    usable_evidence = final_cues > 0
     usable = usable_evidence and not core_errors
     if raw_status in {"cancelled", "canceled"}:
         core_status, label, title = "cancelled", "已取消", "任务已取消"
@@ -267,8 +270,18 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_status, label, title = "failed", "失败", "识别未完成"
         if final_cues > 0 and save_error:
             label, title = '工程保存失败，可恢复', '字幕已生成 · 工程保存失败，可恢复'
+    elif pending or raw_status in {'needs_recovery', 'partial_recovery'}:
+        usable = final_cues > 0
+        core_status = 'partial' if usable else 'needs_recovery'
+        label, title = ('部分字幕可用 · 语言待恢复', '部分字幕已生成 · 异常范围待恢复') if usable else ('语言待恢复', '转写已取得 · 尚未生成可用字幕')
+        problems.append('正常范围字幕已保留，异常范围需要核对和恢复。' if usable else RECOVERY_MESSAGE)
+    elif raw_status == 'no_speech':
+        usable = False
+        core_status, label, title = 'no_speech', '未检测到人声', '未检测到可识别人声'
+    elif raw_status == 'empty_result' or raw_status in _SUCCESS and 'cue_count' in result and not final_cues:
+        usable = False
+        core_status, label, title = 'empty_result', '没有可用字幕', '未生成可用字幕 · 请核对输入与识别结果'
     elif raw_status in _SUCCESS:
-        usable = usable or ("cue_count" in result and final_cues == 0)
         if not usable:
             core_status, label, title = "unknown", "状态待确认", "任务状态待确认"
         elif polish_status == "partial":
@@ -335,9 +348,11 @@ def normalize_recognition_outcome(payload: dict[str, Any] | None, *, delivery_wi
     valid_hash = lambda value: len(str(value)) == 64 and all(char in "0123456789abcdef" for char in str(value).lower())
     if (not witness.verified_saved_project or not witness.report_path or not witness.project_path
             or not valid_hash(witness.report_sha256) or not valid_hash(witness.project_sha256)
-            or witness.cue_count < 0
+            or witness.cue_count <= 0
             or witness.report_started_at != str(_dict(payload).get("started_at") or "")):
         raise ValueError("recovered delivery lacks matching report identity and verified saved project evidence")
+    if outcome.core_status == 'needs_recovery':
+        return outcome  # saving a diagnostic copy does not accept its transcript
     if outcome.core_status == "cancelled":
         # A recovered artifact can be usable while the user's cancellation
         # remains the task's independent terminal state.
@@ -379,10 +394,15 @@ def normalize_recognition_queue(payloads) -> RecognitionQueueOutcome:
     counts = Counter(value.core_status for value in outcomes)
     completed, partial, failed = counts["completed"], counts["partial"], counts["failed"]
     cancelled, skipped, unknown = counts["cancelled"], counts["skipped"], counts["unknown"] + counts["running"]
+    recovery, empty = counts['needs_recovery'], counts['empty_result'] + counts['no_speech']
     if failed:
         status = "partial" if completed or partial else "failed"
     elif cancelled:
         status = "cancelled"
+    elif recovery:
+        status = 'partial' if completed or partial else 'needs_recovery'
+    elif empty:
+        status = 'partial' if completed or partial else 'empty_result'
     elif partial:
         status = "partial"
     elif unknown:
@@ -393,15 +413,15 @@ def normalize_recognition_queue(payloads) -> RecognitionQueueOutcome:
         status = "skipped"
     else:
         status = "empty"
-    titles = {"completed": "字幕生成完成", "partial": "字幕生成部分完成", "failed": "字幕生成失败",
+    titles = {'needs_recovery': '取得转写 · 字幕待恢复', 'empty_result': '未生成可用字幕', "completed": "字幕生成完成", "partial": "字幕生成部分完成", "failed": "字幕生成失败",
               "cancelled": "字幕任务已取消", "unknown": "字幕任务状态待确认", "skipped": "字幕生成完成", "empty": "字幕任务已结束"}
-    labels = {"completed": "完成", "partial": "部分完成", "failed": "失败", "cancelled": "已取消",
+    labels = {'needs_recovery': '语言待恢复', 'empty_result': '没有可用字幕', "completed": "完成", "partial": "部分完成", "failed": "失败", "cancelled": "已取消",
               "unknown": "状态待确认", "skipped": "已跳过", "empty": "没有任务结果"}
     return RecognitionQueueOutcome(
         core_status=status, status_label=labels[status], title=titles[status],
-        notification_level="error" if status == "failed" else "warning" if status in {"partial", "cancelled", "unknown"} else "information",
+        notification_level="error" if status == "failed" else "warning" if status in {"partial", "cancelled", "unknown", 'needs_recovery', 'empty_result'} else "information",
         completed_count=completed, partial_count=partial, failed_count=failed,
-        cancelled_count=cancelled, skipped_count=skipped, unknown_count=unknown,
+        cancelled_count=cancelled, skipped_count=skipped, unknown_count=unknown + recovery + empty,
         review_task_count=sum(value.has_review for value in outcomes),
         review_issue_count=sum(value.review_issue_count for value in outcomes),
         search_incomplete_count=sum(value.search_status in {"unsupported", "not_configured", "not_run", "partial", "failed", "timeout", "insufficient_evidence"} for value in outcomes),

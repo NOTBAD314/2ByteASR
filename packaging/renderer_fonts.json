@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "fonts": [
+    {
+      "file": "Cubic11.ttf",
+      "sha256": "a0a497da038cf228eed911cc43738b1e35ebb69ab24c125623eca5087da66c80"
+    },
+    {
+      "file": "SmileySans-Oblique.woff2",
+      "sha256": "731f22973349404b15a88a99ef3b5dd4104c0965c23b7e485c1f11e84fea99e2"
+    },
+    {
+      "file": "SourceHanSansSC-Heavy.otf",
+      "sha256": "6374b11bc4c2cd4bd7be1a1d64cf5047906c8a6a025c64e023c6792e50ba985e"
+    },
+    {
+      "file": "SourceHanSansSC-Medium.otf",
+      "sha256": "1df61d31687d04fd2f928a3bb6ca6cd61f0e988cc267cf317f32406edbb49f70"
+    },
+    {
+      "file": "SourceHanSansSC-Medium.woff2",
+      "sha256": "c84123c18bf1f718ff6ce8a14b31cad916e8fe6ac509951bd172e272dca16215"
+    },
+    {
+      "file": "ZCOOLKuaiLe-Regular.ttf",
+      "sha256": "812a6fc1fe54b6d73a419245c32dfeba8aa33104d5be90d1cf6af082007cb71d"
+    },
+    {
+      "file": "ZCOOLQingKeHuangYou-Regular.ttf",
+      "sha256": "54f0c0df4308cd74cd0f2fd3494ae054dbc4a1fd6fa7d71f4807eb4cdd8b4136"
+    }
+  ]
+}

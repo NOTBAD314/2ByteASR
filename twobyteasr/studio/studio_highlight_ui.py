@@ -1250,9 +1250,13 @@ class HighlightAssistantPanel(QWidget):
             self._refresh_bin_controls()
         self._append_analysis_note()
 
+    def showEvent(self,event):
+        super().showEvent(event)
+        self._refresh_data_mode()
+
     def _refresh_data_mode(self) -> None:
         cue_count = (
-            len(highlight_transcript_project(self._project).cues)
+            (len(highlight_transcript_project(self._project).cues) if self.isVisible() else len(self._project.cues))
             if self._project is not None
             else 0
         )

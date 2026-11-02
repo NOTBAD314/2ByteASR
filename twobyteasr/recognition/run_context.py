@@ -71,6 +71,8 @@ class RuntimeContext:
     requested_language: str = "auto"
     task_language: str = ""
     language_evidence: dict[str, Any] = field(default_factory=dict)
+    language_mode: str = 'auto'
+    language_decision: dict[str, Any] = field(default_factory=dict)
     transcript_acceptance: dict[str, Any] = field(default_factory=dict)
     language_recovery_result: Any | None = field(default=None, repr=False)
     # Requested subtitle output (original/translation/bilingual) and translation
@@ -100,6 +102,10 @@ class RuntimeContext:
     shard_input_version: str = ''
     shard_bounds: tuple[float,float] | None = None
 
+    def __post_init__(self):
+        from .language_decision import initialise
+        initialise(self)
+
     def reset_for_media(self) -> None:
         """Clear output/report state while retaining queue-wide discovered terms."""
         self.close_resources()
@@ -112,6 +118,8 @@ class RuntimeContext:
         self.committed_result_ref.clear()
         self.task_language = ""
         self.language_evidence = {}
+        from .language_decision import initialise
+        initialise(self)
         self.transcript_acceptance = {}
         self.language_recovery_result = None
         self.japanese_phrases = None

@@ -165,11 +165,14 @@ def recognize_range(audio, start_sample, end_sample, *, language, cache_root, to
             raise RuntimeError('本地识别存在空窗口；保留检查点，未将该范围标成恢复成功')
         from .language_diagnostics import transcript_language_sample
         observed = transcript_language_sample(r.get('text') for r in rows)
-        if observed.get('language') not in {None, language}:
-            raise RuntimeError('替代识别结果仍有明显文字语言冲突，未接受为主稿')
+        text_warning=observed.get('language') not in {None, language}
+        # This helper requires an explicit source choice. Text observations do
+        # not overrule it; the owning audit presents the mismatch once. Empty,
+        # truncated, invalid and input-mismatched results still fail above.
         result = dict(status='accepted', attempt_id=attempt_id, identity=identity, rows=rows,
                       acoustic_samples=values[production_count:], raw_payload=str(output),
                       elapsed_seconds=time.perf_counter()-started, language_evidence=observed,
+                      text_language_warning=text_warning,processing_language=language,
                       model=MODEL, backend='qwen_local', policy=policy, production_windows=production_count)
         result['resumed_windows']=len(resumed)
         _save(result_path, result)

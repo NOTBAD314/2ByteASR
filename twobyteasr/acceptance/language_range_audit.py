@@ -131,6 +131,10 @@ def start(window, output):
                 result['action_at']=time.monotonic()
                 result['phase']='sheet';write();return
             if phase=='sheet':
+                review=getattr(page,'_language_candidate_dialog',None)
+                if review is not None and review.isVisible():
+                    page._language_candidate_controls['local'].click()
+                    return
                 controls=getattr(page,'_recognition_controls',{})
                 if not controls:
                     if time.monotonic()-result['action_at']>3:

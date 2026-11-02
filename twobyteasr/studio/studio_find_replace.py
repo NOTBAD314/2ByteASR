@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -442,8 +444,9 @@ def replace_row_html(text: str, hit: TextOccurrence, colors: dict[str, str]) -> 
             f'<span style="color:{colors["secondary"]};">{clean(text[:start])}{added}{clean(text[end:])}</span>')
 
 
-def replace_card_html(text: str, hits: list[TextOccurrence], colors: dict[str, str]) -> str:
-    """One cue as one line: every match struck out with its new words beside it, the time on the right."""
+def replace_card_html(text: str, hits: list[TextOccurrence], colors: dict[str, str], meta: str = "") -> str:
+    """One cue as one row: the time (and ``meta``: layer, speaker, track) on the left,
+    the sentence with every match struck out and its new words beside it on the right."""
     clean = lambda part: html.escape(part).replace("\n", " / ")
     ordered = sorted(hits, key=lambda hit: hit.span)
     if any(text[hit.span[0]:hit.span[1]] != hit.original for hit in ordered):
@@ -465,10 +468,12 @@ def replace_card_html(text: str, hits: list[TextOccurrence], colors: dict[str, s
     parts.append(clean(text[cursor:]))
     count = (f'&nbsp;&nbsp;<span style="color:{colors["muted"]};">{html.escape(tr("{value0} 处", value0=len(ordered)))}</span>'
              if len(ordered) > 1 else "")
+    side = (f'<span style="color:{colors["muted"]}; font-size:12px;">{clock_ms(ordered[0].start_ms)}</span>'
+            + (f'&nbsp;&nbsp;<span style="color:{colors["secondary"]}; font-size:12px;">{html.escape(meta)}</span>'
+               if meta else ''))
     return (f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
-            f'<td><span style="color:{colors["text"]};">{"".join(parts)}</span>{count}</td>'
-            f'<td align="right" width="96" style="white-space:pre;"><span style="color:{colors["muted"]};">'
-            f'{clock_ms(ordered[0].start_ms)}</span></td>'
+            f'<td width="150" valign="middle">{side}</td>'
+            f'<td valign="middle"><span style="color:{colors["text"]};">{"".join(parts)}</span>{count}</td>'
             f'</tr></table>')
 
 
@@ -659,6 +664,11 @@ class _TextPreviewDialog(QDialog):
     def _rows_html(self, row: list[TextOccurrence], text: str, colors) -> str:
         return self._row_html(row[0], text, colors)
 
+    def _item_html(self, row: list[TextOccurrence], text: str, colors, meta: str, entry=None) -> str:
+        """A list row's rich text: the meta line over the row's own text."""
+        row_html = self._rows_html(row, text, colors)
+        return f'<span style="color:{colors["secondary"]};">{html.escape(meta)}</span><br>{row_html}' if row_html else ""
+
     def _apply_extras(self, hits) -> dict:
         """Undo title, learning and receipt for this tool's apply."""
         return {"title": self._title}
@@ -709,9 +719,9 @@ class _TextPreviewDialog(QDialog):
             plain=(f'{clock_ms(hit.start_ms)} · {meta}\n'+tr('修改前：{text}',text=baseline)+'\n'
                    +tr('建议：{text}',text=before_after)+'\n'+' · '.join(f'{h.original} → {h.replacement}' for h in row))
             item=PreviewItem(plain)
-            row_html=self._rows_html(row,baseline,colors)
+            row_html=self._item_html(row,baseline,colors,meta,entry)
             if row_html:
-                item.setData(PREVIEW_HTML_ROLE,'<span style="color:'+colors['secondary']+';">'+html.escape(meta)+'</span><br>'+row_html)
+                item.setData(PREVIEW_HTML_ROLE,row_html)
             item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if all(h.default_selected for h in row) else Qt.Unchecked)
             item.setData(Qt.UserRole,entry.target.cue_id if entry else hit.cue_id)
@@ -870,46 +880,38 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     def __init__(self, page, parent=None):
         super().__init__(page, parent)
-        self.setMinimumSize(600, 480)
-        self.resize(760, 620)
+        from ..app.rounded_window import SHADOW, RoundedWindow
+        from ..design.themed_icons import install_themed_icon, themed_icon
+        from . import find_replace_card as card
+        from .text_target_widgets import TextTargetSelector
+
+        # 2026-11-02 (user picked draft B 「软糖卡片」): no Windows title bar, a
+        # rounded window that is short until there is something to list.
+        self._shown_rows = None
+        self.setMinimumWidth(560 + 2 * SHADOW)
+        self.resize(640 + 2 * SHADOW, 340 + 2 * SHADOW)
         self._preview_query = None
         self._skipped = Counter()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.root = QWidget()
+        self.root.setObjectName("replaceRoot")
+        outer.addWidget(self.root)
+        column = QVBoxLayout(self.root)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        self.title_bar, self.target_summary, self.close_button = card.title_bar(self._title, self.reject)
+        column.addWidget(self.title_bar)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 2, 16, 14)
         layout.setSpacing(10)
+        column.addLayout(layout, 1)
 
-        self._add_text_targets(layout)
-
-        # 2026-10-30 (user picked draft C): one line reads "find → replace",
-        # the options are a row of small tags, results are one card per cue.
-        fields = QHBoxLayout()
-        fields.setSpacing(8)
-        self.find_edit = QLineEdit()
-        bind_text(self.find_edit, '要查找的文字，例如：尼奈', property='placeholderText')
-        self.replace_edit = QLineEdit()
-        bind_text(self.replace_edit, '替换为，例如：她', property='placeholderText')
-        from ..design.themed_icons import install_themed_icon, themed_icon
-        for edit, icon_name in ((self.find_edit, "fa5s.search"), (self.replace_edit, "fa5s.pen")):
-            edit.setObjectName("findBigField")
-            edit.setMinimumHeight(42)
-            edit.setClearButtonEnabled(True)
-            edit.addAction(themed_icon(icon_name, "muted"), QLineEdit.ActionPosition.LeadingPosition)
-            edit.textChanged.connect(self._queue_live_search)
-            edit.installEventFilter(self)
-        self.swap_button = QPushButton()
-        self.swap_button.setObjectName("findSwapButton")
-        bind_text(self.swap_button, '对调查找和替换', property='toolTip')
-        install_themed_icon(self.swap_button, "fa5s.exchange-alt", "secondary")
-        # The shared button rules pad and square every button; its own sheet keeps it round.
-        self.swap_button.setStyleSheet("padding: 0; min-width: 36px; max-width: 36px; "
-                                       "min-height: 36px; max-height: 36px; border-radius: 18px;")
-        self.swap_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.swap_button.clicked.connect(self._swap_fields)
-        fields.addWidget(self.find_edit, 1)
-        fields.addWidget(self.swap_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        fields.addWidget(self.replace_edit, 1)
-        layout.addLayout(fields)
-
+        # 原文 / 译文 / 两者 on the left, the range on the right.
+        self.text_targets = TextTargetSelector(self, compact=True)
+        self.text_targets.bind(self._page.session.project, self._page)
+        self.text_targets.changed.connect(self._text_target_changed)
+        self.text_targets.changed.connect(self._update_target_summary)
         self.scope_combo = self._scope_box()
         self.scope_combo.setObjectName("findScopeTag")
         bind_text(self.scope_combo, '范围', property='toolTip')
@@ -917,6 +919,40 @@ class FindReplaceDialog(_TextPreviewDialog):
         # A tag sized to its label, not the dialog's 180 px field rule.
         self.scope_combo.setProperty("fieldWidth", "tag")
         self.scope_combo.currentIndexChanged.connect(lambda *_args: self._queue_live_search())
+        targets = QHBoxLayout()
+        targets.setSpacing(8)
+        targets.addWidget(self.text_targets)
+        targets.addStretch(1)
+        targets.addWidget(self.scope_combo)
+        layout.addLayout(targets)
+
+        fields = QHBoxLayout()
+        fields.setSpacing(8)
+        self.find_edit = QLineEdit()
+        bind_text(self.find_edit, '要查找的文字，例如：尼奈', property='placeholderText')
+        self.replace_edit = QLineEdit()
+        bind_text(self.replace_edit, '替换为，例如：她', property='placeholderText')
+        for edit, icon_name in ((self.find_edit, "fa5s.search"), (self.replace_edit, "fa5s.pen")):
+            edit.setObjectName("findBigField")
+            edit.setMinimumHeight(44)
+            edit.addAction(themed_icon(icon_name, "muted"), QLineEdit.ActionPosition.LeadingPosition)
+            edit.textChanged.connect(self._queue_live_search)
+            edit.installEventFilter(self)
+        # The find field ends in its match count; the replace field keeps its clear button.
+        self.replace_edit.setClearButtonEnabled(True)
+        self.count_badge = card.CountBadge(self.find_edit)
+        self.swap_button = QPushButton()
+        self.swap_button.setObjectName("findSwapButton")
+        bind_text(self.swap_button, '对调查找和替换', property='toolTip')
+        install_themed_icon(self.swap_button, "fa5s.exchange-alt", "secondary")
+        self.swap_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.swap_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.swap_button.clicked.connect(self._swap_fields)
+        fields.addWidget(self.find_edit, 1)
+        fields.addWidget(self.swap_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        fields.addWidget(self.replace_edit, 1)
+        layout.addLayout(fields)
+
         self.lock_box = _option_chip("不修改锁定字幕", checked=True)
         install_themed_icon(self.lock_box, "fa5s.lock", "secondary")
         self.case_box = _option_chip("区分大小写")
@@ -937,48 +973,118 @@ class FindReplaceDialog(_TextPreviewDialog):
         for box in (self.body_box, self.project_entity_box):
             box.toggled.connect(lambda *_args: self._show_more_options(False))
         self._more_options_open = False
-        layout.addWidget(_chip_row((self.scope_combo, self.lock_box, self.case_box, self.word_box,
-                                    self.regex_box, self.body_box, self.project_entity_box,
-                                    self.more_options_button)))
+        layout.addWidget(_chip_row((self.lock_box, self.case_box, self.word_box, self.regex_box,
+                                    self.body_box, self.project_entity_box, self.more_options_button)))
         self._show_more_options(False)
 
-        self._add_results(layout)
+        # One card: a head line, then the matches, or one line saying what to do.
+        self.result_card = QFrame()
+        self.result_card.setObjectName("findResultCard")
+        card_layout = QVBoxLayout(self.result_card)
+        card_layout.setContentsMargins(6, 6, 6, 6)
+        card_layout.setSpacing(4)
+        self._add_results(card_layout)
+        head = card_layout.itemAt(0).layout()
+        head.setContentsMargins(8, 2, 2, 0)
+        self.status_label.setWordWrap(False)
         self.preview.setObjectName("findResultCards")
-        self.preview.setSpacing(3)
+        self.preview.setSpacing(2)
+        self.preview.setFrameShape(QFrame.Shape.NoFrame)
+        self.preview.viewport().setAutoFillBackground(False)
+        self.preview.setMinimumHeight(0)
         self.preview.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._empty_hint = QLabel(self.preview.viewport())
-        self._empty_hint.setObjectName("findEmptyHint")
-        self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_hint.setWordWrap(True)
-        self._empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        bind_text(self._empty_hint, '输入要查找的文字，匹配会在这里列出\n也可以在字幕里选字后右键「批量替换相同文字…」')
-        self.preview.viewport().installEventFilter(self)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._empty_row, self._empty_hint = card.empty_row()
+        bind_text(self._empty_hint, '也可以在字幕里选字后右键「批量替换相同文字…」')
+        card_layout.addWidget(self._empty_row)
+        layout.addWidget(self.result_card, 1)
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(180)
         self._search_timer.timeout.connect(self._live_search)
 
-        self.key_hint = QLabel()
-        self.key_hint.setObjectName("findKeyHint")
-        bind_text(self.key_hint, '↓ 切到替换　Enter 替换所选　Esc 关闭')
+        footer = QFrame()
+        footer.setObjectName("replaceFooter")
+        actions = QHBoxLayout(footer)
+        actions.setContentsMargins(18, 10, 14, 12)
+        actions.setSpacing(8)
+        self.key_hint = card.key_hints((("↓", "切到替换"), ("Enter", "替换所选"), ("Esc", "关闭")))
+        actions.addWidget(self.key_hint)
+        actions.addStretch(1)
         self.next_button = QPushButton("替换下一个")
         self.next_button.setObjectName("findQuietButton")
         self.next_button.clicked.connect(self._do_replace_next)
         self.all_button = QPushButton("替换所选")
+        self.all_button.setObjectName("findPrimaryButton")
         self.all_button.setProperty("studioPrimary", True)
         self.all_button.clicked.connect(self._do_apply_preview)
-        self._add_footer(layout, leading=(self.key_hint,), trailing=(self.next_button, self.all_button),
-                         close_button=False)
+        for button in (self.next_button, self.all_button):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            actions.addWidget(button)
+        column.addWidget(footer)
+
+        self.chrome = RoundedWindow(self, self.root, title_areas=[self.title_bar], radius=card.RADIUS,
+                                    maximizable=False)
         self._finish_setup()
+        self.refresh_theme_palette()
         self.project_entity_box.setEnabled(self.text_targets.mode_value()=='original')
+        self._update_target_summary()
         self._page.session.undo_stack.indexChanged.connect(self._external_text_change)
         self.find_edit.setFocus()
 
+    # ---------------------------------------------------------- frame
+    def refresh_theme_palette(self) -> None:
+        from ..app.ui_zoom import set_sheet
+        from ..design.studio_theme import refresh_secondary_surface_theme
+        from ..design.theme_manager import theme_definition, theme_key
+        from .find_replace_card import find_replace_qss
+        refresh_secondary_surface_theme(self)
+        set_sheet(self.root, find_replace_qss(theme_definition(theme_key())))
+        self._theme_refresh_pending = False
+
+    def showEvent(self, event):
+        if getattr(self, "_theme_refresh_pending", False):
+            self.refresh_theme_palette()
+        super().showEvent(event)
+        QTimer.singleShot(0, self._fit_height)
+
+    def _update_target_summary(self, *_args) -> None:
+        label, count = self.text_targets.summary()
+        bind_text(self.target_summary, '{scope} · {count} 条文本', scope=label, count=count)
+        self.target_summary.setToolTip(self.text_targets.note.text())
+
+    def _fit_height(self) -> None:
+        """Short with nothing to list (and not stretchable then); with matches, as
+        tall as the rows need up to a limit. Runs only when what is listed changes,
+        so a window made taller by hand stays so until the next search."""
+        from ..app.ui_zoom import px
+        if not self.isVisible():
+            return
+        rows = self.preview.count() if self._preview_hits else 0
+        self.layout().activate()
+        if rows:
+            self.setMaximumHeight(16777215)
+            fixed = self.height() - self.preview.height()
+            limit, wanted, spacing = px(360), 0, self.preview.spacing()
+            for index in range(rows):
+                wanted += self.preview.sizeHintForRow(index) + 2 * spacing
+                if wanted >= limit:
+                    break
+            target = fixed + min(wanted + 2 * self.preview.frameWidth() + 4, limit)
+        else:
+            target = self.minimumSizeHint().height()
+        screen = self.screen()
+        if screen is not None:
+            target = min(target, screen.availableGeometry().height() - px(40))
+        self._shown_rows = rows
+        if not rows:
+            self.setMaximumHeight(target)
+        if target != self.height():
+            self.resize(self.width(), target)
+
     # ---------------------------------------------------------- keyboard
     def eventFilter(self, watched, event):
-        if event.type() == QEvent.Type.Resize and watched is self.preview.viewport():
-            self._empty_hint.setGeometry(watched.rect().adjusted(24, 0, -24, 0))
         if event.type() == QEvent.Type.KeyPress and watched in (self.find_edit, self.replace_edit):
             key = event.key()
             if key == Qt.Key.Key_Down and watched is self.find_edit:
@@ -1035,6 +1141,16 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     def _rows_html(self, row: list[TextOccurrence], text: str, colors) -> str:
         return replace_card_html(text, row, colors)
+
+    def _item_html(self, row: list[TextOccurrence], text: str, colors, meta: str, entry=None) -> str:
+        # Draft B: the time and who sit left of the sentence; the layer and
+        # language only when translations are searched too.
+        if entry is not None:
+            project = self._page.session.project
+            speaker = next((s.name for s in project.speakers if s.id == entry.speaker_id), entry.speaker_id or "")
+            parts = [target_label(entry.target)] if self.text_targets.mode_value() != "original" else []
+            meta = " · ".join(dict.fromkeys(part for part in (*parts, speaker) if part))
+        return replace_card_html(text, row, colors, meta)
 
     def _show_more_options(self, open_: bool) -> None:
         """仅正文 and 记录实体 stay behind 更多 until opened or turned on."""
@@ -1102,10 +1218,22 @@ class FindReplaceDialog(_TextPreviewDialog):
         checked=len(self._checked_hits())
         if checked:bind_text(self.all_button,'替换 {value0} 处',value0=checked)
         else:bind_text(self.all_button,'替换所选')
-        self._empty_hint.setVisible(not bool(self._preview_hits))
         self.all_button.setEnabled(bool(self._checked_hits()))
+        self._show_list(bool(self._preview_hits))
+        broken = enabled and self.regex_box.isChecked() and not self._pattern_ok(needle)
+        if self.find_edit.property("regexError") != broken:
+            self.find_edit.setProperty("regexError", broken)
+            self.find_edit.style().unpolish(self.find_edit)
+            self.find_edit.style().polish(self.find_edit)
+        self._mark_status_error(broken)
+        self.count_badge.set_shown(enabled)
         if not enabled:
             bind_text(self.status_label, '输入查找文字后显示匹配数量')
+            return
+        if broken:
+            self.count_badge.set_count(None, tr('正则表达式写法有误；关掉「正则表达式」就按普通文字查找。'))
+            bind_text(self.status_label, '正则表达式写法有误；关掉「正则表达式」就按普通文字查找。')
+            self.next_button.setEnabled(False)
             return
         if self._preview_query == self._query() and self._preview_binding is not None:
             hits = self._preview_hits
@@ -1116,12 +1244,37 @@ class FindReplaceDialog(_TextPreviewDialog):
                 whole_word=self.word_box.isChecked(), regex=self.regex_box.isChecked(),
                 body_only=self.body_box.isChecked(), skip_locked=self.lock_box.isChecked(),
                 locked_ids=_locked_ids(self._page), entries=self._scoped_entries())
+        self.count_badge.set_count(len(hits))
         if not hits:
             bind_text(self.status_label, '没有匹配的字幕')
             self.next_button.setEnabled(False)
             return
         bind_text(self.status_label, '匹配 {cues} 条字幕 · {texts} 条文本 · {hits} 处',
                   cues=len({h.cue_id for h in hits}), texts=len({h.target_key for h in hits}), hits=len(hits))
+
+    def _mark_status_error(self, error: bool) -> None:
+        if self.status_label.property("error") != error:
+            self.status_label.setProperty("error", error)
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
+
+    def _pattern_ok(self, needle: str) -> bool:
+        import re
+        from .studio_text_tools import _compile_needle
+        try:
+            _compile_needle(needle, case_sensitive=self.case_box.isChecked(),
+                            whole_word=self.word_box.isChecked(), regex=True)
+        except re.error:
+            return False
+        return True
+
+    def _show_list(self, rows: bool) -> None:
+        """The matches, or the card's one-line hint; the window's height follows."""
+        changed = self.preview.isHidden() == rows or self._shown_rows != (self.preview.count() if rows else 0)
+        self.preview.setVisible(rows)
+        self._empty_row.setVisible(not rows)
+        if changed and self.isVisible():
+            QTimer.singleShot(0, self._fit_height)
 
 
     @observed('cue.search')

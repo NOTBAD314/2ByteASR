@@ -246,6 +246,16 @@ def effective_report(project,report, *, summary=None):
     from .recognition_outcome import review_severity
     from collections import Counter
     result['review_severity_counts']=dict(Counter(review_severity(r) for r in result['review_items']))
+    acceptance = project.generation_metadata.get('transcript_acceptance') or {}
+    if acceptance.get('range_results'):
+        from .transcript_acceptance import pending_ranges
+        from .transcript_delivery import terminal_status, report_counts
+        counts = dict(acceptance.get('counts') or report_counts(report))
+        counts['pending_range_count'] = len(pending_ranges(acceptance))
+        counts['final_cue_count'] = len(project.cues)
+        result['result'] = {**(result.get('result') or {}), 'cue_count': len(project.cues), 'transcript_counts': counts}
+        result['status'] = terminal_status(counts, len(project.cues))
+        result['_language_recovery'] = {'original_status': report.get('status'), 'current_project': True}
     return result
 
 

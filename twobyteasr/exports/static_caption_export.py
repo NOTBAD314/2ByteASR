@@ -8,6 +8,8 @@ import re
 import tempfile
 import time
 from .export_validation import record_completion, publish_output, notify_after_publication
+from .export_failure import ExportFailure, ffmpeg_failure
+from .static_caption_timeline import build_caption_timeline, caption_input, caption_filter
 
 
 def _run_static_command(command, folder, runner, **kwargs):
@@ -32,7 +34,9 @@ def _run_static_command(command, folder, runner, **kwargs):
                 labels[input_count] = label
                 removed.update((index, index + 1))
             else:
-                command[index + 1] = str(path)
+                # concat resolves child URLs; an absolute list path containing
+                # '#' can change its base URL. Owned inputs use a safe basename.
+                command[index + 1] = path.name if path.parent == folder else str(path)
                 labels[input_count] = str(kept_count)
                 kept_count += 1
             input_count += 1
@@ -99,7 +103,11 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         from ..subtitle_rules.current_issues import digest
         from PySide6.QtCore import QRect
         invisible_count=0
-        with StaticCaptionPreparation(len(props['cues']),progress,trace,identity=dict(
+        def raster_progress(payload):
+            data=dict(payload)
+            if data.get('percent') is not None:data['percent']=float(data['percent'])*.7
+            if progress:progress(data)
+        with StaticCaptionPreparation(len(props['cues']),raster_progress if progress else None,trace,identity=dict(
                 job_id=(job.export_context or {}).get('job_id'),project_id=project.project_id,
                 project_revision=(job.export_context or {}).get('project_revision'))) as preparation:
             for i,cue in enumerate(props['cues']):
@@ -160,7 +168,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                             # coordinates. Avoid writing and decoding a full PNG
                             # for every cue before discovering the first failure.
                             if not image.copy(QRect(*bounds)).save(str(path)):
-                                raise RuntimeError('Cannot write static caption raster')
+                                raise OSError('Cannot write static caption raster')
                             x,y,w,h=bounds
                             cached=(path,(x,y,x+w,y+h),None)
                         raster_cache[key]=cached
@@ -184,11 +192,14 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                         if trace:trace('static_caption_failure_artifact',dict(detail,local_artifact=str(folder)))
                     except Exception as artifact_error:
                         if trace:trace('static_caption_evidence_failed',dict(task_index=i,error_type=type(artifact_error).__name__))
-                    raise
+                    raise ExportFailure(str(exc),stage=STAGE_ADVANCED_RENDER,
+                        category='output_io' if isinstance(exc,OSError) else 'subtitle_render',
+                        cue_id=cue['id'],cue_index=i,cue_time_ms=cue['startMs']) from exc
         timings['subtitle_stills']=time.perf_counter()-started
         filters=[];inputs=[];native_filter=None
         native=_native_segment_project(project,round(start*1000),round((start+duration)*1000))
-        base='[0:v]'
+        base='[staticfps]'
+        filters.append(f'[0:v]fps={fps:.12g}:round=near:start_time=0[staticfps]')
         # The source was proved identical by prepared_video_job; non-identity
         # graphs arrive as the existing composition at the requested range.
         filters.append(f'{base}scale={width}:{height}[scaled]');base='[scaled]'
@@ -197,17 +208,25 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
             fonts = Path(__file__).resolve().parents[2]/'assets/fonts'
             native_filter=f'ass=filename={_ffmpeg_filter_path(ass)}:fontsdir={_ffmpeg_filter_path(fonts)}'
             filters.append(f'{base}{native_filter}[native]');base='[native]'
-        total_png=0
-        for layer in layers:
-            i=len(inputs)//2
-            total_png+=layer['path'].stat().st_size
-            box=layer['bounds']
-            inputs.extend(['-i',str(layer['path'])])
-            filters.append(f"{base}[{i+1}:v]overlay=x={box[0]}:y={box[1]}:eof_action=repeat:format=auto:enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'[s{i}]")
-            base=f'[s{i}]'
-        if not filters:filters.append('[0:v]null[staticbase]');base='[staticbase]'
+        total_png=sum(path.stat().st_size for path in {layer['path'] for layer in layers})
+        schedule_start=time.perf_counter()
+        if progress:progress(export_progress(STAGE_ADVANCED_RENDER,message='合成静态字幕变化场景…',percent=70))
+        def scheduled(done,total):
+            if progress:progress(export_progress(STAGE_ADVANCED_RENDER,
+                message=f'合成字幕场景 {done}/{total}…',percent=70+30*done/total))
+        sparse=build_caption_timeline(layers,temp,fps=fps,duration=duration,cancelled=cancelled,progress=scheduled)
+        if progress:progress(export_progress(STAGE_ADVANCED_RENDER,message='静态字幕准备完成',percent=100))
+        timings.update(caption_schedule=time.perf_counter()-schedule_start,
+                       sparse_scenes=sparse['scenes'],caption_cache_peak_bytes=sparse['cache_peak_bytes'],
+                       source_captions=len(layers))
+        layers=[sparse]
+        box=sparse['bounds']
+        inputs=caption_input(sparse)
+        pre,label=caption_filter(sparse,'[1:v]',fps)
+        filters.append(pre+f"{base}{label}overlay=x={box[0]}:y={box[1]}:eof_action=repeat:format=auto[captioned]")
+        base='[captioned]'
         encoder=select_encoder(ffmpeg,job.settings)
-        command=[str(ffmpeg),'-hide_banner','-loglevel','info','-y','-benchmark','-filter_complex_threads','2']
+        command=[str(ffmpeg),'-hide_banner','-loglevel','level+info','-y','-benchmark','-filter_complex_threads','2']
         if job.direct_video_graph:
             from dataclasses import replace
             from .export_filtergraph import compile_video_filtergraph
@@ -237,23 +256,25 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         command+=['-progress','pipe:1','-nostats',str(partial)]
         if trace:trace('static_caption_command',command)
         if progress:progress(export_progress(STAGE_ENCODE,message='连续合成字幕与视频并编码…',duration_seconds=duration))
-        current = {}
+        current={}
         def line(value):
-            key, separator, val = value.strip().partition('=')
-            if separator: current[key] = val
-            if progress and key == 'progress':
-                stage = STAGE_MUX if val == 'end' else STAGE_ENCODE
-                progress(export_progress(stage, message='正在封装收尾…' if stage == STAGE_MUX else '连续合成字幕与视频并编码…',
-                    frame=current.get('frame'), video_time_seconds=int(current.get('frame') or 0)/fps,
-                    out_time_us=current.get('out_time_us'), speed=current.get('speed'), duration_seconds=duration))
+            key,separator,val=value.partition('=')
+            if separator:current[key]=val
+            if key=='progress':
+                if progress:
+                    progress(export_progress(STAGE_ENCODE,message='连续合成字幕与视频并编码…',
+                        out_time_us=current.get('out_time_us'),frame=current.get('frame',''),
+                        fps=current.get('fps',''),speed=current.get('speed',''),
+                        video_time_seconds=int(current.get('frame') or 0)/fps,duration_seconds=duration))
                 current.clear()
         from .export_preview import run_streaming_with_preview
         encode_start=time.perf_counter()
         def run_static(command, **kwargs):
             return _run_static_command(command, temp, _run_streaming_process, **kwargs)
-        code,log=run_streaming_with_preview(command,job,run_static,on_line=line,cancelled=cancelled)
+        code,log=run_streaming_with_preview(command,job,run_static,on_line=line,cancelled=cancelled,
+            warning=(lambda text:progress({'notice':text})) if progress else None)
         timings['encode']=time.perf_counter()-encode_start
-        if code:raise RuntimeError('静态字幕编码失败：'+log[-3000:])
+        if code:raise ffmpeg_failure(code,log,encoder=encoder,fps=fps)
         if progress:progress(export_progress(STAGE_VALIDATE,message='完整解码校验后发布成片…'))
         validate_start=time.perf_counter();metadata=validate_output(ffmpeg,partial,duration=duration,fps=fps,cancelled=cancelled,preview_path=job.completion_preview_path)
         timings['validate']=time.perf_counter()-validate_start

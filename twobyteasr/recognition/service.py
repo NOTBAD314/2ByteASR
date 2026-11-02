@@ -1,4 +1,4 @@
-﻿"""Headless queue orchestration: the single queue interface between the
+"""Headless queue orchestration: the single queue interface between the
 PySide6 UI and the subtitle core (see docs/adr/0001)."""
 
 from __future__ import annotations
@@ -232,6 +232,8 @@ class RunOptions:
         context.recognition_snapshot = configured.recognition_snapshot
         context.speaker_source = configured.speaker_source
         context.requested_language = configured.requested_language
+        from .language_decision import initialise
+        initialise(context)
         context.subtitle_output = configured.subtitle_output
         context.translation_script = configured.translation_script
         context.chinese_script = configured.chinese_script
@@ -294,7 +296,7 @@ class QueueResult:
     def successes(self) -> tuple[MediaResult, ...]:
         return tuple(
             item for item in self.results
-            if item.status in {"success", "degraded_success"}
+            if item.status in {"success", "degraded_success", "partial_recovery"}
         )
 
     @property
@@ -870,7 +872,7 @@ def run_media_queue(
                                 Path(report_json).read_text(encoding="utf-8")
                             )
                             reported_status = str(report_payload.get("status") or "")
-                            if reported_status in {"success", "degraded_success"}:
+                            if reported_status in {"success", "degraded_success", "needs_recovery", "partial_recovery", "empty_result", "no_speech"}:
                                 media_status = reported_status
                         except (OSError, ValueError, TypeError):
                             pass
@@ -929,8 +931,13 @@ def run_media_queue(
                     elapsed = time.perf_counter() - file_started
                     durations.append(elapsed)
                     error = _exception_message(exc, "字幕处理失败")
-                    legacy.finish_media_report("failed", elapsed_seconds=round(elapsed, 3), error=error)
-                    results.append(MediaResult(media_path, "failed", elapsed_seconds=elapsed, error=error))
+                    from .transcript_delivery import NoSpeechDetected
+                    status = 'no_speech' if isinstance(exc, NoSpeechDetected) else 'failed'
+                    legacy.finish_media_report(status, elapsed_seconds=round(elapsed, 3), error=error)
+                    report_json, report_text = legacy.task_reporting.report_paths_for_media(media_path)
+                    results.append(MediaResult(media_path, status, elapsed_seconds=elapsed, error=error,
+                        report_json_path=report_json if os.path.isfile(report_json) else '',
+                        report_text_path=report_text if os.path.isfile(report_text) else ''))
                     print(f"\n[文件失败] {os.path.basename(media_path)}：{error}")
                     legacy.record_run_event(
                         "media_failed",

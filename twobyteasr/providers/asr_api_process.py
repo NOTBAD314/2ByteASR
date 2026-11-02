@@ -58,8 +58,10 @@ def cache_hint_signature(endpoint, settings, requested_language=None):
     import hashlib
     from .qwen31_asr import QWEN3_FILETRANS
     from .mosi_asr import MODEL as MOSI_MODEL
+    from .asr_language_control import policy
+    language_control=policy(endpoint,requested_language)
     if endpoint.get('model') not in {QWEN3_FILETRANS, MOSI_MODEL, MAI_TRANSCRIBE_2}:
-        return {}
+        return {'source_language_constraint':language_control['request_language']} if language_control['parameter_sent'] else {}
     hints = cloud_request_hints(endpoint, settings, requested_language)
     keep = {k: hints.get(k) for k in ('filetrans_language', 'mosi_keyterms', 'mosi_diarize', 'azure_phrases') if k in hints}
     if endpoint.get('model') == MAI_TRANSCRIBE_2:
@@ -83,6 +85,18 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
     from .qwen31_asr import is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL
     endpoint.update(cloud_request_hints(endpoint, settings, context.requested_language))
+    from .asr_language_control import hints as language_hints,policy as language_policy
+    endpoint.update(language_hints(endpoint,context.requested_language))
+    control=language_policy(endpoint,context.requested_language)
+    context.language_evidence['remote_language_control']=dict(control,phase='request_intent')
+    context.language_decision['remote_language_control']=dict(control,phase='request_intent')
+    record_run_event('asr_language_control',phase='request_intent',provider=endpoint.get('provider'),model=endpoint.get('model'),**control)
+    policy = (context.recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if policy.get('force_cloud'):
+        endpoint['asr_request_generation'] = context.job_id
+        record_run_event('asr_cache_policy', operation='new_cloud_transcription',
+            reason='explicit_user_range_retry', generation=context.job_id,
+            aggregate_reuse=False, native_result_reuse=False, previous_responses_preserved=True)
     if endpoint.get('model') == MOSI_MODEL:
         from .mosi_asr import language_policy
         record_run_event('cloud_language_policy', provider=endpoint.get('provider'),

@@ -439,16 +439,30 @@ def restore_full_sequence_command(
             def __init__(self):
                 super().__init__("返回完整录播")
                 self.speakers = copy.deepcopy(project.speakers)
+                self.metadata_keys=tuple(info.get('caption_metadata_keys') or ())
+                self.caption_metadata={key:copy.deepcopy(project.generation_metadata[key])
+                    for key in self.metadata_keys if key in project.generation_metadata}
+                self.asr_evidence=copy.deepcopy(project.asr_evidence)
+
+            def _metadata(self,value):
+                for key in self.metadata_keys:project.generation_metadata.pop(key,None)
+                project.generation_metadata.update(copy.deepcopy(value))
 
             def redo(self):
-                project.generation_metadata.pop("timeline_recognition", None)
-                project.speakers = [StudioSpeaker(**s) for s in info.get("original_speakers", [])]
-                command.redo()
+                with state_for(project).transaction(project,action_id=self.text(),dirty=DirtyDomain.PROJECT_METADATA):
+                    project.generation_metadata.pop("timeline_recognition", None)
+                    project.speakers = [StudioSpeaker(**s) for s in info.get("original_speakers", [])]
+                    if 'original_caption_metadata' in info:self._metadata(info['original_caption_metadata'])
+                    if 'original_asr_evidence' in info:project.asr_evidence=copy.deepcopy(info['original_asr_evidence'])
+                    command.redo()
 
             def undo(self):
-                project.generation_metadata["timeline_recognition"] = copy.deepcopy(info)
-                project.speakers = copy.deepcopy(self.speakers)
-                command.undo()
+                with state_for(project).transaction(project,action_id=self.text(),dirty=DirtyDomain.PROJECT_METADATA):
+                    project.generation_metadata["timeline_recognition"] = copy.deepcopy(info)
+                    project.speakers = copy.deepcopy(self.speakers)
+                    if self.metadata_keys:self._metadata(self.caption_metadata)
+                    project.asr_evidence=copy.deepcopy(self.asr_evidence)
+                    command.undo()
 
         return RestoreRecognitionSource()
     return command

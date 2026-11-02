@@ -119,6 +119,8 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
     seconds = result.get('audio_seconds')
     duration = line('有效音频 {seconds} 秒', seconds=f'{float(seconds):.3f}') if isinstance(seconds, (int, float)) else translate('有效时长未记录', language)
     saved = translate('字幕工程已保存并载入', language) if project_loaded else line('工程无法载入：{reason}', reason=project_error) if project_error else translate('工程保存状态待确认', language)
+    if outcome.core_status == 'needs_recovery' and project_loaded:
+        saved = translate('诊断与候选已保存；尚无可用字幕', language)
     if save_state:
         saved = translate('最新修改正在保存' if save_state == 'pending' else '最新修改保存失败，仍保留在内存中', language)
     resolved = _dict(profile.get('resolved_context')) or _dict(settings.get('resolved_content_context'))

@@ -111,7 +111,7 @@ def task_language_tag(default=None):
         context=get_runtime_context()
         evidence=getattr(context,'language_evidence',{}) or {}
         requested=(context.asr_settings_snapshot.get('subtitle_language') or {}).get('recognition_language')
-        for raw in (evidence.get('locale'),evidence.get('requested_locale'),requested):
+        for raw in (context.requested_language,evidence.get('locale'),evidence.get('requested_locale'),requested):
             tag=language_tag(raw)
             if tag!='und' and tag.split('-')[0]==base.split('-')[0]:return tag
     except (AttributeError,TypeError):
@@ -256,7 +256,11 @@ def project_language_tag(project):
     value=(getattr(project,'generation_metadata',{}) or {}).get('language') or {}
     if isinstance(value,dict):
         evidence=value.get('evidence') or {}
+        requested=value.get('requested')
+        if requested and str(requested).lower()!='auto':return language_tag(requested)
+        code=language_tag(value.get('code'))
         raw=value.get('locale') or evidence.get('locale') or value.get('code')
+        if language_tag(raw).split('-')[0]!=code.split('-')[0]:raw=code
     else:raw=value
     return language_tag(raw)
 

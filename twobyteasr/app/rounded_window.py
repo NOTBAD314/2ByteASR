@@ -140,12 +140,13 @@ class RoundedWindow(QObject):
     frameless and rounded. ``title_areas`` move it; call before it is shown."""
 
     def __init__(self, window: QWidget, content: QWidget, title_areas=(), buttons: WindowButtons | None = None,
-                 *, radius: int = RADIUS, shadow: int = SHADOW):
+                 *, radius: int = RADIUS, shadow: int = SHADOW, maximizable: bool = True):
         super().__init__(window)
         self.window = window
         self.content = content
         self.radius = radius
         self.shadow = shadow
+        self.maximizable = maximizable
         self.buttons = buttons
         self.title_areas = list(title_areas)
         self.maximized = False
@@ -193,10 +194,14 @@ class RoundedWindow(QObject):
         self._sync()
 
     def _sync(self):
+        from .ui_zoom import set_layout
         margin = self.margin()
         layout = self.window.layout()
         if layout is not None:
-            layout.setContentsMargins(margin, margin, margin, margin)
+            # In logical px, so a later zoom pass rescales from 16 instead of
+            # scaling the already zoomed margin again (content and mask drifted apart at 120 %).
+            logical_margin = self.shadow if margin else 0
+            set_layout(layout, margins=(logical_margin,) * 4)
         rounded = margin > 0
         self.mask.setVisible(rounded)
         for grip in self.grips.values():
@@ -243,7 +248,8 @@ class RoundedWindow(QObject):
                 self._place()
             return False
         if kind == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-            self.toggle_maximized()
+            if self.maximizable:
+                self.toggle_maximized()
             return True
         if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             handle = self.window.windowHandle()

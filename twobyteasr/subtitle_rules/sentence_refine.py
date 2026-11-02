@@ -488,9 +488,7 @@ def refine_cues_with_llm(
     from .segmentation_profiles import project_language_tag
     from .japanese_morphology import document_for_texts, phrase_scope
     language = project_language_tag(project) if project is not None else ""
-    if language=='und' and project is not None and not (project.generation_metadata or {}).get('language'):
-        from .language_rules import resolve_task_language
-        language,evidence=resolve_task_language('auto',[cue.text for cue in cues])
+    # An unlabelled old project is uncertain, not an explicit auto request.
     # Japanese: proposed breaks are checked against bunsetsu of the current
     # (possibly hand-edited) texts, as in recognition; heuristic only when the
     # tagger is unavailable.

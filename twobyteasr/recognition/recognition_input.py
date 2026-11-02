@@ -152,6 +152,10 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
         stat = Path(source).stat()
         if (stat.st_size, stat.st_mtime_ns) != (identity["size"], identity["mtime_ns"]):
             raise RuntimeError(f"识别启动后素材已改变：{source}")
+    policy = snapshot.get('language_recovery_policy') or {}
+    if policy.get('reuse_candidates') and policy.get('input_pcm'):
+        from .candidate_audio import prepare_candidate_input
+        return prepare_candidate_input(snapshot, cache_root, token=token)
     if target.is_file() and manifest.is_file():
         try:
             prior = json.loads(manifest.read_text(encoding="utf-8"))
@@ -221,12 +225,24 @@ def attach_timeline_result(result, snapshot):
     from ..projects.studio_project import SubtitleProject
     captured = SubtitleProject.from_dict(copy.deepcopy(snapshot["project"]))
     original = captured.to_dict()
+    if not result.cues:
+        captured.project_id = uuid.uuid4().hex
+        captured.report_path = result.report_path
+        captured.generation_metadata['last_empty_recognition'] = copy.deepcopy(result.generation_metadata)
+        if result.generation_metadata.get('transcript_acceptance'):
+            captured.generation_metadata['transcript_acceptance'] = copy.deepcopy(result.generation_metadata['transcript_acceptance'])
+        return captured
     captured.project_id = uuid.uuid4().hex
     captured.studio_state["project_name"] = f"{Path(snapshot.get('project_path') or '时间轴').stem} · 识别结果"
     captured.studio_state["project_name_automatic"] = True
     captured.studio_state["project_name_origin"] = {"kind": "recognition_result", "parent": Path(snapshot.get("project_path") or "").stem}
     if snapshot.get("range_ms"):
         return _attach_range_result(captured, result, snapshot)
+    # A full run allocates fresh cue ids; an old id such as '1' does not
+    # authorize inheriting its translation, language or word receipts.
+    original_caption_metadata={key:copy.deepcopy(captured.generation_metadata[key])
+        for key in _FULL_RESULT_CAPTION_METADATA if key in captured.generation_metadata}
+    for key in _FULL_RESULT_CAPTION_METADATA:captured.generation_metadata.pop(key,None)
     captured.cues = result.cues
     # These cues are a new recognition result. Anonymous ids cannot inherit
     # the previous task's host identity or hidden-track state.
@@ -257,7 +273,10 @@ def attach_timeline_result(result, snapshot):
             "source_project_revision": snapshot["project_revision"],
             "duration_ms": snapshot["duration_ms"], "sequence": snapshot["sequence"],
             "cue_ids": [cue.id for cue in result.cues],
-            "original_cues": original["cues"], "original_speakers": original["speakers"]}}
+            "original_cues": original["cues"], "original_speakers": original["speakers"],
+            "caption_metadata_keys": list(_FULL_RESULT_CAPTION_METADATA),
+            "original_caption_metadata": original_caption_metadata,
+            "original_asr_evidence": copy.deepcopy(original.get("asr_evidence",{}))}}
     from ..timeline.caption_source_receipts import initialize_recognition_receipts
     prior_domain = captured.render_settings.get('_cue_domain')
     initialize_recognition_receipts(captured, result)
@@ -276,6 +295,10 @@ def attach_timeline_result(result, snapshot):
 _RANGE_KEPT_METADATA = ("translations", "translation_records", "speaker_names", "asr_cue_states",
                         "asr_replacement_mapping", "cue_forced_alignment", "speaker_recovery",
                         "speaker_recovery_error", "transcript_acceptance")
+
+
+_FULL_RESULT_CAPTION_METADATA=(*_RANGE_KEPT_METADATA,"language","subtitle_output",
+    "subtitle_punctuation","analysis_transcript","segmentation_source_spans")
 
 
 def _attach_range_result(captured, result, snapshot):

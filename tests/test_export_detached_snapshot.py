@@ -34,7 +34,10 @@ def test_export_entry_waits_for_the_last_style_request_before_borrowing_canvas()
     from types import SimpleNamespace
     from twobyteasr.studio.studio_ui import SubtitleStudioPage
     calls=[]
-    page=SimpleNamespace(project=object(),_preview_path='owned-test.mp4',
+    traces=[]
+    page=SimpleNamespace(project=SimpleNamespace(cues=[]),_preview_path='owned-test.mp4',export_workspace=None,
+        _studio_trace=lambda event,**fields:traces.append((event,fields)),
         style_controller=SimpleNamespace(flush_pending_application=lambda:(calls.append('flush') or False)))
     SubtitleStudioPage._open_render_dialog(page)
     assert calls==['flush']
+    assert len(traces)==1 and traces[0][0]=='EXPORT_ENTRY'

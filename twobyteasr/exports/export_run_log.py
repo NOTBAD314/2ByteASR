@@ -13,6 +13,7 @@ from pathlib import Path
 import threading
 import uuid
 import time
+import traceback
 
 _CURRENT = ContextVar('studio_export_log', default=None)
 
@@ -38,6 +39,10 @@ class ExportRunLog:
     def __init__(self, ffmpeg, job):
         from ..projects.studio_project import studio_data_root
         context = job.export_context
+        context.pop('failure', None)
+        context.pop('last_progress', None)
+        context.pop('media_progress', None)
+        context['active_stage'] = 'prepare_project'
         context.setdefault('job_id', uuid.uuid4().hex)
         context.setdefault('requested_encoder', job.settings.encoder)
         context.setdefault('requested_settings', asdict(job.settings))
@@ -171,92 +176,95 @@ class ExportRunLog:
         return evidence
 
     def finish(self, error=None):
-        for log in self._process_logs:log.finish()
+        for log in self._process_logs:
+            log.finish()
+        failure = None
+        if error is not None:
+            source = error
+            seen = set()
+            while id(source) not in seen and not getattr(source, 'evidence', None):
+                seen.add(id(source))
+                previous = source.__cause__ or source.__context__
+                if previous is None:
+                    break
+                source = previous
+            failure = dict(getattr(source, 'evidence', {}))
+            if source is not error:
+                failure['secondary_error'] = f'{type(error).__name__}: {error}'
+            failure.setdefault('stage', self.job.export_context.get('active_stage', 'prepare_project'))
+            failure.setdefault('progress', self.job.export_context.get('media_progress') or self.job.export_context.get('last_progress', {}))
+            failure.setdefault('encoder', (self.manifest.get('last_encoding') or {}).get('actual_encoder'))
+            failure.update(error_type=type(error).__name__, message=str(error),
+                traceback=''.join(traceback.format_exception(type(error), error, error.__traceback__)))
+            self.job.export_context['failure'] = failure
+        self.manifest.update(failure=failure, published=bool(self.job.completion_metadata.get('output_path')))
+        if self.job.export_context.get('preview_warning'):
+            self.manifest['preview_warning'] = self.job.export_context['preview_warning']
+        self._save_manifest()
         self.note('job_finished', dict(error_type=type(error).__name__ if error else None,
-            published=bool(self.job.completion_metadata.get('output_path'))))
+            failure=failure, published=self.manifest['published']))
 
 
 class ProcessLog:
     def __init__(self, owner, identity, redirected, capture_stdout=True):
         self.owner, self.identity, self.redirected = owner, identity, redirected
         self.capture_stdout = capture_stdout
-        self._buffers = {}
-        self._sizes = {}
-        self._last_flush = 0.
-        self._exited = False
+        self._streams = {}
+        self._finished = False
         self.observer = None
-        import queue
-        self._queue = queue.Queue(maxsize=1024)
-        self._done = threading.Event()
-        self._drained = threading.Event()
+        self._exited = False
         self.dropped_chunks = 0
         self.write_error = None
-        self._writer = threading.Thread(target=self._write_loop, daemon=True, name='export-log-writer')
-        self._writer.start()
-
-    def _write_loop(self):
-        import queue
-        from ..providers.provider_diagnostics import redact_diagnostics
-        while not self._done.is_set() or not self._queue.empty():
-            try:
-                channel, text = self._queue.get(timeout=.1)
-            except queue.Empty:
-                self._drained.set()
-                continue
-            try:
-                text = redact_diagnostics(text)
-                self._buffers.setdefault(channel, []).append(text)
-                self._sizes[channel] = self._sizes.get(channel, 0)+len(text)
-                if self._sizes[channel] >= 32768 or self._queue.empty(): self._write_buffers()
-            except Exception as exc:
-                self.write_error = f'{type(exc).__name__}: {exc}'
-            finally:
-                self._queue.task_done()
-                if self._queue.empty(): self._drained.set()
-        self._write_buffers()
-
-    def _write_buffers(self):
-        for channel, chunks in self._buffers.items():
-            if chunks:
-                with (self.owner.path/f'{self.identity}.{channel}.log').open('a', encoding='utf8') as stream:
-                    stream.write(''.join(chunks))
-                chunks.clear();self._sizes[channel]=0
-
-    def finish(self):
-        if self.observer: self.observer.close()
-        self.flush()
-        self._done.set();self._writer.join(timeout=2)
-        if self.dropped_chunks or self.write_error:
-            self.owner.note('diagnostics_incomplete', dict(process_id=self.identity,
-                dropped_chunks=self.dropped_chunks, write_error=self.write_error))
-
-    def flush(self):
-        if self._queue.unfinished_tasks:
-            self._drained.wait(timeout=2)
 
     def output(self, channel, value):
         if not value:
             return
         if channel == 'stdout' and not self.capture_stdout:
             return  # Raw video/PCM/image pixels are media payload, never diagnostics.
+        from ..providers.provider_diagnostics import redact_diagnostics
         text = value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value)
-        if channel == 'stdout' and self.observer: self.observer.feed(text)
-        import queue
-        for offset in range(0, len(text), 32768):
-            self._drained.clear()
-            try: self._queue.put_nowait((channel, text[offset:offset+32768]))
-            except queue.Full: self.dropped_chunks += 1
+        if channel=='stdout' and self.observer:self.observer.feed(text)
+        text = redact_diagnostics(text)
+        with self.owner._lock:
+            if self._finished:
+                with (self.owner.path / f'{self.identity}.{channel}.log').open('a', encoding='utf8') as stream:
+                    stream.write(text)
+                return
+            stream = self._streams.get(channel)
+            if stream is None:
+                stream = (self.owner.path / f'{self.identity}.{channel}.log').open('a', encoding='utf8')
+                self._streams[channel] = stream
+            stream.write(text)
+            stream.flush()
+
+    def close_channel(self, channel):
+        with self.owner._lock:
+            stream = self._streams.pop(channel, None)
+            if stream is not None:
+                stream.close()
+
+    def flush(self):
+        with self.owner._lock:
+            for stream in self._streams.values():stream.flush()
+
+    def finish(self):
+        if self.observer:self.observer.close()
+        # Acquire once; never call another lock-taking method from this block.
+        with self.owner._lock:
+            for stream in self._streams.values():
+                stream.close()
+            self._streams.clear()
+            self._finished = True
 
     def exited(self, code):
         self._exited=True
-        if self.observer: self.observer.close()
+        if self.observer:self.observer.close()
         # File redirects (FFV1/decode) are copied before their temp directories disappear.
         for channel, filename in self.redirected.items():
             try:
                 self.output(channel, Path(filename).read_bytes())
             except (OSError, TypeError):
                 pass
-        self.flush()
         self.owner.note('process_exited', dict(process_id=self.identity, phase='exit', returncode=code))
 
 
@@ -269,18 +277,26 @@ class LoggedPipe:
         return self
 
     def __next__(self):
-        value = next(self.stream)
+        try:
+            value = next(self.stream)
+        except StopIteration:
+            self.log.close_channel(self.channel)
+            raise
         self.log.output(self.channel, value)
         return value
 
     def readline(self, *args, **kwargs):
         value = self.stream.readline(*args, **kwargs)
         self.log.output(self.channel, value)
+        if not value:
+            self.log.close_channel(self.channel)
         return value
 
     def read(self, *args, **kwargs):
         value = self.stream.read(*args, **kwargs)
         self.log.output(self.channel, value)
+        if not value or not args and not kwargs:
+            self.log.close_channel(self.channel)
         return value
 
     def __getattr__(self, name):
@@ -310,6 +326,8 @@ def note_export(event, payload):
     logger = current_export_log()
     if logger is not None:
         logger.note(event, payload)
+        if event in {'validation_started','publication_started'}:
+            logger.job.export_context['active_stage'] = payload['stage']
         if event == 'render_backend':
             logger.manifest['render_backend'] = payload
             logger._save_manifest()

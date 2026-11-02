@@ -52,7 +52,9 @@ class Timer:
 def gate_fixture():
     loading = Loading()
     calls = []
-    page = NS(project=object(), _project_view_state='loading',
+    # This ownership-only fake has no Qt event filter; real registration is
+    # exercised by test_native_loading_main/cover with actual widgets.
+    page = NS(project=object(), _project_view_state='loading', _event_filter_installed=True,
               timeline=NS(setUpdatesEnabled=lambda _:None),
               video=NS(controller=object(), set_paused=lambda _:None,
                        resume_requested_playback=lambda:calls.append('play')),

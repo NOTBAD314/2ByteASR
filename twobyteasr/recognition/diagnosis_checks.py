@@ -114,8 +114,23 @@ def _language_mismatch(facts: RunFacts):
                  translate=("chosen", "actual"), chosen=_name(LANGUAGE_NAMES, chosen), actual=_name(LANGUAGE_NAMES, actual))
 
 
+@check('transcript_quarantined')
+def _transcript_quarantined(facts: RunFacts):
+    from .transcript_delivery import report_counts
+    counts = report_counts(facts.report)
+    if counts.get('pending_range_count'):
+        return found('transcript_quarantined', 'certain', [
+            'candidate_segment_count = '+str(counts.get('candidate_segment_count', '?')),
+            'pending_range_count = '+str(counts['pending_range_count']),
+            'final_cue_count = '+str(facts.cue_count),
+            'acoustic_language_verified = false'])
+
+
 @check("empty_result")
 def _empty_result(facts: RunFacts):
+    from .transcript_delivery import report_counts
+    if report_counts(facts.report).get('pending_range_count'):
+        return None
     error = facts.error_matches(r"没有生成有效文字|returned no parsed text|no valid output|没有识别出|empty_result|识别结果为空|"
                                 r"没有检测到语音|没有发现有效语音|没有形成可用语音区间|没有生成可用片段|returned no usable segments|"
                                 r"返回成功，但没有识别文本|没有可用的字幕行|断句后没有可用字幕")

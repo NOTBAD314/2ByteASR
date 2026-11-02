@@ -147,6 +147,72 @@ def test_swap_and_select_none(app, page):
         dialog.close()
 
 
+def test_soft_card_frame_title_and_short_empty_window(app, page):
+    """2026-11-02 draft B: own rounded frame, short until there is something to list."""
+    dialog = FindReplaceDialog(page, page)
+    try:
+        _show(app, dialog)
+        QTest.qWait(50)
+        assert dialog.windowFlags() & Qt.WindowType.FramelessWindowHint
+        assert dialog.chrome.maximizable is False
+        QTest.mouseDClick(dialog.title_bar, Qt.MouseButton.LeftButton)
+        assert not dialog.chrome.maximized
+        assert dialog.target_summary.text() == "原文 · 4 条文本"
+        assert dialog.preview.isHidden() and not dialog._empty_row.isHidden()
+        assert not dialog.count_badge.label.isVisible()
+        empty_height = dialog.height()
+        assert dialog.maximumHeight() == empty_height   # nothing to list: the window does not stretch
+        dialog.find_edit.setText("尼奈")
+        QTest.qWait(400)
+        assert not dialog.preview.isHidden() and dialog._empty_row.isHidden()
+        assert dialog.count_badge.label.isVisible() and dialog.count_badge.label.text() == "4"
+        assert dialog.height() > empty_height and dialog.maximumHeight() > empty_height
+        # Three rows: the list is as tall as they are, not a blank stretch.
+        need = sum(dialog.preview.sizeHintForRow(i) + 2 * dialog.preview.spacing() for i in range(3))
+        assert dialog.preview.viewport().height() <= need + dialog.preview.sizeHintForRow(0)
+        dialog.find_edit.setText("")
+        QTest.qWait(400)
+        assert dialog.height() == empty_height and dialog.preview.isHidden()
+        dialog.close_button.click()
+        assert not dialog.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_bad_regex_is_said_and_counted_as_unsearchable(app, page):
+    dialog = FindReplaceDialog(page, page)
+    try:
+        dialog.regex_box.setChecked(True)
+        dialog.find_edit.setText("尼奈(")
+        assert dialog.count_badge.label.text() == "!"
+        assert dialog.find_edit.property("regexError") is True
+        assert "正则表达式写法有误" in dialog.status_label.text() and dialog.status_label.property("error") is True
+        assert not dialog.next_button.isEnabled()
+        dialog.regex_box.setChecked(False)
+        assert dialog.count_badge.label.text() == "0" and dialog.find_edit.property("regexError") is False
+        assert dialog.status_label.property("error") is False
+    finally:
+        dialog.close()
+
+
+def test_target_segments_follow_the_mode_and_wait_for_a_translation(app, page):
+    dialog = FindReplaceDialog(page, page)
+    try:
+        targets = dialog.text_targets
+        buttons = targets.segment_buttons
+        assert targets.mode.isHidden() and targets.note.isHidden()
+        assert buttons["original"].isChecked() and buttons["original"].isEnabled()
+        # No translation in this project: 译文 / 原文＋译文 wait for one and say why.
+        assert not buttons["translation"].isEnabled() and not buttons["both"].isEnabled()
+        assert "暂无译文" in buttons["translation"].toolTip()
+        assert targets.track.isHidden()
+        targets.mode.setCurrentIndex(1)   # driven through the model combo, as scripts do
+        assert buttons["translation"].isChecked() and buttons["translation"].isEnabled()
+        assert dialog.target_summary.text().startswith("译文")
+    finally:
+        dialog.close()
+
+
 def test_regex_replacement_is_not_learned(app, page, monkeypatch):
     dialog = FindReplaceDialog(page, page)
     try:

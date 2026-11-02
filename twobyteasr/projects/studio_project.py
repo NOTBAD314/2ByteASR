@@ -1180,6 +1180,8 @@ class SubtitleProject:
         self.effects = _mapping(self.effects, owned=owned)
         self.style_recipes = _mapping(self.style_recipes, owned=owned)
         self.generation_metadata = _mapping(self.generation_metadata, owned=owned)
+        from ..recognition.language_decision import migrate_project
+        migrate_project(self)
         self.asr_evidence = _mapping(self.asr_evidence, owned=owned)
         self.render_settings = _mapping(self.render_settings, owned=owned)
         self.original_outputs = {
@@ -1377,9 +1379,10 @@ def studio_settings_path(base: str | os.PathLike[str] | None = None) -> Path:
 
 
 LIBRARY_INDEX_VERSION = 2
+_LIBRARY_INDEX_LOCK = threading.RLock()
 _LIBRARY_INDEX_SUMMARY_KEYS = (
-    "project_id", "name", "name_origin", "name_custom", "cue_count", "duration_ms", "source_media",
-    "created_at", "updated_at", "width", "height", "cover_path",
+    "summary_version", "project_id", "name", "name_origin", "name_custom", "cue_count", "duration_ms", "source_media",
+    "created_at", "updated_at", "width", "height", "cover_path", "cover_mtime_ns", "cover_size",
 )
 
 
@@ -1799,7 +1802,8 @@ def save_project_revision(
 def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
     project_path = Path(path)
     try:
-        payload = json.loads(project_path.read_text(encoding="utf-8-sig"))
+        from .project_read_cache import read_payload
+        payload = read_payload(project_path)
     except (OSError, ValueError) as exc:
         raise ProjectValidationError(f"could not read project {project_path}: {exc}") from exc
     # An autosave checkpoint may carry the later changes in its overlay.
@@ -2978,7 +2982,12 @@ def create_studio_outputs(
             raise ProjectValidationError(
                 "recognition target project belongs to a different media file"
             )
-        if analysis_transcript:
+        if not project.cues and existing.cues:
+            existing.generation_metadata['last_empty_recognition'] = copy.deepcopy(metadata)
+            if metadata.get('transcript_acceptance'):
+                existing.generation_metadata['transcript_acceptance'] = copy.deepcopy(metadata['transcript_acceptance'])
+            project = existing
+        elif analysis_transcript:
             analysis_payload = {
                 "updated_at": _utc_now(),
                 "generation_metadata": metadata,
@@ -3041,6 +3050,12 @@ def create_studio_outputs(
     if recognition_snapshot:
         from ..recognition.recognition_input import attach_timeline_result
         project = attach_timeline_result(project, recognition_snapshot)
+    acceptance = project.generation_metadata.get('transcript_acceptance') or {}
+    if acceptance.get('input_pcm'):
+        from ..recognition.transcript_acceptance import digest
+        from ..playback.audio_graph import capture_audio_graph
+        acceptance['audio_graph_digest'] = digest(capture_audio_graph(project))
+        acceptance['source_identities'] = copy.deepcopy(project.generation_metadata.get('input_source_identities') or {})
     from ..caption_style.subtitle_stacking import initialize_project_layout
     initialize_project_layout(project)
     if job_id:

@@ -264,6 +264,8 @@ def _export_workspace_qss(theme: ThemeDefinition) -> str:
         QPushButton#exportSuccessNav:hover {{ background: {theme.selected}; border-color: {theme.accent}; }}
         QWidget#exportSuccessBody, QWidget#exportSuccessPage QScrollArea {{ background:{theme.app_background}; border:0; }}
         QLabel#exportFailureTitle {{ color: {theme.danger}; }}
+        QLabel#exportFailureReason {{ color: {theme.text}; font-size: 14px; }}
+        QToolButton#exportFailureDetails {{ color: {theme.text}; background: {theme.surface}; border: 1px solid {theme.border}; padding: 8px 12px; border-radius: 8px; }}
         QLabel#exportSuccessTitle {{ font-family: {TITLE_FONT_STACK}; font-size: 28px; font-weight: {WEIGHT_SCALE['heavy']}; color: {theme.text}; }}
         QLabel#exportSuccessName {{ font-size: 15px; font-weight: 600; color: {theme.text_secondary}; }}
         QLabel#exportResultValue {{ font-size:26px; font-weight:700; color:{theme.text}; }}
@@ -617,6 +619,12 @@ class SubtitleExportDialog(QDialog):
 
     # ------------------------------------------------------------ export
     def _accept(self) -> None:
+        from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+        GLOBAL_STUDIO_TRACE.emit("SUBTITLE_EXPORT_REQUEST", dict(
+            entry="studio_subtitles", project_id=self.project.project_id,
+            schema_version=self.project.schema_version, formats=sorted(self._selected_formats()),
+            layers=list(self._selected_layers()), speaker_mode=self.selected_speaker_mode(),
+            cue_count=len(self.project.cues)))
         self.warning.hide()
         if not self._selected_formats():
             bind_text(self.warning, '至少选择一种字幕格式')
@@ -664,6 +672,10 @@ class SubtitleExportDialog(QDialog):
                 artifacts += list(export_subtitle_artifacts(
                     export_project, directory, self.base_name, SubtitleExportOptions(frozenset(formats), mode)))
         except Exception as exc:
+            from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+            GLOBAL_STUDIO_TRACE.emit("SUBTITLE_EXPORT_FAILED", dict(
+                entry="studio_subtitles", project_id=self.project.project_id,
+                exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc()))
             published = list(layered.artifacts) if layered is not None else []
             published.extend(getattr(exc, "published", ()))
             self.artifacts = tuple(published)
@@ -677,6 +689,10 @@ class SubtitleExportDialog(QDialog):
             self._refresh_preview()
             return
         self.artifacts = tuple(artifacts)
+        from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+        GLOBAL_STUDIO_TRACE.emit("SUBTITLE_EXPORT_FINISHED", dict(
+            entry="studio_subtitles", project_id=self.project.project_id,
+            files=len(self.artifacts), cue_counts=[a.cue_count for a in self.artifacts]))
         self.result_reason = reason
         bind_text(self.done_title, "已导出并检查 {count} 个文件", count=len(self.artifacts))
         notes = [tr(reason)]
@@ -2014,15 +2030,22 @@ class StudioExportWorkspace(QWidget):
 
     def _failure_page(self) -> QWidget:
         page, layout = QWidget(), QVBoxLayout(); page.setLayout(layout); page.setObjectName("exportFailurePage"); layout.setContentsMargins(60, 60, 60, 60); layout.addStretch(1)
-        title = QLabel("无法开始导出"); title.setAlignment(Qt.AlignmentFlag.AlignCenter); title.setObjectName("exportFailureTitle"); title.setStyleSheet("font-size:29px;font-weight:800"); layout.addWidget(title)
-        self.failure_reason = QLabel(); self.failure_reason.setAlignment(Qt.AlignmentFlag.AlignCenter); self.failure_reason.setWordWrap(True); layout.addWidget(self.failure_reason)
+        title = self.failure_title = QLabel("导出失败"); title.setAlignment(Qt.AlignmentFlag.AlignCenter); title.setObjectName("exportFailureTitle"); title.setStyleSheet("font-size:29px;font-weight:800"); layout.addWidget(title)
+        self.failure_reason = QLabel(); self.failure_reason.setObjectName('exportFailureReason'); self.failure_reason.setAlignment(Qt.AlignmentFlag.AlignCenter); self.failure_reason.setWordWrap(True); layout.addWidget(self.failure_reason)
         row = QHBoxLayout(); row.addStretch(1)
         back, self.retry_button, self.install_renderer_button, self.details_button = QPushButton("返回设置"), QPushButton("重试"), QPushButton("安装渲染环境"), QToolButton()
         back.clicked.connect(self._return_to_settings); self.retry_button.clicked.connect(self._retry); self.retry_button.setProperty("studioPrimary", True)
         self.install_renderer_button.clicked.connect(self._install_renderer_environment)
         self.install_renderer_button.hide()
+        self.cpu_retry_button = QPushButton("改用 CPU 编码…")
+        self.cpu_retry_button.clicked.connect(self._prepare_cpu_retry)
+        self.cpu_retry_button.hide()
+        self.diagnostics_button = QPushButton("打开诊断目录")
+        self.diagnostics_button.clicked.connect(self._open_export_diagnostics)
+        self.diagnostics_button.hide()
         bind_text(self.details_button, '查看详情'); self.details_button.setCheckable(True); self.details_button.toggled.connect(self._toggle_details)
-        for button in (back, self.retry_button, self.install_renderer_button, self.details_button): row.addWidget(button)
+        self.details_button.setObjectName('exportFailureDetails')
+        for button in (back, self.retry_button, self.cpu_retry_button, self.install_renderer_button, self.details_button, self.diagnostics_button): row.addWidget(button)
         row.addStretch(1); layout.addLayout(row)
         self.details = QTextEdit(); self.details.setReadOnly(True); self.details.setMaximumSize(900, 220); self.details.hide(); layout.addWidget(self.details, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1); return page
@@ -2677,6 +2700,9 @@ class StudioExportWorkspace(QWidget):
         self._export_trace("EXPORT_CLICK")
         if self._running:
             return
+        self._last_job = None
+        self._export_notice = ''
+        self._progress_payload = export_progress(STAGE_PREPARE_PROJECT)
         try:
             target = self.export_target(); output = target.full_path
             media = Path(self.project.media.path)
@@ -2837,6 +2863,14 @@ class StudioExportWorkspace(QWidget):
 
     def _progress(self, payload: dict) -> None:
         data = {str(key): str(value) for key, value in dict(payload or {}).items()}
+        if data.get('notice'):
+            self._export_notice = data['notice']
+            self._append_running_log(data['notice'])
+            if self._progress_payload:
+                self._paint_progress_copy(self._progress_payload)
+            else:
+                self.processing_info.setText(data['notice'])
+            return
         stage = data.get("stage") or ""
         percent = None
         if data.get("percent") not in {"", None}:
@@ -2962,6 +2996,9 @@ class StudioExportWorkspace(QWidget):
         bind_text(self.processing_time, '总进度 {value0}% · {label} {stage_copy}', value0=int(self._progress_target), label=label, stage_copy=stage_copy)
         if message:
             self.processing_info.setText(message + (f' · {payload["fps"]} FPS' if payload.get('fps') else ''))
+        if getattr(self, '_export_notice', ''):
+            self.processing_info.setText(self.processing_info.text()+'\n'+self._export_notice)
+        self.processing_info.setMinimumHeight(max(0,self.processing_info.heightForWidth(max(120,self.processing_info.width())))+2)
 
     def _set_pipeline_stage_state(self, states: tuple[str, ...], active: str, specs: list[tuple[str, str]] | None = None) -> None:
         specs = specs or self._visible_stage_specs()
@@ -3066,6 +3103,14 @@ class StudioExportWorkspace(QWidget):
             bind_text(panel.error, '导出完成，视频码率无法可靠测量。成片与诊断信息已保留。'); panel.error.show()
         else:
             panel.error.hide()
+        preview_warning=(getattr(job,'export_context',{}) or {}).get('preview_warning') if job is not None else None
+        if preview_warning:
+            text=panel.error.text()+'\n' if not panel.error.isHidden() else ''
+            text+=tr('导出完成；仅实时预览曾中断，成片已完整校验。诊断目录：{path}',
+                path=(job.export_context or {}).get('diagnostics_path',''))
+            panel.error.setText(text)
+            panel.error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            panel.error.show()
         self._success_output = output
         panel.painted = False   # ExportSuccessPanel.paintEvent sets it
         self.pages.setCurrentWidget(self.success_page)
@@ -3120,16 +3165,60 @@ class StudioExportWorkspace(QWidget):
             return
         self._finish_run()
         self._last_failure = str(message)
-        phase = str(getattr(self,'_progress_payload',{}).get('stage_label') or '准备工程')
+        context = getattr(getattr(self, '_last_job', None), 'export_context', {}) or {}
+        failure = context.get('failure') or {}
+        from .studio_render import STAGE_LABELS, parse_ffmpeg_out_time_seconds
+        phase = STAGE_LABELS.get(failure.get('stage')) or str(getattr(self,'_progress_payload',{}).get('stage_label') or '准备工程')
         detail = str(message).strip().split('\n\n',1)[0] or '未返回可读原因'
         detail = detail.split('（cue.style_id=',1)[0]
-        bind_text(self.failure_reason, '失败阶段：{phase}\n{value1}\n请返回设置修正后重试；完整诊断可在“查看详情”中查看。', phase=tr(phase), value1=tr(detail[:220]))
+        progress = failure.get('progress') or getattr(self, '_progress_payload', {})
+        elapsed = parse_ffmpeg_out_time_seconds(progress)
+        started = elapsed is not None and elapsed > 0
+        bind_text(self.failure_title, '导出中断' if started else '导出失败')
+        reason = failure.get('reason') or detail[:400]
+        self.failure_reason.setToolTip(str(reason))
+        lines = [tr('失败阶段：{phase}', phase=tr(phase)), str(reason)[:600]]
+        if failure.get('returncode') is not None:
+            lines.append(tr('FFmpeg 退出码：{value}', value=failure['returncode']))
+        if failure.get('renderer_exitcode') is not None:
+            lines.append(tr('字幕渲染器退出码：{value}', value=failure['renderer_exitcode']))
+        encoder = failure.get('encoder') or context.get('requested_encoder')
+        if encoder:
+            lines.append(tr('编码器：{value}', value=encoder))
+        if elapsed is not None:
+            lines.append(tr('最近成功输出：{seconds} 秒', seconds=f'{elapsed:.3f}'))
+        video_time=failure.get('video_time_seconds') or progress.get('video_time_seconds')
+        if video_time is not None:
+            lines.append(tr('视频进度：{seconds} 秒', seconds=f'{float(video_time):.3f}'))
+        lines.append(failure.get('suggestion') or tr('请查看完整诊断日志，修正后重试。'))
+        self.failure_reason.setText('\n'.join(lines))
+        self.cpu_retry_button.setVisible(bool(failure.get('retry_cpu')))
         self.install_renderer_button.setVisible("高级字幕渲染环境尚未安装" in str(message))
         diagnostics = (getattr(getattr(self, '_last_job', None), 'export_context', {}) or {}).get('diagnostics_path')
         details = str(message)
         if diagnostics:
             details += '\n\n' + tr('导出诊断目录：{path}', path=diagnostics)
+        self.diagnostics_button.setVisible(bool(diagnostics))
         self.details.setPlainText(details); self.details.hide(); self.details_button.setChecked(False); self.pages.setCurrentWidget(self.failure_page)
+
+    def _open_export_diagnostics(self):
+        context = getattr(getattr(self, '_last_job', None), 'export_context', {}) or {}
+        path = context.get('diagnostics_path')
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _prepare_cpu_retry(self):
+        from .studio_render import _software_encoder
+        job = getattr(self, '_last_job', None)
+        if job is None:
+            return
+        self._return_to_settings()
+        index = self.encoder.findData(_software_encoder(job.settings.codec))
+        if index >= 0:
+            self.encoder.setCurrentIndex(index)
+        bind_text(self.actual_encoder_hint, '已切换到 CPU 编码。请检查质量、预设和音频设置后再开始导出；CQ 与 CRF 的相同数值不代表相同画质。')
+        # Return to the explicit settings review. Hardware CQ and CPU CRF
+        # numbers are not identical quality controls; the user submits again.
 
     def _install_renderer_environment(self) -> None:
         self.install_renderer_button.setEnabled(False)

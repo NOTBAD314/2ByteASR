@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .run_context import ContextExecutor, local_runtime_context
 
-VERSION = 'ready-native-shards-v2'
+VERSION = 'ready-native-shards-v3-manual-first'
 STRIDE = 1_000_000
 
 
@@ -168,12 +168,18 @@ class LongMediaPipeline:
                 active+=1
 
     def _context(self,index):
-        return replace(self.context, shard_id=f'r{index+1:03}', root_context=self.context,
+        child = replace(self.context, shard_id=f'r{index+1:03}', root_context=self.context,
             shard_input_version=self.inputs[index]['version'],
-            task_language=self.context.requested_language, language_evidence={'decided_by':'user'},
+            task_language=self.context.task_language or self.context.requested_language,
+            language_evidence=copy.deepcopy(self.context.language_evidence),
+            language_decision=copy.deepcopy(self.context.language_decision),
             review_items=[], speaker_recovery={}, polishing_summary={}, transcript_acceptance={},
             japanese_phrases=None, segment_alignment_evidence=None, primary_ready_callback=None,
             long_pipeline=None, translation_ready=None)
+        # dataclasses.replace runs __post_init__; restore the already bound task
+        # decision as an independent snapshot after that initialisation.
+        child.language_decision=copy.deepcopy(self.context.language_decision)
+        return child
 
     def _step(self,index,phase,label,runner):
         from .pipeline_activity import work

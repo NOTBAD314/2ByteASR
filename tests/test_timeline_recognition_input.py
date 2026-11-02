@@ -136,3 +136,49 @@ def test_rate_and_gap_are_preserved(project,tmp_path):
     assert len(pcm) == 80000
     assert not np.any(pcm[:15900]) and not np.any(pcm[32100:47900])
     assert np.max(np.abs(pcm[16000:32000])) > 1000
+
+
+
+def test_full_replacement_never_binds_previous_german_translation_to_new_english_id(project,tmp_path):
+    from twobyteasr.subtitle_rules import subtitle_translation as tr
+    from twobyteasr.projects.studio_project import save_project,load_project
+    project.cues[0].text='Deutscher alter Text'
+    project.generation_metadata['language']={'requested':'auto','code':'de'}
+    tr.set_manual(project,project.cues[0].id,'旧德语人工译文',target='zh-Hans')
+    before=copy.deepcopy(project.to_dict());snapshot=capture_recognition_snapshot(project)
+    incoming=SubtitleProject(StudioMedia(''),cues=[StudioCue('original',100,1900,'New English source')],
+        generation_metadata={'language':{'requested':'en','code':'en','mode':'manual'}})
+    result=attach_timeline_result(incoming,snapshot)
+    assert not result.generation_metadata.get('translations') and not result.generation_metadata.get('translation_records')
+    assert not tr.translation_view(result)['original']['text']
+    assert result.generation_metadata['timeline_recognition']['original_caption_metadata']['translations']['original']=='旧德语人工译文'
+    assert project.to_dict()==before
+    reopened=load_project(save_project(result,tmp_path/'new-English.2byteproj'))
+    assert not tr.translation_view(reopened)['original']['text'] and reopened.cues[0].text=='New English source'
+
+
+def test_full_replacement_fresh_translation_and_restore_undo_keep_their_own_source(project):
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QUndoStack
+    from twobyteasr.timeline.studio_edit_commands import restore_full_sequence_command
+    from twobyteasr.subtitle_rules import subtitle_translation as tr
+    app=QApplication.instance() or QApplication([])
+    project.cues[0].text='Alter deutscher Text'
+    project.generation_metadata['language']={'requested':'de','code':'de'}
+    project.asr_evidence={'old-evidence':{'source':'original-model'}}
+    tr.set_manual(project,'original','旧译文',target='zh-Hans')
+    snapshot=capture_recognition_snapshot(project)
+    incoming=SubtitleProject(StudioMedia(''),cues=[StudioCue('original',100,1900,'New English source')],
+        generation_metadata={'language':{'requested':'en','code':'en'}})
+    incoming.asr_evidence={'new-evidence':{'source':'new-model'}}
+    tr.set_manual(incoming,'original','新英语译文',target='zh-Hans')
+    result=attach_timeline_result(incoming,snapshot)
+    assert tr.translation_view(result)['original']['text']=='新英语译文'
+    stack=QUndoStack();stack.push(restore_full_sequence_command(result))
+    assert result.generation_metadata['language']['code']=='de'
+    assert tr.translation_view(result)['original']['text']=='旧译文' and 'old-evidence' in result.asr_evidence
+    stack.undo()
+    assert result.generation_metadata['language']['code']=='en'
+    assert tr.translation_view(result)['original']['text']=='新英语译文' and 'new-evidence' in result.asr_evidence
+    stack.redo()
+    assert tr.translation_view(result)['original']['text']=='旧译文'

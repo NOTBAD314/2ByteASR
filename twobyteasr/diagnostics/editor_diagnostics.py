@@ -373,10 +373,12 @@ def install_gui(app):
         geometry=[s.geometry().x(),s.geometry().y(),s.geometry().width(),s.geometry().height()])
         for s in app.screens()])
     def qt_message(kind, context, message):
+        from .qt_warning_detail import warning_detail
         record("QT_MESSAGE", severity=int(kind.value), category=context.category or "",
                level="ERROR" if int(kind.value) in (2,3) else "WARN" if int(kind.value)==1 else "DEBUG",
                location=Path(context.file or "").name, line=context.line,
-               signature=instance.sanitizer.alias(message,"fingerprint"), message_characters=len(message))
+               signature=instance.sanitizer.alias(message,"fingerprint"), message_characters=len(message),
+               **warning_detail(message))
         if instance.previous_qt_handler is not None:
             instance.previous_qt_handler(kind,context,message)
     instance.qt_handler = qt_message

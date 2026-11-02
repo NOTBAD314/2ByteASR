@@ -62,6 +62,7 @@ def _commit_mutation(
     snapshot_cues: bool = True,
     sync_caption_words: bool = True,
     studio_state_keys: Iterable[str] | None = None,
+    generation_metadata_keys: Iterable[str] = (),
 ) -> None:
     if project.render_settings.get('_cue_domain') == 'timeline' and dirty & DirtyDomain.CUE_TIMING:
         dirty |= DirtyDomain.PROJECT_METADATA
@@ -83,6 +84,7 @@ def _commit_mutation(
         selection_after=selection_after,
         snapshot_cues=snapshot_cues,
         studio_state_keys=(None if studio_state_keys is None else (*studio_state_keys,LEGACY_INPUTS)),
+        generation_metadata_keys=generation_metadata_keys,
     ) as transaction:
         if legacy_inputs and LEGACY_INPUTS not in project.studio_state:
             # Preserve what old confirmations actually reviewed, before any
@@ -1799,6 +1801,8 @@ class BatchReplaceTextCommand(QUndoCommand):
                 self.project, action_id=self.text(), dirty=dirty,
                 cue_ids=set(values) | set(self.translation_values), mutate=mutate,
                 changed=self.changed, snapshot_cues=bool(values),
+                studio_state_keys=('glossary_proofread_review','manual_caption_text','term_word_overrides'),
+                generation_metadata_keys=('translations','translation_records','glossary_review_jobs'),
             )
         except Exception:
             if self.translation_before is not None:

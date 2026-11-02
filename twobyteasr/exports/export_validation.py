@@ -51,6 +51,17 @@ def record_completion(function):
             receipt.clear()
             receipt.update(started_monotonic=requested_start if requested_start is not None else time.monotonic(),
                            _receipt_active=True)
+            observer = kwargs.get('progress')
+            def track_progress(payload):
+                if payload.get('stage'):
+                    job.export_context['active_stage'] = payload['stage']
+                job.export_context['last_progress'] = dict(payload)
+                if any(key in payload for key in ('out_time_us','out_time_ms','out_time','frame')):
+                    job.export_context['media_progress'] = dict(payload)
+                if observer:
+                    observer(payload)
+            if 'progress' in parameters.parameters:
+                kwargs['progress'] = track_progress
         log = token = None
         error = None
         from .export_run_log import begin_export_log, end_export_log, note_export
@@ -142,6 +153,8 @@ def notify_after_publication(job, callback, *args):
 
 def publish_output(staged, output, job, metadata, *, cancelled=None):
     """Publish the validated bytes and freeze elapsed time before any UI callback."""
+    from .export_run_log import note_export
+    note_export('publication_started', {'stage':'publish'})
     output = Path(output).resolve()
     statistics = completion_statistics(staged, metadata)
     frozen = dict(metadata)
@@ -177,6 +190,8 @@ def publish_output(staged, output, job, metadata, *, cancelled=None):
 
 
 def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, preview_path=''):
+    from .export_run_log import note_export
+    note_export('validation_started', {'stage':'validate'})
     ffmpeg=Path(ffmpeg);path=Path(path)
     result=run_hidden_subprocess([str(ffmpeg.with_name('ffprobe.exe' if os.name=='nt' else 'ffprobe')),
         '-v','error','-show_format','-show_streams','-of','json',str(path)],

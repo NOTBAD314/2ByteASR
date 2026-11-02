@@ -153,7 +153,7 @@ def test_filetrans_resume_same_remote_task_and_word_speaker_precedence(tmp_path)
         def get(url,**kw):
             calls.append(('get',url))
             if fail[0]:fail[0]=False;raise OSError('network')
-            if '/tasks/' in url:return Response({'output':{'task_status':'SUCCEEDED','results':[{'subtask_status':'SUCCEEDED','transcription_url':'https://result.example.com/x?sig=secret'}]}})
+            if '/tasks/' in url:return Response({'output':{'task_status':'SUCCEEDED','results':[{'subtask_status':'SUCCEEDED','transcription_url':'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/x?sig=secret'}]}})
             assert 'headers' not in kw
             return Response(payload)
     endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',url='https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription',api_key='key',speaker_source='native')

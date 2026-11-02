@@ -1212,6 +1212,10 @@ class MpvCanvas(QFrame):
                     "load_at_start", project_target_s=start_content,
                     mapped_media_target_s=target,
                 )
+                # Accepted actor work reserves its epoch at submission. A
+                # fast library roundtrip must not start from the epoch of the
+                # last completed request while an older seek is still queued.
+                self._playback_clock.advance_generation_to(self.controller.source_epoch)
                 snapshot = self._playback_clock.begin_seek(int(start_content * 1000))
                 self._adopt_playback_snapshot(snapshot, emit=False)
                 options = dict(generation=self._playback_clock.generation)
@@ -1434,6 +1438,22 @@ class MpvCanvas(QFrame):
         self._eof_reached = False
         self.position_changed.emit(max(0, project_ms) / 1000.0)
         self._timer.start()
+
+    def enter_audio_only_source(self, project_ms: int, duration_ms: int) -> None:
+        """No mpv stream is loaded: the existing PCM sink supplies observations.
+
+        aid=no is deliberate (one audible sink). Loading a WAV with no video
+        into that player yields no selected streams, which is not an audio
+        decoder failure. Retire the previous async load before adopting PCM.
+        """
+        self._load_generation = getattr(self, '_load_generation', 0) + 1
+        self._last_load_error = ''
+        self._external_clock_sequence = self._external_clock_source_generation = -1
+        self._clock_only = False  # a different audio clip needs a new epoch too
+        self.enter_timeline_gap(project_ms, duration_ms)
+        self._media_has_video = False
+        self._set_startup_state('MEDIA_OPENING')
+        self._sync_timer.start()
 
     def enter_empty_playback_state(self) -> None:
         """Clear the current frame/subtitles while preserving the mpv process."""
@@ -2013,6 +2033,8 @@ class MpvCanvas(QFrame):
         observed_at = float(payload.get("clock_monotonic_ts") or time.monotonic())
         paused = bool(payload.get("paused", self._paused))
         rate = float(payload.get("effective_rate") or self._playback_rate or 1.0)
+        if self._clock_only and self._project_time_mapping_enabled:
+            rate /= self._project_playback_rate
         discontinuity = (
             source_generation != self._external_clock_source_generation
             or self._playback_clock.snapshot().source == "reset"
@@ -2652,6 +2674,8 @@ class MpvCanvas(QFrame):
             # frame (e.g. 24.967s) and must not clear the 25.000s project EOF.
             return
         if self._clock_only:
+            if self._external_clock_enabled:
+                self._observe_external_clock()
             return
         # Audio-only projects have no meaningful mpv frame clock. Keep mpv's
         # idle/eof observations from stopping the ProjectClock; AudioEngine is
@@ -3189,7 +3213,7 @@ class MpvCanvas(QFrame):
 
     def _should_hold_for_seek(self) -> bool:
         return bool(
-            not self._clock_only
+            (not self._clock_only or self._external_clock_enabled)
             and self.controller is not None
             and self.controller.running
             and not self._playback_source_dead
@@ -3378,10 +3402,36 @@ class MpvCanvas(QFrame):
             return
         invalidate_tail = getattr(page, '_invalidate_audio_tail', None)
         if self._clock_only:
+            if not paused and self._external_clock_enabled:
+                if self._startup_state != 'READY':
+                    self._startup_play_requested = True
+                    return
+                # Reuse the buffered-play timer and actual PCM readiness.
+                if self._paused and callable(self.playback_ready):
+                    if not self._buffered_play_pending:
+                        self._buffered_play_started = time.monotonic()
+                        if callable(self.playback_prepare):
+                            self.playback_prepare()
+                    if not self.playback_ready():
+                        self._buffered_play_pending = True
+                        if time.monotonic()-self._buffered_play_started < 10:
+                            self._buffered_play_timer.start()
+                        else:
+                            self._buffered_play_pending = False
+                            self._buffered_play_timer.stop()
+                            self._trace_playback_gate('PLAYBACK_GATE_TIMEOUT')
+                            self._end_seek_hold(resumed=False)
+                        return
+            self._buffered_play_pending = False
+            self._buffered_play_timer.stop()
+            if paused and self._seek_hold_active and not self._seek_hold_entering:
+                self._end_seek_hold(resumed=False)
             self._eof_reached = False
             snapshot = self._playback_clock.set_local_state(
                 self.visual_position() * 1000, paused=paused, reason='timeline_gap_pause')
             self._adopt_playback_snapshot(snapshot)
+            if not paused:
+                self._end_seek_hold(resumed=True)
             return
         self._track_playback_perf(paused=paused)
         if paused:

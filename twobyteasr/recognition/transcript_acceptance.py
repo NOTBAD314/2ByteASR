@@ -11,6 +11,9 @@ from pathlib import Path
 
 KEY = 'transcript_acceptance'
 VERSION = 1
+POLICY_VERSION = 'manual-first-v1'
+LANGUAGE_ONLY_REASONS = {'text_language_conflict','legacy_text_language_conflict',
+    'insufficient_text_evidence_in_conflicting_request','acoustic_language_unconfirmed','acoustic_language_unconfirmed'}
 
 
 def digest(value):
@@ -42,21 +45,37 @@ def _raw_conflicts(audit, identity, rows):
     selected = []
     for region in audit.get('regions', []):
         code = (region.get('transcript') or {}).get('language')
-        if not code or code == identity['requested_language']:
+        target=audit.get('adopted_language') if identity['requested_language']=='auto' else identity['requested_language']
+        if (not code and not region.get('needs_manual_review')) or code == target:
             continue
         start = max(0, round(float(region['start'])*16000))
         end = min(identity['samples'], round(float(region['end'])*16000))
         if end <= start:
             continue
         selected.append(dict(id=digest([identity, start, end])[:24], start_sample=start, end_sample=end,
-            start=start/16000, end=end/16000, status='pending', reason='text_language_conflict',
+            start=start/16000, end=end/16000, status='pending', reason='text_language_conflict' if code else 'insufficient_text_evidence_in_conflicting_request',
             requested_language=identity['requested_language'],
             transcript_language=code, acoustic_language=None,
             remote_task_id=region.get('remote_task_id'), remote_status='SUCCESS' if region.get('remote_task_id') else None,
             raw_result_path=region.get('raw_result_path'),
             raw_rows=[copy.deepcopy(r) for r in rows if _inside(r, start, end)],
             attempts=[], selected_attempt=None))
-    return selected
+    merged = []
+    for region in selected:
+        prior = merged[-1] if merged else None
+        same_request = prior and prior.get('remote_task_id') == region.get('remote_task_id')
+        same_language = prior and (prior.get('transcript_language') == region.get('transcript_language')
+            or region.get('transcript_language') is None)
+        if same_request and same_language and abs(prior['end_sample']-region['start_sample']) <= 16:
+            prior.setdefault('language_subranges', [dict(start=prior['start'],end=prior['end'],language=prior.get('transcript_language'))])
+            prior['language_subranges'].append(dict(start=region['start'],end=region['end'],language=region.get('transcript_language')))
+            prior.update(end=region['end'], end_sample=region['end_sample'],
+                         id=digest([identity,prior['start_sample'],region['end_sample']])[:24])
+            known={digest(r) for r in prior['raw_rows']}
+            prior['raw_rows'].extend(r for r in region['raw_rows'] if digest(r) not in known)
+        else:
+            merged.append(region)
+    return merged
 
 
 def _selection_language(region,state,metadata=None):
@@ -126,6 +145,8 @@ def register_candidate(state, conflict_id, candidate, *, speaker_intervals=(), r
     requested = result['identity']['requested_language']
     from ..subtitle_rules.language_rules import normalize_language
     detected = [normalize_language(p.get('language')) for p in probes if p.get('request_language') is None and p.get('text')]
+    if requested=='auto' and len(set(detected))==1:
+        requested=detected[0]
     sound_agrees = len(detected) >= 2 and all(code == requested for code in detected)
     attempt = dict(id=candidate['attempt_id'], backend='qwen_local', model=candidate['model'],
         raw_payload=candidate.get('raw_payload'), policy=candidate['policy'],
@@ -141,7 +162,8 @@ def register_candidate(state, conflict_id, candidate, *, speaker_intervals=(), r
     if (round(converted[0]['start']*16000) != row['start_sample']
             or round(converted[-1]['end']*16000) != row['end_sample']):
         raise ValueError('替代结果范围与冲突范围不一致')
-    row.update(status='accepted', reason='local_asr_acoustically_checked', acoustic_language=requested,
+    row.update(status='accepted', reason='local_asr_acoustically_checked' if sound_agrees else 'manual_language_range_processed',
+               acoustic_language=requested if sound_agrees else None,acoustic_language_verified=bool(sound_agrees),
                selected_attempt=attempt, accepted_rows=converted, accepted_rows_sha256=digest(converted))
     return result
 
@@ -200,10 +222,85 @@ def project_selection(context,audio):
     return dict(version=VERSION,identity=identity_for(audio,context.requested_language,context.media_identity),ranges=accepted)
 
 
-def gate_primary(payload, audio, context, legacy, cache_context, audit):
-    """Quarantine conflicts before alignment; local recovery requires task opt-in."""
+def _language_preference_selection(payload,audio,context,legacy,cache_context,audit):
+    """Text language is an observation, never an exclusion policy."""
+    raw=copy.deepcopy(payload.get('segments') or [])
+    policy=context.recognition_snapshot.get('language_recovery_policy') or {}
+    path=Path(cache_context['cache_dir'])/f'primary-selection-{context.requested_language}.json'
+    identity=identity_for(audio,context.requested_language,context.media_identity) if audit.get('conflicts') or path.is_file() or policy.get('explicit_range') else None
+    saved={}
+    if path.is_file():
+        try:saved=json.loads(path.read_text('utf8'))
+        except (OSError,ValueError,TypeError):
+            legacy.record_run_event('transcript_selection_invalidated',reason='invalid_decision_cache',selection_path=str(path))
+    signature=digest([identity,raw,POLICY_VERSION,context.language_mode])
+    state=dict(version=VERSION,policy_version=POLICY_VERSION,language_mode=context.language_mode,
+        language_decision=copy.deepcopy(context.language_decision),ranges=[],audit_signature=signature)
+    if identity:state['identity']=identity
+    if saved and (saved.get('policy_version')!=POLICY_VERSION or saved.get('audit_signature')!=signature):
+        _save(path.with_name(path.stem+'-history-'+digest(saved)[:16]+'.json'),saved)
+        legacy.record_run_event('transcript_selection_invalidated',reason='manual_first_policy_or_input_changed',selection_path=str(path))
+    if not policy.get('force_cloud') and not policy.get('reuse_candidates'):
+        carried=project_selection(context,audio)
+        if carried:
+            state['ranges']=copy.deepcopy(carried.get('ranges') or [])
+        elif identity and saved.get('identity')==identity:
+            from ..subtitle_rules.language_rules import normalize_language
+            state['ranges']=[copy.deepcopy(r) for r in saved.get('ranges',[]) if
+                r.get('reason') not in LANGUAGE_ONLY_REASONS and (
+                r.get('status')!='accepted' or normalize_language(_selection_language(r,saved))==normalize_language(context.requested_language))]
+    invalid=[r for r in saved.get('ranges',[]) if r.get('status')=='accepted' and r not in state['ranges']]
+    if invalid:state['invalidated_selections']=copy.deepcopy(invalid)
+    selected=apply_selection(raw,state)
+    # A deliberate range retry/reprocess supplies the receipt needed by the
+    # existing parent splice; manual mismatch does not reject its valid text.
+    if policy.get('explicit_range') and selected and not pending_ranges(state):
+        identity=identity or identity_for(audio,context.requested_language,context.media_identity)
+        endpoint=context.asr_endpoint_snapshot or {}
+        attempt=dict(backend='saved_candidates' if policy.get('reuse_candidates') else getattr(legacy,'PRIMARY_ASR_BACKEND','unknown'),
+            model=endpoint.get('model'),request_language=endpoint.get('filetrans_language'),status='accepted',
+            basis='explicit_user_range_and_manual_source' if context.language_mode=='manual' else 'explicit_user_range',
+            acoustic_language_verified=False)
+        state.update(identity=identity,ranges=[dict(id=policy.get('conflict_id') or digest(identity)[:24],
+            start_sample=0,end_sample=len(audio),start=0.,end=len(audio)/16000,status='accepted',
+            requested_language=context.requested_language,adopted_language=context.task_language,
+            reason='explicit_range_processed',selected_attempt=attempt,attempts=[attempt],
+            accepted_rows=copy.deepcopy(selected),accepted_rows_sha256=digest(selected))])
+    observed=_raw_conflicts(audit,identity or {'requested_language':context.task_language,'samples':len(audio)},raw)
+    for row in observed:row.update(status='observation',reason='suspected_text_language',review_required=True)
+    state['observed_ranges']=observed
+    if observed or saved or state['ranges']:
+        state['selection_store']=str(path);_save(path,state)
+    context.transcript_acceptance=state
+    context.language_evidence['application_acceptance']=dict(policy=POLICY_VERSION,mode=context.language_mode,
+        pending=len(pending_ranges(state)),text_observations=len(observed),selection_path=str(path),remote_status_preserved=True)
+    from .transcript_delivery import acceptance_counts
+    delivery=acceptance_counts(raw,selected,state)
+    legacy.record_run_event('transcript_acceptance',policy=POLICY_VERSION,mode=context.language_mode,
+        candidate_segment_count=delivery['candidate_segment_count'],accepted_segment_count=delivery['accepted_segment_count'],
+        pending_segment_count=delivery['pending_segment_count'],selection_decision_ranges=len(state['ranges']),
+        adopted_language=context.task_language,pending_ranges=[{k:r.get(k) for k in ('id','start','end','reason')} for r in pending_ranges(state)],
+        observed_ranges=len(observed),accepted_ranges=len(delivery['accepted_ranges']),selection_path=str(path))
+    return dict(payload,segments=selected,references=selected)
+
+
+def _gate_primary(payload, audio, context, legacy, cache_context, audit):
+    """Apply explicit selections and independent integrity gates, keeping text observations advisory."""
     raw = copy.deepcopy(payload.get('segments', []))
+    if context.cancellation_token is not None:context.cancellation_token.raise_if_cancelled()
     policy = (context.recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if policy.get('reuse_candidates') and policy.get('confirmed_after_listening') and raw:
+        identity = identity_for(audio, context.requested_language, context.media_identity)
+        attempt = dict(backend='saved_candidates', model=policy.get('candidate_model'), status='accepted',
+            basis='user_confirmed_after_listening', request_language=None, acoustic_language_verified=False)
+        selected = copy.deepcopy(raw)
+        context.transcript_acceptance = dict(version=VERSION, identity=identity, ranges=[dict(
+            id=policy['conflict_id'], start_sample=0, end_sample=len(audio), start=0., end=len(audio)/16000,
+            status='accepted', reason='user_confirmed_candidate', requested_language=context.requested_language,
+            acoustic_language=None, selected_attempt=attempt, attempts=[attempt],
+            accepted_rows=selected, accepted_rows_sha256=digest(selected))])
+        context.review_items[:] = [r for r in context.review_items if r.get('category') != '转写语言需要核对']
+        return payload
     if (context.recognition_snapshot.get('language_recovery_policy') or {}).get('explicit_local_range'):
         # This explicit range task has already selected and acoustically checked
         # its local attempt in the primary adapter; do not reset that receipt.
@@ -218,93 +315,31 @@ def gate_primary(payload, audio, context, legacy, cache_context, audit):
                 raise ValueError('本地接受回执与当前音频不匹配')
             context.transcript_acceptance = copy.deepcopy(saved)
         return payload
-    if policy.get('explicit_range') and not audit.get('conflicts') and raw:
-        # An explicitly chosen existing alternative is allowed; it is never
-        # selected or uploaded automatically by this recovery mechanism.
-        selected = copy.deepcopy(raw)
-        identity = identity_for(audio, context.requested_language, context.media_identity)
-        endpoint = context.asr_endpoint_snapshot or {}
-        attempt = dict(backend=getattr(legacy,'PRIMARY_ASR_BACKEND','unknown'),model=endpoint.get('model'),
-                       request_language=endpoint.get('filetrans_language'),status='accepted',
-                       basis='explicit_user_alternative_and_matching_transcript')
-        context.transcript_acceptance = dict(version=VERSION,identity=identity,ranges=[dict(
-            id=policy.get('conflict_id') or digest(identity)[:24],start_sample=0,end_sample=len(audio),
-            start=0.,end=len(audio)/16000,status='accepted',acoustic_language=None,
-            selected_attempt=attempt,accepted_rows=selected,accepted_rows_sha256=digest(selected),attempts=[attempt])])
-        return payload
-    path = Path(cache_context['cache_dir'])/f'primary-selection-{context.requested_language}.json'
-    carried=project_selection(context,audio)
-    if carried:
-        # Still quarantine any newly conflicting scope not covered by a prior
-        # accepted choice, rather than treating one recovery as a blanket pass.
-        _include_uncovered_conflicts(carried,audit,raw)
-        _save(path,carried)
-        context.transcript_acceptance=carried
-        if not pending_ranges(carried):
-            context.review_items[:]=[r for r in context.review_items if r.get('category')!='转写语言需要核对']
-        selected=apply_selection(raw,carried)
-        return dict(payload,segments=selected,references=selected)
-    if not audit.get('conflicts') and not path.is_file():
-        context.transcript_acceptance = dict(version=VERSION, ranges=[])
-        return payload
-    identity = identity_for(audio, context.requested_language, context.media_identity)
-    saved = json.loads(path.read_text('utf8')) if path.is_file() else {}
-    state = saved if saved.get('identity') == identity else dict(version=VERSION, identity=identity, ranges=[])
-    from ..subtitle_rules.language_rules import normalize_language
-    invalid=[r for r in state['ranges'] if r.get('status')=='accepted'
-        and normalize_language(_selection_language(r,state))!=normalize_language(context.requested_language)]
-    if invalid:
-        state.setdefault('invalidated_selections',[]).extend(copy.deepcopy(invalid))
-        state['ranges']=[r for r in state['ranges'] if r not in invalid]
-    _include_uncovered_conflicts(state,audit,raw)
-    if not state['ranges']:
-        if invalid:_save(path,state)
-        context.transcript_acceptance = state
-        return payload
-    state['selection_store'] = str(path)
-    # The raw cache remains evidence. Persist the pending scope before any
-    # optional local attempt, so cancellation/restart cannot hide it.
-    _save(path, state)
-    if policy.get('allow_local_once'):
-        from .local_language_recovery import recognize_range
-        from .service import CancelledError
-        for region in pending_ranges(state):
-            if region.get('attempts') and not policy.get('explicit_retry'):
-                continue
-            start, end = region['start_sample'], region['end_sample']
-            span = end-start
-            probes = []
-            for fraction in (.05, .5, .9):
-                left = max(start, min(end-8*16000, start+round(span*fraction)))
-                right = min(end, left+12*16000)
-                if right-left >= 6*16000:
-                    probes.append((left, right))
-            try:
-                candidate = recognize_range(audio, start, end, language=context.requested_language,
-                    cache_root=Path(cache_context['cache_dir'])/'local-language',
-                    token=context.cancellation_token,
-                    progress=lambda e: legacy.record_run_event('language_recovery_progress', **{
-                        'worker_state' if k == 'event' else k: v for k, v in e.items()}),
-                    acoustic_samples=probes, source_identity=context.media_identity,
-                    retry=bool(policy.get('explicit_retry')))
-                state = register_candidate(state, region['id'], candidate)
-            except CancelledError:
-                _save(path, state)
-                raise
-            except Exception as exc:
-                target = next(r for r in state['ranges'] if r['id'] == region['id'])
-                target['attempts'].append(dict(status='failed', backend='qwen_local', reason=str(exc)[:500]))
-            _save(path, state)
-    context.transcript_acceptance = state
-    accepted = apply_selection(raw, state)
-    result = dict(payload, segments=accepted, references=accepted)
-    pending = pending_ranges(state)
-    if not pending:
-        context.review_items[:] = [r for r in context.review_items if r.get('category') != '转写语言需要核对']
-    context.asr_provisional_cues = [r for r in context.asr_provisional_cues if not any(
-        r.get('end_ms', 0) > p['start']*1000 and r.get('start_ms', 0) < p['end']*1000 for p in state['ranges'])]
-    context.language_evidence['application_acceptance'] = dict(pending=len(pending), accepted=len(state['ranges'])-len(pending),
-        selection_path=str(path), remote_status_preserved=True)
-    legacy.record_run_event('transcript_acceptance', pending_ranges=[{k:r[k] for k in ('id','start','end','reason')} for r in pending],
-                            accepted_ranges=len(state['ranges'])-len(pending), selection_path=str(path))
+    return _language_preference_selection(payload,audio,context,legacy,cache_context,audit)
+
+
+def gate_primary(payload, audio, context, legacy, cache_context, audit):
+    from .language_decision import validate_rows
+    validate_rows(payload,len(audio)/16000)
+    result = _gate_primary(payload, audio, context, legacy, cache_context, audit)
+    from .transcript_delivery import acceptance_counts
+    raw = payload.get('segments') or []
+    state = context.transcript_acceptance
+    state['candidate_rows'] = copy.deepcopy(raw)
+    state['policy_version']=POLICY_VERSION
+    state['language_mode']=context.language_mode
+    state['language_decision']=copy.deepcopy(context.language_decision)
+    pcm_path = getattr(audio, 'filename', None)
+    if pcm_path and Path(pcm_path).is_file():
+        state['input_pcm'] = dict(path=str(Path(pcm_path).resolve()), samples=len(audio), sample_rate=16000,
+            range_origin_ms=(context.recognition_snapshot.get('range_ms') or [0])[0],
+            pcm_sha256=(state.get('identity') or {}).get('pcm_sha256'))
+    state['counts'] = acceptance_counts(raw, result.get('segments') or [], state)
+    for region in pending_ranges(state)+state.get('observed_ranges',[]):
+        from .alignment_audio import pcm_digest
+        region['pcm_sha256'] = pcm_digest(audio[region['start_sample']:region['end_sample']])
+    if state.get('selection_store'):
+        _save(state['selection_store'], state)
+    legacy.record_run_event('transcript_delivery_counts', **state['counts'],
+        remote_task_ids=list(dict.fromkeys(r.get('remote_task_id') for r in audit.get('regions', []) if r.get('remote_task_id'))))
     return result

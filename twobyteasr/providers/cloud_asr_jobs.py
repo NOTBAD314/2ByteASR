@@ -36,6 +36,10 @@ def public_identity(endpoint):
     # the existing Qwen-Audio-3.1 route keep their cache directory.
     hints.update({k:endpoint[k] for k in ('filetrans_language','mosi_keyterms','mosi_diarize')
                   if endpoint.get(k) is not None})
+    if endpoint.get('asr_request_language'):
+        hints['asr_request_language']=endpoint['asr_request_language']
+    if endpoint.get('asr_request_generation'):
+        hints['asr_request_generation'] = endpoint['asr_request_generation']
     return dict(version=2,provider=endpoint.get('provider'), model=endpoint.get('model'),
                 protocol=endpoint.get('protocol'),url=public_url(endpoint.get('url','')),
                 speaker_source=endpoint.get('speaker_source','single'),

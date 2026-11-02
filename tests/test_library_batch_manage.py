@@ -6,6 +6,13 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox, QToolButton
+from PySide6.QtTest import QTest
+
+def _built(page):
+    for _ in range(100):
+        QApplication.processEvents()
+        if not any(t.isActive() for t in getattr(page,"_library_build_timers",{}).values()):break
+        QTest.qWait(5)
 
 import twobyteasr.projects.studio_project as studio_project
 import twobyteasr.studio.studio_project_flow as studio_project_flow
@@ -63,6 +70,7 @@ def _hub_page(tmp_path, monkeypatch, hub_project_dir, records_spec):
     # 同步走真实扫描路径（含 enrich/_summary_loaded），不等待后台线程
     page._hub_library_records = page._project_library_records()
     page._rebuild_project_library()
+    _built(page)
     return page, settings
 
 
@@ -77,6 +85,7 @@ def test_manage_mode_makes_cards_checkable_and_blocks_open(tmp_path, monkeypatch
         assert page.project_manage_bar.isHidden()
         page._set_library_manage_mode(True)
         app.processEvents()
+        _built(page)
         assert not page.project_manage_bar.isHidden()
         assert page.project_manage_button.text() == "完成"
         cards = list(page._hub_card_widgets)
@@ -86,12 +95,14 @@ def test_manage_mode_makes_cards_checkable_and_blocks_open(tmp_path, monkeypatch
         # 点击卡片 = 勾选，不触发打开工程
         cards[0].click()
         app.processEvents()
+        _built(page)
         assert cards[0].isChecked()
         assert page._library_selected_paths
         assert "已选 1 项" in page.project_manage_count_label.text()
         assert page.project_delete_button.isEnabled()
         page._set_library_manage_mode(False)
         app.processEvents()
+        _built(page)
         assert page.project_manage_bar.isHidden()
         assert page.project_manage_button.text() == "管理"
         cards = list(page._hub_card_widgets)
@@ -110,6 +121,7 @@ def test_select_empty_targets_only_empty_projects(tmp_path, monkeypatch, hub_pro
     try:
         page._set_library_manage_mode(True)
         page._library_select_empty_projects()
+        _built(page)
         selected_names = {
             Path(path).stem for path in page._library_selected_paths
         }
@@ -137,6 +149,7 @@ def test_batch_delete_removes_files_and_recent_metadata(tmp_path, monkeypatch, h
     try:
         page._set_library_manage_mode(True)
         page._library_select_empty_projects()
+        _built(page)
         monkeypatch.setattr(
             QMessageBox, "exec",
             classmethod(lambda cls, *args, **kwargs: QMessageBox.StandardButton.Yes),
@@ -151,6 +164,7 @@ def test_batch_delete_removes_files_and_recent_metadata(tmp_path, monkeypatch, h
         page._hub_library_records = None  # 删除后走 recent 记录直读路径（真机由后台扫描刷新）
         app = QApplication.instance()
         app.processEvents()
+        _built(page)
         remaining = sorted(path.name for path in hub_project_dir.glob("*.2byteproj"))
         assert remaining == ["keep.2byteproj"], remaining
         payload = json.loads(settings.read_text(encoding="utf-8"))
@@ -194,10 +208,12 @@ def test_list_view_rows_checkable_in_manage_mode(tmp_path, monkeypatch, hub_proj
     try:
         app = QApplication.instance()
         page._set_project_library_view("list")
+        _built(page)
         rows = list(page._hub_row_widgets)
         assert rows and not rows[0].isCheckable()
         page._set_library_manage_mode(True)
         app.processEvents()
+        _built(page)
         rows = list(page._hub_row_widgets)
         assert rows[0].isCheckable()
         rows[0].click()

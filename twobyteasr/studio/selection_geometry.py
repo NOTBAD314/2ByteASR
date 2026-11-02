@@ -145,7 +145,7 @@ class SelectionGeometryController(QObject):
         if image is not None and not image.isNull():
             self._accept(key,dict(bounds=image_bounds(image),viewport=[image.width(),image.height()],renderer='live-raster'))
             return
-        project=p._ass_preview_snapshot(p.project)
+        project=p._ass_preview_snapshot(p.project, cue_ids={cue_id})
         if not any(c.id==cue_id for c in project.cues):return
         # Stable project-space sampling is independent of panel size and DPI.
         width=int(project.render_settings.get('play_res_x',1920))

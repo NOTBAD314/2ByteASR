@@ -2316,7 +2316,8 @@ def detect_firered_vad(audio, legacy, *, _owned_polling=False):
                 )
             regions = json.loads(Path(output_path).read_text(encoding="utf-8"))["regions"]
     if not regions:
-        raise RuntimeError("FireRedVAD 没有检测到语音。")
+        from twobyteasr.recognition.transcript_delivery import NoSpeechDetected
+        raise NoSpeechDetected("FireRedVAD 没有检测到语音。")
     print(f"   [完成] FireRedVAD：{len(regions)} 个人声区间。")
     return regions
 
@@ -2347,7 +2348,8 @@ def detect_lightweight_vad(audio, legacy):
     threshold = max(1e-4, floor * 2.2, peak * 0.025)
     active = rms >= threshold
     if not np.any(active):
-        raise RuntimeError("轻量静音检测没有发现有效语音。")
+        from twobyteasr.recognition.transcript_delivery import NoSpeechDetected
+        raise NoSpeechDetected("轻量静音检测没有发现有效语音。")
 
     pad_frames = max(1, int(round(0.18 / (hop / sample_rate))))
     active_indices = np.flatnonzero(active)
@@ -4208,6 +4210,10 @@ def process_media(
     deferred_primary_cache = None
 
     def run_moss_stage():
+        if (runtime_context.recognition_snapshot.get('language_recovery_policy') or {}).get('reuse_candidates'):
+            from twobyteasr.recognition.candidate_reprocess import replay_rows
+            rows = replay_rows(shared_audio, runtime_context)
+            return dict(segments=rows, references=rows, primary_backend=primary_backend, cloud_gaps=[])
         audit_branch(primary_backend)
         if primary_backend != "moss":
             legacy.record_run_event('MODEL_PLANNED', model_id=primary_backend,
@@ -4731,9 +4737,11 @@ def process_media(
 
     # The language this task runs with: a manual choice, otherwise the kana
     # share of the primary transcript (kanji alone never mean Chinese).
-    from twobyteasr.subtitle_rules.language_rules import resolve_task_language, JA as _JA
-    task_language, language_evidence = resolve_task_language(
-        getattr(runtime_context, "requested_language", "auto"),
+    from twobyteasr.subtitle_rules.language_rules import JA as _JA
+    from twobyteasr.recognition.language_decision import bind,validate_rows
+    validate_rows(moss_payload,len(shared_audio)/16000)
+    task_language, language_evidence = bind(
+        runtime_context,
         [str(row.get("text") or "") for row in moss_payload.get("segments", [])],
         asr_detected=(moss_payload.get("metadata") or {}).get("detected_language") or moss_payload.get("language"),
     )

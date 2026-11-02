@@ -194,6 +194,17 @@ class GuiThreadCollector(QObject):
     def tick(self):
         if not self.active or gc.isenabled():
             return
+        # Reader-owned JSON graphs generate millions of young containers.
+        # Even gen-0/1 collections can scan them for hundreds of milliseconds.
+        # Loading/playback holds are bounded by their existing deadlines and
+        # private-growth guard; do not collect on the animation's GUI tick.
+        if _holders:
+            from ..system.memory_budget import memory_status
+            if memory_status()['available']>1024**3:return
+        if time.monotonic() >= getattr(self, '_next_cache_pressure', 0):
+            self._next_cache_pressure = time.monotonic()+2
+            from ..projects.project_read_cache import trim
+            trim()
         counts = gc.get_count()
         thresholds = gc.get_threshold()
         if thresholds[0] <= 0:
@@ -343,12 +354,13 @@ class ProjectHeapPolicy(QObject):
     edits were not faster on a 1,000-caption project.
     """
     LOAD_LIMIT_MS = 180_000
-    SETTLE_MS = 1_200
+    SETTLE_MS = 2_200
 
     def __init__(self, parent=None, *, busy=None):
         super().__init__(parent)
         self.busy = busy or (lambda: False)
         self.loading = False
+        self._settling = False
         self.settles = 0
         self.limit = QTimer(self)
         self.limit.setSingleShot(True)
@@ -361,36 +373,49 @@ class ProjectHeapPolicy(QObject):
 
     def load_started(self):
         self.settle_timer.stop()
+        self._settling = False
         if not self.loading:
             self.loading = hold_full_collections(('project-load', id(self)))
         if self.loading:
             self.limit.start()
 
     def load_finished(self, *, settle=True):
-        self.limit.stop()
-        if self.loading:
+        if self.loading or self._settling:
             self.loading = False
-            release_full_collections(('project-load', id(self)))
+            self._settling = bool(settle)
             if settle:
+                # Keep the same bounded hold through the loading-to-editor
+                # handoff; a young-generation scan was freezing its first edit.
                 self.settle_timer.start()
+            else:
+                self.limit.stop()
+                self.settle_timer.stop()
+                release_full_collections(('project-load', id(self)))
 
     def settle(self):
         if self.loading:
             return
-        if self.busy() or _holders:
+        if self.busy() or (_holders - {('project-load', id(self))}):
             self.settle_timer.start()  # pointer down, playing: try again later
             return
+        self.settle_timer.stop()
+        self.limit.stop()
+        self._settling = False
+        release_full_collections(('project-load', id(self)))
         _collect_observed(owner='project_heap_policy',reason='project_settle_idle')
         self.settles += 1
         mark('project_load_collected')
 
     def release(self):
         """Project closed or switched before the deferred collection ran."""
-        self.settle_timer.stop()
+        if self._settling:
+            self.settle_timer.start()
+        else:
+            self.settle_timer.stop()
 
     def close(self):
         self.limit.stop()
         self.settle_timer.stop()
-        if self.loading:
-            self.loading = False
+        if self.loading or self._settling:
+            self.loading = self._settling = False
             release_full_collections(('project-load', id(self)))

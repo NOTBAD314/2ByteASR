@@ -22,7 +22,7 @@ def test_load_defers_full_collections_then_collects_when_idle(app):
         policy.load_started()
         assert gc.get_threshold()[2] >= 1_000_000 and gc.get_threshold()[:2] == before[:2]
         policy.load_finished()
-        assert gc.get_threshold() == before
+        assert gc.get_threshold()[2] >= 1_000_000  # first paint/input still protected
         assert policy.settle_timer.isActive() and policy.settles == 0
         busy[0] = True
         policy.settle()  # pointer down or playing: wait, never collect mid-gesture

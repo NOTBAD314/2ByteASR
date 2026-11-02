@@ -79,7 +79,8 @@ def filetrans_hints_for_model(model, canonical_terms, *, vocabulary_id='', vocab
         terms = [str(x).strip() for x in canonical_terms if str(x).strip()]
         hints = {'hint_counts': {'native_vocabulary': 0, 'context_terms': 0,
                                  'unsupported_by_model': len(dict.fromkeys(terms))}}
-    code = FILETRANS_LANGUAGE_CODES.get(str(language or '').lower())
+    from ..subtitle_rules.language_rules import normalize_language
+    code = FILETRANS_LANGUAGE_CODES.get(normalize_language(language))
     if spec.language_parameter and code:
         hints['filetrans_language'] = code
     return hints

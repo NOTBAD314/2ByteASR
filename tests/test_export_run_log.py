@@ -235,3 +235,26 @@ def test_parallel_overlay_segment_launches_inherit_distinct_contexts(tmp_path, m
         assert {x['process_id'] for x in starts} == {'001','002'}
     finally:
         export_run_log.end_export_log(logger, token)
+
+
+def test_cleanup_error_cannot_replace_original_encoder_evidence(tmp_path,monkeypatch):
+    from twobyteasr.exports.export_failure import ExportFailure
+    monkeypatch.setenv('TWOBYTEASR_EXPORT_LOG_ROOT',str(tmp_path/'logs'))
+    monkeypatch.setattr(export_run_log,'_version',lambda *a:'test')
+    job=RenderJob('source.mp4','',str(tmp_path/'out.mp4'))
+    logger,token=export_run_log.begin_export_log(tmp_path/'ffmpeg.exe',job)
+    try:
+        try:
+            try:
+                raise ExportFailure('real encoder failure',stage='encode',category='ffmpeg',returncode=17)
+            except ExportFailure:
+                raise PermissionError('cleanup could not remove partial file')
+        except PermissionError as error:
+            export_run_log.end_export_log(logger,token,error)
+    finally:
+        pass
+    failure=json.loads((logger.path/'manifest.json').read_text('utf8'))['failure']
+    assert failure['reason']=='real encoder failure' and failure['returncode']==17
+    assert 'cleanup could not remove' in failure['secondary_error']
+    assert 'real encoder failure' in failure['traceback']
+    assert all(not log._streams for log in logger._process_logs)

@@ -56,7 +56,7 @@ def library(tmp_path, monkeypatch):
 def _wait_scan(page, timeout=8.0):
     app = QApplication.instance()
     end = time.monotonic() + timeout
-    while (getattr(page, "_hub_scan_pending", False) or getattr(page, "_hub_scan_again", False)) \
+    while (getattr(page, "_hub_scan_pending", False) or getattr(page, "_hub_scan_again", False) or any(t.isActive() for t in getattr(page, "_library_build_timers", {}).values())) \
             and time.monotonic() < end:
         app.processEvents()
         time.sleep(0.01)
@@ -81,6 +81,22 @@ def test_signature_ignores_bookkeeping_but_sees_real_changes():
     assert _library_display_signature(base) == _library_display_signature(noisy)
     assert _library_display_signature(base) != _library_display_signature([dict(base[0], cue_count=4)])
     assert _library_display_signature(base) != _library_display_signature(base + base)
+
+
+def test_date_refresh_retains_cards_and_one_changed_summary_reuses_others(library):
+    page=_page_with_index(library)
+    try:
+        page.show_project_hub();_wait_scan(page)
+        old={card._library_item_path:card for card in page._hub_card_widgets}
+        records=[dict(row) for row in page._hub_library_records]
+        for row in records:row['modified']='2030-01-01T00:00:00'
+        page._hub_library_records=records;page._rebuild_project_library();_wait_scan(page)
+        assert all(card is old[card._library_item_path] for card in page._hub_card_widgets)
+        changed=records[0]['path'];records[0]['cue_count']+=1
+        page._rebuild_project_library();_wait_scan(page)
+        assert all(card is old[card._library_item_path] for card in page._hub_card_widgets if card._library_item_path!=changed)
+        assert next(card for card in page._hub_card_widgets if card._library_item_path==changed) is not old[changed]
+    finally:page.close_page()
 
 
 def test_first_entry_from_index_is_not_rebuilt_by_the_unchanged_scan(library):
@@ -135,6 +151,7 @@ def test_scan_result_while_library_hidden_is_rendered_only_when_shown(library):
         page.show()
         page._refresh_studio_empty_state(rescan=False)
         assert page._library_build_generation == generation + 1
+        _wait_scan(page)
         assert any(card.text().startswith("late") for card in page._hub_card_widgets)
     finally:
         page.close_page()
@@ -170,6 +187,8 @@ def test_cover_cache_is_bounded_by_bytes_not_thrashed_by_two_views(tmp_path, mon
         for width in range(10):
             image = QImage(400, 400, QImage.Format.Format_ARGB32)
             image.fill(0)
+            stamp=cover.stat()
+            image.setText('source_stamp',f'{stamp.st_mtime_ns}:{stamp.st_size}')
             page._on_library_cover_ready(str(cover), 400 + width, 400, image)
         assert len(page._library_cover_images) == 3
         assert page._library_cover_bytes <= studio_hub._COVER_CACHE_BYTES

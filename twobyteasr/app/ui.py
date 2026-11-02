@@ -2060,7 +2060,7 @@ class MainWindow(QWidget):
             self._studio_entry_start_queued = False
             QTimer.singleShot(0, self, self._start_studio_construction)
 
-    def _prepare_studio_loading(self, path, **options):
+    def _ensure_studio_loading_surface(self):
         """Own the loading surface before construction, hydration or native video."""
         from ..studio.studio_loading import StudioLoadingSession
         session = self.__dict__.get('_studio_loading_session')
@@ -2086,11 +2086,16 @@ class MainWindow(QWidget):
             # Compatibility name for instrumentation, never a separate page.
             self._studio_entry_loading = session.view
             self._studio_entry_status = session.view.label
+        return session
+
+    def _prepare_studio_loading(self, path, **options):
+        session = self._ensure_studio_loading_surface()
         target = str(Path(path).resolve()) if path else ''
         studio = self.built_page('studio')
         if studio is not None:
             session.attach_surface(studio.video)
         if not session.active or session.path != target:
+            session.recent_entries = self._loading_recent_entries()
             continuation = session.active or (session.state == 'failed' and session.path == target)
             previous_origin = session.return_target if continuation else None
             origin = previous_origin or ('hub' if self.pages.currentWidget() is self.built_page('studio') else 'home')
@@ -2103,6 +2108,21 @@ class MainWindow(QWidget):
         self.pages.layout().activate()
         session.present()
         return session
+
+    def _loading_recent_entries(self):
+        """Recent projects for the loading page (cover, name, counts); never raises."""
+        try:
+            studio = self.built_page('studio')
+            if studio is not None:
+                records = studio.recent_project_records()
+            else:
+                from ..projects.studio_project import studio_settings_path
+                payload = json.loads(studio_settings_path().read_text('utf-8-sig'))
+                records = payload.get('recent_projects', []) if isinstance(payload, dict) else []
+            from .home_studio_entry import recent_studio_entries
+            return recent_studio_entries(records, limit=50)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return []
 
     def _present_native_loading_destination(self):
         """Only a verified native child cover may expose its editor behind it."""
@@ -2507,15 +2527,21 @@ class MainWindow(QWidget):
                     if stage == '创建工作台界面':
                         loading.mark(stage)
                     elif stage == '首屏绘制':
-                        self.studio_page.grab()
+                        self.studio_page.studio_empty.grab()
                         loading.mark(stage)
                     else:
                         loading.skip(stage, '进入工程库，没有载入工程')
                 epoch = loading.generation
                 def hub_ready():
+                    picked = loading.picked_project()
                     if (loading.deliver(epoch) and loading.generation == epoch
-                            and loading.state == 'ready' and on_ready is not None):
-                        on_ready(self.built_page('studio'))
+                            and loading.state == 'ready'):
+                        if on_ready is not None:
+                            on_ready(self.built_page('studio'))
+                        elif picked and Path(picked).is_file():
+                            # 2026-11-02: a recent project picked on the library
+                            # loading page opens as soon as the library is ready.
+                            QTimer.singleShot(0, self, lambda: self.open_studio_project(picked))
                 QTimer.singleShot(0, self, hub_ready)
             self._retry_pending_recognition_reload()
 
@@ -2626,6 +2652,7 @@ class MainWindow(QWidget):
             # 2026-10-23: the sheet's translation choice is for this run only (home keeps its own).
             "subtitle_output": str(request_options.get("subtitle_output") or ""),
             "translation_script": str(request_options.get("translation_script") or ""),
+            "recognition_language": str(request_options.get('recognition_language') or self._subtitle_language_options()['recognition_language']),
         }
         if noninteractive:
             self._studio_recognition_context["enable_domain_terms"] = request_options["enable_domain_terms"]
@@ -3485,6 +3512,7 @@ class MainWindow(QWidget):
         if self.built_page("studio") is not None or "twobyteasr.studio.studio_ui" in sys.modules:
             return
         import twobyteasr.studio.studio_ui  # noqa: F401
+        self._ensure_studio_loading_surface()
 
     def _auto_check_updates(self):
         if (self.update_check_worker and self.update_check_worker.isRunning()) or \
@@ -5949,6 +5977,10 @@ class MainWindow(QWidget):
         The saved switches stay as they are; filling in a key turns AI back on."""
         settings = json.loads(json.dumps(self.legacy.RUNTIME_SETTINGS, ensure_ascii=False))
         switches = settings.setdefault("switches", {})
+        policy = (((getattr(self, '_studio_recognition_context', None) or {}).get('snapshot') or {}).get('language_recovery_policy') or {})
+        if policy.get('reuse_candidates'):
+            settings.setdefault('models', {}).update(primary_asr_backend='api', qwen_asr_backend='off')
+            switches['enable_qwen_asr_reference'] = False
         for role in getattr(self, "_text_ai_local_roles", ()) or ():
             switches[{"polish": "enable_ai_polish", "group": "use_ai_grouping"}[role]] = False
         from ..providers.ai_config_state import trace_configuration
@@ -6543,18 +6575,27 @@ class MainWindow(QWidget):
             bind_text(self.result_task_summary, '')
         self.result_task_summary.setVisible(bool(project_error))
         recovery=evidence.get('stage_recovery') or {}
-        from ..recognition.language_recovery_project import project_pending
+        from ..recognition.language_recovery_project import project_review_ranges as project_pending
         language_pending = project_pending(task[1] if task else None)
         retryable = bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable or outcome.core_status == 'failed'))
         retryable = retryable or bool(language_pending)
         optional_retry=bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable))
         enabled = bool(retryable and (available or not optional_retry))
         if language_pending:
-            self.result_todo.set_retry(visible=True, enabled=enabled, title='语言待恢复',
-                label='仅恢复语言异常范围…', badge=len(language_pending),
-                body='有 {count} 段原文语言待核对；正常结果已保存。可选择已有模型只重新识别异常范围。',
+            output_pending=[r for r in language_pending if r.get('status')=='pending']
+            self.result_todo.set_retry(visible=True, enabled=enabled, title='语言待恢复' if output_pending else '语言待核对',
+                label='核对候选与恢复…', badge=len(language_pending),
+                body=('已按你选择的源语言生成字幕。{count} 个范围的文字疑似其他语言，可试听核对、继续处理已有候选或主动重新识别。' if not output_pending else '有 {count} 个范围待恢复。查看候选并试听；可按原手动语言继续，或核对后修改源语言、重新识别异常范围。'),
                 body_arguments=dict(count=len(language_pending)))
-            bind_text(self.result_task_summary,'有 {count} 段原文语言待核对；正常结果已保存。可选择已有模型只重新识别异常范围。',count=len(language_pending))
+            from ..recognition.transcript_delivery import report_counts, RECOVERY_MESSAGE
+            counters = report_counts(evidence.get('display_payload') or {})
+            message = (RECOVERY_MESSAGE if output_pending and outcome and not outcome.final_cues else
+                '正常范围字幕已保留；部分范围尚无可用结果，可核对候选或主动重新识别。' if output_pending else
+                '已按你选择的源语言处理。部分返回文字疑似其他语言，可试听核对或主动重新识别。')
+            self.result_task_summary.setText(tr(message) + '\n' + tr(
+                '候选 {raw} 段 · 接纳 {accepted} 段 · 待恢复 {pending} 段 / {ranges} 个范围 · 最终字幕 {final} 条',
+                raw=counters.get('candidate_segment_count', '?'), accepted=counters.get('accepted_segment_count', 0),
+                pending=counters.get('pending_segment_count', '?'), ranges=len(output_pending), final=outcome.final_cues if outcome else 0))
             self.result_task_summary.show()
         elif recovery.get('failed_tasks'):
             self.result_todo.set_retry(visible=True, enabled=enabled, title='重试', badge=recovery['retryable_tasks'],
@@ -7171,7 +7212,7 @@ class MainWindow(QWidget):
                 QMessageBox.information(self,tr('无法重试当前范围'),tr('原工程尚未载入或身份已改变。请先恢复已有识别结果；未重新提交整段转写。'))
                 return
         if 0 <= index < len(tasks) and tasks[index][1]:
-            from ..recognition.language_recovery_project import project_pending
+            from ..recognition.language_recovery_project import project_review_ranges as project_pending
             if project_pending(tasks[index][1]):
                 from ..studio.language_recovery_ui import open_recovery
                 self._open_completion_project(tasks[index][0].project_path, mode='edit',
@@ -8338,14 +8379,8 @@ class MainWindow(QWidget):
         if key != "custom" and all(hasattr(self, name) for name in ("primary_asr_backend", "firered_asr_backend", "qwen_asr_backend")):
             self._applying_recognition_plan = True
             try:
-                if plan.language and self.__dict__.get("recognition_language") is not None:
-                    # 日语 / 外语 also set the spoken language (2026-10-14); 外语 keeps a
-                    # foreign language already chosen and starts at English otherwise.
-                    current = str(self.recognition_language.currentData() or "auto")
-                    wanted = plan.language if plan.language != FOREIGN else (current if plan.for_language(current) else "en")
-                    language_index = self.recognition_language.findData(wanted)
-                    if language_index >= 0:
-                        self.recognition_language.setCurrentIndex(language_index)
+                # A model/scene plan may suggest a language, but only the
+                # source-language control can change the user's selection.
                 # API 转写 times Chinese with FireRedASR2 and other languages (or a
                 # computer without an NVIDIA GPU) with Qwen3 对齐 (2026-10-23).
                 spoken = (self._subtitle_language_options()["recognition_language"]
@@ -10791,7 +10826,9 @@ class MainWindow(QWidget):
                 self._retry_cached_failed = False
                 launched = True
                 return
-            if self.primary_asr_backend.currentData() == "none":
+            recovery_policy = ((((getattr(self, '_studio_recognition_context', None) or {}).get('snapshot') or {}).get('language_recovery_policy')) or {})
+            reuse_candidates = bool(recovery_policy.get('reuse_candidates'))
+            if self.primary_asr_backend.currentData() == "none" and not reuse_candidates:
                 self._run_block_reason = (
                     "当前没有可运行的主力转写模型：请到模型工坊下载并选择模型，或配置在线 ASR API。"
                 )
@@ -10810,7 +10847,9 @@ class MainWindow(QWidget):
                     self._open_model_workshop()
                 return
             effective = _language_preflight_values(self._asr_values(),
-                self._subtitle_language_options()['recognition_language'], self.legacy.RUNTIME_SETTINGS)
+                ((getattr(self,'_studio_recognition_context',None) or {}).get('recognition_language') or self._subtitle_language_options()['recognition_language']), self.legacy.RUNTIME_SETTINGS)
+            if reuse_candidates:
+                effective.update(primary_asr_backend='api', qwen_asr_backend='off')
             missing_models = missing_selected_local_models(effective)
             if missing_models:
                 self._run_block_reason = "所选模型尚未下载完整：" + "、".join(missing_models)
@@ -10840,7 +10879,9 @@ class MainWindow(QWidget):
                     if ask_audio_tracks(self, self._resume_with_audio_tracks):
                         self._run_block_reason = '正在选择要识别的音轨。'
                         return
-            if noninteractive:
+            if reuse_candidates:
+                pass  # no ASR credentials/models are needed to reprocess saved text
+            elif noninteractive:
                 try:
                     persist_asr_configuration(self.legacy, self.legacy.RUNTIME_SETTINGS.get('models', {}),
                                               require_ready=True, dry_run=True)
@@ -10931,7 +10972,7 @@ class MainWindow(QWidget):
                 return
             if not (self._confirm_run_limits(noninteractive=True) if noninteractive else self._confirm_run_limits()):
                 return
-            if not (self._confirm_run_disclosure(noninteractive=True) if noninteractive else self._confirm_run_disclosure()):
+            if not reuse_candidates and not (self._confirm_run_disclosure(noninteractive=True) if noninteractive else self._confirm_run_disclosure()):
                 return
             game_name = self.legacy.canonicalize_runtime_game_name(self.game_box.currentText())
             if game_name:
@@ -11414,6 +11455,7 @@ class MainWindow(QWidget):
         title = getattr(self, 'progress_title', None)
         if title is not None:
             bind_text(title, '正在安全取消字幕任务' if cancelling else {
+                'needs_recovery': '取得转写 · 尚未生成可用字幕', 'empty_result': '未生成可用字幕',
                 'success': '字幕已制作完成', 'degraded_success': '字幕已完成，有需复核项',
                 'cancelled': '字幕任务已取消', 'failed': '字幕任务未完成', 'unknown': '任务状态待确认',
             }.get(terminal, '2ByteASR 正在制作字幕'))
@@ -11603,12 +11645,12 @@ class MainWindow(QWidget):
 
     def _render_terminal_step(self, terminal, ended, total):
         from .progress_model import clock
-        tone, pill = {'success': ('success', '已完成'), 'degraded_success': ('warning', '已完成 · 需复核'),
+        tone, pill = {'needs_recovery': ('warning', '语言待恢复'), 'empty_result': ('warning', '无可用字幕'), 'success': ('success', '已完成'), 'degraded_success': ('warning', '已完成 · 需复核'),
                       'cancelled': ('warning', '已取消'), 'failed': ('danger', '未完成')}.get(terminal, ('muted', '待确认'))
         self.running_indicator.set_status(pill, tone)
         self._set_stage_device('')
         bind_text(self.stage_step_label, '')
-        bind_text(self.progress_stage, {'success': '完成', 'degraded_success': '完成，有需复核项', 'failed': '任务结束，有失败项',
+        bind_text(self.progress_stage, {'needs_recovery': '取得转写，待恢复字幕', 'empty_result': '没有可用字幕', 'success': '完成', 'degraded_success': '完成，有需复核项', 'failed': '任务结束，有失败项',
                                         'cancelled': '任务已取消'}.get(terminal, '任务结束'))
         metrics = []
         elapsed = getattr(self, '_terminal_elapsed', 0.0)
@@ -12350,6 +12392,7 @@ class MainWindow(QWidget):
         cancel_count = queue_outcome.cancelled_count
         review_total = queue_outcome.review_issue_count
         self._recognition_terminal = ('failed' if queue_outcome.core_status == 'failed' else
+            queue_outcome.core_status if queue_outcome.core_status in {'needs_recovery', 'empty_result'} else
             'cancelled' if queue_outcome.core_status == 'cancelled' else
             'unknown' if queue_outcome.core_status == 'unknown' else
             'degraded_success' if queue_outcome.core_status == 'partial' or queue_outcome.review_task_count else 'success')
@@ -12381,8 +12424,10 @@ class MainWindow(QWidget):
             self.open_studio_result_button.setVisible(True)
         if not studio_context and not getattr(self, "_tutorial_demo_result", False):
             self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
-        elif studio_context and (failure_count or cancel_count):
+        elif studio_context and (failure_count or cancel_count or queue_outcome.core_status in {'needs_recovery', 'empty_result'}):
             self.studio_page.fail_recognition_runtime(
+                '取得转写，但尚未生成可用字幕；请从完成页核对候选并恢复' if queue_outcome.core_status == 'needs_recovery' else
+                '没有生成可用字幕，原字幕和人工修改保持' if queue_outcome.core_status == 'empty_result' else
                 "任务已取消" if cancel_count and not failure_count else "识别失败，请检查模型与运行日志"
             )
             # 四十二轮：识别转后台后用户可能已离开 Studio 页——失败/取消也要

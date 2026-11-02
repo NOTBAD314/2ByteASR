@@ -8503,5 +8503,11 @@
   "+ 更多选项": "+ Mais opções",
   "替换 {value0} 处": "Substituir {value0}",
   "{value0} 处": "{value0} ocorrências",
-  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zoom da linha do tempo: à esquerda mostra mais, à direita amplia (ou Ctrl+roda)"
+  "时间轴缩放：向左看到更多，向右放大（也可以 Ctrl+滚轮）": "Zoom da linha do tempo: à esquerda mostra mais, à direita amplia (ou Ctrl+roda)",
+  "{scope} · {count} 条文本": "{scope} · {count} textos",
+  "正则表达式写法有误；关掉「正则表达式」就按普通文字查找。": "A expressão regular não é válida; desative “Expressão regular” para procurar o texto literal.",
+  "切到替换": "ir para Substituir",
+  "Enter": "Enter",
+  "Esc": "Esc",
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "Ou selecione um texto na legenda e clique com o botão direito em “Substituir o mesmo texto em lote…”"
 }

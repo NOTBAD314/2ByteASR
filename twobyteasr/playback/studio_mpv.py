@@ -1636,8 +1636,16 @@ class MpvController:
         mode = "absolute+exact" if accurate else "absolute+keyframes"
         target = max(0.0, float(seconds))
         command = ["seek", target, mode]
+        epoch = self._subtitle_binding_epoch
+        generation = max(int(generation), self.source_epoch)
+        self._advance_source_epoch(generation)
 
         def perform_seek() -> dict[str, Any]:
+            if epoch != self._subtitle_binding_epoch or generation < self.source_epoch:
+                return {}
+            if self._subtitle_media_path and not self._subtitle_media_ready:
+                self._pending_media_seek=(epoch,target,bool(accurate),generation)
+                return {}  # file-loaded will submit the current seek once
             actor = self._actor
             if actor is not None:
                 actor.begin_seek(generation, target)
@@ -1704,6 +1712,8 @@ class MpvController:
         self._begin_subtitle_media(source)
         epoch = self._subtitle_binding_epoch
         target = max(0.0, float(seconds))
+        generation = max(int(generation), self.source_epoch)
+        self._advance_source_epoch(generation)
         command = [
             "loadfile",
             source,
@@ -1944,6 +1954,7 @@ class MpvController:
         self._subtitle_binding_epoch += 1
         self._subtitle_media_path = source
         self._subtitle_media_ready = False
+        self._pending_media_seek = None
         self._studio_subtitle_sid = None
         self._studio_subtitle_path = ""
         self._desired_subtitle_path = ''
@@ -1977,6 +1988,10 @@ class MpvController:
             if not actual or Path(actual).resolve() != Path(source).resolve():
                 return
             self._subtitle_media_ready = True
+            pending=getattr(self,'_pending_media_seek',None)
+            self._pending_media_seek=None
+            if pending is not None and pending[0]==epoch:
+                self.post_seek(pending[1],accurate=pending[2],generation=pending[3])
             if self._desired_subtitle_path:
                 self.set_subtitle_file(self._desired_subtitle_path)
         self._post(bind, coalesce_key='subtitle-media-ready')

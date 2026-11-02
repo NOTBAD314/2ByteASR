@@ -23,7 +23,8 @@ def _read(path, modified, size):
     if len(_READ_KEYS) > 500:  # the lru_cache below keeps 512
         _READ_KEYS.clear()
     try:
-        payload=json.loads(Path(path).read_text('utf-8'))
+        from .project_summary import naming_payload
+        payload=naming_payload(path)
     except (OSError,ValueError):
         return {}
     if not isinstance(payload,dict):
@@ -63,6 +64,16 @@ def display_project_name(record=None, *, path=None, project=None, read=True):
     record=record or {}
     path=Path(path or record.get('path') or '')
     name=str(record.get('name') or path.stem)
+    if project is None and not read:
+        origin=record.get('name_origin') or {}
+        if record.get('name_custom'):return name
+        if origin.get('kind')=='unnamed':
+            number=origin.get('number')
+            return tr('未命名工程 {number}',number=number) if number is not None else tr('未命名工程')
+        if origin.get('kind')=='recognition_result':
+            parent=origin.get('parent')
+            return tr('{name} · 识别结果',name=parent) if parent else tr('识别结果')
+        return name
     payload={}
     if project is None and path.is_file():
         key=_read_key(path)

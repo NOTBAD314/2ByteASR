@@ -87,6 +87,11 @@ class StudioProjectFlowMixin:
         if readiness is not None and readiness.active and reason != "project_switch":
             readiness.cancel(navigate=False)
         previous_path = str(self.project_path or "")
+        parked_project, parked_store = self.project, getattr(self, '_revision_store', None)
+        parked_consistency = getattr(self, '_subtitle_consistency_result', None)
+        keep_clean = (reason == 'project_hub' and self.undo_stack.isClean()
+                      and parked_consistency is not None and not getattr(self, '_recovered_autosave_pending', False))
+        self._danmaku_generation = getattr(self, '_danmaku_generation', 0) + 1
         style_controller=getattr(self,'style_controller',None)
         if style_controller is not None:style_controller.cancel_pending_application()
         if getattr(self, '_canvas_editor', None) is not None:
@@ -201,18 +206,23 @@ class StudioProjectFlowMixin:
                 advanced.clear()
             except RuntimeError:
                 pass
-        # Prepared drag-preview rasters (up to 64 MB) and LIVE layers (up to
-        # 160 MB) only serve the closed project; the hub keeps neither.
+        # Retire project-bound drag previews; content-addressed LIVE QImages
+        # can survive navigation within their adaptive memory budget.
         timing = getattr(self, "_cue_timing_preview", None)
         if timing is not None:
             timing.release()
         from ..rendering.live_layer_cache import GLOBAL_LIVE_LAYER_CACHE
-        GLOBAL_LIVE_LAYER_CACHE.clear()
+        # Keys cover every static pixel input and entries own QImages only.
+        # Keep valuable rasters for a return; pressure still trims the budget.
+        GLOBAL_LIVE_LAYER_CACHE.trim()
         self._preview_path = None
         # Preview path caches are keyed by project identity; do not keep the
         # closed project alive while the hub is showing.
         self._preview_path_project = None
         self.project = None
+        if keep_clean:
+            from ..projects.project_read_cache import park
+            park(previous_path, parked_project, parked_store, parked_consistency)
         # Unload can emit synchronous callbacks while the old project is still
         # assigned. Fence LIVE jobs after those callbacks too.
         self._advanced_live_render_generation = getattr(self, "_advanced_live_render_generation", 0) + 1

@@ -57,7 +57,8 @@ def test_pre_guard_cache_cannot_reapply_another_language(tmp_path,current_raw_co
     context=RuntimeContext(requested_language='en',task_language='en')
     result=gate_primary({'segments':raw},audio,context,SimpleNamespace(record_run_event=lambda *a,**k:None),{'cache_dir':str(tmp_path)},audit)
     assert result['segments'][-1]['text']=='Chosen later English stays'
-    assert all(r['text']!=IT for r in result['segments'])
-    assert len(pending_ranges(context.transcript_acceptance))==int(current_raw_conflicts)
+    assert result['segments'][0]['text']==(IT if current_raw_conflicts else EN)
+    assert not pending_ranges(context.transcript_acceptance)
+    assert len(context.transcript_acceptance['observed_ranges'])==int(current_raw_conflicts)
     assert len(context.transcript_acceptance['invalidated_selections'])==1
     if not current_raw_conflicts:assert result['segments'][0]['text']==EN

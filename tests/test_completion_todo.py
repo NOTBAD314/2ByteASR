@@ -222,9 +222,9 @@ def test_language_recovery_daily_entry_survives_operation_bar_merge(monkeypatch,
         report_json_path=str(report_path)),), 1))
     todo = shell.result_todo
     assert todo._shown[todo.retry_card] and todo.retry_card.badge.text() == '1'
-    assert shell.retry_failed_button.text() == '仅恢复语言异常范围…'
+    assert shell.retry_failed_button.text() == '核对候选与恢复…'
     assert shell.retry_failed_button.isEnabled()
-    assert '正常结果已保存' in shell.result_task_summary.text()
+    assert '正常范围字幕已保留' in shell.result_task_summary.text()
     assert shell.retry_failed_button is todo.retry_card.action
     opened = []
     monkeypatch.setattr(shell, '_open_completion_project', lambda path, **kwargs: opened.append((path, kwargs)))

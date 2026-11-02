@@ -88,9 +88,10 @@ class StudioAssFlowMixin:
             except OSError:
                 pass
 
-    def _ass_preview_snapshot(self, project: SubtitleProject) -> SubtitleProject:
+    def _ass_preview_snapshot(self, project: SubtitleProject, *, cue_ids=None) -> SubtitleProject:
         """Return the ASS-owned view; Advanced cues never enter Native foreground."""
-        snapshot = copy.deepcopy(project)
+        from ..projects.project_snapshot import presentation_snapshot
+        snapshot = presentation_snapshot(project, cue_ids=cue_ids)
         overrides = dict(self._live_edit_text_overrides)
         transform_overrides = copy.deepcopy(self._live_transform_overrides)
         kept = []
@@ -566,11 +567,22 @@ class StudioAssFlowMixin:
             bind_text(self.save_state, '预览更新失败: {message}', message=message)
 
     def export_subtitles(self) -> None:
+        self._studio_trace("EXPORT_ENTRY", entry="studio_subtitles", export_type="subtitle_dialog",
+            schema_version=getattr(self.project, "schema_version", None),
+            cue_count=len(self.project.cues) if self.project else 0)
         if not self.project:
+            self._studio_trace("EXPORT_ENTRY_BLOCKED", entry="studio_subtitles", reason="no_project")
             return
         if getattr(self, "_canvas_editor", None) is not None:
             self._commit_canvas_inline_edit()
         # 2026-10-18: the dialog writes, verifies and shows the result itself
         # (打开文件夹 / 复制路径); a failure stays in the dialog with the choices.
-        dialog = SubtitleExportDialog(self.project, self.project_path, self, export_on_accept=True)
-        dialog.exec()
+        try:
+            dialog = SubtitleExportDialog(self.project, self.project_path, self, export_on_accept=True)
+            self._studio_trace("EXPORT_ENTRY_OPENED", entry="studio_subtitles")
+            dialog.exec()
+        except Exception as exc:
+            import traceback
+            self._studio_trace("EXPORT_ENTRY_FAILED", entry="studio_subtitles", reason="dialog_setup",
+                exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
+            studio_message_box(self, QMessageBox.Icon.Warning, tr('无法打开字幕导出'), str(exc))

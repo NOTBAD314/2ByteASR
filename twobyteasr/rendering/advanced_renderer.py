@@ -215,13 +215,18 @@ def _native_segment_project(project: SubtitleProject, start_ms: int, end_ms: int
 def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                            on_line: Callable[[str], None] | None = None,
                            cancelled: Callable[[], bool] | None = None,
-                           stall_timeout: float | None = None) -> tuple[int, str]:
+                           stall_timeout: float | None = None,
+                           purpose: str = "advanced preview/render child") -> tuple[int, str]:
     import queue
+    from ..exports.export_failure import ErrorEvidence, ProcessEvidence
+    separate = Path(str(command[0])).stem.lower().startswith('ffmpeg')
+    evidence = ErrorEvidence()
 
     process = popen_hidden_subprocess(
-        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        command, cwd=cwd, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE if separate else subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
-        purpose="advanced preview/render child",
+        purpose=purpose,
         own_process_tree=True,
         env=renderer_child_environment() if command and Path(command[0]).name.lower() in {'node.exe','node'} else None,
     )
@@ -289,22 +294,28 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
             except queue.Full:
                 continue
 
-    def read_lines() -> None:
+    def read_lines(stream, channel) -> None:
         try:
-            for raw in iter(process.stdout.readline, ""):
-                enqueue(raw)
+            for raw in iter(stream.readline, ""):
+                enqueue((channel, raw))
                 if finished.is_set():
                     return
         except BaseException as exc:
             enqueue(exc)
         finally:
-            enqueue(eof)
+            enqueue((channel, eof))
 
-    reader = threading.Thread(target=read_lines, daemon=True, name="advanced-render-output")
-    reader.start()
+    readers = [threading.Thread(target=read_lines, args=(process.stdout, 'stdout'),
+               daemon=True, name='advanced-render-stdout')]
+    if separate:
+        readers.append(threading.Thread(target=read_lines, args=(process.stderr, 'stderr'),
+                       daemon=True, name='advanced-render-stderr'))
+    for reader in readers:
+        reader.start()
     watchdog.start()
     try:
-        while True:
+        remaining = len(readers)
+        while remaining:
             if cleanup_error is not None:
                 raise cleanup_error
             if "watchdog_error" in state:
@@ -313,16 +324,22 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                 raw = lines.get(timeout=.05)
             except queue.Empty:
                 continue
-            if raw is eof:
-                break
             if isinstance(raw, BaseException):
                 raise raw
+            channel, raw = raw
+            if raw is eof:
+                remaining -= 1
+                continue
             line = raw.strip()
             state["last_line"] = time.monotonic()
             if line:
-                tail.append(line)
-                del tail[:-120]
-                if on_line:
+                if separate:
+                    evidence.feed(channel, line)
+                else:
+                    evidence.feed('stderr',line)
+                    tail.append(line)
+                    del tail[:-120]
+                if on_line and (not separate or channel == 'stdout'):
                     on_line(line)
         while True:
             if cleanup_error is not None:
@@ -340,13 +357,20 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
             cleanup()
         finally:
             watchdog.join(timeout=3.5)
-            reader.join(timeout=.2)
+            for reader in readers:
+                reader.join(timeout=.2)
+            # A failed Job close can leave another thread inside readline.
+            # Closing its TextIOWrapper here would wait on that read lock.
+            if not readers[0].is_alive():
+                process.stdout.close()
+            if separate and not readers[1].is_alive():
+                process.stderr.close()
     if state['cancelled'] or (cancelled and cancelled()):
         raise InterruptedError("render cancelled")
     if state["stall_killed"]:
         tail.append(f"[2ByteASR] 渲染进程超过 {stall_timeout:.0f}s 无输出，已终止（疑似挂死）。")
         raise RuntimeError("\n".join(tail[-12:]))
-    return code, "\n".join(tail)
+    return code, evidence.result() if separate else ProcessEvidence("\n".join(tail), errors=evidence.errors)
 
 
 def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
@@ -995,7 +1019,9 @@ class AdvancedRendererBackend:
                             message=f"渲染 HTML 字幕帧 {row['done']}/{row['total']}",indeterminate=False))
                 code,log=_run_streaming_process(renderer_node_command(self.root,self.root/'render-overlays.mjs',manifest),
                     cwd=self.root,on_line=line,cancelled=cancelled,stall_timeout=300.)
-                if code:raise RuntimeError('HTML 分段渲染失败：'+log[-2000:])
+                if code:
+                    from ..exports.export_failure import renderer_failure
+                    raise renderer_failure(code,log)
                 for a,b,path in missing:
                     if not path.is_file() or path.stat().st_size<=0:raise RuntimeError(f'HTML 字幕分段缺失：{a}-{b}')
                     _segment_cache_store(props,a,b,path)
@@ -1088,9 +1114,8 @@ class AdvancedRendererBackend:
                         cancelled=cancelled_or_failed, stall_timeout=300.0,
                     )
                     if code != 0 or not seg_path.is_file() or seg_path.stat().st_size <= 0:
-                        raise RuntimeError(
-                            f"segment {a}-{b} render failed: {log[-2000:]}"
-                        )
+                        from ..exports.export_failure import renderer_failure
+                        raise renderer_failure(code,log)
                     _segment_cache_store(props, a, b, seg_path)
                 except BaseException as exc:  # noqa: BLE001 - first failure wins
                     with state_lock:
@@ -1237,8 +1262,9 @@ class AdvancedRendererBackend:
                 f"--props={props_path}", "--codec=prores", "--prores-profile=4444",
                 "--pixel-format=yuva444p10le", "--image-format=png", "--log=verbose",
             ]
-            if _web_theme_composition(props):
-                command.append('--concurrency='+str(min(4,max(2,(os.cpu_count() or 4)//2)) if chrome.name=='chrome-headless-shell.exe' else 2))
+            # Full glyph renders need an explicit page budget too.
+            pages = max(1, min(4, (os.cpu_count() or 4)//2)) if chrome.name=='chrome-headless-shell.exe' else 2
+            command.append(f'--concurrency={pages}')
             if chrome.is_file():
                 command.append(f"--browser-executable={chrome}")
             if trace: trace("advanced_overlay_command", command)
@@ -1364,7 +1390,8 @@ class AdvancedRendererBackend:
                     stall_timeout=300.0,
                 )
                 if overlay_code != 0 or not overlay.is_file():
-                    raise RuntimeError(f"Remotion overlay render failed: {overlay_log[-4000:]}")
+                    from ..exports.export_failure import renderer_failure
+                    raise renderer_failure(overlay_code,overlay_log)
                 _store_overlay_cache(props, overlay)
                 timings["remotion"] = time.perf_counter() - remotion_started
                 timings["overlay_cache"] = "miss"
@@ -1375,7 +1402,7 @@ class AdvancedRendererBackend:
             if native_project.cues:
                 native_ass.write_text(compile_ass(native_project), encoding="utf-8-sig")
             partial = Path(temp_name) / f"output.partial{output.suffix}"
-            composite = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "info", "-y"]
+            composite = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-y"]
             slices = [(float(a), float(b)) for a, b in (getattr(job, "edit_segments", ()) or ())]
             scale_chain = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
             if native_ass.is_file():
@@ -1481,10 +1508,13 @@ class AdvancedRendererBackend:
             from ..exports.export_preview import run_streaming_with_preview
             composite_code, composite_log = run_streaming_with_preview(
                 composite, job, _run_streaming_process, on_line=composite_line, cancelled=cancelled,
+                warning=(lambda text:progress({'notice':text})) if progress else None,
             )
             timings["ffmpeg_composite"] = time.perf_counter() - encode_started
             if composite_code != 0 or not partial.is_file() or partial.stat().st_size <= 0:
-                raise RuntimeError(f"Advanced FFmpeg composite failed: {composite_log[-4000:]}")
+                from ..exports.export_failure import ffmpeg_failure
+                raise ffmpeg_failure(composite_code, composite_log,
+                    encoder=composite[composite.index('-c:v')+1],fps=fps)
             mux_started = time.perf_counter()
             if progress:
                 progress(export_progress(STAGE_MUX, message="正在封装文件…"))

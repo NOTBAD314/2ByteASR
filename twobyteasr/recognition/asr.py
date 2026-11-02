@@ -1784,6 +1784,11 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
         if request_token is not None:request_token.raise_if_cancelled()
         else:_raise_if_queue_cancelled()
     protocol = endpoint.get("protocol", "dashscope_multimodal")
+    from ..providers.asr_language_control import policy as source_control
+    control=source_control(endpoint,get_runtime_context().requested_language)
+    request_language=endpoint.get('asr_request_language') if control['parameter_sent'] else None
+    if request_language is None and control['parameter_sent']:request_language=control['request_language']
+    record_run_event('asr_language_control',provider=endpoint.get('provider'),model=endpoint.get('model'),**control)
     # A prompt/context hint is different from native hotword biasing. Some
     # existing adapters carry no text context and must report that honestly.
     context_supported = protocol in {"openai_transcription", "azure_transcription", "dashscope_multimodal"}
@@ -1815,7 +1820,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
             "parameters": {
                 "asr_options": {
                     "enable_itn": True,
-                    "language": "zh",
+                    **({'language':request_language} if request_language else {}),
                 }
             },
         }
@@ -1913,6 +1918,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
             elif is_multipart:
                 response_format = "verbose_json" if verbose_ok else "json"
                 data = {"prompt": context[:900], "response_format": response_format}
+                if request_language:data['language']=request_language
                 headers = (
                     {"api-key": endpoint["api_key"]}
                     if protocol == "azure_transcription"
@@ -3553,6 +3559,9 @@ def transcribe_primary_reference(
     mapped = "local" if backend == "qwen_local" else backend
     task = get_runtime_context()
     recovery_policy = (task.recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if recovery_policy.get('reuse_candidates'):
+        from .candidate_reprocess import replay_rows
+        return replay_rows(shared_audio, task)
     if backend == 'qwen_local' and recovery_policy.get('explicit_local_range'):
         import numpy as np
         from .cache import record_run_event
@@ -3593,7 +3602,8 @@ def transcribe_primary_reference(
         offset = (task.recognition_snapshot.get('range_ms') or [0])[0]/1000
         intervals = [dict(start=c['start_ms']/1000-offset, end=c['end_ms']/1000-offset, speaker=c['speaker_id'])
                      for c in (task.recognition_snapshot.get('project') or {}).get('cues',[])]
-        state = register_candidate(state,state['ranges'][0]['id'],candidate,speaker_intervals=intervals)
+        state = register_candidate(state,state['ranges'][0]['id'],candidate,speaker_intervals=intervals,
+                                   require_acoustic=task.language_mode!='manual')
         if state['ranges'][0]['status'] != 'accepted':
             raise RuntimeError('自动声学样本没有确认所选语言；未替换原字幕，请检查音轨或选择实际语言')
         task.transcript_acceptance = state

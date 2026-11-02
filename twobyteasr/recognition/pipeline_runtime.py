@@ -1,4 +1,4 @@
-﻿"""Reusable orchestration helpers for the media pipeline.
+"""Reusable orchestration helpers for the media pipeline.
 
 This module deliberately contains no ASR or subtitle-editing rules.  It owns the
 thread coordination, final-stage call order, and transactional hand-off only.
@@ -371,8 +371,10 @@ def complete_media_run(
     cache_owners=None,
 ):
     """Write outputs transactionally, finish the report, and return public paths."""
-    review_items = legacy.print_review_summary()
     runtime_context = runtime_context or get_runtime_context()
+    from .language_diagnostics import merge_language_notices
+    runtime_context.review_items[:]=merge_language_notices(runtime_context.review_items)
+    review_items = legacy.print_review_summary()
     # Before the project and its delivery digest exist: never a later rewrite.
     normalize_delivered_cue_text(cues, legacy)
     # 繁体中文 (2026-10-19): converted here once, so the project, its translation
@@ -463,6 +465,8 @@ def complete_media_run(
                             "language": {
                                 "code": str(getattr(runtime_context, "task_language", "") or "zh"),
                                 "requested": str(getattr(runtime_context, "requested_language", "auto") or "auto"),
+                                "mode": runtime_context.language_mode,
+                                "decision": copy.deepcopy(runtime_context.language_decision),
                                 "evidence": dict(getattr(runtime_context, "language_evidence", {}) or {}),
                                 # Chinese subtitles only: zh-Hans or zh-Hant (2026-10-19).
                                 **({"script": task_script(runtime_context)}
@@ -557,8 +561,15 @@ def complete_media_run(
         for item in review_items
         if isinstance(item, dict)
     )
+    from .transcript_delivery import terminal_status
+    counts = dict((getattr(runtime_context, 'transcript_acceptance', {}) or {}).get('counts') or {})
+    counts['final_cue_count'] = len(cues)
+    status = terminal_status(counts, len(cues), degraded=degraded or bool(
+        getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
+    legacy.record_run_event('subtitle_delivery', status=status, **counts)
     report_json_path, report_text_path = legacy.finish_media_report(
-        "degraded_success" if degraded or getattr(runtime_context, "speaker_recovery", {}).get("needs_confirmation") else "success",
+        status,
+        transcript_counts=counts,
         elapsed_seconds=round(elapsed, 3),
         audio_seconds=round(audio_seconds, 3),
         cue_count=len(cues),
@@ -572,7 +583,7 @@ def complete_media_run(
         outputs={**output_details},
     )
     print(
-        f"\n[文件完成 {file_index}/{file_total}] {legacy.format_elapsed(elapsed)}"
+        f"\n[{'字幕待恢复' if status == 'needs_recovery' else '没有可用字幕' if status == 'empty_result' else '文件完成'} {file_index}/{file_total}] {legacy.format_elapsed(elapsed)}"
         f"\n   工程：{output_details.get('project', '')}"
     )
     if report_text_path:

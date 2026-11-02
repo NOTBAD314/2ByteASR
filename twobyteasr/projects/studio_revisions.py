@@ -582,7 +582,7 @@ class StudioRevisionStore:
         return FrozenMap(tuple(captured))
 
     def _capture_render(self, revision: int, *, style_only: bool = False,
-                        content_ids: frozenset[str] = frozenset()) -> SubtitleRenderRevision:
+                        content_ids: frozenset[str] = frozenset(), refresh_metadata: bool = False) -> SubtitleRenderRevision:
         settings = self.project.render_settings
         from ..timeline.caption_frame_time import project_frame_rate
         from ..caption_style.word_animation import build_word_animation, needs_word_plan
@@ -621,7 +621,7 @@ class StudioRevisionStore:
             # ASS/CaptionScene consume only translations from generation
             # metadata. Recognition histories and terminology/source receipts
             # belong to persistence, not every live visual revision.
-            generation_metadata=(self.render.generation_metadata if content_ids else freeze_json({
+            generation_metadata=(self.render.generation_metadata if content_ids and not refresh_metadata else freeze_json({
                 'translations': (self.project.generation_metadata or {}).get('translations', {}),
                 'speaker_names': (self.project.generation_metadata or {}).get('speaker_names', {}),
             })),
@@ -660,12 +660,12 @@ class StudioRevisionStore:
                 rows[key] = hit
                 continue
             try:
-                data = marshal.dumps(row, 2)
+                data = marshal.dumps(row, 4)
             except ValueError:
                 self._evidence_rows = self._evidence_frozen = None
                 return self._frozen_metadata("asr_evidence")
             if hit is not None and hit[1] == data:
-                rows[key] = (row, data, hit[2])
+                rows[key] = (row, hit[1], hit[2])
                 continue
             rows[key] = (row, data, FrozenBlob.capture(row, data))
             changed = True
@@ -690,7 +690,7 @@ class StudioRevisionStore:
             if hit is None or row is None or hit[0] is not row:
                 continue
             try:
-                same = marshal.dumps(row, 2) == hit[1]
+                same = marshal.dumps(row, 4) == hit[1]
             except ValueError:
                 same = False
             if not same:
@@ -794,6 +794,11 @@ class StudioRevisionStore:
     def consume(self, delta: StateDelta, *, prepare_render: bool = True) -> None:
         project = self.project
         dirty = delta.dirty
+        from ..subtitle_rules.current_issues import LEGACY_INPUTS
+        scoped_metadata = bool(dirty & DirtyDomain.PROJECT_METADATA
+            and delta.studio_state_fields is not None
+            and delta.studio_state_fields <= {'glossary_proofread_review','manual_caption_text','term_word_overrides',LEGACY_INPUTS}
+            and delta.generation_metadata_fields <= {'translations','translation_records','glossary_review_jobs'})
         local_domains = (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_STYLE | DirtyDomain.CUE_SELECTION
                          | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
                          | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM
@@ -842,7 +847,7 @@ class StudioRevisionStore:
             self._recipes = freeze_json(project.style_recipes)
         if dirty & DirtyDomain.PROJECT_METADATA:
             self._speakers = tuple(SpeakerDTO.capture(speaker) for speaker in project.speakers)
-        if dirty & _MAPPING_DIRTY:
+        if dirty & (_MAPPING_DIRTY & ~DirtyDomain.PROJECT_METADATA if scoped_metadata else _MAPPING_DIRTY):
             self.mapping_revision += 1
             # 序列结构变化会改变 source 域投影（预览 ASS 的 cue 集合与
             # 裁边时间），必须重捕获渲染 cue。
@@ -858,13 +863,13 @@ class StudioRevisionStore:
                            | DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW
                            | DirtyDomain.TRANSFORM | DirtyDomain.QC | DirtyDomain.AUTOSAVE)
         content_ids = (delta.affected_cue_ids if delta.affected_cue_ids
-                       and dirty & DirtyDomain.CUE_CONTENT and not dirty & ~content_domains
+                       and dirty & DirtyDomain.CUE_CONTENT and not dirty & ~(content_domains | (DirtyDomain.PROJECT_METADATA if scoped_metadata else DirtyDomain.NONE))
                        and project.render_settings.get('_cue_domain') == 'timeline' else frozenset())
         # A field-only presentation transaction changes no caption receipts or
         # other studio metadata. Reuse the immutable state for that exact set
         # of typed domains; text/timing/structure/metadata changes recapture.
         if prepare_render:
-            self.render = self._capture_render(delta.revision, style_only=style_only, content_ids=content_ids)
+            self.render = self._capture_render(delta.revision, style_only=style_only, content_ids=content_ids, refresh_metadata=scoped_metadata)
         else:
             self._render_pending_revision = delta.revision
         if dirty & DirtyDomain.AUTOSAVE:

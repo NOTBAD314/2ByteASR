@@ -65,17 +65,25 @@ class StudioMediaFlowMixin:
         if path_text in inflight or len(inflight) >= 2:
             return
         inflight.add(path_text)
+        summary = dict(record)
 
         def work() -> None:
             cover = ""
             try:
                 project_path = Path(path_text)
-                project = load_project(project_path)
+                from types import SimpleNamespace
+                from ..projects.project_summary import read_project_summary
+                stamp=project_path.stat()
+                if not summary.get('source_media') or summary.get('_file_version')!=(stamp.st_size,stamp.st_mtime_ns):
+                    summary.update(read_project_summary(project_path))
+                project = SimpleNamespace(media=SimpleNamespace(path=str(summary.get('source_media') or ''),
+                    duration_ms=int(summary.get('duration_ms') or 0)))
                 result = self._ensure_project_cover(project_path, project)
                 cover = str(result or "")
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
                 cover = ""
-            self.cover_ready_signal.emit(path_text, cover)
+            try:self.cover_ready_signal.emit(path_text, cover)
+            except RuntimeError:inflight.discard(path_text)
 
         threading.Thread(target=work, daemon=True, name="studio-cover-backfill").start()
 
@@ -134,19 +142,27 @@ class StudioMediaFlowMixin:
             payload["recent_projects"] = records
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            # Update only the matching card surface; never rebuild or navigate
-            # the Hub while a project may already be opening.
-            cover_path = Path(cover)
-            if cover_path.is_file():
-                fresh = QPixmap(str(cover_path))
-                for card in getattr(self, "_hub_card_widgets", []):
-                    tooltip_lines = str(card.toolTip()).splitlines()
-                    if not tooltip_lines or tooltip_lines[-1] != path_text:
-                        continue
-                    cover_label = card.findChild(QLabel, "projectCardCover")
-                    if cover_label is not None and not fresh.isNull():
-                        cover_label.setPixmap(fresh)
-                    break
+            # Publish versioned summary metadata and decode through the
+            # existing bounded image worker, including a retained hero.
+            cover_path=Path(cover)
+            try:stamp=cover_path.stat()
+            except OSError:return
+            data={'path':path_text,'cover_path':cover,'cover_mtime_ns':stamp.st_mtime_ns,'cover_size':stamp.st_size}
+            for record in getattr(self,'_hub_library_records',()) or ():
+                if str(record.get('path'))==path_text:record.update(data)
+            from ..projects.studio_project import load_library_index,save_library_index,_LIBRARY_INDEX_LOCK
+            with _LIBRARY_INDEX_LOCK:
+                index=load_library_index()
+                if path_text in index:
+                    index[path_text].update({k:v for k,v in data.items() if k!='path'})
+                    save_library_index(index)
+            for card in (*getattr(self,'_hub_card_widgets',()),*getattr(self,'_hub_row_widgets',())):
+                if getattr(card,'_library_item_path','')!=path_text:continue
+                label=card.findChild(QLabel,'projectCardCover')
+                if label is not None:self._enqueue_library_cover(data,label.width(),label.height(),label)
+            if getattr(self,'_resume_target','')==path_text:
+                self._enqueue_library_cover(data,1280,720,self.resume_preview_image)
+            self._start_library_cover_worker()
 
     def _open_or_create_media_project(self, media_path: Path) -> None:
         return self.project_controller._open_or_create_media_project(
@@ -736,6 +752,12 @@ class StudioMediaFlowMixin:
         """The 识别字幕 sheet; ``range_ms`` = (in, out) opens it for that stretch only
         (2026-10-25, studio_range_recognition)."""
         project = self.project
+        if project is not None and not language_recovery:
+            from ..recognition.language_recovery_project import project_pending
+            if project_pending(project):
+                from .language_recovery_ui import open_recovery
+                open_recovery(self)
+                return
         media_path = str(project.media.path or "") if project else ""
         if not project or not media_path or not Path(media_path).is_file():
             studio_message_box(
@@ -1092,6 +1114,25 @@ class StudioMediaFlowMixin:
         if language_recovery:
             spoken = str(language_recovery['requested_language'])
             language_options['recognition_language'] = spoken
+            original_output = project.generation_metadata.get('subtitle_output') or {}
+            language_options['subtitle_output'] = original_output.get('mode', language_options.get('subtitle_output', 'original'))
+            language_options['translation_script'] = original_output.get('translation_script', language_options.get('translation_script', 'zh-Hans'))
+        if not language_recovery:
+            saved_language=project.generation_metadata.get('language') or {}
+            spoken=str(saved_language.get('requested') or spoken)
+        source_language=QComboBox()
+        source_language.setObjectName('recognitionSourceLanguage')
+        source_labels={'auto':'自动判断语言','zh':'中文','ja':'日语','en':'英语','ko':'韩语','es':'西班牙语',
+            'de':'德语','fr':'法语','pt':'葡萄牙语','it':'意大利语','ru':'俄语','pt-BR':'葡萄牙语（巴西）','pt-PT':'葡萄牙语（葡萄牙）'}
+        from ..subtitle_rules.language_rules import SUPPORTED_REQUESTS,normalize_language
+        for code in SUPPORTED_REQUESTS:source_language.addItem(tr(source_labels.get(code,code)),code)
+        index=source_language.findData(spoken)
+        if index<0:index=source_language.findData(normalize_language(spoken))
+        source_language.setCurrentIndex(max(0,index))
+        spoken=str(source_language.currentData())
+        source_language.setEnabled(not bool(language_recovery))
+        options.addWidget(field_label('音频源语言'),2,0)
+        options.addWidget(source_language,2,1)
         for value in (TARGETS if spoken == "auto" else targets_for(spoken)):
             translation_target.addItem(TARGET_LABELS[value], value)
         translation_target.setCurrentIndex(max(0, translation_target.findData(
@@ -1142,6 +1183,17 @@ class StudioMediaFlowMixin:
             ai_button.setVisible((not range_info or bool(language_recovery)) and callable(getattr(host, "_open_ai_settings_dialog", None)))
             translation_target.setVisible((not range_info or bool(language_recovery)) and ready and translation_output.currentData() != "original")
             QTimer.singleShot(0, fit_card)
+
+        def source_changed(_index):
+            nonlocal spoken
+            spoken=str(source_language.currentData() or 'auto')
+            previous=translation_target.currentData()
+            translation_target.clear()
+            for value in (TARGETS if spoken=='auto' else targets_for(spoken)):
+                translation_target.addItem(TARGET_LABELS[value],value)
+            translation_target.setCurrentIndex(max(0,translation_target.findData(previous)))
+            refresh_translation_lock()
+        source_language.currentIndexChanged.connect(source_changed)
 
         def open_ai_settings() -> None:
             opener = getattr(host, "_open_ai_settings_dialog", None)
@@ -1404,6 +1456,7 @@ class StudioMediaFlowMixin:
                 output = "original"
             options = {
                 "purpose": "analysis" if local_analysis.isChecked() else "final",
+                "recognition_language": str(source_language.currentData() or 'auto'),
                 "recognition_plan": str(plan.currentData() or "custom"),
                 "models": {
                     "primary": str(primary_model.currentData() or ""),
@@ -1427,7 +1480,7 @@ class StudioMediaFlowMixin:
                                range_replaced_cue_ids=stretch["replaced"])
             if language_recovery:
                 options['language_recovery_policy'] = dict(language_recovery,
-                    explicit_range=True, explicit_local_range=str(primary_model.currentData())=='qwen_local')
+                    explicit_range=True, explicit_local_range=not language_recovery.get('reuse_candidates') and str(primary_model.currentData())=='qwen_local')
                 options['recognition_language'] = spoken
             return options
 
@@ -1442,7 +1495,7 @@ class StudioMediaFlowMixin:
                 bind_text(problem, '已有识别任务正在运行，请等待完成或取消后再试。')
                 problem.show()
                 return
-            if language_recovery and str(primary_model.currentData())=='qwen_local':
+            if language_recovery and not language_recovery.get('reuse_candidates') and str(primary_model.currentData())=='qwen_local':
                 from ..recognition.asr import resolve_qwen_asr_local_source, resolve_qwen_aligner_local_source
                 from ..system.runtime_registry import resolve_runtime_python
                 ready = bool(resolve_qwen_asr_local_source() and resolve_runtime_python('main',register=False))
@@ -1466,6 +1519,7 @@ class StudioMediaFlowMixin:
             if lanes:
                 # 2026-10-24: the picked audio tracks, each recognized on its own.
                 self._recognition_request_options["audio_lanes"] = [dict(row) for row in lanes]
+            self._recognition_provisional_receipts = {}
             self._recognition_started_at = perf_counter()
             # 四十二轮：识别转后台。①弹窗立即关闭（状态进左侧字幕列表芯片），
             # 否则 _start_run 预检分支的 QMessageBox 会被 ModalHost 盖住形成
@@ -1563,7 +1617,7 @@ class StudioMediaFlowMixin:
         start.clicked.connect(start_clicked)
         confirm_replace.clicked.connect(lambda: dispatch("start_final"))
         apply_plan()
-        if language_recovery:
+        if language_recovery and not language_recovery.get('reuse_candidates') and not language_recovery.get('force_cloud'):
             select_plan('custom')
             for combo, value in ((primary_model,'qwen_local'),(timeline_model,'qwen_aligner'),(review_model,'off')):
                 index = combo.findData(value)
@@ -1575,6 +1629,14 @@ class StudioMediaFlowMixin:
             range_notes.append(bind_text(QLabel(), '只处理异常范围；本地方案不会上传音频，模型未就绪时不会自动下载。旧文字与设置保留在可恢复记录中。'))
             range_notes[-1].setWordWrap(True)
             summary.insertWidget(max(0,summary.count()-1),range_notes[-1])
+        if language_recovery and language_recovery.get('reuse_candidates'):
+            bind_text(start, '审核并继续处理已有候选')
+        if language_recovery and language_recovery.get('force_cloud'):
+            select_plan('custom')
+            index = primary_model.findData('api')
+            if index >= 0:
+                primary_model.setCurrentIndex(index)
+            bind_text(start, '重新云端转写此范围（可能计费）')
         refresh_translation_lock(initial=True)
         # 四处引用旧 sheet 状态对象的地方都已改走左侧芯片；重建弹窗前清理
         # 上一张 retain 的 sheet，避免反复开关累积孤儿控件。
@@ -1594,6 +1656,7 @@ class StudioMediaFlowMixin:
             "summary": summary_card,
             "glossaries": chips_host,
             "translation": translation_output,
+            "source_language": source_language,
             "translation_target": translation_target,
             "start": start,
             "confirm": confirm_row,
@@ -1826,12 +1889,22 @@ class StudioMediaFlowMixin:
             item for item in payload.get("cues", ()) if isinstance(item, Mapping)
         ]
         state_name = str(payload.get("state") or "provisional")
-        if not raw_cues and state_name != "final":
+        raw_cues = [item for item in raw_cues if str(item.get('id') or '').strip() and str(item.get('text') or '').strip()]
+        if not raw_cues:
+            if state_name == 'final':
+                from .recognition_preview import discard
+                discard(self)
+                self._recognition_replace_baseline_ids = None
             return
         incoming_ids = {
             str(item.get("id") or "") for item in raw_cues
             if str(item.get("id") or "")
         }
+        receipts = getattr(self,'_recognition_provisional_receipts',None)
+        if receipts is None:
+            receipts={}
+            self._recognition_provisional_receipts=receipts
+        from .recognition_preview import signature
         states = project.generation_metadata.setdefault("asr_cue_states", {})
         if not isinstance(states, dict):
             states = {}
@@ -1880,6 +1953,13 @@ class StudioMediaFlowMixin:
                 start_ms = max(0, int(item.get("start_ms") or 0))
                 end_ms = max(start_ms + 20, int(item.get("end_ms") or start_ms + 20))
                 cue = existing.get(cue_id)
+                if state_name == 'provisional' and cue is not None:
+                    if cue_id not in receipts:
+                        continue  # a cache ID never authorizes replacing existing text
+                    if signature(project,cue) != receipts[cue_id]:
+                        receipts.pop(cue_id,None)
+                        states.pop(cue_id,None)
+                        continue  # retain the user's edit to a preview
                 if cue is None:
                     cue = StudioCue(
                         id=cue_id,
@@ -1889,6 +1969,7 @@ class StudioMediaFlowMixin:
                         speaker_id=str(item.get("speaker_id") or "S00"),
                         style_id=str(item.get("style_id") or "default"),
                     )
+                    cue.validate()
                     project.cues.append(cue)
                     existing[cue_id] = cue
                 else:
@@ -1896,6 +1977,10 @@ class StudioMediaFlowMixin:
                     cue.end_ms = end_ms
                     cue.text = str(item.get("text") or cue.text)
                 states[cue_id] = state_name
+                if state_name == 'provisional':
+                    receipts[cue_id] = signature(project,cue)
+            if state_name == 'final':
+                receipts.clear()
             project.cues.sort(key=lambda cue: (cue.start_ms, cue.end_ms, cue.id))
         if not self.selected_cue_id and project.cues:
             self.select_cue(project.cues[0].id)
@@ -1948,6 +2033,8 @@ class StudioMediaFlowMixin:
         self._sync_recognition_zero_state()
 
     def fail_recognition_runtime(self, message: str) -> None:
+        from .recognition_preview import discard
+        discard(self)
         self._recognition_running = False
         self._recognition_cancelling = False
         self._recognition_replace_baseline_ids = None

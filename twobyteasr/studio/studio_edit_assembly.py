@@ -333,6 +333,8 @@ class StudioEditAssemblyMixin:
             self._refresh_danmaku_status()
             return
         project_id, source = project.project_id, primary_source(project)
+        self._danmaku_generation = generation = getattr(self, "_danmaku_generation", 0) + 1
+        owner_identity = id(project)
         explicit = bool(manual_path)
 
         def work() -> None:
@@ -344,7 +346,7 @@ class StudioEditAssemblyMixin:
             else:
                 result = discover_for_source(source)
             try:
-                self.danmaku_discovery_signal.emit(project_id, result)
+                self.danmaku_discovery_signal.emit(project_id, (generation, owner_identity, result))
             except RuntimeError:
                 pass
 
@@ -354,6 +356,9 @@ class StudioEditAssemblyMixin:
 
     def _danmaku_discovery_ready(self, project_id: str, discovery) -> None:
         project = self.project
+        if isinstance(discovery, tuple):
+            generation, owner_identity, discovery = discovery
+            if generation != getattr(self, '_danmaku_generation', 0) or id(project) != owner_identity:return
         if project is None or project.project_id != project_id:
             return  # a late result for another project is discarded
         from ..media.danmaku_binding import apply_discovery, bind_manual, normalized_source, primary_source
@@ -363,10 +368,11 @@ class StudioEditAssemblyMixin:
         manual = discovery.status in {"manual", "legacy_manual"}
         # A user choice is an edit (saved); an automatic match is re-found on
         # open and saved with the next edit, without forcing an autosave.
-        dirty = DirtyDomain.CLIP_STATUS | DirtyDomain.PROJECT_METADATA
+        dirty = DirtyDomain.CLIP_STATUS
         if discovery.status == "manual":
             dirty |= DirtyDomain.AUTOSAVE
-        with state_for(project).transaction(project, action_id="danmaku_binding", dirty=dirty):
+        with state_for(project).transaction(project, action_id="danmaku_binding", dirty=dirty,
+                studio_state_keys=("danmaku_binding","media_xml_candidates","media_xml_match")):
             if manual:
                 bind_manual(project, discovery.path, discovery.count, discovery.duration_ms, discovery.error)
             else:

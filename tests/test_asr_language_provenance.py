@@ -43,7 +43,7 @@ def test_pipeline_warns_once_before_alignment_without_rewriting(monkeypatch, tmp
         media_cache_context=lambda p: {'cache_dir': str(tmp_path)}, begin_media_report=lambda *a: None,
         run_timed_stage=lambda n, total, label, resource, run: run(),
         run_cached_stage=lambda name, cache, run, **kw: run(),
-        load_shared_audio=lambda *a: np.zeros(16000, dtype=np.float32),
+        load_shared_audio=lambda *a: np.zeros(60*16000, dtype=np.float32),
         record_run_event=lambda name, **data: events.append((name, data)),
         add_review_item=lambda *a, **kw: warnings.append((a, kw)),
         capture_review_items=lambda: nullcontext([]), extend_review_items=lambda rows: None,
@@ -72,7 +72,8 @@ def test_pipeline_warns_once_before_alignment_without_rewriting(monkeypatch, tmp
         assert context.task_language == requested
     assert any(name == 'primary_language_audit' for name, _ in events)
     if warning:
-        assert context.transcript_acceptance['ranges'][0]['status'] == 'pending'
+        assert not context.transcript_acceptance['ranges']
+        assert context.transcript_acceptance['observed_ranges'][0]['status']=='observation'
         assert warnings[0][1]['severity'] == 'warning'
         assert warnings[0][1]['retry_action'] == 'inspect_audio_then_recognize_range'
 

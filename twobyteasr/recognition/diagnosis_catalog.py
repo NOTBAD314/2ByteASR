@@ -105,6 +105,14 @@ def _issues(*entries: KnownIssue) -> dict[str, KnownIssue]:
 
 
 ISSUES: dict[str, KnownIssue] = _issues(
+    KnownIssue(
+        'transcript_quarantined', 'asr', 'blocker', '转写候选已取得，语言冲突范围待恢复',
+        '存在原始候选，但接纳检查隔离了冲突范围；候选数量与最终字幕数量是不同事实。',
+        '已选择的源语言与转写文字特征冲突，或该请求的局部文字证据不足；这没有验证真实音频的语言。',
+        '点击“核对候选与恢复”，查看原文并试听输入；确认后可修改源语言复用候选继续处理，或明确重新云端识别异常范围。',
+        supersedes=('empty_result', 'language_mismatch'),
+        short='原始转写候选已保留；语言冲突范围尚未生成可用字幕，需要核对和恢复。',
+    ),
     # Order = display order among findings of the same severity and certainty.
     # ---- 素材与音频 ------------------------------------------------------
     KnownIssue(

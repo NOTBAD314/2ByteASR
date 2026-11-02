@@ -524,6 +524,13 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         "stage": stage,
         "version": version,
     }
+    policy = (runtime_context.recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if str(stage).startswith('primary_'):
+        if policy.get('force_cloud'):
+            base['explicit_cloud_generation'] = runtime_context.job_id
+        if policy.get('reuse_candidates'):
+            base['saved_candidate_reprocess'] = stable_digest(policy)
+            base['reprocess_language'] = runtime_context.requested_language
     if stage in {'qwen', 'primary_qwen_local'}:
         from ..subtitle_rules.language_rules import qwen_language_name
         actual_language = runtime_context.task_language or runtime_context.requested_language
@@ -693,6 +700,9 @@ def atomic_write_json(path, payload):
 
 def _stage_cache_path(stage, cache_context, signature):
     # Legacy grouped.json is retained verbatim. New identities never replace it.
+    policy = (get_runtime_context().recognition_snapshot or {}).get('language_recovery_policy') or {}
+    if str(stage).startswith('primary_') and (policy.get('force_cloud') or policy.get('reuse_candidates')):
+        return os.path.join(cache_context['cache_dir'], f'{stage}-{signature}.json')
     name = (f"moss-full-context-{signature}.json" if stage == "moss" else
             f"grouped-snapshot-{signature}.json" if stage == "grouped" else f"{stage}.json")
     return os.path.join(cache_context["cache_dir"], name)

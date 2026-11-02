@@ -1,5 +1,6 @@
 """Local recovery and accepted-result boundaries; no real network or model load."""
 import copy
+from pathlib import Path
 import json
 from types import SimpleNamespace
 import numpy as np
@@ -74,11 +75,11 @@ def test_gate_keeps_remote_success_but_never_aligns_wrong_primary(tmp_path):
     ctx=RuntimeContext(requested_language='en',task_language='en')
     raw=[dict(start=0,end=2,text=IT),dict(start=3,end=4,text=EN)]
     got=gate_primary({'segments':raw,'references':raw},np.zeros(64000),ctx,_legacy(),{'cache_dir':str(tmp_path)},_audit())
-    assert got['segments']==[raw[1]]
+    assert got['segments']==raw and ctx.task_language=='en'
     state=ctx.transcript_acceptance
-    assert state['ranges'][0]['remote_status']=='SUCCESS'
-    assert state['ranges'][0]['raw_rows']==[raw[0]]
-    assert len(pending_ranges(state))==1
+    assert state['observed_ranges'][0]['remote_status']=='SUCCESS'
+    assert state['observed_ranges'][0]['raw_rows']==[raw[0]]
+    assert not pending_ranges(state)
     assert (tmp_path/'primary-selection-en.json').exists()
 
 
@@ -86,12 +87,12 @@ def test_normal_task_does_not_hash_audio_or_start_second_asr(tmp_path,monkeypatc
     from twobyteasr.recognition import transcript_acceptance as acceptance
     monkeypatch.setattr(acceptance,'identity_for',lambda *a:(_ for _ in ()).throw(AssertionError('unexpected audio work')))
     raw={'segments':[dict(start=0,end=1,text=EN)]}
-    assert gate_primary(raw,np.zeros(10),RuntimeContext(requested_language='en'),_legacy(),
-                        {'cache_dir':str(tmp_path)},{'conflicts':0}) is raw
+    assert gate_primary(raw,np.zeros(16000),RuntimeContext(requested_language='en'),_legacy(),
+                        {'cache_dir':str(tmp_path)},{'conflicts':0})['segments']==raw['segments']
 
 
 @pytest.mark.parametrize('error',['model not installed','CUDA unavailable','CUDA out of memory'])
-def test_unavailable_local_recovery_is_pending_and_attempted_only_once(tmp_path,monkeypatch,error):
+def test_legacy_allow_local_once_does_not_trigger_extra_asr_for_text_hint(tmp_path,monkeypatch,error):
     from twobyteasr.recognition import local_language_recovery as local
     calls=[]
     def fail(*a,**kw):calls.append(1);raise RuntimeError(error)
@@ -101,20 +102,21 @@ def test_unavailable_local_recovery_is_pending_and_attempted_only_once(tmp_path,
     raw={'segments':[dict(start=0,end=2,text=IT),dict(start=3,end=4,text=EN)]}
     for _ in range(2):
         got=gate_primary(raw,np.zeros(64000),ctx,_legacy(),{'cache_dir':str(tmp_path)},_audit())
-        assert got['segments']==[raw['segments'][1]]
-    assert len(calls)==1 and len(pending_ranges(ctx.transcript_acceptance))==1
+        assert got['segments']==raw['segments']
+    assert len(calls)==0 and not pending_ranges(ctx.transcript_acceptance)
+    assert ctx.transcript_acceptance['observed_ranges']
 
 
-def test_cancellation_keeps_saved_pending_scope(tmp_path,monkeypatch):
-    from twobyteasr.recognition import local_language_recovery as local
-    from twobyteasr.recognition.service import CancelledError
-    def cancel(*a,**kw):raise CancelledError('cancel')
-    monkeypatch.setattr(local,'recognize_range',cancel)
-    ctx=RuntimeContext(requested_language='en',task_language='en',
-                       recognition_snapshot={'language_recovery_policy':{'allow_local_once':True}})
-    with pytest.raises(CancelledError):
-        gate_primary({'segments':[dict(start=0,end=2,text=IT)]},np.zeros(32000),ctx,_legacy(),{'cache_dir':str(tmp_path)},_audit())
-    assert pending_ranges(json.loads((tmp_path/'primary-selection-en.json').read_text('utf8')))
+def test_cancellation_keeps_saved_observation_and_original_candidate(tmp_path,monkeypatch):
+    from twobyteasr.recognition.service import CancelledError,CancellationToken
+    token=CancellationToken();ctx=RuntimeContext(requested_language='en',cancellation_token=token)
+    raw={'segments':[dict(start=0,end=2,text=IT)]}
+    gate_primary(raw,np.zeros(32000),ctx,_legacy(),{'cache_dir':str(tmp_path)},_audit())
+    path=tmp_path/'primary-selection-en.json';before=path.read_bytes()
+    token.cancel()
+    with pytest.raises(CancelledError):gate_primary(raw,np.zeros(32000),ctx,_legacy(),{'cache_dir':str(tmp_path)},_audit())
+    assert path.read_bytes()==before
+    assert json.loads(before)['candidate_rows']==raw['segments']
 
 
 @pytest.mark.parametrize('backend,model',[('qwen_local','Qwen3-ASR-1.7B'),('api','explicit-alternate-model')])
@@ -216,6 +218,10 @@ def test_accepted_zero_cues_can_save_pending_project_without_alignment(tmp_path)
         cache=core.media_cache_context(source);ctx.media_identity=media_identity_for_task(source,ctx)
         core.begin_media_report(source,cache)
         audit=audit_primary_language(rows,ctx,core)
+        from twobyteasr.recognition.transcript_acceptance import identity_for
+        genuine=pending();genuine['identity']=identity_for(np.zeros(32000),'en',ctx.media_identity)
+        genuine['ranges'][0]['reason']='source_audio_identity_missing'
+        (Path(cache['cache_dir'])/'primary-selection-en.json').write_text(json.dumps(genuine),'utf8')
         result=gate_primary({'segments':rows},np.zeros(32000),ctx,core,cache,audit)
         assert not result['segments']
         complete_media_run(cues=[],segments=[],file_index=1,file_total=1,started=__import__('time').perf_counter(),

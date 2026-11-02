@@ -34,7 +34,7 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
         self._acceptance_before = copy.deepcopy(project.generation_metadata.get('transcript_acceptance'))
         self._speaker_names_before = copy.deepcopy(project.generation_metadata.get('speaker_names'))
         self._recovery_metadata_before = {key:copy.deepcopy(project.generation_metadata.get(key))
-            for key in ('speaker_recovery','asr_cue_states','superseded_asr_evidence')}
+            for key in ('speaker_recovery','asr_cue_states','superseded_asr_evidence','language')}
         self._evidence = ({key: copy.deepcopy(project.asr_evidence.get(key)) for key in plan.evidence},
                           copy.deepcopy(plan.evidence))
         from .studio_caption_timeline import KEY, independent_captions

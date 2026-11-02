@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--media", type=Path, required=True, help="video clip inside repository tmp")
-    parser.add_argument("--theme", default="grape", choices=("grape", "warm"))
+    parser.add_argument("--theme", default="grape", choices=("grape", "warm", "sand"))
     parser.add_argument("--widths", default="1440,1600,1920")
     parser.add_argument("--zoom", type=int, default=100, choices=(100, 110, 120, 135, 150),
                         help="interface zoom saved on this (isolated) machine before the app starts")

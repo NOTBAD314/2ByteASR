@@ -314,6 +314,9 @@ class SubtitleStudioPage(
         previous = self.session.runtime
         if previous is not None:
             previous.unsubscribe(self._consume_state_delta)
+            journal = getattr(self, '_timing_journal', None)
+            if journal is not None:previous.unsubscribe(journal.consume)
+            self._timing_journal = None
         heap = getattr(self, '_project_heap', None)
         if heap is not None and value is not self.session.project:
             heap.release()  # no deferred collection for a project that is gone
@@ -385,7 +388,10 @@ class SubtitleStudioPage(
         self._timing_journal = TimingJournal(value, lambda: self.project_path)
         runtime.subscribe(self._timing_journal.consume)
         self.session.runtime = runtime
-        self._revision_store = StudioRevisionStore(value, revision=runtime.revision)
+        from ..projects.project_open_preparation import prepared
+        preparation = prepared(value)
+        self._revision_store = preparation[4] if preparation is not None else StudioRevisionStore(value, revision=runtime.revision)
+        value.__dict__.pop('_prepared_open', None)
         recovery = getattr(self, "_draft_recovery", None)
         if recovery is not None:
             recovery.project_changed()
@@ -1110,7 +1116,11 @@ class SubtitleStudioPage(
 
     def _native_keys_blocked(self) -> bool:
         """A modal card over the main window owns the keyboard."""
-        host = getattr(self.window(), "_modal_host", None)
+        owner=self.window()
+        loading=getattr(owner, '_studio_loading_session', None)
+        if loading is not None and getattr(getattr(loading, '_input_lease', None), 'held', False):
+            return True
+        host = getattr(owner, "_modal_host", None)
         return bool(host is not None and host.isVisible())
 
     def _studio_preferences(self) -> dict[str, object]:
@@ -3291,8 +3301,18 @@ class SubtitleStudioPage(
         return self.cue_controller.table_activated(index)
 
     def _open_render_dialog(self) -> None:
-        if not self.project or not self._preview_path:
+        self._studio_trace("EXPORT_ENTRY", entry="studio_video", export_type="video",
+            schema_version=getattr(self.project, "schema_version", None),
+            cue_count=len(self.project.cues) if self.project else 0,
+            preview_ready=bool(self._preview_path),
+            workspace_open=self.export_workspace is not None,
+            loading=getattr(self, "_project_view_state", ""))
+        if not self.project:
+            self._studio_trace("EXPORT_ENTRY_BLOCKED", entry="studio_video", reason="no_project")
+            studio_message_box(self, QMessageBox.Icon.Warning, tr('无法打开视频导出'), tr('请先打开工程。'))
             return
+        # Export freezes its own ASS in StudioExportWorkspace._job. The
+        # asynchronous, disposable preview is not an export prerequisite.
         style = getattr(self, 'style_controller', None)
         if style is not None and not style.flush_pending_application():
             return
@@ -3319,22 +3339,31 @@ class SubtitleStudioPage(
         try:
             self.export_workspace = StudioExportWorkspace(
                 self.project,
-                str(self._preview_path),
+                str(self._preview_path or ""),
                 project_path=self.project_path,
                 parent=self,
                 preview_widget=self.video,
             )
-        except Exception:
+        except Exception as exc:
+            import traceback
+            self._studio_trace("EXPORT_ENTRY_FAILED", entry="studio_video", reason="workspace_setup",
+                exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
+            self.export_workspace = None
             self._restore_studio_video()
             self.video.show()
             self.video_compositor.set_interaction_enabled(self._export_interaction_before)
-            raise
+            self._export_return_ui = None
+            self._sync_navigation_chrome()
+            studio_message_box(self, QMessageBox.Icon.Warning, tr('无法打开视频导出'),
+                tr('导出窗口初始化失败：{error}\n请重试；若仍失败，请从“回报问题”导出日志。', error=str(exc)))
+            return
         self.export_workspace.back_requested.connect(self._close_export_workspace)
         self.export_workspace.render_succeeded.connect(lambda path: self._render_succeeded(path, False))
         self.layout().addWidget(self.export_workspace, 1)
         self.workspace_splitter.hide()
         self.workspace_host.hide()
         self.export_workspace.show()
+        self._studio_trace("EXPORT_ENTRY_OPENED", entry="studio_video")
         self.studio_render_button.setEnabled(False)
         self._sync_navigation_chrome()
 

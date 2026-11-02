@@ -230,6 +230,15 @@ class StudioProjectController:
             "status": "已保存",
             "pinned": bool(previous.get("pinned", False)),
         }
+        if project is not None:
+            from .project_summary import summary_from_payload
+            summary=summary_from_payload(path,dict(project_id=project.project_id,
+                media=vars(project.media),studio_state=project.studio_state,
+                generation_metadata=project.generation_metadata,cues=len(project.cues),
+                created_at=project.created_at,updated_at=project.updated_at),current)
+            # Preserve the existing settings contract; extra summary fields
+            # belong only to the rebuildable library index.
+            current.update({key:summary[key] for key in current if key in summary})
         retained = []
         for item in existing:
             item_path = item.get("path", "") if isinstance(item, dict) else item
@@ -260,6 +269,9 @@ class StudioProjectController:
             "mtime_ns": int(stat.st_mtime_ns),
             "size": int(stat.st_size),
             "needs_metadata_repair": False,
+            "summary_version": 1,
+            "name_origin": dict(recent_record.get("name_origin") or {}),
+            "name_custom": bool(recent_record.get("name_custom")),
             "project_id": (self.session.project.project_id if self.session.project else ""),
             "name": str(recent_record.get("name") or path.stem),
             "cue_count": int(recent_record.get("cue_count") or 0),
@@ -267,17 +279,21 @@ class StudioProjectController:
             "source_media": str(recent_record.get("source_media") or ""),
             "created_at": str(recent_record.get("created_at") or ""),
             "updated_at": str(recent_record.get("updated_at") or ""),
-            "width": 0,
-            "height": 0,
+            "width": int(self.session.project.media.width or 0) if self.session.project else 0,
+            "height": int(self.session.project.media.height or 0) if self.session.project else 0,
             "cover_path": str(recent_record.get("cover_path") or ""),
         }
         if index.get(resolved) and int(index[resolved].get("mtime_ns", -1)) == entry["mtime_ns"]:
             previous = index[resolved]
-            for dimension in ("width", "height"):
-                entry[dimension] = int(previous.get(dimension) or 0)
+            if self.session.project is None:
+                for dimension in ("width", "height"):
+                    entry[dimension] = int(previous.get(dimension) or 0)
             entry["project_id"] = entry["project_id"] or str(previous.get("project_id") or "")
-        index[resolved] = entry
-        save_library_index(index)
+        from .studio_project import _LIBRARY_INDEX_LOCK
+        with _LIBRARY_INDEX_LOCK:
+            latest=load_library_index()
+            latest[resolved]=entry
+            save_library_index(latest)
 
     def _ensure_project_cover(self, project_path: Path, project: SubtitleProject) -> Path | None:
         preview_dir = project_path.resolve().parent / "preview"
@@ -290,18 +306,35 @@ class StudioProjectController:
             return cover if cover.is_file() else None
         preview_dir.mkdir(parents=True, exist_ok=True)
         seek_seconds = min(90.0, max(1.0, float(project.media.duration_ms or 0) / 100_000.0))
-        result = run_hidden_subprocess(
-            [
-                str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
-                "-ss", f"{seek_seconds:.3f}", "-i", str(media), "-frames:v", "1",
-                "-vf", "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2",
-                "-q:v", "3", str(cover),
-            ],
-            purpose="ffmpeg project cover",
-            capture_output=True,
-            timeout=20,
-        )
-        return cover if result.returncode == 0 and cover.is_file() else None
+        import tempfile
+        def version(path):
+            try:
+                stat=path.stat();return stat.st_ino,stat.st_size,stat.st_mtime_ns
+            except OSError:return None
+        project_version,cover_version=version(project_path),version(cover)
+        descriptor,name=tempfile.mkstemp(prefix='.project-cover-',suffix='.jpg',dir=preview_dir)
+        os.close(descriptor);temporary=Path(name)
+        try:
+            result = run_hidden_subprocess(
+                [str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y',
+                 '-ss', f'{seek_seconds:.3f}', '-i', str(media), '-frames:v', '1',
+                 '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2',
+                 '-q:v', '3', str(temporary)],
+                purpose='ffmpeg project cover',capture_output=True,timeout=20)
+            if result.returncode != 0 or not temporary.is_file():return None
+            if version(project_path)!=project_version or version(cover)!=cover_version:return None
+            if cover_version is None:
+                try:os.link(temporary,cover)  # atomic no-replace if a user supplied a cover meanwhile
+                except FileExistsError:return None
+                except OSError:
+                    if os.name!='nt':raise
+                    try:os.rename(temporary,cover)  # Windows rename never overwrites an existing file
+                    except FileExistsError:return None
+            else:
+                os.replace(temporary,cover)
+            return cover
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _relink_media(
         self,
@@ -514,26 +547,31 @@ class StudioProjectController:
                     project, recovered_autosave = page._resolve_project_recovery(requested_path, project)
             open_stage = "CONSISTENCY"
             from .subtitle_consistency import validate_project, SubtitleConsistencyError
-            consistency = validate_project(project, stage="load")
-            if not consistency.ok:
-                raise SubtitleConsistencyError(consistency)
-            # Run old-project compatibility only at the load boundary, before
-            # releasing the previous session. Never restore ASR over edits or
-            # synchronously fuzzy-align every edited caption while opening.
-            from ..timeline.studio_caption_timeline import ensure_independent_captions, recover_caption_words
-            from ..timeline.caption_source_receipts import recover_caption_sources
-            ensure_independent_captions(project)
-            recover_caption_sources(project)
-            recovered_words = recover_caption_words(project, allow_realign=False)
-            # 2026-10-22: automatic speaker groups follow the current rule and
-            # the 「默认独立字幕轨」 preference (a cap the user picked is kept).
-            from ..recognition.speaker_roles import refresh_automatic_roles
-            from .studio_project import speaker_track_preference
-            if refresh_automatic_roles(project, speaker_track_preference()):
-                page._studio_trace("SPEAKER_ROLES_REFRESHED", cap=project.studio_state["speaker_roles"]["cap"])
-            consistency = validate_project(project, stage="load")
-            if not consistency.ok:
-                raise SubtitleConsistencyError(consistency)
+            from .project_open_preparation import prepared
+            preparation = prepared(project)
+            if preparation is not None:
+                consistency, recovered_words = preparation[2:4]
+            else:
+                consistency = validate_project(project, stage="load")
+                if not consistency.ok:
+                    raise SubtitleConsistencyError(consistency)
+                # Run old-project compatibility only at the load boundary, before
+                # releasing the previous session. Never restore ASR over edits or
+                # synchronously fuzzy-align every edited caption while opening.
+                from ..timeline.studio_caption_timeline import ensure_independent_captions, recover_caption_words
+                from ..timeline.caption_source_receipts import recover_caption_sources
+                ensure_independent_captions(project)
+                recover_caption_sources(project)
+                recovered_words = recover_caption_words(project, allow_realign=False)
+                # 2026-10-22: automatic speaker groups follow the current rule and
+                # the 「默认独立字幕轨」 preference (a cap the user picked is kept).
+                from ..recognition.speaker_roles import refresh_automatic_roles
+                from .studio_project import speaker_track_preference
+                if refresh_automatic_roles(project, speaker_track_preference()):
+                    page._studio_trace("SPEAKER_ROLES_REFRESHED", cap=project.studio_state["speaker_roles"]["cap"])
+                consistency = validate_project(project, stage="load")
+                if not consistency.ok:
+                    raise SubtitleConsistencyError(consistency)
             page._studio_trace("SUBTITLE_CONSISTENCY",
                                errors=len(consistency.errors), warnings=len(consistency.warnings),
                                warning_codes=sorted({item.code for item in consistency.warnings}))
@@ -879,7 +917,14 @@ class StudioProjectController:
         mark_hydration("timeline_window")
         if project.generation_metadata.get('display_overlap_audit',{}).get('status') != 'user_undone':
             from ..subtitle_rules.display_timing import project_display_tail_plan
-            ends,audit=project_display_tail_plan(project)
+            cached_tail=getattr(project, '_prepared_display_tail', None)
+            from .project_open_preparation import tail_key
+            qc_revision=tail_key(project)
+            if cached_tail is not None and cached_tail[0] == qc_revision:
+                ends,audit=cached_tail[1]
+            else:
+                ends,audit=project_display_tail_plan(project)
+                project._prepared_display_tail=(qc_revision,(ends,audit))
             page._pending_display_handoffs_preview = {"project_id": project.project_id, "ends": ends, "audit": audit}
             if ends:
                 bind_text(page.save_state, '发现{value0}条可预览的显示边界修复，确认后应用；原始工程保持。', property='toolTip', value0=len(ends))
