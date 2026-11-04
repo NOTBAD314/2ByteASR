@@ -649,9 +649,9 @@ def _run_media_queue(
     try:
         pipeline.set_cancellation_token(token)
         with legacy.run_event_observer(forward_event):
-            startup_self_test = _startup_self_test or legacy.run_startup_self_test()
             log_path = legacy.begin_run_event_log()
             print(f"[运行日志] {log_path}")
+            startup_self_test = _startup_self_test or legacy.run_startup_self_test()
             legacy.record_run_event(
                 "queue_configured",
                 media_count=len(normalized_paths),

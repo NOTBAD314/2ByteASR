@@ -13,7 +13,7 @@ class ExportProgress:
         if advanced:
             self.weights.append(('advanced_render', 2 if static_advanced else 35))
         used = sum(w for _, w in self.weights)
-        self.weights.extend([('encode', 96-used), ('mux', 1), ('validate', 3)])
+        self.weights.extend([('encode', 96-used), ('mux', 1), ('validate', 2), ('publish', 1)])
         self.percent = 0.
         self.started = time.monotonic()
         self.stage = ''

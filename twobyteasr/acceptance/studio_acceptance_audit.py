@@ -266,7 +266,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions'}:
+    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -481,6 +481,16 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-release':
+        from .export_release_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-edit-integrity':
+        from .studio_edit_integrity_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'recognition-recovery':
         from .recognition_recovery_audit import start
         output=audit_directory()

@@ -537,7 +537,7 @@ class CleanupCuesCommand(ReplaceCuesCommand):
 
 
 class SpliceCuesCommand(QUndoCommand):
-    """O(affected) structural cue edit that splices a contiguous list range.
+    """Store only affected cues for a contiguous splice or sparse deletion.
 
     The ReplaceCuesCommand path deep-copies the entire cue list three times
     (helper replacement, ``__init__`` before/after, ``_apply``) plus a fourth
@@ -560,14 +560,18 @@ class SpliceCuesCommand(QUndoCommand):
         changed: ChangedCallback | None = None,
         origin: MutationOrigin = MutationOrigin.SYSTEM,
         selection_after: str | None = None,
+        removed_positions: Iterable[int] | None = None,
     ) -> None:
         super().__init__(text)
         self.project = project
         self.index = int(index)
         self.removed_count = int(removed_count)
+        self._sparse_positions = tuple(removed_positions) if removed_positions is not None else None
+        positions = set(self._sparse_positions) if self._sparse_positions is not None else set(
+            range(self.index, self.index+self.removed_count))
         self._before_cues = [
             copy.deepcopy(cue)
-            for cue in project.cues[self.index:self.index + self.removed_count]
+            for i, cue in enumerate(project.cues) if i in positions
         ]
         self._after_cues = [copy.deepcopy(cue) for cue in inserted]
         runtime=state_for(project)
@@ -586,7 +590,7 @@ class SpliceCuesCommand(QUndoCommand):
             cue.validate()
         surviving_ids = {
             cue.id for position, cue in enumerate(project.cues)
-            if not self.index <= position < self.index + self.removed_count
+            if position not in positions
         }
         inserted_ids = [cue.id for cue in self._after_cues]
         duplicates = surviving_ids.intersection(inserted_ids)
@@ -602,12 +606,15 @@ class SpliceCuesCommand(QUndoCommand):
         start = self.index
         inserted = [copy.deepcopy(cue) for cue in inserted_source]
         after_ids = {cue.id for cue in inserted}
-        removed_ids = {cue.id for cue in self.project.cues[start:start + replacing_count]}
+        sparse = self._sparse_positions is not None
+        if sparse:
+            removed_ids = {c.id for c in (self._before_cues if inserted_source is self._after_cues else self._after_cues)}
+        else:
+            removed_ids = {cue.id for cue in self.project.cues[start:start + replacing_count]}
         affected = removed_ids | after_ids
         state = state_for(self.project)
         selection_after = state.selected_cue_id if selection_override is None else selection_override
-        surviving_ids = {cue.id for position, cue in enumerate(self.project.cues)
-                         if not start <= position < start + replacing_count}
+        surviving_ids = {cue.id for cue in self.project.cues if cue.id not in removed_ids}
         if selection_after and selection_after not in after_ids | surviving_ids:
             if selection_after in removed_ids and inserted:
                 # The selected cue was split/merged away: keep the user on
@@ -619,8 +626,7 @@ class SpliceCuesCommand(QUndoCommand):
                 if selection_after in before_order:
                     old_index = before_order.index(selection_after)
                     following = [
-                        cue.id for position, cue in enumerate(self.project.cues)
-                        if not start <= position < start + replacing_count
+                        cue.id for cue in self.project.cues if cue.id not in removed_ids
                     ]
                     following[start:start] = [cue.id for cue in inserted]
                     selection_after = (
@@ -632,7 +638,12 @@ class SpliceCuesCommand(QUndoCommand):
                     selection_after = next(iter(after_ids), "")
 
         def mutate() -> None:
-            self.project.cues[start:start + replacing_count] = inserted
+            if sparse:
+                self.project.cues = [cue for cue in self.project.cues if cue.id not in removed_ids]
+                for position, cue in zip(self._sparse_positions, inserted):
+                    self.project.cues.insert(min(position,len(self.project.cues)), cue)
+            else:
+                self.project.cues[start:start + replacing_count] = inserted
             # A split/merge/delete can retain an ID. Existing drafts must not
             # mistake that new entity lifetime for a harmless object rebuild.
             for cue_id in affected:
@@ -779,15 +790,16 @@ def _splice_delete(
     cue_ids: Iterable[str],
     changed: ChangedCallback | None,
 ) -> SpliceCuesCommand | None:
-    """Delete a contiguous run of cues; ``None`` falls back to full replace."""
+    """Delete contiguous or sparse selections without copying unaffected cues."""
     targets = set(str(item) for item in cue_ids)
     positions = sorted(
         position for position, cue in enumerate(project.cues) if cue.id in targets
     )
-    if not positions or positions[-1] - positions[0] + 1 != len(positions):
+    if not positions:
         return None
     return SpliceCuesCommand(
-        project, positions[0], len(positions), (), "Delete subtitles", changed
+        project, positions[0], len(positions), (), "Delete subtitles", changed,
+        removed_positions=positions if positions[-1]-positions[0]+1 != len(positions) else None,
     )
 
 

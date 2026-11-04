@@ -165,6 +165,10 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
     done = threading.Event()
     heartbeat = [time.monotonic()]
     preview_at = 0.
+    canvas = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    timings = dict(canvas_and_paint_seconds=0., decoder_read_seconds=0., pipe_write_seconds=0.,
+                   receipt_json_seconds=0., raw_video_bytes=0, canvas_allocations=1)
+    compose_started = time.perf_counter()
     with errors.open("wb") as stderr:
         process = popen_hidden_subprocess(command, purpose="Studio media graph raster export",
                                           stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=stderr)
@@ -187,7 +191,9 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                 for key in list(decoders):
                     if key not in active_ids:
                         decoders.pop(key).close()
-                image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+                frame_started = time.perf_counter()
+                frame_decode = frame_json = 0.
+                image = canvas
                 image.fill(Qt.GlobalColor.black)
                 painter = QPainter(image)
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -200,11 +206,15 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                         if decoder is None:
                             decoder = SequentialExportDecoder(indexes[path], cancelled=cancelled)
                             decoders[clip["id"]] = decoder
+                        decode_started = time.perf_counter()
                         (fw,fh,pixels), receipt = decoder.read(source_seconds,context=dict(export_job_id=job_id,
                             clip_id=clip['id'],timeline_frame_index=index,timeline_pts=str(timeline_seconds),
                             clip_local_pts=str(timeline_seconds-Fraction(clip['timeline_in_ms'],1000)),
                             clip_in=clip['source_in_ms'],clip_out=clip['source_out_ms']))
+                        frame_decode += time.perf_counter()-decode_started
+                        json_started = time.perf_counter()
                         receipts.write(json.dumps(receipt)+'\n')
+                        frame_json += time.perf_counter()-json_started
                         layer = QImage(pixels, fw, fh, fw * 4,
                                        QImage.Format.Format_ARGB32)
                         sampled = dict(clip, transform=dict(clip.get("transform") or {}))
@@ -213,7 +223,13 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                         paint_layer(painter, width, height, layer, sampled, fx if transition_fx_active(fx) else None)
                 finally:
                     painter.end()
+                timings['decoder_read_seconds'] += frame_decode
+                timings['receipt_json_seconds'] += frame_json
+                timings['canvas_and_paint_seconds'] += time.perf_counter()-frame_started-frame_decode-frame_json
+                write_started = time.perf_counter()
                 process.stdin.write(image.constBits())
+                timings['pipe_write_seconds'] += time.perf_counter()-write_started
+                timings['raw_video_bytes'] += width*height*4
                 heartbeat[0] = time.monotonic()
                 if job.preview_callback and heartbeat[0] - preview_at >= .5:
                     preview_at = heartbeat[0]
@@ -250,6 +266,10 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
             for decoder in decoders.values():
                 decoder.close()
             receipts.close()
+    timings.update(wall_seconds=time.perf_counter()-compose_started, temporary_ffv1_bytes=output.stat().st_size,
+        includes='sequential producer counters; pipe waits overlap the FFV1 child encoder')
+    from .export_run_log import note_export
+    note_export('video_composition_timings', timings)
     return frame_clock
 
 
@@ -272,10 +292,25 @@ def prepared_video_job(ffmpeg, job, *, cancelled=None, progress=None):
     if not job.video_graph or not requires_video_composition(job.video_graph):
         yield replace(job, video_graph=None)
         return
-    from .timeline_media import resolve_video_graph
-    job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg, cancelled=cancelled))
+    from .timeline_media import resolve_video_graph, export_range_graph
+    graph = export_range_graph(job.video_graph, job.start_seconds, job.duration_seconds)
+    job = replace(job, video_graph=resolve_video_graph(graph, ffmpeg, cancelled=cancelled))
     parent = Path(job.output_path).resolve().parent
     parent.mkdir(parents=True, exist_ok=True)
+    if (not job.video_graph.get('clip_transitions')
+            and identity_video_graph(job.video_graph, job.media_path)):
+        # No application decoder will request source PTS here. FFmpeg already
+        # owns the source clock, including VFR/nonzero origins; do not decode
+        # the entire film merely to prove that no raster pass is needed.
+        from .studio_render import media_has_audio
+        from .export_run_log import note_export
+        job.export_context['expected_output_audio'] = (job.settings.audio_codec != 'none'
+            and media_has_audio(ffmpeg, job.media_path))
+        fps, _, _, _ = _video_frame_clock(Path(ffmpeg), job)
+        note_export('export_route', dict(route='identity_media', reason='unchanged source video and audio',
+            timestamp_index='not_required', intermediate_video=False))
+        yield replace(job, video_graph=None, edit_segments=(), settings=replace(job.settings, fps=fps))
+        return
     try:
         indexes = preflight_video_job(ffmpeg,job,cancelled=cancelled,progress=progress)
     except Exception as exc:

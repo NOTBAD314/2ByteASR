@@ -1541,9 +1541,9 @@ class SubtitleStudioPage(
                 and app.applicationState() == Qt.ApplicationState.ApplicationActive
             )
             watched_is_editor = (
-                isinstance(watched, QLineEdit) and not watched.isReadOnly()
+                isinstance(watched, QLineEdit)
             ) or (
-                isinstance(watched, QPlainTextEdit) and not watched.isReadOnly()
+                isinstance(watched, QPlainTextEdit)
             ) or isinstance(watched, QAbstractSpinBox) or (
                 isinstance(watched, QComboBox) and watched.isEditable()
             )
@@ -1554,6 +1554,10 @@ class SubtitleStudioPage(
                 and not watched_is_editor
                 and not self._editing_has_focus()
             ):
+                from .caption_clipboard import handle_key as caption_key
+                if caption_key(self, event):
+                    event.accept()
+                    return True
                 from .studio_translation_edit import handle_key
                 if handle_key(self, event):
                     event.accept()
@@ -1619,6 +1623,9 @@ class SubtitleStudioPage(
             return False
         source_monitor = getattr(self, 'source_monitor', None)
         if source_monitor is not None and source_monitor.dispatch(sequence):
+            return True
+        from .caption_clipboard import handle_sequence as caption_sequence
+        if caption_sequence(self, sequence):
             return True
         from .studio_translation_edit import handle_sequence
         if handle_sequence(self, sequence):
@@ -1836,7 +1843,7 @@ class SubtitleStudioPage(
             if not focus_window.isVisible():
                 return False
         from PySide6.QtWidgets import QTextEdit
-        if isinstance(focus, QTextEdit) and not focus.isReadOnly():
+        if isinstance(focus, QTextEdit):
             return True
         ancestor = focus
         while ancestor is not None:
@@ -1844,9 +1851,9 @@ class SubtitleStudioPage(
                 return True
             ancestor = ancestor.parentWidget()
         return (
-            isinstance(focus, QLineEdit) and not focus.isReadOnly()
+            isinstance(focus, QLineEdit)
         ) or (
-            isinstance(focus, QPlainTextEdit) and not focus.isReadOnly()
+            isinstance(focus, QPlainTextEdit)
         ) or isinstance(focus, QAbstractSpinBox) or (
             isinstance(focus, QComboBox) and focus.isEditable()
         )
@@ -2569,6 +2576,22 @@ class SubtitleStudioPage(
         self.undo_stack.push(command)
 
     def _copy_selected_clip_group(self, selection, delta):
+        if selection.cue_ids and not selection.video_ids and not selection.audio_ids:
+            from ..timeline.caption_copy_command import capture_captions, PasteCaptionsCommand
+            payload = getattr(selection, 'caption_payload', None) or capture_captions(
+                self.project, selection.cue_ids, layer=getattr(selection, 'subtitle_layer', 'original'))
+            if not payload['rows']:
+                return
+            start = min(row['cue']['start_ms'] for row in payload['rows'])
+            command = PasteCaptionsCommand(self.project, payload, start + delta, changed=self._changed)
+            self.timeline.set_subtitle_layer('original')
+            outcome = command.outcome
+            self.undo_stack.push(command)
+            if not outcome['applied']:
+                self.save_state.setText(outcome['error'] or '字幕复制未提交')
+                return
+            self.timeline._publish_clip_selection(command.copied_selection)
+            return
         from ..timeline.studio_selection import copy_selection_command
         try:
             command = copy_selection_command(self.project, selection, delta, page=self,
@@ -3034,6 +3057,10 @@ class SubtitleStudioPage(
         self._set_major_panel_visible("cue_list", not self.source_tabs.isVisible())
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        from .caption_clipboard import handle_key as caption_key
+        if caption_key(self, event):
+            event.accept()
+            return
         from .studio_translation_edit import handle_key
         if handle_key(self, event):
             event.accept()

@@ -1971,7 +1971,7 @@ class StudioExportWorkspace(QWidget):
             (STAGE_ADVANCED_RENDER, "高级样式"),
             (STAGE_ENCODE, "视频编码"),
             (STAGE_MUX, "封装收尾"),
-            (STAGE_VALIDATE, "验证与发布"),
+            (STAGE_VALIDATE, "检查成片"),
         ]
         for _key, label in self._stage_specs:
             card = QLabel(f"○  {label}")
@@ -2711,6 +2711,7 @@ class StudioExportWorkspace(QWidget):
     def _start(self) -> None:
         if self._released:
             return
+        requested_started = time.monotonic()
         from .audio_export_ui import is_audio, start_audio
         if is_audio(self): return start_audio(self)
         self._export_trace("button_clicked")
@@ -2777,7 +2778,7 @@ class StudioExportWorkspace(QWidget):
             ass_path=str(ass), output_path=str(output), range_start=start or 0.0,
             range_end=(start or 0.0) + effective_duration, codec=settings.codec, encoder=settings.encoder,
         )
-        self._last_job, self._running, self._started_at = job, True, time.monotonic()
+        self._last_job, self._running, self._started_at = job, True, requested_started
         self._completion_notified = False
         job.completion_metadata.clear()
         job.completion_metadata['requested_started_monotonic'] = self._started_at
@@ -2786,10 +2787,13 @@ class StudioExportWorkspace(QWidget):
         from .export_progress import ExportProgress
         from .export_media import identity_video_graph
         from .static_caption_export import static_graph_project
-        static_advanced=bool(self._advanced_route and static_graph_project(self._export_project))
-        static_direct=bool(static_advanced and job.video_graph and simple_video_clips(job.video_graph) is not None)
-        self._has_composition_stage = bool(job.video_graph and not identity_video_graph(job.video_graph, job.media_path)
-            and ((self._advanced_route and not static_direct) or simple_video_clips(job.video_graph) is None))
+        from .timeline_media import export_range_graph
+        active_graph=export_range_graph(job.video_graph, start, effective_duration) if job.video_graph else None
+        static_advanced=bool(self._advanced_route and static_graph_project(self._export_project,
+            start_ms=(start or 0)*1000, end_ms=((start or 0)+effective_duration)*1000))
+        direct=bool(active_graph and simple_video_clips(active_graph) is not None)
+        self._has_composition_stage = bool(active_graph and not direct
+            and not identity_video_graph(active_graph, job.media_path))
         self._work_progress = ExportProgress(effective_duration, raster=self._has_composition_stage,
             advanced=self._advanced_route, static_advanced=static_advanced)
         with self._preview_lock:
@@ -2970,7 +2974,7 @@ class StudioExportWorkspace(QWidget):
             STAGE_PREPARE_SUBTITLES: "准备字幕",
             STAGE_ADVANCED_RENDER: "高级样式渲染",
             STAGE_ENCODE: "视频编码",
-            STAGE_MUX: "封装收尾", STAGE_VALIDATE: "验证与发布",
+            STAGE_MUX: "封装收尾", STAGE_VALIDATE: "检查成片",
         }.get(stage, "准备工程"))
         label = tr(label)
         message = tr(str(payload.get("message") or ""))
@@ -3127,7 +3131,7 @@ class StudioExportWorkspace(QWidget):
         preview_warning=(getattr(job,'export_context',{}) or {}).get('preview_warning') if job is not None else None
         if preview_warning:
             text=panel.error.text()+'\n' if not panel.error.isHidden() else ''
-            text+=tr('导出完成；仅实时预览曾中断，成片已完整校验。诊断目录：{path}',
+            text+=tr('导出完成；仅实时预览曾中断，成片检查已通过。诊断目录：{path}',
                 path=(job.export_context or {}).get('diagnostics_path',''))
             panel.error.setText(text)
             panel.error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)

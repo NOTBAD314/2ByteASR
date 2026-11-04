@@ -140,15 +140,35 @@ def _measure_packet_streams(ffmpeg,path,streams,*,selector=None,cancelled=None):
         watcher.join(timeout=1)
 
 
-def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None):
-    """Called in the export worker after decode validation; unknown is explicit."""
+def metadata_measurement(stream):
+    """A muxed stream's byte rate is distinct from format.bit_rate/encoder target.
+
+    MP4/MOV sample tables supply this without a packet walk. Containers lacking
+    a stream duration/rate retain the packet presentation-extent fallback.
+    """
+    duration = _number(stream.get('duration'), positive=True)
+    rate = _number(stream.get('bit_rate'), positive=True)
+    if duration is None or rate is None:
+        return None
+    return dict(reliable=True, average_bitrate_bps=rate, duration_seconds=duration,
+        duration_source='ffprobe.stream.duration', bitrate_source='ffprobe.stream.bit_rate',
+        metadata_bitrate_bps=rate, metadata_duration_seconds=duration, reason='',
+        packet_count=None, packet_bytes=None)
+
+
+def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None, full_scan=False):
+    """Prefer actual stream metadata; scan only when absent or explicitly strict."""
+    from .export_run_log import note_export
+    started = time.monotonic()
+    note_export('bitrate_measurement_started', {'full_scan': full_scan})
     result = {}
     audio = []
     video_index = audio_index = 0
     streams={int(s.get('index',i)):s for i,s in enumerate(metadata.get('streams',[]))
              if s.get('codec_type') in {'video','audio'}}
+    needed={i:s for i,s in streams.items() if full_scan or metadata_measurement(s) is None}
     try:
-        scanned=_measure_packet_streams(ffmpeg,path,streams,cancelled=cancelled)
+        scanned=_measure_packet_streams(ffmpeg,path,needed,cancelled=cancelled) if needed else {}
         scan_error=None
     except InterruptedError:raise
     except Exception as exc:
@@ -161,8 +181,13 @@ def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None):
             continue  # The delivered primary video stream is v:0.
         selector = f'v:{video_index}' if kind == 'video' else f'a:{audio_index}'
         try:
-            if scan_error is not None:raise scan_error
-            measurement = scanned[index]
+            if cancelled and cancelled():
+                raise InterruptedError('export bitrate measurement cancelled')
+            measurement = None if full_scan else metadata_measurement(stream)
+            if measurement is None:
+                if scan_error is not None:raise scan_error
+                measurement = scanned[index]
+                measurement['bitrate_source'] = 'packet_bytes/presentation_extent'
         except InterruptedError:
             raise
         except Exception as exc:
@@ -177,6 +202,9 @@ def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None):
             audio.append(measurement)
             audio_index += 1
     result['audio_bitrate'] = audio
+    result['bitrate_measurement_seconds'] = time.monotonic() - started
+    note_export('bitrate_measurement_finished', dict(seconds=result['bitrate_measurement_seconds'],
+        sources=[m.get('bitrate_source', 'unavailable') for m in [result.get('video_bitrate', {}), *audio]]))
     return result
 
 

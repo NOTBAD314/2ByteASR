@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -209,6 +210,7 @@ class StudioRenderQueue:
                 self._cancel_current.clear()
                 self.store.save(self._jobs)
             try:
+                queued.job.completion_metadata['requested_started_monotonic'] = time.monotonic()
                 runner = self.runner
                 if queued.job.export_project_data and runner is run_render_job:
                     from ..projects.studio_project import SubtitleProject

@@ -14,6 +14,7 @@ import threading
 import uuid
 import time
 import traceback
+import time
 
 _CURRENT = ContextVar('studio_export_log', default=None)
 
@@ -59,6 +60,7 @@ class ExportRunLog:
         context['diagnostics_path'] = str(self.path)
         self._lock = threading.RLock()
         self._serial = 0
+        self._started = time.monotonic()
         self._process_logs = []
         self.job = job
         binary = Path(ffmpeg).resolve()
@@ -95,7 +97,7 @@ class ExportRunLog:
     def note(self, event, payload):
         from ..providers.provider_diagnostics import redact_diagnostics
         record = dict(timestamp=datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
-            job_id=self.job.export_context['job_id'], event=event, payload=payload)
+            job_id=self.job.export_context['job_id'], monotonic_seconds=time.monotonic()-self._started, event=event, payload=payload)
         with self._lock, (self.path / 'processes.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(redact_diagnostics(record), ensure_ascii=False) + '\n')
             stream.flush()
@@ -215,6 +217,7 @@ class ProcessLog:
         self._exited = False
         self.dropped_chunks = 0
         self.write_error = None
+        self._started = time.monotonic()
 
     def output(self, channel, value):
         if not value:
@@ -265,7 +268,7 @@ class ProcessLog:
                 self.output(channel, Path(filename).read_bytes())
             except (OSError, TypeError):
                 pass
-        self.owner.note('process_exited', dict(process_id=self.identity, phase='exit', returncode=code))
+        self.owner.note('process_exited', dict(process_id=self.identity, phase='exit', returncode=code, elapsed_seconds=time.monotonic()-self._started))
 
 
 class LoggedPipe:

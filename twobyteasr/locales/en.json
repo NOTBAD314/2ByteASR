@@ -9376,5 +9376,8 @@
   "右半边是之前的颜色，点它恢复": "The right half is the previous color; click it to restore",
   "+ 存进颜料盒": "+ Save to paint box",
   "反转渐变方向": "Reverse gradient direction",
-  " · 色点 {index}": " · stop {index}"
+  " · 色点 {index}": " · stop {index}",
+  "检查成片": "Check output",
+  "检查成片…": "Checking output…",
+  "导出完成；仅实时预览曾中断，成片检查已通过。诊断目录：{path}": "Export complete. Live preview was interrupted; output checks passed. Diagnostics: {path}"
 }

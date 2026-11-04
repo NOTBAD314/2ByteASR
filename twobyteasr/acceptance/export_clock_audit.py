@@ -6,6 +6,7 @@ import wave
 
 
 def run(output):
+    from .studio_acceptance_audit import require
     import av
     import numpy as np
     from PySide6.QtWidgets import QApplication
@@ -26,7 +27,7 @@ def run(output):
     apply_application_theme(app, "grape")
     ffmpeg = Path(ffmpeg_tool())
     studio_render.scan_encoder_capabilities(ffmpeg)
-    result = {"scope": "source; private Windows desktop; generated media; real export UI", "cases": []}
+    result = {"scope": "actual process; private Windows desktop; generated media; real export UI", "cases": []}
 
     def command(args):
         return run_hidden_subprocess([str(ffmpeg), "-v", "error", "-y", *map(str, args)],
@@ -107,12 +108,11 @@ def run(output):
         detail = dict(fps=rate, frames=frames, audio_duration=len(pcm)/48000, events=events,
                       max_caption_boundary_error=max(caption_errors, default=0),
                       max_color_boundary_error=max(color_errors, default=0), tolerance=tolerance)
-        assert max(caption_errors, default=0) <= tolerance, detail
-        assert max(color_errors, default=0) <= tolerance, detail
-        assert abs(len(pcm)/48000-duration) < .06, detail
-        assert len(events) >= 4, detail
-        assert all(e["heard"] is not None and abs(e["visible"]-e["expected"]) <= tolerance
-                   and abs(e["heard"]-e["expected"]) < .02 for e in events), detail
+        require(max(caption_errors, default=0) <= tolerance, detail)
+        require(max(color_errors, default=0) <= tolerance, detail)
+        require(abs(len(pcm) / 48000 - duration) < 0.06, detail)
+        require(len(events) >= 4, detail)
+        require(all((e['heard'] is not None and abs(e['visible'] - e['expected']) <= tolerance and (abs(e['heard'] - e['expected']) < 0.02) for e in events)), detail)
         return detail
 
     cases = [("vfr-cpu-source-range", False, 0, "libx264", 2.137, 4.573),
@@ -134,7 +134,7 @@ def run(output):
         deadline = time.monotonic()+15
         while window.encoder.findData(encoder) < 0 and time.monotonic() < deadline:
             QTest.qWait(50)
-        assert window.encoder.findData(encoder) >= 0, encoder
+        require(window.encoder.findData(encoder) >= 0, encoder)
         window.directory.setText(str(folder))
         window.filename.setText("result")
         window.filename_prefix.setText("")
@@ -157,30 +157,44 @@ def run(output):
                     return [str(executable), "-v", "error", "-y", "-i", str(bad),
                             "-map", "0", "-c", "copy", "-progress", "pipe:1", job.output_path]
                 studio_render.build_render_command = bad_encoder
+            button_at = time.monotonic()
             window._start()
             deadline = time.monotonic()+90
+            validation_seen = False
             while window._running and time.monotonic() < deadline:
                 app.processEvents()
                 time.sleep(.02)  # Yield the GIL to the real export worker and pipe readers.
+                if getattr(window, '_progress_payload', {}).get('stage') == 'validate' and not validation_seen:
+                    validation_seen = True
+                    require('检查成片' in window.processing_time.text(), window.processing_time.text())
+                    require(window._progress_target < 100, 'export acceptance requirement failed')
+                    require(any(('检查成片' in label.text() for label in window.render_stage_labels if label.isVisible())), 'export acceptance requirement failed')
+                    _capture(window, folder/'checking-output.png')
                 if not (folder/"processing.png").exists() and not window.render_preview.pixmap().isNull():
                     _capture(window, folder/"processing.png")
-            assert not window._running, "export timed out"
+            require(not window._running, 'export timed out')
             QTest.qWait(200)
             _capture(window, folder/"finished.png")
             job = window._last_job
-            assert job.settings.encoder == encoder, (name, job.settings)
-            assert job.settings.fps == fps, (name, job.settings)
-            assert Path(job.output_path).suffix == ('.mkv' if broken else '.mp4')
+            require(job.settings.encoder == encoder, (name, job.settings))
+            require(job.settings.fps == fps, (name, job.settings))
+            require(Path(job.output_path).suffix == ('.mkv' if broken else '.mp4'), 'export acceptance requirement failed')
             item = dict(name=name, start=start, duration=duration, requested_encoder=encoder,
                         settings_encoder=job.settings.encoder, passed=False)
             if broken:
-                assert "视频实际时间轴" in window._last_failure, window._last_failure
-                assert not Path(job.output_path).exists()
-                assert "output_path" not in job.completion_metadata
+                require('视频实际时间轴' in window._last_failure, window._last_failure)
+                require(not Path(job.output_path).exists(), 'export acceptance requirement failed')
+                require('output_path' not in job.completion_metadata, 'export acceptance requirement failed')
                 item.update(passed=True, error=window._last_failure.split("\n")[0])
             else:
-                assert Path(job.output_path).is_file(), getattr(window, "_last_failure", "output missing")
-                item.update(inspect(Path(job.output_path), start, duration, folder), passed=True)
+                require(Path(job.output_path).is_file(), getattr(window, '_last_failure', 'output missing'))
+                require(validation_seen, 'real export must visibly enter output checks before publication')
+                require(job.completion_metadata['validation']['mode'] == 'quick', 'export acceptance requirement failed')
+                require(not job.completion_metadata['validation']['full_decode'], 'export acceptance requirement failed')
+                click_elapsed = job.completion_metadata['published_monotonic']-button_at
+                require(abs(job.completion_metadata['elapsed_seconds'] - click_elapsed) < 0.03, 'export acceptance requirement failed')
+                item.update(inspect(Path(job.output_path), start, duration, folder), passed=True, validation_ui=True,
+                    elapsed_to_publication=job.completion_metadata.get('elapsed_seconds'))
                 item["diagnostics_path"] = job.completion_metadata.get("diagnostics_path")
             result["cases"].append(item)
             (output/"result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf8")

@@ -16,6 +16,9 @@ class TranslationSplice:
         self.before_view = {key: metadata.get('translations', {}).get(key) for key in self.ids}
         self.after = deepcopy(self.before)
         self.after_view = deepcopy(self.before_view)
+        surviving = {cue.id for cue in after}
+        for key in self.ids - surviving:
+            self.after[key] = None
         self.template = deepcopy(container or {'version': 1, 'records': {}})
         if self.before_container_present: self.template['records'] = {}
         for key in self.ids:

@@ -60,18 +60,34 @@ def clear_translation(page):
     ids = selected_ids(page)
     if not ids:
         return False
-    stack = page.undo_stack
-    if len(ids) > 1:
-        stack.beginMacro(tr("清空所选译文"))
+    from ..subtitle_rules.subtitle_translation import manual_batch_state, _migrated_container
+    from .studio_bilingual import ApplyTranslationSnapshotCommand
+    target = page.timeline.subtitle_target_language or container_target(page.project)
+    container = _migrated_container(page.project.generation_metadata, page.project.cues)[0] or {}
+    records = container.get('records', {})
+    view = page.project.generation_metadata.get('translations', {})
+    groups = {c.id: c.appearance_override.get('translation_group', {}).get('text', '') for c in page.project.cues}
+    targets = [key for key in ids if (records.get(key, {}).get('text') or view.get(key) or groups.get(key)
+                                    or records.get(key, {}).get('status') == 'failed')]
+    if not targets:
+        if target == container_target(page.project):
+            for cue_id in ids: mark_manual_intent(page.project, cue_id)
+        return True
     try:
-        for cue_id in ids:
-            if page.timeline.subtitle_target_language == container_target(page.project):
-                mark_manual_intent(page.project, cue_id)
-            page.cue_controller.set_translation(cue_id, "", target=page.timeline.subtitle_target_language)
-    finally:
-        if len(ids) > 1:
-            stack.endMacro()
-    return True
+        # Validate every selected language binding before the first mutation.
+        before, after = manual_batch_state(page.project, {key: ('', target) for key in targets})
+    except (ValueError, KeyError) as exc:
+        page.save_state.setText(str(exc))
+        return False
+    if target == container_target(page.project):
+        for cue_id in ids: mark_manual_intent(page.project, cue_id)
+    command = ApplyTranslationSnapshotCommand(page.project, before, after, targets,
+        label=tr('清空所选译文'), changed=getattr(page, '_changed', None))
+    outcome = command.outcome
+    page.undo_stack.push(command)
+    if not outcome['applied']:
+        page.save_state.setText(str(outcome['error'] or tr('译文删除未提交')))
+    return outcome['applied']
 
 
 def choose_cue(timeline, candidates=None):

@@ -74,6 +74,9 @@ def record_completion(function):
                      project_id=getattr(project,'project_id',None),backend=function.__name__,**fields)
             except Exception:pass
         try:
+            graph = getattr(job, "direct_video_graph", None) or getattr(job, "video_graph", None)
+            if graph and graph.get('audio_mix') is not None:
+                job.export_context['expected_output_audio'] = bool(graph['audio_mix'])
             if not nested and 'ffmpeg_path' in parameters.parameters:
                 ffmpeg = parameters.bind(*args, **kwargs).arguments['ffmpeg_path']
                 log, token = begin_export_log(ffmpeg, job)
@@ -155,10 +158,13 @@ def publish_output(staged, output, job, metadata, *, cancelled=None):
     """Publish the validated bytes and freeze elapsed time before any UI callback."""
     from .export_run_log import note_export
     note_export('publication_started', {'stage':'publish'})
+    publication_started = time.perf_counter()
     output = Path(output).resolve()
     statistics = completion_statistics(staged, metadata)
     frozen = dict(metadata)
     frozen.update(statistics)
+    frozen['encoding_statistics'] = {k: getattr(job, 'export_context', {}).get('media_progress', {}).get(k)
+        for k in ('frame', 'fps', 'speed', 'out_time_us', 'out_time_ms')}
     from .export_bitrate import target_comparison
     frozen.update(target_comparison(job, metadata))
     frozen.update(output_path=str(output), format=dict(metadata.get('format', {}), filename=str(output)))
@@ -180,6 +186,7 @@ def publish_output(staged, output, job, metadata, *, cancelled=None):
     receipt.update(frozen)
     receipt.update(published_monotonic=published,
                    elapsed_seconds=max(0.0, published - receipt.get('started_monotonic', published)))
+    receipt['publication_seconds'] = time.perf_counter() - publication_started
     from .export_run_log import note_export
     note_export('output_published', dict(output_path=str(output), video_bitrate=frozen.get('video_bitrate'),
         audio_bitrate=frozen.get('audio_bitrate'), container_bitrate_bps=frozen.get('average_bitrate_bps'),
@@ -189,69 +196,161 @@ def publish_output(staged, output, job, metadata, *, cancelled=None):
         notify_after_publication(job, Path(staged).unlink)
 
 
-def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, preview_path=''):
+def output_validation_options(job):
+    """Transient job controls; no saved project/settings contract changes."""
+    context = job.export_context
+    graph = job.direct_video_graph or job.video_graph
+    audio = context.get('expected_output_audio')
+    if graph and graph.get('audio_mix') is not None:
+        audio = bool(graph['audio_mix'])
+    cuts = []
+    if graph:
+        origin = float(job.start_seconds or 0)
+        cuts = [float(c[k])/1000-origin for t in graph.get('video_tracks', []) if t.get('enabled', True)
+                for c in t.get('clips', []) if c.get('enabled', True)
+                for k in ('timeline_in_ms', 'timeline_out_ms')]
+    return dict(mode=context.get('validation_mode') or os.environ.get('TWOBYTEASR_EXPORT_VALIDATION', 'quick'),
+        expected_audio=False if job.settings.audio_codec == 'none' else audio,
+        cut_points=cuts)
+
+
+def _check_cancelled(cancelled):
+    if cancelled and cancelled():
+        raise InterruptedError('render cancelled before publication')
+
+
+def _checked_decode(command, path, *, cancelled, timeout, purpose, require_frames=True):
+    """No unread pipes, cancellable bounded child lifetime, retained error context."""
     from .export_run_log import note_export
-    note_export('validation_started', {'stage':'validate'})
-    ffmpeg=Path(ffmpeg);path=Path(path)
-    result=run_hidden_subprocess([str(ffmpeg.with_name('ffprobe.exe' if os.name=='nt' else 'ffprobe')),
-        '-v','error','-show_format','-show_streams','-of','json',str(path)],
-        purpose='validate staged export metadata',capture_output=True,check=True,timeout=15)
-    data=json.loads(result.stdout);video=next(s for s in data['streams'] if s['codec_type']=='video')
-    if duration and abs(float(video.get('duration',data['format']['duration']))-duration)>max(.05,2/(fps or 30)):
-        raise RuntimeError('导出验证失败：视频时长与工程范围不一致')
-    if duration and fps and video.get('nb_frames') not in (None, 'N/A'):
-        expected = round(duration * fps)
-        if abs(int(video['nb_frames']) - expected) > 1:
-            raise RuntimeError(f'导出验证失败：帧数 {video["nb_frames"]} 与范围 {expected} 不一致')
-    log=path.with_suffix(path.suffix+'.validation.log')
+    from ..system.processes import stop_process_tree
+    log = path.with_suffix(path.suffix + '.validation.log')
+    progress = path.with_suffix(path.suffix + '.validation.progress')
+    _check_cancelled(cancelled)
     try:
-        with log.open('wb') as stderr:
-            command=[str(ffmpeg),'-v','error','-xerror','-y','-i',str(path),
-                '-map','0:v:0','-map','0:a?','-f','null','-']
-            if preview_path:
-                from fractions import Fraction
-                try:rate=float(Fraction(video.get('avg_frame_rate') or '30'))
-                except (ValueError,ZeroDivisionError):rate=float(fps or 30)
-                if rate<=0:rate=float(fps or 30)
-                try:total_frames=int(video.get('nb_frames'))
-                except (TypeError,ValueError):total_frames=round(float(duration or data['format'].get('duration') or 1)*rate)
-                frame=max(0,min(round(rate),total_frames-1))
-                # 2026-10-15 (user: the result poster looked blurry): the poster
-                # is shown up to ~2000 device px wide, so keep the frame at the
-                # export's own resolution (capped at 3840) and near-lossless JPEG;
-                # it used to be scaled to 640 px wide and stretched back up.
-                command += ['-map','0:v:0','-vf',f'select=gte(n\\,{frame}),scale=w=min(iw\\,3840):h=-2:flags=lanczos,blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:value=95:function=less',
-                    '-frames:v','1','-c:v','mjpeg','-pix_fmt','yuvj420p','-q:v','2','-update','1',str(preview_path)]
-            child=popen_hidden_subprocess(command,purpose='complete staged export decode',
-                stdout=subprocess.DEVNULL,stderr=stderr)
+        with log.open('wb') as stderr, progress.open('wb') as stdout:
+            child = popen_hidden_subprocess(command, purpose=purpose, stdout=stdout, stderr=stderr)
             try:
-                deadline=time.monotonic()+max(30,float(duration or 0)*2)
+                deadline = time.monotonic() + timeout
                 while child.poll() is None:
-                    if cancelled and cancelled():raise InterruptedError('render cancelled')
-                    if time.monotonic()>deadline:raise RuntimeError('导出完整解码验证超时')
-                    time.sleep(.05)
-                if child.returncode:raise RuntimeError('导出完整解码验证失败：'+log.read_text(encoding='utf-8',errors='replace')[-1500:])
+                    _check_cancelled(cancelled)
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('导出成片检查超时')
+                    time.sleep(.02)
+                _check_cancelled(cancelled)
+                if child.returncode:
+                    raise RuntimeError('导出成片解码检查失败：' + log.read_text(encoding='utf-8', errors='replace')[-1500:])
             finally:
-                if child.poll() is None:child.kill();child.wait()
-        from .export_bitrate import export_bitrate_measurements
-        data.update(export_bitrate_measurements(ffmpeg, path, data, cancelled=cancelled))
-        # MKV/WebM often omit stream.duration and nb_frames. The container
-        # duration above can then be the longer AUDIO duration, hiding a video
-        # whose timestamps run twice as fast. Reuse the bounded packet scan
-        # already made for bitrate truth; never let audio stand in for video.
-        measured = data.get('video_bitrate') or {}
-        video_duration = positive_number(measured.get('duration_seconds'))
-        if duration and measured.get('reliable') and video_duration is not None:
-            from fractions import Fraction
-            try:
-                rate = positive_number(fps) or positive_number(Fraction(video.get('avg_frame_rate') or '0'))
-            except (ValueError, ZeroDivisionError):
-                rate = positive_number(fps)
-            tolerance = max(.05, 2 / (rate or 30))
-            if abs(video_duration - duration) > tolerance:
-                raise RuntimeError(
-                    f'导出验证失败：视频实际时间轴时长 {video_duration:.3f} 秒，'
-                    f'与工程范围 {duration:.3f} 秒不一致（可能存在速度异常），已停止发布')
-        return data
+                if child.poll() is None:
+                    stop_process_tree(child)
+        frames = [int(line.partition('=')[2]) for line in progress.read_text('utf-8', errors='replace').splitlines()
+                  if line.startswith('frame=') and line.partition('=')[2].strip().isdigit()]
+        if require_frames and not max(frames, default=0):
+            raise RuntimeError('导出验证失败：视频检查区间没有可解码帧（可能已截断）')
+        return max(frames, default=0)
     finally:
         log.unlink(missing_ok=True)
+        progress.unlink(missing_ok=True)
+
+
+def validation_windows(duration, fps=30, cut_points=()):
+    """At most 24 short output intervals; each input gets a real demuxer seek."""
+    length = min(.25, duration)
+    points = {0., max(0., duration-length), *(duration*f for f in (.25, .5, .75))}
+    cuts = sorted({float(p) for p in cut_points if 0 < float(p) < duration})
+    # Keep both sides of representative cuts without O(number-of-clips) decodes.
+    if len(cuts) > 9:
+        cuts = [cuts[round(i*(len(cuts)-1)/8)] for i in range(9)]
+    for cut in cuts:
+        points.update((max(0., cut-length), cut))
+    windows = []
+    for start in sorted(points):
+        start = min(max(0., start), max(0., duration-length))
+        end = min(duration, start+length)
+        if windows and start <= windows[-1][1] + 1e-6:
+            windows[-1] = (windows[-1][0], max(end, windows[-1][1]))
+        else:
+            windows.append((start, end))
+    return windows
+
+
+def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, preview_path='',
+                    mode='quick', expected_audio=None, cut_points=()):
+    """Inspect staged bytes before publication; quick sampling is never full proof."""
+    from .export_run_log import note_export
+    from fractions import Fraction
+    if mode not in {'quick', 'full'}:
+        raise ValueError('validation mode must be quick or full')
+    started = time.monotonic()
+    note_export('validation_started', {'stage': 'validate', 'mode': mode})
+    ffmpeg, path = Path(ffmpeg), Path(path)
+    _check_cancelled(cancelled)
+    result = run_hidden_subprocess([str(ffmpeg.with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')),
+        '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(path)],
+        purpose='validate staged export metadata', capture_output=True, check=True, timeout=15)
+    _check_cancelled(cancelled)
+    data = json.loads(result.stdout)
+    video = next((s for s in data.get('streams', []) if s.get('codec_type') == 'video'), None)
+    if video is None:
+        raise RuntimeError('导出验证失败：缺少视频流')
+    audio = [s for s in data.get('streams', []) if s.get('codec_type') == 'audio']
+    if expected_audio is True and not audio:
+        raise RuntimeError('导出验证失败：缺少应有的音频流')
+    if expected_audio is False and audio:
+        raise RuntimeError('导出验证失败：禁用音频的成片仍含音频流')
+    try:
+        rate = positive_number(fps) or positive_number(Fraction(video.get('avg_frame_rate') or '0')) or 30
+    except (ValueError, ZeroDivisionError, TypeError):
+        rate = positive_number(fps) or 30
+    tolerance = max(.05, 2/rate)
+    stream_duration = positive_number(video.get('duration'))
+    if duration and stream_duration and abs(stream_duration-duration) > tolerance:
+        raise RuntimeError('导出验证失败：视频时长与工程范围不一致')
+    if duration and fps and video.get('nb_frames') not in (None, 'N/A'):
+        expected = round(duration*fps)
+        if abs(int(video['nb_frames'])-expected) > 1:
+            raise RuntimeError(f'导出验证失败：帧数 {video["nb_frames"]} 与范围 {expected} 不一致')
+    # The fallback packet extent remains mandatory when stream metadata is absent.
+    # Never substitute a longer audio/container duration for video presentation.
+    from .export_bitrate import export_bitrate_measurements
+    data.update(export_bitrate_measurements(ffmpeg, path, data, cancelled=cancelled, full_scan=mode == 'full'))
+    measured = data.get('video_bitrate') or {}
+    video_duration = positive_number(measured.get('duration_seconds')) or stream_duration
+    if duration and video_duration and abs(video_duration-duration) > tolerance:
+        raise RuntimeError(f'导出验证失败：视频实际时间轴时长 {video_duration:.3f} 秒，'
+                           f'与工程范围 {duration:.3f} 秒不一致（可能存在速度异常），已停止发布')
+    if video_duration is None:
+        raise RuntimeError('导出验证失败：无法确认独立视频时间轴时长')
+    decode_started = time.monotonic()
+    decoded = []
+    windows = [(0., video_duration)] if mode == 'full' else validation_windows(video_duration, rate, cut_points)
+    for start, end in windows:
+        command = [str(ffmpeg), '-v', 'error', '-xerror', '-nostdin']
+        if mode == 'quick':
+            command += ['-ss', f'{start:.9f}']
+        command += ['-i', str(path)]
+        if mode == 'quick':
+            command += ['-t', f'{end-start:.9f}']
+        command += ['-map', '0:v:0', '-map', '0:a?', '-progress', 'pipe:1', '-nostats', '-f', 'null', '-']
+        frames = _checked_decode(command, path, cancelled=cancelled,
+            timeout=max(30, video_duration*2) if mode == 'full' else 30,
+            purpose='complete staged export decode' if mode == 'full' else 'bounded staged export decode')
+        decoded.append(dict(start_seconds=start, end_seconds=end, decoded_video_frames=frames))
+    decode_seconds = time.monotonic() - decode_started
+    # A poster is independent of integrity checking and has its own bounded input.
+    preview_seconds = 0.
+    if preview_path:
+        at = time.monotonic()
+        command = [str(ffmpeg), '-v', 'error', '-nostdin', '-y', '-ss', '0', '-t', f'{min(3., video_duration):.9f}',
+            '-i', str(path), '-map', '0:v:0', '-an', '-vf',
+            r'scale=w=min(iw\,3840):h=-2:flags=lanczos,blackframe=amount=0:threshold=24,metadata=mode=select:key=lavfi.blackframe.pblack:value=95:function=less',
+            '-frames:v', '1', '-c:v', 'mjpeg', '-pix_fmt', 'yuvj420p', '-q:v', '2', '-update', '1',
+            '-progress', 'pipe:1', '-nostats', str(preview_path)]
+        _checked_decode(command, path, cancelled=cancelled, timeout=30,
+            purpose='bounded export completion poster', require_frames=False)
+        preview_seconds = time.monotonic() - at
+    data['validation'] = dict(mode=mode, full_decode=mode == 'full',
+        coverage='complete_video_and_audio_decode' if mode == 'full' else 'metadata_and_bounded_samples',
+        windows=decoded, decode_seconds=decode_seconds, preview_seconds=preview_seconds,
+        bitrate_seconds=data.get('bitrate_measurement_seconds', 0.), seconds=time.monotonic()-started)
+    note_export('validation_finished', data['validation'])
+    return data

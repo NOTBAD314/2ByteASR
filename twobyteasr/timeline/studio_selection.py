@@ -7,6 +7,7 @@ class ClipSelection:
     video_ids: set[str] = field(default_factory=set)
     audio_ids: set[str] = field(default_factory=set)
     cue_ids: set[str] = field(default_factory=set)
+    subtitle_layer: str = 'original'
 
     @property
     def count(self):
@@ -113,6 +114,13 @@ def move_selection_command(project, selection, delta_ms, *, page=None, locked_sp
 def delete_selection_command(project, selection, *, page=None, locked_speakers=()):
     from .studio_clip_edit import _working_copy, _finalize_edit, video_track_locked
     selection=expand_linked_selection(project,selection)
+    if not selection.video_ids and not selection.audio_ids:
+        from .studio_commands import delete_cues_command
+        targets = {c.id for c in project.cues if c.id in selection.cue_ids
+                   and c.speaker_id not in locked_speakers}
+        if not targets:
+            raise ValueError('没有可删除的未锁定字幕')
+        return delete_cues_command(project, targets, getattr(page, '_changed', None))
     working=_working_copy(project)
     for track in working.video_tracks:
         if not video_track_locked(project,track):
@@ -162,6 +170,7 @@ def copy_selection_command(project, selection, delta_ms, *, page=None, locked_sp
         track.clips.append(clone)
         copied.audio_ids.add(clone.id)
     receipts = working.studio_state.get(KEY, {}).get('instances', {})
+    copied_cues = {}
     for cue in cues:
         clone = copy.deepcopy(cue)
         clone.id = f'cue-{uuid.uuid4().hex[:12]}'
@@ -169,10 +178,21 @@ def copy_selection_command(project, selection, delta_ms, *, page=None, locked_sp
             receipts[clone.id] = copy.deepcopy(receipts[cue.id])
         shift_caption(working, clone, delta)
         working.cues.append(clone)
+        copied_cues[cue.id] = clone.id
         copied.cue_ids.add(clone.id)
     for track in working.video_tracks + working.audio_tracks:
         track.clips.sort(key=lambda c: (c.timeline_in_ms, c.id))
     working.cues.sort(key=lambda c: (c.start_ms, c.id))
     command = _finalize_edit(project, working, '复制选中片段', page=page, locked_speakers=locked_speakers)
+    if copied_cues:
+        from ..subtitle_rules.subtitle_translation import _migrated_container
+        from .caption_copy_command import _remap
+        records = (_migrated_container(project.generation_metadata, project.cues)[0] or {}).get('records', {})
+        splice = command.caption_translations
+        for parent, clone in copied_cues.items():
+            if parent in records:
+                splice.after[clone] = _remap(records[parent], copied_cues)
+                splice.after_view[clone] = records[parent].get('text', '')
+                splice.active = True
     command.copied_selection = copied
     return command

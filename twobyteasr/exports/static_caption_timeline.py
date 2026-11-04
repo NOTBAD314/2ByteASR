@@ -26,8 +26,8 @@ def build_caption_timeline(layers, folder, *, fps, duration, cancelled=None, pro
     height = max((b[3] for b in bounds), default=1) - y
     events = {0: [], count: []}
     for index, layer in enumerate(layers):
-        first = max(0, math.ceil(Fraction(str(layer['start'])) * rate))
-        last = min(count, math.ceil(Fraction(str(layer['end'])) * rate))
+        first = max(0, layer.get('first_frame', math.ceil(Fraction(str(layer['start'])) * rate)))
+        last = min(count, layer.get('last_frame', math.ceil(Fraction(str(layer['end'])) * rate)))
         if first < last:
             events.setdefault(first, []).append((index, True))
             events.setdefault(last, []).append((index, False))

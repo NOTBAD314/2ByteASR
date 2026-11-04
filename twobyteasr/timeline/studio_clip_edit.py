@@ -469,6 +469,12 @@ class ClipEditCommand(QUndoCommand):
         self.project, self.page, self.changed = project, page, changed
         self.before, self.after = _snapshot(project), _snapshot(after)
         self.before_cues, self.after_cues = copy.deepcopy(project.cues), copy.deepcopy(after.cues)
+        from .caption_translation_splice import TranslationSplice
+        old_ids = {c.id for c in project.cues}
+        new_ids = {c.id for c in after.cues}
+        self.caption_translations = TranslationSplice(project,
+            [c for c in project.cues if c.id not in new_ids],
+            [c for c in after.cues if c.id not in old_ids])
         self.before_settings = _json_snapshot(project.render_settings)
         self.after_settings = _json_snapshot(after.render_settings)
         self.state_keys = {key for key in project.studio_state.keys() | after.studio_state.keys()
@@ -496,6 +502,7 @@ class ClipEditCommand(QUndoCommand):
                 videos, audios, groups, sequence = copy.deepcopy(snapshot)
                 project.video_tracks, project.audio_tracks, project.av_track_groups = videos, audios, groups
                 project.cues = copy.deepcopy(cues)
+                self.caption_translations.apply(project, snapshot is self.after)
                 project.render_settings = _json_snapshot(settings)
                 for key in self.state_keys:
                     if key in edited_state:

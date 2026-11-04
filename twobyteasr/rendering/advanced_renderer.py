@@ -133,7 +133,9 @@ def recipe_payload_for_cue(project: SubtitleProject, cue) -> Mapping[str, object
 
 
 def project_requires_advanced(project: SubtitleProject, *, start_ms=None, end_ms=None) -> bool:
+    hidden = project.hidden_speaker_ids()
     for cue in project.cues:
+        if cue.speaker_id in hidden:continue
         if start_ms is not None and cue.end_ms <= start_ms:continue
         if end_ms is not None and cue.start_ms >= end_ms:continue
         payload = recipe_payload_for_cue(project, cue)
@@ -802,7 +804,7 @@ def _renderer_cache_fingerprint() -> str:
     digest = hashlib.sha256()
     # Browser/driver changes invalidate pixels even when authored props match.
     digest.update(b'headless-shell-export-v2')
-    for name in ('render-overlays.mjs','export-browser.mjs','resource-boundary.mjs'):
+    for name in ('render-overlays.mjs','render-caption-stills.mjs','export-browser.mjs','resource-boundary.mjs'):
         runner=root/name
         if runner.is_file():digest.update(runner.read_bytes())
     for browser in sorted({_export_browser(root, web=True),_export_browser(root,web=False)}):
@@ -838,7 +840,7 @@ def _composition_browser(root: Path, props: Mapping[str, object]) -> Path:
 
 def _trim_overlay_cache() -> None:
     """Derived compressed overlays have a 2 GiB oldest-first disk budget."""
-    files = sorted(_overlay_cache_dir().glob('*.mov'), key=lambda p:p.stat().st_mtime, reverse=True)
+    files = sorted([*_overlay_cache_dir().glob('*.mov'), *_overlay_cache_dir().glob('*.still.png')], key=lambda p:p.stat().st_mtime, reverse=True)
     used = 0
     for path in files:
         try:
@@ -1190,52 +1192,73 @@ class AdvancedRendererBackend:
         from ..exports.caption_integrity import require_confirmed_empty_sources
         require_confirmed_empty_sources(project,start_ms=round((job.start_seconds or 0)*1000),
             end_ms=round(((job.start_seconds or 0)+job.duration_seconds)*1000) if job.duration_seconds is not None else None)
-        project = materialize_display_project(project)
+        from dataclasses import replace
+        from copy import copy
+        from ..exports.export_run_log import note_export
+        # Route only visible cues that can contribute to this export range.
+        start = float(job.start_seconds or 0)
+        duration = float(job.duration_seconds or project.media.duration_ms/1000-start)
+        visible = copy(project)
+        hidden = project.hidden_speaker_ids()
+        visible.cues = [c for c in project.cues if c.speaker_id not in hidden
+                        and c.end_ms > start*1000 and c.start_ms < (start+duration)*1000]
+        project = materialize_display_project(visible)
+        if not project_requires_advanced(project):
+            from ..exports.studio_render import run_render_job
+            return run_render_job(ffmpeg_path, job, progress=progress, cancelled=cancelled, trace=trace)
         if job.video_graph:
-            from dataclasses import replace
-            from ..exports.timeline_media import resolve_video_graph
-            job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled, seekable=True))
-        if static_graph_project(project) and job.video_graph and simple_video_clips(job.video_graph) is not None:
-            from dataclasses import replace
-            source_fps=job.settings.fps or job.video_graph.get('fps')
+            from ..exports.timeline_media import resolve_video_graph, export_range_graph
+            graph = export_range_graph(job.video_graph, start, duration)
+            job = replace(job, video_graph=resolve_video_graph(graph, ffmpeg_path, cancelled=cancelled, seekable=True))
+        if job.video_graph and simple_video_clips(job.video_graph) is not None:
+            source_fps = job.settings.fps or job.video_graph.get('fps')
             if not source_fps:
                 from fractions import Fraction
                 from ..exports.studio_render import _run_probe
-                result=_run_probe([str(Path(ffmpeg_path).with_name('ffprobe.exe' if os.name=='nt' else 'ffprobe')),
+                result = _run_probe([str(Path(ffmpeg_path).with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')),
                     '-v','error','-select_streams','v:0','-show_entries','stream=avg_frame_rate','-of','json',job.media_path])
-                source_fps=float(Fraction(json.loads(result.stdout)['streams'][0]['avg_frame_rate']))
-            prepared=replace(job,direct_video_graph=job.video_graph,video_graph=None,edit_segments=(),
-                             settings=replace(job.settings,fps=float(source_fps)))
-            return render_static_graph(project,ffmpeg_path,prepared,progress=progress,cancelled=cancelled,trace=trace)
-        # The canonical static Qt path does not use Node/Remotion. Its direct
-        # video-graph sibling above already works without that optional runtime.
+                source_fps = float(Fraction(json.loads(result.stdout)['streams'][0]['avg_frame_rate']))
+            job = replace(job, direct_video_graph=job.video_graph, video_graph=None, edit_segments=(),
+                          duration_seconds=duration, settings=replace(job.settings, fps=float(source_fps)))
+            note_export('export_route', dict(route='advanced_direct_filtergraph',
+                reason='supported video clock/geometry, subtitle renderer independent',
+                timestamp_index='not_required', intermediate_video=False))
         if not job.video_graph and not job.edit_segments and static_graph_project(project):
-            return render_static_graph(project,ffmpeg_path,job,progress=progress,cancelled=cancelled,trace=trace)
+            return render_static_graph(project, ffmpeg_path, job, progress=progress, cancelled=cancelled, trace=trace)
         self.require_available()
         if job.video_graph:
             from ..exports.video_export import prepared_video_job
             with prepared_video_job(ffmpeg_path, job, cancelled=cancelled, progress=progress) as prepared:
-                return self.render(project, ffmpeg_path, prepared, progress=progress,
-                                   cancelled=cancelled, trace=trace)
+                return self.render(project, ffmpeg_path, prepared, progress=progress, cancelled=cancelled, trace=trace)
         if cancelled and cancelled():
-            raise InterruptedError("render cancelled")
-        from ..exports.static_caption_export import static_graph_project, render_static_graph
-        if not job.edit_segments and static_graph_project(project):
-            return render_static_graph(project,ffmpeg_path,job,progress=progress,cancelled=cancelled,trace=trace)
+            raise InterruptedError('render cancelled')
         if progress and not job.composition_resolved:
             progress(export_progress(STAGE_PREPARE_PROJECT, message="正在解析高级字幕工程…"))
         started = time.perf_counter()
         timings: dict[str, float] = {}
         start = float(job.start_seconds or 0.0)
-        duration = float(job.duration_seconds or project.media.duration_ms / 1000.0)
-        overlay_start, overlay_duration = _advanced_overlay_window(project, start, duration)
+        duration = float(job.duration_seconds or project.media.duration_ms / 1000.0-start)
+        from ..exports.mixed_caption_export import split_mixed_captions, prepare_mixed_stills
+        mixed = split_mixed_captions(project) if not job.edit_segments else None
+        still_project, moving_project = mixed if mixed else (None, project)
+        overlay_start, overlay_duration = _advanced_overlay_window(moving_project, start, duration)
         width = int(job.settings.width or project.media.width or 1920)
         height = int(job.settings.height or project.media.height or 1080)
         fps = float(job.settings.fps or getattr(project.media, "fps", 0.0) or 30.0)
+        if mixed:
+            # Reducing a mixed composition's window must not change which
+            # authored animation frame reaches an output frame (e.g. its fade).
+            from fractions import Fraction
+            import math
+            rate = Fraction(str(fps)).limit_denominator(100100)
+            first = math.floor(Fraction(str(overlay_start-start))*rate)
+            last = math.ceil(Fraction(str(overlay_start+overlay_duration-start))*rate)
+            overlay_start = start+float(Fraction(first)/rate)
+            overlay_duration = min(start+duration, start+float(Fraction(last)/rate))-overlay_start
         if progress:
             progress(export_progress(STAGE_PREPARE_SUBTITLES, message="正在准备 Advanced recipe 与 overlay 缓存…"))
         props = compile_composition_data(
-            project, width=width, height=height, fps=fps,
+            moving_project, width=width, height=height, fps=fps,
             start_seconds=overlay_start, duration_seconds=overlay_duration,
         )
         output = Path(job.output_path).resolve()
@@ -1244,6 +1267,8 @@ class AdvancedRendererBackend:
             trace("advanced_window", {"start": overlay_start, "duration": overlay_duration, "job_start": start, "job_duration": duration})
         with tempfile.TemporaryDirectory(prefix="2byteasr-advanced-", dir=str(output.parent)) as temp_name:
             temp = Path(temp_name)
+            sparse = prepare_mixed_stills(still_project, self.root, temp, width=width, height=height,
+                fps=fps, start=start, duration=duration, cancelled=cancelled, progress=progress, trace=trace) if still_project else None
             props_path = temp / "recipe.json"
             overlay = temp / "subtitle-overlay.mov"
             native_ass = temp / "native-subtitles.ass"
@@ -1402,7 +1427,7 @@ class AdvancedRendererBackend:
             if native_project.cues:
                 native_ass.write_text(compile_ass(native_project), encoding="utf-8-sig")
             partial = Path(temp_name) / f"output.partial{output.suffix}"
-            composite = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-y"]
+            composite = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-xerror", "-y"]
             slices = [(float(a), float(b)) for a, b in (getattr(job, "edit_segments", ()) or ())]
             scale_chain = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
             if native_ass.is_file():
@@ -1433,14 +1458,23 @@ class AdvancedRendererBackend:
                     overlay_inputs.append((seg_start_sec, seg_end_sec, seg_path))
             elif overlay.is_file() and overlay.stat().st_size > 0:
                 overlay_inputs.append((delay, duration + 1.0, overlay))
+            from ..exports.export_filtergraph import overlay_pts_shift
             prev_label = "base"
             parts = [filter_graph]
+            static_inputs = []
+            if sparse:
+                from ..exports.static_caption_timeline import caption_input, caption_filter
+                static_inputs = caption_input(sparse)
+                pre, static_label = caption_filter(sparse, '[1:v]', fps)
+                x, y, *_ = sparse['bounds']
+                parts.append(';'+pre+f'[base]{static_label}overlay=x={x}:y={y}:format=auto:eof_action=repeat[mixedbase]')
+                prev_label = 'mixedbase'
             for input_index, (window_start, window_end, overlay_path) in enumerate(overlay_inputs):
-                input_id = input_index + 1
+                input_id = input_index + 1 + bool(sparse)
                 stream_label = f"ov{input_index}"
                 next_label = "v" if input_index == len(overlay_inputs) - 1 else f"m{input_index}"
                 parts.append(
-                    f";[{input_id}:v]setpts=PTS+{max(0.0, window_start):.5f}/TB[{stream_label}]"
+                    f";[{input_id}:v]setpts={overlay_pts_shift(max(0.0,window_start),fps)}[{stream_label}]"
                 )
                 enable = (
                     f"enable='between(t,{max(0.0, window_start):.5f},{window_end:.5f})'"
@@ -1456,12 +1490,18 @@ class AdvancedRendererBackend:
             encoder = select_encoder(ffmpeg_path, job.settings)
             quality = _quality_arguments(encoder, job.settings)
             pix = job.settings.pixel_format or "yuv420p"
-            composite.extend(["-i", str(Path(job.media_path).resolve())])
-            for _window_start, _window_end, overlay_path in overlay_inputs:
-                composite.extend(["-i", str(overlay_path)])
-            composite.extend(["-t", f"{duration:.3f}",
-                              "-filter_complex", filter_graph, "-map", "[v]", "-map", audio_map,
-                              "-c:v", encoder, *quality, "-pix_fmt", pix])
+            if job.direct_video_graph:
+                from ..exports.export_filtergraph import compile_video_filtergraph
+                native_filter = f'ass=filename={_ffmpeg_filter_path(native_ass)}' if native_ass.is_file() else None
+                composite.extend(compile_video_filtergraph(ffmpeg_path, job, 'null',
+                    caption_filter=native_filter, caption_overlays=[sparse] if sparse else (), video_overlays=overlay_inputs))
+            else:
+                from ..exports.studio_render import video_input_acceleration
+                composite.extend([*video_input_acceleration(job), "-i", str(Path(job.media_path).resolve()), *static_inputs])
+                for _window_start, _window_end, overlay_path in overlay_inputs:
+                    composite.extend(["-i", str(overlay_path)])
+                composite.extend(["-t", f"{duration:.9f}", "-filter_complex", filter_graph, "-map", "[v]", "-map", audio_map])
+            composite.extend(["-c:v", encoder, *quality, "-pix_fmt", pix])
             preset = encoder_preset(encoder, job.settings.preset)
             if preset:
                 composite.extend(["-preset", preset])
@@ -1475,9 +1515,10 @@ class AdvancedRendererBackend:
             if job.settings.gop>0:composite.extend(['-g',str(job.settings.gop)])
             if job.settings.b_frames>=0:composite.extend(['-bf',str(job.settings.b_frames)])
             if job.settings.audio_codec == "none": composite.append("-an")
-            elif job.settings.audio_codec == "copy" and not slices: composite.extend(["-c:a", "copy"])
+            elif job.settings.audio_codec == "copy" and not slices and not job.direct_video_graph: composite.extend(["-c:a", "copy"])
             else: composite.extend(["-c:a", "libopus" if job.settings.audio_codec == "opus" else "aac", "-b:a", f"{job.settings.audio_bitrate_kbps}k"])
-            composite.extend(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(partial)])
+            if job.settings.container in {"mp4", "mov"}:composite.extend(["-movflags", "+faststart"])
+            composite.extend(["-progress", "pipe:1", "-nostats", str(partial)])
             if trace: trace("advanced_composite_command", composite)
             if progress:
                 progress(export_progress(
@@ -1486,25 +1527,17 @@ class AdvancedRendererBackend:
                     duration_seconds=duration,
                 ))
             encode_started = time.perf_counter()
+            current = {}
             def composite_line(line: str) -> None:
-                if not progress:
-                    return
-                if line.startswith("out_time_ms=") or line.startswith("out_time="):
-                    key, _, value = line.partition("=")
-                    payload = export_progress(
-                        STAGE_ENCODE,
-                        message="正在编码视频…",
-                        out_time_us=value if key == "out_time_ms" else None,
-                        duration_seconds=duration,
-                        speed="FFmpeg",
-                        indeterminate=False,
-                    )
-                    if key == "out_time":
-                        payload["out_time"] = value
-                    seconds = parse_ffmpeg_out_time_seconds(payload)
-                    if seconds is not None:
-                        payload["percent"] = f"{max(0.0, min(100.0, seconds / max(0.05, duration) * 100.0)):.3f}"
-                    progress(payload)
+                key, separator, value = line.partition('=')
+                if separator:current[key] = value
+                if key == 'progress':
+                    if progress:
+                        progress(export_progress(STAGE_ENCODE, message='正在编码视频…',
+                            out_time_us=current.get('out_time_us') or current.get('out_time_ms'),
+                            frame=current.get('frame', ''), fps=current.get('fps', ''), speed=current.get('speed', ''),
+                            duration_seconds=duration, indeterminate=False))
+                    current.clear()
             from ..exports.export_preview import run_streaming_with_preview
             composite_code, composite_log = run_streaming_with_preview(
                 composite, job, _run_streaming_process, on_line=composite_line, cancelled=cancelled,
@@ -1517,9 +1550,9 @@ class AdvancedRendererBackend:
                     encoder=composite[composite.index('-c:v')+1],fps=fps)
             mux_started = time.perf_counter()
             if progress:
-                progress(export_progress(STAGE_MUX, message="正在封装文件…"))
-            from ..exports.export_validation import validate_output
-            metadata = validate_output(ffmpeg_path, partial, duration=duration, fps=fps, cancelled=cancelled,preview_path=job.completion_preview_path)
+                progress(export_progress("validate", message="检查成片…"))
+            from ..exports.export_validation import validate_output, output_validation_options
+            metadata = validate_output(ffmpeg_path, partial, duration=duration, fps=fps, cancelled=cancelled,preview_path=job.completion_preview_path, **output_validation_options(job))
             if trace:
                 trace("validated_output", metadata)
             publish_output(partial, output, job, metadata, cancelled=cancelled)
@@ -1536,6 +1569,7 @@ class AdvancedRendererBackend:
                 frame=str(round(duration * fps)),
                 speed="1.0x",
             ))
+        note_export("advanced_timings", timings)
         if trace:
             notify_after_publication(job, trace, "advanced_output_verified", {"exists": output.is_file(), "size": output.stat().st_size})
             notify_after_publication(job, trace, "advanced_timings", timings)

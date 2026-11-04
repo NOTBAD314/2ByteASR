@@ -10,6 +10,37 @@ import copy
 TIME_CONTRACT = "timeline-content-v2"
 
 
+def export_range_graph(graph, start_seconds=0, duration_seconds=None):
+    """Drop hidden/out-of-range sources before any source preparation/indexing.
+
+    Transition-expanded spans still participate; canonical clip coordinates and
+    the full timeline duration remain unchanged for the existing time mapper.
+    """
+    from ..timeline.studio_transitions import transition_windows
+    graph = copy.deepcopy(graph)
+    start = float(start_seconds or 0) * 1000
+    end = start + float(duration_seconds)*1000 if duration_seconds else float('inf')
+    windows = transition_windows(graph, 'video')
+    tracks = []
+    for track in graph.get('video_tracks', []):
+        if not track.get('enabled', True):
+            continue
+        clips = []
+        for clip in track.get('clips', []):
+            span = windows.get((track['id'], clip['id']), windows.get(clip['id'], clip))
+            if (clip.get('enabled', True) and span['timeline_in_ms'] < end
+                    and span['timeline_out_ms'] > start):
+                clips.append(clip)
+        track['clips'] = clips
+        if clips:
+            tracks.append(track)
+    graph['video_tracks'] = tracks
+    if graph.get('audio_mix') is not None:
+        graph['audio_mix'] = [a for a in graph['audio_mix']
+                              if a['timeline_in_ms'] < end and a['timeline_out_ms'] > start]
+    return graph
+
+
 def resolve_frame_graph(graph, milliseconds, ffmpeg, *, cache=None):
     """Resolve only the frozen instant's video, on the capture worker."""
     from ..timeline.studio_transitions import transition_windows

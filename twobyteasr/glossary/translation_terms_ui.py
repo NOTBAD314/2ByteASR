@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QUndoCommand
 from PySide6.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem, QLineEdit,
-    QComboBox, QDialogButtonBox, QFileDialog, QHeaderView)
+    QComboBox, QDialogButtonBox, QFileDialog, QHeaderView, QMessageBox, QRadioButton,
+    QInputDialog)
 
 from .translation_terms import KEY, SOURCE_ENABLED, normalize, policy_of
 from ..i18n import tr
@@ -45,6 +46,9 @@ class TerminologySettingsCommand(QUndoCommand):
                         self.project.generation_metadata.pop(key, None)
             if state[1] != previous[1]:
                 self.project.glossary_ids = list(state[1])
+            if state[0].get(KEY) != previous[0].get(KEY):
+                from .translation_terms import _index
+                _index.cache_clear()
         _commit_mutation(self.project, action_id=self.text(),
             dirty=DirtyDomain.PROJECT_METADATA | DirtyDomain.AUTOSAVE | DirtyDomain.QC,
             cue_ids=(), mutate=mutate, changed=self.changed)
@@ -71,9 +75,14 @@ class TranslationTermsDialog(QDialog):
         self.list.setMaximumHeight(115)
         layout.addWidget(self.list)
         controls = QHBoxLayout()
+        self.delete_button = QPushButton(tr('删除词库'))
+        self.delete_button.clicked.connect(self.delete_library)
         for label, handler in (('新建词库', self.add_library), ('导入…', self.import_library),
                                ('导出…', self.export_library)):
-            button = QPushButton(tr(label)); button.clicked.connect(handler); controls.addWidget(button)
+            button = QPushButton(tr(label)); button.clicked.connect(handler); controls.addWidget(button, 1)
+            if handler == self.export_library:
+                self.export_button = button
+        controls.addWidget(self.delete_button, 1)
         layout.addLayout(controls)
         row = QHBoxLayout()
         self.name = QLineEdit()
@@ -95,6 +104,7 @@ class TranslationTermsDialog(QDialog):
         actions = QHBoxLayout()
         add = QPushButton(tr('添加术语')); add.clicked.connect(lambda: self.table.insertRow(self.table.rowCount()))
         remove = QPushButton(tr('移除所选术语')); remove.clicked.connect(self.remove_rows)
+        self.add_term_button, self.remove_term_button = add, remove
         actions.addWidget(add); actions.addWidget(remove); layout.addLayout(actions)
         self.note = QLabel(tr('勾选参与翻译的词库。语境说明用于区分同形异义；旧原文纠错库不会自动变成翻译库。可导入本窗口JSON，或按当前方向导入两列TSV。'))
         self.note.setWordWrap(True); layout.addWidget(self.note)
@@ -103,10 +113,10 @@ class TranslationTermsDialog(QDialog):
         self.list.currentRowChanged.connect(self.select_library)
         for library in self.policy['libraries']:
             self._item(library)
-        if not self.policy['libraries']:
-            self.add_library()
-        else:
+        if self.policy['libraries']:
             self.list.setCurrentRow(0)
+        else:
+            self._load_current()
 
     def _item(self, library):
         item = QListWidgetItem(library['name'])
@@ -125,7 +135,8 @@ class TranslationTermsDialog(QDialog):
             if any(values):
                 if not values[0] or not values[1]:
                     raise ValueError(tr('每条术语必须同时填写源语言术语和标准译名'))
-                terms.append(dict(source=values[0], target=values[1], aliases=values[2].split('|'), context=values[3]))
+                terms.append(dict(source=values[0], target=values[1],
+                    aliases=list(dict.fromkeys(a.strip() for a in values[2].split('|') if a.strip())), context=values[3]))
         lib.update(name=self.name.text().strip() or tr('翻译术语库'), source_language=self.source.currentData(),
                    target_language=self.target.currentData(), terms=terms)
         self.list.item(self._current).setText(lib['name'])
@@ -138,9 +149,16 @@ class TranslationTermsDialog(QDialog):
             self.list.blockSignals(True); self.list.setCurrentRow(self._current); self.list.blockSignals(False)
             return
         self._current = index if 0 <= index < len(self.policy['libraries']) else None
+        self._load_current()
+
+    def _load_current(self):
+        for control in (self.name, self.source, self.target, self.table, self.add_term_button,
+                        self.remove_term_button, self.export_button, self.delete_button):
+            control.setEnabled(self._current is not None)
         if self._current is None:
+            self.name.clear(); self.table.setRowCount(0)
             return
-        lib = self.policy['libraries'][index]
+        lib = self.policy['libraries'][self._current]
         self.name.setText(lib['name'])
         self.source.setCurrentIndex(max(0, self.source.findData(lib['source_language'])))
         self.target.setCurrentIndex(max(0, self.target.findData(lib['target_language'])))
@@ -150,9 +168,51 @@ class TranslationTermsDialog(QDialog):
                 self.table.setItem(i, j, QTableWidgetItem(value))
 
     def add_library(self):
+        try:
+            self.store_current()
+        except ValueError as exc:
+            self.note.setText(str(exc)); return
         lib = dict(id=uuid.uuid4().hex, name=tr('新翻译术语库'), source_language='ja', target_language='zh-Hans', terms=[])
         self.policy['libraries'].append(lib); self.policy['selected_ids'].append(lib['id'])
         self._item(lib); self.list.setCurrentRow(len(self.policy['libraries'])-1)
+
+    def _sync_checks(self):
+        self.policy['selected_ids'] = [self.list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _reload_libraries(self, current_id=''):
+        self._current = None
+        self.list.blockSignals(True)
+        self.list.clear()
+        for lib in self.policy['libraries']:
+            self._item(lib)
+        index = next((i for i, lib in enumerate(self.policy['libraries']) if lib['id'] == current_id),
+                     0 if self.policy['libraries'] else -1)
+        self.list.setCurrentRow(index)
+        self.list.blockSignals(False)
+        self._current = index if index >= 0 else None
+        self._load_current()
+
+    def delete_library(self):
+        if self._current is None:
+            return
+        lib = self.policy['libraries'][self._current]
+        name = self.name.text().strip() or lib['name']
+        count = sum(any(self.table.item(i, j) and self.table.item(i, j).text().strip()
+                        for j in range(4)) for i in range(self.table.rowCount()))
+        answer = QMessageBox.question(self, tr('删除整份译文词库'),
+            tr('将删除整份词库“{name}”（{count} 条术语）。其他词库不受影响。点击本窗口“确定”后才会保存；“取消”可放弃此次删除。', name=name, count=count),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._sync_checks()
+        index = self._current
+        identity = lib['id']
+        self.policy['libraries'].pop(index)
+        self.policy['selected_ids'] = [key for key in self.policy['selected_ids'] if key != identity]
+        remaining = self.policy['libraries']
+        self._reload_libraries(remaining[min(index, len(remaining)-1)]['id'] if remaining else '')
+        self.note.setText(tr('已暂存删除“{name}”；点击“确定”保存，点击“取消”放弃。', name=name))
 
     def remove_rows(self):
         for row in sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True):
@@ -161,8 +221,7 @@ class TranslationTermsDialog(QDialog):
     def value(self):
         self.store_current()
         self.policy['enabled'] = self.enabled.isChecked()
-        self.policy['selected_ids'] = [self.list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.CheckState.Checked]
+        self._sync_checks()
         return normalize(self.policy)
 
     def accept(self):
@@ -177,28 +236,98 @@ class TranslationTermsDialog(QDialog):
         if not path: return
         try:
             self.store_current()
+            from .translation_terms_import import parse_libraries
             text = Path(path).read_text('utf-8-sig')
-            if Path(path).suffix.lower() == '.json':
-                raw = json.loads(text)
-                libs = raw.get('libraries', []) if isinstance(raw, dict) else []
-                if not libs or any(not lib.get('source_language') or not lib.get('target_language') for lib in libs):
-                    raise ValueError(tr('请选择含明确语言方向和source/target术语的翻译库；原文纠错库不能自动转换。'))
-                from ..subtitle_rules.subtitle_translation import SOURCE_LANGUAGES, TARGETS
-                if any(lib.get('source_language') not in SOURCE_LANGUAGES or lib.get('target_language') not in TARGETS for lib in libs):
-                    raise ValueError(tr('翻译库的语言方向无效，请使用窗口列出的语言代码。'))
-                libs = normalize(dict(libraries=libs))['libraries']
-            else:
-                from ..studio.studio_translation_dialog import parse_glossary
-                pairs = parse_glossary(text)
-                if not pairs: raise ValueError(tr('没有读取到源语言术语和标准译名'))
-                libs = [dict(id=uuid.uuid4().hex, name=Path(path).stem, source_language=self.source.currentData(),
-                    target_language=self.target.currentData(), terms=[dict(source=a,target=b,aliases=[],context='') for a,b in pairs])]
-            for lib in libs:
-                lib['id'] = uuid.uuid4().hex
-                self.policy['libraries'].append(lib); self.policy['selected_ids'].append(lib['id']); self._item(lib)
-            self.list.setCurrentRow(len(self.policy['libraries'])-1)
+            libs = parse_libraries(text, is_json=Path(path).suffix.lower() == '.json', name=Path(path).stem,
+                source_language=self.source.currentData(), target_language=self.target.currentData())
+            mode = self.choose_import_mode()
+            if mode is None:
+                return
+            if mode == 'append' and len(libs) > 1:
+                labels = [f"{i+1}. {lib['name']}（{lib['source_language']} → {lib['target_language']}，{len(lib['terms'])} 条）"
+                          for i, lib in enumerate(libs)]
+                label, ok = QInputDialog.getItem(self, tr('选择要追加的词库'),
+                    tr('JSON 含多个词库。请选择一份追加到当前高亮词库；其他词库不会混入。'), labels, 0, False)
+                if not ok:
+                    return
+                libs = [libs[labels.index(label)]]
+            decisions = {}
+            if mode == 'append':
+                from .translation_terms_import import merge_library
+                _lib, _stats, conflicts = merge_library(self.policy['libraries'][self._current], libs[0])
+                if conflicts:
+                    decisions = self.choose_conflicts(conflicts)
+                    if decisions is None:
+                        return
+            self.apply_import(libs, mode=mode, decisions=decisions)
         except (OSError, ValueError, TypeError) as exc:
             self.note.setText(str(exc))
+
+    def choose_import_mode(self):
+        dialog = QDialog(self); dialog.setWindowTitle(tr('选择导入方式'))
+        layout = QVBoxLayout(dialog)
+        lib = self.policy['libraries'][self._current] if self._current is not None else None
+        append = QRadioButton(tr('追加到当前词库：{name}', name=lib['name']) if lib else tr('追加到当前词库（请先选择词库）'))
+        append.setEnabled(lib is not None); append.setChecked(lib is not None)
+        new = QRadioButton(tr('导入为新词库')); new.setChecked(lib is None)
+        layout.addWidget(append); layout.addWidget(new)
+        note = QLabel(tr('目标只取当前高亮词库。上方勾选框仅表示是否参与翻译。新增内容将在主窗口“确定”后保存。'))
+        note.setWordWrap(True); layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        return ('append' if append.isChecked() else 'new') if dialog.exec() == QDialog.Accepted else None
+
+    def choose_conflicts(self, conflicts):
+        dialog = QDialog(self); dialog.setWindowTitle(tr('处理译名／语境冲突')); dialog.resize(850, 430)
+        layout = QVBoxLayout(dialog)
+        note = QLabel(tr('相同源术语存在不同译名、语境或别名。默认保留现有内容；采用导入会替换该源术语的现有条目组，也可明确同时保留。'))
+        note.setWordWrap(True); layout.addWidget(note)
+        table = QTableWidget(len(conflicts), 4)
+        table.setHorizontalHeaderLabels([tr(s) for s in ('源术语', '现有内容', '导入内容', '处理方式')])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        choices = []
+        def summary(rows):
+            return '\n'.join(f"{r['target']} · {r['context'] or '无语境限制'} · {'|'.join(r['aliases'])}" for r in rows)
+        for i, conflict in enumerate(conflicts):
+            for j, text in enumerate((conflict['source'], summary(conflict['existing']), summary(conflict['incoming']))):
+                item = QTableWidgetItem(text); item.setFlags(item.flags() & ~Qt.ItemIsEditable); item.setToolTip(text)
+                table.setItem(i, j, item)
+            box = QComboBox()
+            for text, key in (('保留现有内容', 'keep'), ('采用导入内容', 'imported'), ('同时保留', 'both')):
+                box.addItem(tr(text), key)
+            table.setCellWidget(i, 3, box); choices.append(box)
+        table.resizeRowsToContents(); layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return {c['key']: box.currentData() for c, box in zip(conflicts, choices)}
+
+    def apply_import(self, libraries, *, mode, decisions=None):
+        """Commit one fully parsed import to this dialog's private draft only."""
+        from .translation_terms_import import merge_library, unique_terms
+        self.store_current(); self._sync_checks()
+        draft = copy.deepcopy(self.policy)
+        if mode == 'append':
+            if self._current is None or len(libraries) != 1:
+                raise ValueError('追加必须明确选择当前词库及一份导入词库')
+            target, stats, _conflicts = merge_library(draft['libraries'][self._current], libraries[0], decisions)
+            draft['libraries'][self._current] = target
+            selected_id = target['id']
+        elif mode == 'new':
+            stats = dict(added=0, duplicates=0, conflicts=0, replaced=0)
+            selected_id = ''
+            for library in libraries:
+                lib = copy.deepcopy(library); lib['id'] = uuid.uuid4().hex
+                lib['terms'], duplicates = unique_terms(lib['terms'])
+                stats['added'] += len(lib['terms']); stats['duplicates'] += duplicates
+                draft['libraries'].append(lib); draft['selected_ids'].append(lib['id']); selected_id = lib['id']
+        else:
+            raise ValueError('无效的导入方式')
+        self.policy = draft
+        self._reload_libraries(selected_id)
+        self.note.setText(tr('新增 {added} 条；重复跳过 {duplicates} 条；冲突 {conflicts} 条；采用导入 {replaced} 条。点击“确定”保存，点击“取消”放弃。', **stats))
+        return stats
 
     def export_library(self):
         path, _ = QFileDialog.getSaveFileName(self, tr('导出翻译术语库'), 'translation-terms.json', 'JSON (*.json)')
@@ -229,6 +358,8 @@ class TranslationTermsWidget(QWidget):
             if self.commit(dialog.value()) is False:
                 self.summary.setText(tr('工程已切换，词库选择没有写入。'))
             else:
+                from .translation_terms import _index
+                _index.cache_clear()
                 self.refresh()
 
 

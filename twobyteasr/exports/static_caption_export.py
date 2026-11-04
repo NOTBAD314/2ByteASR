@@ -62,10 +62,13 @@ def _run_static_command(command, folder, runner, **kwargs):
     return runner(command, cwd=folder, **kwargs)
 
 
-def static_graph_project(project):
+def static_graph_project(project, *, start_ms=None, end_ms=None):
     from ..rendering.advanced_renderer import split_renderer_cues
     from .static_caption_contract import shared_static_cue
     _, advanced=split_renderer_cues(project)
+    hidden=project.hidden_speaker_ids()
+    advanced=[c for c in advanced if c.speaker_id not in hidden
+              and (start_ms is None or c.end_ms>start_ms) and (end_ms is None or c.start_ms<end_ms)]
     if not advanced: return False
     for cue in advanced:
         if not shared_static_cue(project,cue):return False
@@ -76,10 +79,10 @@ def static_graph_project(project):
 def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, trace=None):
     from ..caption_style.bilingual_layout import materialize_display_project
     project = materialize_display_project(project)
-    from ..rendering.advanced_renderer import compile_composition_data, _run_streaming_process, _ffmpeg_filter_path, _native_segment_project
+    from ..rendering.advanced_renderer import split_renderer_cues, _run_streaming_process, _ffmpeg_filter_path, _native_segment_project
     from ..rendering.ass_compiler import compile_ass
     from .studio_render import select_encoder, _quality_arguments, encoder_preset, export_progress, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX, STAGE_VALIDATE
-    from .export_validation import validate_output
+    from .export_validation import validate_output, output_validation_options
     output=Path(job.output_path).resolve()
     if output.exists() and not job.overwrite_existing:raise FileExistsError(output)
     output.parent.mkdir(parents=True,exist_ok=True)
@@ -92,7 +95,15 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
     fps=job.settings.fps or getattr(project.media,'fps',0) or 30
     with tempfile.TemporaryDirectory(prefix='.static-captions-',dir=output.parent) as folder:
         temp=Path(folder);partial=temp/('output'+output.suffix)
-        props=compile_composition_data(project,width=width,height=height,fps=fps,start_seconds=start,duration_seconds=duration)
+        # The Qt still path needs one canonical snapshot per cue, not the
+        # normalized browser payload followed by a second identical snapshot.
+        _, advanced = split_renderer_cues(project)
+        hidden = project.hidden_speaker_ids()
+        origin_ms, end_ms = round(start*1000), round((start+duration)*1000)
+        props = dict(cues=[dict(id=c.id, startMs=max(0, c.start_ms-origin_ms),
+                               endMs=min(round(duration*1000), c.end_ms-origin_ms))
+                           for c in advanced if c.speaker_id not in hidden
+                           and c.end_ms>origin_ms and c.start_ms<end_ms])
         from ..caption_style.visual_snapshot import build_visual_cue_snapshot
         from ..rendering.advanced_live_renderer import render_live_snapshot
         layers=[]; raster_cache={}
@@ -226,7 +237,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         filters.append(pre+f"{base}{label}overlay=x={box[0]}:y={box[1]}:eof_action=repeat:format=auto[captioned]")
         base='[captioned]'
         encoder=select_encoder(ffmpeg,job.settings)
-        command=[str(ffmpeg),'-hide_banner','-loglevel','level+info','-y','-benchmark','-filter_complex_threads','2']
+        command=[str(ffmpeg),'-hide_banner','-loglevel','level+info','-xerror','-y','-benchmark','-filter_complex_threads','2']
         if job.direct_video_graph:
             from dataclasses import replace
             from .export_filtergraph import compile_video_filtergraph
@@ -234,7 +245,8 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
             command+=compile_video_filtergraph(ffmpeg,effective,'null',caption_overlays=layers,caption_filter=native_filter)
         else:
             if start>0 and not job.composition_resolved:command+=['-ss',f'{start:.9f}']
-            command+=['-i',job.media_path,*inputs,'-t',f'{duration:.9f}','-filter_complex',';'.join(filters),'-map',base,'-map','0:a?']
+            from .studio_render import video_input_acceleration
+            command += [*video_input_acceleration(job), '-i',job.media_path,*inputs,'-t',f'{duration:.9f}','-filter_complex',';'.join(filters),'-map',base,'-map','0:a?']
         command+=['-c:v',encoder,*_quality_arguments(encoder,job.settings),'-pix_fmt',job.settings.pixel_format,'-r',f'{fps:.12g}']
         preset=encoder_preset(encoder,job.settings.preset)
         if preset:command+=['-preset',preset]
@@ -275,11 +287,13 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
             warning=(lambda text:progress({'notice':text})) if progress else None)
         timings['encode']=time.perf_counter()-encode_start
         if code:raise ffmpeg_failure(code,log,encoder=encoder,fps=fps)
-        if progress:progress(export_progress(STAGE_VALIDATE,message='完整解码校验后发布成片…'))
-        validate_start=time.perf_counter();metadata=validate_output(ffmpeg,partial,duration=duration,fps=fps,cancelled=cancelled,preview_path=job.completion_preview_path)
+        if progress:progress(export_progress('validate',message='检查成片…'))
+        validate_start=time.perf_counter();metadata=validate_output(ffmpeg,partial,duration=duration,fps=fps,cancelled=cancelled,preview_path=job.completion_preview_path, **output_validation_options(job))
         timings['validate']=time.perf_counter()-validate_start
         publish_output(partial, output, job, metadata, cancelled=cancelled)
         timings.update(wall=time.perf_counter()-started,static_images=len(layers),intentionally_invisible=invisible_count,temporary_png_bytes=total_png,encoder=encoder)
+        from .export_run_log import note_export
+        note_export('static_caption_timings', timings)
         notify_after_publication(job, trace, 'static_caption_timings', timings)
         notify_after_publication(job, trace, 'validated_output', metadata)
         notify_after_publication(job, progress, export_progress(STAGE_VALIDATE,message='导出完成',percent=100))

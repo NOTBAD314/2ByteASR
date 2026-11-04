@@ -101,6 +101,8 @@ def _probe(ffmpeg, path, size, modified, cancelled):
             _PROBE_CACHE.move_to_end(key)
     if cached is not None:
         _check_cancel(cancelled)
+        from .export_run_log import note_export
+        note_export('timestamp_index', dict(path=path, cache='hit', frames=len(cached.pts), original_build_seconds=cached.elapsed))
         return cached
     value = _build_probe(ffmpeg, path, cancelled)
     _check_cancel(cancelled)
@@ -112,6 +114,8 @@ def _probe(ffmpeg, path, size, modified, cancelled):
         _PROBE_CACHE.move_to_end(key)
         while len(_PROBE_CACHE) > _PROBE_CACHE_LIMIT:
             _PROBE_CACHE.popitem(last=False)
+    from .export_run_log import note_export
+    note_export('timestamp_index', dict(path=path, cache='miss', frames=len(value.pts), seconds=value.elapsed))
     return value
 
 

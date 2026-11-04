@@ -2764,9 +2764,12 @@ class MainWindow(QWidget):
             # Only one stretch was recognized: the Studio splices it into the
             # open project as one undo step instead of opening the result.
             self._studio_recognition_context = None
-            self.studio_page.apply_range_recognition_result(project_path, snapshot)
+            applied = self.studio_page.apply_range_recognition_result(project_path, snapshot)
+            update_hint = getattr(self, '_update_completion_delivery_hint', None)
+            if callable(update_hint):
+                update_hint(synced=bool(applied))
             if callable(done):
-                done(True)
+                done(bool(applied))
             return
         if snapshot:
             from ..recognition.recognition_input import project_content_revision
@@ -2790,7 +2793,7 @@ class MainWindow(QWidget):
                         return bool(loaded_path and str(Path(loaded_path).resolve()) == target)
                     studio._mcp_project_handoff = (target, guarded_handoff, done)
                 self.open_studio_project(project_path, mode="edit", source="studio_recognition",
-                    expected_result_ref=expected_result_ref)
+                    expected_result_ref=expected_result_ref, on_ready=getattr(self, '_update_completion_delivery_hint', None))
             else:
                 if callable(done):
                     done(False)
@@ -12362,7 +12365,9 @@ class MainWindow(QWidget):
         self.raise_()
         self.activateWindow()
 
-        dialog = CompletionDialog(title, message, icon, details, self)
+        from .completion_dialog import delivery_hint
+        dialog = CompletionDialog(title, message, icon, details, self,
+            result_hint=delivery_hint(getattr(self, '_completion_tasks', ()), self.built_page('studio')))
         self._completion_dialog = dialog
 
         def clear_dialog(_result):
@@ -12371,6 +12376,13 @@ class MainWindow(QWidget):
 
         dialog.finished.connect(clear_dialog)
         dialog.open()
+
+    def _update_completion_delivery_hint(self, *, synced=False):
+        dialog = getattr(self, '_completion_dialog', None)
+        if dialog is not None:
+            from .completion_dialog import delivery_hint
+            bind_text(dialog.delivery_hint, delivery_hint(getattr(self, '_completion_tasks', ()),
+                self.built_page('studio'), synced=synced))
 
     def _recover_recognition_output(self):
         report_path = getattr(self, '_last_recognition_report', '')

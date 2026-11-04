@@ -115,6 +115,7 @@ _RENDERER_SOURCE_FILES = {
     "renderer/package.json",
     "renderer/service.mjs",
     "renderer/render-overlays.mjs",
+    "renderer/render-caption-stills.mjs",
     "renderer/export-browser.mjs",
     "renderer/resource-boundary.mjs",
     "renderer/tsconfig.json",

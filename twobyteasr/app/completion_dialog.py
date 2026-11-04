@@ -18,6 +18,22 @@ from .main_ui_branding import _app_icon
 from .main_ui_helpers import _icon, APP_ICON_SOURCE_PATH
 
 
+def delivery_hint(tasks, studio=None, *, synced=False):
+    """A loaded result is usable; only the displayed matching project is synced."""
+    usable = [(item, project) for item, project in tasks
+              if project is not None and bool(project.cues)]
+    current = getattr(studio, 'project', None)
+    synced = bool(usable and (synced or current and any(
+        current.project_id == project.project_id and current.cues == project.cues for _item, project in usable)))
+    partial = len(usable) < len(tasks) or any(
+        getattr(item, 'status', '') != 'success' for item, _project in usable)
+    if synced:
+        return '部分结果已同步到工作台' if partial else '任务结果已同步到工作台'
+    if usable:
+        return '部分结果已保存，可从结果页打开' if partial else '任务结果已保存，可从结果页打开'
+    return '没有可用结果，原有字幕保持不变'
+
+
 class CompletionDialog(SpringDialog):
     """Theme-stable completion card that does not inherit native dark dialogs."""
 
@@ -27,7 +43,7 @@ class CompletionDialog(SpringDialog):
         QMessageBox.Icon.Critical: ("danger", "fa5s.exclamation", "需要处理"),
     }
 
-    def __init__(self, title: str, message: str, icon, details: str = "", parent=None):
+    def __init__(self, title: str, message: str, icon, details: str = "", parent=None, *, result_hint=""):
         super().__init__(parent)
         role, icon_name, badge_text = self._VISUALS.get(
             icon,
@@ -138,7 +154,7 @@ class CompletionDialog(SpringDialog):
 
         footer = self.card.footer_layout
         footer.setSpacing(12)
-        hint = QLabel("任务结果已同步到工作台")
+        hint = self.delivery_hint = QLabel(result_hint or '请查看结果页和运行日志')
         hint.setStyleSheet(f"color: {theme.text_muted}; font-size: 12px; border: 0; background: transparent;")
         footer.addWidget(hint)
         footer.addStretch(1)

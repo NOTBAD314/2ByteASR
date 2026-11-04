@@ -9,6 +9,15 @@ import math
 from pathlib import Path
 
 
+def overlay_pts_shift(seconds, fps):
+    """Use the output frame lattice when an overlay starts on that lattice."""
+    rate = Fraction(str(fps)).limit_denominator(100100)
+    frames = round(Fraction(str(seconds))*rate)
+    if abs(float(Fraction(frames)/rate)-seconds) < 1e-7:
+        return f'PTS+{frames}/({rate}*TB)'
+    return f'PTS+{seconds:.9f}/TB'
+
+
 def simple_video_clips(graph):
     if not graph or graph.get('audio_mix') is None or any(t.get('media') == 'video' for t in graph.get('clip_transitions', [])):
         return None
@@ -37,10 +46,11 @@ def simple_video_clips(graph):
     return clips
 
 
-def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), caption_filter=None):
+def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), caption_filter=None, video_overlays=()):
     from .audio_export import compile_audio_mix
     from ..timeline.clip_time_mapper import project_to_source_exact
     from .timeline_media import resolve_video_graph
+    from .studio_render import video_input_acceleration
     graph = resolve_video_graph(job.direct_video_graph, ffmpeg)
     clips = simple_video_clips(graph)
     if clips is None:
@@ -82,6 +92,7 @@ def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), c
         trim = source - seek
         source_window = trim + (last-first)/fps*rate + 2/fps
         inputs += ['-threads', '4']
+        inputs += video_input_acceleration(job)
         if seek > 0:
             inputs += ['-ss', f'{float(seek):.9f}']
         inputs += ['-t', f'{float(source_window):.9f}',
@@ -125,6 +136,13 @@ def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), c
         enable='' if layer.get('sparse') else f":enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'"
         filters.append(pre+f"{video_label}{label}overlay=x={x}:y={y}:eof_action=repeat:format=auto{enable}[static{i}]")
         video_label=f'[static{i}]'
+    for i, (start, end, path) in enumerate(video_overlays):
+        index = inputs.count('-i')
+        inputs += ['-i', str(path)]
+        filters.append(f'[{index}:v]setpts={overlay_pts_shift(start, fps)}[movingpixels{i}]')
+        filters.append(f"{video_label}[movingpixels{i}]overlay=x=0:y=0:format=auto:eof_action=pass:"
+                       f"enable='gte(t,{start:.9f})*lt(t,{end:.9f})'[moving{i}]")
+        video_label = f'[moving{i}]'
     if job.preview_url:
         filters.append(f'{video_label}split=2[vfinal][previewfull]')
         filters.append('[previewfull]fps=2:round=up:start_time=0:eof_action=pass,scale=640:-2[exportpreview]')

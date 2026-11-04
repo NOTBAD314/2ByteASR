@@ -61,7 +61,7 @@ def normalize(value):
             target_language=str(library.get('target_language') or ''), terms=terms))
     selected = value.get('selected_ids', ())
     return dict(version=1, enabled=bool(value.get('enabled', False)),
-                selected_ids=list(dict.fromkeys(str(i) for i in selected)) if isinstance(selected, (list, tuple)) else [], libraries=libraries)
+                selected_ids=list(dict.fromkeys(str(i) for i in selected if str(i) in seen)) if isinstance(selected, (list, tuple)) else [], libraries=libraries)
 
 
 def policy_of(project):

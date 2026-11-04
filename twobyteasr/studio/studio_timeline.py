@@ -720,6 +720,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self._visible_cue_window_key = None
         self._visible_cue_window = []
         self._dense_cue_span_cache.clear()
+        from ..projects.studio_runtime_state import state_for
+        self._indexed_caption_token = ((id(self.project.cues), state_for(self.project).language_source_revision)
+                                       if self.project else None)
+        present = set(self._timeline_cue_by_id)
+        self.translation_selected_ids.intersection_update(present)
+        self.active_cue_ids = frozenset(getattr(self, 'active_cue_ids', ())) & present
 
     GROUP_HEADER_HEIGHT = 24
     GROUP_LANE_MAX = 4
@@ -1736,7 +1742,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             track.id == self.selected_video_track_id for track in self.project.video_tracks
         ):
             self.selected_video_track_id = self.project.video_tracks[0].id if self.project.video_tracks else ""
-        if self.project and self.project.render_settings.get('_cue_domain')=='timeline':
+        from ..projects.studio_runtime_state import state_for
+        canonical = bool(self.project and self.project.render_settings.get('_cue_domain') == 'timeline')
+        token = ((id(self.project.cues), state_for(self.project).language_source_revision)
+                 if self.project else None)
+        if canonical and token == getattr(self, '_indexed_caption_token', None):
             self._project_duration_ms=timeline_duration_ms(self.project)
         else:
             self._rebuild_cue_index()
@@ -4159,7 +4169,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     @measured('mouse_press')
     def clip_selection(self):
         from ..timeline.studio_selection import ClipSelection
-        return ClipSelection(set(self.selected_segment_ids),set(self.selected_audio_clip_ids),set(self.selected_ids))
+        return ClipSelection(set(self.selected_segment_ids),set(self.selected_audio_clip_ids),set(self.selected_ids),
+                             self.active_subtitle_layer)
 
     def _publish_clip_selection(self, selection):
         feedback_started=perf_counter()
@@ -4320,8 +4331,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         times += [c.timeline_in_ms for t in self.project.audio_tracks for c in t.clips if c.id in selection.audio_ids]
         times += [c.start_ms for c in self._cues_by_start if c.id in selection.cue_ids]
         self._group_drag=dict(minimum=min(times,default=0),origin_ms=self._x_to_time(event.position().x()),
-            origin=QPointF(event.position()),delta=0,moved=False,selection=self.clip_selection(),
+            origin=QPointF(event.position()),delta=0,moved=False,selection=selection,
             copy=bool(event.modifiers() & Qt.AltModifier))
+        if self._group_drag['copy'] and selection.cue_ids and not selection.video_ids and not selection.audio_ids:
+            from ..timeline.caption_copy_command import capture_captions
+            selection.caption_payload = capture_captions(self.project, selection.cue_ids,
+                                                         layer=selection.subtitle_layer)
         self.interaction_changed.emit(True)
 
     def select_all_clips(self):
@@ -4389,11 +4404,19 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.save()
         painter.setPen(QPen(color,2.2,Qt.SolidLine))
         painter.setBrush(fill)
-        for kind,key,rect in self._selection_items():
+        items = self._selection_items()
+        if drag and getattr(drag['selection'], 'subtitle_layer', '') == 'translation':
+            track = self._track_layout()[1]
+            items = [('subtitle', c.id, QRectF(self._time_to_x(c.start_ms), track.top()+6,
+                     max(4, self._time_to_x(c.end_ms)-self._time_to_x(c.start_ms)), track.height()-12))
+                     for c in self._cues_by_start if c.id in selection.cue_ids] if track is not None else []
+        for kind,key,rect in items:
             ids=getattr(selection,{'video':'video_ids','audio':'audio_ids','subtitle':'cue_ids'}[kind])
             if key in ids:
                 if drag:rect=rect.translated(offset,0)
                 painter.drawRect(self._selection_highlight_rect(rect))
+                if drag and drag.get('copy'):
+                    painter.drawText(rect.adjusted(5, 1, -2, -1), Qt.AlignLeft | Qt.AlignTop, tr('副本'))
         painter.restore()
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -4412,14 +4435,26 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             cue = self._resolve_translation_at(point)
             modifiers = event.modifiers()
             self.select_translation(cue.id if cue else "",
-                                    extend=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier)),
+                                    extend=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+                                        or bool(cue and modifiers & Qt.AltModifier and cue.id in self.translation_selected_ids),
                                     toggle=bool(modifiers & Qt.ControlModifier))
+            if cue and modifiers & Qt.AltModifier:
+                self._begin_group_drag(event)
             event.accept()
             return
         if event.button() == Qt.LeftButton:
             if self.active_subtitle_layer == "translation":
                 self.set_selected("")
             self.set_subtitle_layer("original")
+            if event.modifiers() & Qt.AltModifier and self.project:
+                cue, _ = self._cue_at(point)
+                if cue and cue.speaker_id not in self.locked_speakers:
+                    from ..timeline.studio_selection import ClipSelection
+                    ids = set(self.selected_ids) if cue.id in self.selected_ids else {cue.id}
+                    self._publish_clip_selection(ClipSelection(cue_ids=ids))
+                    self._begin_group_drag(event)
+                    event.accept()
+                    return
         self._seam_candidate = None
         if event.button() == Qt.LeftButton and self.tool_mode == 'selection':
             self._seam_candidate = self._caption_seam_at(point)

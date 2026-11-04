@@ -65,6 +65,7 @@ STAGE_ORDER = (
     STAGE_PREPARE_SUBTITLES,
     STAGE_ADVANCED_RENDER,
     STAGE_ENCODE,
+    "validate",
     STAGE_MUX,
     STAGE_VALIDATE,
 )
@@ -75,7 +76,7 @@ STAGE_LABELS = {
     STAGE_ADVANCED_RENDER: "高级样式渲染",
     STAGE_ENCODE: "视频编码",
     STAGE_MUX: "封装收尾",
-    STAGE_VALIDATE: "验证与发布",
+    STAGE_VALIDATE: "检查成片",
     "publish": "发布成片",
 }
 
@@ -348,25 +349,40 @@ def probe_encoder_detail(
     *,
     listed: bool = True,
     cancelled: Callable[[], bool] | None = None,
+    settings: RenderSettings | None = None,
 ) -> dict[str, object]:
-    """Functional encoder probe. Hardware tests use 640x360, never 64x64."""
+    """Functional probe; optionally check the actual export geometry/format.
+
+    The small UI discovery probe does not promise that 4K/10-bit/profile/level
+    combinations work. Diagnostics can pass settings and retain the exact argv.
+    """
     if cancelled is not None and cancelled():
         raise InterruptedError("encoder capability scan cancelled")
     null_target = "NUL" if os.name == "nt" else "/dev/null"
+    if settings is not None:
+        settings.validate()
+    frame_size = (f'{settings.width}x{settings.height}' if settings and settings.width and settings.height else PROBE_FRAME_SIZE)
+    pixel_format = settings.pixel_format if settings else 'yuv420p'
+    rate = settings.fps if settings and settings.fps else 24
     command = [
         ffmpeg_path, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c=black:s={PROBE_FRAME_SIZE}:r=24",
-        "-frames:v", "8", "-an", "-pix_fmt", "yuv420p",
-        "-c:v", encoder, "-f", "null", null_target,
+        "-f", "lavfi", "-i", f"color=c=black:s={frame_size}:r={rate:.12g}",
+        "-frames:v", "8", "-an", "-pix_fmt", pixel_format, "-c:v", encoder,
     ]
+    if settings is not None:
+        preset = encoder_preset(encoder, settings.preset)
+        if preset:command += ['-preset', preset]
+        if settings.profile:command += ['-profile:v', settings.profile]
+        if settings.level:command += ['-level:v', settings.level]
+    command += ['-f', 'null', null_target]
     result: dict[str, object] = {
         "encoder": encoder,
         "listed": bool(listed),
         "functional": False,
         "returncode": None,
         "stderr": "",
-        "pixel_format": "yuv420p",
-        "frame_size": PROBE_FRAME_SIZE,
+        "pixel_format": pixel_format,
+        "frame_size": frame_size,
         "command": command,
         "elapsed_ms": 0,
         "driver": (
@@ -378,7 +394,7 @@ def probe_encoder_detail(
     if not listed:
         result["stderr"] = "not listed by this FFmpeg build"
         return result
-    if encoder.startswith("lib"):
+    if encoder.startswith("lib") and settings is None:
         result["functional"] = True
         result["returncode"] = 0
         return result
@@ -546,6 +562,17 @@ def media_has_audio(ffmpeg_path: str | os.PathLike[str], media_path: str | os.Pa
     return bool(str(getattr(completed, "stdout", "") or "").strip())
 
 
+def video_input_acceleration(job):
+    """Opt-in CUDA decode comparison returning software frames to ASS/overlays.
+
+    This deliberately omits hwaccel_output_format=cuda. Raster FFV1
+    intermediates retain software decode; it is not a GPU-only pipeline.
+    """
+    if job.export_context.get('decode_backend') == 'cuda' and not job.composition_resolved:
+        return ['-hwaccel', 'cuda']
+    return []
+
+
 def build_concat_filter_complex(
     slices: list[tuple[float, float]],
     ass_filter: str,
@@ -660,7 +687,7 @@ def build_render_command(
     if output.suffix.lower() != f".{settings.container}":
         raise ValueError("output extension does not match container")
     encoder = select_encoder(ffmpeg_path, settings)
-    command = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-y"]
+    command = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "level+info", "-xerror", "-y"]
     slices = [(float(start), float(end)) for start, end in (job.edit_segments or ())]
     ass_filter = f"ass=filename={_filter_path(ass)}" if job.ass_path else 'null'
     # Qt's application fonts are process-local. libass in FFmpeg cannot see
@@ -682,7 +709,7 @@ def build_render_command(
         from .export_filtergraph import compile_video_filtergraph
         command.extend(compile_video_filtergraph(ffmpeg_path, job, ass_filter))
     elif slices:
-        command.extend(["-i", str(media)])
+        command.extend([*video_input_acceleration(job), "-i", str(media)])
         has_audio = settings.audio_codec != "none" and media_has_audio(ffmpeg_path, media)
         graph, video_label, audio_label = build_concat_filter_complex(
             slices,
@@ -701,7 +728,7 @@ def build_render_command(
     else:
         if job.start_seconds is not None and not job.composition_resolved:
             command.extend(["-ss", f"{max(0.0, float(job.start_seconds)):.3f}"])
-        command.extend(["-i", str(media)])
+        command.extend([*video_input_acceleration(job), "-i", str(media)])
         if job.duration_seconds is not None:
             command.extend(["-t", f"{max(0.05, float(job.duration_seconds)):.3f}"])
         # Input seeking resets the encoded segment to a zero-based timeline. Put
@@ -732,7 +759,7 @@ def build_render_command(
     if settings.pixel_format:
         command.extend(["-pix_fmt", settings.pixel_format])
     if settings.fps > 0:
-        command.extend(["-r", f"{settings.fps:g}"])
+        command.extend(["-r", f"{settings.fps:.12g}"])
     if settings.gop > 0:
         command.extend(["-g", str(settings.gop)])
     if settings.b_frames >= 0:
@@ -846,8 +873,12 @@ def _run_render_attempt(
         progress(export_progress(STAGE_ENCODE, message='正在编码视频…',
             duration_seconds=float(job.duration_seconds or 0) or None))
     try:
-        code, output_log = _run_streaming_process(command, on_line=on_line, cancelled=cancelled, purpose="ffmpeg studio render")
+        from .export_performance import export_phase
+        with export_phase("final_pipeline", overlaps="decode+filters+encode+audio+mux+faststart"):
+            code, output_log = _run_streaming_process(command, on_line=on_line, cancelled=cancelled, purpose="ffmpeg studio render")
         if trace: trace('exit_code', code)
+        from .export_run_log import note_export
+        note_export('encoding_finished', dict(returncode=code, includes_mux_and_faststart=True))
         if code:
             encoder = command[command.index('-c:v')+1]
             raise ffmpeg_failure(code, output_log, encoder=encoder, fps=job.settings.fps)
@@ -860,10 +891,12 @@ def _run_render_attempt(
     if not temporary.is_file() or temporary.stat().st_size <= 0:
         raise RuntimeError("FFmpeg completed without a playable output file")
     if progress:
-        progress(export_progress(STAGE_VALIDATE, message="校验完整视频与音频后发布文件…"))
+        progress(export_progress("validate", message="检查成片…"))
     try:
-        from .export_validation import validate_output
-        metadata = validate_output(ffmpeg_path,temporary,duration=job.duration_seconds,fps=job.settings.fps,cancelled=cancelled,preview_path=job.completion_preview_path)
+        from .export_validation import validate_output, output_validation_options
+        if "expected_output_audio" not in job.export_context:
+            job.export_context["expected_output_audio"] = job.settings.audio_codec != "none" and media_has_audio(ffmpeg_path, job.media_path)
+        metadata = validate_output(ffmpeg_path,temporary,duration=job.duration_seconds,fps=job.settings.fps,cancelled=cancelled,preview_path=job.completion_preview_path, **output_validation_options(job))
         if trace: trace('validated_output',metadata)
         publish_output(temporary, output, job, metadata, cancelled=cancelled)
     finally:
@@ -893,8 +926,9 @@ def run_render_job(
         from .audio_delivery import run_audio_job
         return run_audio_job(ffmpeg_path, job, progress=progress, cancelled=cancelled, trace=trace)
     if job.video_graph:
-        from .timeline_media import resolve_video_graph
-        job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled, seekable=True))
+        from .timeline_media import resolve_video_graph, export_range_graph
+        graph = export_range_graph(job.video_graph, job.start_seconds, job.duration_seconds)
+        job = replace(job, video_graph=resolve_video_graph(graph, ffmpeg_path, cancelled=cancelled, seekable=True))
         validate_export_config(job)
         from ..media.media_availability import export_sources, probe_sources, require_available
         start_ms = (job.start_seconds or 0) * 1000
@@ -905,8 +939,11 @@ def run_render_job(
             raise FileExistsError(f"输出文件已存在: {job.output_path}")
         from .export_filtergraph import simple_video_clips
         if simple_video_clips(job.video_graph) is not None:
+            from .export_run_log import note_export
+            route = dict(route='direct_filtergraph', reason='nonoverlapping default-geometry video clips', intermediate_video=False)
+            note_export('export_route', route)
             if trace:
-                trace('export_route', {'route': 'direct_filtergraph', 'intermediate_video': False})
+                trace('export_route', route)
             graph = job.video_graph
             source_fps = graph.get('fps')
             if not source_fps and not job.settings.fps:
@@ -933,6 +970,9 @@ def run_render_job(
     if current.settings.encoder == 'auto':
         current = replace(current, settings=replace(current.settings,
             encoder=select_encoder(ffmpeg_path, current.settings)))
+    from .parallel_video_export import parallel_native_supported, render_parallel_native
+    if parallel_native_supported(current):
+        return render_parallel_native(ffmpeg_path, current, progress=progress, cancelled=cancelled, trace=trace)
     preview = None
     try:
         if current.preview_callback and not current.edit_segments:

@@ -11,10 +11,14 @@ def run_startup_self_test(core):
             raise RuntimeError(label)
         checks.append(label)
     saved_review_items = list(core.RUN_REVIEW_ITEMS)
+    from ..subtitle_rules.language_rules import language_scope
     try:
         core.RUN_REVIEW_ITEMS.clear()
         muted_output = io.StringIO()
-        with contextlib.redirect_stdout(muted_output):
+        # These fixtures describe Chinese rules, independent of the language
+        # already installed by the queue's RuntimeContext (notably Japanese).
+        # Restore the caller's thread-local scope even when a guard fails.
+        with language_scope('zh'), contextlib.redirect_stdout(muted_output):
             require(abs(core.ISOLATED_CUE_TAIL_SECONDS - 0.2) < 1e-09, '字幕尾帧必须固定为 200ms')
             require(abs(core.SHORT_DISPLAY_GAP_BRIDGE_SECONDS - 0.5) < 1e-09, '全轨短空白衔接阈值必须固定为 500ms')
             require(core.PREFERRED_MAX_SUBTITLE_CHARS <= core.MAX_SUBTITLE_CHARS == core.COMPLETE_PHRASE_SOFT_MAX_CHARS <= 16, '字幕舒适目标与最终 16 字硬上限必须生效')
