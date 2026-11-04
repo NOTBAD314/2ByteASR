@@ -1,47 +1,58 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: bounded-0.9.3-draft-transfer
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, for example v0.6.5"
         required: true
-
+        type: string
 permissions: {}
-
 jobs:
-  anonymous-download-check:
+  transfer-verified-assets:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_TAG: ${{ inputs.tag }}
+      ASSET_SPEC_B64: 'W3sibmFtZSI6ICIyQnl0ZUFTUi0wLjkuMy1hcHAtYTdmNGViOWQwYjY0LnppcCIsICJzaGEyNTYiOiAiMjZkZTgyOTlmNDY0NGExODQ2NjE0ZGEyNzg2OGUyZmY1M2Q0M2I2ZjhhZTc5YTNkMWQ0NDI4OWRiOGE5NzU0OSIsICJzaXplIjogNjQyNjUwMDN9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtR1BMLUFkZGl0aW9uYWwtUGVybWlzc2lvbi50eHQiLCAic2hhMjU2IjogIjZlOTJmMDljYzYyNjhmZDE0ZTBjY2ZlZWQ1ZWQzZDQ2NzU5NmY1MmFiMjMyMDg3ZTVjMTU2MjkwZTdkY2JlOTYiLCAic2l6ZSI6IDQ1NjB9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtbGljZW5zZXMtZjNlMjhiNzMwNDBlLnppcCIsICJzaGEyNTYiOiAiYjU2MmU0MmJiOTBjZTNkMTk4NGYwMWE3Yjg2N2Q4NmE0YTFhOTVhZDU3ZGFmNmMwN2QzMDk1Y2NkMWE3N2E1ZCIsICJzaXplIjogMjk3MTg3MTJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtcHl0aG9uLXJ1bnRpbWUtMmYzZjA3NmMyNTVlLnppcCIsICJzaGEyNTYiOiAiMWY2NzhiNWY3YmExYmZmMDAwNjY3NjM5OTIwYjBkOTY5MDg3ZWJkZGRkZGZmMzQ5OTcyNjg5MzNkYTFjOTFiNiIsICJzaXplIjogMTQ4OTgyMjE5fSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXJlbmRlcmVyLTZmYzk2YjY0NTU4Yi56aXAiLCAic2hhMjU2IjogIjRmZTk2NzEzNGJlOTI3ODQyYjNjOGZiYzY2NDg4MzQzZjVmYzRjYjljNmQ0YTk4ZmE2ZWIxZTNlNzY2N2UzYjEiLCAic2l6ZSI6IDIzNzAzMDU4N30sIHsibmFtZSI6ICIyQnl0ZUFTUi0wLjkuMy10b29scy0yMjljOTdkNTlkMDMuemlwIiwgInNoYTI1NiI6ICIxODY4NGE2MWU0NGMxYjhhZWQxNWYxMjYxZWZiN2E4ZDljZTE5OTUzZmM3N2Q2MjA1ZTVjNDg5YTY1NzIyYTNlIiwgInNpemUiOiAyMjg3MzE2Njh9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtd2hlZWxzLWVkY2JkZjc5MTNiNy56aXAiLCAic2hhMjU2IjogIjY1YThjZjdiZjAyNWRiN2MyZGNkNDAxY2NlZWM1YTY5Mzc1ZjUzYjVjZWQ2OTVkODVjNDI3N2FmYmQzNTliZTIiLCAic2l6ZSI6IDQ0Mjc1NzUzM30sIHsibmFtZSI6ICIyQnl0ZUFTUi1TZXR1cC0wLjkuMy5leGUiLCAic2hhMjU2IjogImMxMmM2MDRkODFmMGZlZjNiNzg5NGE5NTkzMDY4MDkwNmI1M2I0OTNiOGI1MjNjNmJmZTQwYmRhMmExODQwZTgiLCAic2l6ZSI6IDExMDc3ODAzNTV9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItU291cmNlLTAuOS4zLnppcCIsICJzaGEyNTYiOiAiZDVmNmE3ZmNjNzFiYmI4Nzk1OWQ2NjdkY2ZkNTg4ZjE2MDJkZTE1ZGVhZjZlYmI0ZDMwYmMxMTZmNWVkNDE3MyIsICJzaXplIjogMTAxNzA0MTMxMX0sIHsibmFtZSI6ICIyQnl0ZUFTUi1UaGlyZFBhcnR5LU1hdGVyaWFscy0wLjkuMy56aXAiLCAic2hhMjU2IjogIjUzOGIzZThlMTE1YzVjMzEyMjJlZmJhZDhmNWQzZWI4MjRmN2FmZTYwOGZiMzcyZmQzMzhmY2U4NmUyMGJlYjkiLCAic2l6ZSI6IDI5OTc4NzY1fSwgeyJuYW1lIjogIjJCeXRlQVNSLXVwZGF0ZS5qc29uIiwgInNoYTI1NiI6ICI3ZjBlNTdjN2M2MTk4MWYxMTU0ZDI4ZTAyOWM4YTJlNGJkYWY3ZDA5YjdlNzdhMjg4YWNkYTliNDg4MjQ1MGRkIiwgInNpemUiOiA4MTY4fSwgeyJuYW1lIjogIjJCeXRlQVNSLXVwZGF0ZS5qc29uLnNpZyIsICJzaGEyNTYiOiAiZWM1YWQ4ZTJkZjhhMDA3NDEyZTE0MGFkYWQ3ZTAzOGE2NmFiMGI5NWIwOGMyZGE3ODZlZjBjOTRlZWUwNTNhYyIsICJzaXplIjogMjkxfSwgeyJuYW1lIjogIm1pbmd3LXc2NC1saWJpY29udi0xLjE5LTEuc3JjLnRhci56c3QiLCAic2hhMjU2IjogIjc0NDI4MjgwYzE3MDk0ZGE1YjcwMmMyOWIyZTFhMGFiYWU1OTU1NmVhNWRmZGQ2NTcwNWNjOGNjYzFlMDAwZmIiLCAic2l6ZSI6IDUxMzEwMjl9LCB7Im5hbWUiOiAibWluZ3ctdzY0LWxpYmljb252LTEuMTktMS5zcmMudGFyLnpzdC5zaWciLCAic2hhMjU2IjogImQ5OWYyNjViZDRlNTFkN2U4NjI2NzI1OGQzZDAxMDFhNzJkOTAxZDhjMmI4YzRmMmY1OWNmODQ1NjU2ZGJlNjIiLCAic2l6ZSI6IDU2Nn0sIHsibmFtZSI6ICJTSEEyNTZTVU1TLnR4dCIsICJzaGEyNTYiOiAiNTgxNDI5MWY0MGJiZjgzZWY4NjhjYzc0ZmUwOTRkOTRjZDY5OGRiMGRiNDhjY2FjZTA4ZDExYjU0YTVhOGMzZiIsICJzaXplIjogMTQyOH0sIHsibmFtZSI6ICJTSEEyNTZTVU1TLnR4dC5zaWciLCAic2hhMjU2IjogIjNlYmNkMmE3MTg3NGFjYTBmMWM1YjQ5NjVhOTkyYzY0Y2I4N2I1YTczY2E1ODBlOTEzNmJlMDYzZTU2MjA3ODkiLCAic2l6ZSI6IDI5MX1d'
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Transfer only fixed verified files into the existing draft
         shell: bash
         run: |
-          set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
           python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          import base64,concurrent.futures,hashlib,json,os,pathlib,subprocess,tempfile,time,urllib.parse
+          REPO='NOTBAD314/2ByteASR';TAG='v0.9.3';RID=433563410;TARGET='7d4354c19df68525af62ff59b8805d0fe3d196b8'
+          assert os.environ['GITHUB_REPOSITORY'].casefold()==REPO.casefold() and os.environ['INPUT_TAG']==TAG
+          spec=json.loads(base64.b64decode(os.environ['ASSET_SPEC_B64']));expected={x['name']:x for x in spec}
+          def gh(*args):return subprocess.check_output(['gh',*args],text=True)
+          def release():
+           r=json.loads(gh('api',f'repos/{REPO}/releases/{RID}'))
+           assert r['draft'] and r['tag_name']==TAG and r['target_commitish']==TARGET
+           return r
+          remote={x['name']:x for x in release()['assets']};assert not(set(remote)-set(expected))
+          for name,r in remote.items():
+           x=expected[name];assert r['state']=='uploaded' and r['size']==x['size'] and r['digest']=='sha256:'+x['sha256'],name
+          assert {'2ByteASR-update.json','2ByteASR-update.json.sig'}<=remote.keys(), 'Small local signed feed must already be uploaded'
+          folder=pathlib.Path(tempfile.mkdtemp(prefix='verified-gitcode-092-'))
+          def copy(x):
+           name=x['name']
+           if name in remote:return dict(name=name,reused=True)
+           p=folder/name;url='https://gitcode.com/Notbad314/2ByteASR/releases/download/'+TAG+'/'+urllib.parse.quote(name)
+           start=time.monotonic();print('DOWNLOAD',name,flush=True)
+           subprocess.run(['curl','--fail','--location','--silent','--show-error','--retry','3','--connect-timeout','20','--max-time','900','--output',str(p),url],check=True)
+           h=hashlib.sha256()
+           with p.open('rb')as f:
+            for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
+           assert p.stat().st_size==x['size'] and h.hexdigest()==x['sha256'],name
+           downloaded=round(time.monotonic()-start,2);print('VERIFIED',name,downloaded,flush=True)
+           subprocess.run(['gh','release','upload',TAG,str(p),'--repo',REPO],check=True)
+           result=dict(name=name,download_seconds=downloaded,total_seconds=round(time.monotonic()-start,2));print(json.dumps(result),flush=True);return result
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3)as pool:results=list(pool.map(copy,spec))
+          for attempt in range(10):
+           final={x['name']:x for x in release()['assets']}
+           if len(final)==len(expected) and all(name in final and final[name]['state']=='uploaded' and final[name]['size']==x['size'] and final[name].get('digest')=='sha256:'+x['sha256']for name,x in expected.items()):break
+           time.sleep(2)
+          else:raise RuntimeError('Final GitHub digest verification failed')
+          print(json.dumps(dict(passed=True,draft=True,assets=len(expected),results=results)),flush=True)
           PY
