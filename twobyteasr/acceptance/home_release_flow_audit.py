@@ -189,12 +189,12 @@ def start(window, out):
                 result['events'].append(asdict(event)); save(); original(event)
             window._handle_event = observe
             check('Home Start visible and enabled', window.start_button.isVisible() and window.start_button.isEnabled())
-            QTest.mouseClick(window.start_button, Qt.LeftButton); pump(.1)
+            QTest.mouseClick(window.start_button, Qt.LeftButton, pos=window.start_button.rect().center()); pump(.1)
             if config.get('run_limits_cancel_first'):
                 check('取消 in “开始前请确认” starts nothing', limits['cancelled'] == 1 and window.worker is None)
                 check('取消 is logged', any('已取消' in line for line in getattr(window, '_console_lines', []) or []))
                 wait(lambda: window.start_button.isEnabled(), 10, 'Start can be clicked again after 取消')
-                QTest.mouseClick(window.start_button, Qt.LeftButton); pump(.1)
+                QTest.mouseClick(window.start_button, Qt.LeftButton, pos=window.start_button.rect().center()); pump(.1)
             check('normal Home Start launches actual worker', window.worker is not None)
             if config.get('expect_run_limits') is not None:
                 texts = result.get('run_limits') or []
@@ -299,9 +299,13 @@ def start(window, out):
                 result['saved_project']=str(target)
                 result['passed']=True
                 return
-            page = window.studio_page
             window.open_studio_project(target, mode='edit', source='home_release_validation')
-            wait(lambda: page.project is not None and page.project.project_id == project.project_id and page._readiness.ready, 90, 'recognized result enters Studio')
+            def studio_ready():
+                page = window.built_page('studio')
+                return bool(page is not None and page.project is not None
+                            and page.project.project_id == project.project_id and page._readiness.ready)
+            wait(studio_ready, 90, 'recognized result enters Studio')
+            page = window.built_page('studio')
             result['studio_ready_snapshot'] = studio_snapshot(page); save()
             preview(page, 'ready')
             cue = page.project.cues[0]; page.select_cue(cue.id)
@@ -364,7 +368,7 @@ def start(window, out):
                 page._seek(position);pump(.4)
                 window.grab().save(str(out/f'cut-frame-{offset}.png'))
                 preview(page, 'cut-before' if offset < 0 else 'cut-after')
-            QTest.mouseClick(page.save_button, Qt.LeftButton)
+            QTest.mouseClick(page.save_button, Qt.LeftButton, pos=page.save_button.rect().center())
             wait(lambda: page.undo_stack.isClean(), 30, 'normal Save completes')
             page.show_project_hub(skip_dirty_guard=True)
             window.open_studio_project(target, mode='edit', source='home_release_reopen')
@@ -377,7 +381,7 @@ def start(window, out):
             check('cut captions survive save and reopen', signature()==before and len(sequence_of(page.project).segments)==3)
             window.grab().save(str(out/'02-recognized-edited-reopened.png'))
             preview(page, 'reopened')
-            QTest.mouseClick(page.studio_render_button,Qt.LeftButton)
+            QTest.mouseClick(page.studio_render_button, Qt.LeftButton, pos=page.studio_render_button.rect().center())
             wait(lambda:page.export_workspace is not None and hasattr(page.export_workspace,'subtitle_format_checks'),30,'normal export workspace opens')
             ui=page.export_workspace
             export_root=out/'exports';export_root.mkdir(exist_ok=True)
@@ -387,7 +391,7 @@ def start(window, out):
             if config.get('bilingual'):
                 for control in ui.subtitle_language_checks.values(): control.setChecked(False)
             ui.subtitle_speaker_modes['combined'].setChecked(True)
-            QTest.mouseClick(ui.subtitle_export_button,Qt.LeftButton);pump(.3)
+            QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center());pump(.3)
             artifacts=ui._last_subtitle_artifacts
             result['subtitle_artifacts']=[str(a.path) for a in artifacts]
             check('actual GUI subtitle button exports four formats',len(artifacts)==4 and {a.path.suffix.lower() for a in artifacts}=={'.srt','.ass','.txt','.json'} and all(a.path.is_file() for a in artifacts))
@@ -402,7 +406,7 @@ def start(window, out):
             if config.get('bilingual'):
                 for name,control in ui.subtitle_format_checks.items(): control.setChecked(name=='srt')
                 for name,control in ui.subtitle_language_checks.items(): control.setChecked(name=='bilingual')
-                QTest.mouseClick(ui.subtitle_export_button,Qt.LeftButton);pump(.3)
+                QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center());pump(.3)
                 bilingual_artifacts=ui._last_subtitle_artifacts
                 check('bilingual SRT includes both manually edited texts',
                       len(bilingual_artifacts)==1 and translation in bilingual_artifacts[0].path.read_text('utf-8-sig')
@@ -411,7 +415,7 @@ def start(window, out):
             ui.directory.setText(str(export_root));ui.resolution.setCurrentIndex(ui.resolution.findData((640,360)))
             ui.export_range.setCurrentIndex(ui.export_range.findData('full'))
             destination=ui.export_target().full_path
-            QTest.mouseClick(ui.export_button,Qt.LeftButton)
+            QTest.mouseClick(ui.export_button, Qt.LeftButton, pos=ui.export_button.rect().center())
             wait(lambda:not ui._running and (ui.pages.currentWidget() is ui.success_page or ui._last_failure),180,'cut Chinese project video export completes')
             result['video_error']=ui._last_failure
             check('cut Chinese video export succeeds',not ui._last_failure and destination.is_file())

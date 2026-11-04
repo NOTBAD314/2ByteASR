@@ -248,3 +248,22 @@ def test_original_project_bytes_are_preserved_but_profile_and_other_projects_are
     unrelated.write_bytes(payload)
     assert [p.relative_to(root).as_posix() for p in selected_files(root)] == [
         'desktop-flow/owned-projects/recognized.2byteproj']
+
+
+def test_runtime_default_project_tree_is_owned_but_sibling_and_resolved_escape_are_excluded(tmp_path):
+    output = tmp_path/'tmp/desktop-flow'
+    project = output/'local/2ByteASR/Projects/p-owned/project.2byteproj'
+    project.parent.mkdir(parents=True)
+    project.write_bytes(b'{"owned":true}')
+    assert Path(preserve_owned_project(project, output, 'final')['path']).read_bytes() == project.read_bytes()
+    sibling = output/'local/2ByteASR/Projects-other/project.2byteproj'
+    sibling.parent.mkdir(); sibling.write_bytes(b'{}')
+    with pytest.raises(ValueError): preserve_owned_project(sibling, output, 'final')
+    escape = project.parent/'../../../../private.2byteproj'
+    escape.resolve().write_bytes(b'{}')
+    with pytest.raises(ValueError): preserve_owned_project(escape, output, 'final')
+    outside = tmp_path/'private.2byteproj'; outside.write_bytes(b'{}')
+    link = project.parent/'escaped.2byteproj'
+    try: link.symlink_to(outside)
+    except OSError: return  # Link creation requires privileges on some Windows hosts.
+    with pytest.raises(ValueError): preserve_owned_project(link, output, 'final')

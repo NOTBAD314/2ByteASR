@@ -300,6 +300,7 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.regressions.outcome }}
+          STUDIO_PERF_REQUESTED: ${{ inputs.run_studio_perf }}
           MODEL_REQUESTED: ${{ inputs.run_model_smoke }}
           CLOUD_MLX_REQUESTED: ${{ inputs.run_cloud_mlx_smoke }}
         run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT"

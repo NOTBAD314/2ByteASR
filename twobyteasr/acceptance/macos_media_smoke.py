@@ -265,7 +265,7 @@ def main(output: str) -> int:
                 controller._frame(frame)
         busy = BusyGui()
         canvas.set_speed(1.0)
-        resettles = controller.actor_status()['paused_target_resettles']
+        resettles_before = controller.actor_status().get('paused_target_resettles')
         controller.sink.videoFrameChanged.disconnect(controller._frame)
         controller.sink.videoFrameChanged.connect(busy.frame)
         try:
@@ -274,11 +274,15 @@ def main(output: str) -> int:
             ready = wait(lambda: player_surface_ready(gate), 10)
             pump(.3)
             frame = controller.observed_property('video-frame-info', {}) or {}
+            resettles_after = controller.actor_status().get('paused_target_resettles')
+            resettles = (resettles_after - resettles_before
+                         if isinstance(resettles_before, (int, float))
+                         and isinstance(resettles_after, (int, float)) else None)
             receipt['busy_gui_preroll'] = details = dict(
                 pts=frame.get('pts'), time_pos=controller.observed_property('time-pos'),
                 gui_held=bool(busy.held),
                 frames_after_hold=controller._frame_sequence-(busy.held[0] if busy.held else 0),
-                resettles=controller.actor_status()['paused_target_resettles']-resettles,
+                resettles=resettles,
                 applied=controller.applied_seek_state())
             check('busy_gui_preroll_settles_on_paused_target', ready and bool(busy.held)
                   and player_surface_ready(gate) and abs(float(frame.get('pts', -1))) < .085, **details)
