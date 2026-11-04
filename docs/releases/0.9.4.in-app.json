@@ -1,0 +1,4 @@
+{
+  "zh": "· 减少导出重复索引、渲染和成片扫描；可选普通字幕双路编码。\n· 修正字幕删除/复制、译文词库追加删除及中文启动自检状态。\n· 一小时十分钟成绩仅限已测合成4K30普通字幕/指定硬件；高级动效及原机仍需验证。Mac保持0.9.3。",
+  "en": "Less repeated export work; optional dual-segment native/ASS encoding. Caption deletion/copy, translation-library append/delete and startup language-state fixes. One-hour benchmark applies only to the tested synthetic4K30 fixture/hardware. Mac stays0.9.3."
+}
