@@ -1329,6 +1329,8 @@ class MainWindow(QWidget):
             page.terms_requested.connect(self._open_terms_from_history)
             page.result_requested.connect(self._open_completion_from_history)
             page.diagnose_requested.connect(self._open_history_diagnosis)
+            page.resume_requested.connect(self._resume_recognition_task)
+            page.partial_requested.connect(lambda record:self._resume_recognition_task(record,preview_only=True))
         elif name == "studio":
             # Imported on first use (or by the idle warm-up after startup):
             # the Studio module tree is ~0.5 s of the home page's start.
@@ -2045,9 +2047,19 @@ class MainWindow(QWidget):
             mode=str(mode),
             project_path=str(project_path or ""),
         )
-        self._open_subtitle_studio(project_path, mode=mode,
-            skip_dirty_guard=source == 'studio_recognition', on_ready=on_ready,
-            expected_result_ref=expected_result_ref)
+        try:
+            self._open_subtitle_studio(project_path, mode=mode,
+                skip_dirty_guard=source == 'studio_recognition', on_ready=on_ready,
+                expected_result_ref=expected_result_ref)
+        except Exception:
+            import traceback
+            error = traceback.format_exc()
+            self.studio_page._studio_trace('ENTRY_FAILED', traceback=error)
+            loading = self.__dict__.get('_studio_loading_session')
+            if loading is not None:
+                loading.fail('读取工程列表' if not project_path else '准备工程', error)
+            else:
+                raise
 
     def _loading_surface_painted(self):
         if self.__dict__.get('_studio_entry_start_queued', False):
@@ -2058,7 +2070,9 @@ class MainWindow(QWidget):
                     and not session.native_cover_state().get('verified')):
                 return
             self._studio_entry_start_queued = False
-            QTimer.singleShot(0, self, self._start_studio_construction)
+            generation = session.generation
+            QTimer.singleShot(0, self, lambda: self._start_studio_construction()
+                if session.active and session.generation == generation else None)
 
     def _ensure_studio_loading_surface(self):
         """Own the loading surface before construction, hydration or native video."""
@@ -2114,7 +2128,7 @@ class MainWindow(QWidget):
         try:
             studio = self.built_page('studio')
             if studio is not None:
-                records = studio.recent_project_records()
+                records = studio._recent_records_unchecked()
             else:
                 from ..projects.studio_project import studio_settings_path
                 payload = json.loads(studio_settings_path().read_text('utf-8-sig'))
@@ -2266,6 +2280,10 @@ class MainWindow(QWidget):
         elif not self.__dict__.get('_studio_entry_start_queued', False):
             self._studio_entry_start_queued = True
             session.view.update()
+            # A reused native cover may already be painted/verified. Its
+            # on_present callback ran before the queue flag was set; no new
+            # paint acknowledgement is guaranteed after a failed attempt.
+            self._loading_surface_painted()
 
     def _start_studio_construction(self):
         self._studio_entry_start_queued = False
@@ -2287,6 +2305,8 @@ class MainWindow(QWidget):
             path, options = request
             self.open_studio_project(path, **options)
             return
+        if isinstance(self, MainWindow) and not self._ensure_studio_modules():
+            return
         try:
             from ..studio.studio_ui import SubtitleStudioPage
             page = SubtitleStudioPage(self, deferred_build=True)
@@ -2294,14 +2314,17 @@ class MainWindow(QWidget):
             page.workspace_build_progress.connect(
                 lambda stage: self._studio_loading_session.stage('创建工作台界面', stage)
                 if self.__dict__.get('_studio_page_building') is page else None)
-            page.workspace_build_failed.connect(self._studio_construction_failed)
-            page.workspace_built.connect(self._studio_construction_finished)
+            page.workspace_build_failed.connect(lambda error: self._studio_construction_failed(error)
+                if self.__dict__.get('_studio_page_building') is page else None)
+            page.workspace_built.connect(lambda: self._studio_construction_finished()
+                if self.__dict__.get('_studio_page_building') is page else None)
             page.resume_workspace_construction()
         except Exception as exc:
             self._studio_construction_failed(str(exc))
 
     def _studio_construction_failed(self, error):
         self._studio_entry_pending = None
+        self._studio_entry_start_queued = False
         self._studio_loading_session.fail('创建工作台界面', error)
         page = self.__dict__.get('_studio_page_building')
         if page is None:
@@ -2317,15 +2340,24 @@ class MainWindow(QWidget):
                 self._studio_entry_start_queued = True
                 self._studio_loading_session.stage('创建工作台界面')
                 self._studio_loading_session.view.update()
+                self._loading_surface_painted()
         page.discard_workspace_construction(disposed)
 
     def _studio_construction_finished(self):
         page = self.__dict__.get('_studio_page_building')
-        if page is None:
+        if page is None or not page._workspace_ready:
+            return
+        try:
+            self._studio_loading_session.attach_surface(page.video)
+            self._construct_lazy_page('studio', prepared=page)
+        except Exception:
+            import traceback
+            if self.built_page('studio') is page:
+                self._studio_page_instance = None
+                self.pages.removeWidget(page)
+            self._studio_construction_failed(traceback.format_exc())
             return
         self._studio_page_building = None
-        self._studio_loading_session.attach_surface(page.video)
-        self._construct_lazy_page('studio', prepared=page)
         self._studio_loading_session.mark('创建工作台界面')
         request, self._studio_entry_pending = self.__dict__.get('_studio_entry_pending'), None
         if request is not None:
@@ -2534,7 +2566,7 @@ class MainWindow(QWidget):
                 epoch = loading.generation
                 def hub_ready():
                     picked = loading.picked_project()
-                    if (loading.deliver(epoch) and loading.generation == epoch
+                    if (loading.generation == epoch
                             and loading.state == 'ready'):
                         if on_ready is not None:
                             on_ready(self.built_page('studio'))
@@ -2542,7 +2574,7 @@ class MainWindow(QWidget):
                             # 2026-11-02: a recent project picked on the library
                             # loading page opens as soon as the library is ready.
                             QTimer.singleShot(0, self, lambda: self.open_studio_project(picked))
-                QTimer.singleShot(0, self, hub_ready)
+                loading.complete(epoch, hub_ready)
             self._retry_pending_recognition_reload()
 
     @navigation_timed('home.return')
@@ -2645,6 +2677,7 @@ class MainWindow(QWidget):
             "handoff_done": handoff_done,
             "recognition_purpose": "analysis" if str(action) == "start_analysis" else "final",
             "enabled_glossary_ids": list(request_options.get("enabled_glossary_ids") or []),
+            "enable_domain_terms": bool(request_options.get('enable_domain_terms', request_options.get('enabled_glossary_ids'))),
             "replace_policy": str(request_options.get("replace_policy") or "replace_cues"),
             "recognition_plan": plan_key,
             "models": dict(models),
@@ -2652,6 +2685,7 @@ class MainWindow(QWidget):
             # 2026-10-23: the sheet's translation choice is for this run only (home keeps its own).
             "subtitle_output": str(request_options.get("subtitle_output") or ""),
             "translation_script": str(request_options.get("translation_script") or ""),
+            "translation_terminology": copy.deepcopy(request_options.get('translation_terminology', {})),
             "recognition_language": str(request_options.get('recognition_language') or self._subtitle_language_options()['recognition_language']),
         }
         if noninteractive:
@@ -3498,21 +3532,47 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, tr('范例工程'), tr('没能准备范例工程：{reason}', reason=value))
 
     def _warm_studio_module(self):
-        """Run the startup idle tasks, then load the Studio module tree.
-
-        Neither runs before the first window (~0.35 s of the start each).
-        Done on the GUI thread on purpose: a background import could race a
-        GUI-thread import of the same package cycle. Without this the first
-        click into Studio would pay for it."""
+        """Warm dependencies without a monolithic GUI-thread import."""
         if QApplication.mouseButtons() != Qt.MouseButton.NoButton or QApplication.activePopupWidget():
             QTimer.singleShot(1000, self, self._warm_studio_module)
             return
-        while _STARTUP_IDLE_TASKS:
-            _STARTUP_IDLE_TASKS.pop(0)()
-        if self.built_page("studio") is not None or "twobyteasr.studio.studio_ui" in sys.modules:
+        # Runtime fingerprinting is one of these callbacks and imports the
+        # same feature modules. Run it only after the staged importer, or it
+        # would silently turn the first loading paint into a full import.
+        if not self._ensure_studio_modules():
             return
-        import twobyteasr.studio.studio_ui  # noqa: F401
+        if _STARTUP_IDLE_TASKS:
+            _STARTUP_IDLE_TASKS.pop(0)()
+            QTimer.singleShot(16, self, self._warm_studio_module)
+            return
         self._ensure_studio_loading_surface()
+
+    def _ensure_studio_modules(self):
+        module = sys.modules.get('twobyteasr.studio.studio_ui')
+        if module is not None and not getattr(getattr(module,'__spec__',None),'_initializing',False):
+            return True
+        from .studio_module_preload import StudioModulePreloader
+        loader = self.__dict__.get('_studio_module_preloader')
+        if loader is None:
+            loader = self._studio_module_preloader = StudioModulePreloader(self)
+            loader.ready.connect(self._studio_modules_prepared)
+            loader.failed.connect(self._studio_module_prepare_failed)
+        loader.start()
+        return loader.completed
+
+    def _studio_modules_prepared(self):
+        if (self.__dict__.get('_studio_close_pending',False)
+                or self.__dict__.get('_studio_close_finalizing',False)):
+            return
+        if self.__dict__.get('_studio_entry_pending') is not None:
+            QTimer.singleShot(0, self, self._start_studio_construction)
+        else:
+            self._ensure_studio_loading_surface()
+        QTimer.singleShot(16, self, self._warm_studio_module)
+
+    def _studio_module_prepare_failed(self, error):
+        if self.__dict__.get('_studio_entry_pending') is not None:
+            self._studio_construction_failed(error)
 
     def _auto_check_updates(self):
         if (self.update_check_worker and self.update_check_worker.isRunning()) or \
@@ -4039,7 +4099,7 @@ class MainWindow(QWidget):
         self.content_quick_picks.picked.connect(self._pick_recent_content)
         content_choice.addWidget(self.content_quick_picks)
         self.game_box.currentTextChanged.connect(self._sync_content_quick_picks)
-        self.terms = SwitchControl("术语库校对")
+        self.terms = SwitchControl("原文校对术语库")
         self.terms.setObjectName("homeSwitch")
         self._restore_glossary_switch()
         bind_text(self.terms, '使用本批已确认词库进行本地匹配和文字校对；联网核验独立选择', property='toolTip')
@@ -6403,13 +6463,23 @@ class MainWindow(QWidget):
         payload = record.payload
         result = payload.get('result') or {}
         outputs = result.get('outputs') or {}
+        # An explicit history open reads the saved project, including later
+        # human edits. It is not a late result committing into the active job.
+        history_ref=''
+        history_job=''
+        report_path=next((Path(path) for path in (payload.get('task') or {}).get('reports',[]) if Path(path).is_file()),record.path)
+        self._active_job_id=history_job
+        self._committed_job_ids=getattr(self,'_committed_job_ids',set())-{history_job}
+        status=str(payload.get('status') or 'unknown')
+        if outputs.get('project') and status in {'partial','interrupted','completed'}:
+            status='success' if status=='completed' else 'degraded_success'
         item = MediaResult(media_path=str((payload.get('media') or {}).get('path') or record.media_name),
-            status=str(payload.get('status') or 'unknown'), project_path=str(outputs.get('project') or ''),
-            srt_path=str(outputs.get('srt') or ''), report_json_path=str(record.path),
-            report_text_path=str(record.path.with_suffix('.txt')),
+            status=status, project_path=str(outputs.get('project') or ''),job_id=history_job,
+            srt_path=str(outputs.get('srt') or ''), report_json_path=str(report_path),result_ref_json=history_ref,
+            report_text_path=str(report_path.with_suffix('.txt')),
             elapsed_seconds=float(result.get('elapsed_seconds') or 0))
         self._last_run_options = None
-        self._handle_result(QueueResult((item,), item.elapsed_seconds))
+        self._handle_result(QueueResult((item,), item.elapsed_seconds,job_id=history_job))
         events = payload.get('events') or []
         self._completion_log_lines = tuple(json.dumps(row, ensure_ascii=False) for row in events)
         self._completion_log_fragments = tuple(self._completion_plain_log_fragment(line) for line in self._completion_log_lines)
@@ -8728,6 +8798,14 @@ class MainWindow(QWidget):
         self.subtitle_language_hint.setObjectName("homeTermState")
         self.subtitle_language_hint.setWordWrap(True)
         layout.addWidget(self.subtitle_language_hint)
+        from ..glossary.translation_terms_ui import TranslationTermsWidget
+        def store_translation_terms(value):
+            self.legacy.RUNTIME_SETTINGS.setdefault('glossary', {})['translation_terminology'] = value
+            save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+        self.translation_term_libraries = TranslationTermsWidget(
+            lambda: self.legacy.RUNTIME_SETTINGS.get('glossary', {}).get('translation_terminology', {}),
+            store_translation_terms, self)
+        layout.addWidget(self.translation_term_libraries)
         self.aligner_download_button = AnimatedButton("去模型工坊下载 Qwen3-ForcedAligner（约 1.8 GB）")
         self.aligner_download_button.setObjectName("homeHeaderAction")
         self.aligner_download_button.clicked.connect(self._open_aligner_in_workshop)
@@ -11005,6 +11083,9 @@ class MainWindow(QWidget):
                 self._subtitle_language_options(), studio_context, _ai_unlocked(self))
             options = RunOptions(
                 **language_options,
+                translation_terminology_json=json.dumps(studio_context.get('translation_terminology',
+                    self.legacy.RUNTIME_SETTINGS.get('glossary', {}).get('translation_terminology', {})), ensure_ascii=False),
+                source_glossary_selection=tuple(studio_context.get('enabled_glossary_ids', self._enabled_glossary_ids())),
                 settings_snapshot_json=json.dumps(self._run_settings_snapshot(), ensure_ascii=False),
                 glossary_snapshot_json=json.dumps(
                     snapshot_glossaries(self.legacy, enabled_glossary_ids if terms_enabled else ()).to_dict(),
@@ -11076,21 +11157,59 @@ class MainWindow(QWidget):
         callback(*args)
         return True
 
+    def _resume_recognition_task(self, record, *, preview_only=False):
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.information(self, tr('识别正在运行'), tr('请等待当前任务结束后再继续另一个任务。'))
+            return
+        try:
+            if record.status=='partial' and not preview_only and (record.payload.get('result') or {}).get('outputs',{}).get('project'):
+                # Existing stage recovery owns failed text units and preserves
+                # successful ASR/audio; do not re-enter the whole pipeline.
+                self._open_completion_from_history(record)
+                self._retry_completion_stage()
+                return
+            from ..recognition.task_journal import resume_options
+            options, paths = resume_options(record.path, self.legacy.RUNTIME_SETTINGS)
+            options=replace(options,preview_only=preview_only)
+            self.media_paths = paths
+            self._run_in_progress = True
+            self._launch_pipeline_worker(options)
+        except Exception as exc:
+            self._release_run_state()
+            QMessageBox.warning(self, tr('无法继续任务'), str(exc))
+
+    def _dispatch_recognition_attempt(self, worker, job_id, callback, *args):
+        # A resumed task deliberately keeps its job ID. Queued callbacks from
+        # an older attempt must additionally match the current worker object.
+        if self.worker is not worker:
+            return False
+        return self._dispatch_recognition_job(job_id, callback, *args)
+
     def _launch_pipeline_worker(self, options):
-        options = replace(options, job_id=uuid.uuid4().hex)
+        previous=getattr(self,'worker',None)
+        if previous is not None:
+            if previous.isRunning() or not previous.wait(0):
+                raise RuntimeError('上一识别任务的线程仍在收尾，请稍后继续。')
+        options = replace(options, job_id=options.job_id if options.resume and options.job_id else uuid.uuid4().hex)
         self._last_run_options = options
         self._active_job_id = options.job_id
         self._committed_job_ids = getattr(self, '_committed_job_ids', set())
         self._cancelled_job_ids = getattr(self, '_cancelled_job_ids', set())
+        if options.resume:
+            self._committed_job_ids.discard(options.job_id)
+            self._cancelled_job_ids.discard(options.job_id)
         self.token = CancellationToken()
         self.worker = PipelineWorker(self.media_paths, options, self.token, self.legacy,
                                      self.pipeline, self.startup_self_test)
+        self.worker.setParent(self)
+        if previous is not None:previous.deleteLater()
         job_id = options.job_id
-        self.worker.event_received.connect(lambda event: self._dispatch_recognition_job(job_id, self._handle_event, event))
-        self.worker.console_received.connect(lambda line: self._dispatch_recognition_job(job_id, self._append_console_line, line))
-        self.worker.result_ready.connect(lambda result: self._dispatch_recognition_job(job_id, self._handle_result, result))
-        self.worker.unexpected_error.connect(lambda error: self._dispatch_recognition_job(job_id, self._handle_unexpected_error, error))
-        self.worker.finished.connect(lambda: self._dispatch_recognition_job(job_id, self._release_run_state))
+        worker=self.worker
+        worker.event_received.connect(lambda event: self._dispatch_recognition_attempt(worker,job_id, self._handle_event, event))
+        worker.console_received.connect(lambda line: self._dispatch_recognition_attempt(worker,job_id, self._append_console_line, line))
+        worker.result_ready.connect(lambda result: self._dispatch_recognition_attempt(worker,job_id, self._handle_result, result))
+        worker.unexpected_error.connect(lambda error: self._dispatch_recognition_attempt(worker,job_id, self._handle_unexpected_error, error))
+        worker.finished.connect(lambda: self._dispatch_recognition_attempt(worker,job_id, self._release_run_state))
         self.started_at = time.perf_counter()
         self._active_stages.clear()
         self._completed_stages.clear()
@@ -12452,6 +12571,12 @@ class MainWindow(QWidget):
 
     def _handle_unexpected_error(self, message: str):
         active_job = getattr(self, '_active_job_id', '')
+        interrupted=False
+        try:
+            from ..recognition.task_journal import TaskJournal,read_record
+            interrupted=bool(active_job and read_record(TaskJournal(active_job).path)['status']=='interrupted')
+        except (OSError,ValueError):
+            pass
         if active_job:
             self._committed_job_ids = getattr(self, '_committed_job_ids', set()) | {active_job}
         self._release_run_state()
@@ -12462,8 +12587,10 @@ class MainWindow(QWidget):
             self._finish_progress_presentation()
             self._refresh_progress_cards()
         self.result_icon.setPixmap(_icon("fa5s.exclamation-circle", CORAL).pixmap(QSize(72, 72)))
-        bind_text(self.result_title, '任务未能启动')
-        self.result_title.setProperty("i18nText","任务未能启动")
+        title='识别意外中断' if interrupted else '识别未完成'
+        bind_text(self.result_title, title)
+        self.result_title.setProperty("i18nText",title)
+        if interrupted:message+=' 可从识别记录继续处理。'
         self.result_summary.setProperty("i18nTemplate",None)
         self.result_summary.setText(message)
         if hasattr(self, 'result_stats'):
@@ -12491,7 +12618,11 @@ class MainWindow(QWidget):
         if getattr(self, "_studio_recognition_context", None):
             self.studio_page.fail_recognition_runtime(message)
             return
-        self._switch_page(2)
+        history=self.__dict__.get('_history_page_instance')
+        if history is not None and self.pages.currentWidget() is history:
+            history.refresh()
+        else:
+            self._switch_page(2)
         apply_ui_language(self, getattr(self, "_ui_language", "zh"))
         self._show_task_notification(
             "字幕任务异常中止",

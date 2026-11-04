@@ -28,6 +28,7 @@ VIDEO_OVERLAY_ID = 0
 ADVANCED_OVERLAY_ID = 1
 TRANSFORM_OVERLAY_ID = 2
 VIDEO_TRANSFORM_OVERLAY_ID = 3
+SEEK_COVER_OVERLAY_ID = 4
 # How far after the container start an unprobed recording may put its first
 # video picture (FLV leads seen: 64 ms, ~1 s).
 UNPROBED_FIRST_PICTURE_LIMIT_S = 1.5
@@ -672,7 +673,9 @@ class _MpvCommandActor:
                 if getattr(self, '_frame_witness_request', None) is request:
                     self._frame_witness_request = None
         request['queued'] = True
-        if not self.post(query, coalesce_key='frame-readiness', deferred=True):
+        # This proof gates the current picture. It must not sit behind remote
+        # prefetch/optional overlay work while a user is waiting on a seek.
+        if not self.post(query, coalesce_key='frame-readiness', deferred=False):
             request['queued'] = False
             if getattr(self, '_frame_witness_request', None) is request:
                 self._frame_witness_request = None
@@ -1700,6 +1703,7 @@ class MpvController:
         *,
         generation: int,
         paused: bool | None = None,
+        source_audio_stream: int | None = None,
     ) -> bool:
         """Load a new source at its mapped time in one mpv command.
 
@@ -1723,6 +1727,8 @@ class MpvController:
         ]
         if paused is not None:
             self._remember_desired('pause', ['set_property', 'pause', bool(paused)])
+        if source_audio_stream is not None:
+            command[-1].update(aid=str(int(source_audio_stream) + 1), sid='no', pause='yes')
 
         def perform_load_at() -> dict[str, Any]:
             if epoch != self._subtitle_binding_epoch:
@@ -1906,7 +1912,7 @@ class MpvController:
                 if valid_when is not None and not valid_when():return
                 boundary=getattr(self,'_caption_boundary_publisher',None)
                 cue_id=geometry.get('cue_id')
-                if boundary is not None and cue_id and not boundary.allows(cue_id):return
+                if overlay!=SEEK_COVER_OVERLAY_ID and boundary is not None and cue_id and not boundary.allows(cue_id):return
                 if on_started is not None:on_started()
                 response = self._send(command)
                 receipt = response.get('_ipc_poll_receipt') if isinstance(response, dict) else None
@@ -1928,8 +1934,8 @@ class MpvController:
         return self._post(
             publish,
             coalesce_key=coalesce_key or f"overlay:{overlay}",
-            foreground=overlay == ADVANCED_OVERLAY_ID,
-            deferred=overlay != ADVANCED_OVERLAY_ID,
+            foreground=overlay in {ADVANCED_OVERLAY_ID,SEEK_COVER_OVERLAY_ID},
+            deferred=overlay not in {ADVANCED_OVERLAY_ID,SEEK_COVER_OVERLAY_ID},
             on_discard=discarded if on_applied is not None or on_metrics is not None else None,
         )
 
@@ -1937,13 +1943,13 @@ class MpvController:
         overlay = int(overlay_id)
         def remove_current():
             boundary=getattr(self,'_caption_boundary_publisher',None)
-            if boundary is not None and cue_id and not boundary.allows(cue_id):return
+            if overlay!=SEEK_COVER_OVERLAY_ID and boundary is not None and cue_id and not boundary.allows(cue_id):return
             self.remove_overlay(overlay)
         return self._post(
             remove_current,
             coalesce_key=f"overlay:{overlay}",
-            foreground=overlay == ADVANCED_OVERLAY_ID,
-            deferred=overlay != ADVANCED_OVERLAY_ID,
+            foreground=overlay in {ADVANCED_OVERLAY_ID,SEEK_COVER_OVERLAY_ID},
+            deferred=overlay not in {ADVANCED_OVERLAY_ID,SEEK_COVER_OVERLAY_ID},
         )
 
     def load(self, media_path: str | os.PathLike[str]) -> None:
@@ -2141,8 +2147,23 @@ class MpvController:
         path: str | os.PathLike[str],
         *,
         mode: str = "window",
+        fast: bool = False,
     ) -> None:
         """Ask mpv to capture the composed video/subtitle/bitmap plane."""
+        if fast and self._actor is not None:
+            actor=self._actor
+            def capture():
+                previous=actor.exchange(['get_property','screenshot-png-compression'],timeout=.5).get('data')
+                changed=False
+                try:
+                    actor.exchange(['set_property','screenshot-png-compression',0],timeout=.5);changed=True
+                    actor.exchange(['screenshot-to-file',str(Path(path).resolve()),str(mode)],timeout=2.)
+                finally:
+                    if changed and previous is not None:
+                        try:actor.exchange(['set_property','screenshot-png-compression',previous],timeout=.5)
+                        except RuntimeError:pass  # A retired player has no setting to restore.
+            actor.call(capture,timeout=4.)
+            return
         self._send(["screenshot-to-file", str(Path(path).resolve()), str(mode)])
 
     def get_property(self, name: str, default: Any = None) -> Any:

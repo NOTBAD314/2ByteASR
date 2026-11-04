@@ -13,6 +13,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import replace
 from functools import wraps
+from math import ceil
 from pathlib import Path
 from time import perf_counter
 
@@ -1735,7 +1736,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             track.id == self.selected_video_track_id for track in self.project.video_tracks
         ):
             self.selected_video_track_id = self.project.video_tracks[0].id if self.project.video_tracks else ""
-        self._rebuild_cue_index()
+        if self.project and self.project.render_settings.get('_cue_domain')=='timeline':
+            self._project_duration_ms=timeline_duration_ms(self.project)
+        else:
+            self._rebuild_cue_index()
         self._sync_track_minimum_height()
         self._sync_scrollbars()
         self.update()
@@ -2732,15 +2736,24 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             end = min(float(clip_out), (index + 1) * tile_ms)
             if end <= start:
                 continue
-            key = (id(cache), index, round(start, 3), round(end, 3), ms_per_px)
+            key = (cache, index, round(start, 3), round(end, 3), ms_per_px)
             cached = tiles.get(key)
+            partials = getattr(self, '_waveform_partial_tiles', {})
+            partial = partials.get(key)
+            if cached is None and partial is not None and partial[0] is cache and partial[3] > perf_counter():
+                cached = partial[1:3]
             if cached is not None:
-                tiles.move_to_end(key)
+                if key in tiles:tiles.move_to_end(key)
                 self._paint_envelope_hits = getattr(self, '_paint_envelope_hits', 0) + 1
                 self._last_waveform_envelope_stats = cached[1]
                 path = cached[0]
             else:
                 self._paint_envelope_misses = getattr(self, '_paint_envelope_misses', 0) + 1
+                if getattr(self, '_paint_geometry_cache', None) is not None:
+                    jobs = getattr(self, '_waveform_tile_jobs', None)
+                    if jobs is not None:
+                        jobs[key] = (cache,start,end,max(1,round((end-start)/ms_per_px)),(end-start)/ms_per_px)
+                    continue
                 built = self._build_waveform_envelope(cache, start, end, max(1, round((end - start) / ms_per_px)),
                                                       (end - start) / ms_per_px, rect.height(), amplitude=1.0)
                 if built is None:
@@ -2752,6 +2765,24 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                         tiles.popitem(last=False)
             pieces.append((to_lane.map(path), float(left) + (start - float(source_in)) / ms_per_px))
         return pieces
+
+    def _waveform_tile_ready(self, epoch, key, cache, result):
+        if epoch is not self.project or result is None:
+            return
+        path, stats, complete = result
+        if complete:
+            tiles = getattr(self, '_waveform_tile_cache', None)
+            if tiles is None:self._waveform_tile_cache = tiles = OrderedDict()
+            tiles[key] = (path,stats)
+            tiles.move_to_end(key)
+            while len(tiles)>96:tiles.popitem(last=False)
+        else:
+            partials = getattr(self, '_waveform_partial_tiles', None)
+            if partials is None:self._waveform_partial_tiles = partials = {}
+            partials[key] = (cache,path,stats,perf_counter()+.12)
+            while len(partials)>96:partials.pop(next(iter(partials)))
+            QTimer.singleShot(140,self.update)
+        self.update()
 
     def _build_waveform_envelope(self, cache, source_in, source_out, pixels, width, height, *, amplitude=None):
         """Envelope polygon at x=0..width, y around 0 (same drawing as before).
@@ -3128,10 +3159,18 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     def _paint_timeline(self, event):
         self._paint_geometry_cache = {}
+        self._waveform_tile_jobs = {}
         try:
             self._paint_timeline_frame(event)
         finally:
             self._paint_geometry_cache = None
+        if self._waveform_tile_jobs:
+            worker = getattr(self, '_waveform_tile_worker', None)
+            if worker is None:
+                from .waveform_tiles import WaveformTileWorker
+                self._waveform_tile_worker = worker = WaveformTileWorker(self)
+                worker.ready.connect(self._waveform_tile_ready)
+            worker.submit(self._waveform_tile_jobs,self.project)
 
     def _paint_timeline_frame(self, event):
         palette = self._timeline_palette()
@@ -3280,7 +3319,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if not isinstance(state, dict) or bool(state.get("expanded")) == bool(expanded):
             return
         state["expanded"] = bool(expanded)
-        self.reindex_project()
+        # Expansion changes row geometry, not subtitle identity, time or
+        # content. Keep the interval index, dense spans and text layouts.
+        self._group_expanded = bool(expanded)
+        self._sync_track_minimum_height()
+        self._sync_scrollbars()
+        self.update()
 
     def _group_header_clicked(self, point, rect: QRectF) -> None:
         """Group buttons act on every member: eye, lock, expand/collapse.
@@ -3625,6 +3669,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                         visible_cues.append(cue)
         else:
             visible_cues = self.visible_cues()
+        # One coordinate transform per paint. Dense ranges and translations
+        # must not cross the Python/Qt geometry boundary for every cue edge.
+        header_width = self.TRACK_HEADER_WIDTH
+        content_right = self._content_right()
+        view_start = self.visible_start_ms
+        view_duration = max(1, self.visible_duration_ms)
+        to_x = lambda ms: header_width + (ms - view_start) * content_width / view_duration
         # At multi-hour overview scale thousands of cues collapse onto fewer
         # horizontal pixels.  Running font measurement and rounded-rect text
         # layout for every sub-pixel cue makes an otherwise harmless expose or
@@ -3650,9 +3701,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 for speaker_id, cues in grouped.items():
                     spans: list[tuple[int, int]] = []
                     for cue in cues:
-                        left = max(self.TRACK_HEADER_WIDTH, round(self._time_to_x(cue.start_ms)))
-                        right = min(self._content_right(), round(self._time_to_x(cue.end_ms)))
-                        if right < self.TRACK_HEADER_WIDTH or left > self._content_right():
+                        left = max(header_width, round(to_x(cue.start_ms)))
+                        right = min(content_right, round(to_x(cue.end_ms)))
+                        if right < header_width or left > content_right:
                             continue
                         right = max(left + 1, right)
                         if spans and left <= spans[-1][1] + 1:
@@ -3695,11 +3746,6 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         # Per-paint constants for the cue loop. ``to_x`` is _time_to_x with
         # the same arithmetic (identical floats), minus two Qt size calls per
         # cue edge; fonts/metrics depend only on row height and a width bucket.
-        header_width = self.TRACK_HEADER_WIDTH
-        content_right = self._content_right()
-        view_start = self.visible_start_ms
-        view_duration = max(1, self.visible_duration_ms)
-        to_x = lambda ms: header_width + (ms - view_start) * content_width / view_duration
         multi_border = QColor(palette.clip_multi_border)
         selected_border = QColor(palette.clip_selected_border)
         selected_glow = rgba_color(palette.clip_selected_glow)
@@ -3712,6 +3758,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 self._paint_group_header(painter, palette, kind, rect)
         letter_index = {key: position for position, key in enumerate(self._speaker_ids)}
         for speaker_id, rect in speaker_rects.items():
+            if not rect.intersects(track_viewport):
+                continue
             index = letter_index.get(speaker_id, 0)
             color = _speaker_color(self.project, speaker_id, palette)
             name = _speaker_name(self.project, speaker_id)
@@ -3774,8 +3822,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 painter.setBrush(palette.clip_fill(color, True))
                 for cue in selected:
                     self._count_paint_item('cue_items', bounds=rect.adjusted(0, 5, 0, -5))
-                    left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(cue.start_ms))
-                    right = min(self._content_right(), self._time_to_x(cue.end_ms))
+                    left = max(header_width, to_x(cue.start_ms))
+                    right = min(content_right, to_x(cue.end_ms))
                     painter.drawRect(
                         QRectF(
                             left,
@@ -3790,6 +3838,15 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             fill_selected = palette.clip_fill(color, True)
             stripe = color.darker(112)
             aliased = False  # narrow cues are drawn as crisp rects, in runs
+            narrow_rects = []
+            narrow_selected = None
+            narrow_pens = {False: QPen(border, 1), True: QPen(multi_border, 1)}
+            def flush_narrow():
+                if narrow_rects:
+                    painter.setPen(narrow_pens[narrow_selected])
+                    painter.setBrush(fill_normal)
+                    painter.drawRects(narrow_rects)
+                    narrow_rects.clear()
             for cue in visible_by_speaker.get(speaker_id, ()):
                 left = to_x(cue.start_ms)
                 right = to_x(cue.end_ms)
@@ -3809,13 +3866,15 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 # Text shaping, rounded corners and the inset stripe have no
                 # visible information at that size; hit testing stays indexed.
                 if block.width() < 24 and not selected:
-                    painter.setPen(QPen(multi_border if multi_selected else border, 1))
-                    painter.setBrush(fill_normal)
+                    if narrow_selected != multi_selected:
+                        flush_narrow()
+                        narrow_selected = multi_selected
                     if not aliased:
                         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
                         aliased = True
-                    painter.drawRect(block)
+                    narrow_rects.append(block)
                     continue
+                flush_narrow()
                 if aliased:
                     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                     aliased = False
@@ -3876,7 +3935,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                                 available * max_lines,
                             )
                         if len(labels) >= 4096:
-                            labels.clear()
+                            labels.pop(next(iter(labels)))
                         labels[label_key] = label
                 painter.drawText(inner, flags, label)
                 self._paint_acoustic_span(painter, cue, block, color, to_x)
@@ -3885,11 +3944,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     painter.setBrush(QColor(palette.handle_dot_fill))
                     for handle_x in (block.left(), block.right()):
                         painter.drawEllipse(QRectF(handle_x - 3, block.center().y() - 5, 6, 10))
+            flush_narrow()
             if aliased:
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         translations = self.project.generation_metadata.get("translations", {}) if self.project else {}
-        if translation_rect:
+        if translation_rect and translation_rect.intersects(track_viewport):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(palette.translation_dot))
             painter.drawEllipse(QRectF(14, translation_rect.center().y() - 5, 10, 10))
@@ -3901,7 +3961,46 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             translation_font.setBold(False)
             painter.setFont(translation_font)
             if isinstance(translations, dict):
-                for cue in visible_cues:
+                translation_cues = visible_cues
+                if dense_cue_overview:
+                    # At six-hour scale text is subpixel. Union pixel spans;
+                    # exact intervals and hit testing remain unchanged.
+                    spans = {False: [], True: []}
+                    for cue in visible_cues:
+                        if not translations.get(cue.id) and cue.id != self.selected_id:
+                            continue
+                        selected = self.active_subtitle_layer == 'translation' and cue.id in self.translation_selected_ids
+                        left = max(header_width, int(to_x(cue.start_ms)))
+                        right = min(content_right, max(left+1, ceil(to_x(cue.end_ms))))
+                        if right <= left:
+                            continue
+                        group = spans[selected]
+                        if group and left <= group[-1][1]+1:
+                            group[-1] = (group[-1][0], max(group[-1][1], right))
+                        else:
+                            group.append((left, right))
+                    for selected, group in spans.items():
+                        painter.setPen(QPen(QColor(palette.inline_editor_border if selected else palette.translation_clip_border), 2 if selected else 1))
+                        painter.setBrush(QColor(palette.translation_clip))
+                        for left, right in group:
+                            block = QRectF(left, translation_rect.top()+6, right-left, translation_rect.height()-12)
+                            self._count_paint_item('dense_translation_spans', bounds=block)
+                            painter.drawRect(block)
+                    translation_cues = ()
+                translation_metrics = QFontMetrics(translation_font)
+                narrow_translations = []
+                translation_pen = QPen(QColor(palette.translation_clip_border), 1)
+                translation_brush = QColor(palette.translation_clip)
+                translation_text = QColor(palette.translation_clip_text)
+                def flush_translations():
+                    if narrow_translations:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                        painter.setPen(translation_pen)
+                        painter.setBrush(translation_brush)
+                        painter.drawRects(narrow_translations)
+                        narrow_translations.clear()
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                for cue in translation_cues:
                     text = str(translations.get(cue.id, "") or "")
                     selected = self.active_subtitle_layer == "translation" and cue.id in self.translation_selected_ids
                     placeholder = not text
@@ -3909,21 +4008,27 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                         continue
                     if placeholder:
                         text = str(tr("＋ 添加译文"))
-                    left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(cue.start_ms))
-                    right = min(self._content_right(), self._time_to_x(cue.end_ms))
-                    if right <= self.TRACK_HEADER_WIDTH or left >= self._content_right():
+                    left = max(header_width, to_x(cue.start_ms))
+                    right = min(content_right, to_x(cue.end_ms))
+                    if right <= header_width or left >= content_right:
                         continue
                     block = QRectF(left, translation_rect.top() + 6, max(4, right - left), translation_rect.height() - 12)
                     self._count_paint_item('translation_items', bounds=block)
+                    if block.width() < 24 and not selected and not placeholder:
+                        narrow_translations.append(block)
+                        continue
+                    flush_translations()
                     border = QPen(QColor(palette.inline_editor_border if selected else palette.translation_clip_border), 2 if selected else 1)
                     if placeholder:
                         border.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(border)
-                    painter.setBrush(QColor(palette.translation_clip))
+                    painter.setBrush(translation_brush)
                     painter.drawRoundedRect(block, 5, 5)
-                    painter.setPen(QColor(palette.translation_clip_text))
-                    label = QFontMetrics(painter.font()).elidedText(text, Qt.TextElideMode.ElideRight, max(8, int(block.width()) - 16))
-                    painter.drawText(block.adjusted(8, 2, -6, -2), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextSingleLine, label)
+                    painter.setPen(translation_text)
+                    if block.width() >= 32:
+                        label = translation_metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(block.width()) - 16)
+                        painter.drawText(block.adjusted(8, 2, -6, -2), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextSingleLine, label)
+                flush_translations()
 
         painter.restore()
 
@@ -5774,9 +5879,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        old_width = event.oldSize().width() - self.TRACK_HEADER_WIDTH - self.vertical_scrollbar.sizeHint().width()
+        # Use the actual reserved width on both sides. The styled scrollbar
+        # differs from sizeHint(); even an unchanged resize after navigation
+        # otherwise multiplies the zoom on every return.
+        old_width = event.oldSize().width() - self.TRACK_HEADER_WIDTH - self.vertical_scrollbar.width()
         new_width = self._content_right() - self.TRACK_HEADER_WIDTH
-        if old_width > 1 and new_width > 1 and self._view_mode == 'manual':
+        if getattr(self, '_preserve_zoom_on_resize', False):
+            pass
+        elif old_width > 1 and new_width > 1 and self._view_mode == 'manual':
             self.visible_duration_ms = max(1000, round(self.visible_duration_ms * new_width / old_width))
         elif self._view_mode == 'fit':
             self.fit_all_time()

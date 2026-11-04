@@ -8509,5 +8509,19 @@
   "切到替换": "ir para Substituir",
   "Enter": "Enter",
   "Esc": "Esc",
-  "也可以在字幕里选字后右键「批量替换相同文字…」": "Ou selecione um texto na legenda e clique com o botão direito em “Substituir o mesmo texto em lote…”"
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "Ou selecione um texto na legenda e clique com o botão direito em “Substituir o mesmo texto em lote…”",
+  "双击加色点，拖动移动，拖出色条删除": "Clique duas vezes para adicionar um ponto, arraste para mover, arraste para fora da barra para excluir",
+  "把当前颜色存进最近": "Salvar a cor atual em Recentes",
+  "拖动选择饱和度和亮度": "Arraste para escolher saturação e brilho",
+  "拖动圆环选择色相": "Arraste no anel para escolher o matiz",
+  "拖动旋转渐变角度": "Arraste para girar o ângulo do gradiente",
+  "字幕正文": "Texto da legenda",
+  "渐变色条": "Barra de gradiente",
+  "双击色条加色点 · 拖出去删除": "Clique duplo para adicionar · arraste para fora para excluir",
+  "颜料盒": "Caixa de cores",
+  "渐变": "Gradientes",
+  "右半边是之前的颜色，点它恢复": "A metade direita é a cor anterior; clique para restaurar",
+  "+ 存进颜料盒": "+ Salvar na caixa de cores",
+  "反转渐变方向": "Inverter a direção do gradiente",
+  " · 色点 {index}": " · ponto {index}"
 }

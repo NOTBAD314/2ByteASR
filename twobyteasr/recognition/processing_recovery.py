@@ -289,6 +289,8 @@ def save_unit_states(project,report,updates,*,path):
     candidate=copy.copy(project);candidate.generation_metadata=metadata
     from ..projects.studio_project import save_project
     save_project(candidate,Path(path))
+    from .task_journal import record_optional_result
+    for unit in updates:record_optional_result(candidate,report,unit,path)
     from ..projects.studio_runtime_state import state_for,DirtyDomain
     with state_for(project).transaction(project,action_id='保存阶段重试状态',dirty=DirtyDomain.AUTOSAVE,
             affected_cue_ids=tuple({c for u in updates for c in u.get('cue_ids',())})):

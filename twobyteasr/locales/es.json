@@ -8509,5 +8509,19 @@
   "切到替换": "ir a Reemplazar",
   "Enter": "Intro",
   "Esc": "Esc",
-  "也可以在字幕里选字后右键「批量替换相同文字…」": "O selecciona texto en un subtítulo y haz clic derecho en «Reemplazar el mismo texto en bloque…»"
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "O selecciona texto en un subtítulo y haz clic derecho en «Reemplazar el mismo texto en bloque…»",
+  "双击加色点，拖动移动，拖出色条删除": "Doble clic para añadir un punto, arrastra para moverlo, arrástralo fuera de la barra para eliminarlo",
+  "把当前颜色存进最近": "Guardar el color actual en Recientes",
+  "拖动选择饱和度和亮度": "Arrastra para elegir saturación y brillo",
+  "拖动圆环选择色相": "Arrastra por el anillo para elegir el tono",
+  "拖动旋转渐变角度": "Arrastra para girar el ángulo del degradado",
+  "字幕正文": "Texto del subtítulo",
+  "渐变色条": "Barra de degradado",
+  "双击色条加色点 · 拖出去删除": "Doble clic para añadir · arrastra fuera para eliminar",
+  "颜料盒": "Caja de colores",
+  "渐变": "Degradados",
+  "右半边是之前的颜色，点它恢复": "La mitad derecha es el color anterior; haz clic para restaurarlo",
+  "+ 存进颜料盒": "+ Guardar en la caja de colores",
+  "反转渐变方向": "Invertir la dirección del degradado",
+  " · 色点 {index}": " · punto {index}"
 }

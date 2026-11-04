@@ -246,8 +246,11 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
     _app()
     win = _window()
     dialog = TermLibraryDialog(win)
-    assert isinstance(dialog.listing, QTableView)
-    assert not isinstance(dialog.listing, QTableWidget)
+    # 2026-11-03 card wall: the same table model, painted as cards in a list view.
+    from twobyteasr.glossary.glossary_term_cards import TermCardDelegate, TermCardView
+    assert isinstance(dialog.listing, TermCardView)
+    assert not isinstance(dialog.listing, (QTableView, QTableWidget))
+    assert isinstance(dialog.listing.itemDelegate(), TermCardDelegate)
     model = dialog.listing.model()
     assert [
         model.headerData(i, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
@@ -259,11 +262,7 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
         "状态",
         "操作",
     ]
-    # 2026-10-17 redesign v2: categories are plain text; status is a dot and text.
-    from twobyteasr.glossary.glossary_page_parts import StatusDotDelegate
     assert not isinstance(dialog.listing.itemDelegateForColumn(1), _CategoryPillDelegate)
-    assert isinstance(dialog.listing.itemDelegateForColumn(3), StatusDotDelegate)
-    assert dialog.listing.columnWidth(1) >= 72
     categories = ("其他", "角色", "Boss", "技能", "物品")
     model.set_data(
         [
@@ -308,11 +307,14 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
         if content_body_layout.itemAt(index).layout() is dialog.term_tools_layout
     )
     assert tools_index < content_body_layout.indexOf(dialog.listing)
-    # 统一搜索常显 + 分类/状态筛选在表头上方
+    # 统一搜索常显；状态切换按钮驱动 filter_status，分类下拉保留为筛选状态但不显示
     assert not dialog.search.isHidden()
-    assert dialog.filter_category.count() >= 1
-    assert dialog.filter_status.count() == 4
-    assert "QTableView#termMappingTable" in APP_QSS
+    assert dialog.filter_category.count() >= 1 and dialog.filter_category.isHidden()
+    assert dialog.filter_status.count() == 4 and dialog.filter_status.isHidden()
+    assert list(dialog.status_buttons) == ["", "confirmed", "reference", "hidden"]
+    from twobyteasr.design.glossary_page_qss import build_glossary_page_qss
+    from twobyteasr.design.ui_theme import theme_definition
+    assert "QListView#termCardView" in build_glossary_page_qss(theme_definition("grape"))
     assert "QTableWidget#termMappingTable" not in APP_QSS
     dialog.close()
     win.close()

@@ -244,6 +244,7 @@ class SubtitleStudioPage(
 
     cover_ready_signal = Signal(str, str)
     library_records_ready_signal = Signal(object, int)
+    library_presence_ready_signal = Signal(object, int)
     # 2026-09-18 III：工程库封面后台解码完成（worker 线程发 QImage，GUI 转 QPixmap）
     library_cover_ready_signal = Signal(str, int, int, QImage)
 
@@ -422,6 +423,10 @@ class SubtitleStudioPage(
             if delta.touches(DirtyDomain.AUTOSAVE):
                 self._schedule_autosave()
             return
+        if delta.dirty and not delta.dirty & ~(DirtyDomain.ASSET_CATALOG | DirtyDomain.AUTOSAVE):
+            if delta.touches(DirtyDomain.ASSET_CATALOG):self.media_pool_panel.refresh(self.project)
+            if delta.touches(DirtyDomain.AUTOSAVE):self._schedule_autosave()
+            return
         with measure("MODEL_TIMELINE_PREVIEW"):
             self.cue_controller.consume_state_delta(delta)
         from ..projects.studio_runtime_state import DirtyDomain
@@ -523,6 +528,10 @@ class SubtitleStudioPage(
         # ancestry and cost ~1 s in the measured first-entry path.
         host = getattr(parent, 'pages', parent) if hasattr(parent, 'built_page') else parent
         super().__init__(host)
+        # Filters on toolbar/viewport start during build_steps, before the
+        # first library refresh. Containers are lifetime state, not a marker
+        # that library content has been rendered.
+        self._initialize_library_state()
         from ..design.native_surfaces import isolate_native_children
         isolate_native_children()
         from .gui_thread_handoff import GuiThreadHandoff
@@ -765,7 +774,7 @@ class SubtitleStudioPage(
         self._finish_workspace_initialization()
 
     def resume_workspace_construction(self):
-        if not self._workspace_ready:
+        if not self._workspace_ready and self._workspace_steps is not None and not self._close_requested:
             self._workspace_build_timer.start(0)
 
     def pause_workspace_construction(self):
@@ -786,6 +795,17 @@ class SubtitleStudioPage(
             self._workspace_steps.close()
             self._workspace_steps = None
         self._close_requested = True
+        self._retire_library_work()
+        app = QApplication.instance()
+        if app is not None and self._event_filter_installed:
+            app.removeEventFilter(self)
+            self._event_filter_installed = False
+        if app is not None and self._focus_signal_connected:
+            app.focusChanged.disconnect(self._restore_edit_card_focus)
+            self._focus_signal_connected = False
+        if app is not None and self._native_key_filter is not None:
+            app.removeNativeEventFilter(self._native_key_filter)
+            self._native_key_filter = None
         self._qc_scan_token = getattr(self, '_qc_scan_token', 0) + 1
         qc_worker = getattr(self, '_qc_worker', None)
         if qc_worker is not None:
@@ -825,10 +845,18 @@ class SubtitleStudioPage(
                 self._finish_workspace_initialization()
                 self.workspace_built.emit()
             except Exception as exc:
-                self.workspace_build_failed.emit(str(exc))
+                self._workspace_initialization_failed(exc)
         except Exception as exc:
             self._workspace_build_timer.stop()
-            self.workspace_build_failed.emit(str(exc))
+            self._workspace_initialization_failed(exc)
+
+    def _workspace_initialization_failed(self, exc):
+        import traceback
+        self._workspace_ready = False
+        self._workspace_build_timer.stop()
+        self._workspace_failure = traceback.format_exc()
+        self._studio_trace('WORKSPACE_BUILD_FAILED', error=str(exc), traceback=self._workspace_failure)
+        self.workspace_build_failed.emit(self._workspace_failure)
 
     @navigation_timed('studio.construct.finish')
     def _finish_workspace_initialization(self):
@@ -1307,6 +1335,13 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        # Application-wide filters also receive every Polish/Paint/style
+        # event generated while hundreds of hidden controls settle. Reject
+        # those before Python property and Qt viewport lookups; keep the
+        # three early handlers that are not in the main dispatch set.
+        if event_type not in self._FILTERED_EVENT_TYPES and event_type not in (
+                QEvent.Type.FocusIn, QEvent.Type.InputMethod, QEvent.Type.KeyRelease):
+            return False
         consumed = getattr(self, '_caption_consumed_commit_key', None)
         if (consumed is not None and isinstance(event,QKeyEvent) and event.key()==consumed
                 and event_type in {QEvent.KeyPress,QEvent.KeyRelease,QEvent.ShortcutOverride}):
@@ -1323,7 +1358,8 @@ class SubtitleStudioPage(
             self._studio_ime_composing=bool(event.preeditString())
             return False
         scroll = getattr(self, 'project_library_scroll', None)
-        if scroll is not None and watched is scroll.viewport() and event_type == QEvent.Type.Resize:
+        if (event_type == QEvent.Type.Resize and self._hub_ui_ready and not self._close_requested
+                and scroll is not None and watched is scroll.viewport()):
             if self.project is None and hasattr(self, '_hub_card_widgets'):
                 self._refresh_studio_empty_state(rescan=False)
         if event_type not in self._FILTERED_EVENT_TYPES:
@@ -1581,6 +1617,9 @@ class SubtitleStudioPage(
                      reason="text_editor_or_ime_owns_command", source="shortcut",
                      project_id=getattr(getattr(self, "project", None), "project_id", None))
             return False
+        source_monitor = getattr(self, 'source_monitor', None)
+        if source_monitor is not None and source_monitor.dispatch(sequence):
+            return True
         from .studio_translation_edit import handle_sequence
         if handle_sequence(self, sequence):
             return True
@@ -2675,6 +2714,9 @@ class SubtitleStudioPage(
         session_id = self._autosave_session_id
         draft = self._draft_recovery.snapshot()
         self._autosave_worker_running = True
+        from .text_edit_submission import save_operation_ids, record_text_save
+        edit_revision = getattr(getattr(self.project, '_studio_state_runtime', None), 'revision', 0)
+        edit_operations = save_operation_ids(self, self.project, edit_revision)
 
         def work():
             try:
@@ -2709,11 +2751,13 @@ class SubtitleStudioPage(
                 from ..diagnostics.editor_diagnostics import record
                 record("AUTOSAVE", **self._autosave_profile[-1])
             except Exception as exc:
+                record_text_save(edit_operations, kind='recovery', revision=edit_revision, generation=generation, error=exc)
                 try:
                     self.autosave_failed_signal.emit(generation, str(exc))
                 except RuntimeError:
                     pass
             else:
+                record_text_save(edit_operations, kind='recovery', revision=edit_revision, generation=generation)
                 try:
                     self.autosave_ready_signal.emit(generation)
                 except RuntimeError:
@@ -2734,7 +2778,7 @@ class SubtitleStudioPage(
             return
         self._autosave_deadline.mark_succeeded()
         self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
-        bind_text(self.save_state, '已自动保存 · {time}', time=self._last_autosave_at)
+        bind_text(self.save_state, '自动恢复点已保存 · {time}（Ctrl+S 正式保存）', time=self._last_autosave_at)
         bind_text(self.save_state, '恢复快照已安全写入磁盘；正式工程仍保留未保存修改。', property='toolTip')
         check = getattr(self, "_evidence_idle_check", None)
         if check is not None:
@@ -2793,7 +2837,7 @@ class SubtitleStudioPage(
                     # Keep the legacy numeric meaning for older readers; new
                     # readers restore by stable identity after tab removal.
                     **context_tab_state(self._last_context_tab),
-                    "cue_list_visible": self.cue_list_panel.isVisible(),
+                    "cue_list_visible": self.source_tabs.isVisible(),
                     "editor_visible": self.cue_editor.isVisible(),
                     "context_visible": self.context_panel.isVisible(),
                     "editor_fields": dict(self._editor_field_visibility),
@@ -2919,7 +2963,7 @@ class SubtitleStudioPage(
     def _set_major_panel_visible(self, panel: str, visible: bool) -> None:
         visible = bool(visible)
         if panel == "cue_list":
-            self.cue_list_panel.setVisible(visible)
+            self.source_tabs.setVisible(visible)
         elif panel == "context":
             self._show_context_panel() if visible else self._collapse_context_panel()
         action = self.workspace_actions.get(panel)
@@ -2979,15 +3023,15 @@ class SubtitleStudioPage(
         if width / height >= 1.55:
             total = max(900, self.upper_splitter.width())
             context = min(480, max(420, round(total * 0.24)))
-            left = min(420, max(self.cue_list_panel.minimumWidth(), round(total * 0.22)))
+            left = min(420, max(self.source_tabs.minimumWidth(), round(total * 0.22)))
             center = max(360, total - left - context)
             if left + center + context > total:
-                left = max(self.cue_list_panel.minimumWidth(), total - center - context)
+                left = max(self.source_tabs.minimumWidth(), total - center - context)
             self.upper_splitter.setSizes([left, max(360, total - left - context), context])
         self._apply_default_timeline_height()
 
     def _toggle_cue_list(self) -> None:
-        self._set_major_panel_visible("cue_list", not self.cue_list_panel.isVisible())
+        self._set_major_panel_visible("cue_list", not self.source_tabs.isVisible())
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         from .studio_translation_edit import handle_key
@@ -3224,6 +3268,8 @@ class SubtitleStudioPage(
             # 2026-10-25: recognize only the in/out stretch again (studio_range_recognition).
             from .studio_range_recognition import add_range_action
             add_range_action(self, menu, _icon("fa5s.redo-alt"))
+            from .caption_range_preparation import add_preparation_action
+            add_preparation_action(self, menu)
         menu.exec(global_pos)
 
     def _apply_timing_offset(self, cue_ids: list[str], offset_ms: int) -> None:
@@ -3300,7 +3346,7 @@ class SubtitleStudioPage(
     def _table_activated(self, index: QModelIndex) -> None:
         return self.cue_controller.table_activated(index)
 
-    def _open_render_dialog(self) -> None:
+    def _open_render_dialog(self, *, skip_preflight=False) -> None:
         self._studio_trace("EXPORT_ENTRY", entry="studio_video", export_type="video",
             schema_version=getattr(self.project, "schema_version", None),
             cue_count=len(self.project.cues) if self.project else 0,
@@ -3321,6 +3367,22 @@ class SubtitleStudioPage(
             timing.suspend_warm()
         if getattr(self, "_canvas_editor", None) is not None:
             self._commit_canvas_inline_edit()
+        from ..exports.export_issues import export_issues, ExportPreflightError
+        from ..exports.export_issues_ui import show_export_issues
+        from ..projects.project_range import range_points
+        scope = {}
+        try:
+            start, end = range_points(self.project)
+            scope = dict(start_ms=start, end_ms=end)
+            issues = export_issues(self.project, **scope)
+        except Exception as exc:
+            show_export_issues(self, error=exc, scope=scope,
+                continue_callback=lambda: self._open_render_dialog(skip_preflight=True))
+            return
+        if not skip_preflight and any(issue.blocking for issue in issues):
+            show_export_issues(self, error=ExportPreflightError(issues), scope=scope,
+                continue_callback=lambda: self._open_render_dialog(skip_preflight=True))
+            return
         self._cancel_scrub()
         if self.export_workspace is not None:
             self._close_export_workspace()
@@ -3354,8 +3416,8 @@ class SubtitleStudioPage(
             self.video_compositor.set_interaction_enabled(self._export_interaction_before)
             self._export_return_ui = None
             self._sync_navigation_chrome()
-            studio_message_box(self, QMessageBox.Icon.Warning, tr('无法打开视频导出'),
-                tr('导出窗口初始化失败：{error}\n请重试；若仍失败，请从“回报问题”导出日志。', error=str(exc)))
+            show_export_issues(self, error=exc, scope=scope,
+                continue_callback=lambda: self._open_render_dialog(skip_preflight=True))
             return
         self.export_workspace.back_requested.connect(self._close_export_workspace)
         self.export_workspace.render_succeeded.connect(lambda path: self._render_succeeded(path, False))
@@ -3419,6 +3481,11 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
+        if self.project is not None:
+            self._navigation_view_token = getattr(self, '_navigation_view_token', 0)+1
+            self._navigation_timeline_view = (self.project, self.session.generation,
+                self.timeline.visible_start_ms, self.timeline.visible_duration_ms, self.timeline._view_mode)
+            self.timeline._preserve_zoom_on_resize = True
         if getattr(self, '_caption_following', False):
             self.subtitle_edit_dock.hide()
         self._presentation_hidden = True
@@ -3480,6 +3547,21 @@ class SubtitleStudioPage(
         self._presentation_hidden = False
         self._gui_thread_handoff.acquire()
         super().showEvent(event)
+        saved_view = getattr(self, '_navigation_timeline_view', None)
+        if saved_view is not None:
+            token = self._navigation_view_token
+            def restore_view():
+                if token != self._navigation_view_token:
+                    return
+                self.timeline._preserve_zoom_on_resize = False
+                self._navigation_timeline_view = None
+                project, generation, start, duration, mode = saved_view
+                if (self._close_requested or not self.isVisible() or self.project is not project
+                        or self.session.generation != generation):
+                    return
+                self.timeline.set_visible_window(start,duration)
+                self.timeline._view_mode = mode
+            QTimer.singleShot(0,restore_view)
         if getattr(self, '_caption_following', False):
             self._set_subtitle_editor_visible(True)
         pending, self._hidden_state_delta = getattr(self, '_hidden_state_delta', None), None
@@ -3524,6 +3606,7 @@ class SubtitleStudioPage(
         if self._close_requested:
             return float(self.last_close_profile.get("visible_response_ms", 0.0))
         self._close_requested = True
+        self._retire_library_work()
         export = getattr(self, 'export_workspace', None)
         if export is not None:
             export.release_preview()
@@ -3727,6 +3810,10 @@ class SubtitleStudioPage(
         self._resource_governor.set_playback(False)
         self._cancel_media_ingest()
         close_checkpoint("resources_cancelled")
+        if hasattr(self, 'source_monitor'):
+            self.source_monitor.shutdown()
+        if hasattr(self, 'media_pool_panel'):
+            self.media_pool_panel.shutdown()
         active_seek = getattr(self.video, "_active_seek_trace", None)
         if isinstance(active_seek, dict):
             self.video._expire_seek_trace(

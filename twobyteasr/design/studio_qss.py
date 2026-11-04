@@ -330,4 +330,81 @@ QLabel#projectCardStatus[status="ready"] {{ background: {theme.success}; color: 
 QLabel#projectCardStatus[status="offline"] {{ background: {theme.warning}; color: {theme.on_vivid}; }}
 QLabel#projectCardStatus[status="missing"] {{ background: {theme.danger}; color: {theme.on_vivid}; }}
 QToolButton#recentProjectCard:hover {{ border-color: {theme.accent_text}; }}
+/* 2026-11-03 source monitor "capsule console": rounded cards, one round play
+   action and pill controls, scoped so other Studio panels keep their look. */
+QWidget#studioSourceMonitor QScrollArea, QWidget#studioSourceMonitor QWidget#sourceContent {{ background: transparent; border: 0; }}
+QWidget#studioSourceMonitor QLabel {{ background: transparent; border: 0; }}
+QWidget#studioSourceMonitor QLabel#sourceTitle {{ color: {theme.text}; font-family: {UI_FONT_STACK}; font-size: 14px; font-weight: 700; }}
+QWidget#studioSourceMonitor QLabel#sourceChip {{
+    background: {theme.accent_soft}; color: {theme.accent_text}; border-radius: 10px;
+    padding: 2px 9px; font-size: {t.caption_size}px; font-weight: 600; }}
+QWidget#studioSourceMonitor QLabel#sourceStatus {{ color: {theme.text_secondary}; font-size: {t.caption_size}px; padding: 0 4px; }}
+QWidget#studioSourceMonitor QFrame#sourceCard {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 16px; }}
+QWidget#studioSourceMonitor QLabel#sourceSectionTitle {{ color: {theme.text}; font-size: {t.label_size}px; font-weight: 700; }}
+QWidget#studioSourceMonitor QLabel#sourceDuration {{
+    color: {theme.accent_text}; font-family: {MONO_FONT_STACK}; font-size: {t.label_size}px; font-weight: 700; }}
+QWidget#studioSourceMonitor QLabel#sourceTotal {{ color: {theme.text_muted}; font-family: {MONO_FONT_STACK}; font-size: {t.caption_size}px; padding-left: 4px; }}
+QWidget#studioSourceMonitor QLabel#sourcePointLabel {{ color: {theme.text_muted}; font-size: {t.caption_size}px; padding-left: 4px; }}
+QWidget#studioSourceMonitor QToolButton#sourceRound {{
+    background: {theme.surface_elevated}; border: 1px solid {theme.border}; border-radius: 17px;
+    min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; padding: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourceRound:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; }}
+QWidget#studioSourceMonitor QToolButton#sourceRound:pressed {{ background: {theme.accent_soft}; }}
+QWidget#studioSourceMonitor QToolButton#sourceClose {{
+    background: transparent; border: 1px solid {theme.border}; border-radius: 14px;
+    min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourceClose:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; }}
+QWidget#studioSourceMonitor QToolButton#sourcePlay {{
+    background: {theme.accent}; border: 0; border-radius: 23px;
+    min-width: 46px; max-width: 46px; min-height: 46px; max-height: 46px; padding: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourcePlay:hover {{ background: {theme.accent_hover}; }}
+QWidget#studioSourceMonitor QToolButton#sourcePlay:pressed {{ background: {theme.accent_pressed}; }}
+QWidget#studioSourceMonitor QToolButton#sourceRound[compact="true"] {{
+    border-radius: 15px; min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; }}
+QWidget#studioSourceMonitor QToolButton#sourcePlay[compact="true"] {{
+    border-radius: 21px; min-width: 42px; max-width: 42px; min-height: 42px; max-height: 42px; }}
+QWidget#studioSourceMonitor QToolButton#sourceGlyph {{
+    background: transparent; border: 0; border-radius: 12px; min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px; padding: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourceGlyph:hover {{ background: {theme.selected}; }}
+QWidget#studioSourceMonitor QPushButton#sourcePoint {{ background: {theme.input_surface}; border: 1px solid {theme.border}; border-radius: 14px; padding: 0; }}
+QWidget#studioSourceMonitor QPushButton#sourcePoint:hover {{ border-color: {theme.accent}; }}
+QWidget#studioSourceMonitor QPushButton#sourcePoint:pressed {{ background: {theme.accent_soft}; }}
+QWidget#studioSourceMonitor QFrame#sourceSelectionHandle {{ background: transparent; border: 0; }}
+QWidget#studioSourceMonitor QLabel#sourceDragGrip {{ color: {theme.text_muted}; background: transparent; border: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourcePointSet {{
+    background: {theme.accent_soft}; border: 0; border-radius: 14px;
+    min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; }}
+QWidget#studioSourceMonitor QToolButton#sourcePointSet:hover {{ background: {theme.selected}; }}
+QWidget#studioSourceMonitor QLineEdit#sourceTimecode {{
+    background: transparent; color: {theme.text}; border: 1px solid transparent; border-radius: 8px;
+    padding: 1px 3px; min-height: 22px; font-family: {MONO_FONT_STACK}; font-size: 13px; font-weight: 700;
+    selection-background-color: {theme.accent}; selection-color: {theme.text_on_accent}; }}
+QWidget#studioSourceMonitor QLineEdit#sourceTimecode[role="position"] {{ font-size: {t.timecode_size}px; font-weight: 800; }}
+QWidget#studioSourceMonitor QLineEdit#sourceTimecode[role="position"][compact="true"] {{ font-size: 13px; }}
+QWidget#studioSourceMonitor QLineEdit#sourceTimecode:hover {{ border-color: {theme.border_strong}; }}
+QWidget#studioSourceMonitor QLineEdit#sourceTimecode:focus {{ border-color: {theme.focus}; background: {theme.input_surface}; }}
+QWidget#studioSourceMonitor QPushButton#sourceLink {{
+    background: transparent; border: 0; border-radius: 11px; color: {theme.text_muted};
+    min-height: 22px; max-height: 22px; padding: 0 7px; font-size: {t.caption_size}px; font-weight: 600; }}
+QWidget#studioSourceMonitor QPushButton#sourceLink:hover {{ background: {theme.accent_soft}; color: {theme.accent_text}; }}
+QWidget#studioSourceMonitor QFrame#sourceSegment {{ background: {theme.input_surface}; border: 1px solid {theme.border}; border-radius: 19px; }}
+QWidget#studioSourceMonitor QPushButton#sourceModeButton {{
+    background: transparent; border: 1px solid transparent; border-radius: 15px; color: {theme.text_muted};
+    min-height: 30px; max-height: 30px; padding: 0 6px; font-size: {t.label_size}px; font-weight: 700; }}
+QWidget#studioSourceMonitor QPushButton#sourceModeButton:hover {{ color: {theme.text}; }}
+QWidget#studioSourceMonitor QPushButton#sourceModeButton:checked {{
+    background: {theme.surface_elevated}; color: {theme.text}; border: 1px solid {theme.accent}; }}
+QWidget#studioSourceMonitor QPushButton#sourceModeButton:disabled {{ color: {theme.disabled}; }}
+QWidget#studioSourceMonitor QComboBox#sourceTarget {{ border-radius: 12px; min-height: 32px; max-height: 32px; }}
+QWidget#studioSourceMonitor QPushButton#sourcePrimary {{
+    background: {theme.accent}; color: {theme.text_on_accent}; border: 0; border-radius: 22px;
+    min-height: 44px; max-height: 44px; padding: 0 16px; font-size: 14px; font-weight: 800; }}
+QWidget#studioSourceMonitor QPushButton#sourcePrimary:hover {{ background: {theme.accent_hover}; }}
+QWidget#studioSourceMonitor QPushButton#sourcePrimary:pressed {{ background: {theme.accent_pressed}; }}
+QWidget#studioSourceMonitor QPushButton#sourcePrimary:disabled {{ background: {theme.surface_elevated}; color: {theme.disabled}; }}
+QWidget#studioSourceMonitor QSlider#sourceVolume {{ min-height: 18px; background: transparent; }}
+QWidget#studioSourceMonitor QSlider#sourceVolume::groove:horizontal {{ height: 6px; border-radius: 3px; background: {theme.border_strong}; }}
+QWidget#studioSourceMonitor QSlider#sourceVolume::sub-page:horizontal {{ height: 6px; border-radius: 3px; background: {theme.accent}; }}
+QWidget#studioSourceMonitor QSlider#sourceVolume::handle:horizontal {{
+    width: 8px; height: 8px; margin: -4px 0; border-radius: 7px; background: {theme.text}; border: 3px solid {theme.accent}; }}
 """

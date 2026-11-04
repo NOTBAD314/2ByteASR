@@ -355,8 +355,8 @@ def test_mosi_lost_upload_response_is_never_resubmitted(tmp_path):
     assert len(client.posts) == 1
 
 
-def test_mosi_interrupted_upload_is_uploaded_again_without_confirmation(tmp_path):
-    """MOSI cannot accept a body whose closing boundary was never sent."""
+def test_mosi_interrupted_upload_requires_confirmation(tmp_path):
+    """A local body cursor is not proof that the provider did not accept it."""
     import requests
     from twobyteasr.providers.mosi_asr import transcribe
 
@@ -368,12 +368,14 @@ def test_mosi_interrupted_upload_is_uploaded_again_without_confirmation(tmp_path
     interrupted = Interrupted()
     with pytest.raises(ASRProtocolError) as error:
         transcribe(np.zeros(16000, dtype=np.float32), mosi_endpoint(), tmp_path, client=interrupted)
-    assert error.value.category == 'upload_interrupted' and '不会计费' in str(error.value)
-    assert error.value.problem.category == 'network'
+    assert error.value.category == 'submission_uncertain'
     events, healthy = [], MosiClient()
+    with pytest.raises(ASRProtocolError):
+        transcribe(np.zeros(16000,dtype=np.float32),mosi_endpoint(),tmp_path,client=healthy)
+    assert not healthy.posts
     rows = transcribe(np.zeros(16000, dtype=np.float32), mosi_endpoint(), tmp_path, client=healthy,
-                      sleep=lambda *_: None, progress=lambda state, *_: events.append(state))
-    assert rows and len(healthy.posts) == 1 and 'retry_incomplete_upload' in events
+                      sleep=lambda *_: None, progress=lambda state, *_: events.append(state),restart_terminal=True)
+    assert rows and len(healthy.posts) == 1 and 'explicit_restart_uncertain' in events
     assert list(tmp_path.rglob('previous-task-*.json'))
 
 

@@ -4651,6 +4651,11 @@ def process_media(
         admission = api_local_admission(_gpu_runtime_snapshot(), audio_bytes=getattr(shared_audio, "nbytes", 0))
         legacy.record_run_event("api_local_admission", **admission)
         api_overlap = admission["admitted"]
+        if not api_overlap and long_pipeline is not None and str(legacy.FIRERED_ASR_BACKEND)=='local':
+            long_pipeline.close()
+            runtime_context.long_pipeline=None
+            long_pipeline=None
+            legacy.record_run_event('long_pipeline_resource_fallback',reason='local_acoustic_admission_denied')
     # 2026-10-22 (user report, MOSS Pro, 24-minute anime): VAD ran 26 s before
     # the upload started, although a whole-file upload never reads it. When
     # the cloud has to run anyway (no cache entry for this file yet), VAD runs
@@ -4669,13 +4674,24 @@ def process_media(
     if overlap_vad:
         speech_regions = None
         deferred_primary_cache = []
+    def vad_with_receipts():
+        regions=run_vad_stage()
+        if long_pipeline is not None:long_pipeline.set_vad(regions)
+        return regions
     if api_overlap:
         moss_payload = {}
-        runners = {"primary": run_moss_stage, "firered": run_firered_stage}
+        def firered_with_receipts():
+            result=None
+            try:
+                result=run_firered_stage()
+                return result
+            finally:
+                if long_pipeline is not None:long_pipeline.finish_timeline(result)
+        runners = {"primary": run_moss_stage, "firered": firered_with_receipts}
         if overlap_vad:
-            runners["vad"] = run_vad_stage
+            runners["vad"] = vad_with_receipts
         else:
-            speech_regions = run_vad_stage()
+            speech_regions = vad_with_receipts()
         legacy.record_run_event("local_stages_parallel", stages=["primary_api", *(["firered_vad"] if overlap_vad else []),
                                                                  "firered"], max_workers=len(runners))
         parallel_results = run_parallel_stages(legacy, runners,
@@ -4687,7 +4703,7 @@ def process_media(
         legacy.record_run_event("local_stages_parallel", stages=["primary_api", "firered_vad"])
         parallel_results = run_parallel_stages(
             legacy,
-            {"primary": run_moss_stage, "vad": run_vad_stage},
+            {"primary": run_moss_stage, "vad": vad_with_receipts},
             thread_name_prefix="api-vad",
             cancel_poll=_parallel_cancel_poll,
         )

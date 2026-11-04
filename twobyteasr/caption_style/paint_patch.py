@@ -96,6 +96,23 @@ def paint_command(project,cue_ids,fields,*,layer='original',changed=None):
     for cue in project.cues:
         if cue.id not in wanted:continue
         before=cue.appearance_override;after=dict(before)
+        if 'outline_color' in fields:
+            from .style_resolution import recipe_for_cue
+            from .caption_layer_transform import materialize_layer
+            from .bilingual_layout import _translation_appearance
+            languages=('original','translation') if layer=='group' or (layer=='original' and translations.get(cue.id)) else (layer,)
+            for language in languages:
+                from copy import deepcopy
+                shown=materialize_layer(_translation_appearance(cue,deepcopy(cue)),language) if language=='translation' else cue
+                recipe=recipe_for_cue(project.style_recipes,shown) or {}
+                glow=(recipe.get('effects') or {}).get('glow') or {}
+                if not glow.get('color'):
+                    # An unset glow color previously followed outline_color.
+                    # Freeze that current value before editing another effect.
+                    color=effective_layer_style(project,cue,language).outline_color
+                    path=(('_recipe_patch','effects','glow','color') if language=='original'
+                          else ('translation','recipe','effects','glow','color'))
+                    after=_write(after,path,color)
         if layer=='original' and translations.get(cue.id):
             language=dict(after.get('translation') or {});face=dict(language.get('style') or {})
             for field in fields:

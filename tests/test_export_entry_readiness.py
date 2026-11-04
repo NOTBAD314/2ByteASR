@@ -54,7 +54,11 @@ def test_failed_workspace_construction_explains_and_restores_retry(page, monkeyp
     monkeypatch.setattr(studio_ui, 'studio_message_box', lambda *a, **kw: messages.append((a, kw)))
     page._preview_path = Path('unused.ass')
     page.studio_render_button.click()
-    assert messages and 'controlled workspace setup failure' in str(messages)
+    dialog = page._export_issues_dialog
+    assert dialog.isVisible() and 'controlled workspace setup failure' in dialog.detail.toPlainText()
+    dialog.refresh()
+    assert dialog.issues  # A task failure cannot be cleared by subtitle-only rechecking.
+    dialog.close()
     assert page.export_workspace is None
     assert page.video_compositor._interaction_enabled
     assert page._export_return_ui is None

@@ -8509,5 +8509,19 @@
   "切到替换": "zu Ersetzen",
   "Enter": "Enter",
   "Esc": "Esc",
-  "也可以在字幕里选字后右键「批量替换相同文字…」": "Oder Text in einem Untertitel markieren und per Rechtsklick „Gleichen Text überall ersetzen…“ wählen"
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "Oder Text in einem Untertitel markieren und per Rechtsklick „Gleichen Text überall ersetzen…“ wählen",
+  "双击加色点，拖动移动，拖出色条删除": "Doppelklick fügt einen Farbpunkt hinzu, Ziehen verschiebt ihn, aus der Leiste ziehen löscht ihn",
+  "把当前颜色存进最近": "Aktuelle Farbe unter Zuletzt speichern",
+  "拖动选择饱和度和亮度": "Ziehen, um Sättigung und Helligkeit zu wählen",
+  "拖动圆环选择色相": "Am Ring ziehen, um den Farbton zu wählen",
+  "拖动旋转渐变角度": "Ziehen, um den Verlaufswinkel zu drehen",
+  "字幕正文": "Untertiteltext",
+  "渐变色条": "Verlaufsleiste",
+  "双击色条加色点 · 拖出去删除": "Doppelklick fügt hinzu · herausziehen löscht",
+  "颜料盒": "Farbkasten",
+  "渐变": "Verläufe",
+  "右半边是之前的颜色，点它恢复": "Die rechte Hälfte ist die vorherige Farbe; zum Wiederherstellen klicken",
+  "+ 存进颜料盒": "+ Im Farbkasten speichern",
+  "反转渐变方向": "Verlaufsrichtung umkehren",
+  " · 色点 {index}": " · Punkt {index}"
 }

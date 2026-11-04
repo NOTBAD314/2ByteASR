@@ -62,6 +62,8 @@ class StudioProjectFlowMixin:
         if readiness is not None and readiness.active:
             readiness.cancel(navigate=False)
         self.video.set_paused(True)
+        if hasattr(self, 'source_monitor'):
+            self.source_monitor.pause()
         self._close_export_workspace()
         self._studio_trace('PROJECT_SUSPENDED', project_path=str(self.project_path or ''))
         self.return_requested.emit()
@@ -81,6 +83,10 @@ class StudioProjectFlowMixin:
         from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
         close_t0 = perf_counter()
+        seek=getattr(self,'_caption_seek_preparation',None)
+        if seek is not None:seek.cancel()
+        preparation=getattr(self,'_caption_range_preparation',None)
+        if preparation is not None:preparation.cancel()
         readiness = getattr(self, "_readiness", None)
         # During hydration, project_switch retires the old project inside
         # the NEW readiness request. That request must remain active.
@@ -119,6 +125,9 @@ class StudioProjectFlowMixin:
         from .studio_analysis_request import cancel_analysis
         cancel_analysis(self)
         self._composition_keep_resynced = False
+        if hasattr(self, 'source_monitor'):
+            self.source_monitor.reset()
+            self.source_tabs.setCurrentIndex(0)
         self._cancel_media_ingest()
         self._resource_governor.set_dragging(False)
         self._resource_governor.set_playback(False)
@@ -402,6 +411,12 @@ class StudioProjectFlowMixin:
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         projects = [path for path in paths if path.suffix.lower() == PROJECT_SUFFIX]
         media = [path for path in paths if path.suffix.lower() in STUDIO_MEDIA_SUFFIXES]
+        pool = getattr(self, 'media_pool_panel', None)
+        if media and pool is not None and pool.isVisible() and pool.rect().contains(
+                pool.mapFrom(self, event.position().toPoint())):
+            pool.import_paths(media)
+            event.acceptProposedAction()
+            return
         subtitles = [path for path in paths if path.suffix.lower() in {".srt", ".ass"}]
         # A danmaku XML dropped with (or after) the recording is an explicit choice.
         danmaku = [path for path in paths if path.suffix.lower() == ".xml"]

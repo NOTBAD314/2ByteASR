@@ -80,8 +80,23 @@ class PipelineWorker(QThread):
         self.legacy = legacy
         self.pipeline = pipeline
         self.startup_self_test = startup_self_test
+        from ..recognition.task_journal import TaskJournal
+        # This runs on the launch path before QThread.start or any self-test.
+        if options.job_id:
+            TaskJournal(options.job_id).create(self.media_paths, options)
 
     def run(self):
+        if (getattr(self.legacy, '__name__', '') == 'subtitle_core'
+                and getattr(self.pipeline, '__name__', '') == 'moss_firered_pipeline'
+                and run_media_queue.__module__ == 'twobyteasr.recognition.service'):
+            try:
+                from ..recognition.queue_process import supervise
+                result = supervise(self.media_paths,self.options,self.token,
+                    self.event_received.emit,self.console_received.emit)
+                self.result_ready.emit(result)
+            except BaseException as exc:
+                self.unexpected_error.emit(' '.join(str(exc).split()) or exc.__class__.__name__)
+            return
         stdout_stream = SignalTextStream(self.console_received, "stdout", sys.stdout)
         stderr_stream = SignalTextStream(self.console_received, "stderr", sys.stderr)
         try:

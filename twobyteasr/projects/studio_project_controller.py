@@ -48,11 +48,12 @@ from ..i18n import bind_text
 class StudioProjectController:
     """Coordinate project persistence and page population without owning UI state."""
 
-    __slots__ = ("page", "session")
+    __slots__ = ("page", "session", "_sync_recovery_request")
 
     def __init__(self, page, session: StudioSession):
         self.page = page
         self.session = session
+        self._sync_recovery_request = None
 
     @contextmanager
     def _studio_operation(
@@ -483,6 +484,7 @@ class StudioProjectController:
         skip_dirty_guard: bool = False,
         loaded_project=None,
         expected_result_ref=None,
+        async_recovery=False,
     ) -> None:
         page = self.page
         if getattr(page, "_manual_save_in_progress", False):
@@ -544,7 +546,11 @@ class StudioProjectController:
                     # Autosave recovery belongs to explicit normal project open.
                     recovered_autosave = False
                 else:
-                    project, recovered_autosave = page._resolve_project_recovery(requested_path, project)
+                    if async_recovery:
+                        project, recovered_autosave = yield from self._resolve_project_recovery_steps(
+                            requested_path, project, single_shot_fn=single_shot_fn)
+                    else:
+                        project, recovered_autosave = page._resolve_project_recovery(requested_path, project)
             open_stage = "CONSISTENCY"
             from .subtitle_consistency import validate_project, SubtitleConsistencyError
             from .project_open_preparation import prepared
@@ -629,6 +635,15 @@ class StudioProjectController:
                 audio_timebase=str((primary_asset.audio_metadata if primary_asset is not None else {}).get("timebase") or ""),
             )
         except Exception as exc:
+            from .project_recovery_dialog import RecoveryCancelled
+            if isinstance(exc, RecoveryCancelled):
+                page._studio_trace('OPEN_CANCELLED', stage='RECOVERY')
+                page._project_view_state = previous_view_state if self.session.project is not None else 'hub'
+                page._project_opening_path = ''
+                page._set_hub_toolbar_mode(self.session.project is None)
+                page.studio_empty.setEnabled(True)
+                page.hub_loading_label.hide()
+                return
             # Record the cause first: 2026-10-22 the process died natively in
             # the toolbar step below and the original exception was never logged.
             page._studio_trace("OPEN_FAILED", stage=open_stage, exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
@@ -1129,40 +1144,34 @@ class StudioProjectController:
         )
 
     def _recovery_choice(self, candidate: Path) -> str:
-        box = QMessageBox(self.page)
-        box.setIcon(QMessageBox.Icon.Warning)
-        bind_text(box, '发现未保存的自动恢复版本', property='windowTitle')
-        bind_text(box, '自动恢复包含正式保存之后的实际修改。')
-        try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-            project_path_value = payload.get("autosave", {}).get("project_path", "")
-            project_path = Path(str(project_path_value)) if project_path_value else None
-            saved_time = datetime.fromtimestamp(project_path.stat().st_mtime).strftime("%H:%M") if project_path else "--:--"
-            from .studio_project import autosave_effective_mtime_ns
-            recovery_time = datetime.fromtimestamp(autosave_effective_mtime_ns(candidate) / 1e9).strftime("%H:%M")
-            bind_text(box, '正式保存  {value0}\n自动恢复  {value1}\n\n请选择要打开的版本。', property='informativeText', value0=saved_time, value1=recovery_time)
-        except OSError:
-            bind_text(box, '请选择恢复自动保存、打开正式保存，或删除恢复点。', property='informativeText')
-        restore = box.addButton("恢复自动保存", QMessageBox.ButtonRole.AcceptRole)
-        saved = box.addButton("打开正式保存", QMessageBox.ButtonRole.ActionRole)
-        ignore = box.addButton("删除恢复点", QMessageBox.ButtonRole.DestructiveRole)
-        box.setDefaultButton(restore)
-        apply_secondary_surface_theme(box)
-        # Opening has a stall limit; the time the user takes to choose is not one.
+        from .project_recovery_dialog import RecoveryDialog, RecoveryChoice
+        request = getattr(self, '_sync_recovery_request', None) or RecoveryChoice(
+            candidate, Path(getattr(self.page, '_project_opening_path', '') or '.'))
+        box = RecoveryDialog(self.page, request)
         readiness = getattr(self.page, "_readiness", None)
         with (readiness.user_wait() if hasattr(readiness, "user_wait") else nullcontext()):
             box.exec()
-        clicked = box.clickedButton()
-        if clicked is restore:
-            return "recover"
-        if clicked is ignore:
-            return "ignore"
-        return "saved" if clicked is saved else "saved"
+        choice = box.choice
+        box.deleteLater()
+        return choice
 
     @observed('project.recover')
     def _resolve_project_recovery(
         self, project_path: Path, official: SubtitleProject, *, single_shot_fn
     ) -> tuple[SubtitleProject, bool]:
+        steps = self._resolve_project_recovery_steps(project_path, official, single_shot_fn=single_shot_fn)
+        try:
+            while True:
+                self._sync_recovery_request = request = next(steps)
+                request.choice = self.page._recovery_choice(request.candidate)
+        except StopIteration as done:
+            return done.value
+        finally:
+            self._sync_recovery_request = None
+            steps.close()
+
+    def _resolve_project_recovery_steps(self, project_path, official, *, single_shot_fn):
+        from .project_recovery_dialog import RecoveryChoice, RecoveryCancelled
         page = self.page
         inspection = official.__dict__.pop('_recovery_inspection', None)
         if inspection is not None and inspection.matches(project_path, official):
@@ -1215,13 +1224,25 @@ class StudioProjectController:
             page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(project_path), decision="policy_official")
             single_shot_fn(100, lambda: QToolTip.showText(QCursor.pos(), "已按偏好打开正式保存版本", page))
             return official, False
-        choice = page._recovery_choice(candidate)
+        error = ''
+        while True:
+            request = RecoveryChoice(candidate, project_path, error)
+            yield request
+            choice = request.choice
+            if choice == 'cancel':
+                raise RecoveryCancelled()
+            if choice != 'ignore':
+                break
+            try:
+                from .studio_project import discard_autosave
+                discard_autosave(candidate)
+                break
+            except OSError as exc:
+                error = str(exc)
+                page._studio_trace('RECOVERY_DELETE_FAILED', error=error)
         if choice == "recover":
             page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(candidate), decision="recover")
             return recovered, True
-        if choice == "ignore":
-            from .studio_project import discard_autosave
-            discard_autosave(candidate)
         page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(project_path), decision="official")
         return official, False
 
@@ -1304,6 +1325,8 @@ class StudioProjectController:
                 runtime = getattr(project, "_studio_state_runtime", None)
                 revision_id = getattr(runtime, "revision", 0)
                 save_generation = getattr(page, "_autosave_generation", 0)
+                from ..studio.text_edit_submission import save_operation_ids, record_text_save
+                edit_operations = save_operation_ids(page, project, revision_id)
                 with measure("MANUAL_SAVE_SNAPSHOT"):
                     phase='snapshot'
                     revision = capture_manual_save(page, project, revision_id)
@@ -1311,6 +1334,7 @@ class StudioProjectController:
                     phase='persist'
                     saved = persist_with_progress(
                         page, revision, target, save_project_fn=save_project_fn)
+                record_text_save(edit_operations, kind='formal', revision=revision_id, generation=save_generation)
                 # The modal guard blocks user navigation. Also reject stale
                 # publication if a programmatic callback bypasses that guard.
                 if self.session.project is not project or self.session.generation != generation:

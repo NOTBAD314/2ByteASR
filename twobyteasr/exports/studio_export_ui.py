@@ -1138,6 +1138,9 @@ class StudioExportWorkspace(QWidget):
         self.status.setWordWrap(True)
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         footer.addWidget(self.status, 1)
+        self.subtitle_issues_button = QPushButton(tr('检查导出问题…'))
+        self.subtitle_issues_button.clicked.connect(self._open_subtitle_issues)
+        footer.addWidget(self.subtitle_issues_button)
         # Export actions stay reachable even when either column must scroll.
         footer.addLayout(self._export_actions)
         root.addWidget(footer_bar)
@@ -2459,6 +2462,14 @@ class StudioExportWorkspace(QWidget):
             QTimer.singleShot(0, lambda: self.settings_scroll.ensureWidgetVisible(self.advanced_panel, 0, 24))
         self._target_changed()
 
+    def _open_subtitle_issues(self, error=None):
+        from .export_issues_ui import show_export_issues
+        page = self.parentWidget()
+        if page is None or not hasattr(page, 'session'): return
+        show_export_issues(page, error=error if isinstance(error, Exception) else None,
+            scope=dict(start_ms=self.in_ms, end_ms=self.out_ms),
+            continue_callback=lambda: page._open_render_dialog(skip_preflight=True))
+
     def _target_changed(self, *_args) -> None:
         if self._released or self._updating_export_controls:
             return
@@ -2485,7 +2496,13 @@ class StudioExportWorkspace(QWidget):
         effective = self._render_settings(commit=False)
         self._effective_export_settings = effective
         from .export_timeline import export_project_snapshot
-        frozen = export_project_snapshot(self.project, start_ms=self.in_ms, end_ms=self.out_ms,
+        from .export_issues import export_issues
+        self._preflight_issues = export_issues(self.project, start_ms=self.in_ms, end_ms=self.out_ms)
+        if hasattr(self, 'subtitle_issues_button'):
+            self.subtitle_issues_button.setText(tr('导出问题（{count}）…', count=len(self._preflight_issues)))
+        # Settings/layout previews are read-only; validation remains mandatory
+        # on _start/_job and every production snapshot.
+        frozen = export_project_snapshot(self.project, check_integrity=False, start_ms=self.in_ms, end_ms=self.out_ms,
                                          width=effective.width or self.project.media.width,
                                          height=effective.height or self.project.media.height)
         self._output_layout_project = frozen
@@ -2747,6 +2764,10 @@ class StudioExportWorkspace(QWidget):
                 OUTPUT_PATH=str(output), RENDER_ROUTE="advanced" if self._advanced_route else "native",
             )
         except Exception as exc:
+            from .export_issues import ExportPreflightError
+            if isinstance(exc, ExportPreflightError) or getattr(exc, 'result', None) is not None:
+                self._open_subtitle_issues(exc)
+                return
             stack = traceback.format_exc()
             self._export_trace("target_validated", False, reason=str(exc), traceback=stack)
             self._show_failure(f"{exc}\n\n{stack}")

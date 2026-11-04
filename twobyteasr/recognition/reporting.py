@@ -320,7 +320,8 @@ def _write_report(report):
     json_path = Path(json_path)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     _archive_previous_report(json_path, str(report.get("started_at") or ""))
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    from ..storage.atomic_files import write_text_atomic
+    write_text_atomic(json_path, json.dumps(report, ensure_ascii=False, indent=2))
     result = report.get("result", {})
     elapsed_seconds = float(result.get("elapsed_seconds", 0) or 0)
     audio_seconds = float(result.get("audio_seconds", 0) or report.get("media", {}).get("audio_seconds") or 0)

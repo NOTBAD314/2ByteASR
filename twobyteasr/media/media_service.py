@@ -308,7 +308,8 @@ class MediaService:
         payload = json.loads(str(getattr(completed, "stdout", "{}")))
         format_info = payload.get("format", {}) if isinstance(payload, Mapping) else {}
         streams = payload.get("streams", []) if isinstance(payload, Mapping) else []
-        video = next((item for item in streams if item.get("codec_type") == "video"), {})
+        video = next((item for item in streams if item.get("codec_type") == "video"
+                      and not item.get('disposition', {}).get('attached_pic')), {})
         audio = next((item for item in streams if item.get("codec_type") == "audio"), {})
         container_start_ms = _timestamp_ms(format_info.get("start_time"))
         video_start_ms = _stream_start_time_ms(video.get("start_time")) if video else 0.0

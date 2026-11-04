@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+from collections import OrderedDict
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QSortFilterProxyModel, QTimer, QSettings
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QSlider,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -23,16 +26,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..timeline.studio_media_commands import media_graph_command
+from ..timeline.studio_media_commands import media_graph_command, media_pool_import_command
 from ..timeline.studio_media_pool import (
     add_video_clip,
     create_video_track,
     media_usage,
     primary_video_track_id,
+    add_media_asset,
     relink_media_asset,
     remove_unused_media,
 )
 from ..design.themed_icons import themed_icon
+from .media_pool_view import MediaPoolModel, MediaPoolView
+from .studio_helpers import probe_media_identity
 
 from ..i18n import bind_text
 
@@ -56,25 +62,16 @@ def _format_duration(milliseconds: int) -> str:
     )
 
 
-class _AssetTree(QTreeWidget):
-    """Rows drag the whole source (picture and sound) into the tracks (2026-10-25)."""
-
-    def mimeTypes(self):  # noqa: N802 - Qt API
-        from .studio_source_monitor import MEDIA_PART_MIME
-        return [MEDIA_PART_MIME]
-
-    def mimeData(self, items):  # noqa: N802 - Qt API
-        from .studio_source_monitor import media_part_mime
-        asset_id = str(items[0].data(0, Qt.ItemDataRole.UserRole) or "") if items else ""
-        return media_part_mime(asset_id, "both") if asset_id else None
-
-
 class StudioMediaPoolPanel(QWidget):
     """A project-bound panel. Mutations always enter the page undo stack."""
+
+    metadata_ready = Signal(object)
 
     def __init__(self, page, parent=None) -> None:
         super().__init__(parent)
         self.page = page
+        self.setAcceptDrops(True)
+        self.view_settings = QSettings('2ByteASR', '2ByteASR')
         self.setObjectName("studioMediaPoolPanel")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -102,28 +99,37 @@ class StudioMediaPoolPanel(QWidget):
         self.search.textChanged.connect(self._apply_filter)
         layout.addWidget(self.search)
 
-        self.assets = _AssetTree()
-        self.assets.setObjectName("mediaPoolAssets")
-        self.assets.setColumnCount(3)
-        self.assets.setHeaderLabels(["素材", "状态", "时长"])
-        self.assets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.assets.setRootIsDecorated(False)
-        self.assets.setUniformRowHeights(True)
-        # Keep at least several selectable rows when the timeline is tall.
-        self.assets.setMinimumHeight(140)
-        self.assets.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.assets.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.assets.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.assets.itemSelectionChanged.connect(self._sync_actions)
-        # 2026-10-25: double-click previews the source in the cue-list slot;
-        # rows drag into the tracks; right click adds the picture or sound alone.
-        self.assets.itemDoubleClicked.connect(lambda *_args: self._preview_selected())
-        self.assets.setDragEnabled(True)
-        self.assets.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
-        self.assets.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.assets.customContextMenuRequested.connect(self._show_asset_menu)
-        bind_text(self.assets, '双击预览；拖到时间线轨道上加入', property='toolTip')
+        self.model = MediaPoolModel(self)
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(self.model)
+        self.proxy.setFilterRole(Qt.ItemDataRole.UserRole+3)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        modes = QHBoxLayout()
+        self.list_button = self._button('fa5s.list', '列表', lambda: self._presentation(False))
+        self.thumbnail_button = self._button('fa5s.th-large', '缩略图', lambda: self._presentation(True))
+        for button in (self.list_button, self.thumbnail_button):
+            button.setCheckable(True); modes.addWidget(button)
+        self.thumbnail_size = QSlider(Qt.Orientation.Horizontal)
+        self.thumbnail_size.setRange(132, 240); self.thumbnail_size.setValue(172)
+        self.thumbnail_size.setToolTip('缩略图大小；列数随面板宽度变化')
+        self.thumbnail_size.valueChanged.connect(lambda *_: self._presentation(self.assets.thumbnail_mode))
+        modes.addWidget(self.thumbnail_size, 1)
+        layout.addLayout(modes)
+        self.assets = MediaPoolView(page, page.source_monitor.wave_cache)
+        self.assets.setModel(self.proxy)
+        self.assets.selectionModel().currentChanged.connect(lambda *_: self._sync_actions())
+        self.assets.doubleClicked.connect(self._open_selected)
+        self.assets.visible_assets.connect(self._queue_visible)
         layout.addWidget(self.assets, 1)
+        self._bound_project = None
+        self._epoch = 0
+        self._jobs = OrderedDict()
+        self._probed = set()
+        self._condition = threading.Condition()
+        self._closed = False
+        self.metadata_ready.connect(self._metadata_ready)
+        self._worker = threading.Thread(target=self._metadata_work, name='pool-metadata', daemon=True)
+        self._worker.start()
 
         asset_actions = QHBoxLayout()
         self.add_asset_button = self._button(
@@ -160,11 +166,15 @@ class StudioMediaPoolPanel(QWidget):
         )
         track_row.addWidget(self.add_track_button)
         layout.addLayout(track_row)
+        # Placement controls live next to the source range. Keep these legacy
+        # selectors available to existing track commands without two targets
+        # competing for the user's attention.
+        divider.hide(); self.track_selector.hide(); self.add_track_button.hide()
 
-        self.add_to_track_button = QPushButton("加入所选轨道")
+        self.add_to_track_button = QPushButton("打开源预览 / 选择片段")
         self.add_to_track_button.setObjectName("studioPrimary")
         self.add_to_track_button.setIcon(themed_icon("fa5s.arrow-right", "primary"))
-        self.add_to_track_button.clicked.connect(self._add_selected_to_track)
+        self.add_to_track_button.clicked.connect(self._open_selected)
         layout.addWidget(self.add_to_track_button)
         self._sync_actions()
 
@@ -187,7 +197,39 @@ class StudioMediaPoolPanel(QWidget):
         project = self.page.project if project is None else project
         selected_asset_id = self.selected_asset_id()
         selected_track_id = self.selected_track_id()
-        self.assets.clear()
+        if project is not self._bound_project:
+            self._bound_project = project
+            self._epoch += 1
+            self._probed.clear()
+            with self._condition:
+                self._jobs.clear()
+            if self.page.source_monitor.project is not None and self.page.source_monitor.project is not project:
+                self.page.source_monitor.reset()
+                self.page.source_tabs.setCurrentIndex(0)
+            prefs = project.studio_state.get('media_pool_view', {}) if project else {}
+            self.thumbnail_size.blockSignals(True)
+            try:
+                size = int(prefs.get('size', self.view_settings.value('studio/media_pool_thumb_size', 172)))
+            except (ValueError, TypeError):
+                size = 172
+            self.thumbnail_size.setValue(size)
+            self.thumbnail_size.blockSignals(False)
+            mode = prefs.get('mode', self.view_settings.value('studio/media_pool_view', 'thumbnails'))
+            self.assets.set_presentation(mode == 'thumbnails', self.thumbnail_size.value())
+        self.model.refresh(project)
+        monitor = self.page.source_monitor
+        if monitor.project is project and monitor.asset_id and monitor.asset is None:
+            monitor.close_source()
+        if monitor.asset is not None and monitor.source_path_at_open != monitor.asset.canonical_source:
+            if monitor.isVisible():
+                monitor.open_asset(monitor.asset_id)
+            else:
+                monitor.reset()
+        if selected_asset_id:
+            for row in range(self.proxy.rowCount()):
+                index = self.proxy.index(row, 0)
+                if index.data(Qt.ItemDataRole.UserRole) == selected_asset_id:
+                    self.assets.setCurrentIndex(index); break
         self.track_selector.blockSignals(True)
         self.track_selector.clear()
         if project is None:
@@ -195,24 +237,6 @@ class StudioMediaPoolPanel(QWidget):
             self.track_selector.blockSignals(False)
             self._sync_actions()
             return
-        usage = media_usage(project)
-        for asset in project.media_pool:
-            state = "离线" if asset.offline else "已使用" if usage.get(asset.asset_id) else "未使用"
-            health = getattr(project, '_media_availability', {}).get(asset.canonical_source, {})
-            if asset.offline:
-                state = health.get('reason', state)
-            item = QTreeWidgetItem(
-                [asset.display_name, state, _format_duration(asset.duration_ms)]
-            )
-            item.setData(0, Qt.ItemDataRole.UserRole, asset.asset_id)
-            item.setToolTip(0, asset.canonical_source)
-            if asset.offline:
-                item.setIcon(0, themed_icon("fa5s.exclamation-triangle", "warning"))
-            else:
-                item.setIcon(0, themed_icon("fa5s.film", "secondary"))
-            self.assets.addTopLevelItem(item)
-            if asset.asset_id == selected_asset_id:
-                item.setSelected(True)
         for track in project.video_tracks:
             suffix = " · 已锁定" if track.locked else ""
             self.track_selector.addItem(f"{track.id}  {track.name}{suffix}", track.id)
@@ -233,11 +257,14 @@ class StudioMediaPoolPanel(QWidget):
         self.track_selector.blockSignals(False)
         bind_text(self.asset_count, '{value0} 个素材', value0=len(project.media_pool))
         self._apply_filter(self.search.text())
+        self.list_button.setChecked(not self.assets.thumbnail_mode)
+        self.thumbnail_button.setChecked(self.assets.thumbnail_mode)
+        self.thumbnail_size.setEnabled(self.assets.thumbnail_mode)
+        self.page.source_monitor.refresh_targets()
         self._sync_actions()
 
     def selected_asset_id(self) -> str:
-        item = self.assets.currentItem()
-        return str(item.data(0, Qt.ItemDataRole.UserRole) or "") if item else ""
+        return str(self.assets.currentIndex().data(Qt.ItemDataRole.UserRole) or '')
 
     def selected_track_id(self) -> str:
         return str(self.track_selector.currentData() or "")
@@ -246,15 +273,21 @@ class StudioMediaPoolPanel(QWidget):
         index = self.track_selector.findData(str(track_id))
         if index >= 0:
             self.track_selector.setCurrentIndex(index)
+        source_index = self.page.source_monitor.video_target.findData(str(track_id))
+        if source_index >= 0:
+            self.page.source_monitor.video_target.setCurrentIndex(source_index)
 
     def _apply_filter(self, query: str) -> None:
-        query = str(query or "").strip().casefold()
-        for row in range(self.assets.topLevelItemCount()):
-            item = self.assets.topLevelItem(row)
-            haystack = " ".join(
-                (item.text(0), item.text(1), item.toolTip(0))
-            ).casefold()
-            item.setHidden(bool(query and query not in haystack))
+        selected = self.selected_asset_id()
+        if selected:
+            self._last_selected = selected
+        self.proxy.setFilterFixedString(str(query or '').strip())
+        for row in range(self.proxy.rowCount()):
+            index = self.proxy.index(row, 0)
+            if index.data(Qt.ItemDataRole.UserRole) == getattr(self, '_last_selected', ''):
+                self.assets.setCurrentIndex(index); break
+        self.assets.timer.start()
+        self._sync_actions()
 
     def _sync_actions(self) -> None:
         project = self.page.project
@@ -264,13 +297,9 @@ class StudioMediaPoolPanel(QWidget):
             (item for item in project.video_tracks if item.id == track_id),
             None,
         ) if project else None
-        primary_id = primary_video_track_id(project) if project else ""
-        accepts_free_clip = track is not None and track.id != primary_id
         self.relink_button.setEnabled(bool(project and asset_id))
-        self.add_to_track_button.setEnabled(
-            bool(project and asset_id and accepts_free_clip and not track.locked)
-        )
-        (bind_text(self.add_to_track_button, 'V1 由主素材剪辑维护；新素材请选择 V2 或新建视频轨。', property='toolTip') if track is not None and track.id == primary_id else bind_text(self.add_to_track_button, '将所选素材放到当前播放头', property='toolTip'))
+        self.add_to_track_button.setEnabled(bool(project and asset_id))
+        self.add_to_track_button.setToolTip('双击或点击打开源预览；设置入出点后选择音视频方式加入')
         unused = (
             sum(1 for used in media_usage(project).values() if not used)
             if project else 0
@@ -288,13 +317,45 @@ class StudioMediaPoolPanel(QWidget):
         self._sync_actions()
 
     def _add_asset(self) -> None:
-        path, _selected = QFileDialog.getOpenFileName(
-            self, tr('添加素材'), "", MEDIA_FILTER
-        )
-        if path:
-            self.page.project_controller._attach_media_to_current(
-                Path(path), add_to_timeline=False
-            )
+        paths, _selected = QFileDialog.getOpenFileNames(self, tr('添加素材'), '', MEDIA_FILTER)
+        if paths:
+            self.import_paths(paths)
+
+    def import_paths(self, paths):
+        if self.page.project is None:
+            return
+        self.add_asset_button.setEnabled(False)
+        self.preview_contract.setText('正在后台读取素材信息…')
+        with self._condition:
+            key = ('import', self._epoch, tuple(str(p) for p in paths))
+            self._jobs[key] = (self._epoch, self.page.project, '', tuple(str(p) for p in paths))
+            self._jobs.move_to_end(key, last=False)
+            self._condition.notify_all()
+
+    @staticmethod
+    def external_media_paths(mime):
+        from ..design.studio_theme import STUDIO_MEDIA_SUFFIXES
+        return tuple(dict.fromkeys(url.toLocalFile() for url in mime.urls()
+            if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() in STUDIO_MEDIA_SUFFIXES))
+
+    def dragEnterEvent(self, event):
+        if self.page.project is not None and self.external_media_paths(event.mimeData()):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = self.external_media_paths(event.mimeData())
+        if self.page.project is None or not paths:
+            event.ignore()
+            return
+        self.import_paths(paths)
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
 
     def _relink_selected(self) -> None:
         if self.relink_button.text() == '取消检查':
@@ -326,69 +387,123 @@ class StudioMediaPoolPanel(QWidget):
             media_graph_command(project, "移除未使用素材", remove_unused_media)
         )
 
-    def _preview_selected(self) -> None:
-        asset_id = self.selected_asset_id()
-        if self.page.project is not None and asset_id:
-            from .studio_source_monitor import open_source_monitor
-            open_source_monitor(self.page, asset_id)
-
-    def _show_asset_menu(self, pos) -> None:
-        item = self.assets.itemAt(pos)
-        project = self.page.project
-        if item is None or project is None:
-            return
-        self.assets.setCurrentItem(item)
-        asset_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
-        asset = next((a for a in project.media_pool if a.asset_id == asset_id), None)
-        if asset is None:
-            return
-        from ..timeline.studio_media_pool import asset_has_audio, asset_has_video
-        from .studio_source_monitor import place_media_part
-        from ..design.studio_theme import create_studio_menu
-        menu = create_studio_menu(self)
-        menu.addAction(tr('预览'), self._preview_selected)
-        menu.addSeparator()
-        for part, label, usable in (("both", '加到播放头（视频+音频）', asset_has_video(asset) or asset_has_audio(asset)),
-                                    ("video", '只加视频到播放头', asset_has_video(asset)),
-                                    ("audio", '只加音频到播放头', asset_has_audio(asset))):
-            action = menu.addAction(tr(label))
-            action.setEnabled(bool(usable and not asset.offline))
-            action.triggered.connect(lambda _=False, value=part: self._report(place_media_part(self.page, asset_id, value)))
-        if asset.offline:
-            menu.addSeparator()
-            menu.addAction(tr('重新定位'), self._relink_selected)
-        self._asset_menu = menu
-        menu.popup(self.assets.viewport().mapToGlobal(pos))
-
-    def _report(self, problem: str) -> None:
-        if problem:
-            QMessageBox.information(self, tr('无法添加片段'), problem)
-
     def _add_track(self) -> None:
         if self.page.project is None:
             return
         self.page._add_video_track()
 
-    def _add_selected_to_track(self) -> None:
-        project = self.page.project
+    def _add_selected_to_track(self):
+        self._open_selected()
+
+    def _open_selected(self, *_):
         asset_id = self.selected_asset_id()
-        track_id = self.selected_track_id()
-        if project is None or not asset_id or not track_id:
+        if self.page.project is None or not asset_id:
             return
-        if track_id == primary_video_track_id(project):
+        self.page._set_major_panel_visible('cue_list', True)
+        self.page.source_tabs.setCurrentIndex(1)
+        self.page.source_monitor.open_asset(asset_id)
+        name = next(a.display_name for a in self.page.project.media_pool if a.asset_id == asset_id)
+        self.page.source_tabs.setTabText(1, '源：'+(name[:10]+'…' if len(name)>10 else name))
+        self.page.source_tabs.setTabToolTip(1, name)
+        self.page.source_monitor.setFocus()
+
+    def _presentation(self, thumbnails):
+        self.assets.set_presentation(thumbnails, self.thumbnail_size.value())
+        self.list_button.setChecked(not thumbnails); self.thumbnail_button.setChecked(thumbnails)
+        self.thumbnail_size.setEnabled(thumbnails)
+        self.view_settings.setValue('studio/media_pool_view', 'thumbnails' if thumbnails else 'list')
+        self.view_settings.setValue('studio/media_pool_thumb_size', self.thumbnail_size.value())
+        if self.page.project:
+            self.page.project.studio_state['media_pool_view'] = dict(mode='thumbnails' if thumbnails else 'list', size=self.thumbnail_size.value())
+
+    def _queue_visible(self, assets):
+        project = self.page.project
+        if project is None:
             return
-        try:
-            command = media_graph_command(
-                project,
-                "添加媒体片段",
-                lambda working: add_video_clip(
-                    working,
-                    track_id,
-                    asset_id,
-                    timeline_in_ms=int(getattr(self.page.timeline, "playhead_ms", 0)),
-                ),
-            )
-        except (KeyError, ValueError) as exc:
-            QMessageBox.information(self, tr('无法添加片段'), str(exc))
+        with self._condition:
+            for asset in assets:
+                key = (self._epoch, asset.asset_id, asset.canonical_source)
+                if key not in self._probed and not asset.offline:
+                    self._probed.add(key)
+                    self._jobs[key] = (self._epoch, project, asset.asset_id, (asset.canonical_source,))
+                    self._jobs.move_to_end(key, last=False)
+            probes = [key for key in self._jobs if key[0] != 'import']
+            for key in probes[24:]:
+                self._jobs.pop(key, None); self._probed.discard(key)
+            self._condition.notify_all()
+
+    def _metadata_work(self):
+        while True:
+            with self._condition:
+                while not self._jobs and not self._closed:
+                    self._condition.wait()
+                if self._closed:
+                    return
+                _, (epoch, project, asset_id, paths) = self._jobs.popitem(last=False)
+            results = []
+            for path in paths:
+                if self._closed or epoch != self._epoch:
+                    break
+                try:
+                    results.append((path, probe_media_identity(path), ''))
+                except Exception as exc:
+                    results.append((path, {}, str(exc)))
+            try:
+                self.metadata_ready.emit((epoch, project, asset_id, results))
+            except RuntimeError:
+                return
+
+    @staticmethod
+    def _metadata_dicts(identity):
+        return (dict(width=identity.get('width', 0), height=identity.get('height', 0),
+                     fps=identity.get('fps', 0), has_video=bool(identity.get('has_video'))),
+                dict(has_audio=bool(identity.get('has_audio')), streams=list(identity.get('audio_streams', [])),
+                     sample_rate=identity.get('sample_rate', 0), channels=identity.get('channels', 0), stream_index=0,
+                     source_start_ms=identity.get('source_start_ms', 0),
+                     sample_timeline_origin_ms=identity.get('sample_timeline_origin_ms', 0)))
+
+    def _metadata_ready(self, payload):
+        epoch, project, asset_id, results = payload
+        if self._closed or epoch != self._epoch or self.page.project is not project:
+            self.add_asset_button.setEnabled(True)
             return
-        self.page.undo_stack.push(command)
+        if not asset_id:
+            self.add_asset_button.setEnabled(True)
+            def add(working):
+                for path, identity, error in results:
+                    if error:
+                        continue
+                    video, audio = self._metadata_dicts(identity)
+                    add_media_asset(working, path, fingerprint=str(identity.get('fingerprint') or ''),
+                        duration_ms=int(identity.get('duration_ms') or 0), video_metadata=video,
+                        audio_metadata=audio, materialize_audio=False)
+            if any(not error for _, _, error in results):
+                command=media_pool_import_command(project, add)
+                if command is not None:self.page.undo_stack.push(command)
+            errors = [str(Path(path).name)+': '+error for path, _, error in results if error]
+            self.preview_contract.setText('；'.join(errors) if errors else f'已添加 {len(results)} 个素材；双击预览，拖动选段加入')
+        elif results:
+            path, identity, error = results[0]
+            asset = next((a for a in project.media_pool if a.asset_id == asset_id and a.canonical_source == path), None)
+            if asset and not error:
+                from ..projects.studio_runtime_state import state_for, DirtyDomain as D
+                video, audio = self._metadata_dicts(identity)
+                changed = (any(asset.video_metadata.get(k) != v for k, v in video.items()) or
+                           any(asset.audio_metadata.get(k) != v for k, v in audio.items()))
+                if changed:
+                    with state_for(project).transaction(project, action_id='source_metadata', dirty=D.MEDIA_POOL | D.AUTOSAVE):
+                        asset.video_metadata.update(video); asset.audio_metadata.update(audio)
+                        asset.duration_ms = int(identity.get('duration_ms') or asset.duration_ms)
+                if self.page.source_monitor.asset_id == asset_id:
+                    # Enrich stream choices without moving either playhead.
+                    self.page.source_monitor.refresh_metadata()
+            elif asset and error:
+                self.preview_contract.setText('素材信息读取失败：'+error+'；可重新定位')
+        self.refresh(project)
+        self.assets.timer.start()
+
+    def shutdown(self):
+        self._closed = True; self._epoch += 1
+        with self._condition:
+            self._jobs.clear(); self._condition.notify_all()
+        self.assets.shutdown()

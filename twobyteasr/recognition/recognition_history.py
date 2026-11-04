@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -110,7 +110,8 @@ def _date_value(value: object) -> datetime:
     if not text:
         return datetime.min
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed=datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (parsed.astimezone() if parsed.tzinfo is not None else parsed).replace(tzinfo=None)
     except ValueError:
         pass
     for pattern in (
@@ -206,7 +207,7 @@ class _RecordFacts:
 
     @property
     def has_anomaly(self) -> bool:
-        return self.anomaly_count > 0 or self.status in {"failed", "cancelled", "skipped", "partial", "unknown"}
+        return self.anomaly_count > 0 or self.status in {"failed", "cancelled", "skipped", "partial", "unknown", "interrupted", "needs_recovery", "empty_result"}
 
 
 @dataclass(frozen=True)
@@ -243,7 +244,11 @@ _RecognitionRecordCache = dict[
 
 
 def parse_recognition_report(path: Path) -> RecognitionRecord:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if Path(path).name == 'task.json':
+        from .task_journal import report_payload
+        payload = report_payload(path)
+    else:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("报告顶层不是 JSON 对象")
     media = _dict(payload.get("media"))
@@ -256,6 +261,8 @@ def parse_recognition_report(path: Path) -> RecognitionRecord:
 
     primary_backend = str(models.get("primary_asr_backend") or "")
     primary = _PRIMARY_NAMES.get(primary_backend, primary_backend) if primary_backend else _inferred_primary(stages)
+    if primary_backend=='api' and models.get('qwen_asr_api_provider')=='mosi_moss_pro':
+        primary='MOSS Pro（MOSI）'
     timeline_backend = str(models.get("firered_asr_backend") or "off")
     timeline = _TIMELINE_NAMES.get(timeline_backend, timeline_backend)
     review_backend = str(models.get("qwen_asr_backend") or "off")
@@ -269,6 +276,15 @@ def parse_recognition_report(path: Path) -> RecognitionRecord:
         glossary_count = 1
 
     outcome = normalize_recognition_outcome(payload)
+    if payload.get('journal_version') == 1:
+        raw = payload.get('status', 'unknown')
+        labels = {'queued':'等待启动', 'running':'运行中', 'interrupted':'意外中断 · 可继续',
+                  'failed':'失败 · 可重试', 'cancelled':'已取消', 'partial':'部分完成', 'completed':'完成',
+                  'no_speech':'未检测到人声','needs_recovery':'暂无可用字幕 · 待恢复','empty_result':'没有可用字幕'}
+        outcome = replace(outcome, core_status=raw, status_label=labels.get(raw, outcome.status_label),
+            result_usable=bool(result.get('outputs', {}).get('project') and result.get('cue_count')),
+            problems=tuple(dict.fromkeys((*outcome.problems, *([payload['task']['last_error']]
+                if payload['task'].get('last_error') else [])))))
     status = outcome.core_status
     status_label = outcome.status_label
     severity_counts = dict(outcome.severity_counts)
@@ -319,6 +335,8 @@ def _record_identity(record: RecognitionRecord) -> tuple[str, str, str]:
     media = record.payload.get("media") if isinstance(record.payload, dict) else {}
     media_path = str(media.get("path") or record.media_name) if isinstance(media, dict) else record.media_name
     started = str(record.payload.get("started_at") or record.completed_sort.isoformat())
+    if record.payload.get('job_id'):
+        return (str(record.payload['job_id']), os.path.normcase(media_path), '')
     task_id = str(record.payload.get("task_id") or record.payload.get("run_id") or "").strip()
     return (task_id or record.path.stem, media_path, started)
 
@@ -588,7 +606,11 @@ def list_report_files(roots) -> tuple[list[tuple[Path, int, int]], list[str]]:
         try:
             if not root.is_dir():
                 continue
-            paths = list(root.glob(REPORT_GLOB))
+            if root.name == 'recognition-tasks':
+                from .task_journal import history_paths
+                paths = list(history_paths(root))
+            else:
+                paths = list(root.glob(REPORT_GLOB))
         except OSError as exc:
             errors.append(f"{root}: {exc}")
             continue
@@ -819,6 +841,12 @@ def _duration_label(seconds: float) -> str:
     return f"{value:.1f} {unit}"
 
 
+def _timeline_label(seconds: float) -> str:
+    """A saved range can start at zero; zero is not a missing duration."""
+    whole = max(0, int(round(float(seconds))))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
 class HistoryMetric(QFrame):
     def __init__(self, label: str, value: str, parent=None):
         super().__init__(parent)
@@ -854,8 +882,8 @@ class HistoryCard(QFrame):
         top.addWidget(title, 1)
         status = QLabel(translate(record.status_label, language))
         status.setObjectName(
-            "historyStatusError" if record.status_label == "失败" else
-            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled"} else "historyStatusGood")
+            "historyStatusError" if record.status == "failed" else
+            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled", "interrupted"} else "historyStatusGood")
         )
         top.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
         button = QPushButton(translate("查看详情", language))
@@ -866,7 +894,7 @@ class HistoryCard(QFrame):
 
         metrics = QHBoxLayout()
         metrics.setSpacing(6)
-        metrics.addWidget(HistoryMetric(translate("完成时间", language), record.completed_at))
+        metrics.addWidget(HistoryMetric(translate("最近状态" if record.status in {'queued','running','interrupted','failed','cancelled'} else "完成时间", language), record.completed_at))
         metrics.addWidget(HistoryMetric(translate("总耗时", language), _duration_label(record.elapsed_seconds)))
         if record.media_seconds:
             metrics.addWidget(HistoryMetric(translate("素材时长", language), _duration_label(record.media_seconds)))
@@ -1149,6 +1177,8 @@ class RecognitionHistoryDetail(QWidget):
 
     result_requested = Signal(object)
     diagnose_requested = Signal(object)
+    resume_requested = Signal(object)
+    partial_requested = Signal(object)
 
     def __init__(self, record: RecognitionRecord, parent=None):
         super().__init__(parent)
@@ -1166,8 +1196,8 @@ class RecognitionHistoryDetail(QWidget):
         summary = QHBoxLayout()
         summary.setSpacing(6)
         status_object = (
-            "historyStatusError" if record.status_label == "失败" else
-            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled"} else "historyStatusGood")
+            "historyStatusError" if record.status == "failed" else
+            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled", "interrupted"} else "historyStatusGood")
         )
         summary.addWidget(_history_pill(record.status_label, status_object))
         summary.addWidget(_history_pill(tr("本文件耗时 {duration}", duration=_duration_label(record.elapsed_seconds))))
@@ -1193,6 +1223,13 @@ class RecognitionHistoryDetail(QWidget):
             outcome_box.addWidget(reason)
         if record.outcome.processed_records:
             outcome_box.addWidget(_history_config_row("处理记录", tr("{count} 条处理记录", count=record.outcome.processed_records)))
+        if record.outcome.fallback_records:
+            fallback_batches = int(_dict(record.payload.get('polishing_summary')).get('fallback_batches') or 0)
+            remaining = (tr('{batches} 批 · {count} 条处理记录（已保留原文）',
+                            batches=fallback_batches, count=record.outcome.fallback_records)
+                         if fallback_batches else tr('{count} 条处理记录（已保留原文）',
+                                                      count=record.outcome.fallback_records))
+            outcome_box.addWidget(_history_config_row('校对待重试', remaining))
         outcome_box.addWidget(_history_config_row("实际接受修改", tr("{count} 处文字修改", count=record.outcome.accepted_edits)))
         if record.outcome.review_issue_count:
             outcome_box.addWidget(_history_config_row("待检查问题", tr("{count} 项检查问题", count=record.outcome.review_issue_count)))
@@ -1213,6 +1250,33 @@ class RecognitionHistoryDetail(QWidget):
         if hasattr(self, "open_result_button"):
             result_actions.addWidget(self.open_result_button)
         result_actions.addWidget(self.diagnose_button)
+        task = _dict(record.payload.get('task'))
+        if task:
+            outcome_box.addWidget(_history_config_row('当前阶段', str(task.get('current_stage') or '等待启动')))
+            outcome_box.addWidget(_history_config_row('最近进展', _display_date(task.get('last_progress_at'))))
+            requests = task.get('remote_requests') or {}
+            total=max(int(task.get('remote_total') or 0),len(requests))
+            outcome_box.addWidget(_history_config_row('识别分片', tr('已保存 {done} / {total}；待完成 {pending}',
+                done=len(requests),total=total,pending=max(0,total-len(requests)))))
+            if requests:
+                ordered = sorted((r for r in requests.values() if r.get('end') is not None),
+                                 key=lambda r: float(r.get('start') or 0))
+                spans=[f"{_timeline_label(r.get('start') or 0)}–{_timeline_label(r['end'])}"
+                       for r in ordered]
+                if spans:outcome_box.addWidget(_history_config_row('已保存范围','、'.join(spans)))
+            outcome_box.addWidget(_history_config_row('已保存结果', tr('{count} 个阶段产物；{requests} 个远端分片',
+                count=len(task.get('cache_files') or {})+len(task.get('artifacts') or {}), requests=len(requests))))
+            if record.status in {'interrupted', 'failed', 'partial', 'cancelled'}:
+                self.resume_button = QPushButton()
+                bind_text(self.resume_button, '继续处理' if record.status == 'interrupted' else '重试未完成部分')
+                self.resume_button.setObjectName('historyPrimary')
+                self.resume_button.clicked.connect(lambda: self.resume_requested.emit(record))
+                result_actions.insertWidget(0, self.resume_button)
+                if not hasattr(self, 'open_result_button') and (task.get('artifacts') or task.get('shards')):
+                    self.partial_button=QPushButton(tr('查看已保存部分'))
+                    self.partial_button.setObjectName('historySecondary')
+                    self.partial_button.clicked.connect(lambda:self.partial_requested.emit(record))
+                    result_actions.insertWidget(1,self.partial_button)
         result_actions.addStretch(1)
         outcome_box.addLayout(result_actions)
         layout.addWidget(outcome_section)
@@ -1234,6 +1298,9 @@ class RecognitionHistoryDetail(QWidget):
         from ..app.ui_zoom import set_sheet
         set_sheet(self.stage_table, _stage_table_sheet())
         status_labels = {
+            "running": ("进行中", "historyResourcePill"),
+            "interrupted": ("中断", "historyStageStatusWarn"),
+            "cancelled": ("已取消", "historyStageStatusWarn"),
             "completed": ("完成", "historyStageStatusGood"),
             "fallback": ("降级", "historyStageStatusWarn"),
             "failed": ("失败", "historyStageStatusError"),
@@ -1269,6 +1336,13 @@ class RecognitionHistoryDetail(QWidget):
             ("时间轴", _history_model_name("timeline", record, models)),
             ("文字复核", _history_model_name("review", record, models)),
         ]
+        if models.get('primary_asr_backend')=='api' and models.get('qwen_asr_api_model'):
+            config_values.append(('云端模型',str(models['qwen_asr_api_model'])))
+        language=_dict(settings.get('subtitle_language'))
+        requested=language.get('requested_language') or language.get('recognition_language')
+        if requested:config_values.append(('源语言',{'zh':'中文','en':'英语','ja':'日语','auto':'自动判断'}.get(str(requested),str(requested))))
+        output=language.get('subtitle_output') or language.get('output')
+        if output:config_values.append(('字幕输出',{'original':'仅原文','translation':'仅译文','bilingual':'双语'}.get(str(output),str(output))))
         if record.ai_model:
             provider = str(models.get("polish_provider") or models.get("group_provider") or "").strip()
             base_url = str(models.get("polish_base_url") or models.get("group_base_url") or "").lower()
@@ -1445,6 +1519,8 @@ class RecognitionHistoryPage(QWidget):
     terms_requested = Signal()
     result_requested = Signal(object)
     diagnose_requested = Signal(object)
+    resume_requested = Signal(object)
+    partial_requested = Signal(object)
     # (generation, payload) from the background report reader.
     _parsed = Signal(int, object)
     _repaired = Signal(object)
@@ -1498,6 +1574,10 @@ class RecognitionHistoryPage(QWidget):
         set_sheet(self, build_history_page_qss())
         self._build()
         self.refresh()
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(2000)
+        self._live_timer.timeout.connect(lambda: self.refresh() if self.isVisible() and not self.background_busy() else None)
+        self._live_timer.start()
 
     def restore_active_navigation(self):
         self.nav.set_active("history")
@@ -1511,7 +1591,8 @@ class RecognitionHistoryPage(QWidget):
         return bool(self._jobs) or self._save_timer.isActive()
 
     def _roots(self) -> list[Path]:
-        roots = [Path(self.report_root)]
+        from .task_journal import task_root
+        roots = [task_root(), Path(self.report_root)]
         for extra in self.extra_roots:
             if Path(extra) not in roots:
                 roots.append(Path(extra))
@@ -1550,7 +1631,7 @@ class RecognitionHistoryPage(QWidget):
         title.setObjectName("historyTitle")
         style_workspace_page_title(title)
         title_box.addWidget(title)
-        note = QLabel(translate("从现有字幕任务 JSON 报告汇总；详情按需展开，密钥不会显示。", language))
+        note = QLabel(translate("任务从开始即保存；中断后可继续处理，已完成的阶段会尽量复用。", language))
         note.setObjectName("historyMuted")
         title_box.addWidget(note)
         header.addLayout(title_box, 1)
@@ -2027,6 +2108,8 @@ class RecognitionHistoryPage(QWidget):
                     placeholder.setText(tr("无法读取这份报告：{error}", error=error or ""))
                 return
             detail = RecognitionHistoryDetail(full)
+            detail.resume_requested.connect(lambda selected: (dialog.accept(), self.resume_requested.emit(selected)))
+            detail.partial_requested.connect(lambda selected: (dialog.accept(), self.partial_requested.emit(selected)))
             detail.result_requested.connect(lambda selected: (dialog.accept(), self.result_requested.emit(selected)))
             # The 排查原因 window opens after this one has closed (no nested modal loops).
             detail.diagnose_requested.connect(lambda selected: (dialog.accept(), QTimer.singleShot(

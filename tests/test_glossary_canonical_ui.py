@@ -140,13 +140,15 @@ def test_try_sentence_uses_real_shared_resolver(dialog):
         top = label.mapTo(ancestor, label.rect().topLeft()).y()
         assert top >= 0 and top + label.height() <= ancestor.height(), (ancestor.objectName(), label.geometry(), ancestor.geometry())
         ancestor = ancestor.parentWidget()
-    quick = dialog.term_try_panel.parentWidget()
-    header = quick.parentWidget()
-    # 2026-10-17 redesign: the AI card left the header; the tools below it
-    # (content body) must still start under the grown trial.
-    below = header.parentWidget().layout().itemAt(1).widget()
-    assert quick.geometry().bottom() <= header.height()
-    assert below.geometry().top() >= header.geometry().bottom()
+    # 2026-11-03 card wall: the trial is its own row under the add panel; the
+    # next shown row (the cards) must still start under the grown trial.
+    panel = dialog.term_try_panel
+    body = panel.parentWidget().layout()
+    position = body.indexOf(panel)
+    below = next(body.itemAt(index).widget() for index in range(position + 1, body.count())
+                 if body.itemAt(index).widget() is not None and body.itemAt(index).widget().isVisible())
+    assert panel.geometry().bottom() <= panel.parentWidget().height()
+    assert below.geometry().top() >= panel.geometry().bottom()
 
 
 def test_duplicate_labels_have_two_actual_ids_without_phantom_row(dialog):
@@ -169,12 +171,13 @@ def test_normal_alias_tab_canonical_and_multiword_name(dialog):
     create(dialog, '本地输入测试')
     dialog.owner.show(); dialog.show(); APP.processEvents()
     dialog.owner.activateWindow(); APP.processEvents()
-    dialog.term_alias_editor.setText('NoxMist')
-    dialog.term_alias_editor.setFocus()
-    QTest.keyClick(dialog.term_alias_editor, Qt.Key.Key_Tab)
-    assert dialog.term_editor.hasFocus()
+    # 2026-11-03: the add row reads 正确写法 → 常被听成, and Tab follows it.
     dialog.term_editor.setText('NoX7')
-    QTest.keyClick(dialog.term_editor, Qt.Key.Key_Return)
+    dialog.term_editor.setFocus()
+    QTest.keyClick(dialog.term_editor, Qt.Key.Key_Tab)
+    assert dialog.term_alias_editor.hasFocus()
+    dialog.term_alias_editor.setText('NoxMist')
+    QTest.keyClick(dialog.term_alias_editor, Qt.Key.Key_Return)
     dialog.term_editor.setText('Silent Hill')
     dialog.add_term_button.click()
     rows = legacy.learned_mappings_for_game('本地输入测试')

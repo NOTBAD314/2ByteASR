@@ -2951,9 +2951,14 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                 try:event=json.loads(line[len(marker):])
                 except (ValueError,TypeError):continue
                 if event.get('event')=='batch_completed':
+                    from .run_context import get_runtime_context
+                    graph=get_runtime_context().long_pipeline
+                    if graph is not None:graph.add_timeline_rows(event.get('rows') or [])
                     record_run_event('asr_evidence_delta',backend='firered',state='provisional_evidence',
                         worker_pid=process.pid,**{key:value for key,value in event.items() if key!='event'})
-                elif event.get('event') in {'loading','loaded','model_dtype','concurrency_reduced'}:
+                elif event.get('event')=='checkpoint_saved':
+                    record_run_event('cache_write',stage='firered_window',path=event['path'])
+                elif event.get('event') in {'loading','loaded','model_dtype','concurrency_reduced','batch_budget','checkpoints_reused'}:
                     record_run_event('asr_worker_progress',backend='firered',worker_pid=process.pid,
                         worker_state=event['event'],**{key:value for key,value in event.items() if key!='event'})
         _raise_if_queue_cancelled()
@@ -3097,6 +3102,10 @@ def _parse_firered_alignment_telemetry(stdout):
 
 def _transcribe_firered_worker(audio, audio_seconds, firered_dir):
     from twobyteasr.system.runtime_registry import resolve_runtime_python
+    from .cache import media_cache_context, file_digest
+    from .run_context import get_runtime_context
+    from twobyteasr.model_integrity import locked_model
+    from .firered_checkpoints import fingerprint
 
     runtime = _main_worker_python()
     worker = os.path.join(os.path.abspath(SCRIPT_DIR), "firered_aed_worker.py")
@@ -3112,18 +3121,23 @@ def _transcribe_firered_worker(audio, audio_seconds, firered_dir):
             end = min(audio_seconds, offset + FIRERED_CHUNK_SECONDS)
             path = os.path.join(temp_dir, f"chunk_{chunk_index:04d}.wav")
             write_pcm16_wav(path, audio[int(round(offset * AUDIO_SAMPLE_RATE)):int(round(end * AUDIO_SAMPLE_RATE))])
-            jobs.append({"segment_id": chunk_index, "path": path, "offset": offset, "duration": end - offset})
+            jobs.append({"segment_id": chunk_index, "path": path, "offset": offset, "duration": end - offset,
+                         "audio_sha256": file_digest(path)})
             if end >= audio_seconds - 0.01:
                 break
             offset += FIRERED_CHUNK_STEP_SECONDS
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
-        Path(manifest).write_text(
-            json.dumps({"jobs": jobs}, ensure_ascii=False), encoding="utf-8"
-        )
+        context=get_runtime_context()
+        cache=media_cache_context(context.media_path) if context.media_path else None
+        checkpoint_identity=dict(version=1,model=locked_model('firered_aed'),worker_sha256=file_digest(worker),beam_size=3)
+        checkpoint_root=str(Path(cache['cache_dir'])/'firered-windows'/fingerprint(checkpoint_identity)) if cache else ''
+        if context.long_pipeline is not None:context.long_pipeline.set_timeline_plan(jobs)
+        Path(manifest).write_text(json.dumps({"jobs": jobs, 'checkpoint_root':checkpoint_root,
+            'checkpoint_identity':checkpoint_identity}, ensure_ascii=False), encoding="utf-8")
         from .cache import record_run_event
         record_run_event('firered_audio_prepared',elapsed_ms=round((time.perf_counter()-segmentation_started)*1000,3),
-            chunk_count=len(jobs),audio_seconds=audio_seconds,coverage='full_audio',batch_size=1)
+            chunk_count=len(jobs),audio_seconds=audio_seconds,coverage='full_audio',batch_size='adaptive')
         payload = _run_isolated_asr_worker(
             python_utf8_command([runtime, '-I', worker, "--manifest", manifest, "--output", output, "--model-dir", firered_dir]),
             output, model_id="FIRERED", audio_input="shared_audio", model_path=firered_dir,

@@ -65,12 +65,13 @@ def start(window, output):
             before = snapshot_glossaries(window.legacy, (library_id,))
             if not restoring:
                 check('fresh isolated library', not before.canonical_terms, before.summary())
-                page.term_alias_editor.setFocus()
-                QTest.keyClicks(page.term_alias_editor, 'NoxMist')
-                QTest.keyClick(page.term_alias_editor, Qt.Key.Key_Tab)
-                check('normal Tab reaches canonical field', page.term_editor.hasFocus())
+                # 2026-11-03: the add row reads 正确写法 → 常被听成, and Tab follows it.
+                page.term_editor.setFocus()
                 QTest.keyClicks(page.term_editor, 'NoX7')
-                QTest.keyClick(page.term_editor, Qt.Key.Key_Return)
+                QTest.keyClick(page.term_editor, Qt.Key.Key_Tab)
+                check('normal Tab reaches alias field', page.term_alias_editor.hasFocus())
+                QTest.keyClicks(page.term_alias_editor, 'NoxMist')
+                QTest.keyClick(page.term_alias_editor, Qt.Key.Key_Return)
                 settle()
                 check('Return saves through original persistence',
                       any(row['from'] == 'NoxMist' and row['to'] == 'NoX7'

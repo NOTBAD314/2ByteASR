@@ -79,6 +79,8 @@ class RuntimeContext:
     # target (zh-Hans / zh-Hant / en / ja / ko; the name predates non-Chinese targets).
     subtitle_output: str = "original"
     translation_script: str = "zh-Hans"
+    translation_terminology: dict = field(default_factory=dict)
+    selected_source_glossary_ids: list[str] = field(default_factory=list)
     # Script of Chinese subtitles: zh-Hans, or zh-Hant (converted before the
     # project is written, subtitle_rules.chinese_script; 2026-10-19).
     chinese_script: str = "zh-Hans"
@@ -101,6 +103,9 @@ class RuntimeContext:
     input_session: Any | None = field(default=None, repr=False)
     shard_input_version: str = ''
     shard_bounds: tuple[float,float] | None = None
+    task_journal: Any | None = field(default=None, repr=False)
+    resume: bool = False
+    retry_incomplete: bool = False
 
     def __post_init__(self):
         from .language_decision import initialise
@@ -213,6 +218,8 @@ def runtime_context_from_legacy(legacy: Any) -> RuntimeContext:
         enabled_glossary_ids=list(
             getattr(legacy, "RUNTIME_ENABLED_GLOSSARY_IDS", ()) or ()
         ),
+        translation_terminology=__import__('twobyteasr.glossary.translation_terms', fromlist=['normalize']).normalize(
+            (getattr(legacy, 'RUNTIME_SETTINGS', {}) or {}).get('glossary', {}).get('translation_terminology')),
         discovered_terms=set(getattr(legacy, "RUNTIME_DISCOVERED_TERMS", set()) or ()),
         output_review_track=bool(getattr(legacy, "RUNTIME_OUTPUT_REVIEW_TRACK", False)),
         output_jianying_txt=bool(getattr(legacy, "RUNTIME_OUTPUT_JIANYING_TXT", False)),

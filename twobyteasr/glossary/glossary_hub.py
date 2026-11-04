@@ -331,17 +331,38 @@ def share_prompt_done(library_key: str, legacy=None) -> bool:
     return str(library_key) in (state.get("share_prompt_done") or [])
 
 
+def _read_prompts(legacy=None) -> dict:
+    try:
+        state = json.loads(_prompts_path(legacy).read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
 def mark_share_prompt_done(library_key: str, legacy=None) -> None:
     """The user dismissed the prompt or submitted this library: never ask again."""
-    path = _prompts_path(legacy)
-    try:
-        state = json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):
-        state = {}
+    state = _read_prompts(legacy)
     done = [str(item) for item in state.get("share_prompt_done") or []]
     if str(library_key) in done:
         return
     state["share_prompt_done"] = [*done, str(library_key)]
+    _write_prompts(state, legacy)
+
+
+# The term library's 「第一次用？」 three-step strip (2026-11-03), shown until dismissed.
+def term_guide_done(legacy=None) -> bool:
+    return bool(_read_prompts(legacy).get("term_guide_done"))
+
+
+def mark_term_guide_done(legacy=None) -> None:
+    state = _read_prompts(legacy)
+    if not state.get("term_guide_done"):
+        state["term_guide_done"] = True
+        _write_prompts(state, legacy)
+
+
+def _write_prompts(state: dict, legacy=None) -> None:
+    path = _prompts_path(legacy)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(".tmp")

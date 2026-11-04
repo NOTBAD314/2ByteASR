@@ -314,4 +314,4 @@ def identity_video_graph(graph, media_path):
     a=audio[0]
     return (Path(a['source_path']).resolve()==Path(media_path).resolve() and a['source_in_ms']==0
         and a['timeline_in_ms']==0 and a['timeline_out_ms']==c['timeline_out_ms']
-        and a.get('gain_db',0)==0 and a.get('playback_rate',1)==1)
+        and a.get('gain_db',0)==0 and a.get('playback_rate',1)==1 and int(a.get('stream_index',0))==0)

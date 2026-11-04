@@ -350,6 +350,12 @@ class SpeakerManagerDialog(QDialog):
         button_role(self.single_button, "secondary", size="compact")
         self.single_button.clicked.connect(lambda: self._batch("single", all_rows=True))
         row.addWidget(self.single_button)
+        self.single_identity_button = QPushButton()
+        bind_text(self.single_identity_button, '确认全片只有一人')
+        bind_text(self.single_identity_button, '将当前标签统一到第一位说话人，保留每条字幕的文字、译文、时间和样式；可撤销。', property='toolTip')
+        button_role(self.single_identity_button, 'secondary', size='compact')
+        self.single_identity_button.clicked.connect(self._confirm_single_identity)
+        row.addWidget(self.single_identity_button)
         row.addStretch(1)
         tools.addLayout(row)
         policy = QHBoxLayout()
@@ -1248,6 +1254,15 @@ class SpeakerManagerDialog(QDialog):
             action.triggered.connect(lambda _=False, target=speaker.id: self._batch("merge", target=target))
         if menu.isEmpty():
             menu.addAction(tr("没有可并入的说话人")).setEnabled(False)
+
+    def _confirm_single_identity(self):
+        from ..projects.single_speaker import confirm_single_speaker_command
+        try:
+            command = confirm_single_speaker_command(self.page.project, changed=self.page._speaker_structure_changed)
+            self._push(command)
+            self.refresh()
+        except ValueError as error:
+            self._set_status(str(error))
 
     def _batch(self, action, target=None, all_rows=False, ids=None):
         from ..projects.speaker_organization import organization_command

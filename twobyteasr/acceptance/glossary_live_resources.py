@@ -138,7 +138,7 @@ def install(output):
     global _installed
     output = Path(output).resolve()
     if (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') not in {'glossary-live-home', 'perf-recognition', 'ja-bilingual', 'ctc-refine',
-                                                                  'text-split'}
+                                                                  'text-split', 'recognition-recovery'}
             or Path(os.environ.get('TWOBYTEASR_TEST_ROOT', '')).resolve() != output):
         raise ValueError('Borrowed resources may only be installed in the explicitly isolated real Home acceptance')
     if _installed:

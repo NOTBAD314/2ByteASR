@@ -302,6 +302,7 @@ class StudioLoadingView(QFrame):
         for mascot in (self.perch, self.library_bunny):
             mascot.set_mood('idle')
         self.steps_view.times, self.library_steps.times = {}, {}
+        self.steps_view.reused, self.library_steps.reused = {}, {}
         self.steps_view.failed_detail = ''
         entries = [entry for entry in (entries or ()) if isinstance(entry, dict)]
         if library:
@@ -629,6 +630,15 @@ class StudioLoadingSession(QObject):
         self._detail = ''
         self._mark_at = self.started
         self._surfaces = []
+        self._stage_text = ('', '')
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(100)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed)
+        self._completion_callback = None
+        self._completion_generation = None
+        for steps in (self.view.steps_view, self.view.library_steps):
+            steps.completion_painted.connect(self._completion_painted, Qt.ConnectionType.QueuedConnection)
+            steps.completion_finished.connect(self._completion_finished, Qt.ConnectionType.QueuedConnection)
         self.view.back.clicked.connect(self.request_cancel)
         self.view.retry.clicked.connect(self.request_retry)
         if self.uses_native_cover:
@@ -810,6 +820,7 @@ class StudioLoadingSession(QObject):
                 video.set_presentation_blocked(reason, blocked)
 
     def begin(self, path, *, on_cancel=None, on_retry=None, return_target='home', present=True):
+        self._cancel_completion()
         self.generation += 1
         self._native_cover_fault = ''
         self._native_present_pending = None
@@ -821,6 +832,7 @@ class StudioLoadingSession(QObject):
         self.path = str(path or '')
         self.state, self.active = 'preparing', True
         self.started = time.perf_counter()
+        self._elapsed_timer.start()
         self.completed = set()
         self.events.clear()
         self.deliveries = 0
@@ -844,6 +856,15 @@ class StudioLoadingSession(QObject):
 
     def present(self):
         """Paint the complete cover before withdrawing native video pixels."""
+        self.view.ensurePolished()
+        self.view.sync_geometry()
+        self.view.fit_card()
+        # Resolve hidden layouts before making the first pixel visible. A
+        # queued LayoutRequest after show used to move the poster/perch.
+        for face in (self.view.project_face, self.view.library_face, self.view.card, self.view):
+            if face.layout() is not None:
+                face.layout().activate()
+        self.view._place_perch()
         if self.uses_native_cover:
             generation = self.generation
             self._native_present_pending = generation
@@ -910,8 +931,8 @@ class StudioLoadingSession(QObject):
         if not self.active:
             return
         task = stage if stage in TASKS else ('建立时间轴' if stage.startswith(('恢复', '建立')) else '准备字幕')
-        from ..i18n import tr
-        self.view.label.setText(f"{tr(stage)}{(' · ' + tr(detail)) if detail else ''} · {time.perf_counter()-self.started:.1f}s")
+        self._stage_text = (stage, detail)
+        self._refresh_elapsed()
         self.view.steps_view.set_state(self.completed, task)
         if stage == '创建工作台界面':
             self._detail = str(detail or '')
@@ -919,6 +940,14 @@ class StudioLoadingSession(QObject):
         self.view.fit_card()
         if not self.events or self.events[-1].get('stage') != stage or self.events[-1].get('detail') != detail:
             self._record('stage', stage=stage, detail=detail)
+
+    def _refresh_elapsed(self):
+        from ..i18n import tr
+        if not self.active:
+            self._elapsed_timer.stop()
+            return
+        stage, detail = self._stage_text
+        self.view.label.setText(f"{tr(stage)}{(' · ' + tr(detail)) if detail else ''} · {time.perf_counter()-self.started:.1f}s")
 
     def mark(self, stage):
         if self.active and stage not in self.completed:
@@ -936,7 +965,9 @@ class StudioLoadingSession(QObject):
     def fail(self, stage, error):
         if not self.active:
             return
+        self._cancel_completion()
         self.state, self.active = 'failed', False
+        self._elapsed_timer.stop()
         self.view.steps_view.set_state(self.completed, '', stage)
         bind_text(self.view.label, '{stage}失败\n{error}\n工程文件仍保留，可重试载入：\n{value2}', stage=stage, error=error, value2=self.path)
         self.view.show_progress(self.completed, '', self._detail, failed=stage)
@@ -951,6 +982,14 @@ class StudioLoadingSession(QObject):
             self.view.steps_view.skipped[stage] = str(reason)
             self.mark(stage)
             self._record('skipped', stage=stage, reason=str(reason))
+
+    def reuse(self, stage, reason):
+        if self.active:
+            self.view.steps_view.reused[stage] = str(reason)
+            if stage == '创建工作台界面':
+                self.view.library_steps.reused.update({name:str(reason) for name in LIBRARY_TASKS[:4]})
+            self.mark(stage)
+            self._record('reused', stage=stage, reason=str(reason))
 
     def deliver(self, generation):
         if not self.active or generation != self.generation or self.deliveries:
@@ -969,6 +1008,7 @@ class StudioLoadingSession(QObject):
             if generation != self.generation or not self.active:
                 return False
             self.state, self.active = 'ready', False
+            self._elapsed_timer.stop()
             self._retire_view()
         if generation != self.generation or self.state != 'ready':
             return False
@@ -976,12 +1016,67 @@ class StudioLoadingSession(QObject):
         self._record('delivered')
         return True
 
+    def complete(self, generation, callback=None):
+        """Present real terminal stages and finish a painted success gesture.
+
+        Resource readiness and navigation are separate. No sleeping, nested
+        event loop, or fabricated progress: the visible step painter owns the
+        animation's start and end; generation checks own the later handoff.
+        """
+        if (not self.active or generation != self.generation or self.deliveries
+                or set(TASKS) - self.completed):
+            return False
+        if self._completion_generation == generation:
+            return True
+        self._completion_generation = generation
+        self._completion_callback = callback
+        self.state = 'finishing'
+        self._stage_text = ('准备好了', '')
+        self._refresh_elapsed()
+        self.view.show_progress(self.completed, '', self._detail)
+        self._record('resources_ready')
+        steps = self.view.library_steps if self.view.library_mode else self.view.steps_view
+        steps.finish_after_paint()
+        return True
+
+    def _cancel_completion(self):
+        self._completion_generation = None
+        self._completion_callback = None
+        for steps in (self.view.steps_view, self.view.library_steps):
+            steps.cancel_completion()
+
+    def _completion_painted(self):
+        if self.active and self._completion_generation == self.generation:
+            self._record('completion_painted')
+
+    def _completion_finished(self):
+        generation = self._completion_generation
+        if generation is None or generation != self.generation or not self.active:
+            return
+        # A queued finish from a retired face must not finish its successor.
+        steps = self.view.library_steps if self.view.library_mode else self.view.steps_view
+        if steps._finishing or steps._finish_started is None:
+            return
+        callback = self._completion_callback
+        self._completion_callback = None
+        self._record('completion_animation_finished',
+                     progress_shown=None if self.view.library_mode else self.view.bar._shown)
+        try:
+            delivered = self.deliver(generation)
+        except Exception as error:
+            self.fail('首屏绘制', str(error))
+            return
+        if delivered and callable(callback) and generation == self.generation:
+            callback()
+
     def resume_ready(self, path):
         """Bind a retained, already verified editor after another open was cancelled.
 
         No loading view or second delivery is needed. A fresh identity still
         retires results belonging to the cancelled request.
         """
+        self._cancel_completion()
+        self._elapsed_timer.stop()
         self.generation += 1
         generation = self.generation
         self._native_cover_fault = ''
@@ -997,6 +1092,8 @@ class StudioLoadingSession(QObject):
         return generation
 
     def abort(self, *, reveal=None):
+        self._cancel_completion()
+        self._elapsed_timer.stop()
         self.generation += 1
         self._native_cover_fault = ''
         generation = self.generation

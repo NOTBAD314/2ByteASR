@@ -161,10 +161,10 @@ def test_p51_fill_editor_professional_picker_layout():
     dialog.resize(560, 680)
     dialog.show()
     app.processEvents()
-    assert dialog.picker.hue_slider._vertical
-    assert dialog.picker.hue_slider.height() >= dialog.picker.hue_slider.width()
-    radios = dialog.picker.findChildren(QRadioButton)
-    assert len(radios) >= 12
+    # 2026-11-03: hue ring + square; HEX/RGB/HSB/HSL/YUV fields replace the channel radios.
+    assert dialog.picker.wheel.width() == dialog.picker.wheel.height()
+    assert not dialog.picker.findChildren(QRadioButton)
+    assert dialog.picker.format_segment.count() == 5
     assert dialog.picker.plate is not None
     assert dialog.picker.color().alpha() == 0x80
     assert dialog.mode_combo.currentIndex() == 0
@@ -183,8 +183,9 @@ def test_p51_fill_editor_professional_picker_layout():
     assert abs(r - 255) <= 2 and abs(g - 32) <= 2 and abs(b - 64) <= 2
     dialog.picker.set_color(QColor(12, 200, 90, 255))
     assert dialog.picker.rgb_spins[1].value() == 200
-    dialog.picker._channel_radios["rgb_r"].setChecked(True)
-    assert dialog.picker._mode == "rgb_r"
+    dialog.picker.set_color(QColor(128, 128, 128, 255))
+    dialog.picker.yuv_spins[0].setValue(40)
+    assert abs(rgb_to_yuv(*dialog.picker.color().getRgb()[:3])[0] - 40) <= 2
     dialog.deleteLater()
     app.processEvents()
 

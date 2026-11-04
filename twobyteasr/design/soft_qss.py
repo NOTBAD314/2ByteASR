@@ -426,6 +426,10 @@ QFrame#softSegmented[collapsed="true"], {card} QFrame#softSegmented[collapsed="t
 {bar} QPushButton:hover, {bar} QToolButton:hover {{ background: {track_hover}; color: {t.text}; border-color: transparent; }}
 {bar} QPushButton:pressed, {bar} QToolButton:pressed {{ background: {track_pressed}; color: {t.text}; }}
 {bar} QPushButton:checked, {bar} QToolButton:checked {{ background: {t.surface_elevated}; color: {t.accent_text}; border-color: transparent; }}
+{bar} QPushButton:checked:hover, {bar} QToolButton:checked:hover {{
+    background: {track_hover}; color: {t.accent_text}; border-color: {t.accent}; }}
+{bar} QPushButton:checked:pressed, {bar} QToolButton:checked:pressed {{
+    background: {track_pressed}; color: {t.accent_text}; border-color: {t.accent}; }}
 {bar} QPushButton:focus, {bar} QToolButton:focus {{ border-color: {t.focus}; }}
 {bar} QPushButton:disabled, {bar} QToolButton:disabled {{ background: transparent; color: {t.disabled}; }}
 {bar} QPushButton[hasMenu="true"] {{ padding-right: 24px; }}

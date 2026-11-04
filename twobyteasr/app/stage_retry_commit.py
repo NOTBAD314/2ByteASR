@@ -64,6 +64,8 @@ def commit_unit_result(studio,report,unit):
     ledger.setdefault('units',{})[result['key']]=result
     # Save must succeed before a resolved unit becomes visible in any UI.
     save_project(candidate,path)
+    from ..recognition.task_journal import record_optional_result
+    record_optional_result(candidate,report,result,path)
     if replacements or translation is not None:
         studio.session.undo_stack.push(StageResultCommand(project,candidate,getattr(studio,'_changed',None)))
     else:

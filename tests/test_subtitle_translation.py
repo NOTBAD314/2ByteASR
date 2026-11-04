@@ -550,7 +550,7 @@ def test_cache_hit_and_each_key_part_misses():
     assert other.calls  # model differs: no reuse
     glossary = FakeProvider()
     run(project, glossary, ["c0"], cache=cache, glossary_pairs=[("ボス", "首领")])
-    assert glossary.calls
+    assert not glossary.calls  # Unrelated terms outside this cue/context keep its cache.
     hant = FakeProvider()
     run(project, hant, ["c0"], cache=cache, target="zh-Hant")
     assert hant.calls

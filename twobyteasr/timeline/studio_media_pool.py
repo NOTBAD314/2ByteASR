@@ -99,8 +99,9 @@ def primary_video_track_id(project: SubtitleProject) -> str:
 def media_graph_duration_ms(project: SubtitleProject) -> int:
     """Return the editable multi-track extent, including disabled clips."""
 
-    linked_audio = {g.audio_track_id for g in project.av_track_groups if g.linked}
-    tracks = list(project.video_tracks) + [t for t in project.audio_tracks if t.id not in linked_audio]
+    # Linked lanes may also contain independent audio-only inserts. Their
+    # tails count even when no video component reaches that project time.
+    tracks = list(project.video_tracks) + list(project.audio_tracks)
     return max(
         (
             int(clip.timeline_out_ms)
@@ -174,6 +175,7 @@ def add_media_asset(
     video_metadata: Mapping[str, Any] | None = None,
     audio_metadata: Mapping[str, Any] | None = None,
     proxy_identity: str = "",
+    materialize_audio: bool = True,
 ) -> MediaAsset:
     canonical = str(Path(source).resolve())
     for existing in project.media_pool:
@@ -198,7 +200,7 @@ def add_media_asset(
     )
     asset.validate()
     project.media_pool.append(asset)
-    sync_linked_av_contract(project, materialize_unreferenced_audio={asset.asset_id})
+    sync_linked_av_contract(project, materialize_unreferenced_audio={asset.asset_id} if materialize_audio else False)
     return asset
 
 

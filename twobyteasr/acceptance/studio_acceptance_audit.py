@@ -76,7 +76,7 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'library-performance':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'library-performance','library-lifecycle','recognition-recovery'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -87,7 +87,7 @@ def isolate_acceptance_settings() -> None:
             from ..rendering.ass_compile_actor import AssCompileActor
             AssCompileActor.submit = lambda *args, **kwargs: None
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'mcp-production','long-pipeline-progress'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'long-interactions', 'real-long-project', 'studio-interactions', 'mcp-production','long-pipeline-progress'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -103,7 +103,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'controls-timeline':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'controls-timeline', 'source-monitor'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -111,7 +111,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -163,7 +163,7 @@ def isolate_acceptance_settings() -> None:
         from .update_reminder_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'export-follow', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'fill-editor', 'export-follow', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -266,7 +266,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text'}:
+    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -481,6 +481,27 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'recognition-recovery':
+        from .recognition_recovery_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'terms-color-export':
+        from .terms_color_export_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'source-monitor':
+        from .source_monitor_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'library-lifecycle':
+        from .library_lifecycle_audit import start
+        output = audit_directory()
+        if output is not None:start(window, output)
+        return
     if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") == "library-performance":
         from .library_performance_audit import start
         output = audit_directory()
@@ -493,6 +514,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'long-interactions':
         from .long_interactions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'real-long-project':
+        from .real_long_project_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-interactions':
+        from .studio_interactions_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -820,6 +851,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'fill-editor':
+        from .fill_editor_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-follow':
         from .export_follow_audit import start
         output = audit_directory()
@@ -936,6 +972,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario == 'proofread-interactions':
+        from .proofread_interactions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'bilingual-text':
         from .bilingual_text_audit import start
         output = audit_directory()
@@ -953,6 +994,16 @@ def start_acceptance(window) -> None:
             else:
                 from .real_glossary_repair_audit import start
             start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-card-layout':
+        from .glossary_card_layout_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-card-wall':
+        from .glossary_card_wall_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'glossary-input','glossary-input-restore'}:
         from .glossary_input_audit import start

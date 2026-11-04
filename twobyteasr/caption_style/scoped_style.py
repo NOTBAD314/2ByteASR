@@ -161,6 +161,11 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
                 effective_patch['outline'] = dict(effective_patch['outline'],
                                                   shadow=merge_patch(current, effective_patch['outline']['shadow']))
             if effective_patch:
+                if appearance.get('_recipe_patch') and not replace_recipe:
+                    # Existing local leaves (including a retained inactive
+                    # effect color) must receive this explicit property edit.
+                    # Otherwise they mask the newer recipe on the derived ID.
+                    appearance['_recipe_patch']=merge_patch(appearance['_recipe_patch'],effective_patch)
                 if not base_recipe:
                     # A new fill/shadow recipe must start from this cue's
                     # native face; default recipe typography would flatten

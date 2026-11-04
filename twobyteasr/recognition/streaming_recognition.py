@@ -12,12 +12,12 @@ import json
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from pathlib import Path
 
 from .run_context import ContextExecutor, local_runtime_context
 
-VERSION = 'ready-native-shards-v3-manual-first'
+VERSION = 'ready-native-shards-v4-chinese-acoustic-dependencies'
 STRIDE = 1_000_000
 
 
@@ -37,7 +37,7 @@ def eligible(context, legacy, seconds):
     if seconds <= 25*60: return False, 'single_native_request'
     if endpoint.get('model') != MODEL or str(getattr(legacy,'PRIMARY_ASR_BACKEND','')) != 'api':
         return False, 'different_primary_path'
-    if context.requested_language not in {'ja','en','ko',*EUROPEAN}:
+    if context.requested_language not in {'zh','ja','en','ko',*EUROPEAN}:
         return False, 'language_requires_global_resolution_or_arbitration'
     if context.recognition_purpose != 'final' or context.enable_term_search:
         return False, 'selected_global_analysis'
@@ -45,8 +45,17 @@ def eligible(context, legacy, seconds):
         return False, 'explicit_language_recovery'
     if str(getattr(legacy,'QWEN_ASR_BACKEND','off')) != 'off' and getattr(legacy,'USE_QWEN_ASR_REFERENCE',False):
         return False, 'independent_asr_review_not_shard_ready'
-    if str(getattr(legacy,'FIRERED_ASR_BACKEND','')) not in {'qwen_aligner','mlx_qwen_aligner','mfa_aligner','off'}:
+    timeline=str(getattr(legacy,'FIRERED_ASR_BACKEND',''))
+    if timeline not in {'qwen_aligner','mlx_qwen_aligner','mfa_aligner','off','local'}:
         return False, 'selected_timeline_requires_its_own_acoustic_evidence'
+    if context.requested_language=='zh':
+        import os
+        if (timeline!='local' or context.speaker_source not in {'native','single'}
+                or context.dialogue_coverage_mode!='all_dialogue' or context.expected_speakers
+                or os.environ.get('FIRERED_LLM_ENDPOINT') or not getattr(legacy,'PARALLEL_GPU_ASR',False)):
+            return False, 'chinese_global_selection_or_optional_review'
+    elif timeline=='local':
+        return False, 'local_firered_requires_chinese'
     return True, 'independent_native_requests_with_explicit_language'
 
 
@@ -60,6 +69,35 @@ class ShardResult:
     translation: dict
     reviews: list
     error: BaseException | None = None
+    polishing_summary: dict = field(default_factory=dict)
+
+
+def aggregate_polishing(results):
+    """One task summary, not whichever parallel shard happened to finish last."""
+    totals={key:0 for key in ('success_batches','fallback_batches','success_cues','fallback_cues')}
+    output={'count_scope':'all_shards_processing_records','success_ids':[],'fallback_ids':[],
+            'failure_records':{},'failure_categories':{},'term_context':{'accepted_edits':0},'cached_complete_shards':0}
+    failed=False
+    for result in results:
+        summary=result.polishing_summary
+        failed=failed or any(r.get('category')=='校对回退' for r in result.reviews)
+        if not summary:
+            output['cached_complete_shards']+=1
+            continue
+        for key in totals:totals[key]+=int(summary.get(key) or 0)
+        def identity(value):
+            try:
+                number=int(value)
+                return number if number>=STRIDE else (result.index+1)*STRIDE+number
+            except (ValueError,TypeError):return f'r{result.index+1:03}:{value}'
+        for key in ('success_ids','fallback_ids'):
+            output[key].extend(identity(value) for value in summary.get(key,[]))
+        for key,value in (summary.get('failure_records') or {}).items():output['failure_records'][str(identity(key))]=value
+        for key,value in (summary.get('failure_categories') or {}).items():output['failure_categories'][key]=output['failure_categories'].get(key,0)+int(value)
+        output['term_context']['accepted_edits']+=int((summary.get('term_context') or {}).get('accepted_edits') or 0)
+    output.update(totals)
+    output['status']='partial' if failed or totals['fallback_batches'] or totals['fallback_cues'] else 'completed'
+    return output
 
 
 class LongMediaPipeline:
@@ -85,8 +123,55 @@ class LongMediaPipeline:
         self.closed = False
         self.phase_stats = {}
         self.completed_nodes = set()
+        self.timeline_condition=threading.Condition()
+        self.timeline_jobs=[]
+        self.timeline_rows={}
+        self.timeline_done=False
+        self.timeline_final=None
         self.root = Path(cache_context['cache_dir'])/'ready-shards'
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def set_timeline_plan(self,jobs):
+        with self.timeline_condition:
+            self.timeline_jobs=list(jobs)
+            self.timeline_condition.notify_all()
+
+    def add_timeline_rows(self,rows):
+        with self.timeline_condition:
+            for row in rows:self.timeline_rows[int(row['segment_id'])]=row
+            self.timeline_condition.notify_all()
+
+    def finish_timeline(self,result):
+        with self.timeline_condition:
+            self.timeline_final=result
+            self.timeline_done=True
+            self.timeline_condition.notify_all()
+
+    def timeline_for(self,bounds):
+        from .asr_schema import normalize_firered_worker_result, flatten_segment_tokens
+        began=time.perf_counter()
+        with self.timeline_condition:
+            while True:
+                self._check()
+                if self.timeline_done:
+                    if not self.timeline_final:raise RuntimeError('FireRed 工作进程未交付有效结果；其它分片保留。')
+                    tokens=flatten_segment_tokens(self.timeline_final)
+                    break
+                prefix=[]
+                for job in self.timeline_jobs:
+                    row=self.timeline_rows.get(int(job['segment_id']))
+                    if row is None:break
+                    prefix.append(row)
+                # Normalize against the full plan: even the last ready window
+                # keeps its overlap ownership with the following window.
+                covered=(float(self.timeline_jobs[len(prefix)-1]['offset']) if prefix else 0.)
+                if prefix and covered >= bounds[1]+2.:
+                    tokens=flatten_segment_tokens(normalize_firered_worker_result({'results':prefix},self.timeline_jobs))
+                    break
+                self.timeline_condition.wait(.1)
+        self.legacy.record_run_event('acoustic_dependency_wait', waited_seconds=time.perf_counter()-began,
+                                     start=bounds[0],end=bounds[1])
+        return [row for row in tokens if float(row['end'])>=bounds[0]-2. and float(row['start'])<=bounds[1]+2.]
 
     def set_vad(self, regions):
         self.speech_regions = list(regions or [])
@@ -211,8 +296,10 @@ class LongMediaPipeline:
             cues=self.legacy.deserialize_cues(data['cues'])
             for cue,row in zip(cues,data['cues']):
                 if row.get('forced_alignment'):cue.forced_alignment=row['forced_alignment']
-            return ShardResult(data['index'],version,data['primary'],self.legacy.deserialize_segments(data['segments']),
+            result=ShardResult(data['index'],version,data['primary'],self.legacy.deserialize_segments(data['segments']),
                                cues,data['translation'],data['reviews'])
+            result.polishing_summary=data.get('polishing_summary') or {}
+            return result
         except (OSError,ValueError,KeyError,TypeError):
             return None
 
@@ -223,7 +310,7 @@ class LongMediaPipeline:
             if getattr(cue,'forced_alignment',None):row['forced_alignment']=cue.forced_alignment
         data=dict(index=result.index,primary=result.primary,segments=self.legacy.serialize_segments(result.segments),
                   cues=cues,translation=result.translation,reviews=result.reviews,
-                  incomplete_roles=bool(getattr(result,'incomplete_roles',False)))
+                  incomplete_roles=bool(getattr(result,'incomplete_roles',False)),polishing_summary=result.polishing_summary)
         write_text_atomic(path,json.dumps(dict(version=result.version,checksum=_digest(data),data=data),ensure_ascii=False))
 
     def _run(self,index,version,incoming,coarse_ready):
@@ -262,6 +349,7 @@ class LongMediaPipeline:
                     coarse_ready.set()
                     result=self._process(index,version,primary,local)
                 result.reviews=list(reviews)
+                result.polishing_summary=copy.deepcopy(local.polishing_summary)
                 retry_categories={'校对回退','断句回退','翻译未全部完成','翻译未完成','字级对齐失败','缺少对齐模型'}
                 records=(result.translation.get('translation_records') or {}).get('records') or {}
                 result.incomplete_roles=(any(row.get('category') in retry_categories for row in result.reviews)
@@ -352,6 +440,7 @@ class LongMediaPipeline:
         timeline=str(getattr(self.legacy,'FIRERED_ASR_BACKEND',''))
         def align_initial():
             if timeline=='off':return []
+            if timeline=='local':return self.timeline_for(context.shard_bounds)
             return transcribe_qwen_aligner_reference(self.audio,primary,language=language,
                 raise_errors=True,evidence_dir=evidence)
         tokens=self._step(index,'initial-alignment','初始字级对齐',align_initial)
@@ -359,26 +448,42 @@ class LongMediaPipeline:
             self.legacy.record_run_event('MODEL_RESULT_AVAILABLE',model_id=timeline,backend=timeline,
                 role='timeline_alignment',segment_count=len(tokens),execution='validated_alignment_receipt')
         segments=self.pipeline.build_alternate_primary_segments(primary,tokens,self.legacy,'api')
+        if context.task_language=='zh':
+            segments=self.pipeline.apply_alternate_dialogue_coverage(segments,primary,tokens,
+                self.speech_regions,self.seconds,self.legacy,'api',runtime_context=context)
+            segments=self.pipeline.reconcile_firered_moss_qwen(segments,self.legacy)
+            for segment in segments:
+                segment.caption_arbitration=dict(segment.caption_arbitration or {})
+                segment.caption_arbitration['acoustic_words']=[dict(text=str(t.get('text') or ''),
+                    start_ms=round(t['start']*1000),end_ms=round(t['end']*1000),model='firered')
+                    for t in tokens if t.get('text') and t['end']>segment.start and t['start']<segment.end]
         if len(segments)>=STRIDE:raise ValueError('分片字幕数量超过稳定ID范围。')
         for segment in segments:
             segment.segment_id=(index+1)*STRIDE+segment.segment_id
             segment.final_text=segment.text;segment.final_start=segment.start;segment.final_end=segment.end
             segment.final_text_owner='API'
             window=(segment.caption_arbitration or {}).get('forced_alignment_window') or {}
-            segment.final_timing_owner='Qwen3-ForcedAligner' if window else 'API coarse sentence bounds'
+            segment.final_timing_owner='FireRed' if timeline=='local' and tokens else 'Qwen3-ForcedAligner' if window else 'API coarse sentence bounds'
+            if timeline=='local' and segment.firered_text:segment.final_text_owner='API+FireRed'
         # VAD/token dependencies are local and immutable; no other chunk's
         # mutation can invalidate all batches of this shard.
         left=min(row['start'] for row in primary)-2.;right=max(row['end'] for row in primary)+2.
         speech=[row for row in self.speech_regions if float(row['end'])>=left and float(row['start'])<=right]
+        if context.task_language=='zh':
+            from ..glossary.terminology import apply_to_segments, runtime_snapshot
+            segments=apply_to_segments(segments,runtime_snapshot(self.legacy),self.legacy)
         if self.text_plan.polish:
             segments=self._step(index,'polished','校对',lambda:self.legacy.polish_subtitles(segments,
                 Path(self.media_path).stem,cache))
         else:
             self._step(index,'polished','保留原文',lambda:None)
+        if context.task_language=='zh':
+            segments=self.legacy.apply_editorial_segment_rules(segments)
+            segments=apply_to_segments(segments,runtime_snapshot(self.legacy),self.legacy)
         cues=self._step(index,'grouped','断句',lambda:self.legacy.group_subtitles(segments,
             firered_tokens=tokens,speech_regions=speech,protect_all_source_boundaries=False,
             cache_context=cache,use_ai=self.text_plan.group,provider_snapshot=context.provider_snapshot))
-        if context.task_language=='ja':
+        if context.task_language in {'zh','ja'}:
             cues=self._step(index,'text-stable','整理最终原文',lambda:finalize_cues(
                 cues,segments,tokens,speech,shard_end,self.fps,self.legacy))
         else:
@@ -391,7 +496,7 @@ class LongMediaPipeline:
         translation=start_translation(cues,context,self.legacy)
         try:
             def final_alignment():
-                if timeline=='off':return
+                if timeline in {'off','local'}:return
                 align_final_cues(cues,self.audio,self.legacy,language=language,
                                  speech_regions=speech,evidence_dir=evidence)
                 from .cue_boundary_refine import apply_to_runtime_cues
@@ -458,8 +563,14 @@ class LongMediaPipeline:
                 completed_checkpoints=len(expected)-len(failures))
             raise failures[0][1]
         ordered=[self.results[index] for index in sorted(expected)]
+        if self.text_plan.polish:
+            self.context.polishing_summary=aggregate_polishing(ordered)
+            self.legacy.record_run_event('polishing_summary',**self.context.polishing_summary)
+        from .shard_identity import namespace_result
+        for result in ordered:namespace_result(result)
         cues=sorted([cue for result in ordered for cue in result.cues],key=lambda c:(c.start,c.end,c.cue_id))
         segments=sorted([segment for result in ordered for segment in result.segments],key=lambda s:(s.start,s.end,s.segment_id))
+        if len({s.segment_id for s in segments})!=len(segments):raise ValueError('并行来源段出现重复身份。')
         if len({cue.cue_id for cue in cues})!=len(cues):raise ValueError('并行字幕出现重复身份。')
         metadata={}
         for result in ordered:

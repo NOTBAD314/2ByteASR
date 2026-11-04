@@ -324,7 +324,7 @@ def test_new_terms_follow_the_single_chosen_library_and_ask_when_several(tmp_pat
                  for library in snapshot_glossaries(legacy, [first, second]).libraries}
         assert ("古龙", "骨龙") in terms[second] and ("古龙", "骨龙") not in terms[first]
         assert page.changed_values() == {"c1": "嗯 然后骨龙首发"}
-        assert page._stack.count() == 1  # remembering is a library change, not a caption edit
+        assert page._stack.count() == 3  # Two saved source-library selections plus the text edit; remembering adds no text command.
     finally:
         _close(page)
 
@@ -397,9 +397,11 @@ def test_only_adopted_proposals_are_written_back(tmp_path):
         receipt = project.generation_metadata["glossary_review_jobs"][-1]
         assert receipt["applied_cue_ids"] == ["c2"] and receipt["changes"][0]["kinds"] == ["term"]
         assert receipt["operation"] == "adopt"
-        # An adopted proposal cannot execute again. Undo is the explicit path back.
+        # A second click reverts only this proposal; that revert is undoable.
         page._toggle_issue("c2", next(i for i, issue in enumerate(_row(page, "c2")["issues"]) if issue["checked"]))
-        assert _row(page, "c2")["base"] == "而且CHICHOO能奶自己" and page._stack.count() == 1
+        assert _row(page, "c2")["base"] == "而且CHIOCHOO能奶自己" and page._stack.count() == 2
+        page._undo()
+        assert _row(page,'c2')['base']=='而且CHICHOO能奶自己'
         page._undo()
         assert _row(page,'c2')['base']=='而且CHIOCHOO能奶自己'
     finally:
@@ -1023,8 +1025,10 @@ def test_a_whole_name_is_adopted_ignored_and_undone_as_one(tmp_path):
         page._toggle_issue("c1", 1)
         assert rows["c1"]["base"] == "两层一命突袭" and all(i["checked"] for i in rows["c1"]["issues"])
         assert page._stack.count() == 2 and "疫病吐息 → 一命突袭" in page._stack.undoText()
-        page._toggle_issue("c1", 0)  # repeated adoption is inert
-        assert rows['c1']['base']=='两层一命突袭' and page._stack.count()==2
+        page._toggle_issue("c1", 0)  # the same word-sized suggestion reverts locally
+        assert rows['c1']['base']=='两层疫病吐息' and page._stack.count()==3
+        page._undo()
+        assert rows['c1']['base']=='两层一命突袭'
         page._undo()
         assert rows["c1"]["base"] == "两层疫病吐息" and not any(i["checked"] for i in rows["c1"]["issues"])
         # 忽略 answers the group without touching the caption.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -14,11 +14,12 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
+    QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -37,10 +37,10 @@ from PySide6.QtWidgets import (
 )
 
 from .font_system import resolve_font_weight, system_font_inventory
-from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme
+from ..design.studio_theme import StudioComboBox
 from ..studio.studio_widgets import ScrubDoubleSpinBox, ScrubSpinBox
 
-from ..i18n import bind_text
+from ..i18n import apply_ui_language, bind_text, current_language, translate
 
 class GradientStop:
     """Simple value holder for a gradient stop (used by GradientEditor)."""
@@ -77,6 +77,7 @@ class GradientEditor(QWidget):
         self._angle = 0.0
         self._selected: GradientStop | None = self._stops[0]
         self._dragging_stop = False
+        self._removing = False
         self.setMinimumHeight(48 if compact else 92)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -188,10 +189,52 @@ class GradientEditor(QWidget):
 
     def _strip_rect(self) -> QRect:
         if self._compact:
-            return self.bar.rect().adjusted(10, 16, -10, -6)
+            return self.bar.rect().adjusted(16, 9, -16, -9)
         return self.bar.rect().adjusted(2, 2, -2, -2)
 
+    def _paint_rounded_bar(self) -> None:
+        """Compact rail (2026-11-03): pill strip with round white-ring stops."""
+        from ..design.fill_picker import checker_brush, paint_knob
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+
+        theme = theme_definition(theme_key())
+        p = QPainter(self.bar)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self._strip_rect())
+        strip = r.adjusted(-8, 0, 8, 0)
+        path = QPainterPath()
+        path.addRoundedRect(strip, strip.height() / 2, strip.height() / 2)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(checker_brush(5))
+        p.drawPath(path)
+        ordered = sorted(self._stops, key=lambda x: x.pos)
+        grad = QLinearGradient(r.left(), 0, r.right(), 0)
+        for s in ordered:
+            grad.setColorAt(max(0.0, min(1.0, s.pos)), QColor(s.color))
+        p.setBrush(QBrush(grad))
+        p.drawPath(path)
+        p.setPen(QPen(QColor(0, 0, 0, 45), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        for s in ordered:
+            if s is self._selected:
+                continue
+            p.setOpacity(1.0)
+            paint_knob(p, QPointF(r.left() + s.pos * r.width(), r.center().y()), 11.5, QColor(s.color))
+        if self._selected in self._stops:
+            center = QPointF(r.left() + self._selected.pos * r.width(), r.center().y())
+            p.setOpacity(0.35 if self._removing else 1.0)
+            p.setPen(QPen(QColor(theme.accent), 3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(center, 17, 17)
+            paint_knob(p, center, 14, QColor(self._selected.color))
+        p.end()
+
     def _paint_bar(self, ev):
+        if self._compact:
+            self._paint_rounded_bar()
+            return
         p = QPainter(self.bar)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = self._strip_rect()
@@ -218,29 +261,12 @@ class GradientEditor(QWidget):
             x = r.left() + int(s.pos * r.width())
             col = QColor(s.color)
             selected = s is self._selected
-            if self._compact:
-                path = QPainterPath()
-                top = r.top() - 13
-                path.moveTo(x, r.top() + 1)
-                path.lineTo(x + 6, top + 8)
-                path.lineTo(x + 6, top)
-                path.lineTo(x - 6, top)
-                path.lineTo(x - 6, top + 8)
-                path.closeSubpath()
-                p.setBrush(col)
-                p.setPen(QPen(QColor("#111111") if selected else QColor("#3a3a3a"), 1.4 if selected else 1))
-                p.drawPath(path)
-                if selected:
-                    p.setPen(QPen(QColor("#4a8a5e"), 2))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawPath(path)
-            else:
-                p.setBrush(col)
-                p.setPen(QPen(QColor("#111"), 1))
-                p.drawEllipse(QPoint(x, r.center().y()), 7, 7)
-                if selected:
-                    p.setPen(QPen(QColor("#4a8a5e"), 2))
-                    p.drawEllipse(QPoint(x, r.center().y()), 9, 9)
+            p.setBrush(col)
+            p.setPen(QPen(QColor("#111"), 1))
+            p.drawEllipse(QPoint(x, r.center().y()), 7, 7)
+            if selected:
+                p.setPen(QPen(QColor("#4a8a5e"), 2))
+                p.drawEllipse(QPoint(x, r.center().y()), 9, 9)
         p.end()
 
     # Keeps the bar scannable: more stops than this become unreadable.
@@ -251,15 +277,18 @@ class GradientEditor(QWidget):
         r = self._strip_rect()
         pos = max(0.0, min(1.0, (ev.position().x() - r.left()) / max(1, r.width())))
         self._dragging_stop = False
-        hit_threshold = max(0.01, 10.0 / max(1, r.width()))
-        for i, s in enumerate(self._stops):
-            if abs(s.pos - pos) <= hit_threshold:
-                self._selected = s
-                self._dragging_stop = True
-                self._sync_stop_controls()
-                self.update()
-                self.selectionChanged.emit(i)
-                return
+        self._removing = False
+        hit_threshold = max(0.01, (14.0 if self._compact else 10.0) / max(1, r.width()))
+        nearest = min(self._stops, key=lambda s: abs(s.pos - pos), default=None)
+        if nearest is not None and abs(nearest.pos - pos) <= hit_threshold:
+            self._selected = nearest
+            self._dragging_stop = True
+            self._sync_stop_controls()
+            self.update()
+            self.selectionChanged.emit(self._stops.index(nearest))
+
+    # Compact rail: dragging a stop this far above/below the strip removes it.
+    REMOVE_DISTANCE = 34
 
     def _bar_drag(self, ev):
         if not (ev.buttons() & Qt.MouseButton.LeftButton):
@@ -270,6 +299,10 @@ class GradientEditor(QWidget):
         pos = max(0.0, min(1.0, (ev.position().x() - r.left()) / max(1, r.width())))
         selected = self._selected
         selected.pos = pos
+        self._removing = (
+            self._compact and len(self._stops) > 2
+            and abs(ev.position().y() - r.center().y()) > self.REMOVE_DISTANCE
+        )
         self._sync_stop_controls()
         self._stops.sort(key=lambda x: x.pos)
         self._selected = selected
@@ -277,7 +310,13 @@ class GradientEditor(QWidget):
         self._emit()
 
     def _bar_release(self, _ev):
+        if self._dragging_stop and self._removing:
+            self._removing = False
+            self._delete_selected()
+            if self._selected in self._stops:
+                self.selectionChanged.emit(self._stops.index(self._selected))
         self._dragging_stop = False
+        self._removing = False
 
     def _bar_double(self, ev):
         if len(self._stops) >= self.MAX_STOPS:
@@ -408,203 +447,380 @@ class GradientEditor(QWidget):
         self.angle_spin.setValue(self._angle)
 
 
-class _FillPreview(QLabel):
-    """Sample subtitle text painted with the current solid/gradient fill."""
+class _FillPreview(QWidget):
+    """Large sample-subtitle card painted with the current fill (2026-11-03).
+
+    Three backdrops (checker / game-like scene / light) sit behind outlined
+    sample text; the top-right tag names the fill, the bottom-left dots switch
+    the backdrop.
+    """
+
+    BACKDROPS = ("checker", "scene", "light")
+    SAMPLE = "字幕样式 Aa 123"
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._solid = QColor("#FFFFFF")
-        self._stops: list[tuple[float, QColor]] = []
-        self._gradient_mode = False
-        self.setMinimumHeight(56)
-        self.setMaximumHeight(72)
+        self._fill: str | dict = "#FFFFFFFF"
+        self._desc = ""
+        self.backdrop = "scene"
+        self.setFixedHeight(156)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
-    def set_solid(self, color: QColor) -> None:
-        self._solid = QColor(color)
-        self._gradient_mode = False
+    def set_fill(self, fill: str | dict, desc: str = "") -> None:
+        self._fill = fill
+        self._desc = desc
         self.update()
 
-    def set_gradient(self, stops: list[tuple[float, QColor]]) -> None:
-        self._stops = list(stops)
-        self._gradient_mode = True
-        self.update()
+    def set_backdrop(self, name: str) -> None:
+        if name in self.BACKDROPS:
+            self.backdrop = name
+            self.update()
+
+    def _dot_rects(self) -> list[QRectF]:
+        return [QRectF(16 + index * 26, self.height() - 34, 20, 20) for index in range(len(self.BACKDROPS))]
+
+    def mousePressEvent(self, event) -> None:
+        for name, rect in zip(self.BACKDROPS, self._dot_rects()):
+            if rect.adjusted(-3, -3, 3, 3).contains(event.position()):
+                self.set_backdrop(name)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        over = any(rect.adjusted(-3, -3, 3, 3).contains(event.position()) for rect in self._dot_rects())
+        self.setCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def _paint_backdrop(self, painter: QPainter, rect: QRectF) -> None:
+        from ..design.fill_picker import checker_brush
+
+        if self.backdrop == "checker":
+            painter.fillRect(rect, checker_brush(8, dark=True))
+        elif self.backdrop == "light":
+            painter.fillRect(rect, QColor("#f4f1ee"))
+        else:
+            sky = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            sky.setColorAt(0.0, QColor("#1b1f3d"))
+            sky.setColorAt(0.62, QColor("#55386a"))
+            sky.setColorAt(1.0, QColor("#a65f7c"))
+            painter.fillRect(rect, sky)
+            for center, radius, color in (
+                (QPointF(rect.width() * 0.84, rect.bottom() + 8), rect.width() * 0.42, QColor(246, 161, 116, 150)),
+                (QPointF(rect.width() * 0.06, rect.top() - 12), rect.width() * 0.4, QColor(79, 69, 160, 150)),
+            ):
+                glow = QRadialGradient(center, radius)
+                glow.setColorAt(0.0, color)
+                glow.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+                painter.fillRect(rect, glow)
+            hill = QPainterPath()
+            hill.addEllipse(QRectF(rect.left() - rect.width() * 0.08, rect.bottom() - rect.height() * 0.3, rect.width() * 1.16, rect.height() * 0.7))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(26, 20, 38, 215))
+            painter.drawPath(hill)
 
     def paintEvent(self, _event) -> None:
+        from ..design.typography import TITLE_FONT_FAMILIES
+        from ..design.fill_picker import checker_brush, mono_font
+        from ..studio.studio_helpers import resolve_fill_brush
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
-        painter.setPen(Qt.PenStyle.NoPen)
-        cell = 8
-        for y in range(0, self.height(), cell):
-            for x in range(0, self.width(), cell):
-                light = ((x // cell) + (y // cell)) % 2 == 0
-                painter.setBrush(QColor(30, 30, 34) if light else QColor(46, 46, 52))
-                painter.drawRect(x, y, cell, cell)
-        font = QFont(self.font())
-        font.setPointSize(max(15, min(24, self.height() // 3)))
-        font.setBold(True)
-        painter.setFont(font)
-        text_rect = QRectF(rect).adjusted(10, 2, -10, -2)
-        painter.setPen(QPen(QColor(0, 0, 0, 180), 3))
-        painter.drawText(text_rect.translated(1, 1), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, "字幕样式 Aa 123")
-        if self._gradient_mode and self._stops:
-            gradient = QLinearGradient(text_rect.left(), 0, text_rect.right(), 0)
-            for position, color in self._stops:
-                gradient.setColorAt(max(0.0, min(1.0, position)), QColor(color))
-            painter.setPen(QPen(QBrush(gradient), 0))
-        else:
-            painter.setPen(QPen(QBrush(self._solid), 0))
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, "字幕样式 Aa 123")
-        painter.setPen(QPen(QColor(0, 0, 0, 90), 1))
+        rect = QRectF(self.rect())
+        card = QPainterPath()
+        card.addRoundedRect(rect, 18, 18)
+        painter.setClipPath(card)
+        self._paint_backdrop(painter, rect)
+
+        font = QFont()
+        font.setFamilies(list(TITLE_FONT_FAMILIES))
+        font.setPixelSize(34)
+        font.setWeight(QFont.Weight.Black)
+        text = QPainterPath()
+        text.addText(0, 0, font, self.SAMPLE)
+        bounds = text.boundingRect()
+        text.translate(rect.center().x() - bounds.center().x(), rect.center().y() - 6 - bounds.center().y())
+        painter.setPen(QPen(QColor("#1a1320"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect, 6, 6)
+        painter.drawPath(text)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(resolve_fill_brush(self._fill, text.boundingRect()))
+        painter.drawPath(text)
+
+        if self._desc:
+            tag_font = mono_font(12, QFont.Weight.Bold)
+            painter.setFont(tag_font)
+            width = painter.fontMetrics().horizontalAdvance(self._desc) + 22
+            tag = QRectF(rect.right() - width - 10, 10, width, 24)
+            painter.setBrush(QColor(0, 0, 0, 110))
+            painter.drawRoundedRect(tag, 12, 12)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(tag, Qt.AlignmentFlag.AlignCenter, self._desc)
+
+        dots = self._dot_rects()
+        holder = QRectF(dots[0].left() - 5, dots[0].top() - 5, dots[-1].right() - dots[0].left() + 10, 30)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 90))
+        painter.drawRoundedRect(holder, 15, 15)
+        for name, dot in zip(self.BACKDROPS, dots):
+            if name == "checker":
+                painter.setBrush(checker_brush(4, dark=True))
+            elif name == "light":
+                painter.setBrush(QColor("#f4f1ee"))
+            else:
+                swatch = QLinearGradient(dot.topLeft(), dot.bottomLeft())
+                swatch.setColorAt(0.0, QColor("#2a2c5a"))
+                swatch.setColorAt(1.0, QColor("#a65f7c"))
+                painter.setBrush(QBrush(swatch))
+            painter.setPen(QPen(QColor("#ffffff") if name == self.backdrop else QColor(255, 255, 255, 70), 2 if name == self.backdrop else 1))
+            painter.drawEllipse(dot)
+        painter.end()
+
+
+class _Avatar(QWidget):
+    """Brand bunny in a soft accent circle for the dialog header."""
+
+    _pixmap: QPixmap | None = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(38, 38)
+        if _Avatar._pixmap is None:
+            from ..runtime_paths import detect_install_root
+
+            _Avatar._pixmap = QPixmap(str(detect_install_root() / "assets" / "2byteasr-icon-transparent.png"))
+
+    def paintEvent(self, _event) -> None:
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme_definition(theme_key()).accent_soft))
+        painter.drawEllipse(rect)
+        pixmap = _Avatar._pixmap
+        if pixmap is not None and not pixmap.isNull():
+            clip = QPainterPath()
+            clip.addEllipse(rect)
+            painter.setClipPath(clip)
+            painter.drawPixmap(rect.adjusted(2, 2, -2, -2).toRect(), pixmap)
         painter.end()
 
 
 class FillEditorDialog(QDialog):
-    """One surface for solid, linear and radial subtitle fills.
+    """Solid / linear / radial subtitle fill editor ("调色工作台", 2026-11-03).
 
-    Professional picker stack: mode, gradient rail, opacity/location/angle,
-    SV plane + vertical hue, HSB/RGB/HSL/YUV, HEX, current/previous plates.
+    Frameless rounded card: left column previews the fill and holds the
+    gradient rail and swatch box (常用 / 最近 / 渐变); right column is the
+    color picker (hue ring + square, opacity, current/previous, numbers).
+    Still a Qt-modal QDialog: ``exec()`` / ``value()`` are unchanged.
     """
 
     recent_colors: list[str] = []
+    COMMON_COLORS = ("#FFFFFF", "#000000", "#FFE45E", "#FF4FA3", "#20D9FF", "#7C5CFF", "#FF6B6B", "#7CF29A")
+    GRADIENT_PRESETS = (
+        ("莓果汽水", ("#FF7EB6", "#7C5CFF")),
+        ("薄荷", ("#20D9FF", "#7CF29A")),
+        ("晚霞", ("#FFE45E", "#FF4FA3")),
+        ("兔耳", ("#FFFFFF", "#F4DCE8")),
+        ("霓虹", ("#00F0FF", "#FF00E5", "#FFE45E")),
+        ("金币", ("#FFF3A3", "#FFB800")),
+        ("夜空", ("#7C5CFF", "#20D9FF")),
+        ("奶糖", ("#FFF4E8", "#FFB3C7")),
+    )
+    MODES = ("solid", "linear-gradient", "radial-gradient")
+    SHADOW = 18
 
-    def __init__(self, fill: str | Mapping[str, object] | None = None, parent=None):
+    def __init__(self, fill: str | Mapping[str, object] | None = None, parent=None, *,
+                 title='填充', allow_gradients=True, preview_update=None):
         super().__init__(parent)
-        bind_text(self, '填充', property='windowTitle')
-        self.setObjectName("toolDialog")
-        self.setMinimumSize(620, 620)
-        self.resize(680, 700)
-        from ..design.color_picker import ColorPickerWidget
+        from ..design.fill_picker import AngleDial, FillColorPicker, PillField, PillSegment, round_button
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
+        self.allow_gradients = bool(allow_gradients)
+        self._preview_update = preview_update
+        bind_text(self, title, property='windowTitle')
+        self.setObjectName("fillEditorDialog")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setModal(True)
 
-        self.mode_combo = QComboBox()
-        self.mode_combo.setObjectName("fillModeCombo")
-        self.mode_combo.addItems(["纯色", "线性渐变", "径向渐变"])
-        self.mode_combo.setMinimumHeight(30)
-        layout.addWidget(self.mode_combo)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(self.SHADOW, self.SHADOW - 6, self.SHADOW, self.SHADOW + 6)
+        self.card = QFrame()
+        self.card.setObjectName("fillCard")
+        outer.addWidget(self.card)
+        layout = QVBoxLayout(self.card)
+        layout.setContentsMargins(20, 16, 20, 18)
+        layout.setSpacing(16)
 
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        for index, (label, value) in enumerate((("纯色", "solid"), ("线性渐变", "linear-gradient"), ("径向渐变", "radial-gradient"))):
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setObjectName("fillModeButton")
-            button.setProperty("fillMode", value)
-            button.hide()
-            self.mode_group.addButton(button, index)
-        self.mode_combo.currentIndexChanged.connect(self._combo_to_group)
-        self.mode_group.idToggled.connect(self._group_toggled)
+        self.header = QWidget()
+        self.header.installEventFilter(self)
+        header = QHBoxLayout(self.header)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+        header.addWidget(_Avatar())
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title_label = QLabel(title)
+        title_label.setObjectName("fillTitle")
+        self.subtitle = QLabel("字幕正文" if allow_gradients else '字幕'+title+' · 纯色')
+        self.subtitle.setObjectName("fillSubtitle")
+        titles.addWidget(title_label)
+        titles.addWidget(self.subtitle)
+        header.addLayout(titles)
+        header.addStretch(1)
+        modes = [("纯色", "solid"), ("线性渐变", "linear"), ("径向渐变", "radial")]
+        self.mode_segment = PillSegment(modes if allow_gradients else modes[:1], height=42, icons=True)
+        self.mode_segment.setFixedWidth(340 if allow_gradients else 120)
+        self.mode_group = self.mode_segment.group
+        # QComboBox-style alias kept for acceptance scripts.
+        self.mode_combo = self.mode_segment
+        header.addWidget(self.mode_segment)
+        self.close_button = round_button("fa5s.times", "关闭")
+        self.close_button.setProperty("ghost", True)
+        self.close_button.clicked.connect(self.reject)
+        header.addWidget(self.close_button)
+        layout.addWidget(self.header)
+
+        body = QHBoxLayout()
+        body.setSpacing(20)
+        left_host = QWidget()
+        left_host.setFixedWidth(350)
+        left = QVBoxLayout(left_host)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(12)
+        if preview_update is None:
+            self.preview = _FillPreview()
+        else:
+            from .studio_style_widgets import StylePreview
+            self.preview = StylePreview()
+            self.preview.setFixedHeight(156)
+        left.addWidget(self.preview)
 
         self.gradient = GradientEditor(self, compact=True)
         self.gradient.colorRequested.connect(self._pick_gradient_stop)
         self.gradient.selectionChanged.connect(self._select_gradient_stop)
         self.gradient.gradientChanged.connect(self._gradient_changed)
         self.gradient.opacity_spin.valueChanged.connect(self._stop_opacity_to_picker)
+        self.gradient.bar.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.gradient.bar, '双击加色点，拖动移动，拖出色条删除', property='toolTip')
 
-        self._stop_host = QWidget()
-        stop_grid = QGridLayout(self._stop_host)
-        stop_grid.setContentsMargins(0, 0, 0, 0)
-        stop_grid.setHorizontalSpacing(8)
-        stop_grid.setVerticalSpacing(6)
-        opacity_label = QLabel("透明度")
-        opacity_label.setObjectName("fillFieldLabel")
-        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self._opacity_slider.setObjectName("fillControlSlider")
-        self._opacity_slider.setRange(0, 100)
-        self._opacity_slider.setValue(100)
-        self._opacity_slider.valueChanged.connect(self._opacity_slider_changed)
-        self.gradient.opacity_spin.setMinimumHeight(28)
-        self.gradient.opacity_spin.setMaximumWidth(72)
-        stop_grid.addWidget(opacity_label, 0, 0)
-        stop_grid.addWidget(self._opacity_slider, 0, 1)
-        stop_grid.addWidget(self.gradient.opacity_spin, 0, 2)
-
-        self._location_host = QWidget()
-        location_grid = QGridLayout(self._location_host)
-        location_grid.setContentsMargins(0, 0, 0, 0)
-        location_grid.setHorizontalSpacing(8)
-        self._location_label = QLabel("位置")
-        self._location_label.setObjectName("fillFieldLabel")
-        self._location_slider = QSlider(Qt.Orientation.Horizontal)
-        self._location_slider.setObjectName("fillControlSlider")
-        self._location_slider.setRange(0, 1000)
-        self._location_slider.valueChanged.connect(self._location_slider_changed)
-        self.gradient.position_spin.setMinimumHeight(28)
-        self.gradient.position_spin.setMaximumWidth(84)
-        self.gradient.position_spin.setSuffix("")
-        self.gradient.delete_stop_button.setObjectName("fillDeleteStop")
-        self.gradient.delete_stop_button.setMinimumHeight(28)
-        # Stop position is manipulated directly on the rail. Keep the legacy
-        # widgets alive for payload/test compatibility, but do not expose the
-        # redundant position row in the product UI.
-        self._location_host.hide()
-        stop_grid.addWidget(self.gradient.delete_stop_button, 0, 3)
-        stop_grid.setColumnStretch(1, 1)
-
+        self._gradient_card = QFrame()
+        self._gradient_card.setObjectName("fillSubCard")
+        gradient_layout = QVBoxLayout(self._gradient_card)
+        gradient_layout.setContentsMargins(14, 12, 14, 12)
+        gradient_layout.setSpacing(8)
+        gradient_title = QHBoxLayout()
+        label = QLabel("渐变色条")
+        label.setObjectName("fillCardTitle")
+        hint = QLabel("双击色条加色点 · 拖出去删除")
+        hint.setObjectName("fillHint")
+        gradient_title.addWidget(label)
+        gradient_title.addStretch(1)
+        gradient_title.addWidget(hint)
+        gradient_layout.addLayout(gradient_title)
+        gradient_layout.addWidget(self.gradient)
+        tools = QHBoxLayout()
+        tools.setSpacing(4)
         self._angle_host = QWidget()
         angle_row = QHBoxLayout(self._angle_host)
         angle_row.setContentsMargins(0, 0, 0, 0)
-        angle_row.setSpacing(8)
-        angle_label = QLabel("角度")
-        angle_label.setObjectName("fillFieldLabel")
-        self._angle_slider = QSlider(Qt.Orientation.Horizontal)
-        self._angle_slider.setObjectName("fillControlSlider")
-        self._angle_slider.setRange(-180, 180)
-        self._angle_slider.valueChanged.connect(self._angle_slider_changed)
-        self.gradient.angle_spin.setMinimumHeight(28)
-        self.gradient.angle_spin.setMaximumWidth(72)
-        angle_row.addWidget(angle_label)
-        angle_row.addWidget(self._angle_slider, 1)
-        angle_row.addWidget(self.gradient.angle_spin)
-        for label, angle, tip in (("0°", 0, "水平"), ("45°", 45, "斜向"), ("90°", 90, "垂直"), ("-45°", -45, "反斜向")):
-            button = QPushButton(label)
-            button.setFixedWidth(52)
-            button.setMinimumHeight(28)
-            button.setToolTip(tip)
-            button.clicked.connect(lambda _c=False, a=angle: self.gradient._set_angle(a))
-            angle_row.addWidget(button)
-        self.gradient.angle_spin.valueChanged.connect(self._sync_angle_slider)
+        angle_row.setSpacing(4)
+        self.angle_dial = AngleDial()
+        self.angle_dial.angleChanged.connect(lambda angle: self.gradient._set_angle(angle))
+        angle_row.addWidget(self.angle_dial)
+        angle_field = PillField(self.gradient.angle_spin, suffix="°")
+        angle_field.setFixedWidth(62)
+        angle_row.addWidget(angle_field)
+        self._angle_chips: list[QPushButton] = []
+        for angle in (0, 45, 90):
+            chip = QPushButton(f"{angle}°")
+            chip.setObjectName("fillChip")
+            chip.setCheckable(True)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setProperty("angle", angle)
+            chip.setFixedWidth(42)
+            chip.clicked.connect(lambda _c=False, a=angle: self.gradient._set_angle(a))
+            angle_row.addWidget(chip)
+            self._angle_chips.append(chip)
+        tools.addWidget(self._angle_host)
+        tools.addStretch(1)
+        self.reverse_button = round_button("fa5s.exchange-alt", "反转渐变方向")
+        self.reverse_button.clicked.connect(self.gradient._reverse)
+        tools.addWidget(self.reverse_button)
+        delete = self.gradient.delete_stop_button
+        delete.setText("")
+        delete.setObjectName("fillRoundButton")
+        delete.setFixedSize(34, 34)
+        delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        from ..design.fill_picker import _theme
+        import qtawesome as qta
+        delete.setIcon(qta.icon("fa5s.trash-alt", color=_theme().text_secondary, color_disabled=_theme().disabled))
+        tools.addWidget(delete)
+        gradient_layout.addLayout(tools)
+        self.gradient.angle_spin.valueChanged.connect(self._sync_angle_controls)
+        left.addWidget(self._gradient_card)
 
-        picker_surface = QFrame()
-        picker_surface.setObjectName("fillPickerSurface")
-        picker_layout = QVBoxLayout(picker_surface)
-        picker_layout.setContentsMargins(8, 8, 8, 8)
-        picker_layout.setSpacing(8)
-        picker_layout.addWidget(self._stop_host)
-        picker_layout.addWidget(self._angle_host)
-        picker_layout.addWidget(self.gradient)
-        self.picker = ColorPickerWidget(show_alpha=False, embed_fields=True)
-        picker_layout.addWidget(self.picker, 1)
-        layout.addWidget(picker_surface, 1)
-        self.preview = _FillPreview()
-        self.preview.hide()
+        palette_card = QFrame()
+        palette_card.setObjectName("fillSubCard")
+        palette_layout = QVBoxLayout(palette_card)
+        palette_layout.setContentsMargins(14, 12, 14, 12)
+        palette_layout.setSpacing(8)
+        palette_title = QHBoxLayout()
+        palette_title.setSpacing(2)
+        label = QLabel("颜料盒")
+        label.setObjectName("fillCardTitle")
+        palette_title.addWidget(label)
+        palette_title.addStretch(1)
+        self.palette_group = QButtonGroup(self)
+        self.palette_group.setExclusive(True)
+        self._palette_tabs: dict[str, QPushButton] = {}
+        for key, text in (("common", "常用"), ("recent", "最近"), ("gradient", "渐变")):
+            tab = QPushButton(text)
+            tab.setObjectName("fillTab")
+            tab.setCheckable(True)
+            tab.setCursor(Qt.CursorShape.PointingHandCursor)
+            tab.clicked.connect(lambda _c=False, k=key: self._set_palette(k))
+            self.palette_group.addButton(tab)
+            self._palette_tabs[key] = tab
+            palette_title.addWidget(tab)
+        palette_layout.addLayout(palette_title)
+        self._palette_host = QWidget()
+        self._palette_grid = QGridLayout(self._palette_host)
+        self._palette_grid.setContentsMargins(0, 0, 0, 0)
+        self._palette_grid.setHorizontalSpacing(0)
+        self._palette_grid.setVerticalSpacing(2)
+        palette_layout.addWidget(self._palette_host)
+        self._palette = "common"
+        self._swatches: list = []
+        left.addWidget(palette_card)
+        left.addStretch(1)
+        body.addWidget(left_host)
 
-        common_row = QHBoxLayout()
-        common_row.setSpacing(6)
-        common_label = QLabel("常用")
-        common_label.setObjectName("fillFieldLabel")
-        common_row.addWidget(common_label)
-        for color in tuple(dict.fromkeys(self.recent_colors + ["#FFFFFF", "#000000", "#FFE45E", "#FF4FA3", "#20D9FF", "#7C5CFF"]))[:8]:
-            swatch = QPushButton()
-            swatch.setFixedSize(22, 22)
-            swatch.setCursor(Qt.CursorShape.PointingHandCursor)
-            swatch.setStyleSheet(
-                f"background:{color};border:1px solid #9a9488;border-radius:4px;padding:0;min-height:22px"
-            )
-            swatch.clicked.connect(lambda _checked=False, value=color: self.picker.set_color(QColor(value)))
-            common_row.addWidget(swatch)
-        common_row.addStretch(1)
-        layout.addLayout(common_row)
+        self.picker = FillColorPicker()
+        body.addWidget(self.picker, 1, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(body, 1)
 
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        self.save_button = QPushButton("+ 存进颜料盒")
+        self.save_button.setObjectName("fillTextButton")
+        self.save_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_button.clicked.connect(self._save_current)
+        footer.addWidget(self.save_button)
+        footer.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        for kind, name in ((QDialogButtonBox.StandardButton.Ok, "fillPrimary"), (QDialogButtonBox.StandardButton.Cancel, "fillGhost")):
+            button = buttons.button(kind)
+            button.setObjectName(name)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        footer.addWidget(buttons)
+        layout.addLayout(footer)
 
         kind = "solid"
         initial = "#FFFFFF"
@@ -618,41 +834,169 @@ class FillEditorDialog(QDialog):
                 initial = str(fill.get("color") or "#FFFFFF")
         else:
             initial = str(fill or "#FFFFFF")
+        self._solid = QColor(initial)
         self.picker.set_color(QColor(initial))
         self.picker.set_previous(QColor(initial))
         self.picker.colorChanged.connect(self._picker_changed)
-        self.gradient.position_spin.valueChanged.connect(self._sync_location_slider)
-        self.gradient.opacity_spin.valueChanged.connect(self._sync_opacity_slider)
-        mode_id = {"solid": 0, "linear-gradient": 1, "radial-gradient": 2}.get(kind, 0)
+        mode_id = {"solid": 0, "linear-gradient": 1, "radial-gradient": 2}.get(kind, 0) if allow_gradients else 0
         self.mode_group.button(mode_id).setChecked(True)
-        apply_secondary_surface_theme(self)
+        self.mode_group.idToggled.connect(self._group_toggled)
+        self._apply_theme()
+        self._set_palette("gradient" if mode_id else "common")
         self._sync_mode()
-        self._sync_opacity_slider()
-        self._sync_location_slider()
-        self._sync_angle_slider()
+        self._sync_angle_controls()
 
-    def _combo_to_group(self, index: int) -> None:
-        button = self.mode_group.button(index)
-        if button is not None and not button.isChecked():
-            button.setChecked(True)
+    # --- shell ----------------------------------------------------------
+    def _apply_theme(self) -> None:
+        from ..design.fill_picker import fill_editor_qss
+        from ..design.studio_theme import build_secondary_surface_qss
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
 
+        theme = theme_definition(theme_key())
+        self._theme_key = theme.key
+        self.setStyleSheet(build_secondary_surface_qss(theme) + fill_editor_qss(theme))
+        self.mode_segment.refresh_icons()
+
+    def showEvent(self, event) -> None:
+        from ..design.theme_manager import theme_key
+        from ..design.ui_motion import MOTION_STANDARD_MS, motion_duration
+
+        if getattr(self, "_theme_key", None) != theme_key():
+            self._apply_theme()
+        apply_ui_language(self, current_language())
+        super().showEvent(event)
+        duration = motion_duration(MOTION_STANDARD_MS)
+        if duration:
+            self.setWindowOpacity(0.0)
+            self._entrance = QPropertyAnimation(self, b"windowOpacity", self)
+            self._entrance.setDuration(duration)
+            self._entrance.setStartValue(0.0)
+            self._entrance.setEndValue(1.0)
+            self._entrance.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._entrance.start()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.header and event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+                return True
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, _event) -> None:
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+
+        theme = theme_definition(theme_key())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        card = QRectF(self.card.geometry())
+        radius = 26.0
+        painter.setPen(Qt.PenStyle.NoPen)
+        layers = 10
+        strength = 9 if theme.is_light else 22
+        for step in range(layers, 0, -1):
+            spread = step * 1.6
+            painter.setBrush(QColor(0, 0, 0, max(1, round(strength * (1 - step / (layers + 1)) ** 2))))
+            painter.drawRoundedRect(card.adjusted(-spread, -spread + 4, spread, spread + 4), radius + spread, radius + spread)
+        painter.setBrush(QColor(theme.surface))
+        painter.setPen(QPen(QColor(theme.border), 1))
+        painter.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        painter.end()
+
+    # --- palette --------------------------------------------------------
+    def _set_palette(self, key: str) -> None:
+        from ..design.fill_picker import SwatchButton
+
+        if key == "gradient" and self.mode_group.checkedId() == 0:
+            key = "common"
+        self._palette = key
+        self._palette_tabs[key].setChecked(True)
+        while self._palette_grid.count():
+            item = self._palette_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        swatches = []
+        if key == "gradient":
+            for name, stops in self.GRADIENT_PRESETS:
+                button = SwatchButton(stops=stops)
+                button.setToolTip(name)
+                button.clicked.connect(lambda _c=False, s=stops: self._apply_preset(s))
+                swatches.append(button)
+        else:
+            colors = self.COMMON_COLORS if key == "common" else tuple(self.recent_colors[:7])
+            for value in colors:
+                button = SwatchButton(value)
+                button.setToolTip(QColor(value).name(QColor.NameFormat.HexRgb).upper())
+                button.clicked.connect(lambda _c=False, v=value: self.picker.set_color(QColor(v)))
+                swatches.append(button)
+            if key == "recent":
+                add = SwatchButton(add=True)
+                bind_text(add, '把当前颜色存进最近', property='toolTip')
+                add.clicked.connect(self._save_current)
+                swatches.append(add)
+        for index, button in enumerate(swatches):
+            self._palette_grid.addWidget(button, index // 8, index % 8, Qt.AlignmentFlag.AlignCenter)
+        for column in range(8):
+            self._palette_grid.setColumnStretch(column, 1)
+        self._swatches = swatches
+        self._sync_swatches()
+
+    def _sync_swatches(self) -> None:
+        color = self.picker.color()
+        current = color.name(QColor.NameFormat.HexArgb).upper()
+        for button in self._swatches:
+            if button.color.isValid() and not button.stops:
+                button.set_selected(button.color.name(QColor.NameFormat.HexArgb).upper() == current)
+
+    def _save_current(self) -> None:
+        value = self.picker.color().name(QColor.NameFormat.HexArgb).upper()
+        self.recent_colors[:] = [value] + [item for item in self.recent_colors if item.upper() != value][:7]
+        self._set_palette("recent")
+
+    def _apply_preset(self, stops: tuple[str, ...]) -> None:
+        count = max(1, len(stops) - 1)
+        self.gradient.set_value({
+            "stops": [{"color": value, "position": index / count} for index, value in enumerate(stops)],
+            "angle": self.gradient._angle,
+        })
+        self.gradient._emit()
+        self._select_gradient_stop(0)
+
+    # --- mode / sync ----------------------------------------------------
     def _group_toggled(self, ident: int, checked: bool) -> None:
-        if not checked:
-            return
-        if self.mode_combo.currentIndex() != ident:
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentIndex(ident)
-            self.mode_combo.blockSignals(False)
-        self._sync_mode()
+        if checked:
+            self._sync_mode()
 
     def _sync_mode(self) -> None:
-        gradient_mode = self.mode_group.checkedId() != 0
-        self.gradient.setVisible(gradient_mode)
-        self._location_host.hide()
-        self.gradient.delete_stop_button.setVisible(gradient_mode)
-        self._angle_host.setVisible(self.mode_group.checkedId() == 1)
+        mode = self.mode_group.checkedId()
+        gradient_mode = mode != 0
+        self._gradient_card.setVisible(gradient_mode)
+        self._angle_host.setVisible(mode == 1)
+        self._palette_tabs["gradient"].setVisible(gradient_mode)
+        if gradient_mode != (self._palette == "gradient"):
+            self._set_palette("gradient" if gradient_mode else "common")
         if gradient_mode and self.gradient._selected in self.gradient._stops:
             self._set_picker_color(QColor(self.gradient._selected.color))
+            self.picker.set_previous(QColor(self.gradient._selected.color))
+        elif not gradient_mode:
+            self._set_picker_color(self._solid)
+        self._sync_target_label()
+        self._refresh_preview()
+
+    def _sync_target_label(self) -> None:
+        if self.mode_group.checkedId() == 0 or self.gradient._selected not in self.gradient._stops:
+            self.picker.set_target_suffix("")
+        else:
+            ordered = sorted(self.gradient._stops, key=lambda item: item.pos)
+            self.picker.set_target_suffix(translate(" · 色点 {index}").format(index=ordered.index(self.gradient._selected) + 1))
+
+    def _sync_angle_controls(self, *_args) -> None:
+        angle = float(self.gradient.angle_spin.value())
+        self.angle_dial.set_angle(angle)
+        for chip in self._angle_chips:
+            chip.setChecked(abs(float(chip.property("angle")) - angle) < 0.5)
         self._refresh_preview()
 
     def _set_picker_color(self, color: QColor) -> None:
@@ -661,58 +1005,23 @@ class FillEditorDialog(QDialog):
         self.picker.blockSignals(True)
         self.picker.set_color(color)
         self.picker.blockSignals(False)
-        self._sync_opacity_slider()
+        self._sync_swatches()
 
     def _select_gradient_stop(self, index: int) -> None:
         if 0 <= index < len(self.gradient._stops):
             self.gradient._selected = self.gradient._stops[index]
             self.gradient._sync_stop_controls()
-            self._set_picker_color(QColor(self.gradient._stops[index].color))
+            color = QColor(self.gradient._stops[index].color)
+            self._set_picker_color(color)
+            self.picker.set_previous(color)
+        self.gradient.update()
+        self._sync_target_label()
         self._refresh_preview()
 
     def _stop_opacity_to_picker(self, _value: int) -> None:
         selected = self.gradient._selected
-        if selected not in self.gradient._stops:
-            return
-        self._set_picker_color(QColor(selected.color))
-
-    def _opacity_slider_changed(self, value: int) -> None:
-        color = self.picker.color()
-        color.setAlpha(round(max(0, min(100, int(value))) * 255 / 100))
-        self.picker.set_color(color)
-
-    def _location_slider_changed(self, value: int) -> None:
-        position = value / 1000.0
-        if abs(self.gradient.position_spin.value() - position) > 0.0005:
-            self.gradient.position_spin.setValue(position)
-
-    def _angle_slider_changed(self, value: int) -> None:
-        if int(self.gradient.angle_spin.value()) != int(value):
-            self.gradient.angle_spin.setValue(value)
-
-    def _sync_opacity_slider(self, *_args) -> None:
-        if self.mode_group.checkedId() == 0:
-            value = round(self.picker.color().alpha() * 100 / 255)
-        else:
-            value = self.gradient.opacity_spin.value()
-        if self._opacity_slider.value() != value:
-            self._opacity_slider.blockSignals(True)
-            self._opacity_slider.setValue(value)
-            self._opacity_slider.blockSignals(False)
-
-    def _sync_location_slider(self, *_args) -> None:
-        value = round(self.gradient.position_spin.value() * 1000)
-        if self._location_slider.value() != value:
-            self._location_slider.blockSignals(True)
-            self._location_slider.setValue(value)
-            self._location_slider.blockSignals(False)
-
-    def _sync_angle_slider(self, *_args) -> None:
-        value = int(self.gradient.angle_spin.value())
-        if self._angle_slider.value() != value:
-            self._angle_slider.blockSignals(True)
-            self._angle_slider.setValue(value)
-            self._angle_slider.blockSignals(False)
+        if selected in self.gradient._stops:
+            self._set_picker_color(QColor(selected.color))
 
     def _pick_gradient_stop(self, index: int) -> None:
         if not (0 <= index < len(self.gradient._stops)):
@@ -722,8 +1031,9 @@ class FillEditorDialog(QDialog):
         self._set_picker_color(QColor(self.gradient._selected.color))
 
     def _picker_changed(self, color: QColor) -> None:
-        self._sync_opacity_slider()
+        self._sync_swatches()
         if self.mode_group.checkedId() == 0 or not color.isValid():
+            self._solid = QColor(color)
             self._refresh_preview()
             return
         selected = self.gradient._selected
@@ -736,19 +1046,24 @@ class FillEditorDialog(QDialog):
         self._refresh_preview()
 
     def _gradient_changed(self, _value: dict) -> None:
-        self._sync_location_slider()
-        self._sync_angle_slider()
+        self._sync_target_label()
         self._refresh_preview()
 
     def _refresh_preview(self) -> None:
-        if self.mode_group.checkedId() == 0:
-            self.preview.set_solid(self.picker.color())
-        else:
-            stops = [
-                (float(stop.get("position", 0)), QColor(str(stop.get("color", "#FFFFFF"))))
-                for stop in self.gradient.value().get("stops", [])
-            ]
-            self.preview.set_gradient(stops)
+        if self._preview_update is not None:
+            self._preview_update(self.preview,self.picker.color())
+            return
+        mode = self.mode_group.checkedId()
+        if mode <= 0:
+            color = self.picker.color()
+            desc = f"{color.name(QColor.NameFormat.HexRgb).upper()} · {round(color.alpha() * 100 / 255)}%"
+            self.preview.set_fill(color.name(QColor.NameFormat.HexArgb), desc)
+            return
+        value = self.gradient.value()
+        value["type"] = self.MODES[mode]
+        count = len(value.get("stops", []))
+        desc = f"线性渐变 · {count} 色 · {round(value.get('angle', 0))}°" if mode == 1 else f"径向渐变 · {count} 色"
+        self.preview.set_fill(value, desc)
 
     def value(self) -> str | dict:
         if self.mode_group.checkedId() == 0:
@@ -758,6 +1073,9 @@ class FillEditorDialog(QDialog):
         value = self.gradient.value()
         value["type"] = "radial-gradient" if self.mode_group.checkedId() == 2 else "linear-gradient"
         return value
+
+    def selectedColor(self) -> QColor:
+        return QColor(self.value())
 
 
 class FontPickerDialog(QDialog):

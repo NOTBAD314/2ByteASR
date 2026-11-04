@@ -32,20 +32,24 @@ def capture_video_graph(project) -> dict:
     from ..timeline.studio_media_pool import validate_media_graph
     from ..timeline.studio_edit_sequence import timeline_duration_ms
     validate_media_graph(project)
+    used_video = {c.asset_id for t in project.video_tracks for c in t.clips}
+    reference = next((a for a in project.media_pool if a.canonical_source == project.media.path), None)
+    reference = reference or next((a for a in project.media_pool if a.asset_id in used_video), None)
+    metadata = reference.video_metadata if reference else {}
     return dict(media_pool=[asdict(x) for x in project.media_pool],
                 audio_mix=capture_audio_mix(project),
                 clip_transitions=__import__("copy").deepcopy(project.studio_state.get("clip_transitions", [])),
                 video_tracks=[asdict(x) for x in project.video_tracks],
                 audio_tracks=[asdict(x) for x in project.audio_tracks],
-                width=project.media.width or 1920, height=project.media.height or 1080,
-                fps=next((float((a.video_metadata or {}).get("fps") or 0.) for a in project.media_pool
-                          if a.canonical_source == project.media.path), 0.),
+                width=project.media.width or metadata.get('width') or 1920,
+                height=project.media.height or metadata.get('height') or 1080,
+                fps=float(metadata.get('fps') or (25 if not project.media.path else 0)),
                 duration_ms=timeline_duration_ms(project))
 
 
 def requires_video_composition(graph: dict) -> bool:
     # Even a single V1 may be hidden, transformed, keyed or use another asset.
-    return bool(graph.get("video_tracks"))
+    return bool(graph.get("video_tracks") or graph.get('audio_mix'))
 
 
 def paint_layer(painter: QPainter, width: int, height: int, image: QImage, clip: dict, fx: dict | None = None) -> None:
@@ -140,7 +144,8 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                "-frames:v", str(frame_count), str(output)]
     decoders = {}
     if indexes is None:
-        indexes = {str(Path(a['canonical_source']).resolve()): probe_media(ffmpeg,a['canonical_source'],cancelled=cancelled) for a in graph['media_pool'] if a.get('video_metadata',{}).get('has_video',True)}
+        used = {c['asset_id'] for c in clips}
+        indexes = {str(Path(a['canonical_source']).resolve()): probe_media(ffmpeg,a['canonical_source'],cancelled=cancelled) for a in graph['media_pool'] if a['asset_id'] in used}
     job_id = uuid.uuid4().hex
     output_duration = float(Fraction(frame_count) / Fraction(str(fps)))
     frame_clock = dict(fps=fps, frame_count=frame_count,

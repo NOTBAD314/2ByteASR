@@ -6,6 +6,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 from twobyteasr.exports.export_presets import PRODUCT_PRESETS
@@ -46,8 +47,9 @@ def test_library_copy_and_library_button(tmp_path, monkeypatch):
 def test_fill_editor_fits_current_full_color_controls():
     _app()
     dialog = FillEditorDialog("#FFFF4DA3")
-    assert dialog.minimumWidth() == 620
-    assert dialog.picker.fields_host().width() <= 210
+    dialog.adjustSize()
+    assert 720 <= dialog.width() <= 820
+    assert dialog.picker.color().name(QColor.NameFormat.HexArgb).upper() == "#FFFF4DA3"
     dialog.deleteLater()
 
 

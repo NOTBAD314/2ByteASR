@@ -68,9 +68,8 @@ def _resolve_device(torch, requested: str) -> str:
 
 
 def _atomic_write(path: Path, payload: object) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, path)
+    from twobyteasr.storage.atomic_files import write_text_atomic
+    write_text_atomic(path, json.dumps(payload, ensure_ascii=False))
 
 
 def main() -> None:
@@ -82,7 +81,7 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-dir", required=True)
-    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--batch-size', type=int, default=0)
     parser.add_argument('--device', default=os.environ.get('TWOBYTEASR_FIRERED_DEVICE', 'auto'),
                         choices=('auto', 'cuda', 'mps', 'cpu'))
     # Apple GPU precision (2026-10-14): float16, as on CUDA. On a 7 GB GitHub Mac it gave
@@ -107,7 +106,28 @@ def main() -> None:
     verify_model_files("firered_aed", Path(args.model_dir), root=root)
     kind = _resolve_device(torch, args.device)
     cuda = kind == "cuda"
-    jobs = json.loads(Path(args.manifest).read_text(encoding="utf-8")).get("jobs", [])
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    jobs = manifest.get('jobs', [])
+    checkpoint_root = manifest.get('checkpoint_root')
+    checkpoint_identity = manifest.get('checkpoint_identity')
+    from twobyteasr.recognition.firered_checkpoints import read_row, save_row, batch_budget
+    all_jobs=list(jobs)
+    reused={}
+    if checkpoint_root and checkpoint_identity:
+        for job in jobs:
+            row=read_row(checkpoint_root,job,checkpoint_identity)
+            if row is not None:reused[str(job['segment_id'])]=row
+        jobs=[job for job in jobs if str(job['segment_id']) not in reused]
+        _emit('checkpoints_reused', completed_chunks=len(reused), total_chunks=len(all_jobs))
+        if reused:
+            ready=[dict(reused[str(job['segment_id'])],offset=job['offset'],duration=job['duration'])
+                   for job in all_jobs if str(job['segment_id']) in reused]
+            _emit('batch_completed',completed_chunks=len(reused),total_chunks=len(all_jobs),
+                elapsed_ms=0.,reused=True,rows=ready)
+        if not jobs:
+            _atomic_write(Path(args.output),dict(results=[reused[str(j['segment_id'])] for j in all_jobs],
+                load_ms=0.,inference_ms=0.,reused_chunks=len(reused)))
+            return
     if not jobs:
         raise RuntimeError("FireRedASR2-AED manifest is empty")
     model = None
@@ -191,15 +211,23 @@ def main() -> None:
                     return out
                 finally:telemetry['features_ms']+=(time.perf_counter()-tick)*1000-(telemetry['audio_read_ms']-reading)
         model.feat_extractor=TimedFeatures()
-        results = []
+        results = list(reused.values())
         inference_started = time.perf_counter()
-        batch_size=max(1,min(4,args.batch_size))
+        import psutil
+        free_vram=torch.cuda.mem_get_info()[0] if cuda else 0
+        batch_size=batch_budget(free_vram,psutil.virtual_memory().available,requested=args.batch_size)
+        _emit('batch_budget', batch_size=batch_size, free_vram_bytes=free_vram,
+              available_ram_bytes=psutil.virtual_memory().available)
         offset=0
         while offset<len(jobs):
+            # Acquire the batch budget before feature extraction/audio loading.
+            live_free=torch.cuda.mem_get_info()[0] if cuda else 0
+            batch_size=min(batch_size,batch_budget(live_free,psutil.virtual_memory().available,
+                                                  requested=args.batch_size))
             batch=jobs[offset:offset+batch_size];tick=time.perf_counter()
             try:
                 values=model.transcribe([str(job['segment_id']) for job in batch],[str(job['path']) for job in batch])
-                if len(values)!=len(batch):
+                if len(values)!=len(batch) or {str(v.get('uttid')) for v in values}!={str(j['segment_id']) for j in batch}:
                     raise RuntimeError('FireRed inference did not return every input chunk (possible caught CUDA failure)')
             except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
                 if batch_size<=1:raise
@@ -213,7 +241,7 @@ def main() -> None:
             by_id={str(value.get('uttid')):value for value in values}
             batch_rows=[]
             for index,job in enumerate(batch):
-                value=by_id.get(str(job['segment_id']),values[index])
+                value=by_id[str(job['segment_id'])]
                 timestamps=[]
                 for item in value.get('timestamp') or []:
                     if len(item)<3:continue
@@ -222,18 +250,23 @@ def main() -> None:
                 row={'segment_id':int(job['segment_id']),'text':str(value.get('text') or ''),
                      'confidence':float(value.get('confidence',0.) or 0.),'timestamp':timestamps}
                 results.append(row)
+                if checkpoint_root and checkpoint_identity:
+                    saved=save_row(checkpoint_root,job,checkpoint_identity,row)
+                    _emit('checkpoint_saved', path=saved, segment_id=job['segment_id'])
                 batch_rows.append(dict(row,offset=job['offset'],duration=job['duration']))
             offset+=len(batch)
             elapsed_ms=(time.perf_counter()-tick)*1000
             telemetry['batches'].append({'size':len(batch),'elapsed_ms':round(elapsed_ms,3)})
-            _emit('batch_completed',completed_chunks=offset,total_chunks=len(jobs),
+            _emit('batch_completed',completed_chunks=offset+len(reused),total_chunks=len(all_jobs),
                 processed_start=round(float(batch[0]['offset']),3),
                 processed_end=round(float(batch[-1]['offset'])+float(batch[-1]['duration']),3),
                 elapsed_ms=round(elapsed_ms,3),rows=batch_rows)
         if not any(item.get("timestamp") or item.get("text") for item in results):
             raise RuntimeError("FireRedASR2-AED returned no parsed output")
+        results.sort(key=lambda row:int(row['segment_id']))
+        telemetry['reused_chunks']=len(reused)
         telemetry.update(device=str(next(model.model.parameters()).device),dtype=str(next(model.model.parameters()).dtype),
-            batch_size=batch_size,beam_size=3,coverage='full_audio_overlapping_windows',chunk_count=len(jobs),
+            batch_size=batch_size,beam_size=3,coverage='full_audio_overlapping_windows',chunk_count=len(all_jobs),computed_chunks=len(jobs),
             chunk_seconds=[round(float(job['duration']),3) for job in jobs],
             device_kind=kind,
             peak_allocated_bytes=(torch.cuda.max_memory_allocated() if cuda else

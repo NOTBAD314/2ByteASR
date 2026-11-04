@@ -555,7 +555,7 @@ class StudioStylePanelMixin:
     def _open_style_color_dialog(self, editor: QLineEdit) -> None:
         return self.style_controller._open_style_color_dialog(editor)
 
-    def _create_style_color_dialog(self, editor: QLineEdit) -> QColorDialog:
+    def _create_style_color_dialog(self, editor: QLineEdit) -> FillEditorDialog:
         return self.style_controller._create_style_color_dialog(editor)
 
     def _install_recommended_fonts(self) -> None:

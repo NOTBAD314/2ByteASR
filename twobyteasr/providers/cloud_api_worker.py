@@ -55,7 +55,7 @@ def run(request: dict) -> list:
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
                         'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing', 'asr_language_request',
-                        'asr_shard_ready', 'mosi_scheduler'}:
+                        'asr_shard_ready', 'mosi_scheduler', 'remote_submission_intent', 'remote_task_accepted'}:
             return
         if kind == 'api_usage' and payload.get('stage') == 'asr':
             payload = dict(payload, stage=usage_stage)

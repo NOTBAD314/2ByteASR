@@ -934,6 +934,9 @@ class StylePreview(QWidget):
         painter.translate(-self.width() / 2, -self.height() / 2)
         fill = self._gradient or style.primary_color
         outline = _preview_color(style.outline_color, "#FF000000")
+        if int(style.border_style) == 3:
+            background = _preview_color(style.back_color, '#00000000')
+            painter.fillRect(QRectF(x-7,y-bounds.height()-3,bounds.width()+14,bounds.height()+9),background)
         if os.environ.get("TWOBYTEASR_DEBUG_STYLE_PREVIEW") == "1":
             print(
                 "[STYLE_PREVIEW]"
@@ -962,7 +965,7 @@ class StylePreview(QWidget):
         strokes = self._strokes or [{"color": outline.name(QColor.NameFormat.HexArgb), "width": float(style.outline_width or 0)}]
         for stroke in strokes:
             stroke_color = QColor(str(stroke.get("color", outline.name(QColor.NameFormat.HexArgb))))
-            stroke_color.setAlphaF(max(0.0, min(1.0, float(stroke.get("opacity", 1.0)))))
+            stroke_color.setAlphaF(stroke_color.alphaF()*max(0.0, min(1.0, float(stroke.get("opacity", 1.0)))))
             render_style_sample(
                 painter,
                 text=text,

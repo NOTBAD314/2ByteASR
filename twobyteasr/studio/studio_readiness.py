@@ -256,7 +256,9 @@ class StudioReadiness(QObject):
                 reason = '没有启用的音轨'
             elif name == '准备播放器' and project is not None and not project.media.path and not project.video_tracks:
                 reason = '空工程使用占位画面'
-            if reason:
+            if name == '读取工程' and getattr(self,'_reader_reused',False):
+                self.loading.reuse(name,'复用已载入工程，已核对文件版本')
+            elif reason:
                 self.loading.skip(name, reason)
             else:
                 self.loading.mark(name)
@@ -301,6 +303,7 @@ class StudioReadiness(QObject):
     def _retire_preparation(self):
         """Stop an old gate without cancelling a newer shared loading session."""
         self.active = self.ready = False
+        self._close_recovery_choice()
         self.steps = None
         timer = getattr(self, 'timer', None)
         if timer is not None: timer.stop()
@@ -385,11 +388,20 @@ class StudioReadiness(QObject):
             self.on_ready = callback
             self.begin(path, skip_dirty_guard=True, expected_result_ref=expected_result_ref)
         self.loading.on_retry = retry
-        self.loading.mark('创建工作台界面')
+        if '创建工作台界面' not in self.loading.completed:
+            self.loading.reuse('创建工作台界面','复用已建立的工作台')
         self.generation = self.loading.generation
         self.loading_generation = self.generation
         epoch = self.generation
         self.path, self.active, self.ready = path, True, False
+        app = QApplication.instance()
+        if app is not None and getattr(page, '_event_filter_installed', False):
+            # The loading surface owns input until reveal. Routing every
+            # hidden control's layout/IME event through the editor here took
+            # 0.6-1.2 s in the real long project's sampled GUI stacks.
+            app.removeEventFilter(page)
+            page._event_filter_installed = False
+            self._input_filter_suspended = True
         page.video._last_load_error = ''
         page.video.set_paused(True)
         from ..design.ui_motion import settle_layout
@@ -438,6 +450,7 @@ class StudioReadiness(QObject):
                 value = take(path)
                 reused = value is not None
                 if value is None:value = load_project(path)
+                value._open_from_retained_cache = reused
                 error = ''
                 from ..media.media_availability import apply_availability, stat_sources_in_reader
                 results = stat_sources_in_reader(
@@ -519,12 +532,47 @@ class StudioReadiness(QObject):
                 from ..projects.subtitle_consistency_ui import show_load_failure
                 show_load_failure(self.page, self.path, project)
             return
+        self._reader_reused = bool(getattr(project,'_open_from_retained_cache',False))
         self.mark('读取工程')
         if not self._owns_request(epoch):
             return
         self.steps = self.page.project_controller._open_project_steps(
             self.path, single_shot_fn=QTimer.singleShot, skip_dirty_guard=True, loaded_project=project,
-            expected_result_ref=self.expected_result_ref)
+            expected_result_ref=self.expected_result_ref, async_recovery=True)
+
+    def _close_recovery_choice(self):
+        dialog = getattr(self, '_recovery_dialog', None)
+        self._recovery_dialog = None
+        if dialog is not None:
+            dialog.reject()
+            dialog.deleteLater()
+
+    def _await_recovery_choice(self, request):
+        from ..projects.project_recovery_dialog import RecoveryDialog
+        epoch, path = self.generation, self.path
+        self.timer.stop()
+        began = time.perf_counter()
+        self._set_stage_label('等待选择恢复版本')
+        dialog = self._recovery_dialog = RecoveryDialog(self.page, request)
+        def chosen(_result):
+            if self._recovery_dialog is not dialog or not self._owns_request(epoch) or self.path != path:
+                self.page._studio_trace('RECOVERY_CALLBACK_DISCARDED', generation=epoch)
+                return
+            self._recovery_dialog = None
+            waited = time.perf_counter() - began
+            self.profile['user_wait_ms'] = round(self.profile.get('user_wait_ms', 0) + waited * 1000, 1)
+            self.last_tick = self.last_progress = time.perf_counter()
+            request.choice = dialog.choice
+            dialog.deleteLater()
+            if request.choice == 'cancel':
+                self.cancel()
+                return
+            self.page._studio_trace('RECOVERY_LOAD_RESUMED', generation=epoch, choice=request.choice)
+            self.timer.start()
+        dialog.finished.connect(chosen)
+        dialog.open()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _tick(self):
         if not self._owns_request():
@@ -563,6 +611,10 @@ class StudioReadiness(QObject):
                     epoch, steps = self.generation, self.steps
                     stage = next(steps)
                     if not self._owns_request(epoch):
+                        return
+                    from ..projects.project_recovery_dialog import RecoveryChoice
+                    if isinstance(stage, RecoveryChoice):
+                        self._await_recovery_choice(stage)
                         return
                     self.last_progress = time.perf_counter()
                     self.next_stage = stage
@@ -787,6 +839,7 @@ class StudioReadiness(QObject):
         self.page.video.set_paused(True)
         self.on_ready = None
         self.generation += 1
+        self._close_recovery_choice()
         self.page.timeline.setUpdatesEnabled(True)
         self.active, self.ready = False, False
         heap = getattr(self.page, '_project_heap', None)
@@ -819,6 +872,8 @@ class StudioReadiness(QObject):
             heap.load_finished(settle=False)
         self.generation += 1
         self.active = self.ready = False
+        self._close_recovery_choice()
+        self.page._project_opening_path = ''
         self.steps = None
         self.timer.stop()
         self.on_ready = None
@@ -833,6 +888,11 @@ class StudioReadiness(QObject):
         else:
             self.loading.abort(reveal=reveal)
         if navigate and self.page.project is not None:
+            app = QApplication.instance()
+            if app is not None and getattr(self, '_input_filter_suspended', False):
+                app.installEventFilter(self.page)
+                self.page._event_filter_installed = True
+                self._input_filter_suspended = False
             self.page._project_view_state = 'open'
             self.page._sync_navigation_chrome()
             self.finished.emit()
@@ -849,15 +909,15 @@ class StudioReadiness(QObject):
             except Exception as exc:
                 self.fail('核对识别结果', str(exc))
                 return
+        if self.loading.active:
+            self.loading.complete(self.loading_generation, self._finish)
+            return
         callback, self.on_ready = self.on_ready, None
         app=QApplication.instance()
         if app is not None and not getattr(self.page,'_event_filter_installed',False):
             app.installEventFilter(self.page);self.page._event_filter_installed=True
-        if self.loading.active:
-            if not self.loading.deliver(self.loading_generation):
-                return
-            if not self._owns_request(allow_ready=True):
-                return
+            self._input_filter_suspended = False
+        if self.loading.state == 'ready':
             self.profile['loading_session'] = self.loading.snapshot()
             self.page._studio_trace('STUDIO_READY_GATE', **self.profile)
         if callback is not None:

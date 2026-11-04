@@ -52,6 +52,6 @@ def refresh_application_ui(page):
 def install_application_status(page):
     timer = QTimer(page)
     timer.setInterval(400)
-    timer.timeout.connect(lambda: refresh_application_ui(page))
+    timer.timeout.connect(lambda: refresh_application_ui(page) if page.ai_application_status.isVisible() else None)
     page._theme_application_timer = timer
     timer.start()

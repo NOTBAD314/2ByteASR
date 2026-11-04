@@ -94,7 +94,7 @@ def _preview_color(value: object, fallback: str = "#FFFFFFFF") -> QColor:
     """Resolve legacy #RRGGBB, Qt #AARRGGBB, and recipe color values."""
     if isinstance(value, Mapping):
         value = value.get("color", fallback)
-    color = QColor(str(value or fallback))
+    color = QColor(value) if isinstance(value, QColor) else QColor(str(value or fallback))
     return color if color.isValid() else QColor(fallback)
 
 
@@ -173,7 +173,7 @@ def render_style_sample(
     painter.setOpacity(max(0.0, min(1.0, float(opacity))))
     if isinstance(glow, Mapping) and glow.get("enabled"):
         glow_color = _preview_color(glow.get("color", "#FFFF0000"), "#FFFF0000")
-        base_opacity = max(0.15, min(0.95, float(glow.get("opacity", 1.0)) * 0.8))
+        base_opacity = max(0.0, min(1.0, float(glow.get("opacity", 1.0)))) * glow_color.alphaF() * 0.8
         blur = max(0.0, float(glow.get("blur", glow.get("radius", 8.0)) or 0.0))
         # Two halo rings: a wide faint outer bloom plus a brighter inner ring.
         # Half of a single centered stroke hides under the outline/fill, which

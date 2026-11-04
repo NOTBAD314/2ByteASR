@@ -5,7 +5,7 @@ from uuid import uuid4
 REVIEW_KEY = 'glossary_proofread_review'
 ISSUE_FIELDS = ('kind', 'span', 'original', 'replacement', 'checked', 'default', 'reason',
                 'options', 'evidence', 'lexical', 'cleanup', 'provenance', 'ignored',
-                'reviewed', 'stale', 'context', 'anchor', 'proposal_id')
+                'reviewed', 'stale', 'context', 'anchor', 'proposal_id', 'application_parts')
 
 
 def review_state(project, *, create=False):
@@ -22,6 +22,7 @@ def review_state(project, *, create=False):
 def row_record(row):
     from .proofread_rules import text_version
     def plain(value):
+        if isinstance(value, str): return str(value)
         if isinstance(value,dict):return {key:plain(item) for key,item in value.items()}
         if isinstance(value,(list,tuple)):return [plain(item) for item in value]
         return value

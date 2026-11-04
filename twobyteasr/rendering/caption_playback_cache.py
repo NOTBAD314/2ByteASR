@@ -20,6 +20,7 @@ class PreparedCaption:
     pixel_content_key: str = ''
     preview_error: str = ''
     interaction_transform: object = None
+    font_signature: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ VIEW_STATE_KEYS = frozenset({
     "last_selected_cue", "playhead_ms", "zoom", "scroll_ms", "follow_playhead",
     "timeline_snap_enabled", "timeline_tool", "timeline_track_heights", "layout",
     "manual_caption_text", "cue_statuses", "review_risks", "review_confirmations", "caption_global_link",
+    "speaker_roles", "speaker_track_order", "locked_speakers", "audio_stream_lanes_collapsed",
 })
 # Per-cue entries some captions read (word timings for word effects): a
 # changed entry rebuilds its cue only.
@@ -373,6 +375,8 @@ def basic_caption(project, cue_id, width, height, error):
 class PlaybackCaptionCache(QObject):
     ready = Signal(object, object)
     failed = Signal(str)
+    MAX_ENTRIES = 512
+    MAX_BYTES = 64 * 1024 * 1024
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -380,8 +384,14 @@ class PlaybackCaptionCache(QObject):
         # work stay outside this per-cache gate, on the existing worker.
         self._lock = threading.RLock()
         self._frames = OrderedDict()
+        self._frame_sizes = {}
+        self._frame_bytes = 0
+        self.hits = self.misses = self.evictions = 0
         self._failures = OrderedDict()
         self._pending = None
+        self._prepare_epoch = 0
+        self._active_signature = None
+        self.superseded = 0
         self._running = False
         self._thread = None
         self._closed = False
@@ -395,9 +405,14 @@ class PlaybackCaptionCache(QObject):
         self._materialized_key = None
         self._window_input = None
         self._window_cues = {}
+        import weakref
+        reference = weakref.ref(self)
+        def retire(*_):
+            owner = reference()
+            if owner is not None:PlaybackCaptionCache.close(owner)
         if parent is not None:
-            parent.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
-        self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+            parent.destroyed.connect(retire, Qt.ConnectionType.DirectConnection)
+        self.destroyed.connect(retire, Qt.ConnectionType.DirectConnection)
 
     def event(self, event):
         # Retire while the QObject still exists, before DeferredDelete destroys
@@ -428,8 +443,34 @@ class PlaybackCaptionCache(QObject):
         key = (*revision_key(revision,width,height), cue_id)
         with self._lock:
             prepared = self._frames.get(key)
+            if prepared is not None:
+                self._frames.move_to_end(key)
+                self.hits += 1
+            else:
+                self.misses += 1
             failure = self._failures.get(key)
             return prepared or (failure.fallback if failure else None)
+
+    def _store_frame(self, key, prepared):
+        # Conservative Python-object allowance plus serialized recipe/text.
+        # Count each key even when unchanged revisions share one snapshot.
+        weight = 4096 + 4*len(repr(prepared.snapshot))
+        self._frame_bytes -= self._frame_sizes.pop(key, 0)
+        self._frames[key] = prepared
+        self._frames.move_to_end(key)
+        self._frame_sizes[key] = weight
+        self._frame_bytes += weight
+        while self._frames and (len(self._frames)>self.MAX_ENTRIES or self._frame_bytes>self.MAX_BYTES):
+            removed, _ = self._frames.popitem(last=False)
+            self._frame_bytes -= self._frame_sizes.pop(removed, 0)
+            self.evictions += 1
+
+    def stats(self):
+        with self._lock:
+            return dict(hits=self.hits, misses=self.misses, evictions=self.evictions,
+                        entries=len(self._frames), estimated_bytes=self._frame_bytes,
+                        budget_bytes=self.MAX_BYTES, max_entries=self.MAX_ENTRIES,
+                        prepared=self.prepared_count, rebuilt_cues=self.rebuilt_cues)
 
     def failure(self, revision, cue_id, width, height):
         with self._lock:return self._failures.get((*revision_key(revision,width,height),cue_id))
@@ -441,9 +482,15 @@ class PlaybackCaptionCache(QObject):
             if self._closed: return
             missing = tuple(cue_id for cue_id in cue_ids if (*group,cue_id) not in self._frames and (*group,cue_id) not in self._failures)
             if not missing: return
+            active = self._active_signature
+            if (active is not None and active[0] == group and set(missing) <= active[1]
+                    and self._pending is None):
+                return
             pending = self._pending
             if merge and pending is not None and revision_key(pending[0], pending[2], pending[3]) == group:
                 missing = tuple(dict.fromkeys((*pending[1], *missing)))
+            if not merge:
+                self._prepare_epoch += 1
             self._pending = (revision, missing, width, height)
             self._wake.set()
             if self._running: return
@@ -497,7 +544,11 @@ class PlaybackCaptionCache(QObject):
                 if self._closed:
                     return
                 if task is None: continue
+                epoch = self._prepare_epoch
+                self._active_signature = (revision_key(task[0],task[2],task[3]),frozenset(task[1]))
             revision, ids, width, height = task
+            def superseded():
+                return self._stop_event.is_set() or epoch != self._prepare_epoch
             key = revision_key(revision,width,height)
             with self._lock:
                 if self._closed:
@@ -510,8 +561,8 @@ class PlaybackCaptionCache(QObject):
                 if (current != key or materialized is None
                         or any(id(cue) not in materialized.entries for cue in window_cues)):
                     materialized, reused, reason = materialize_captions(
-                        window_revision, materialized, full_builder=self._full_builder(window_revision),
-                        cancel_check=self._stop_event.is_set)
+                        window_revision, materialized, full_builder=self._full_builder(window_revision, cancel_check=superseded),
+                        cancel_check=superseded)
                     with self._lock:
                         if self._closed:
                             return
@@ -531,7 +582,7 @@ class PlaybackCaptionCache(QObject):
                             for cue_id in reused:
                                 prepared = self._frames.get((*current, cue_id))
                                 if prepared is not None and (*key, cue_id) not in self._frames:
-                                    self._frames[(*key, cue_id)] = prepared
+                                    self._store_frame((*key, cue_id), prepared)
                                     carried.add(cue_id)
                         self._materialized, self._materialized_key = materialized, key
                     current = key
@@ -543,7 +594,7 @@ class PlaybackCaptionCache(QObject):
                     (cue_id, companion_id(cue_id)) if companion_id(cue_id) in present else (cue_id,))))
                 for cue_id in ids:
                     with self._lock:
-                        if self._closed: break
+                        if superseded(): break
                         if (*key,cue_id) in self._frames:
                             if cue_id in carried:
                                 # Carried over, never announced for this key.
@@ -576,12 +627,22 @@ class PlaybackCaptionCache(QObject):
                         pixel_key=(web.strip_key if web is not None and not str(theme.get('stageHtml','')).strip()
                             else snapshot.stable_hash() if web is not None
                             else replace(snapshot,cue_id='',start_ms=0,end_ms=0,appearance_generation=0).stable_hash())
-                        prepared = PreparedCaption(snapshot,snapshot.stable_hash(),route,web,pixel_key)
+                        font_signature = ()
+                        try:
+                            import json
+                            face = json.loads(getattr(getattr(snapshot,'resolved_caption',None), 'font_face_json', '{}'))
+                            path = face.get('file')
+                            if path:
+                                stat = os.stat(path)
+                                font_signature = (path, face.get('index',0), stat.st_size, stat.st_mtime_ns)
+                        except (OSError, ValueError, TypeError):
+                            pass
+                        prepared = PreparedCaption(snapshot,snapshot.stable_hash(),route,web,pixel_key,
+                                                   font_signature=font_signature)
                         with self._lock:
                             if self._closed: break
-                            self._frames[(*key,cue_id)] = prepared
+                            self._store_frame((*key,cue_id), prepared)
                             self.prepared_count += 1
-                            while len(self._frames)>96: self._frames.popitem(last=False)
                         ready_ids.append(cue_id)
                     except Exception as exc:
                         error = f'{type(exc).__name__}: {exc}'
@@ -600,27 +661,32 @@ class PlaybackCaptionCache(QObject):
                         ready_ids.append(cue_id)
                         if not self._notify(error=f'{cue_id}: {type(exc).__name__}: {exc}'):
                             return
-                if ready_ids and not self._notify(key=key, cue_ids=ready_ids):
+                if ready_ids and not superseded() and not self._notify(key=key, cue_ids=ready_ids):
                     return
             except Exception as exc:
                 from ..caption_style.bilingual_layout import CaptionPreparationCancelled
                 if isinstance(exc, CaptionPreparationCancelled):
-                    return
+                    if self._closed:return
+                    self.superseded += 1
+                    continue
                 if not self._notify(error=f'{type(exc).__name__}: {exc}'):
                     return
+            finally:
+                with self._lock:
+                    self._active_signature = None
 
     # Full rebuilds of projects this large go to a worker process: in process
     # they hold the GIL for ~1 ms per cue (2-3.5 s on 2090 bilingual cues).
     DISPLAY_PROCESS_MIN_CUES = 300
 
-    def _full_builder(self, revision):
+    def _full_builder(self, revision, *, cancel_check=None):
         cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
         if (len(cues) < self.DISPLAY_PROCESS_MIN_CUES
                 or os.environ.get("TWOBYTEASR_CAPTION_DISPLAY_PROCESS", "1") == "0"):
             return None
         from .caption_display_actor import build_in_worker
         self.worker_builds += 1
-        return lambda current: build_in_worker(current, cancel_check=self._stop_event.is_set)
+        return lambda current: build_in_worker(current, cancel_check=cancel_check or self._stop_event.is_set)
 
     def close(self, *_):
         with self._lock:
@@ -628,6 +694,8 @@ class PlaybackCaptionCache(QObject):
             self._stop_event.set()
             self._pending=None
             self._frames.clear()
+            self._frame_sizes.clear()
+            self._frame_bytes = 0
             self._failures.clear()
             # The materialized copy is a whole project; release it with the session.
             self._materialized=None

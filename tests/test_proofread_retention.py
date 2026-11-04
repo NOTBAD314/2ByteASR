@@ -28,7 +28,7 @@ def page(tmp_path):
 
 def visible(w):return [w._rows[n]['cue_id'] for n in w.list.visible]
 
-def test_adopt_two_different_lengths_retains_row_and_is_idempotent(page):
+def test_adopt_two_different_lengths_retains_row_and_toggles_locally(page):
     w,p=page
     w._toggle_issue('middle',0)
     assert p.cues[0].text=='大骨龙和火龙来了'
@@ -38,9 +38,9 @@ def test_adopt_two_different_lengths_retains_row_and_is_idempotent(page):
     assert visible(w)==['middle','later']
     count=w._live_stack().count()
     w._toggle_issue('middle',0)
-    assert p.cues[0].text=='大骨龙和火笼来了'
-    assert w._live_stack().count()==count
-    assert not w._row_state(w._by_id['middle'])[1]
+    assert p.cues[0].text=='古龙和火笼来了'
+    assert w._live_stack().count()==count+1
+    assert w._row_state(w._by_id['middle'])[1]
 
 def test_manual_rewrite_retains_even_all_stale_and_dismiss_keeps_edit(page):
     w,p=page
@@ -183,13 +183,14 @@ def test_ignore_all_after_adoption_never_reverts_and_does_not_count_unedited_as_
     w._undo()
     assert visible(w)==['middle','later'] and [c.text for c in p.cues]==before
 
-def test_explicit_repeated_word_deletion_is_adopted_but_never_deletes_again(page):
+def test_explicit_repeated_word_deletion_toggles_without_deleting_second_occurrence(page):
     w,p=page;w._edit_committed('middle','它它来了')
     row=w._by_id['middle'];row['issues']=[_issue('stutter',(0,1),'它','',checked=False)]
     w._apply_filter();w._toggle_issue('middle',0)
     assert row['base']=='它来了' and row['issues'][0]['checked'] and not row['issues'][0]['stale']
     w._toggle_issue('middle',0)
-    assert row['base']=='它来了' and 'middle' in visible(w)
+    assert row['base']=='它它来了' and 'middle' in visible(w)
+    w._undo();assert row['base']=='它来了' and row['issues'][0]['checked']
     w._undo();assert row['base']=='它它来了' and not row['issues'][0]['checked']
 
 def test_shift_r_uses_same_retained_adoption_and_r_stays_text_in_editor(page):

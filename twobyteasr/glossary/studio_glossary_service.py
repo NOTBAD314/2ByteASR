@@ -59,7 +59,7 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         for key in ('checked_cues','requested_cues','successful_cues','fallback_cues','proposed_changes','proposed_cues',
                     'automatic_changes','confirmation_changes','rejected_changes','missing_associations'):
             receipt[key] = receipt.get(key, 0) + result.receipt.get(key, 0)
-        for key in ('segments','pending_rows','failed_cues','request_errors'):
+        for key in ('segments','pending_rows','failed_cues','request_errors','terminology_conflicts'):
             receipt[key] = [*receipt.get(key, ()), *result.receipt.get(key, ())]
     receipt['text_targets'] = [{'key': entry.key, **entry.target.to_dict(), 'baseline': entry.text} for entry in entries]
     receipt['empty_state'] = ('request_failed' if receipt.get('request_errors') else

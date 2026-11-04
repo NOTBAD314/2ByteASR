@@ -188,6 +188,11 @@ def _write_setup_marker() -> None:
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == '--recognition-queue-worker':
+        import multiprocessing
+        multiprocessing.freeze_support()
+        from twobyteasr.recognition.queue_process import main as recognition_queue_main
+        return recognition_queue_main()
     if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
         # Local MCP server for desktop AI clients: protocol on stdout only, no
         # GUI, no logs or data writes; it forwards to the running window.

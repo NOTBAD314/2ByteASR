@@ -802,10 +802,10 @@ class StudioRevisionStore:
         local_domains = (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_STYLE | DirtyDomain.CUE_SELECTION
                          | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
                          | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM
-                         | DirtyDomain.QC | DirtyDomain.AUTOSAVE)
+                         | DirtyDomain.QC | DirtyDomain.AUTOSAVE | DirtyDomain.ASSET_CATALOG)
         if dirty & ~local_domains:
             self._qc_base_current = False
-        if dirty == DirtyDomain.AUTOSAVE:
+        if dirty and not dirty & ~(DirtyDomain.AUTOSAVE | DirtyDomain.ASSET_CATALOG):
             # Review retention/ignore and panel state are save-only. They
             # cannot invalidate the visible caption/geometry revision.
             self.render = replace(self.render, revision_id=delta.revision)

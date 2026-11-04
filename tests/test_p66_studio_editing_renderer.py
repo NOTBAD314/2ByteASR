@@ -207,9 +207,9 @@ def test_fill_editor_gradient_layout_and_stop_behavior():
     })
     dialog.show()
     app.processEvents()
-    assert dialog._location_host.isHidden()
-    assert dialog._stop_host.geometry().top() < dialog._angle_host.geometry().top()
-    assert dialog._angle_host.geometry().top() < dialog.gradient.geometry().top() < dialog.picker.geometry().top()
+    # Rail above its angle row inside the gradient card.
+    assert dialog.gradient.geometry().bottom() < dialog._angle_host.mapTo(dialog._gradient_card, dialog._angle_host.rect().topLeft()).y()
+    assert not dialog._angle_host.isHidden()
     before = len(dialog.gradient._stops)
     QTest.mouseClick(dialog.gradient.bar, Qt.MouseButton.LeftButton,
                      pos=dialog.gradient.bar.rect().center())

@@ -36,6 +36,10 @@ class Loading(QObject):
         self.changed.emit()
         return True
     def snapshot(self): return dict(state=self.state, generation=self.generation)
+    def complete(self,generation,callback=None):
+        if not self.deliver(generation):return False
+        if callback is not None:callback()
+        return True
     def resume_ready(self,path):
         self.generation+=1;self.path=path;self.active=False;self.state='ready'
         self.completed=set(StudioReadiness.TASKS);self.changed.emit()

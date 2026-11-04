@@ -38,8 +38,16 @@ class ProjectRangeBar(QWidget):
         self.status = QLabel(); self.status.setObjectName('rangeStatus'); self.status.setWordWrap(True); row.addWidget(self.status,1)
         clear = QPushButton('清除范围'); clear.setObjectName('rangeClear'); clear.clicked.connect(self.clear); row.addWidget(clear)
         self._timer = QTimer(self); self._timer.setInterval(200)
-        self._timer.timeout.connect(self.refresh); self._timer.start()
+        self._timer.timeout.connect(self.refresh)
         self.refresh()
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        self.refresh();self._timer.start()
+
+    def hideEvent(self,event):
+        self._timer.stop()
+        super().hideEvent(event)
 
     def apply(self, points):
         p = self.project_getter()

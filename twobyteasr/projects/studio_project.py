@@ -791,6 +791,10 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
                 # linked clip it already has.
                 continue
             if audio_clip is None:
+                # A source-monitor video-only insert explicitly owns no audio.
+                # Existing muted components retain their edits and identity.
+                if not video_clip.audio_enabled:
+                    continue
                 audio_clip = AudioClip(
                     id=f"audio-{video_clip.id}",
                     asset_id=video_clip.asset_id,

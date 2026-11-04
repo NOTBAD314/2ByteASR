@@ -89,6 +89,7 @@ def test_tick_does_not_traverse_canonical_media_lists(project):
     project.media_pool=NoIteration(project.media_pool)
     project.video_tracks=NoIteration(project.video_tracks)
     project.audio_tracks=NoIteration(project.audio_tracks)
+    project.cues=NoIteration(project.cues)
     for ms in (1000,1500,2000,3000):
         assert playback_plan(project) is plan
         assert plan.video_at(ms)

@@ -181,9 +181,9 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     processed_records = _int(result.get("segment_count")) or success_records + fallback_records
     context = _dict(polish.get("term_context"))
     accepted_edits = _int(context.get("accepted_edits")) if "accepted_edits" in context else sum(len(row.get("edits") or []) for row in events if row.get("event") == "cloud_correction_applied")
-    if fallback_records or _int(polish.get("fallback_batches")):
+    if polish.get('status')=='partial' or fallback_records or _int(polish.get("fallback_batches")):
         polish_status, polish_label = "partial", "部分AI文字校对未完成"
-    elif polish and (success_records or _int(polish.get("success_batches"))):
+    elif polish and (polish.get('status')=='completed' or success_records or _int(polish.get("success_batches"))):
         polish_status, polish_label = "completed", "AI文字校对已完成"
     elif any(_polish_stage(row) and row.get("status") in _SUCCESS for row in stages):
         polish_status, polish_label = "completed", "AI文字校对已完成"
@@ -263,7 +263,12 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     pending = transcript_counts.get('pending_range_count', 0)
     usable_evidence = final_cues > 0
     usable = usable_evidence and not core_errors
-    if raw_status in {"cancelled", "canceled"}:
+    if raw_status == 'interrupted':
+        usable=usable_evidence and not save_error
+        core_status,label,title='interrupted','意外中断 · 可继续','识别中断 · 已保存结果保留'
+    elif raw_status == 'partial':
+        core_status,label,title='partial','部分完成','已有字幕可用 · 尚有部分处理未完成'
+    elif raw_status in {"cancelled", "canceled"}:
         core_status, label, title = "cancelled", "已取消", "任务已取消"
     elif raw_status == "failed" or core_errors:
         usable = False

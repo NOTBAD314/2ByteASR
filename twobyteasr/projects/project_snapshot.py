@@ -3,6 +3,19 @@ from copy import deepcopy
 from dataclasses import fields
 
 
+def copy_json_value(value):
+    """Detach in-memory JSON-shaped metadata without per-leaf Python deepcopy.
+
+    No bytes from files or IPC are decoded here. Non-serializable legacy
+    runtime values retain the existing deepcopy behavior.
+    """
+    import marshal
+    try:
+        return marshal.loads(marshal.dumps(value,4))
+    except (TypeError,ValueError):
+        return deepcopy(value)
+
+
 def presentation_snapshot(project, *, cue_ids=None):
     """Detached render inputs, with evidence limited to the selected captions.
 

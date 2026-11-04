@@ -102,7 +102,7 @@ def test_recovery_prompt_time_is_not_counted(monkeypatch, tmp_path):
     controller.page = page
     monkeypatch.setattr(QMessageBox, "exec", lambda self: time.sleep(0.2) or 0)
     before = gate.last_progress
-    assert controller._recovery_choice(tmp_path / "missing.2byteproj") == "saved"
+    assert controller._recovery_choice(tmp_path / "missing.2byteproj") == "cancel"
     assert gate.last_progress - before >= 0.19
     assert gate.profile['user_wait_ms'] >= 190
     page.deleteLater()

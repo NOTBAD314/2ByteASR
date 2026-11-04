@@ -109,6 +109,9 @@ class ReadinessSteps(QWidget):
     """
 
     ROW = 44
+    completion_painted = Signal()
+    completion_finished = Signal()
+    FINISH_SECONDS = .28
 
     def __init__(self, tasks, parent=None, *, compact=False):
         super().__init__(parent)
@@ -120,16 +123,23 @@ class ReadinessSteps(QWidget):
         self.failed = ''
         self.failed_detail = ''
         self.skipped = {}
+        self.reused = {}
         self.times: dict[str, float] = {}
+        self._finishing = False
+        self._finish_started = None
         self.setMinimumHeight(self.row * len(self.tasks))
         self._timer = QTimer(self)
-        self._timer.setInterval(90)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._update_active_row)
 
     def sizeHint(self):
         return QSize(360, self.row * len(self.tasks))
 
     def _update_active_row(self):
+        if self._finishing:
+            self.update()
+            return
         if self.current in self.tasks:
             index=self.tasks.index(self.current)
             self.update(QRect(0,index*self.row,self.width(),self.row))
@@ -147,15 +157,28 @@ class ReadinessSteps(QWidget):
         desired=(set(completed),str(current or ''),str(failed or ''))
         if (self.completed,self.current,self.failed)==desired:return
         self.completed,self.current,self.failed=desired
+        if self.failed or set(self.tasks) - self.completed:
+            self.cancel_completion()
         self._sync_timer()
         self.update()
 
     def _sync_timer(self):
-        animate = bool(self.current and not self.failed and self.isVisible())
+        animate = bool((self.current or self._finishing) and not self.failed and self.isVisible())
         if animate and not self._timer.isActive():
             self._timer.start()
         elif not animate:
             self._timer.stop()
+
+    def finish_after_paint(self):
+        """Start the success gesture only when every final row is painted."""
+        self._finishing = True
+        self._finish_started = None
+        self._sync_timer()
+        self.update()
+
+    def cancel_completion(self):
+        self._finishing = False
+        self._finish_started = None
 
     def showEvent(self, event):
         self._sync_timer()
@@ -169,7 +192,7 @@ class ReadinessSteps(QWidget):
         if task == self.failed:
             return 'failed'
         if task in self.completed:
-            return 'done'
+            return 'reused' if task in self.reused else 'done'
         if task == self.current:
             return 'active'
         return 'waiting'
@@ -180,6 +203,11 @@ class ReadinessSteps(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         ratio = self.devicePixelRatioF()
         now = time.perf_counter()
+        final = self._finishing and not self.failed and set(self.tasks) <= self.completed
+        first_final_paint = final and self._finish_started is None
+        if first_final_paint:
+            self._finish_started = now
+        finish_progress = min(1., (now-self._finish_started)/self.FINISH_SECONDS) if final else 0.
         base = QFont(self.font())
         mono = QFont('Cascadia Mono')
         mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -193,7 +221,8 @@ class ReadinessSteps(QWidget):
             top = index * self.row
             if not clip.intersects(QRect(0,top,width,self.row)):continue
             state = self.state_of(task)
-            label = _tr(task) + ((' · ' + _tr('无需准备')) if task in self.skipped else '')
+            label = _tr(task) + ((' · ' + _tr('已复用')) if task in self.reused else
+                                (' · ' + _tr('无需准备')) if task in self.skipped else '')
             if self.compact:
                 tile = QRectF(0, top + (self.row - 30) / 2, 30, 30)
                 text_left = 44
@@ -206,6 +235,7 @@ class ReadinessSteps(QWidget):
                 tile = QRectF(7, top + (self.row - 32) / 2, 32, 32)
                 text_left = 52
             fill, ink, border = {
+                'reused': (theme.accent if self.compact else _alpha(theme.success, .16), theme.text_on_accent if self.compact else theme.success, None),
                 'done': (theme.accent if self.compact else _alpha(theme.success, .16), theme.text_on_accent if self.compact else theme.success, None),
                 'active': (theme.accent if not self.compact else theme.accent_soft, theme.text_on_accent if not self.compact else theme.accent_text, theme.accent if self.compact else None),
                 'failed': (theme.danger, '#ffffff', None),
@@ -224,8 +254,8 @@ class ReadinessSteps(QWidget):
             else:
                 painter.drawRoundedRect(tile, 11, 11)
             center = tile.center()
-            if state == 'done':
-                _draw_check(painter, center, ink)
+            if state in ('done','reused'):
+                _draw_check(painter, center, ink, 1.0 + .18*math.sin(math.pi*finish_progress))
             elif state == 'failed':
                 _draw_cross(painter, center, ink)
             else:
@@ -236,7 +266,7 @@ class ReadinessSteps(QWidget):
             font.setWeight(QFont.Weight.Bold if state in ('active', 'failed') else QFont.Weight.Medium)
             painter.setFont(font)
             color = {'active': theme.accent_text, 'failed': theme.danger,
-                     'done': theme.text_secondary}.get(state, theme.text_muted)
+                     'done': theme.text_secondary, 'reused': theme.text_secondary}.get(state, theme.text_muted)
             painter.setPen(QColor(color))
             right_space = 64
             detail = ''
@@ -276,6 +306,12 @@ class ReadinessSteps(QWidget):
                                  Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                                  _tr('失败') if state == 'failed' else _tr('等待'))
         painter.end()
+        if first_final_paint:
+            self.completion_painted.emit()
+        if final and finish_progress >= 1.:
+            self._finishing = False
+            self._sync_timer()
+            self.completion_finished.emit()
 
 
 def _rounded(rect: QRectF, radius: float) -> QPainterPath:
@@ -358,11 +394,18 @@ class CoverScrubber(QProgressBar):
         self.failed = False
         self.finished = False
         self._shown = 0.0
+        self._ease_from = 0.0
+        self._ease_started = time.perf_counter()
         self._face = None
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._ease)
-        self.valueChanged.connect(lambda _value: self._timer.start())
+        self.valueChanged.connect(self._retarget)
+
+    def _retarget(self, _value):
+        self._ease_from = self._shown
+        self._ease_started = time.perf_counter()
+        self._timer.start()
 
     def _target(self):
         span = max(1, self.maximum() - self.minimum())
@@ -370,14 +413,18 @@ class CoverScrubber(QProgressBar):
 
     def _ease(self):
         target = self._target()
-        self._shown += (target - self._shown) * .2
-        if abs(target - self._shown) < .002:
+        progress = min(1., max(0., (time.perf_counter()-self._ease_started)/.18))
+        self._shown = self._ease_from + (target-self._ease_from)*(1.-(1.-progress)**3)
+        if progress >= 1.:
             self._shown = target
             self._timer.stop()
         self.update()
 
     def reset_progress(self):
+        self._timer.stop()
         self._shown = 0.0
+        self._ease_from = 0.0
+        self._ease_started = time.perf_counter()
         self.failed = self.finished = False
         self.update()
 

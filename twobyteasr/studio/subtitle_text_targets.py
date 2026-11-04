@@ -38,6 +38,7 @@ class TextEntry:
     speaker_id: str
     source_text: str = ""
     source_cue_id: str = ""
+    source_language: str = ""
 
     @property
     def key(self):
@@ -61,6 +62,11 @@ def text_entries(project, *, mode="both", tracks=None, cue_ids=None, include_emp
         if record.get('role') == 'original' and record.get('export_id') and record.get('source_cue'):
             external_sources.setdefault((record['export_id'], record['source_cue']), []).append(cue)
     translated = translation_view(project) if mode != "original" else {}
+    group_sources = {}
+    for cue in sorted(project.cues, key=lambda c: (c.start_ms, c.end_ms, c.id)):
+        group = cue.appearance_override.get('translation_group', {})
+        if group.get('id'):
+            group_sources.setdefault(str(group['id']), []).append(cue.text)
     wanted = None if cue_ids is None else set(cue_ids)
     tracks = None if tracks is None else set(tracks)
     result = []
@@ -84,6 +90,7 @@ def text_entries(project, *, mode="both", tracks=None, cue_ids=None, include_emp
         ref = TextTarget(cue.id, layer, lang, cue.speaker_id)
         source_id = ""
         source_text = ""
+        reference_language = ""
         if is_translation:
             association = cue_info.get(cue.id, {}).get("association") or {}
             source_id = str(association.get("cue_id") or "")
@@ -95,19 +102,23 @@ def text_entries(project, *, mode="both", tracks=None, cue_ids=None, include_emp
             if source is not None and source.id != cue.id:
                 source_text = source.text
                 source_id = source.id
+                reference_language = str(track_info.get(source.speaker_id, {}).get('language') or language)
             else:
                 source_id = ""
         if (mode == "both" or mode == layer) and (layer == "original" or tracks is None or ref.track_id in tracks):
             if include_empty or cue.text.strip():
-                result.append(TextEntry(ref, cue.text, cue.start_ms, cue.end_ms, cue.speaker_id, source_text, source_id))
+                result.append(TextEntry(ref, cue.text, cue.start_ms, cue.end_ms, cue.speaker_id, source_text, source_id, reference_language))
         if mode == "original":
             continue
         record = translated.get(cue.id, {})
+        group = cue.appearance_override.get('translation_group', {})
+        displayed = str(group.get('text') or record.get('text') or '')
+        reference = '\n'.join(group_sources.get(str(group.get('id')), ())) if group.get('text') else cue.text
         target = str(record.get("target") or "")
         ref = TextTarget(cue.id, "translation", target, "translation-records:" + target, "translation")
-        if (tracks is None or ref.track_id in tracks) and (include_empty or str(record.get("text") or "").strip()):
-            result.append(TextEntry(ref, str(record.get("text") or ""), cue.start_ms, cue.end_ms,
-                                    cue.speaker_id, cue.text, cue.id))
+        if (tracks is None or ref.track_id in tracks) and (include_empty or displayed.strip()):
+            result.append(TextEntry(ref, displayed, cue.start_ms, cue.end_ms,
+                                    cue.speaker_id, reference or cue.text, cue.id, lang))
     return result
 
 
@@ -173,9 +184,11 @@ def review_project(project, entries):
     view._review_text_entries = {entry.key: entry for entry in entries}
     view.studio_state = dict(project.studio_state or {})
     view.generation_metadata = dict(project.generation_metadata or {})
-    for key in ('translation_records', 'translations', 'translation_glossary', 'subtitle_imports'):
-        if key in view.generation_metadata:
-            view.generation_metadata[key] = copy.deepcopy(view.generation_metadata[key])
+    from ..projects.project_snapshot import copy_json_value
+    detached=getattr(project,'_review_detached_fields',())
+    for key in ('translation_records', 'translations', 'translation_glossary', 'translation_terminology', 'subtitle_imports'):
+        if key in view.generation_metadata and key not in detached:
+            view.generation_metadata[key] = copy_json_value(view.generation_metadata[key])
     return view
 
 

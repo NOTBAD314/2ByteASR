@@ -33,14 +33,52 @@ def load_cache() -> dict:
 
 
 def save_cache(cache: dict) -> None:
+    from ..recognition.task_journal import FileLease,TaskBusy
+    from ..storage.atomic_files import write_text_atomic
+    import time
+    path=cache_path();path.parent.mkdir(parents=True,exist_ok=True)
+    lease=FileLease(path.with_suffix('.lock'))
+    for attempt in range(8):
+        try:lease.acquire();break
+        except TaskBusy:
+            if attempt==7:raise OSError('Translation cache is busy; task checkpoints remain available')
+            time.sleep(.02*(attempt+1))
+    try:
+        merged=load_cache();merged.update(cache)
+        _save_cache_locked(merged,path,write_text_atomic)
+    finally:lease.close()
+
+
+def _save_cache_locked(cache,path,writer):
     if len(cache) > CACHE_LIMIT:
         for key in list(cache)[: len(cache) - CACHE_LIMIT]:
             cache.pop(key, None)
-    path = cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, path)
+    writer(path,json.dumps(cache,ensure_ascii=False))
+
+
+def task_cache(context,cache):
+    journal=getattr(context,'task_journal',None)
+    if journal is not None:
+        for key in tuple(journal.record['task'].get('artifacts',{})):
+            if str(key).startswith('translation-cache:'):
+                value=journal.load_artifact(key,{'kind':'translation-cache-v1'})
+                if isinstance(value,dict):cache.update(value)
+    return cache
+
+
+def checkpoint_cache(context,cache,previous):
+    journal=getattr(context,'task_journal',None)
+    if journal is None:return
+    added={key:cache[key] for key in cache.keys()-previous}
+    if not added:return
+    from ..recognition.task_journal import digest
+    journal.publish('translation-cache:'+digest(sorted(added))[:24],added,{'kind':'translation-cache-v1'})
+    previous.update(added)
+
+
+def metadata_complete(metadata):
+    records=(metadata.get('translation_records') or {}).get('records') or {}
+    return not any(row.get('status') in {'failed','untranslated','needs_update','cancelled'} for row in records.values())
 
 
 def project_cue_ids(cues) -> list[str]:
@@ -77,11 +115,13 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     from .subtitle_translation import (apply_translation_result, status_counts, translate, translation_source,
                                        RECOMMENDED_BATCH_ITEMS)
     cues = list(cues)
+    from ..glossary.translation_terms import KEY, normalize
+    term_policy = normalize(getattr(runtime_context, KEY, None))
     fake = SimpleNamespace(cues=[StudioCue(id=cue_id, start_ms=round(float(cue.start) * 1000),
                                            end_ms=round(float(cue.end) * 1000), text=str(cue.text or ""),
                                            speaker_id=str(getattr(cue, "speaker", "S00") or "S00"))
                                  for cue_id, cue in zip(project_cue_ids(cues), cues)],
-                           generation_metadata={"language": {"code": language}}, studio_state={}, speakers=[])
+                           generation_metadata={"language": {"code": language}, KEY: term_policy}, studio_state={}, speakers=[])
     if provider is None:
         from ..providers.ai_providers import provider_for_stage
         from ..providers.asr_provider_snapshot import resolve_provider_snapshot
@@ -96,12 +136,14 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         provider=provider.concurrent_client()
         provider.scheduling_lane='translation'
     token = getattr(runtime_context, "cancellation_token", None)
-    cache = load_cache()
+    cache = task_cache(runtime_context,load_cache())
+    checkpointed=set(cache)
     from .european_text import LABELS as european_labels
     source_label = {"zh": "中文", "ja": "日文", "en": "英文", "ko": "韩文", **european_labels}[language]
     print(f"   [翻译] {source_label} → {TARGET_LABELS[target]}：{len(fake.cues)} 条，按批发送字幕文字到已配置的 AI 服务…")
 
     def progress(done, total, message=""):
+        checkpoint_cache(runtime_context,cache,checkpointed)
         print(f"   [翻译] {done}/{total} {message}".rstrip())
         # 2026-10-15: the progress page shows translated / total cues live.
         legacy.record_run_event("subtitle_translation_progress", target=target, done=int(done),
@@ -140,4 +182,4 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
                                priority=2, severity="warning")
     print(f"   [翻译] 完成 {len(result.translations)} 条，失败 {len(result.failed)} 条，缓存命中 {result.cache_hits} 条。")
     metadata = fake.generation_metadata
-    return {key: metadata[key] for key in ("translation_records", "translations") if key in metadata}
+    return {key: metadata[key] for key in ("translation_records", "translations", KEY) if key in metadata}

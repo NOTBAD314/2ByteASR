@@ -496,6 +496,14 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     if os.environ.get('TWOBYTEASR_MOSS_RESUME_ONLY')=='1':
         raise ASRProtocolError('当前只允许恢复已知MOSS任务，缺少缓存时不创建收费请求。','resume_only')
     import requests
+    import uuid
+    # Local intent identity only. MOSI's existing task-ID protocol is not an
+    # idempotency-key API; do not send invented headers or promise deduplication.
+    state.setdefault('client_request_id', uuid.uuid4().hex)
+    state.setdefault('intent_created_at', time.time())
+    if not state.get('status'):
+        state['status'] = 'PREPARED'
+    _save(state_path, state)
     from ..recognition.asr import _pcm16_wav_bytes
     from .dashscope_service import ServiceProblem, _MultipartBody
     wav = _pcm16_wav_bytes(audio)
@@ -511,6 +519,8 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     check()
     state.update(status='SUBMITTING', bytes=len(wav), created_at=time.time())
     _save(state_path, state)
+    _record_event('remote_submission_intent', request_key=state_path.parent.name,
+        state_path=str(state_path),client_request_id=state['client_request_id'],status='SUBMITTING')
     try:
         response = client.post(transcriptions_url(endpoint['url']),
                                headers={**_auth(endpoint), 'Content-Type': form.content_type,
@@ -518,20 +528,11 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
                                data=form, timeout=UPLOAD_TIMEOUT, allow_redirects=False)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         sent = form.tell()
-        if sent < len(form):
-            # The closing boundary never left this process, so MOSI has no
-            # complete request: nothing was accepted or billed. The next
-            # attempt uploads again without asking.
-            state.update(status='UPLOAD_INCOMPLETE', transport_error=type(exc).__name__,
-                         sent_bytes=sent, body_bytes=len(form))
-            _save(state_path, state)
-            message = (f'上传到 MOSI 时网络中断（已送出 {sent / 1048576:.0f} / {len(form) / 1048576:.0f} MB），'
-                       'MOSI 没有收到完整音频，不会受理也不会计费。')
-            error = ASRProtocolError(message, 'upload_interrupted')
-            error.problem = ServiceProblem('network', message, '检查网络后直接重新开始识别即可。',
-                                           code='upload_interrupted')
-            raise error from exc
-        state.update(status='SUBMITTING', transport_error=type(exc).__name__)
+        # Bytes consumed from the local stream are not a provider receipt.
+        # No response means acceptance/billing is unknown even on a partial
+        # upload; require reconciliation rather than promising it was free.
+        state.update(status='SUBMITTING', transport_error=type(exc).__name__,
+                     sent_bytes=sent, body_bytes=len(form))
         _save(state_path, state)
         raise ASRProtocolError('上传时网络中断，无法确认 MOSI 是否已受理（可能已计费）。'
                                '为避免重复收费，没有自动重新提交；请到 MOSI 控制台核对后再重试。',
@@ -560,6 +561,8 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
                  retry_after=int(retry_after) if isinstance(retry_after, (int, float)) else None,
                  submitted_at=time.time())
     _save(state_path, state)
+    _record_event('remote_task_accepted', request_key=state_path.parent.name,state_path=str(state_path),
+        client_request_id=state['client_request_id'],task_id=task_id,status=state['status'])
     return state
 
 
@@ -623,9 +626,15 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
 def _load_state(root: Path) -> dict:
     path = root / 'task.json'
     try:
-        return json.loads(path.read_text('utf8')) if path.is_file() else {}
-    except ValueError:
-        return {}
+        if not path.is_file():
+            if (root/'submission-parameters.json').is_file():
+                raise ASRProtocolError('远端提交记录缺失，无法确认是否受理；已阻止自动重复提交。','submission_uncertain')
+            return {}
+        value=json.loads(path.read_text('utf8'))
+        if not isinstance(value,dict):raise ValueError('task record must be an object')
+        return value
+    except ValueError as exc:
+        raise ASRProtocolError('远端提交记录损坏；请核对服务商任务后恢复，未自动重复提交。','submission_uncertain') from exc
 
 
 def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> dict:
@@ -633,7 +642,7 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
     request must not be sent again without the user's confirmation."""
     root.mkdir(parents=True, exist_ok=True)
     state = _load_state(root)
-    if state.get('status') == 'SUBMITTING' and not state.get('task_id'):
+    if state.get('status') in {'SUBMITTING','UPLOAD_INCOMPLETE'} and not state.get('task_id'):
         if not restart_terminal:
             raise ASRProtocolError('上次上传是否被 MOSI 受理无法确认；为避免重复收费，需先到 MOSI 控制台核对，'
                                    '再在完成页选择“重试失败项”并确认重新提交。', 'submission_uncertain')
@@ -642,12 +651,6 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
         _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
         state = {}
         progress('explicit_restart_uncertain', 0, 1)
-    if state.get('status') == 'UPLOAD_INCOMPLETE' and not state.get('task_id'):
-        # MOSI never received the whole file (see submit); upload again.
-        import uuid
-        _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
-        state = {}
-        progress('retry_incomplete_upload', 0, 1)
     if content_blocked(state):
         # Never sent again unchanged, confirmed or not (2026-10-24): only cut
         # into pieces (``resplit_blocked``), which are requests of their own.

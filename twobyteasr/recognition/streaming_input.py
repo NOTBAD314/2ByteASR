@@ -111,6 +111,9 @@ class LiveInput:
 
 
 def create_live_input(context,legacy,pipeline,media,cache,fps,paths,text_plan):
+    # The Chinese AED process consumes its full shared PCM in order. Keep
+    # decoding atomic here; remote/AED/text stages still overlap by receipts.
+    if str(getattr(legacy,'FIRERED_ASR_BACKEND',''))=='local':return None
     if (context.recognition_snapshot.get('language_recovery_policy') or {}).get('reuse_candidates'):
         return None
     from ..providers.mosi_asr import MODEL

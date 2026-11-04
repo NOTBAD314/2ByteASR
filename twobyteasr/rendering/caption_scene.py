@@ -28,13 +28,29 @@ PREHEAT_INTERVAL_S = 0.25
 PREHEAT_AHEAD_WALL_S = 1.5
 PREHEAT_MIN_BOUNDARIES = 2
 PREHEAT_MAX_BOUNDARIES = 6
-FRAME_CACHE_BYTES = 64 * 1024 * 1024
+FRAME_CACHE_BYTES = 256 * 1024 * 1024
 GLYPH_CACHE_BYTES = 96 * 1024 * 1024
 _FRAME_READY_EVENT=QEvent.Type(QEvent.registerEventType())
 
 
 class _FrameReadyEvent(QEvent):
     def __init__(self):super().__init__(_FRAME_READY_EVENT)
+
+
+def complete_scene_for_seek(scene, cue_id, generation):
+    """An atomic bilingual/multi-cue foreground owns a scene, not one cue ID."""
+    if (scene is None or not getattr(scene,'active',False) or getattr(scene,'closed',True)
+            or getattr(scene,'published',None) is None):
+        return False
+    token = getattr(scene,'token',None)
+    if (token is None or len(token)<5 or token[3]!=generation or cue_id not in token[4]
+            or getattr(scene,'last_result_token',None)!=token or not scene.still_current(token)):
+        return False
+    state = scene.trace()
+    rows = state.get('cue_pixels') or ()
+    ready = {row.get('cue_id') for row in rows if row.get('status')!='pending'}
+    return bool(rows and set(state.get('expected_display_cue_ids') or token[4]) <= ready
+                and all(row.get('status')!='pending' for row in rows))
 
 
 def active_cues(page, milliseconds):
@@ -383,6 +399,9 @@ class CaptionScene(QObject):
         self.pending = None
         self.warm_pending = OrderedDict()
         self.wanted_times = []
+        self.warm_completed = OrderedDict()
+        self._priority_warm_time=None
+        self._seek_reserved_frame=None
         self.frames = OrderedDict()
         self.last_request = None
         self.published = None
@@ -391,6 +410,8 @@ class CaptionScene(QObject):
         self._delivery_pending=None
         self._delivery_scheduled=False
         self.schedule_counts = dict(replaced=0, stale_before_raster=0, stale_at_gui=0)
+        self.cache_counts = dict(memory_hits=0, memory_misses=0, evictions=0)
+        self.disk_stats = {}
         self._hold = None
         self._cleared_token = None
         self._last_preheat = 0.0
@@ -416,8 +437,17 @@ class CaptionScene(QObject):
             from .overlay_session import register_overlay_worker
             register_overlay_worker(overlay_folder, self.thread)
         self.thread.start()
-        page.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
-        self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+        # A QObject cannot receive its own destroyed signal through its C++
+        # slot table after that table has been torn down. Use a Python-only
+        # weak callback, which closes worker state without reviving the widget.
+        import weakref
+        reference = weakref.ref(self)
+        def retire(*_):
+            owner = reference()
+            if owner is not None:CaptionScene.close(owner)
+        self._retire_callback = retire
+        page.destroyed.connect(retire, Qt.ConnectionType.DirectConnection)
+        self.destroyed.connect(retire, Qt.ConnectionType.DirectConnection)
 
     def event(self, event):
         if event.type()==_FRAME_READY_EVENT:
@@ -567,6 +597,8 @@ class CaptionScene(QObject):
             if self._cleared_token != token:
                 self._cleared_token = token
                 page.video.remove_compositor_overlay(page.video.ADVANCED_OVERLAY_ID, force=True)
+            from .visual_runtime import VisualOwner
+            page._visual_ownership.commit(VisualOwner.NONE, cue_id='')
             return True
         self._cleared_token = None
         prepared = self.scene_items(cues)
@@ -601,7 +633,15 @@ class CaptionScene(QObject):
             if animated and not measure_geometry:
                 cached=self.frames.get(self.animation_key(token,prepared,milliseconds))
             else:cached=self.frames.get(self.frame_key(token)) if not animated else None
+            reserved=getattr(self,'_seek_reserved_frame',None)
+            if not animated and reserved is not None and reserved[0]==self.frame_key(token):
+                cached=reserved[1];self._seek_reserved_frame=None
+            if cached is not None:
+                self.cache_counts['memory_hits'] += 1
+                cache_key = self.animation_key(token,prepared,milliseconds) if animated else self.frame_key(token)
+                if cache_key in self.frames:self.frames.move_to_end(cache_key)
             if cached is None:
+                self.cache_counts['memory_misses'] += 1
                 if self.pending is not None:self.schedule_counts['replaced']+=1
                 self.pending = (token, prepared, milliseconds, width, height, measure_geometry, time.perf_counter())
                 self.wake.set()
@@ -634,6 +674,11 @@ class CaptionScene(QObject):
     @staticmethod
     def frame_key(token):
         """Raster identity: a static scene does not depend on the playback generation."""
+        if isinstance(token[5], tuple) and token[5] and token[5][0] == 'content-v1':
+            # Publication still checks the full revision/generation token.
+            # Pixels depend on these captions only, not another cue's edit.
+            geometry = token[6:7] if len(token)>10 and token[6][2] else token[6:]
+            return (token[0], token[4], token[5], *geometry)
         if len(token)>10 and token[6][2]:
             return token[:3]+token[4:-4]
         return token[:3] + token[4:]
@@ -647,7 +692,8 @@ class CaptionScene(QObject):
         from ..timeline.caption_frame_time import project_frame_rate
         rate=project_frame_rate(self.project)
         frame=round(float(milliseconds)*float(rate)/1000) if rate is not None else float(milliseconds)
-        return (self.frame_key(token),tuple(getattr(p,'snapshot_hash',None) for _,p in prepared),'animation',frame)
+        return (self.frame_key(token),tuple(getattr(p,'snapshot_hash',None) for _,p in prepared),
+                'animation',token[1],frame)
 
     def continuous_handoff(self, previous, token):
         """Playback advanced into the next cue set: same project, revisions,
@@ -669,7 +715,7 @@ class CaptionScene(QObject):
         page._studio_trace('CAPTION_SCENE_RETIRED', cue_ids=list(hold[0][4]), reason='hold_timeout',
                            held_ms=round((time.perf_counter() - hold[1]) * 1000, 1))
 
-    def warm_times(self, times):
+    def warm_times(self, times, *, include_motion=False):
         """Rasterise the scenes at ``times`` ahead of a jump there (review navigation)."""
         if self.closed or self.page.project is not self.project:
             return
@@ -692,7 +738,7 @@ class CaptionScene(QObject):
             if any(p is None for _, p in prepared):
                 waiting.append(int(at))  # retried when the caption cache is ready
                 continue
-            if any(animated_caption(p) for _, p in prepared):
+            if any(animated_caption(p) for _, p in prepared) and not include_motion:
                 continue
             with self.lock:
                 self.warm_pending[token] = (token, prepared, int(at), width, height, True)
@@ -701,7 +747,10 @@ class CaptionScene(QObject):
         self.wanted_times = waiting[-6:]
 
     def _limit_warm_pending(self):
-        self.warm_pending=OrderedDict(sorted(self.warm_pending.items(),key=lambda row:row[1][2]))
+        # A seek near the end must not spend its preheat budget at the start.
+        priority=getattr(self,'_priority_warm_time',None)
+        target=self._media_ms if priority is None else priority
+        self.warm_pending=OrderedDict(sorted(self.warm_pending.items(),key=lambda row:abs(row[1][2]-target)))
         while len(self.warm_pending)>32:self.warm_pending.popitem(last=True)
 
     def scene_items(self, cues):
@@ -732,10 +781,11 @@ class CaptionScene(QObject):
 
     def scene_token(self,cues,rect,generation):
         page=self.page;revision=page._revision_store.render
+        items = self.scene_items(cues)
+        dependencies = ('content-v1', tuple((key, getattr(p,'snapshot_hash',None),
+            getattr(p,'font_signature',()), repr(getattr(p,'interaction_transform',None))) for key,p in items))
         return (id(self.project),revision.mapping_revision,revision.visual_revision,generation,tuple(c.id for c in cues),
-                repr((getattr(page,'_caption_transform_preview_serial',0),getattr(page,'_live_edit_text_overrides',{}),getattr(page,'_live_transform_overrides',{}),
-                      [(c.id,c.start_ms,c.end_ms,c.speaker_id) for c in cues])),
-                scene_raster_geometry(page,rect,self.scene_items(cues)),*rect.getRect())
+                dependencies,scene_raster_geometry(page,rect,items),*rect.getRect())
 
     def preheat(self,milliseconds,rect,generation,width,height):
         """Prepare upcoming static active sets before their first visible tick."""
@@ -843,6 +893,8 @@ class CaptionScene(QObject):
 
     def work(self):
         from .caption_pixel_cache import prepared_pixels
+        from .caption_disk_cache import CaptionDiskCache
+        disk = CaptionDiskCache()
         rasterizer = SceneRasterizer(self.web_cache)
         try:
             while True:
@@ -874,8 +926,16 @@ class CaptionScene(QObject):
                         for key,value in self._motion_preheater.take(self.motion_epoch(token), keys if short else None):
                             rasterizer.insert_raster(key, value)
                     raster_started=time.perf_counter()
-                    image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3],
-                        retire_web=current_task, measure_cue_geometry=measure_geometry)
+                    static = (isinstance(token[5],tuple) and token[5] and token[5][0]=='content-v1'
+                              and all(p is not None and getattr(p,'web',None) is None
+                                      and not animated_caption(p) for _,p in cues))
+                    disk_key = disk.key((self.frame_key(token)[1:], width, height)) if static else None
+                    cached = disk.get(disk_key) if disk_key else None
+                    if cached is not None:
+                        image, rows = cached
+                    else:
+                        image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3],
+                            retire_web=current_task, measure_cue_geometry=measure_geometry)
                     raster_finished=time.perf_counter()
                     if any(row['status']=='pending' for row in rows):
                         # A configured HTML page is not yet a rendered frame.
@@ -897,6 +957,7 @@ class CaptionScene(QObject):
                     continue
                 ready_at=time.perf_counter()
                 trace = dict(expected_cue_ids=[key for key, _ in cues], cue_pixels=rows, geometry_complete=measure_geometry,
+                             disk_cache_hit=cached is not None,
                              animated=any(animated_caption(p) for _,p in cues),
                              request_kind='current' if current_task else 'preheat',
                              queue_wait_ms=(started-queued[0])*1000 if queued else 0,
@@ -912,15 +973,28 @@ class CaptionScene(QObject):
                         # reference until ACK and is unaffected.
                         return
                     self._glyph_ready_keys=frozenset(rasterizer.rasters)
+                    if not current_task:
+                        self.warm_completed[self.frame_key(token)] = (float(milliseconds),time.perf_counter())
+                        while len(self.warm_completed)>512:self.warm_completed.popitem(last=False)
                     if all(row['status']!='pending' for row in rows) and (short_warm or not any(animated_caption(p) for _,p in cues)):
                         key=self.animation_key(token,cues,milliseconds) if short_warm else self.frame_key(token)
                         self.frames[key]=(pixels,trace)
                         self.frames.move_to_end(key)
-                        while len(self.frames)>1 and (len(self.frames)>32 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>FRAME_CACHE_BYTES):
+                        while self.frames and (len(self.frames)>256 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>FRAME_CACHE_BYTES):
                             self.frames.popitem(last=False)
-                if short_warm:continue
+                            self.cache_counts['evictions'] += 1
+                # Range warm-up may render an animated cue to prepare glyphs.
+                # Its sampled time is not the current presentation time.
+                if short_warm or (not current_task and trace['animated']):continue
                 if not self._notify_ready(token, pixels, trace):
                     return
+                # Current pixels are submitted before optional compression/I/O.
+                if disk_key and cached is None and not self.closed and all(row['status']=='rendered' for row in rows):
+                    with self.lock:
+                        foreground_waiting = self.pending is not None
+                    if not foreground_waiting:
+                        disk.put(disk_key, image, rows)
+                self.disk_stats = disk.stats()
         finally:
             rasterizer.close()
 
@@ -955,7 +1029,7 @@ class CaptionScene(QObject):
         if tuple(c.id for c in cues) != token[4]:
             return
         context = dict(caller='CaptionScene', cue_id='scene:'+hashlib.sha1('|'.join(token[4]).encode()).hexdigest()[:16],
-                       expected_cue_ids=list(token[4]), scene_token=token)
+                       expected_cue_ids=list(token[4]), scene_token=token,sample_ms=trace.get('sample_ms'))
         accepted = page.video.publish_compositor_overlay(page.video.ADVANCED_OVERLAY_ID,
             pixels.image, QRect(*token[-4:]), prepared_pixels=pixels, context=context)
         trace=dict(trace,gui_delivery_ms=(gui_received-trace['ready_at'])*1000 if 'ready_at' in trace else 0,
@@ -1017,7 +1091,8 @@ class CaptionScene(QObject):
                     rendered_cue_ids=[r['cue_id'] for r in rows if r['status']=='rendered'],
                     cue_pixels=rows,
                     visible=self.published is not None and bool(self.published.raw_geometry['alpha_nonzero']),
-                    owner='caption_scene')
+                    owner='caption_scene', memory_cache=dict(getattr(self,'cache_counts',{})),
+                    disk_cache=dict(getattr(self,'disk_stats',{})))
 
     def close(self, *_):
         self._motion_preheater.close()
@@ -1028,6 +1103,8 @@ class CaptionScene(QObject):
             self.pending = None
             self._delivery_pending=None
             self.warm_pending.clear();self.frames.clear()
+            self.warm_completed.clear()
+            self._seek_reserved_frame=None
             self.published = None
             # Every guard checks `closed` first; dropping the project lets a
             # closed scene stop pinning the whole previous project in memory.

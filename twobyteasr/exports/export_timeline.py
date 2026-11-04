@@ -58,7 +58,7 @@ def output_canvas(snapshot, width=None, height=None):
     return snapshot
 
 
-def export_project_snapshot(project, *, start_ms=None, end_ms=None, width=None, height=None):
+def export_project_snapshot(project, *, start_ms=None, end_ms=None, width=None, height=None, check_integrity=True):
     from ..timeline.studio_edit_sequence import projected_cues
     from ..projects.project_snapshot import document_snapshot
     runtime = getattr(project, '_studio_state_runtime', None)
@@ -71,7 +71,8 @@ def export_project_snapshot(project, *, start_ms=None, end_ms=None, width=None, 
                              and (start_ms is None or c.end_ms > start_ms)
                              and (end_ms is None or c.start_ms < end_ms)]
     from .caption_integrity import require_confirmed_empty_sources
-    require_confirmed_empty_sources(project,visible)
+    if check_integrity:
+        require_confirmed_empty_sources(project,visible)
     snapshot = document_snapshot(project, cues=visible)
     # Burn-in (libass, still frames, web renderer) shows the punctuation choice.
     from ..subtitle_rules.punctuation_style import mark_cues_styled, style_cues

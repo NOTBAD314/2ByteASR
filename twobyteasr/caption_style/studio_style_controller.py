@@ -1997,20 +1997,28 @@ class StudioStyleController:
         bind_text(editor, '精确颜色值', property='toolTip')
         editor.textChanged.connect(lambda value, button=swatch: page._update_color_swatch(button, value))
         editor.hide()
-        layout.addWidget(swatch, 1)
+        layout.addWidget(swatch, 1, Qt.AlignmentFlag.AlignVCenter)
         page._update_color_swatch(swatch, editor.text())
         return host
 
     def _open_fill_editor(self) -> None:
         page = self.page
+        from .style_application import context_key
+        target = context_key(page)
         current = getattr(
             page, "_fill_spec",
             FillSpec.solid(page.style_fill_color.text() or "#FFFFFFFF"),
         )
         dialog = page._new_fill_editor_dialog(current.to_dict(), page)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        fill = FillSpec.from_value(dialog.value())
+        try:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            if context_key(page) != target:
+                page._load_style_inspector()
+                return
+            fill = FillSpec.from_value(dialog.value())
+        finally:
+            dialog.deleteLater()
         page._updating_style_ui = True
         try:
             page._fill_spec = fill
@@ -2068,10 +2076,33 @@ class StudioStyleController:
 
     def _set_style_color(self, editor: QLineEdit, value: str) -> None:
         page = self.page
+        if editor is page.style_shadow_color:
+            color=QColor(value)
+            if not color.isValid():return
+            # The existing shadow contract stores RGB and opacity separately.
+            # Adapt the shared RGBA picker once instead of folding its alpha
+            # into opacity on every normalize/load cycle.
+            page._updating_style_ui=True
+            try:
+                editor.setText(color.name(QColor.NameFormat.HexRgb))
+                page.style_shadow_opacity.setValue(round(color.alphaF()*100))
+            finally:page._updating_style_ui=False
+            page._style_control_changed('shadow.color','shadow.opacity')
+            return
         editor.setText(value)
         fields = {page.style_fill_color: "primary_color", page.style_outline_color: "outline_color",
                   page.style_outline2_color: "outline2_color", page.style_back_color: "back_color",
                   page.style_shadow_color: "shadow.color", page.style_glow_color: "glow.color"}
+        if editor is page.style_outline2_color and not page.style_outline2.isChecked():
+            # Width zero is the disabled state. Keep its chosen color for a
+            # later enable without sending an empty string to a paint command.
+            from .scoped_style import style_patch_command
+            layer = page.style_layer.currentData() or 'original'
+            command = style_patch_command(self.session.project,self._style_target_ids(),
+                {'outline2_color':value},layer=layer,changed=page._changed)
+            if command is not None:self.session.undo_stack.push(command)
+            page._load_style_inspector()
+            return
         page._style_control_changed(fields[editor])
 
     def _open_style_color_dialog(self, editor: QLineEdit) -> None:
@@ -2095,19 +2126,43 @@ class StudioStyleController:
 
     def _create_style_color_dialog(self, editor: QLineEdit):
         page = self.page
-        from ..design.color_picker import SimpleColorDialog
+        from .studio_fill_editors import FillEditorDialog
 
         initial = QColor(editor.text())
-        dialog = SimpleColorDialog(
-            initial if initial.isValid() else QColor("#ffffff"),
+        if editor is page.style_shadow_color and initial.isValid():
+            initial.setAlphaF(page.style_shadow_opacity.value()/100)
+        fields = {page.style_fill_color:('填充','primary_color'),
+                  page.style_outline_color:('描边','outline_color'),
+                  page.style_outline2_color:('第二层描边','outline2_color'),
+                  page.style_back_color:('背景','back_color'),
+                  page.style_shadow_color:('阴影','shadow.color'),
+                  page.style_glow_color:('发光','glow.color')}
+        title,field = fields.get(editor,('颜色','primary_color'))
+        source = page._selected_style_source()
+        base = page._style_from_controls(source) if source is not None else None
+        shadow = self._shadow_from_controls(base.shadow) if base is not None else {}
+        glow = dict(enabled=page.style_glow.isChecked(),color=page.style_glow_color.text(),
+                    blur=page.style_glow_strength.value(),opacity=1.0)
+        gradient = page._current_gradient()
+        def preview(widget,color):
+            if base is None:return
+            style=copy.deepcopy(base)
+            shadow_value=copy.deepcopy(shadow);glow_value=dict(glow)
+            value=color.name(QColor.NameFormat.HexArgb)
+            if field=='shadow.color':
+                shadow_value['color']=color.name(QColor.NameFormat.HexRgb)
+                shadow_value['opacity']=color.alphaF()
+            elif field=='glow.color':glow_value['color']=value
+            else:setattr(style,field,value)
+            widget.set_style(style)
+            widget.set_strokes(style.stroke_layers())
+            widget.set_shadow(shadow_value);widget.set_glow(glow_value)
+            widget.set_gradient(gradient if field!='primary_color' else None)
+        dialog = FillEditorDialog(
+            initial.name(QColor.NameFormat.HexArgb) if initial.isValid() else '#FFFFFFFF',
             page,
-            title="选择字幕颜色",
-            common_colors=(
-                "#FFFFFF", "#000000", "#FFF4B8", "#F4C86A", "#B9DDFF",
-                "#BFE6C5", "#F3B8CE", "#CBB9E8", "#F2A65A",
-            ),
+            title=title,allow_gradients=False,preview_update=preview,
         )
-        apply_secondary_surface_theme(dialog)
         return dialog
 
     def _apply_ai_preview(self) -> None:
@@ -3107,7 +3162,8 @@ class StudioStyleController:
         if hasattr(page, "style_outline2"):
             enabled2 = page.style_outline2.isChecked() and page.style_outline2_width.value() > 0
             style.outline2_width = page.style_outline2_width.value() if enabled2 else 0.0
-            style.outline2_color = page.style_outline2_color.text().strip() if enabled2 else ""
+            style.outline2_color = (page.style_outline2_color.text().strip()
+                if enabled2 or QColor(style.outline2_color).isValid() else "")
         shadow = self._shadow_from_controls(page.style_shadow.value())
         style.shadow = float(shadow.get("strength", page.style_shadow.value()) or 0.0)
         style.border_style = 3 if page.style_background.isChecked() else 1

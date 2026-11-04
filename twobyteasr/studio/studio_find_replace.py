@@ -223,6 +223,33 @@ class PreviewBinding:
         return current == self.document_fingerprint
 
 
+class TextReplaceBinding(PreviewBinding):
+    """Literal replacement depends on addressed text, locks and media context.
+
+    Review receipts, autosave view bookmarks and unrelated UI state can change
+    while this preview is open. They are not conflicts with its text spans.
+    AI/cleanup previews retain the stricter full-document PreviewBinding.
+    """
+    @classmethod
+    def _document_fingerprint(cls, project, *, trust_rows=False):
+        from .subtitle_text_targets import text_entries
+        payload = ([asdict(entry) for entry in text_entries(project)],
+                   project.studio_state.get('locked_cue_ids', []),
+                   [(cue.id, bool(getattr(cue, 'locked', False))) for cue in project.cues],
+                   cls._fingerprint(project))
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf8')).hexdigest()
+
+    @classmethod
+    def capture(cls, project):
+        from ..projects.studio_runtime_state import state_for
+        return cls(project, project.project_id, state_for(project).revision,
+                   cls._fingerprint(project), cls._document_fingerprint(project))
+
+    def matches(self, project):
+        return (project is self.project and project.project_id == self.project_id
+                and self._document_fingerprint(project) == self.document_fingerprint)
+
+
 class _GlossaryReviewThread(QThread):
     ready = Signal(object)
     failed = Signal(str)
@@ -384,11 +411,8 @@ def apply_occurrences(
     learning_meta = None
     if learn_pair is not None:
         learning_meta = _search_replace_learning(page, learn_pair[0], learn_pair[1])
-    page.session.undo_stack.push(BatchReplaceTextCommand(
-        page.session.project,
-        cue_values,
-        needle=title,
-        changed=page._changed,
+    from .text_edit_submission import submit_text_changes
+    result = submit_text_changes(page, values, entries, label=title,
         origin=origin,
         learning_observer=(
             page.cue_controller.observe_learnable_text
@@ -398,9 +422,8 @@ def apply_occurrences(
         learning_meta=learning_meta,
         glossary_ids=glossary_ids,
         review_receipt=review_receipt,
-        translation_values=translation_values,
-    ))
-    return len(hits), len(values)
+    )
+    return len([hit for hit in hits if hit.target_key in result.changed]), len(result.changed)
 
 
 
@@ -807,19 +830,31 @@ class _TextPreviewDialog(QDialog):
             return
         extras = self._apply_extras(hits)
         self._last_applied_hits=list(hits)
+        self._page._last_text_edit_result = None
         self._applying=True
-        total, cue_count = apply_occurrences(
-            self._page, hits,
-            title=extras.get("title") or self._title,
-            learn_pair=extras.get("learn_pair"),
-            binding=self._preview_binding,
-            glossary_ids=extras.get("glossary_ids"),
-            review_receipt=extras.get("review_receipt"),
-        )
+        try:
+            total, cue_count = apply_occurrences(
+                self._page, hits,
+                title=extras.get("title") or self._title,
+                learn_pair=extras.get("learn_pair"),
+                binding=self._preview_binding,
+                glossary_ids=extras.get("glossary_ids"),
+                review_receipt=extras.get("review_receipt"),
+            )
+        except Exception as exc:
+            self.status_label.setText(tr('替换失败：{reason}；没有继续执行', reason=str(exc)[:200]))
+            return
+        finally:
+            self._applying=False
         if total:
-            self._page._show_studio_hint(tr('已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）', value0=total, value1=cue_count))
-        self._applying=False
+            result = self._page._last_text_edit_result
+            self._page._show_studio_hint(tr('已替换 {hits} 处，涉及 {cues} 条字幕 / {texts} 条文本（可 Ctrl+Z 一次撤销）',
+                hits=total, cues=result.cue_count, texts=cue_count))
         self._after_apply(total, cue_count)
+        if not total:
+            result = getattr(self._page, '_last_text_edit_result', None)
+            reason = getattr(result, 'error', '') or tr('目标已变化或已经是替换内容，请重新查找')
+            self.status_label.setText(tr('没有替换任何文字：{reason}', reason=reason))
 
     def reject(self) -> None:
         worker = self._glossary_review_worker
@@ -1031,6 +1066,7 @@ class FindReplaceDialog(_TextPreviewDialog):
         self.project_entity_box.setEnabled(self.text_targets.mode_value()=='original')
         self._update_target_summary()
         self._page.session.undo_stack.indexChanged.connect(self._external_text_change)
+        self._stack_connected = True
         self.find_edit.setFocus()
 
     # ---------------------------------------------------------- frame
@@ -1044,6 +1080,9 @@ class FindReplaceDialog(_TextPreviewDialog):
         self._theme_refresh_pending = False
 
     def showEvent(self, event):
+        if not getattr(self, '_stack_connected', False):
+            self._page.session.undo_stack.indexChanged.connect(self._external_text_change)
+            self._stack_connected = True
         if getattr(self, "_theme_refresh_pending", False):
             self.refresh_theme_palette()
         super().showEvent(event)
@@ -1181,6 +1220,8 @@ class FindReplaceDialog(_TextPreviewDialog):
         return extras
 
     def _apply_checked(self) -> None:
+        if self._preview_query != self._query():
+            self._do_preview()
         # Per cue, how many rows were left unticked: after the apply those are what remains.
         self._skipped = (Counter(hit.target_key for hit in self._preview_hits)
                          - Counter(hit.target_key for hit in self._checked_hits()))
@@ -1193,8 +1234,9 @@ class FindReplaceDialog(_TextPreviewDialog):
             self._set_all_preview_checked(False)
         self._refresh_status()
         if total:
-            bind_text(self.status_label, '已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）',
-                      value0=total, value1=cue_count)
+            result = self._page._last_text_edit_result
+            bind_text(self.status_label, '已替换 {hits} 处，涉及 {cues} 条字幕 / {texts} 条文本（可 Ctrl+Z 一次撤销）',
+                      hits=total, cues=result.cue_count, texts=cue_count)
         # Ready for the next pair: the find text is selected, so typing replaces it.
         self.find_edit.setFocus()
         self.find_edit.selectAll()
@@ -1288,7 +1330,7 @@ class FindReplaceDialog(_TextPreviewDialog):
         if not self.find_edit.text().strip():
             self._fill_preview([])
             return
-        binding = PreviewBinding.capture(project)
+        binding = TextReplaceBinding.capture(project)
         hits = find_occurrences(
             project, list(dict.fromkeys(entry.target.cue_id for entry in self._scoped_entries())),
             self.find_edit.text(), self.replace_edit.text(),
@@ -1319,6 +1361,10 @@ class FindReplaceDialog(_TextPreviewDialog):
         if ok:
             self._page._show_studio_hint(tr('已替换下一条（可 Ctrl+Z 撤销）'))
         self._do_preview()
+        if not ok and hit is not None:
+            result = getattr(self._page, '_last_text_edit_result', None)
+            self.status_label.setText(tr('没有替换任何文字：{reason}',
+                reason=getattr(result, 'error', '') or tr('目标已变化或已经是替换内容')))
 
 
     @observed('cue.replace_all')
@@ -1328,6 +1374,16 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     def _external_text_change(self,*_args):
         if self.isVisible() and not self._applying:self._queue_live_search()
+
+    def done(self, result):
+        self._search_timer.stop()
+        if getattr(self, '_stack_connected', False):
+            try:
+                self._page.session.undo_stack.indexChanged.disconnect(self._external_text_change)
+            except (RuntimeError, TypeError):
+                pass
+            self._stack_connected = False
+        super().done(result)
 
 
 

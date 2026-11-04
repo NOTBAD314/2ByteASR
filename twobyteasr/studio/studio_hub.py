@@ -161,6 +161,49 @@ class _NameRelay(QObject):
 
 
 class StudioHubMixin:
+    def _initialize_library_state(self):
+        self._hub_ui_ready = False
+        self._hub_rebuilding = False
+        self._hub_layout_refreshing = False
+        self._hub_render_signature = None
+        self._hub_library_records = None
+        self._hub_display_records = []
+        self._hub_card_widgets = []
+        self._hub_row_widgets = []
+        self._hub_status_widgets = {}
+        self._hub_built_views = set()
+        self._library_cover_labels = {}
+        self._library_build_generation = 0
+        self._hub_scan_generation = 0
+        self._hub_scan_pending = False
+        self._hub_scan_active_generation = None
+        self._library_load_state = 'loading'
+        self._library_error = ''
+        self._library_presence_generation = 0
+        self._library_presence_cancel = threading.Event()
+        self._library_presence_thread = None
+
+    def _retire_library_work(self):
+        self._hub_ui_ready = False
+        self._hub_scan_generation += 1
+        self._hub_scan_pending = False
+        self._library_build_generation += 1
+        self._library_presence_generation += 1
+        self._library_presence_cancel.set()
+        for timer in getattr(self, '_library_build_timers', {}).values():
+            timer.stop()
+        for name in ('_hub_scan_timer', '_hub_relayout_timer', '_library_presence_timer'):
+            timer = getattr(self, name, None)
+            if timer is not None:timer.stop()
+        self._library_cover_labels.clear()
+        queue = getattr(self, '_library_cover_queue', None)
+        if queue is not None:queue.put(None)
+
+    def _library_trace(self, event, **fields):
+        from ..diagnostics.event_log import emit
+        emit('studio.library', component='studio_hub', result=event,
+             generation=self._hub_scan_generation, **fields)
+
     _LIBRARY_BUILD_BATCH = 8
     # Cards / rows built when the library opens; more are built as the user
     # scrolls towards the end (2026-10-12: building all ~120 cards kept the
@@ -264,6 +307,8 @@ class StudioHubMixin:
         self.resume_hero.setFixedHeight(preview_h + 32)
 
     def _refresh_studio_empty_state(self, *, rescan: bool = True) -> None:
+        if not self._hub_ui_ready or getattr(self, '_close_requested', False):
+            return
         if getattr(self, '_hub_layout_refreshing', False):
             return
         self._hub_layout_refreshing = True
@@ -277,7 +322,10 @@ class StudioHubMixin:
                 and not getattr(self, "_hub_records_seeded", False)
             ):
                 self._hub_records_seeded = True
+                started = perf_counter()
                 self._hub_library_records = self._library_records_from_index()
+                self._library_trace('index_seed',count=len(self._hub_library_records or []),
+                    duration_ms=round((perf_counter()-started)*1000,3))
             self._rebuild_project_library()
             if rescan:
                 self._request_library_scan()
@@ -286,7 +334,7 @@ class StudioHubMixin:
 
     def _request_library_scan(self) -> None:
         """Read project/recovery metadata off the GUI thread; keep cards usable."""
-        if self.project is not None:
+        if self.project is not None or getattr(self, '_close_requested', False):
             return
         if getattr(self, "_hub_scan_pending", False):
             self._hub_scan_again = True
@@ -308,17 +356,24 @@ class StudioHubMixin:
         self._hub_scan_started = now
         # 2026-09-19：扫描代次。删除等改写库结构的操作会 bump 代次；晚到的
         # 过期扫描结果（捕获于删除前）被丢弃并重扫，防止旧列表覆盖新状态。
-        scan_generation = int(getattr(self, "_hub_scan_generation", 0))
+        self._hub_scan_generation += 1
+        scan_generation = self._hub_scan_generation
+        self._hub_scan_active_generation = scan_generation
+        self._library_load_state = 'loading'
+        self._library_error = ''
+        self._sync_library_message()
+        self._library_trace('scan_started')
 
         def scan():
             try:
                 records = self._project_library_records()
-            except (OSError, ValueError, TypeError) as exc:
+            except Exception as exc:
+                import traceback
+                self._library_trace('scan_failed', error=str(exc), traceback=traceback.format_exc())
                 records = {'error': f'工程库读取失败：{exc}。原工程未被修改。'}
-            # Project / media presence is checked here, never while building
-            # cards: media often lives on external drives that may be asleep.
-            self._library_presence_next = self._check_library_presence(records)
             try:
+                self._library_trace('scan_finished', count=len(records) if isinstance(records,list) else None,
+                                    duration_ms=round((perf_counter()-now)*1000,3))
                 self.library_records_ready_signal.emit(records, scan_generation)
             except RuntimeError:
                 pass  # The window may have been closed while files were read.
@@ -359,6 +414,13 @@ class StudioHubMixin:
             return False
 
     def _library_scan_ready(self, records, scan_generation: int = -1) -> None:
+        if getattr(self, '_close_requested', False):return
+        if scan_generation != self._hub_scan_generation:
+            self._library_trace('stale_scan_ignored', received_generation=scan_generation)
+            if scan_generation == self._hub_scan_active_generation and not (isinstance(records,dict) and 'partial' in records):
+                self._hub_scan_pending = False
+                self._request_library_scan()
+            return
         if isinstance(records, dict) and 'partial' in records:
             if scan_generation == int(getattr(self, '_hub_scan_generation', 0)):
                 self._hub_library_records = records['partial']
@@ -366,33 +428,24 @@ class StudioHubMixin:
                     self._rebuild_project_library()
             return
         self._hub_scan_pending = False
-        presence = getattr(self, "_library_presence_next", None)
-        self._library_presence_next = None
-        if scan_generation != int(getattr(self, "_hub_scan_generation", 0)):
-            # Stale snapshot captured before a structural change: rescan.
-            self._request_library_scan()
-            return
-        if getattr(self, "_hub_scan_again", False):
-            self._hub_scan_again = False
-            self._request_library_scan()
+        scan_again = bool(getattr(self, "_hub_scan_again", False))
+        self._hub_scan_again = False
+        if scan_again:
+            QTimer.singleShot(0, self, self._request_library_scan)
         if records is None:
             return
         if isinstance(records, dict) and 'error' in records:
-            self.hub_loading_label.setText(records['error'])
-            self.hub_loading_label.setWordWrap(True)
-            self.hub_loading_label.show()
-            self.project_library_empty.hide()
+            self._library_load_state = 'failed'
+            self._library_error = records['error']
+            self._sync_library_message()
             return
-        if presence:
-            known = getattr(self, "_library_presence", None)
-            if known is None:
-                known = self._library_presence = {}
-            known.update(presence)
+        self._library_load_state = 'ready'
         warnings = getattr(self, '_library_read_warnings', [])
         self.hub_loading_label.setText('\n'.join(warnings))
         self.hub_loading_label.setWordWrap(True)
         self.hub_loading_label.setVisible(bool(warnings))
         self._hub_library_records = records
+        self._start_library_presence(records)
         if self.project is not None:
             return
         if not self._hub_on_screen():
@@ -403,14 +456,93 @@ class StudioHubMixin:
         self._rebuild_project_library()
         self._apply_library_presence()
 
+    def _sync_library_message(self):
+        if not self._hub_ui_ready:return
+        display = self._hub_display_records
+        state = self._library_load_state
+        warning = '\n'.join(getattr(self,'_library_read_warnings',[]))
+        message = self._library_error if state == 'failed' else warning
+        if state == 'loading' and not display:message = tr('正在读取工程列表…')
+        self.hub_loading_label.setText(message)
+        self.hub_loading_label.setWordWrap(True)
+        self.hub_loading_label.setVisible(bool(message))
+        self.project_library_empty.setVisible(not display and state == 'ready')
+        bind_text(self.project_library_empty, '没有找到匹配的工程' if self.project_search.text().strip() else '还没有工程，可导入或新建工程')
+
+    def _start_library_presence(self, records):
+        # A blocked OS stat cannot be interrupted safely. Keep at most one
+        # daemon per page, time out the presentation, and never wait for it
+        # on the GUI thread or enqueue overlapping probes behind it.
+        self._library_presence_generation += 1
+        token = self._library_presence_generation
+        self._library_presence_cancel.set()
+        old = self._library_presence_thread
+        if old is not None and old.is_alive():
+            self._library_presence_timed_out = True
+            return
+        self._library_presence_timed_out = False
+        cancel = self._library_presence_cancel = threading.Event()
+        if not getattr(self,'_library_presence_connected',False):
+            self.library_presence_ready_signal.connect(self._library_presence_ready, Qt.ConnectionType.QueuedConnection)
+            self._library_presence_connected = True
+        started = perf_counter()
+        def probe():
+            values = {}
+            for row in records:
+                if cancel.is_set():return
+                values.update(self._check_library_presence([row]))
+            try:self.library_presence_ready_signal.emit(values, token)
+            except RuntimeError:pass
+        thread = self._library_presence_thread = threading.Thread(target=probe,name='studio-library-presence',daemon=True)
+        thread.start()
+        def expired():
+            if token != self._library_presence_generation:return
+            cancel.set()
+            self._library_presence_timed_out = True
+            self._library_presence_generation += 1
+            self._library_trace('presence_timeout',duration_ms=round((perf_counter()-started)*1000,3))
+            self._apply_library_presence()
+        timer = getattr(self,'_library_presence_timer',None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        timer = self._library_presence_timer = QTimer(self)
+        timer.setSingleShot(True);timer.timeout.connect(expired);timer.start(5000)
+        self._library_presence_started = started
+
+    def _library_presence_ready(self, values, token):
+        if token != self._library_presence_generation or getattr(self,'_close_requested',False):return
+        self._library_presence_timer.stop()
+        self._library_presence = values
+        self._library_trace('presence_finished',count=len(values),duration_ms=round((perf_counter()-self._library_presence_started)*1000,3))
+        self._apply_library_presence()
+
     def _rebuild_project_library(self) -> None:
+        if not self._hub_ui_ready or self._hub_rebuilding or getattr(self,'_close_requested',False):return
+        self._hub_rebuilding = True
+        started = perf_counter()
+        try:
+            self._rebuild_project_library_contents()
+            self._sync_library_message()
+        except Exception:
+            # Failed binding never becomes the cache key for an empty view.
+            self._hub_render_signature = None
+            raise
+        finally:
+            self._hub_rebuilding = False
+            self._library_trace('view_bound',index_count=len(self._hub_library_records or []),
+                filtered_count=len(self._hub_display_records),submitted_count=len(self._hub_display_records),
+                cards=len(self._hub_card_widgets),rows=len(self._hub_row_widgets),
+                duration_ms=round((perf_counter()-started)*1000,3))
+
+    def _rebuild_project_library_contents(self) -> None:
         if not hasattr(self, "studio_empty"):
             return
         self.studio_empty.setVisible(self.project is None)
         if self.project is not None:
             return
         records = getattr(self, "_hub_library_records", None)
-        records = list(self.recent_project_records() if records is None else records)
+        records = list(self._recent_records_unchecked() if records is None else records)
         query = self.project_search.text().strip().casefold() if hasattr(self, "project_search") else ""
         if query:
             records = [record for record in records if query in str(display_project_name(record, read=False)).casefold()
@@ -428,7 +560,10 @@ class StudioHubMixin:
                      selection_mode, current_language())
         self._hub_rebuild_pending = False
         current = getattr(self, "_hub_render_signature", None)
-        if signature == current:
+        mode = 'list' if getattr(self,'_project_library_view_mode','card') == 'list' else 'card'
+        timer = getattr(self,'_library_build_timers',{}).get(mode)
+        items = self._hub_row_widgets if mode == 'list' else self._hub_card_widgets
+        if signature == current and (not records or items or timer is not None and timer.isActive()):
             # Same cards: keep them (and their scroll); newer bookkeeping
             # fields of the same projects are adopted without a rebuild.
             self._hub_display_records = records
@@ -465,7 +600,6 @@ class StudioHubMixin:
             return
         self._hub_render_signature = signature
         self._hub_display_records = records
-        self._update_resume_project(records[0] if records and not query else None)
         saved_scroll = None
         if hasattr(self, "project_library_scroll"):
             saved_scroll = self.project_library_scroll.verticalScrollBar().value()
@@ -498,7 +632,8 @@ class StudioHubMixin:
         self._hub_row_widgets = []
         self._hub_status_widgets = {}
         self._hub_built_views = set()
-        self._library_cover_labels = {}
+        self._library_cover_labels.clear()
+        self._update_resume_project(records[0] if records and not query else None)
         self._library_build_generation = getattr(self, "_library_build_generation", 0) + 1
         for column in range(8):
             # Each grid cell contains an entire flex row, not one card. Giving
@@ -606,6 +741,8 @@ class StudioHubMixin:
                     self._add_project_list_row(record)
                 self._queue_library_maintenance(record, auto_cover)
                 if perf_counter() - batch_started >= .006:break
+            self._library_trace('cards_created',submitted_count=len(records),cards=len(self._hub_card_widgets),
+                rows=len(self._hub_row_widgets),view=view,duration_ms=round((perf_counter()-batch_started)*1000,3))
             if view != "card":
                 self.project_list_layout.activate()
                 restore_scroll_once()
@@ -656,8 +793,19 @@ class StudioHubMixin:
             self.all_projects_layout.activate()
             restore_scroll_once()
 
-        batch_timer.timeout.connect(build_batch)
-        slots[view] = build_batch
+        def guarded_batch():
+            try:
+                build_batch()
+            except Exception:
+                import traceback
+                self._hub_render_signature = None
+                self._hub_built_views.discard(view)
+                self._library_load_state = 'failed'
+                self._library_error = tr('工程列表显示失败，请重新进入工程库重试')
+                self._sync_library_message()
+                self._library_trace('view_failed',traceback=traceback.format_exc())
+        batch_timer.timeout.connect(guarded_batch)
+        slots[view] = guarded_batch
         batch_timer.start(0)
 
     def _library_scrolled(self, _value=None) -> None:
@@ -738,8 +886,7 @@ class StudioHubMixin:
         presence = (getattr(self, "_library_presence", None) or {}).get(str(record.get("path", "")))
         if not presence or not presence[0] or not presence[1]:
             return  # unknown until the background scan reports, or offline
-        cover = self._library_cover_path(record)
-        if not cover.is_file():
+        if not record.get('cover_path') or record.get('cover_mtime_ns') == 0:
             self._queue_project_cover_backfill(record)
 
     def _project_presence(self, record: dict[str, object]):
@@ -753,8 +900,11 @@ class StudioHubMixin:
         return None
 
     def _project_status(self, record: dict[str, object]) -> tuple[str, str]:
+        if str(record.get('status','')).startswith('读取失败'):
+            return tr('工程读取失败'), 'missing'
         presence = self._project_presence(record)
         if presence is None:
+            if getattr(self,'_library_presence_timed_out',False):return tr('素材检查超时，可重试'), 'checking'
             # Not checked yet: the background scan reports moments later.
             return tr("正在检查…"), "checking"
         project_present, media_present = presence
@@ -853,7 +1003,8 @@ class StudioHubMixin:
         if cached is not None and (stamp[0] is None or cached[0] == stamp):
             self._set_library_cover(label, cached[1])
             return
-        self._library_cover_labels.setdefault(key, []).append(label)
+        labels = self._library_cover_labels.setdefault(key, [])
+        if label not in labels:labels.append(label)
         queue = getattr(self, "_library_cover_queue", None)
         if queue is None:
             import queue as _queue

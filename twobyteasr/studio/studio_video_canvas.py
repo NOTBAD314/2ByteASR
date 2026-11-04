@@ -807,7 +807,7 @@ class MpvCanvas(QFrame):
             def applied(ok,keep=prepared_pixels):
                 metrics.append(dict(cue_id=cue_id,prepared_at=keep.finished,posted_at=posted_at,applied_at=perf_counter(),
                     applied=bool(ok),alpha_nonzero=keep.raw_geometry['alpha_nonzero'],
-                    scene_token=(context or {}).get('scene_token')))
+                    scene_token=(context or {}).get('scene_token'),sample_ms=(context or {}).get('sample_ms')))
                 del metrics[:-128]
             posted=self.controller.post_raw_overlay(int(overlay_id),prepared_pixels.raw_path,
                 cue_id=cue_id,
@@ -815,7 +815,7 @@ class MpvCanvas(QFrame):
                 display_width=display.width(),display_height=display.height(),on_applied=applied,
                 valid_when=lambda epoch=epoch:epoch==self._web_live_epoch and (self._media_attached or self._clock_only)
                     and ((context or {}).get('caller')!='CaptionScene' or scene.still_current((context or {}).get('scene_token'))),
-                coalesce_key=f'caption-prepared:{overlay_id}')
+                coalesce_key=f'overlay:{overlay_id}' if int(overlay_id)==4 else f'caption-prepared:{overlay_id}')
             if posted:
                 action='UPDATE' if int(overlay_id) in self._active_compositor_overlays else 'CREATE'
                 self._active_compositor_overlays.add(int(overlay_id))
@@ -3189,6 +3189,14 @@ class MpvCanvas(QFrame):
             # The page moves its playhead and sends the new audio request
             # right after this call; resume (through the gate) after that.
             QTimer.singleShot(0, lambda: self._resume_after_seek_hold(token))
+
+    def begin_caption_seek_hold(self):
+        """Preserve play intent while the old complete frame is captured."""
+        if not self.playback_intended or self._seek_hold_active:return
+        self._seek_hold_token+=1;self._seek_hold_active=True
+        self._seek_hold_started=time.monotonic();self._seek_hold_entering=True
+        try:self.set_paused(True)
+        finally:self._seek_hold_entering=False
 
     def _playback_gate_detail(self) -> dict:
         page = self._studio_page()

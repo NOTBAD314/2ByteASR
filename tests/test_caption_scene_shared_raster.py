@@ -141,8 +141,8 @@ def dispose_worker(page,scene):
     from shiboken6 import delete
     scene.close();scene.thread.join(3)
     assert not scene.thread.is_alive()
-    page.destroyed.disconnect(scene.close)
-    scene.destroyed.disconnect(scene.close)
+    page.destroyed.disconnect(scene._retire_callback)
+    scene.destroyed.disconnect(scene._retire_callback)
     scene.ready.disconnect()
     delete(scene);delete(page)
 
@@ -171,7 +171,7 @@ def test_real_worker_caches_share_buffers_and_cancelled_generation_cannot_publis
         rasterizer=observed[0]()
         inner=[value[2] for value in rasterizer.rasters.values()]
         outer=[value[0].image for value in scene.frames.values()]
-        assert len(inner)==len(outer)==4 and FRAME_CACHE_BYTES==64*1024*1024
+        assert len(inner)==len(outer)==4 and FRAME_CACHE_BYTES==256*1024*1024
         assert {image.cacheKey() for image in inner}=={image.cacheKey() for image in outer}
         token,pixel,trace=delivery[-1];held=QImage(pixel.image);before=pixels(held)
         page.video._playback_clock.generation=2

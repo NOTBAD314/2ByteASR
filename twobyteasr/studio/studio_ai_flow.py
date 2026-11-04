@@ -431,12 +431,17 @@ class StudioAIFlowMixin:
         self.runtime_settings=live
         values=active_service_values(live,stage="polish")
         service=str(values.get("service") or "custom")
+        catalog = service_model_catalog(live,service)
+        view_key = repr((values, catalog, live.get('network'), live.get('proxy')))
+        if getattr(self, '_ai_provider_view_key', None) == view_key:
+            return
+        self._ai_provider_view_key = view_key
         self.ai_provider.blockSignals(True)
         self.ai_provider.setCurrentIndex(max(0,self.ai_provider.findData(service)))
         self.ai_provider.blockSignals(False)
         self.ai_model.blockSignals(True)
         self.ai_model.clear()
-        self.ai_model.addItems(list(service_model_catalog(live,service)))
+        self.ai_model.addItems(list(catalog))
         self.ai_model.setCurrentText(str(values.get("model") or ""))
         self.ai_model.blockSignals(False)
         self._refresh_ai_design_provider_summary()

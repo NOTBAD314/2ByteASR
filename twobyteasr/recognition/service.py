@@ -72,12 +72,17 @@ class RunOptions:
     glossary_snapshot_json: str = field(default="", repr=False)
     enable_term_search: bool = False
     job_id: str = ""
+    resume: bool = False
+    retry_incomplete: bool = False
+    preview_only: bool = False
     # Spoken language of the media: auto (detect from the transcript), zh, ja, en, ko,
     # or (2026-10-19) es, de, fr, pt, it, ru.
     recognition_language: str = "auto"
     # Subtitles to produce: original, translation or bilingual (original + translation).
     subtitle_output: str = "original"
     translation_script: str = "zh-Hans"
+    translation_terminology_json: str = ""
+    source_glossary_selection: tuple[str, ...] = ()
     # Script of Chinese subtitles: zh-Hant converts them after recognition (2026-10-19).
     chinese_script: str = "zh-Hans"
     # Audio tracks the home page picked per multi-track file
@@ -177,6 +182,7 @@ class RunOptions:
             enable_domain_terms=bool(self.enable_domain_terms and enabled_ids),
             enable_term_search=bool(self.enable_term_search),
             enabled_glossary_ids=enabled_ids,
+            selected_source_glossary_ids=list(self.source_glossary_selection or self.enabled_glossary_ids),
             glossary_snapshot=snapshot,
             output_review_track=bool(self.output_review_track),
             output_jianying_txt=bool(self.output_jianying_txt),
@@ -195,6 +201,9 @@ class RunOptions:
             requested_language=self.recognition_language,
             subtitle_output=self.subtitle_output,
             translation_script=self.translation_script,
+            translation_terminology=__import__('twobyteasr.glossary.translation_terms',fromlist=['normalize']).normalize(
+                json.loads(self.translation_terminology_json) if self.translation_terminology_json else
+                (json.loads(self.settings_snapshot_json) if self.settings_snapshot_json else getattr(legacy,'RUNTIME_SETTINGS',{})).get('glossary',{}).get('translation_terminology')),
             chinese_script=self.chinese_script,
         )
 
@@ -213,6 +222,7 @@ class RunOptions:
         context.enable_domain_terms = configured.enable_domain_terms
         context.enable_term_search = configured.enable_term_search
         context.enabled_glossary_ids = list(configured.enabled_glossary_ids)
+        context.selected_source_glossary_ids = list(configured.selected_source_glossary_ids)
         # apply() is also used with an already created context: never reload
         # task contents after its first snapshot was fixed.
         if context.glossary_snapshot is None or not configured.enable_domain_terms:
@@ -236,6 +246,7 @@ class RunOptions:
         initialise(context)
         context.subtitle_output = configured.subtitle_output
         context.translation_script = configured.translation_script
+        context.translation_terminology = configured.translation_terminology
         context.chinese_script = configured.chinese_script
         context.event_log_path = ""
         context.review_items.clear()
@@ -541,7 +552,31 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
     return delivered
 
 
-def run_media_queue(
+def run_media_queue(media_paths, options=None, event_sink=None, cancel_token=None, **kwargs):
+    """Persist before preflight; the OS execution lease outlives every page."""
+    from .task_journal import TaskJournal
+    legacy = kwargs.get('_legacy')
+    if legacy is None:
+        import subtitle_core as legacy
+    options = options or RunOptions.from_legacy(legacy)
+    if not options.job_id:
+        options = replace(options, job_id=uuid.uuid4().hex)
+    journal = TaskJournal(options.job_id).create(media_paths, options)
+    journal.acquire(resume=options.resume)
+    try:
+        journal.configure_run(options)
+        result = _run_media_queue(media_paths, options, event_sink, cancel_token, _journal=journal, **kwargs)
+        journal.finish(result.results)
+        return result
+    except BaseException as exc:
+        journal.finish(status='cancelled' if isinstance(exc, (CancelledError, KeyboardInterrupt)) else 'failed',
+                       error=_exception_message(exc, '识别执行者异常'))
+        raise
+    finally:
+        journal.close()
+
+
+def _run_media_queue(
     media_paths: list[str] | tuple[str, ...],
     options: RunOptions | None = None,
     event_sink: EventSink | None = None,
@@ -551,6 +586,7 @@ def run_media_queue(
     _pipeline: Any | None = None,
     _startup_self_test: dict[str, Any] | None = None,
     _skip_environment_preflight: bool = False,
+    _journal=None,
 ) -> QueueResult:
     """Run a media queue without opening UI dialogs or exiting the process.
 
@@ -573,6 +609,9 @@ def run_media_queue(
         cancellation_token=token,
     )
     runtime_context.identity_task_active = True
+    runtime_context.task_journal = _journal
+    runtime_context.resume = bool(run_options.resume)
+    runtime_context.retry_incomplete = bool(run_options.retry_incomplete)
     runtime_scope = activate_runtime_context(runtime_context, legacy=legacy)
     runtime_scope.__enter__()
     try:
@@ -666,13 +705,16 @@ def run_media_queue(
                 # Phase B：运行环境 preflight correctness gate——坏的 Main/MOSS
                 # 环境必须在真正启动 ASR/MOSS worker/FireRed pipeline 之前
                 # 被拒绝（UI 按钮检查只是更好展示，不是唯一保护）。
-                if not _skip_environment_preflight:
+                from .delivery_checkpoint import all_ready as all_deliveries_ready
+                delivery_only = not run_options.audio_streams_json and all_deliveries_ready(runtime_context, normalized_paths)
+                if not _skip_environment_preflight and not delivery_only:
                     runtime_settings = runtime_context.asr_settings_snapshot
                     if isinstance(runtime_settings, dict):
                         from twobyteasr.system.environment import ensure_environment_ready
 
                         ensure_environment_ready(runtime_settings)
-                pipeline.check_runtime(legacy)
+                if not delivery_only:
+                    pipeline.check_runtime(legacy)
                 if runtime_context.recognition_snapshot:
                     from .recognition_input import lane_snapshots, prepare_recognition_input
                     from ..media.media_service import GLOBAL_MEDIA_SERVICE
@@ -745,7 +787,8 @@ def run_media_queue(
                 legacy.cleanup_old_cache()
                 token.raise_if_cancelled()
                 try:
-                    pipeline.precompute_moss_batch_cache(normalized_paths, legacy)
+                    if not delivery_only:
+                        pipeline.precompute_moss_batch_cache(normalized_paths, legacy)
                 except CancelledError:
                     raise
                 except KeyboardInterrupt:
@@ -845,6 +888,9 @@ def run_media_queue(
                             _stream_project_path(normalized_paths, entry_streams, index, runtime_context.job_id))
                     elif not run_options.studio_project_path:
                         runtime_context.studio_project_path = str(recognition_project_path(media_path, runtime_context.job_id, media_index=index))
+                        if run_options.retry_incomplete and _journal is not None:
+                            attempt=_journal.record['task']['attempts'][-1]['id']
+                            runtime_context.studio_project_path=str(Path(runtime_context.studio_project_path).parent/'attempts'/attempt/'project.2byteproj')
                     runtime_context.committed_result_ref.clear()
                     sync_legacy_runtime(legacy, runtime_context)
                     process_kwargs = (
@@ -852,13 +898,13 @@ def run_media_queue(
                         if process_media_supports_context
                         else {}
                     )
-                    txt_path, srt_path, elapsed = pipeline.process_media(
-                        media_path,
-                        index,
-                        len(normalized_paths),
-                        legacy,
-                        **process_kwargs,
-                    )
+                    from .delivery_checkpoint import load as load_delivery, resume as resume_delivery
+                    delivery = load_delivery(runtime_context)
+                    if delivery is not None:
+                        txt_path, srt_path, elapsed = resume_delivery(runtime_context, legacy, delivery)
+                    else:
+                        txt_path, srt_path, elapsed = pipeline.process_media(
+                            media_path, index, len(normalized_paths), legacy, **process_kwargs)
                     token.raise_if_cancelled()
                     report_json, report_text = legacy.task_reporting.report_paths_for_media(media_path)
                     speaker_paths, review_path = _result_output_details(

@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 class NativeCrashProbe {
+    static int CaptureNumber=0;
     [StructLayout(LayoutKind.Sequential)] struct ExceptionRecord {
         public uint Code, Flags;
         public IntPtr Nested, Address;
@@ -52,7 +53,7 @@ class NativeCrashProbe {
             if(!SymInitializeW(process,"",true))return "[]";
             IntPtr dbg=GetModuleHandleW("dbghelp.dll");
             ulong previous=0;
-            for(int i=0;i<48;i++) {
+            for(int i=0;i<96;i++) {
                 ulong address=unchecked((ulong)Marshal.ReadInt64(frame,0));
                 if(address==0 || (i>1 && address==previous))break;
                 string label="0x"+address.ToString("x");
@@ -69,7 +70,7 @@ class NativeCrashProbe {
     }
     static string Json(string value) { return "\""+value.Replace("\\","\\\\").Replace("\"","\\\"")+"\""; }
     static void Capture(DebugEvent e,string output) {
-        string stem=Path.Combine(output,"native-"+e.ProcessId+"-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss"));
+        string stem=Path.Combine(output,"native-"+e.ProcessId+"-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+"-"+(++CaptureNumber));
         ulong address=unchecked((ulong)e.Exception.Address.ToInt64()),offset=0;
         string module="unknown",version="unknown";
         try { foreach(ProcessModule m in Process.GetProcessById((int)e.ProcessId).Modules) {
@@ -101,15 +102,20 @@ class NativeCrashProbe {
             ",\"exception_code\":"+Json("0x"+e.Exception.Code.ToString("x8"))+
             ",\"fault_module\":"+Json(module)+",\"module_version\":"+Json(version??"")+
             ",\"fault_offset\":"+Json("0x"+offset.ToString("x"))+
+            ",\"first_chance\":"+(e.FirstChance!=0).ToString().ToLower()+
+            ",\"access_kind\":"+e.Exception.I0+",\"access_address\":"+Json("0x"+e.Exception.I1.ToString("x"))+
             ",\"context_captured\":"+contextRead.ToString().ToLower()+",\"dump_written\":"+dumped.ToString().ToLower()+
             ",\"win32_error\":"+error+",\"native_frames\":"+frames+",\"private_local_artifact\":true}",Encoding.UTF8);
     }
     static int Main(string[] args) {
-        if(args.Length!=2 || IntPtr.Size!=8)return 2;
+        if((args.Length!=2 && args.Length!=3) || IntPtr.Size!=8)return 2;
+        bool firstAccess=args.Length==3 && args[2]=="--first-access";
+        if(args.Length==3 && !firstAccess)return 2;
+        int firstAccessCaptures=0;
         uint pid=uint.Parse(args[0]);string output=Path.GetFullPath(args[1]);Directory.CreateDirectory(output);
         if(!DebugActiveProcess(pid)) {File.WriteAllText(Path.Combine(output,"attach-error.txt"),Marshal.GetLastWin32Error().ToString());return 3;}
         DebugSetProcessKillOnExit(false);
-        File.WriteAllText(Path.Combine(output,"attached.json"),"{\"pid\":"+pid+",\"last_chance_only\":true}");
+        File.WriteAllText(Path.Combine(output,"attached.json"),"{\"pid\":"+pid+",\"last_chance_only\":"+(!firstAccess).ToString().ToLower()+",\"first_access_limit\":3}");
         try {
             while(true) {
                 DebugEvent e;if(!WaitForDebugEvent(out e,1000)) {try {if(Process.GetProcessById((int)pid).HasExited)break;}catch(ArgumentException){break;}continue;}
@@ -117,7 +123,9 @@ class NativeCrashProbe {
                 uint status=0x10002;
                 if(e.Kind==1) {
                     status=e.Exception.Code==0x80000003 ? 0x10002U : 0x80010001U;
-                    if(e.FirstChance==0 || e.Exception.Code==0xc0000602 || e.Exception.Code==0xc0000409 || e.Exception.Code==0xc0000374) {try {Capture(e,output);}catch(Exception ex){File.WriteAllText(Path.Combine(output,"capture-error.txt"),ex.ToString());}}
+                    bool first=firstAccess && e.FirstChance!=0 && e.Exception.Code==0xc0000005 && firstAccessCaptures<3;
+                    if(first)firstAccessCaptures++;
+                    if(first || e.FirstChance==0 || e.Exception.Code==0xc0000602 || e.Exception.Code==0xc0000409 || e.Exception.Code==0xc0000374) {try {Capture(e,output);}catch(Exception ex){File.WriteAllText(Path.Combine(output,"capture-error.txt"),ex.ToString());}}
                 }
                 if((e.Kind==3 || e.Kind==6) && e.FileHandle!=IntPtr.Zero)CloseHandle(e.FileHandle);
                 ContinueDebugEvent(e.ProcessId,e.ThreadId,status);

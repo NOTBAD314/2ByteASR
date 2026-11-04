@@ -6,6 +6,7 @@ from tests.test_static_caption_empty_pixels import fixture
 from twobyteasr.exports.caption_integrity import require_confirmed_empty_sources
 from twobyteasr.exports.export_timeline import export_project_snapshot
 from twobyteasr.subtitle_rules.current_issues import DECISIONS,reviewed_version
+from twobyteasr.exports.export_issues_ui import ConfirmEmptySourceCommand
 
 
 def damaged(project):
@@ -17,7 +18,7 @@ def damaged(project):
 
 def test_uncertain_historical_empty_blocks_snapshot_without_restoring_text(fixture):
     app,project,ffmpeg,job=fixture;cue=damaged(project)
-    with pytest.raises(ValueError,match='visible-a.*明确审核确认'):
+    with pytest.raises(ValueError,match='原文为空'):
         export_project_snapshot(project)
     assert cue.text=='' and cue.original_text=='Visible'
 
@@ -28,10 +29,10 @@ def test_advanced_empty_reject_preserves_prior_output_and_retry_after_review(fix
     app,project,ffmpeg,job=fixture;cue=damaged(project)
     Path(job.output_path).write_bytes(b'prior output')
     job=replace(job,overwrite_existing=True)
-    with pytest.raises(ValueError,match='visible-a'):
+    with pytest.raises(ValueError,match='原文为空'):
         AdvancedRendererBackend().render(project,ffmpeg,job)
     assert Path(job.output_path).read_bytes()==b'prior output'
-    project.studio_state[DECISIONS]={'reviewed:'+cue.id:dict(status='resolved',input_version=reviewed_version(project,cue))}
+    ConfirmEmptySourceCommand(project, cue.id).redo()
     AdvancedRendererBackend().render(project,ffmpeg,job)
     with av.open(job.output_path) as result:assert len(list(result.decode(video=0)))==30
     assert cue.text==''
@@ -62,4 +63,4 @@ def test_translation_only_checks_original_only_when_the_original_will_be_shown(f
     project.generation_metadata['translations']={cue.id:'Visible translation'}
     require_confirmed_empty_sources(project)
     project.generation_metadata['translations'][cue.id]=''
-    with pytest.raises(ValueError):require_confirmed_empty_sources(project)
+    require_confirmed_empty_sources(project)  # No original is displayed in this mode.

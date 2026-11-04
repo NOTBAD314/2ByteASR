@@ -137,9 +137,11 @@ def test_color_picker_square_and_gradient_controls_above_picker():
     })
     dialog.show()
     app.processEvents()
-    assert dialog.gradient.geometry().top() < dialog.picker.geometry().top()
-    assert dialog._stop_host.geometry().top() < dialog.picker.geometry().top()
-    assert dialog.width() >= 620 and dialog.height() >= 620
+    # 2026-11-03 plan B: preview + gradient card on the left, picker on the right.
+    card = dialog._gradient_card
+    assert card.mapTo(dialog, card.rect().topRight()).x() < dialog.picker.mapTo(dialog, dialog.picker.rect().topLeft()).x()
+    assert dialog.preview.mapTo(dialog, dialog.preview.rect().bottomLeft()).y() < card.mapTo(dialog, card.rect().topLeft()).y()
+    assert dialog.width() >= 720 and dialog.height() >= 560
     dialog.close()
     picker.deleteLater()
 

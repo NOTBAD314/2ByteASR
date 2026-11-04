@@ -71,11 +71,21 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         "checked_cues": len(entries), "requested_cues": len(entries), "successful_cues": 0, "fallback_cues": 0,
         "asr_run": False, "audio_verified": False, "web_search_run": False, "segments": [], "pending_rows": [],
         "failed_cues": [], "request_errors": [], "ai_requested": bool(use_ai), "missing_associations": 0,
-        "rejected_changes": 0, "automatic_changes": 0, "confirmation_changes": 0}
+        "rejected_changes": 0, "automatic_changes": 0, "confirmation_changes": 0, "terminology_conflicts": []}
     filtered = {language: language_snapshot(snapshot, language) for language in {e.target.language for e in entries}}
+    from .translation_terms import policy_of, relevant, violations, freeze, PROMPT as TERM_PROMPT
+    from ..subtitle_rules.subtitle_translation import _translation_language
+    policy = freeze(policy_of(project))
+    source_language = _translation_language(project)
+    terms_by_key = {entry.key: relevant(policy, entry.source_language or source_language, entry.target.language, entry.source_text)
+                    if entry.target.layer == 'translation' and entry.source_cue_id else [] for entry in entries}
     drafts, hits = {}, []
     for entry in entries:
-        resolver = TermResolver(filtered[entry.target.language])
+        # Pre-existing projects retain their same-language proofreading.
+        # This never supplies translation-generation pairs; an explicit new
+        # translation configuration (including disabled) ends that fallback.
+        legacy_review = 'translation_terminology' not in project.generation_metadata
+        resolver = TermResolver(filtered[entry.target.language] if entry.target.layer == 'original' or legacy_review else GlossarySnapshot())
         resolution = resolver.resolve(entry.text)
         drafts[entry.key] = resolution.text
         cue = SimpleNamespace(id=entry.key, text=entry.text, start_ms=entry.start_ms)
@@ -86,7 +96,8 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 hits.append(bind_occurrence(hit, entry))
         receipt["segments"].append({"cue_id": entry.key, "target": entry.target.to_dict(),
             "original_baseline": entry.text, "source_reference": entry.source_text, "input_text": entry.text,
-            "local_draft": resolution.text})
+            "local_draft": resolution.text, "translation_terminology": terms_by_key[entry.key],
+            "terminology_warnings": violations(entry.source_text, entry.text, terms_by_key[entry.key])})
     batches = []
     batch, size = [], 0
     for entry in entries:
@@ -116,13 +127,16 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         pairs = normalize_glossary(project.generation_metadata.get("translation_glossary", ()))
         languages = {entry.target.language for entry in batch}
         payload = {"targets": [{"target_id": entry.key, **entry.target.to_dict(), "target_language": entry.target.language or 'und',
-                    "target_text": entry.text, "source_reference": entry.source_text} for entry in batch],
-            "same_language_terms": {language: filtered[language].evidence() for language in languages},
+                    "target_text": entry.text, "source_reference": entry.source_text,
+                    "source_language": entry.source_language if entry.target.layer == 'translation' else entry.target.language,
+                    "translation_terminology": terms_by_key[entry.key]} for entry in batch],
+            "same_language_terms": {language: filtered[language].evidence() for language in languages
+                                    if any(e.target.layer == 'original' and e.target.language == language for e in batch)},
             "cross_language_pairs": [{"source": source, "target": target, "target_language": container_target(project)}
                                      for source, target in pairs] if container_target(project) in languages else [],
-            "reference_terms": list(snapshot.canonical_terms)[:400]}
+            "reference_terms": list(snapshot.canonical_terms)[:400] if any(e.target.layer == 'original' for e in batch) else []}
         try:
-            raw = provider.complete([{"role": "system", "content": SYSTEM},
+            raw = provider.complete([{"role": "system", "content": SYSTEM + '\n' + TERM_PROMPT},
                                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 max_tokens=5000, temperature=.1, timeout=(10, 90), enable_thinking=False,
                 response_format={"type": "json_object"}, stage="studio_translation_proofread",
@@ -154,6 +168,13 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 from ..subtitle_rules.math_text import mask_formulas
                 if valid:
                     valid = mask_formulas(new)[1] == mask_formulas(entry.text)[1]
+                if valid and terms_by_key[entry.key]:
+                    conflicts = violations(entry.source_text, new, terms_by_key[entry.key])
+                    if conflicts:
+                        receipt['terminology_conflicts'].append(dict(target_id=entry.key, start_ms=entry.start_ms,
+                            speaker_id=entry.speaker_id, source_reference=entry.source_text, current=entry.text,
+                            candidate=new, required=conflicts))
+                    valid = not conflicts
                 if not valid:
                     rejected.add(entry.key)
                     receipt["rejected_changes"] += 1
@@ -162,7 +183,8 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 if new == entry.text:
                     continue
                 cue = SimpleNamespace(id=entry.key, text=entry.text, start_ms=entry.start_ms)
-                for hit in diff_occurrences(cue, new, reason=str(change.get("reason") or "AI 目标语言校对；请确认"),
+                term_reason = '; '.join(f"{row['source']} → {row['target']}" for row in terms_by_key[entry.key])
+                for hit in diff_occurrences(cue, new, reason=str(change.get("reason") or "AI 目标语言校对；请确认") + (' · ' + term_reason if term_reason else ''),
                                            source="translation_ai", selected=False, missing="请核对句意与译名对应"):
                     hits.append(bind_occurrence(hit, entry))
             receipt["successful_cues"] += len(batch) - len(rejected)
@@ -191,5 +213,5 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         row['final_diff'] = [{'span': list(hit.span), 'from': hit.original, 'to': hit.replacement,
                              'target': hit.target.to_dict(), 'source': hit.source, 'default_selected': hit.default_selected}
                             for hit in hits if hit.target_key == row['cue_id']]
-    receipt["empty_state"] = "request_failed" if receipt["request_errors"] else "needs_confirmation" if hits else "no_changes"
+    receipt["empty_state"] = "request_failed" if receipt["request_errors"] else "needs_confirmation" if hits or receipt['terminology_conflicts'] else "no_changes"
     return GlossaryReviewPreview(tuple(hits), receipt)

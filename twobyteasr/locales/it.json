@@ -8509,5 +8509,19 @@
   "切到替换": "a Sostituisci",
   "Enter": "Invio",
   "Esc": "Esc",
-  "也可以在字幕里选字后右键「批量替换相同文字…」": "Oppure seleziona del testo in un sottotitolo e fai clic destro su «Sostituisci lo stesso testo in blocco…»"
+  "也可以在字幕里选字后右键「批量替换相同文字…」": "Oppure seleziona del testo in un sottotitolo e fai clic destro su «Sostituisci lo stesso testo in blocco…»",
+  "双击加色点，拖动移动，拖出色条删除": "Doppio clic per aggiungere un punto, trascina per spostarlo, trascinalo fuori dalla barra per eliminarlo",
+  "把当前颜色存进最近": "Salva il colore attuale in Recenti",
+  "拖动选择饱和度和亮度": "Trascina per scegliere saturazione e luminosità",
+  "拖动圆环选择色相": "Trascina sull'anello per scegliere la tinta",
+  "拖动旋转渐变角度": "Trascina per ruotare l'angolo della sfumatura",
+  "字幕正文": "Testo del sottotitolo",
+  "渐变色条": "Barra della sfumatura",
+  "双击色条加色点 · 拖出去删除": "Doppio clic per aggiungere · trascina fuori per eliminare",
+  "颜料盒": "Scatola dei colori",
+  "渐变": "Sfumature",
+  "右半边是之前的颜色，点它恢复": "La metà destra è il colore precedente; fai clic per ripristinarlo",
+  "+ 存进颜料盒": "+ Salva nella scatola dei colori",
+  "反转渐变方向": "Inverti la direzione della sfumatura",
+  " · 色点 {index}": " · punto {index}"
 }

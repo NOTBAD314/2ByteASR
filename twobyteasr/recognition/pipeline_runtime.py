@@ -372,6 +372,13 @@ def complete_media_run(
 ):
     """Write outputs transactionally, finish the report, and return public paths."""
     runtime_context = runtime_context or get_runtime_context()
+    from .delivery_checkpoint import save as save_delivery_checkpoint
+    delivery_arguments = dict(cues=cues, segments=segments, file_index=file_index, file_total=file_total,
+        audio_seconds=audio_seconds, txt_path=txt_path, srt_path=srt_path, stage_index=stage_index,
+        stage_total=stage_total, include_srt=include_srt, model_statuses=model_statuses,
+        review_classification=review_classification, real_three_source_cues=real_three_source_cues,
+        cache_owners=cache_owners)
+    save_delivery_checkpoint(runtime_context, legacy, delivery_arguments)
     from .language_diagnostics import merge_language_notices
     runtime_context.review_items[:]=merge_language_notices(runtime_context.review_items)
     review_items = legacy.print_review_summary()
@@ -391,6 +398,7 @@ def complete_media_run(
 
     # Japanese -> Chinese, when chosen before the task: written with the project.
     translation_metadata = {}
+    translation_committed = True
     from twobyteasr.recognition.service import CancelledError
     try:
         from twobyteasr.subtitle_rules.recognition_translation import translate_runtime_cues
@@ -411,9 +419,14 @@ def complete_media_run(
     except CancelledError:
         raise
     except Exception as exc:  # the recognition result is still delivered
+        translation_committed = False
         legacy.add_review_item(0.0, "翻译未完成", f"识别结果已保存；可在工作台重新翻译：{exc}"[:200],
                                priority=2, severity="warning")
         legacy.record_run_event("subtitle_translation_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+
+    from ..subtitle_rules.recognition_translation import metadata_complete
+    save_delivery_checkpoint(runtime_context, legacy, delivery_arguments,
+        translation=translation_metadata if translation_committed and metadata_complete(translation_metadata) else None)
 
     def write_studio_project():
         try:
@@ -459,6 +472,8 @@ def complete_media_run(
                             "transcript_acceptance": copy.deepcopy(getattr(runtime_context, "transcript_acceptance", {}) or {}),
                             "terminology_status": dict(getattr(runtime_context,"terminology_status",{}) or {}),
                             "polishing_summary": dict(getattr(runtime_context,"polishing_summary",{}) or {}),
+                            "translation_terminology": copy.deepcopy(runtime_context.translation_terminology),
+                            "source_glossary_enabled": bool(runtime_context.enable_domain_terms),
                             "terminology_snapshot": (runtime_context.glossary_snapshot.to_dict()
                                 if getattr(runtime_context, "glossary_snapshot", None) is not None else {}),
                             # Spoken language of the media (not of any speaker) and how it was decided.
@@ -483,7 +498,8 @@ def complete_media_run(
                             },
                             **translation_metadata,
                         },
-                        glossary_ids=getattr(runtime_context, "enabled_glossary_ids", ()),
+                        glossary_ids=(getattr(runtime_context, 'selected_source_glossary_ids', ())
+                                      or getattr(runtime_context, "enabled_glossary_ids", ())),
                         target_project_path=str(
                             getattr(runtime_context, "studio_project_path", "") or ""
                         ),

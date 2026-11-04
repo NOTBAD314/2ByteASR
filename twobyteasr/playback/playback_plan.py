@@ -106,8 +106,12 @@ class PlaybackPlan:
 
 def playback_plan(project):
     """O(1) revision check. Never hash or deep-compare the project on a tick."""
-    from ..projects.studio_runtime_state import state_for
-    runtime = state_for(project)
+    from ..projects.studio_runtime_state import ProjectStateRuntime, state_for
+    # Command/session boundaries own cue-index validation. The legacy repair
+    # in state_for scans every cue and must not run for every video frame.
+    runtime = getattr(project, '_studio_state_runtime', None)
+    if not isinstance(runtime, ProjectStateRuntime):
+        runtime = state_for(project)
     plan = getattr(runtime, '_playback_plan', None)
     revision = getattr(runtime, 'playback_revision', 0)
     if plan is None or plan.revision != revision or plan.project_identity != id(project):

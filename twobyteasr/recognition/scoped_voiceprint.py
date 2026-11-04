@@ -19,8 +19,8 @@ import math
 import re
 from collections import defaultdict
 
-VERSION = 'scoped-ecapa-review-v2'
-_SCOPED = re.compile(r'^(?:R(\d+)|API)_([^\s]+)$')
+VERSION = 'scoped-ecapa-review-v3-local-scope'
+_SCOPED = re.compile(r'^(?:R(\d+)|API|LOCAL)_([^\s]+)$')
 # Cosine of the two whole-label voiceprints, the lowest of the four
 # half-to-half pairs, and each label's own speech in seconds.
 REVIEW = {'whole': .45, 'lowest': .40, 'seconds': 4.0}
@@ -37,7 +37,10 @@ TRIM = .08                # the worker drops this much at both piece ends
 def label_scope(label):
     """(request number, provider label) for an anonymous API label, else None."""
     match = _SCOPED.fullmatch(str(label or ''))
-    return (int(match.group(1) or 1), match.group(2)) if match else None
+    # LOCAL_* is the local recognizer's namespace, not a user-given name.
+    # Hybrid long jobs can contain both LOCAL_* and request-scoped Rxxx_*
+    # labels. Omitting LOCAL made that part permanently skip voice matching.
+    return (0 if str(label).startswith('LOCAL_') else int(match.group(1) or 1), match.group(2)) if match else None
 
 
 def cue_signature(rows):
@@ -359,7 +362,7 @@ def _check_groups(project, report, groups, tier):
 def _merge(project, report, groups, *, reviewed_by):
     """One project copy with each group folded into its first label."""
     import copy
-    from dataclasses import asdict
+    from dataclasses import asdict, fields
     from ..projects.studio_project import SubtitleProject
     state = project.generation_metadata.get('speaker_recovery') or {}
     labels = [label for group in groups for label in group]
@@ -380,7 +383,18 @@ def _merge(project, report, groups, *, reviewed_by):
                 raise ValueError('候选包含人工设置的说话人，请使用手动合并。')
     tier = AUTOMATIC if reviewed_by == 'automatic' else REVIEW
     _check_groups(project, report, groups, tier)
-    result = SubtitleProject.from_dict(project.to_dict())
+    if reviewed_by == 'automatic':
+        # This is a new, unpublished recognition project. The merge changes
+        # only identities and their reversible metadata, never acoustic
+        # evidence/media/styles. Avoid serializing, reconstructing and
+        # repeatedly validating the whole evidence tree on this hot path.
+        result = SubtitleProject(**{field.name:getattr(project,field.name) for field in fields(SubtitleProject)})
+        result.cues=copy.deepcopy(project.cues)
+        result.speakers=copy.deepcopy(project.speakers)
+        result.generation_metadata=copy.deepcopy(project.generation_metadata)
+        result.studio_state=copy.deepcopy(project.studio_state)
+    else:
+        result = SubtitleProject.from_dict(project.to_dict())
     state = copy.deepcopy(state)
     saved = state.setdefault('cue_cache', {})
     display = state.setdefault('display_labels', {})

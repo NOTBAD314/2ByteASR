@@ -111,6 +111,14 @@ def test_decode_command_without_copy_reads_the_original(tmp_path):
     assert command[command.index("-ss") + 1] == "5.000000"
 
 
+def test_nonfirst_stream_never_uses_the_first_stream_seek_copy(tmp_path):
+    copy_path=tmp_path/'first-stream.mka'; copy_path.write_bytes(b'fixture')
+    command=build_audio_decode_command('ffmpeg', tmp_path/'source.flv', source_ms=5000, rate=1.0,
+        stream_index=1, decode_source={'path':str(copy_path),'offset_ms':-80})
+    assert command[command.index('-i')+1]==str(tmp_path/'source.flv')
+    assert command[command.index('-map')+1]=='0:a:1'
+
+
 def test_media_cache_builds_copy_in_background_and_then_serves_it(tmp_path, monkeypatch):
     """Preview path: unknown -> background build -> {"path", "offset_ms"}; MP4 never."""
     import time as _time

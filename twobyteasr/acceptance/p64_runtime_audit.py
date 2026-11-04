@@ -582,8 +582,9 @@ class P64RuntimeAudit(QObject):
             "sv_ratio": round(square.width() / max(1, square.height()), 4),
             "gradient_top": dialog.gradient.geometry().top(),
             "picker_top": dialog.picker.geometry().top(),
-            "stop_controls_top": dialog._stop_host.geometry().top(),
-            "gradient_above_picker": dialog.gradient.geometry().top() < dialog.picker.geometry().top(),
+            "gradient_card_top": dialog._gradient_card.geometry().top(),
+            "gradient_left_of_picker": dialog._gradient_card.mapTo(dialog, dialog._gradient_card.rect().topRight()).x()
+            < dialog.picker.mapTo(dialog, dialog.picker.rect().topLeft()).x(),
         }
         dialog.close()
         self.page.context_drawer.setCurrentIndex(3)
@@ -878,7 +879,7 @@ class P64RuntimeAudit(QObject):
                 and self.result.get("page_switch_state_mismatches") == 0
                 and real_studio.get("cue_horizontal_scroll_max") == 0
                 and 0.98 <= float(color.get("sv_ratio", 0)) <= 1.02
-                and color.get("gradient_above_picker")
+                and color.get("gradient_left_of_picker")
                 and candidates.get("horizontal_scroll_max") == 0
                 and float(candidates.get("height_ratio", 0)) >= 0.55
                 and candidates.get("actions_accepted")

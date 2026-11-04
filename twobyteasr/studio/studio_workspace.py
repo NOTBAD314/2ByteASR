@@ -645,6 +645,18 @@ class StudioWorkspaceBuilder:
             lambda active: setattr(page, '_studio_ime_composing', active))
         page.subtitle_edit_input.textChanged.connect(page._queue_edit_preview)
         page._apply_subtitle_edit_card_theme()
+        # The sequence retains its native canvas, overlays and transport.
+        # Sources own a separate decoder and never rebind that canvas.
+        page.source_tabs = QTabWidget()
+        page.source_tabs.setObjectName('studioSourceTabs')
+        page.source_tabs.setMinimumWidth(275)
+        page.source_tabs.addTab(page.cue_list_panel, '字幕列表')
+        from .studio_source_monitor import StudioSourceMonitor
+        page.source_monitor = StudioSourceMonitor(page)
+        page.source_tabs.addTab(page.source_monitor, '源素材')
+        # Each transport keeps its own intent. The source's hideEvent pauses
+        # that source; opening its tab never pauses or rebinds the sequence.
+        page.upper_splitter.insertWidget(0, page.source_tabs)
         video_layout.addWidget(overlay_host, 1)
         page.subtitle_edit_dock.hide()
         yield '视频承载区'
@@ -1332,6 +1344,8 @@ class StudioWorkspaceBuilder:
         from .studio_toolbar_layout import centre_on
         centre_on(page, page.video)
         page.timeline = WaveformTimeline()
+        from .source_timeline_drop import SourceTimelineDrop
+        page.source_timeline_drop = SourceTimelineDrop(page)
         page.timeline.interaction_changed.connect(
             page._resource_governor.set_dragging
         )
@@ -1732,6 +1746,7 @@ class StudioWorkspaceBuilder:
         library_layout.addStretch(1)
         workspace_layers.addWidget(page.studio_empty)
         workspace_layers.setCurrentWidget(page.studio_empty)
+        page._hub_ui_ready = True
         page.project_library_scroll.viewport().installEventFilter(page)
         page.studio_empty.show()
         page.studio_empty.raise_()

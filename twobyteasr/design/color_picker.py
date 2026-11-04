@@ -652,9 +652,9 @@ class _EyedropOverlay(QWidget):
     picked = Signal(QColor)
     cancelled = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(
-            None,
+            parent,
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowStaysOnTopHint,
@@ -675,9 +675,20 @@ class _EyedropOverlay(QWidget):
         self.hide()
         QApplication.processEvents()
         screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.cancelled.emit()
+            self.close()
+            return
         local = pos - screen.geometry().topLeft()
-        image = screen.grabWindow(0, int(local.x()), int(local.y()), 1, 1).toImage()
-        self.picked.emit(image.pixelColor(0, 0))
+        # Qt positions are logical; the grabbed screen image is physical on
+        # Windows. Sample within that screen, including negative origins.
+        image = screen.grabWindow(0).toImage()
+        ratio = image.devicePixelRatio()
+        x, y = int(local.x() * ratio), int(local.y() * ratio)
+        if not image.isNull() and 0 <= x < image.width() and 0 <= y < image.height():
+            self.picked.emit(image.pixelColor(x, y))
+        else:
+            self.cancelled.emit()
         self.close()
 
     def keyPressEvent(self, event) -> None:
@@ -686,6 +697,40 @@ class _EyedropOverlay(QWidget):
             self.close()
             return
         super().keyPressEvent(event)
+
+
+def _start_screen_eyedrop(self) -> None:
+    """Share the live modal session between simple and fill color pickers."""
+    if getattr(self, '_dropper', None) is not None:
+        return
+    window = self.window()
+    opacity = window.windowOpacity() if window is not None else 1.0
+    if window is not None:
+        # hide() ends QDialog.exec() with Rejected. The caller then loses
+        # the eventual picked value, even though the swatch changes.
+        window.setWindowOpacity(0.0)
+    QApplication.processEvents()
+    overlay = _EyedropOverlay(window)
+    self._dropper = overlay
+
+    def finish(color: QColor | None) -> None:
+        overlay.releaseMouse()
+        overlay.hide()
+        if window is not None:
+            window.setWindowOpacity(opacity)
+            window.raise_()
+            window.activateWindow()
+        if color is not None and color.isValid():
+            color.setAlpha(self._color.alpha())
+            self.set_color(color)
+        self._dropper = None
+        overlay.deleteLater()
+
+    overlay.picked.connect(lambda color: finish(color))
+    overlay.cancelled.connect(lambda: finish(None))
+    overlay.show()
+    overlay.grabMouse()
+    overlay.setFocus(Qt.FocusReason.PopupFocusReason)
 
 
 class ColorPickerWidget(QWidget):
@@ -1164,29 +1209,7 @@ class ColorPickerWidget(QWidget):
         self.set_color(self._previous)
 
     def _start_eyedrop(self) -> None:
-        window = self.window()
-        was_visible = window.isVisible() if window is not None else False
-        if window is not None:
-            window.hide()
-        QApplication.processEvents()
-        overlay = _EyedropOverlay()
-        self._dropper = overlay
-
-        def finish(color: QColor | None, *, visible=was_visible) -> None:
-            if window is not None and visible:
-                window.show()
-                window.raise_()
-                window.activateWindow()
-            if color is not None and color.isValid():
-                color.setAlpha(self._color.alpha())
-                self.set_color(color)
-            self._dropper = None
-
-        overlay.picked.connect(lambda color: finish(color))
-        overlay.cancelled.connect(lambda: finish(None))
-        overlay.show()
-        overlay.grabMouse()
-        overlay.setFocus(Qt.FocusReason.PopupFocusReason)
+        _start_screen_eyedrop(self)
 
 
 class _SwatchPreview(QWidget):

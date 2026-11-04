@@ -90,22 +90,16 @@ class SubtitleTranslationDialog(QDialog):
         migrate(self.project)
         layout = QVBoxLayout(self)
         from ..subtitle_rules.language_rules import project_language
-        language = project_language(self.project)
+        from ..subtitle_rules.subtitle_translation import _translation_language
+        language = _translation_language(self.project)
         self.language_note = QLabel()
         self.language_note.setWordWrap(True)
         self._language = language
-        bind_text(self.language_note, ("原文：日语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
-                                       if language == "ja" else
-                                       "原文：英语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
-                                       if language == "en" else
-                                       "原文：韩语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
-                                       if language == "ko" else
-                                       tr("原文：{value0}（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。",
-                                          value0=tr(_european_label(language)))
-                                       if _european_label(language) else
-                                       "原文：中文（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
-                                       if language == "zh" else
-                                       "这个工程没有记录识别语言，按日语原文处理；请确认原文是日语。"))
+        from ..projects.subtitle_import import language_label
+        bind_text(self.language_note, '原文：{language}。翻译读取已提交的正文；译文独立保存，原文、说话人和时间不变。',
+                  language=language_label(language) if language else tr('未记录（旧工程按日语处理，请确认）'))
+        if language and not project_language(self.project):
+            self.language_note.setText(self.language_note.text() + str(tr('语言依据导入标记或明确词库方向，请确认。')))
         layout.addWidget(self.language_note)
         self.scope_group = QButtonGroup(self)
         selected = list(cue_ids if cue_ids is not None else (getattr(page, "selected_cue_ids", lambda: [])() or []))
@@ -138,6 +132,15 @@ class SubtitleTranslationDialog(QDialog):
                                      or getattr(page, "_content_name", "") or ""))
         bind_text(self.context, '背景（可选）：作品 / 游戏名、角色关系，帮助译名一致', property='placeholderText')
         layout.addWidget(self.context)
+        from ..glossary.translation_terms_ui import project_widget
+        self.term_libraries = project_widget(page, self)
+        layout.addWidget(self.term_libraries)
+        import subtitle_core as legacy
+        catalog = {str(row['id']): str(row['name']) for row in legacy.glossary_catalog()}
+        source_names = '、'.join(catalog.get(identity, identity) for identity in self.project.glossary_ids) or tr('未选择')
+        if not self.project.generation_metadata.get('source_glossary_enabled', True):
+            source_names = tr('已关闭') + ' · ' + source_names
+        layout.addWidget(QLabel(tr('原文校对术语库') + '：' + source_names))
         self.glossary = QPlainTextEdit()
         self.glossary.setMaximumHeight(90)
         self._glossary_hint()
@@ -351,8 +354,15 @@ class SubtitleTranslationDialog(QDialog):
         from ..providers.ai_providers import provider_for_stage
         from ..subtitle_rules.subtitle_translation import translation_source
         ids = self._scope_ids()
+        source = translation_source(self.project)
+        eligible = {cue.id for cue in source.cues}
+        if ids is not None:
+            from ..timeline.studio_edit_sequence import source_cue_id_of
+            canonical = {cue.id for cue in self.project.cues}
+            ids = list(dict.fromkeys(cue_id if cue_id in canonical else source_cue_id_of(cue_id) for cue_id in ids))
+            ids = [cue_id for cue_id in ids if cue_id in eligible]
         if ids is not None and not ids:
-            bind_text(self.status, "没有需要处理的字幕。")
+            bind_text(self.status, "所选内容没有属于本次源语言的待处理原文；独立译文轨道请使用译文校对。")
             return
         from ..providers.llm_config import text_ai_key_missing
         if text_ai_key_missing(GLOBAL_PROVIDER_REGISTRY.settings(), 'polish'):
@@ -370,7 +380,9 @@ class SubtitleTranslationDialog(QDialog):
         pairs = parse_glossary(self.glossary.toPlainText())
         self.project.generation_metadata["translation_glossary"] = [list(pair) for pair in pairs]
         self.project.generation_metadata["translation_context"] = self.context.text().strip()
-        source = translation_source(self.project)
+        from dataclasses import replace
+        from ..subtitle_rules.subtitle_translation import normalize_glossary
+        source = replace(source, inline_pairs=normalize_glossary(pairs))
         self._session_generation = getattr(getattr(self.page, "session", None), "generation", None)
         try:
             provider = provider_for_stage(GLOBAL_PROVIDER_REGISTRY.settings(), "polish")
@@ -459,6 +471,10 @@ class SubtitleTranslationDialog(QDialog):
         elif kind == "validated":
             text = tr("第 {batch} 批校验 · 接受 {count} 条 · 问题 {problems}", batch=batch,
                       count=event.get("accepted"), problems=json.dumps(event.get("problems", {}), ensure_ascii=False))
+        elif kind == 'terminology_conflict':
+            mappings = '; '.join(f"{row['source']} → {row['target']}" for row in event.get('required', ()))
+            text = tr('术语冲突 · 字幕 {cue} · AI候选「{candidate}」与用户约定「{rules}」不同，已退回重试。',
+                      cue=self._cue_number(event.get('id', '')), candidate=str(event.get('offered') or ''), rules=mappings)
         elif kind == "error":
             from .translation_actions import failure_hint
             text = tr("第 {batch} 批失败 · {category} · {error}", batch=batch,
@@ -554,7 +570,7 @@ class SubtitleTranslationDialog(QDialog):
                            if self._atomic_display and result.translations and current_settings(self.page).mode == "original"
                            else None)
                 command = ApplyTranslationSnapshotCommand(self.project, before, after, changed_ids,
-                                                           label="AI 翻译字幕", display_settings=display)
+                                                           label="AI 翻译字幕", display_settings=display, refresh_text_ids=result.translations)
                 outcome = command.outcome
                 self.page.undo_stack.push(command)
                 if self._atomic_display and not outcome["applied"]:
@@ -574,6 +590,8 @@ class SubtitleTranslationDialog(QDialog):
                               applied_count=len(result.translations) if before != after else 0,
                               discard_reasons=result.discarded)
         parts = [tr("成功 {count} 条", count=len(result.translations))]
+        if result.terminology_warnings:
+            parts.append(tr('译名或语境需核对 {count} 条；可打开AI词库校对，选择译文', count=len(result.terminology_warnings)))
         if result.discarded:
             parts.append(tr('跳过 {count} 条已修改、撤销或删除的字幕', count=len(result.discarded)))
         if result.cache_hits:

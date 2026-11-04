@@ -214,6 +214,10 @@ class StudioPlaybackFlowMixin:
 
     def _caption_sample_ms(self, milliseconds=None):
         """Use the Clock's observed frame for captions and smooth time for UI."""
+        preparing=getattr(self,'_caption_seek_preparation',None)
+        request=getattr(preparing,'pending',None)
+        if request is not None and request.get('phase')=='prepare':
+            return request['held_sample_ms']
         cached=getattr(self,'_caption_tick_time_ms',None)
         if cached is not None:return cached
         value=self.timeline.playhead_ms if milliseconds is None else milliseconds
@@ -236,6 +240,11 @@ class StudioPlaybackFlowMixin:
     def _position_changed(self, seconds: float, *, defer_follow: bool = False, _bypass_throttle: bool = False) -> None:
         if getattr(self, '_loading_project_media', False) or getattr(self, '_closing_project', False):
             return
+        preparing=getattr(self,'_caption_seek_preparation',None)
+        request=getattr(preparing,'pending',None)
+        if request is not None and request.get('phase')=='prepare':
+            self.timeline.set_playhead(request['target'])
+            return  # Keep input feedback separate from the held media clock.
         if getattr(self, "_defer_next_video_position_follow", False):
             defer_follow = True
             self._defer_next_video_position_follow = False
@@ -625,6 +634,11 @@ class StudioPlaybackFlowMixin:
     @measured('seek_request')
     @observed('player.seek')
     def _seek(self, seconds: float, *, accurate: bool = True) -> None:
+        from .caption_seek_preparation import coordinate_caption_seek
+        if coordinate_caption_seek(self,seconds,accurate):return
+        StudioPlaybackFlowMixin._seek_immediate(self,seconds,accurate=accurate)
+
+    def _seek_immediate(self, seconds: float, *, accurate: bool = True) -> None:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
         timeline_ms = round(seconds * 1000)
@@ -702,6 +716,9 @@ class StudioPlaybackFlowMixin:
             owner_count = int(observed.get("foreground_owner_count") or 0)
             observed_cue_id = str(observed.get("cue_id") or "")
             observed_route = str(observed.get("renderer_route") or "none")
+            from ..rendering.caption_scene import complete_scene_for_seek
+            scene_ready = bool(expected_cue_id and complete_scene_for_seek(
+                getattr(self,'_caption_scene',None), expected_cue_id, generation))
             if not expected_cue_id:
                 passed = bool(
                     not observed_cue_id
@@ -709,6 +726,10 @@ class StudioPlaybackFlowMixin:
                     and not owner_cue_id
                     and owner_count == 0
                 )
+            elif scene_ready:
+                passed = bool(observed_cue_id == expected_cue_id and owner_count == 1
+                    and owner in {VisualOwner.ADVANCED_LIVE.value,VisualOwner.ADVANCED_FIDELITY.value}
+                    and not bool(observed.get('native_overlay_visible')))
             elif expected_route == "advanced":
                 passed = bool(
                     observed_cue_id == expected_cue_id
@@ -735,6 +756,9 @@ class StudioPlaybackFlowMixin:
                     and not bool(observed.get("advanced_canvas_visible"))
                 )
             trace["T8_passed"] = passed
+            preparing=getattr(self,'_caption_seek_preparation',None)
+            if preparing is not None and preparing.pending is not None:
+                passed=False;trace['T8_passed']=False
             trace["T8_attempts"] = attempt
             trace["T8_expected"] = {
                 "cue_id": expected_cue_id,
@@ -749,6 +773,7 @@ class StudioPlaybackFlowMixin:
                 "visible": bool(observed.get("visible")),
                 "native_overlay_visible": bool(observed.get("native_overlay_visible")),
                 "advanced_canvas_visible": bool(observed.get("advanced_canvas_visible")),
+                "complete_current_scene": scene_ready,
             }
             if passed:
                 self.video.mark_seek_stage(
@@ -905,8 +930,10 @@ class StudioPlaybackFlowMixin:
         from ..design.themed_icons import install_themed_icon
         install_themed_icon(self.play_button, "fa5s.play" if paused else "fa5s.pause", "on_accent")
 
-    def _playback_buffers_ready(self) -> bool:
-        if not self.audio_engine.ready_for_playback():
+    def _playback_buffers_ready(self, *, include_seek=True, include_audio=True) -> bool:
+        seek=getattr(self,'_caption_seek_preparation',None)
+        if include_seek and seek is not None and seek.pending is not None:return False
+        if include_audio and not self.audio_engine.ready_for_playback():
             return False
         scene = getattr(self, "video_compositor", None)
         if scene is not None:
@@ -934,11 +961,16 @@ class StudioPlaybackFlowMixin:
             return
         if not paused and hasattr(self, 'timeline'):
             self.timeline._manual_view_hold = False
+        if not paused and hasattr(self, 'source_monitor'):
+            self.source_monitor.pause()
         if getattr(self.video, '_seek_hold_active', False):
             # A seek during playback holds the picture until its audio is
             # ready. The user is still playing: no Q/W retarget, full GC,
             # thumbnail/governor switch or play-button flicker; the audio
             # graph still follows the hold so both clocks stop and resume.
+            preparing=getattr(self,'_caption_seek_preparation',None)
+            request=getattr(preparing,'pending',None)
+            if request is not None and request.get('phase')=='prepare':return
             if self.project and hasattr(self, "timeline"):
                 self._sync_video_compositor(int(self.timeline.playhead_ms))
             return

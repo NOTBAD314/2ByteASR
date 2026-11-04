@@ -487,8 +487,9 @@ def test_term_manager_is_searchable_complete_and_supports_batch_import():
     assert ui_module.TermLibraryDialog is implementation.TermLibraryDialog
     source = inspect.getsource(term_library_dialog)
     assert "术语库与学习记录" in source
-    assert "搜索词条" in source  # 2026-10-17 redesign v2: the term search sits in the tool row
-    assert 'AnimatedButton("批量导入")' in source
+    # 2026-11-03 card wall: the term search (it also matches categories) and 导入 sit in the tool row
+    assert "找词或分类" in source
+    assert 'AnimatedButton("导入")' in source and "self.show_import_dialog" in source
     assert "builtin_names[:300]" not in source
 
 

@@ -305,40 +305,44 @@ class CueTableModel(QAbstractTableModel):
             first = previous = row
 
     def rowCount(self, _parent=QModelIndex()) -> int:
-        return len(self._rows)
+        return 0 if _parent.isValid() else len(self._rows)
 
     def columnCount(self, _parent=QModelIndex()) -> int:
-        return len(self.HEADERS)
+        return 0 if _parent.isValid() else len(self.HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+        if (role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal
+                and 0 <= section < len(self.HEADERS)):
             return tr(self.HEADERS[section])
         return super().headerData(section, orientation, role)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or not self.project:
+        if (not index.isValid() or not self.project or index.model() is not self
+                or not 0 <= index.row() < len(self._rows)
+                or not 0 <= index.column() < len(self.HEADERS)):
             return None
         cue = self.cue_at(index.row())
         if role == self.ActiveCueRole:
             return cue.id in self.active_cue_ids
-        status = _cue_status(self.project, cue)
         if role == Qt.ItemDataRole.UserRole:
             return cue.id
         if role == Qt.ItemDataRole.EditRole and index.column() == 3:
             return self.display_text(cue)
         if role == Qt.ItemDataRole.DisplayRole:
-            values = (
-                self.source_row(index.row()) + 1,
-                _format_ms(cue.start_ms),
-                _speaker_name(self.project, cue.speaker_id),
-                self.display_text(cue),
-                _cue_status_label(self.project, cue),
-            )
-            if index.column() == 4 and _cue_review_level(self.project, cue) != 'confident':
+            column = index.column()
+            if column == 0:
+                return self.source_row(index.row()) + 1
+            if column == 1:
+                return _format_ms(cue.start_ms)
+            if column == 2:
+                return _speaker_name(self.project, cue.speaker_id)
+            if column == 3:
+                return self.display_text(cue)
+            if _cue_review_level(self.project, cue) != 'confident':
                 return tr({"high": "需要检查", "suggested": "建议确认"}.get(
                     _cue_review_level(self.project, cue), "待确认"
                 ))
-            return values[index.column()]
+            return _cue_status_label(self.project, cue)
         if role == Qt.ItemDataRole.ToolTipRole:
             risks = cached_review_risks(self.project)
             row = risks.get(cue.id, {}) if isinstance(risks, dict) else {}
@@ -354,16 +358,16 @@ class CueTableModel(QAbstractTableModel):
                 return QColor(status_colors[key][1])
             return QColor({"pending": status_colors["pending"][1],
                            "issue": status_colors["issue"][1],
-                           "done": status_colors["done"][1]}[status])
+                           "done": status_colors["done"][1]}[_cue_status(self.project, cue)])
         if role == Qt.ItemDataRole.TextAlignmentRole and index.column() in {0, 1, 4}:
             return int(Qt.AlignmentFlag.AlignCenter)
         return None
 
-    def flags(self, index):
-        # Double-click belongs to the bound caption window. Qt's native
-        # delegate would otherwise open a second editor with an empty EditRole
-        # and write that empty value back when the floating window takes focus.
-        return super().flags(index)
+    # Inherit the native read-only QAbstractTableModel flags. A Python virtual
+    # trampoline doing only super().flags() adds an enum conversion for every
+    # accessibility cell query. The 2026-11-03 native dump enters that exact
+    # trampoline from UIAutomation/QPersistentModelIndex, then PyErr_PrintEx.
+    # No ItemIsEditable is added: double click still owns the caption editor.
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if (

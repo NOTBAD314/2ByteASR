@@ -239,6 +239,10 @@ def _record_run_event(event, payload):
         key: _redact_runtime_payload(value)
         for key, value in payload.items()
     }
+    journal = getattr(context, 'task_journal', None)
+    if journal is not None:
+        # Required persistence is not a best-effort diagnostic observer.
+        journal.event(str(event), safe_payload)
     task_reporting.record_media_event(event, **safe_payload)
     with _EVENT_OBSERVER_LOCK:
         observers = tuple(_EVENT_OBSERVERS)
@@ -274,6 +278,8 @@ def media_cache_context(media_path):
     cache_key = stable_digest(identity)[:24]
     cache_dir = os.path.join(CACHE_ROOT, cache_key)
     os.makedirs(cache_dir, exist_ok=True)
+    if getattr(context, 'task_journal', None) is not None:
+        record_run_event('task_cache_prepared', cache_dir=cache_dir, identity=identity)
     from .audio_stream_choice import active_choice
     stream = active_choice(media_path, context) if context.identity_task_active else {}
     # The picked audio stream travels with its cache (2026-10-24); the
@@ -683,19 +689,10 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
 
 
 def atomic_write_json(path, payload):
-    temp_path = path + ".tmp"
-    try:
-        Path(temp_path).write_text(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        os.replace(temp_path, path)
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+    from ..storage.atomic_files import write_text_atomic
+    # Flush the artifact before cache_write publishes its checkpoint. Unique
+    # temporary names also avoid cross-task clobbering of an incomplete file.
+    write_text_atomic(path, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def _stage_cache_path(stage, cache_context, signature):

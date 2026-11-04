@@ -94,6 +94,9 @@ DEFAULT_SETTINGS = {
         "selected_glossary": "",
         "enabled_glossary_ids": [],
         "enable_domain_terms": False,
+        # Optional directional defaults for new recognition tasks; original
+        # library identities/enablement retain their existing meanings.
+        "translation_terminology": {},
     },
     "ui": {
         "language": "zh",

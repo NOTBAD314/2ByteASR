@@ -742,7 +742,10 @@ class StudioReviewMixin:
                     token=(store.mapping_revision,len(self.project.asr_evidence))
                     self.project._qc_evidence_index_cache=(self.project.asr_evidence,token,index)
                     evidence_index_adopted=True
-        self._finish_chunked_qc_scan(self.project,result)
+        if prepared is not None and 'review_risks' in prepared:
+            self._finish_chunked_qc_scan(self.project,result,prepared_risks=prepared['review_risks'])
+        else:
+            self._finish_chunked_qc_scan(self.project,result)
         self._qc_worker_timings = {**timings,'snapshot_ms':self._qc_worker_snapshot_ms,
                                    'gui_commit_ms':(perf_counter()-began)*1000,
                                    'issue_cache_adopted':issue_cache_adopted,
@@ -754,15 +757,17 @@ class StudioReviewMixin:
         self._studio_trace('QC_WORKER_FAILED', error=error, fallback='budgeted_gui_scan')
         self._start_chunked_qc_scan(_fallback=True)
 
-    def _finish_chunked_qc_scan(self, project, result: QCResult) -> None:
+    def _finish_chunked_qc_scan(self, project, result: QCResult, *, prepared_risks=None) -> None:
         if self.project is not project:
             return
-        risks = review_risks_from_qc(result)
+        risks_cache = prepared_risks
+        if risks_cache is None:
+            risks_cache = {cue_id:risk.to_dict() for cue_id,risk in review_risks_from_qc(result).items()}
         setattr(project, "_qc_result", result)
         setattr(
             project,
             "_review_risks_cache",
-            {cue_id: risk.to_dict() for cue_id, risk in risks.items()},
+            risks_cache,
         )
         self._qc_full_scan_pending = False
         self._pending_qc_cue_ids.clear()

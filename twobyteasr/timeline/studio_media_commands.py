@@ -14,6 +14,35 @@ from ..projects.studio_runtime_state import DirtyDomain, state_for
 MediaMutation = Callable[[SubtitleProject], None]
 
 
+class MediaPoolAssetsCommand(QUndoCommand):
+    """Asset ingestion never owns tracks, sequence timing or transport state."""
+
+    def __init__(self, project, after):
+        super().__init__('添加素材到媒体池')
+        self.project=project
+        self.before=copy.deepcopy(project.media_pool)
+        self.after=copy.deepcopy(after)
+
+    def _apply(self, pool):
+        with state_for(self.project).transaction(self.project, action_id='media_pool_import',
+                dirty=DirtyDomain.ASSET_CATALOG | DirtyDomain.AUTOSAVE,snapshot_cues=False):
+            self.project.media_pool=copy.deepcopy(pool)
+
+    def redo(self):self._apply(self.after)
+
+    def undo(self):self._apply(self.before)
+
+
+def media_pool_import_command(project, mutate):
+    working=copy.copy(project)
+    for name in ('media_pool','video_tracks','audio_tracks','av_track_groups'):
+        setattr(working,name,copy.deepcopy(getattr(project,name)))
+    working.studio_state=dict(project.studio_state)
+    mutate(working)
+    if working.media_pool==project.media_pool:return None
+    return MediaPoolAssetsCommand(project,working.media_pool)
+
+
 def _video_timing_signature(tracks) -> tuple:
     return tuple(
         (

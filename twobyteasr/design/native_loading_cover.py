@@ -160,6 +160,7 @@ class InputHostLease(QObject):
         super().__init__()
         self._host = weakref.ref(host) if host is not None else None
         self._restore = None
+        self._dialogs = []
         self._input_types = {QEvent.Type.MouseButtonPress,QEvent.Type.MouseButtonRelease,
             QEvent.Type.MouseButtonDblClick,QEvent.Type.MouseMove,QEvent.Type.Wheel,
             QEvent.Type.KeyPress,QEvent.Type.KeyRelease,QEvent.Type.Shortcut,
@@ -170,6 +171,16 @@ class InputHostLease(QObject):
         if self._restore is None or event.type() not in self._input_types:return False
         host=self._restore[0]()
         if host is None or not isValid(host):return False
+        # A user decision is part of this load, not input to the covered
+        # editor. Admit only dialogs explicitly leased by this request.
+        self._dialogs = [ref for ref in self._dialogs if ref() is not None and isValid(ref())]
+        for ref in self._dialogs:
+            dialog = ref()
+            current = watched
+            while current is not None:
+                if current is dialog and dialog.isVisible():
+                    return False
+                current = current.parent()
         current=watched
         while current is not None:
             if current is host:
@@ -180,6 +191,12 @@ class InputHostLease(QObject):
     @property
     def held(self):
         return self._restore is not None
+
+    def allow_dialog(self, dialog):
+        self._dialogs.append(weakref.ref(dialog))
+
+    def release_dialog(self, dialog):
+        self._dialogs = [ref for ref in self._dialogs if ref() is not None and ref() is not dialog]
 
     def acquire(self, owner, cover):
         if self._host is None:
@@ -201,6 +218,7 @@ class InputHostLease(QObject):
 
     def release(self, *_):
         restore, self._restore = self._restore, None
+        self._dialogs.clear()
         if restore is not None and QApplication.instance() is not None:
             QApplication.instance().removeEventFilter(self)
 

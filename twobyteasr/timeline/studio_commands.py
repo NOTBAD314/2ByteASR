@@ -1643,6 +1643,17 @@ class BatchReplaceTextCommand(QUndoCommand):
         if self.translation_values:
             from ..subtitle_rules.subtitle_translation import manual_batch_state
             self.translation_before, self.translation_after = manual_batch_state(project, self.translation_values, source_values=self.after)
+            # Match the normal manual translation editor: a retained group
+            # display override must not conceal the newly committed record.
+            from ..caption_style.text_marks import translation_text_override
+            old_records = (self.translation_before.get('translation_records') or {}).get('records', {})
+            for cue in project.cues:
+                if cue.id not in self.translation_values: continue
+                self.appearance_before.setdefault(cue.id, copy.deepcopy(cue.appearance_override))
+                styled = copy.copy(cue)
+                styled.appearance_override = self.appearance_after.get(cue.id, cue.appearance_override)
+                self.appearance_after[cue.id] = translation_text_override(styled,
+                    (old_records.get(cue.id) or {}).get('text', ''), self.translation_values[cue.id][0])
         self.origin = MutationOrigin(origin)
         self.needle = str(needle or "")
         self.learning_observer = learning_observer
@@ -1784,6 +1795,7 @@ class BatchReplaceTextCommand(QUndoCommand):
             for cue in self.project.cues:
                 if cue.id in values:
                     cue.text = values[cue.id]
+                if cue.id in self.appearance_before:
                     cue.appearance_override = copy.deepcopy((self.appearance_after if values is self.after else self.appearance_before)[cue.id])
 
         dirty = _field_domains(("text",))
@@ -1792,6 +1804,7 @@ class BatchReplaceTextCommand(QUndoCommand):
             # content revisions may reuse that immutable branch, so declare
             # its mutation for render/QC/persistence and undo/redo alike.
             dirty |= DirtyDomain.PROJECT_METADATA
+            dirty |= DirtyDomain.CUE_STYLE
         if not values and self.translation_values:
             # Translation records do not change ASR/source-text quality.
             # Running a whole-source QC scan here blocked the bulk operation.
@@ -1800,7 +1813,7 @@ class BatchReplaceTextCommand(QUndoCommand):
             _commit_mutation(
                 self.project, action_id=self.text(), dirty=dirty,
                 cue_ids=set(values) | set(self.translation_values), mutate=mutate,
-                changed=self.changed, snapshot_cues=bool(values),
+                changed=self.changed, snapshot_cues=bool(values or self.translation_values),
                 studio_state_keys=('glossary_proofread_review','manual_caption_text','term_word_overrides'),
                 generation_metadata_keys=('translations','translation_records','glossary_review_jobs'),
             )
@@ -1820,6 +1833,9 @@ class BatchReplaceTextCommand(QUndoCommand):
                 pass
 
     def redo(self) -> None:
+        if getattr(self, '_initial_applied', False):
+            self._initial_applied = False
+            return
         self._apply(self.after)
 
     def undo(self) -> None:

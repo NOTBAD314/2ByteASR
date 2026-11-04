@@ -41,7 +41,7 @@ QListWidget#termGameList {{ background: transparent; border: 0; outline: 0; padd
 QListWidget#termGameList::item, QListWidget#termGameList::item:hover, QListWidget#termGameList::item:selected {{
     background: transparent; border: 0;
 }}
-QFrame#termGameRow {{ background: transparent; border: 0; border-left: 3px solid transparent; border-radius: 8px; }}
+QFrame#termGameRow {{ background: transparent; border: 0; border-left: 3px solid transparent; border-radius: 12px; }}
 QFrame#termGameRow:hover {{ background: {hover}; }}
 QFrame#termGameRow[selected="true"] {{ background: {t.selected}; border: 0; border-left: 3px solid {t.accent}; }}
 QLabel#termGameRowName {{ color: {t.text}; font-size: 14px; font-weight: 500; background: transparent; }}
@@ -49,15 +49,15 @@ QFrame#termGameRow[selected="true"] QLabel#termGameRowName {{ color: {t.text}; f
 QLabel#termGameRowCount {{ color: {t.text_muted}; font-size: 12px; font-weight: 400; background: transparent; }}
 QFrame#termNewLibrary {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 10px; }}
 
-QFrame#termLibraryContent {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px; }}
+QFrame#termLibraryContent {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 18px; }}
 QFrame#termLibraryContentHeader {{ background: transparent; border: 0; }}
 QWidget#termQuickAdd {{ background: transparent; }}
-QFrame#termLibraryBody {{ background: transparent; border: 0; border-top: 1px solid {t.border}; }}
+QFrame#termLibraryBody {{ background: transparent; border: 0; }}
 QFrame#termLibraryFooter {{
     background: {t.panel}; border: 0; border-top: 1px solid {t.border};
-    border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;
+    border-bottom-left-radius: 18px; border-bottom-right-radius: 18px;
 }}
-QLabel#termLibraryName {{ color: {t.text}; font-size: 21px; font-weight: 700; background: transparent; }}
+QLabel#termLibraryName {{ color: {t.text}; font-size: 19px; font-weight: 800; background: transparent; }}
 QLabel#termTypeTag {{
     background: {notice}; color: {t.text_secondary}; border-radius: 6px;
     padding: 1px 8px; font-size: 12px; font-weight: 500;
@@ -66,14 +66,47 @@ QLabel#termMeta {{ color: {t.text_muted}; font-size: 13px; font-weight: 400; bac
 QLabel#termHint {{ color: {t.text_muted}; font-size: 12px; font-weight: 400; background: transparent; }}
 QLabel#termTableTitle {{ color: {t.text_secondary}; font-size: 12px; font-weight: 600; background: transparent; padding-top: 4px; }}
 
-QFrame#termComposer {{ background: {t.input_surface}; border: 1px solid {t.border_strong}; border-radius: 10px; }}
-QLineEdit#termComposerInput {{
-    background: transparent; border: 0; color: {t.text}; padding: 0 14px; min-height: 42px; font-size: 14px;
+QFrame#termQuickAdd {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 14px; }}
+QWidget#termAddHead, QWidget#termAddHint {{ background: transparent; border: 0; }}
+QLabel#termAddHeadLabel {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
+QFrame#termComposer {{ background: {t.accent_soft}; border: 0; border-radius: 0; }}
+QLabel#termAddPlus {{
+    background: {t.accent}; color: {on_accent}; border-radius: 9px; font-size: 16px; font-weight: 700;
 }}
-QLabel#termComposerArrow {{ color: {t.text_muted}; padding: 0 2px; background: transparent; font-size: 15px; }}
-QFrame#termComposerDivider {{ background: {t.border}; border: 0; }}
+QLineEdit#termComposerInput {{
+    background: {t.surface}; border: 1px solid {accent_edge}; border-radius: 10px; color: {t.text};
+    padding: 0 10px; min-height: 32px; font-size: 13px;
+}}
+QLineEdit#termComposerInput:focus {{ border-color: {t.accent}; }}
 QComboBox#termComposerCombo {{
-    background: transparent; border: 0; color: {t.text_secondary}; padding: 0 10px; min-height: 42px; font-size: 13px;
+    background: {t.surface}; border: 1px solid {accent_edge}; border-radius: 10px; color: {t.text_secondary};
+    padding: 0 10px; min-height: 32px; font-size: 13px;
+}}
+QFrame#termTryPanel {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#termSegment {{ background: {t.input_surface}; border: 1px solid {t.border}; border-radius: 17px; }}
+QPushButton#termSegmentButton {{
+    background: transparent; color: {t.text_muted}; border: 0; border-radius: 14px;
+    padding: 0 12px; min-height: 28px; font-size: 13px; font-weight: 600;
+}}
+QPushButton#termSegmentButton:hover {{ color: {t.text}; }}
+QPushButton#termSegmentButton:checked {{ background: {t.accent}; color: {on_accent}; }}
+QPushButton#termSegmentButton:disabled {{ color: {t.disabled}; }}
+QFrame#termGuide {{ background: transparent; border: 1px dashed {accent_edge}; border-radius: 12px; }}
+QFrame#termGuide QLabel {{ background: transparent; }}
+QLabel#termGuideTitle {{ color: {t.text}; font-size: 13px; font-weight: 700; }}
+QLabel#termGuideText {{ color: {t.text_secondary}; font-size: 12px; }}
+QLabel#termGuideNumber {{
+    background: {t.accent_soft}; color: {accent_text}; border-radius: 9px; font-size: 11px; font-weight: 700;
+}}
+QListView#termCardView {{ background: transparent; border: 0; outline: 0; }}
+QListView#termCardView > QFrame#termNotice {{
+    background: {t.surface_elevated}; border: 1px solid {t.border_strong}; border-radius: 18px;
+}}
+QListView#termCardView::item, QListView#termCardView::item:hover, QListView#termCardView::item:selected {{
+    background: transparent; border: 0;
+}}
+QLabel#termGameInUse {{
+    color: {t.success}; background: {notice}; border-radius: 7px; padding: 0 6px; font-size: 11px; font-weight: 700;
 }}
 
 QPushButton#termAccentButton {{

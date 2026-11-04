@@ -589,6 +589,7 @@ class StudioMediaFlowMixin:
                     result.source_path,
                     fingerprint=result.fingerprint,
                     duration_ms=result.duration_ms,
+                    materialize_audio=pending_mode != 'pool',
                     video_metadata={
                         "width": result.width,
                         "height": result.height,
@@ -1018,7 +1019,7 @@ class StudioMediaFlowMixin:
         options.setHorizontalSpacing(12)
         options.setVerticalSpacing(8)
         options.setColumnStretch(1, 1)
-        options.addWidget(field_label("词库"), 0, 0, Qt.AlignmentFlag.AlignVCenter)
+        options.addWidget(field_label("原文校对术语库"), 0, 0, Qt.AlignmentFlag.AlignVCenter)
         glossary_entries: dict[str, str] = {}
         profiles = getattr(getattr(host, "legacy", None), "load_game_profiles", lambda: {})() or {}
         identity_fn = getattr(getattr(host, "legacy", None), "runtime_game_identity", str)
@@ -1146,6 +1147,8 @@ class StudioMediaFlowMixin:
         options.addLayout(translation_row, 1, 1)
         summary.addSpacing(2)
         summary.addLayout(options)
+        from ..glossary.translation_terms_ui import project_widget
+        summary.addWidget(project_widget(self, summary_card))
         translation_state = {"ready": False}
 
         def ai_gate() -> str:
@@ -1466,11 +1469,14 @@ class StudioMediaFlowMixin:
                 "enabled_glossary_ids": (
                     _glossary_checked_ids() if glossary_entries else []
                 ),
+                "enable_domain_terms": bool(project.generation_metadata.get('source_glossary_enabled', True)
+                                            and _glossary_checked_ids()),
                 "replace_policy": "replace_cues",
                 # Speakers follow the primary model (speaker_strategy.resolve); not chosen here.
                 "speaker_source": resolve(settings),
                 "subtitle_output": output,
                 "translation_script": str(translation_target.currentData() or "zh-Hans"),
+                "translation_terminology": copy.deepcopy(project.generation_metadata.get('translation_terminology', {})),
             }
             if stretch is not None:
                 # 2026-10-25: only this stretch is heard; its captions are replaced.
@@ -2277,7 +2283,13 @@ class StudioMediaFlowMixin:
 
         pending: list[str] = []
         later: list[str] = []
+        used_assets = {c.asset_id for t in self.project.audio_tracks for c in t.clips}
+        used_assets.update(c.asset_id for t in self.project.video_tracks for c in t.clips if c.audio_enabled)
         for asset in self.project.media_pool:
+            if asset.asset_id not in used_assets:
+                # Browsing a pool must not decode every unused soundtrack.
+                # Source previews and visible cards own bounded requests.
+                continue
             if not _asset_has_audio(asset):
                 continue
             source = str(asset.canonical_source or "").strip()

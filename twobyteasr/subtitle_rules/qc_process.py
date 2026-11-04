@@ -62,6 +62,8 @@ def evaluate(snapshot, config, terminology):
     project._qc_result=result
     from .current_issues import prepare_issue_cache
     prepared=prepare_issue_cache(project)
+    from .studio_review import review_risks_from_qc
+    prepared['review_risks'] = {key:risk.to_dict() for key,risk in review_risks_from_qc(result).items()}
     prepared['evidence_index']=context.evidence_index.compact() if context.evidence_index is not None else None
     return {'result':result,'issue_cache':prepared,'compute_ms':(time.perf_counter()-began)*1000}
 

@@ -18,9 +18,11 @@ def main():
                     try:
                         mem=child.memory_info();cpu=child.cpu_times();io=child.io_counters()
                         rows.append(dict(pid=child.pid,name=child.name(),rss=mem.rss,private=getattr(mem,'private',None),
-                            cpu_s=cpu.user+cpu.system,read=io.read_bytes,write=io.write_bytes,threads=child.num_threads()))
+                            cpu_s=cpu.user+cpu.system,read=io.read_bytes,write=io.write_bytes,threads=child.num_threads(),
+                            handles=child.num_handles() if os.name=='nt' else None))
                     except (psutil.Error,OSError):pass
-                stream.write(json.dumps(dict(at=time.perf_counter()-began,processes=rows))+'\n');stream.flush()
+                stamp=time.perf_counter()
+                stream.write(json.dumps(dict(at=stamp-began,monotonic=stamp,processes=rows))+'\n');stream.flush()
             except (FileNotFoundError,ValueError,KeyError):pass
             except psutil.NoSuchProcess:
                 if known is not None:break

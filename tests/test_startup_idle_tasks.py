@@ -42,6 +42,13 @@ def test_quick_start_writes_the_fingerprint_after_the_window():
 class _Window:
     def __init__(self):
         self.studio = object()
+        self.modules_ready = True
+
+    def _ensure_studio_modules(self):
+        return self.modules_ready
+
+    def _ensure_studio_loading_surface(self):
+        return None
 
     def built_page(self, name):
         return self.studio if name == "studio" else None
@@ -65,6 +72,16 @@ def test_idle_tasks_wait_for_a_released_mouse_then_run_once(monkeypatch, qapp):
 
     pressed[0] = Qt.MouseButton.NoButton
     ui.MainWindow._warm_studio_module(window)
+    assert ran == ["fingerprint"]
+    ui.MainWindow._warm_studio_module(window)
     assert ran == ["fingerprint", "second"]
     ui.MainWindow._warm_studio_module(window)
     assert ran == ["fingerprint", "second"]
+
+
+def test_fingerprint_waits_for_the_staged_importer(monkeypatch,qapp):
+    ran=[];window=_Window();window.modules_ready=False
+    monkeypatch.setattr(ui,'_STARTUP_IDLE_TASKS',[lambda:ran.append('fingerprint')])
+    monkeypatch.setattr(ui.QApplication,'mouseButtons',staticmethod(lambda:Qt.MouseButton.NoButton))
+    ui.MainWindow._warm_studio_module(window)
+    assert not ran and len(ui._STARTUP_IDLE_TASKS)==1

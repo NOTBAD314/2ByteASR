@@ -13,7 +13,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--exe', type=Path)
+    parser.add_argument('--cards', action='store_true')
+    parser.add_argument('--layout', action='store_true')
+    parser.add_argument('--scale', default='1')
+    parser.add_argument('--launcher', type=Path)
+    parser.add_argument('--gui', type=Path)
+    parser.add_argument('--entry-bridge', type=Path)
     args = parser.parse_args()
+    if args.launcher and (not args.gui or not args.entry_bridge):
+        parser.error('--launcher requires --gui and --entry-bridge')
     output = args.output.resolve()
     if output.exists() or not output.is_relative_to(ROOT / 'tmp'):
         raise ValueError('Use a fresh output under repository tmp')
@@ -27,12 +35,19 @@ def main():
     env = os.environ.copy()
     env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(output), TWOBYTEASR_STARTUP_PROJECT=str(project),
         TWOBYTEASR_INVOKER_CWD=str(ROOT), TWOBYTEASR_STARTUP_TRACE=str(output / 'startup.jsonl'),
-        QT_QPA_PLATFORM='windows', QT_SCALE_FACTOR='1', TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
+        QT_QPA_PLATFORM='windows', QT_SCALE_FACTOR=args.scale, TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONUTF8='1')
     from isolated_windows_desktop import run_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
+    if args.launcher:
+        command = [sys.executable, '-B', str(args.entry_bridge.resolve()), '--launcher',str(args.launcher.resolve()),
+                   '--gui',str(args.gui.resolve()),'--output',str(output),'--profile',str(output),'--timeout','90']
     result = {'passed': False, 'scope': 'fresh isolated local input; no original user data/AI/ASR/media'}
     phases = [('glossary-input', 'input-result.json'), ('glossary-input-restore', 'input-restore-result.json')]
+    if args.cards:
+        phases = [('glossary-card-wall', 'card-result.json')]
+    if args.layout:
+        phases = [('glossary-card-layout', 'layout-result.json')]
     for scenario, name in phases:
         env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = scenario
         code = run_on_desktop(command, cwd=ROOT, env=env, output=output / (scenario + '-process'), timeout=90)

@@ -2360,6 +2360,8 @@ def deserialize_segments(items):
                 reference_consensus=float(item.get("reference_consensus", 0.0)),
             )
         )
+        if 'caption_arbitration' in item:
+            result[-1].caption_arbitration = copy.deepcopy(item['caption_arbitration'])
     return result
 
 
@@ -2367,7 +2369,7 @@ def serialize_cues(cues):
     rows=[]
     for cue in cues:
         row=asdict(cue)
-        for key in ('source_spans','timing_basis','segmentation_language'):
+        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment'):
             if hasattr(cue,key):row[key]=copy.deepcopy(getattr(cue,key))
         rows.append(row)
     return rows
@@ -2384,7 +2386,7 @@ def deserialize_cues(items):
             timing_locked=bool(item.get("timing_locked", False)),
             speaker=str(item.get("speaker", "S00")),
         )
-        for key in ('source_spans','timing_basis','segmentation_language'):
+        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment'):
             if key in item:setattr(cue,key,copy.deepcopy(item[key]))
         result.append(cue)
     return result

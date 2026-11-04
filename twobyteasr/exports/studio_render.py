@@ -653,7 +653,7 @@ def build_render_command(
     media = Path(job.media_path).resolve()
     ass = Path(job.ass_path).resolve()
     output = Path(job.output_path).resolve()
-    if not media.is_file():
+    if not job.direct_video_graph and not media.is_file():
         raise FileNotFoundError(media)
     if job.ass_path and not ass.is_file():
         raise FileNotFoundError(ass)

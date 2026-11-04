@@ -191,24 +191,25 @@ def test_media_pool_search_add_to_selected_track_and_undo(tmp_path, monkeypatch)
     app.processEvents()
 
     panel = page.media_pool_panel
-    assert panel.assets.topLevelItemCount() == 3
+    assert panel.model.rowCount() == 3
     assert panel.track_selector.count() == 3
     panel.select_track("V1")
-    panel.assets.setCurrentItem(panel.assets.topLevelItem(0))
-    assert panel.add_to_track_button.isEnabled() is False
-    assert "V2" in panel.add_to_track_button.toolTip()
+    panel.assets.setCurrentIndex(panel.proxy.index(0, 0))
+    assert panel.add_to_track_button.isEnabled() is True
+    assert "源预览" in panel.add_to_track_button.toolTip()
     panel.search.setText("overlay")
-    visible = [
-        panel.assets.topLevelItem(row)
-        for row in range(panel.assets.topLevelItemCount())
-        if not panel.assets.topLevelItem(row).isHidden()
-    ]
+    visible = [panel.proxy.index(row, 0) for row in range(panel.proxy.rowCount())]
     assert len(visible) == 1
-    panel.assets.setCurrentItem(visible[0])
+    panel.assets.setCurrentIndex(visible[0])
     panel.select_track("V3")
     before = page.undo_stack.count()
+    monkeypatch.setattr(page.source_monitor, '_load_current', lambda: None)
     panel._add_selected_to_track()
-
+    assert page.undo_stack.count() == before
+    assert page.project.video_tracks[2].clips == []
+    page.source_monitor.set_mode('video')
+    page.source_monitor.video_target.setCurrentIndex(page.source_monitor.video_target.findData('V3'))
+    page.source_monitor.insert()
     assert page.undo_stack.count() == before + 1
     assert len(page.project.video_tracks[2].clips) == 1
     assert set(page.timeline._video_track_rects()) == {"V1", "V2", "V3"}

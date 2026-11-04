@@ -7,7 +7,7 @@ tooltip, and :meth:`summary` gives the short "原文 · 148 条文本" line for 
 title bar. The ``mode`` and ``track`` combo boxes stay the model in both
 forms: callers, tests and acceptance scripts drive the selector through them.
 """
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import QWidget, QComboBox, QLabel, QHBoxLayout, QVBoxLayout, QPushButton, QFrame, QButtonGroup
 from ..i18n import bind_text, tr
 from .subtitle_text_targets import text_entries
@@ -122,7 +122,16 @@ class TextTargetSelector(QWidget):
         return {value} if value else {self.track.itemData(i) for i in range(1,self.track.count())}
 
     def entries(self, project=None):
-        return text_entries(project or self._project, mode=self.mode_value(), tracks=self.tracks())
+        project = project or self._project
+        runtime = getattr(project,'_studio_state_runtime',None)
+        key = (id(project),getattr(runtime,'revision',None),self.mode_value(),tuple(sorted(self.tracks())))
+        cached = getattr(self,'_turn_entries',None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        entries = text_entries(project,mode=self.mode_value(),tracks=self.tracks())
+        self._turn_entries=(key,entries)
+        QTimer.singleShot(0,lambda:setattr(self,'_turn_entries',None))
+        return entries
 
     def summary(self):
         """(label, count): what the next operation reads, e.g. ("原文", 148)."""

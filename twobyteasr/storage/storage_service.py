@@ -320,6 +320,8 @@ class StorageService:
             # Unknown lease state must not become an executable plan.
             index_failed=True
         else:index_failed=False
+        from ..recognition.task_journal import protected_paths, depends_on
+        recognition_dependencies = protected_paths()
         seen=set()
         for root in self.roots:
             if not root.exists():
@@ -365,6 +367,8 @@ class StorageService:
                             if path.is_relative_to(self.paths.managed_runtime_root/'download-cache'):
                                 category,producer,rebuild,protected='uv','uv','download','包管理器缓存；仅通过官方 uv 维护入口处理'
                             reason = protected
+                            if depends_on(path, recognition_dependencies):
+                                reason = '未完成识别任务的恢复产物；保留以供继续处理'
                             warning=''
                             if protected.startswith('仅手动确认：'):
                                 warning=protected.removeprefix('仅手动确认：')
@@ -564,6 +568,8 @@ class StorageService:
             media_blocks,reference_snapshot=self._media_reference_state(media,cancel)
         else:media_blocks={};reference_snapshot=None
         adoption_skips={}
+        from ..recognition.task_journal import protected_paths, depends_on
+        recognition_dependencies = protected_paths()
         if adopt_legacy:
             from .storage_legacy import adopt
             legacy=[i for i in items if i.producer.endswith('_legacy') and i.manual_cleanable]
@@ -575,6 +581,8 @@ class StorageService:
                 result.cancelled = True
                 break
             record = dict(path=item.path, size=item.size)
+            if depends_on(item.path, recognition_dependencies):
+                result.skipped.append(dict(record, reason='未完成识别任务仍依赖此产物'));continue
             if (self.busy if automatic else self.manual_busy)():
                 result.skipped.append(dict(record, reason='应用正在识别／播放／导出／安装；稍后重试'))
                 continue

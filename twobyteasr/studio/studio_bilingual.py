@@ -247,12 +247,26 @@ def open_style_dialog(page) -> None:
 class ApplyTranslationSnapshotCommand(QUndoCommand):
     """One undo step for translation records + render view (AI batch or manual edit)."""
 
-    def __init__(self, project, before, after, cue_ids=(), label="翻译字幕", changed=None, *, display_settings=None):
+    def __init__(self, project, before, after, cue_ids=(), label="翻译字幕", changed=None, *, display_settings=None, refresh_text_ids=()):
         super().__init__(label)
         self.project = project
         self.before, self.after = copy.deepcopy(before), copy.deepcopy(after)
         self.cue_ids = tuple(str(item) for item in cue_ids)
         self.changed = changed
+        from ..caption_style.text_marks import translation_text_override
+        previous = (before.get('translation_records') or {}).get('records', {})
+        following = (after.get('translation_records') or {}).get('records', {})
+        explicit = set(refresh_text_ids)
+        self.appearance_before, self.appearance_after = {}, {}
+        for cue in project.cues:
+            if cue.id not in self.cue_ids: continue
+            old = str(previous.get(cue.id, {}).get('text') or '')
+            new = str(following.get(cue.id, {}).get('text') or '')
+            if old != new or cue.id in explicit:
+                override = translation_text_override(cue, old, new)
+                if override != cue.appearance_override:
+                    self.appearance_before[cue.id] = copy.deepcopy(cue.appearance_override)
+                    self.appearance_after[cue.id] = override
         self.display_before = self.display_after = None
         if display_settings is not None:
             self.display_before = (copy.deepcopy(project.studio_state.get("bilingual")),
@@ -266,6 +280,9 @@ class ApplyTranslationSnapshotCommand(QUndoCommand):
         from ..subtitle_rules.subtitle_translation import restore_snapshot
         def mutate():
             restore_snapshot(self.project, state)
+            appearance = self.appearance_after if state is self.after else self.appearance_before
+            for cue in self.project.cues:
+                if cue.id in appearance: cue.appearance_override = copy.deepcopy(appearance[cue.id])
             display = self.display_after if state is self.after else self.display_before
             if display is not None:
                 for key, value in zip(("bilingual", "bilingual_mode"), display):
@@ -276,7 +293,7 @@ class ApplyTranslationSnapshotCommand(QUndoCommand):
         _commit_mutation(self.project, action_id=self.text(),
                          dirty=(DirtyDomain.CUE_CONTENT | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
                                 | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.QC | DirtyDomain.AUTOSAVE
-                                | DirtyDomain.PROJECT_METADATA),
+                                | DirtyDomain.PROJECT_METADATA | DirtyDomain.CUE_STYLE),
                          cue_ids=self.cue_ids, mutate=mutate,
                          changed=self.changed)
 
@@ -381,12 +398,8 @@ def set_manual_translation(page, cue_id, text, changed=None, *, target=None) -> 
         return False
     old = project.generation_metadata.get("translations", {}).get(cue.id, "")
     value = clean_translation(text)
-    override = copy.deepcopy(cue.appearance_override)
-    if value != old:
-        marks = layer_marks(cue, "translation")
-        if marks:
-            override = with_marks(cue, remap_marks(old, value, marks), "translation")
-        override.pop("translation_group", None)
+    from ..caption_style.text_marks import translation_text_override
+    override = translation_text_override(cue, old, value)
     command = ManualTranslationCommand(project, cue, value, changed, target=target)
     style_changed = override != cue.appearance_override
     if old == value and not style_changed and (command.before is None or command.before.get('origin') == 'manual' and command.before.get('status') != 'failed' and command.before.get('source_sha') == source_sha(cue.text) and not command.before.get('legacy')):

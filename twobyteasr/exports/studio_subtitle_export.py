@@ -676,7 +676,7 @@ def layer_cues(
     for cue in sorted(cues, key=lambda item: (item.start_ms, item.end_ms, item.id)):
         original = _srt_lines(cue.text)
         info = _lookup_translation(translations, cue.id) or {}
-        translated = _srt_lines(info.get("text", ""))
+        translated = _srt_lines((cue.appearance_override.get('translation_group') or {}).get('text') or info.get("text", ""))
         if layer != "original":
             if not translated.strip():
                 missing.append(cue.id)

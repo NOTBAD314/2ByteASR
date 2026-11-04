@@ -49,6 +49,7 @@ class DirtyDomain(IntFlag):
     MEDIA_TIMING = auto()
     VIDEO_COMPOSITION = auto()
     AUDIO_GAIN = auto()
+    ASSET_CATALOG = auto()
 
 
 SEQUENCE_DOMAINS = (
@@ -576,6 +577,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
                     _json_snapshot(self.project.generation_metadata),
                     _json_snapshot(self.project.render_settings),
                 )
+        if domains & DirtyDomain.ASSET_CATALOG and self._media_pool_snapshot is None:
+            self._media_pool_snapshot = copy.deepcopy(self.project.media_pool)
         if domains & MEDIA_DOMAINS:
             if self._media_pool_snapshot is None:
                 self._media_pool_snapshot = copy.deepcopy(self.project.media_pool)
@@ -674,6 +677,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             from ..timeline.studio_media_pool import validate_media_graph
 
             validate_media_graph(self.project)
+        elif self.dirty & DirtyDomain.ASSET_CATALOG:
+            for asset in self.project.media_pool:asset.validate()
         if self.dirty & CUE_DOMAINS:
             # Timeline projections are detached copies, including style/text.
             # Updating only the command lookup leaves playback routing on the
@@ -705,6 +710,14 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_MODEL):
             for cue_id in self.affected_cue_ids:
                 self.state.content_revisions[cue_id] = self.state.revision
+        if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL):
+            # Intent to omit an empty source belongs to one committed state.
+            # Text/track/timing edits (including undo) retire that intent; style
+            # and selection transactions leave unrelated confirmations alone.
+            decisions = self.project.studio_state.get('intentional_empty_sources')
+            if isinstance(decisions, dict):
+                for cue_id in self.affected_cue_ids:
+                    decisions.pop(cue_id, None)
         self.state.commit_count += 1
         sequence_after = None
         if self.dirty & SEQUENCE_DOMAINS:

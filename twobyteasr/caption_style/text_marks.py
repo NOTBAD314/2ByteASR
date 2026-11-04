@@ -10,6 +10,18 @@ from functools import lru_cache
 MARK_FIELDS = frozenset(('bold', 'italic', 'highlight', 'color'))
 
 
+def translation_text_override(cue, previous_text, next_text):
+    """Preserve local presentation while committing a new translation body."""
+    override = deepcopy(cue.appearance_override)
+    previous_text = str((override.get('translation_group') or {}).get('text') or previous_text or '')
+    if previous_text != str(next_text or ''):
+        marks = layer_marks(cue, 'translation')
+        if marks:
+            override = with_marks(cue, remap_marks(previous_text, str(next_text or ''), marks), 'translation')
+        override.pop('translation_group', None)
+    return override
+
+
 def unencoded_marks(marks):
     """Retain color and explicit suppression: neither has a Markdown token."""
     result=[]

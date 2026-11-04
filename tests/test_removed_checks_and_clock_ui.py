@@ -35,7 +35,7 @@ def test_real_escape_clears_all_selection_domains_and_next_target_restores(tmp_p
 
 def test_checks_widgets_removed_shared_review_and_undo_remain(tmp_path,monkeypatch):
     page=_page(tmp_path,monkeypatch);before=page.project.to_dict()['cues']
-    assert [page.context_drawer.tabToolTip(i) for i in range(page.context_drawer.count())]==['AI设计','样式','视频','剪辑助手','素材']
+    assert [page.context_drawer.tabToolTip(i) for i in range(page.context_drawer.count())]==['AI设计','样式','动效','视频','剪辑助手','素材']
     assert not hasattr(page,'safe_fix_button') and not hasattr(page,'_refresh_checks')
     assert not any('安全修复' in w.text() for w in page.findChildren(QPushButton))
     assert not any(w.text()=='检查' for w in page.findChildren(QLabel))
