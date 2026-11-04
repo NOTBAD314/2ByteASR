@@ -215,6 +215,11 @@ class QtEmbeddedVideoController(QObject):
     def _frame(self, frame):
         self._require_gui()
         if not self.running or not self._loaded or not frame.isValid(): return
+        # Qt may have queued later preroll frames while the GUI was busy.
+        # Once the requested paused frame is accepted, only a new explicit
+        # seek may replace it; pause() cannot withdraw already queued signals.
+        if self._desired_paused and self._first_frame and not self._seek_pending:
+            return
         image = frame.toImage()
         if image.isNull(): return
         pts = max(0, frame.startTime())/1_000_000.0 if frame.startTime() >= 0 else None
