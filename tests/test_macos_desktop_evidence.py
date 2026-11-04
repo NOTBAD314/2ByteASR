@@ -46,6 +46,10 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path,mo
         assert visible['passed']
         assert (tmp_path/'preview-ready.json').is_file()
         assert (tmp_path/'preview-reopened-composed.png').is_file()
+        canvas.hide(); app.processEvents()
+        hidden = preserve_studio_preview(page, tmp_path, 'cut-before')
+        assert hidden['composed']['colour_fraction'] > .10
+        assert not hidden['canvas_visible'] and not hidden['passed']
     finally:
         controller.close(); canvas.close(); app.processEvents()
 

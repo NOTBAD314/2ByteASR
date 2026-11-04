@@ -67,7 +67,8 @@ def start(window, out):
             from ..rendering.caption_scene import active_cues
             if label == 'bilingual' and not any(str(key).endswith('#tr') for key in page._caption_scene.trace().get('rendered_cue_ids',[])):
                 return False
-            return (image_colour_observation(controller.surface.frame)['colour_fraction'] > .10
+            return (page.isVisible() and page.video.isVisible() and controller.surface.isVisible()
+                    and image_colour_observation(controller.surface.frame)['colour_fraction'] > .10
                     and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10
                     and (not active_cues(page,page._caption_sample_ms()) or visible_caption_pixels(page.video)['passed']))
         deadline = time.monotonic()+3
@@ -303,7 +304,8 @@ def start(window, out):
             def studio_ready():
                 page = window.built_page('studio')
                 return bool(page is not None and page.project is not None
-                            and page.project.project_id == project.project_id and page._readiness.ready)
+                            and page.project.project_id == project.project_id and page._readiness.ready
+                            and page.isVisible() and page.video.isVisible())
             wait(studio_ready, 90, 'recognized result enters Studio')
             page = window.built_page('studio')
             result['studio_ready_snapshot'] = studio_snapshot(page); save()
@@ -372,7 +374,8 @@ def start(window, out):
             wait(lambda: page.undo_stack.isClean(), 30, 'normal Save completes')
             page.show_project_hub(skip_dirty_guard=True)
             window.open_studio_project(target, mode='edit', source='home_release_reopen')
-            wait(lambda: page.project is not None and cue.id in page._cue_lookup and page._readiness.ready, 90, 'normal reopen completes')
+            wait(lambda: page.project is not None and cue.id in page._cue_lookup and page._readiness.ready
+                 and page.isVisible() and page.video.isVisible(), 90, 'normal reopen completes')
             check('Chinese edit survives save and reopen', page._cue_lookup[cue.id].text == expected)
             if config.get('bilingual'):
                 check('manual translation survives save and reopen',
