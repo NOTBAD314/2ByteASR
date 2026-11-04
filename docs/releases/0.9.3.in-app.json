@@ -1,0 +1,4 @@
+{
+  "zh": "· 新增媒体池源预览与入出点选段，有方向的翻译／译文词库。\n· 改善长工程绘制、校对往返、词卡及统一取色。\n· 修订媒体池误插轨、源／工程传输串扰、返回后尺度和样例颜色。\n· 仍有冷操作长尾，原生闪退首因未定；仅Windows，Mac保持0.8.8。",
+  "en": "Source-media monitor and direction-aware translation glossaries; faster warm timeline painting and proofread workflows; unified color editing and media/transport fixes. Cold-operation and native crash limitations remain. Windows only; Mac stays on0.8.8."
+}
