@@ -1,47 +1,62 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: bounded-macos093-asset-append
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, for example v0.6.5"
         required: true
-
+        type: string
 permissions: {}
-
 jobs:
-  anonymous-download-check:
+  append-verified-mac-assets:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_TAG: ${{ inputs.tag }}
+      ASSET_SPEC_B64: 'eyJtYWMiOiBbeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLW1hY29zLWFybTY0LVNldHVwLmRtZyIsICJzaXplIjogNTgwMzAyNzMyLCAic2hhMjU2IjogImU1OTM4YzJkYjU3Y2JiNTdiMTU2Y2ZlNGZlYzEwZmE2YTcwOGY1YTE5Zjk5NzhlNjhiNjFiOWQ1YzcxYjE5ODAifSwgeyJuYW1lIjogIjJCeXRlQVNSLVNvdXJjZS0wLjkuMy1tYWNvcy1hcm02NC56aXAiLCAic2l6ZSI6IDE4ODk3MzE4NCwgInNoYTI1NiI6ICIwMjdiNjJjOGE4YjA2OTM4N2FlYWEwZWUwZDdlY2QxZDJmNjEwZTE1ZDBlZTIyYjAzOTQzMjVkMzQyZDJkNDFmIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi1UaGlyZFBhcnR5LU1hdGVyaWFscy0wLjkuMy1tYWNvcy1hcm02NC56aXAiLCAic2l6ZSI6IDM4ODk5OTE2LCAic2hhMjU2IjogIjc5YWJlNTZkNDIwZTY1OWVmZDdkZTk0YjYxYzI4MDI2Nzg3ZTU2NmFlNTAwM2VjMTA2ZjlkMjg0NTZmN2U1YTYifSwgeyJuYW1lIjogIk1BQ09TLTAuOS4zLVJFQURNRS5tZCIsICJzaXplIjogNDE3NCwgInNoYTI1NiI6ICJlZmNhNDg3YWQzY2IwZDE4MzA2ZDcxMmUxZWUzNjkzNmRjNjMyYWIxYTFhMmY2NzFlNzhlZTg3NjBhNDJlOWFhIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi0wLjkuMy1tYWNvcy1hcm02NC5qc29uIiwgInNpemUiOiAyMDY3LCAic2hhMjU2IjogIjkzYmJjMGNhYTM1MzA1YTQ5NTFkYTZkNzM1N2JjZThmY2M1OTMxYzRiNDlmNDNhNDMxMTk4ODNkNjIwZGU1YzgifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLW1hY29zLWFybTY0Lmpzb24uc2lnIiwgInNpemUiOiAyOTEsICJzaGEyNTYiOiAiMTg1ZTc3M2VlOGJjNTVlYWVhZDY3YzI3NzM1YzgxOGEwZDkzOWU3NDlmYTE4MGY3NmU2M2U2MmRiZTJkNjg1MiJ9LCB7Im5hbWUiOiAiU0hBMjU2U1VNUy1tYWNvcy1hcm02NC50eHQiLCAic2l6ZSI6IDYxMywgInNoYTI1NiI6ICI3ZWNkMzdjZWQxYTJlZjE3ODIxMDI2MGFkNjI1MjRlYzZkOTQ1YmNkYzRlNjk2MjY2YmY1ZDFlYjVmZjEwNjg5In0sIHsibmFtZSI6ICJTSEEyNTZTVU1TLW1hY29zLWFybTY0LnR4dC5zaWciLCAic2l6ZSI6IDI5MSwgInNoYTI1NiI6ICJiZTE0OGRlODg3ZmI1OWU5ZDQ5NmI3MDFhYjQ2NGU5YzMyYWQxZjZiYTdlMjBmNWI2Y2ExMTViMzkzOWZmMjIzIn1dLCAid2luZG93cyI6IFt7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtYXBwLWE3ZjRlYjlkMGI2NC56aXAiLCAiaWQiOiA3MDg0NTI1NzUsICJzaXplIjogNjQyNjUwMDMsICJkaWdlc3QiOiAic2hhMjU2OjI2ZGU4Mjk5ZjQ2NDRhMTg0NjYxNGRhMjc4NjhlMmZmNTNkNDNiNmY4YWU3OWEzZDFkNDQyODlkYjhhOTc1NDkifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLUdQTC1BZGRpdGlvbmFsLVBlcm1pc3Npb24udHh0IiwgImlkIjogNzA4NDUyMDg2LCAic2l6ZSI6IDQ1NjAsICJkaWdlc3QiOiAic2hhMjU2OjZlOTJmMDljYzYyNjhmZDE0ZTBjY2ZlZWQ1ZWQzZDQ2NzU5NmY1MmFiMjMyMDg3ZTVjMTU2MjkwZTdkY2JlOTYifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLWxpY2Vuc2VzLWYzZTI4YjczMDQwZS56aXAiLCAiaWQiOiA3MDg0NTIxOTAsICJzaXplIjogMjk3MTg3MTIsICJkaWdlc3QiOiAic2hhMjU2OmI1NjJlNDJiYjkwY2UzZDE5ODRmMDFhN2I4NjdkODZhNGExYTk1YWQ1N2RhZjZjMDdkMzA5NWNjZDFhNzdhNWQifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXB5dGhvbi1ydW50aW1lLTJmM2YwNzZjMjU1ZS56aXAiLCAiaWQiOiA3MDg0NTMxMDcsICJzaXplIjogMTQ4OTgyMjE5LCAiZGlnZXN0IjogInNoYTI1NjoxZjY3OGI1ZjdiYTFiZmYwMDA2Njc2Mzk5MjBiMGQ5NjkwODdlYmRkZGRkZmYzNDk5NzI2ODkzM2RhMWM5MWI2In0sIHsibmFtZSI6ICIyQnl0ZUFTUi0wLjkuMy1yZW5kZXJlci02ZmM5NmI2NDU1OGIuemlwIiwgImlkIjogNzA4NDUzMzM5LCAic2l6ZSI6IDIzNzAzMDU4NywgImRpZ2VzdCI6ICJzaGEyNTY6NGZlOTY3MTM0YmU5Mjc4NDJiM2M4ZmJjNjY0ODgzNDNmNWZjNGNiOWM2ZDRhOThmYTZlYjFlM2U3NjY3ZTNiMSJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjMtdG9vbHMtMjI5Yzk3ZDU5ZDAzLnppcCIsICJpZCI6IDcwODQ1NTE3OSwgInNpemUiOiAyMjg3MzE2NjgsICJkaWdlc3QiOiAic2hhMjU2OjE4Njg0YTYxZTQ0YzFiOGFlZDE1ZjEyNjFlZmI3YThkOWNlMTk5NTNmYzc3ZDYyMDVlNWM0ODlhNjU3MjJhM2UifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXdoZWVscy1lZGNiZGY3OTEzYjcuemlwIiwgImlkIjogNzA4NDU0NzQ1LCAic2l6ZSI6IDQ0Mjc1NzUzMywgImRpZ2VzdCI6ICJzaGEyNTY6NjVhOGNmN2JmMDI1ZGI3YzJkY2Q0MDFjY2VlYzVhNjkzNzVmNTNiNWNlZDY5NWQ4NWM0Mjc3YWZiZDM1OWJlMiJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItU2V0dXAtMC45LjMuZXhlIiwgImlkIjogNzA4NDU3OTI2LCAic2l6ZSI6IDExMDc3ODAzNTUsICJkaWdlc3QiOiAic2hhMjU2OmMxMmM2MDRkODFmMGZlZjNiNzg5NGE5NTkzMDY4MDkwNmI1M2I0OTNiOGI1MjNjNmJmZTQwYmRhMmExODQwZTgifSwgeyJuYW1lIjogIjJCeXRlQVNSLVNvdXJjZS0wLjkuMy56aXAiLCAiaWQiOiA3MDg0NTk1NDgsICJzaXplIjogMTAxNzA0MTMxMSwgImRpZ2VzdCI6ICJzaGEyNTY6ZDVmNmE3ZmNjNzFiYmI4Nzk1OWQ2NjdkY2ZkNTg4ZjE2MDJkZTE1ZGVhZjZlYmI0ZDMwYmMxMTZmNWVkNDE3MyJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItVGhpcmRQYXJ0eS1NYXRlcmlhbHMtMC45LjMuemlwIiwgImlkIjogNzA4NDU1ODgzLCAic2l6ZSI6IDI5OTc4NzY1LCAiZGlnZXN0IjogInNoYTI1Njo1MzhiM2U4ZTExNWM1YzMxMjIyZWZiYWQ4ZjVkM2ViODI0ZjdhZmU2MDhmYjM3MmZkMzM4ZmNlODZlMjBiZWI5In0sIHsibmFtZSI6ICIyQnl0ZUFTUi11cGRhdGUuanNvbiIsICJpZCI6IDcwODQ1MTMyNywgInNpemUiOiA4MTY4LCAiZGlnZXN0IjogInNoYTI1Njo3ZjBlNTdjN2M2MTk4MWYxMTU0ZDI4ZTAyOWM4YTJlNGJkYWY3ZDA5YjdlNzdhMjg4YWNkYTliNDg4MjQ1MGRkIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi11cGRhdGUuanNvbi5zaWciLCAiaWQiOiA3MDg0NTEzODQsICJzaXplIjogMjkxLCAiZGlnZXN0IjogInNoYTI1NjplYzVhZDhlMmRmOGEwMDc0MTJlMTQwYWRhZDdlMDM4YTY2YWIwYjk1YjA4YzJkYTc4NmVmMGM5NGVlZTA1M2FjIn0sIHsibmFtZSI6ICJtaW5ndy13NjQtbGliaWNvbnYtMS4xOS0xLnNyYy50YXIuenN0IiwgImlkIjogNzA4NDU2MTQ0LCAic2l6ZSI6IDUxMzEwMjksICJkaWdlc3QiOiAic2hhMjU2Ojc0NDI4MjgwYzE3MDk0ZGE1YjcwMmMyOWIyZTFhMGFiYWU1OTU1NmVhNWRmZGQ2NTcwNWNjOGNjYzFlMDAwZmIifSwgeyJuYW1lIjogIm1pbmd3LXc2NC1saWJpY29udi0xLjE5LTEuc3JjLnRhci56c3Quc2lnIiwgImlkIjogNzA4NDU2Mjc4LCAic2l6ZSI6IDU2NiwgImRpZ2VzdCI6ICJzaGEyNTY6ZDk5ZjI2NWJkNGU1MWQ3ZTg2MjY3MjU4ZDNkMDEwMWE3MmQ5MDFkOGMyYjhjNGYyZjU5Y2Y4NDU2NTZkYmU2MiJ9LCB7Im5hbWUiOiAiU0hBMjU2U1VNUy50eHQiLCAiaWQiOiA3MDg0NTY0MzUsICJzaXplIjogMTQyOCwgImRpZ2VzdCI6ICJzaGEyNTY6NTgxNDI5MWY0MGJiZjgzZWY4NjhjYzc0ZmUwOTRkOTRjZDY5OGRiMGRiNDhjY2FjZTA4ZDExYjU0YTVhOGMzZiJ9LCB7Im5hbWUiOiAiU0hBMjU2U1VNUy50eHQuc2lnIiwgImlkIjogNzA4NDU2NTc5LCAic2l6ZSI6IDI5MSwgImRpZ2VzdCI6ICJzaGEyNTY6M2ViY2QyYTcxODc0YWNhMGYxYzViNDk2NWE5OTJjNjRjYjg3YjVhNzNjYTU4MGU5MTM2YmUwNjNlNTYyMDc4OSJ9XX0='
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Append fixed GitCode-verified Mac files to exact existing release
         shell: bash
         run: |
-          set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
           python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          import base64,concurrent.futures,hashlib,json,os,pathlib,subprocess,tempfile,time,urllib.parse
+          REPO='NOTBAD314/2ByteASR';TAG='v0.9.3';RID=433563410;TARGET='7d4354c19df68525af62ff59b8805d0fe3d196b8'
+          assert os.environ['GITHUB_REPOSITORY'].casefold()==REPO.casefold() and os.environ['INPUT_TAG']==TAG
+          assert os.environ['GITHUB_ACTOR'].casefold()=='notbad314'
+          data=json.loads(base64.b64decode(os.environ['ASSET_SPEC_B64']));spec=data['mac'];expected={x['name']:x for x in spec};old={x['name']:x for x in data['windows']}
+          assert len(old)==16 and not(set(old)&set(expected))
+          def gh(*args):return subprocess.check_output(['gh',*args],text=True)
+          def release():
+           r=json.loads(gh('api',f'repos/{REPO}/releases/{RID}'))
+           assert not r['draft'] and r['tag_name']==TAG and r['target_commitish']==TARGET
+           for x in r['assets']:
+            if x['name'] in old:
+             b=old[x['name']];assert x['id']==b['id'] and x['size']==b['size'] and x['digest']==b['digest'] and x['state']=='uploaded'
+           assert set(old)<={x['name']for x in r['assets']}
+           return r
+          remote={x['name']:x for x in release()['assets']}
+          for name,x in expected.items():
+           assert pathlib.PurePosixPath(name).name==name and name not in old
+           if name in remote:
+            r=remote[name];assert r['state']=='uploaded' and r['size']==x['size'] and r['digest']=='sha256:'+x['sha256']
+          folder=pathlib.Path(tempfile.mkdtemp(prefix='verified-mac093-append-'))
+          def copy(x):
+           name=x['name']
+           if name in remote:return dict(name=name,reused=True)
+           p=folder/name;url='https://gitcode.com/Notbad314/2ByteASR/releases/download/'+TAG+'/'+urllib.parse.quote(name)
+           start=time.monotonic();print('DOWNLOAD',name,flush=True)
+           subprocess.run(['curl','--fail','--location','--silent','--show-error','--retry','3','--connect-timeout','20','--max-time','900','--output',str(p),url],check=True)
+           h=hashlib.sha256()
+           with p.open('rb')as f:
+            for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
+           assert p.stat().st_size==x['size'] and h.hexdigest()==x['sha256'],name
+           print('VERIFIED',name,flush=True)
+           subprocess.run(['gh','release','upload',TAG,str(p),'--repo',REPO],check=True)
+           return dict(name=name,seconds=round(time.monotonic()-start,2))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3)as pool:results=list(pool.map(copy,spec))
+          final={x['name']:x for x in release()['assets']}
+          assert all(name in final and final[name]['state']=='uploaded' and final[name]['size']==x['size'] and final[name]['digest']=='sha256:'+x['sha256']for name,x in expected.items())
+          print(json.dumps(dict(passed=True,release=RID,appended=len(expected),windows_preserved=len(old),results=results)),flush=True)
           PY
