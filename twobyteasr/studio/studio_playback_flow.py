@@ -291,6 +291,10 @@ class StudioPlaybackFlowMixin:
         if playback_mode == "mapped" and self.project:
             sequence = sequence_of(self.project)
             current_segment = self._mapped_sequence_segment()
+            if (current_segment is not None and clock is not None and clock.snapshot().source == 'frame_step'
+                    and (milliseconds < current_segment.source_in_ms or milliseconds >= current_segment.source_out_ms)
+                    and self._step_across_mapped_boundary(sequence, current_segment, milliseconds)):
+                return
             mapped = source_to_timeline(sequence, milliseconds, segment=current_segment)
             if mapped is None:
                 if current_segment is not None and milliseconds < current_segment.source_in_ms:
@@ -920,8 +924,72 @@ class StudioPlaybackFlowMixin:
 
     def _frame_step(self, backwards: bool) -> None:
         if not getattr(self, "_empty_playback_state", False) and self.video.controller:
-            self.video.controller.frame_step(backwards)
+            preparing=getattr(self,'_caption_seek_preparation',None)
+            request=getattr(preparing,'pending',None)
+            busy=(request is not None or self.video._playback_clock.exact_seek_pending
+                  or getattr(self.video,'_frame_step_pending',None) is not None)
+            if busy:
+                if not self.video._paused:self.video.set_paused(True,align_position=False)
+                if not getattr(self,'_shortcut_is_repeat',False):self._defer_frame_step(backwards,request)
+                return
+            self._frame_step_boundary_target=None
+            self.video.frame_step(backwards, repeat=getattr(self, '_shortcut_is_repeat', False))
             self._sync_play_button(True)
+
+    def _step_across_mapped_boundary(self, sequence, current, source_ms):
+        """Keep a real decoded step out of deleted source ranges."""
+        rows=list(sequence.segments)
+        index=next((i for i,row in enumerate(rows) if row.id==current.id),None)
+        if index is None:return False
+        if source_ms >= current.source_out_ms and index+1 < len(rows):
+            target=rows[index+1].timeline_in_ms
+        elif source_ms < current.source_in_ms and index==0:
+            target=current.timeline_in_ms
+        else:
+            previous=rows[index-1] if source_ms < current.source_in_ms else current
+            # A boundary seek selects a candidate using the measured source
+            # frame rate; the actual landed PTS still owns clock/playhead.
+            from fractions import Fraction
+            import math
+            fps=getattr(self.video.controller,'observed_property',lambda *a:0)('container-fps',0)
+            if previous.source_path != current.source_path:
+                asset=next((a for a in self.project.media_pool if a.canonical_source==previous.source_path),None)
+                fps=(getattr(asset,'video_metadata',{}) or {}).get('fps',0)
+            try:fps=float(Fraction(str(fps)))
+            except (ValueError,ZeroDivisionError):return False
+            if not math.isfinite(fps) or fps<=0:return False
+            last=(math.ceil(previous.source_out_ms*fps/1000-1e-7)-1)*1000/fps
+            mapped=source_to_timeline(sequence,max(previous.source_in_ms,math.floor(last+1e-7)),segment=previous)
+            if mapped is None:return False
+            target=mapped.timeline_ms
+        self._frame_step_boundary_target=int(target)
+        self._seek(target/1000)
+        return True
+
+    def _defer_frame_step(self, backwards, seek_request):
+        """One initial key may follow an owned seek; repeats never queue up."""
+        from time import perf_counter
+        intent=dict(project=self.project,controller=self.video.controller,
+            seek=seek_request,deadline=perf_counter()+5.)
+        self._deferred_frame_step=intent
+        def apply():
+            if getattr(self,'_deferred_frame_step',None) is not intent:return
+            current=getattr(getattr(self,'_caption_seek_preparation',None),'pending',None)
+            # The owned seek may advance epochs. New user input, focus/page
+            # changes and a replaced seek invalidate this deferred key.
+            changed=(self.project is not intent['project'] or self.video.controller is not intent['controller']
+                or (current is not None and intent['seek'] is not None and current is not intent['seek']))
+            if (changed or not self.isVisible() or self._editing_has_focus()
+                    or getattr(self,'_close_requested',False) or perf_counter()>=intent['deadline']):
+                self._deferred_frame_step=None
+                return
+            if (current is not None or self.video._playback_clock.exact_seek_pending
+                    or getattr(self.video,'_frame_step_pending',None) is not None):
+                QTimer.singleShot(20,apply)
+                return
+            self._deferred_frame_step=None
+            self._frame_step(backwards)
+        QTimer.singleShot(20,apply)
 
     def _sync_play_button(self, paused: bool) -> None:
         if paused and not getattr(self, "_rate_transition", False):

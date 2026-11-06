@@ -10,13 +10,21 @@ PARTICLES=frozenset('啊呀呢吧嘛吗啦哦呃嗯')
 NUMBERS=frozenset('0123456789零〇一二两三四五六七八九十百千万亿')
 
 
+PLACEHOLDER_TRANSCRIPTS=frozenset({'<sil>','<blank>','<s>','</s>','<unk>','[sil]'})
+
+
 def content(text):return re.sub(r'[\s，。！？、,.!?；;：:]','',str(text))
+
+
+def placeholder_transcript(text):
+    """Whole-text recognizer placeholder (silence/unknown), never a subtitle."""
+    return str(text or '').strip().casefold() in PLACEHOLDER_TRANSCRIPTS
 
 
 def usable_transcript(text):
     """Damaged decoding is unavailable evidence, never an independent vote."""
     value = str(text or '')
-    return bool(value.strip()) and value.strip().casefold() not in {'<sil>','<blank>','<s>','</s>','<unk>','[sil]'} and not any(
+    return bool(value.strip()) and not placeholder_transcript(value) and not any(
         char == '\ufffd' or 0xd800 <= ord(char) <= 0xdfff
         or (ord(char) < 32 and char not in '\t\r\n') for char in value)
 

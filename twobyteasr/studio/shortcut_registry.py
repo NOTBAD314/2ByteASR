@@ -27,6 +27,9 @@ from dataclasses import dataclass
 FORMAT = '2byteasr-shortcuts'
 FORMAT_VERSION = 1
 
+# Repetition is a command policy, shared by Qt and native Windows entry points.
+REPEATABLE_COMMANDS = frozenset({'frame_left', 'frame_right'})
+
 
 @dataclass(frozen=True)
 class ShortcutAction:

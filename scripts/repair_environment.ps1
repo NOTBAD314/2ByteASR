@@ -223,6 +223,7 @@ function Install-RepairRoleStaging {
             if ((Invoke-UvInstall ($pipBase + $contractPackageSpecs + $pypiArgs)) -ne 0) { throw "Failed to repin $Role packages to contract versions after edits." }
         }
         if ((Invoke-UvInstall ($pipBase + $torchSpecs + $torchOfflineArgs)) -ne 0) { throw "Failed to repin $Role torch to contract version after edits." }
+        if ($Role -eq "main") { Assert-WorkbenchLayoutDependency -PythonExe $stagingPy }
         if (-not (Test-Path -LiteralPath $stagingPy)) { throw "Staging python missing after install: $stagingPy. Original not modified." }
         return
     }
@@ -256,6 +257,7 @@ function Install-RepairRoleStaging {
         & $stagingPy -m pip install @torchSpecs @torchOfflineArgs
         if ($LASTEXITCODE -ne 0) { throw "Torch repin failed (fallback)." }
     }
+    if ($Role -eq "main") { Assert-WorkbenchLayoutDependency -PythonExe $stagingPy }
     if (-not (Test-Path -LiteralPath $stagingPy)) { throw "Staging python missing after pip install: $stagingPy. Original not modified." }
 }
 

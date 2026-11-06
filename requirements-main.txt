@@ -9,6 +9,9 @@ websockets==16.1.1
 jieba==0.42.1
 PySide6==6.9.2
 QtAwesome==1.4.0
+# Caption layout and project delivery use PIL.ImageFont in the GUI/queue.
+# Pillow 12.3 supports Python >=3.10, including Windows x64 and macOS arm64.
+Pillow==12.3.0
 # 四十轮：OSS 临时音频中转（Qwen filetrans provider 需要；已随主 venv 安装）。
 oss2==2.19.1
 # 2026-10-12：本机 MCP 服务（可选功能，默认关闭；官方 SDK）。
@@ -24,6 +27,6 @@ pylatexenc==2.11
 pytest==9.1.1
 psutil==7.2.2
 av==17.1.0
-pycaw==20251023
-comtypes==1.4.16
+pycaw==20251023; sys_platform == "win32"
+comtypes==1.4.16; sys_platform == "win32"
 jsonschema==4.26.0

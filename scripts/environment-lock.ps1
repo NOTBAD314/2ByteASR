@@ -80,3 +80,13 @@ function Get-EnvironmentPackages {
     }
     return $specs
 }
+
+function Assert-WorkbenchLayoutDependency {
+    param([Parameter(Mandatory = $true)][string]$PythonExe)
+    # Run after requirements AND contract/torch installs: dependency resolution
+    # can otherwise undo an earlier successful install. No models are loaded.
+    & $PythonExe -I -X utf8 -c "from PIL import ImageFont; ImageFont.load_default(size=16).getbbox('A')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Workbench Pillow/font dependency is unavailable in $PythonExe. Reinstall requirements-main.txt; original environment preserved during repair."
+    }
+}

@@ -2106,6 +2106,33 @@ class MpvController:
     def frame_step(self, backwards: bool = False) -> None:
         self._send(["frame-back-step" if backwards else "frame-step"])
 
+    def post_frame_step(self, backwards=False, *, intent):
+        """One cancellable actor request; a held key never builds a FIFO."""
+        def perform():
+            if intent.get('cancelled'):
+                return
+            # Pause acknowledgement can precede its cached time-pos event.
+            # Read the paused frame in the actor before issuing a step.
+            baseline=self._send(['get_property','time-pos']).get('data')
+            if intent.get('cancelled') or intent.get('source_epoch',self.source_epoch)!=self.source_epoch:
+                return
+            if baseline is None:
+                intent['error']='frame position unavailable'
+                return
+            observation = self.observed_position()
+            intent.update(started=True, baseline_sequence=int(observation.get('actor_sequence', 0)),
+                source_generation=int(observation.get('source_generation', 0)),
+                baseline_position=float(baseline))
+            try:
+                self.frame_step(backwards)
+            except (OSError, RuntimeError, ValueError) as exc:
+                intent['error'] = str(exc)
+                raise
+        # Stay behind a queued pause. Jumping ahead lets its hold-position
+        # seek run after frame-step and restore the previous picture.
+        return self._post(perform, coalesce_key='frame-step', foreground=False,
+            on_discard=lambda: intent.update(cancelled=True))
+
     def set_volume(self, value: float) -> None:
         self._send(["set_property", "volume", min(100.0, max(0.0, float(value)))])
 

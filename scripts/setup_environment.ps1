@@ -433,10 +433,14 @@ $MainTorchVersion = Get-EnvironmentDependency -Role main -Name torch -ProjectRoo
 $MainAudioVersion = Get-EnvironmentDependency -Role main -Name torchaudio -ProjectRoot $ProjectRoot
 Write-Host "[环境] 安装 Main 共享运行契约（不含模型权重）..." -ForegroundColor Cyan
 Invoke-External $Uv (@("pip", "install", "--python", $MainPython) + $MainContractPackages + $OfflineArgs)
+$MainCpuTorchArgs = if ($OfflineArgs.Count -gt 0) { $OfflineArgs } else {
+    # Local +cpu builds are published on PyTorch's own index, not PyPI.
+    @("--index", "https://download.pytorch.org/whl/cpu")
+}
 Invoke-External $Uv (@(
     "pip", "install", "--python", $MainPython,
     "torch==$MainTorchVersion+cpu", "torchaudio==$MainAudioVersion+cpu"
-) + $OfflineArgs)
+) + $MainCpuTorchArgs)
 
 # NVIDIA GPU 使用经过验证、驱动覆盖面更广的 cu126 组合。不能只检查版本名
 # 是否含有 “+cu”：cu130 在 580 以下驱动上同样会安装成功，却无法启动 CUDA。
@@ -517,6 +521,8 @@ function Install-CompatibleCudaTorch {
         throw "$Label 的 CUDA PyTorch 安装失败。目标版本：$CudaTorchVersion+$CudaTorchTag。若日志含‘拒绝访问/os error 5’，请关闭所有 2ByteASR 与 Python 进程后重试；否则可切换下载源或运行【配置或修复 2ByteASR】。"
     }
 }
+
+Assert-WorkbenchLayoutDependency -PythonExe $MainPython
 
 Invoke-External $MainPython @(
     "-m", "py_compile",
