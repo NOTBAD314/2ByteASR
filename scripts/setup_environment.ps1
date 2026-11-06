@@ -433,10 +433,14 @@ $MainTorchVersion = Get-EnvironmentDependency -Role main -Name torch -ProjectRoo
 $MainAudioVersion = Get-EnvironmentDependency -Role main -Name torchaudio -ProjectRoot $ProjectRoot
 Write-Host "[环境] 安装 Main 共享运行契约（不含模型权重）..." -ForegroundColor Cyan
 Invoke-External $Uv (@("pip", "install", "--python", $MainPython) + $MainContractPackages + $OfflineArgs)
+$MainCpuTorchArgs = if ($OfflineArgs.Count -gt 0) { $OfflineArgs } else {
+    # Local +cpu builds are published on PyTorch's own index, not PyPI.
+    @("--index", "https://download.pytorch.org/whl/cpu")
+}
 Invoke-External $Uv (@(
     "pip", "install", "--python", $MainPython,
     "torch==$MainTorchVersion+cpu", "torchaudio==$MainAudioVersion+cpu"
-) + $OfflineArgs)
+) + $MainCpuTorchArgs)
 
 # NVIDIA GPU 使用经过验证、驱动覆盖面更广的 cu126 组合。不能只检查版本名
 # 是否含有 “+cu”：cu130 在 580 以下驱动上同样会安装成功，却无法启动 CUDA。
