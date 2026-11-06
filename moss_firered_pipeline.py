@@ -5167,6 +5167,9 @@ def process_media(
             runtime_context=runtime_context,
         )
 
+    save_speaker_evidence(speaker_audit_root, 'primary-before-placeholder-normalization', legacy.serialize_segments(segments))
+    from twobyteasr.subtitle_rules.cue_cleanup import prepare_effective_sources
+    segments = prepare_effective_sources(segments, speech_regions=speech_regions)
     speaker_processing['stages']['primary_segments'] = label_summary(segments)
     if primary_backend == 'moss':
         speaker_processing['stages'].update(moss_payload.get('metadata', {}).get('speaker_stages', {}))
@@ -5527,10 +5530,6 @@ def process_media(
     )
 
     save_speaker_evidence(speaker_audit_root, 'grouped-before-final-timing', legacy.serialize_cues(cues))
-    # 2026-11-06: 识别器的静默/未知占位（<sil> 等）不是字幕。分组已完成，这里只剔除
-    # 占位来源行和覆盖它全部内容的字幕；分段、批次组成和断句结果都不再改动。
-    from twobyteasr.subtitle_rules.cue_cleanup import drop_placeholder_source_rows
-    drop_placeholder_source_rows(cues, segments)
     # 2026-10-22 (MFA plan step 5): every step that moves caption times, in order (timing_ledger).
     from twobyteasr.recognition.timing_ledger import TimingLedger
     timing_ledger = TimingLedger()

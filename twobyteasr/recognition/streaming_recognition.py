@@ -293,6 +293,8 @@ class LongMediaPipeline:
                 return None
             data=saved['data']
             if data.get('incomplete_roles'):return None
+            from .caption_arbitration import placeholder_transcript
+            if any(placeholder_transcript(row.get('text')) for row in data['segments']):return None
             cues=self.legacy.deserialize_cues(data['cues'])
             for cue,row in zip(cues,data['cues']):
                 if row.get('forced_alignment'):cue.forced_alignment=row['forced_alignment']
@@ -457,6 +459,8 @@ class LongMediaPipeline:
                 segment.caption_arbitration['acoustic_words']=[dict(text=str(t.get('text') or ''),
                     start_ms=round(t['start']*1000),end_ms=round(t['end']*1000),model='firered')
                     for t in tokens if t.get('text') and t['end']>segment.start and t['start']<segment.end]
+        from ..subtitle_rules.cue_cleanup import prepare_effective_sources
+        segments=prepare_effective_sources(segments,speech_regions=self.speech_regions)
         if len(segments)>=STRIDE:raise ValueError('分片字幕数量超过稳定ID范围。')
         for segment in segments:
             segment.segment_id=(index+1)*STRIDE+segment.segment_id

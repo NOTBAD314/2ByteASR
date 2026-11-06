@@ -289,6 +289,8 @@ def restore_source_text(segments, cues) -> bool:
     Whitespace on a boundary is the boundary itself: it goes to neither cue.
     """
     from ..subtitle_rules.text_rules import content_only
+    if validate_grouped_text(segments, cues):
+        return True
     source = "".join(item.text for item in segments)
     if content_only(source) != content_only("".join(cue.text for cue in cues)):
         return False
@@ -296,11 +298,28 @@ def restore_source_text(segments, cues) -> bool:
     counts = [len(content_only(cue.text)) for cue in cues]
     if not cues or any(count <= 0 for count in counts):
         return False
+    # Map normalized offsets to original row edges. Opening punctuation at
+    # the next row's start must never migrate to the preceding subtitle.
+    row_edges, raw_end, content_end = {}, 0, 0
+    for row in segments:
+        raw_end += len(row.text)
+        content_end += len(content_only(row.text))
+        row_edges.setdefault(content_end, []).append(raw_end)
     consumed = start = 0
     restored = []
     for cue, count in zip(cues, counts):
         consumed += count
         end = positions[consumed] if consumed < len(positions) else len(source)
+        if consumed < len(positions):
+            left = positions[consumed - 1] + 1
+            edges = [edge for edge in row_edges.get(consumed, ()) if left <= edge <= end]
+            if edges:
+                end = edges[0]
+            else:
+                # Inside a row, trailing punctuation stays left, opening
+                # brackets/quotes stay right. Inner spaces remain exact.
+                opening = '(<[{（「『【《〈“‘'
+                end = next((i for i in range(left, end) if source[i] in opening), end)
         restored.append(strip_boundary_space(source[start:end]))
         start = end
     from types import SimpleNamespace
@@ -309,7 +328,6 @@ def restore_source_text(segments, cues) -> bool:
     for cue, text in zip(cues, restored):
         cue.text = text
     return True
-
 
 class GroupedBatchResult(list):
     def __init__(self, values=(), *, origin="ai", validated=False, cache_hit=False,

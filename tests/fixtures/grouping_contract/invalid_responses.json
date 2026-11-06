@@ -1,0 +1,72 @@
+{
+  "schema": "2byte-grouping-offline-fixture-v1",
+  "provenance": "Synthetic minimal reproductions of current code paths; not a captured user/cloud response.",
+  "source": [
+    {
+      "id": 1,
+      "start": 0,
+      "end": 2,
+      "text": "先看左边，再看右边",
+      "speaker": "S01"
+    }
+  ],
+  "cases": [
+    {
+      "id": "contradictory_representations",
+      "response": "{\"boundaries\":[9],\"segmented_text\":\"先看左边，|再看右边\"}",
+      "reason": "both forms disagree; old parser overwrites invalid endpoint"
+    },
+    {
+      "id": "valid_but_conflicting_representations",
+      "response": "{\"boundaries\":[8],\"segmented_text\":\"先看左边，|再看右边\"}",
+      "reason": "Both forms are separately valid but disagree; neither may silently win."
+    },
+    {
+      "id": "trailing_second_object",
+      "response": "{\"boundaries\":[8]}{\"error\":\"unfinished gateway continuation\"}",
+      "reason": "old raw_decode accepts first object and discards trailing body"
+    },
+    {
+      "id": "wrapped_error_page",
+      "response": "<html>upstream error {\"boundaries\":[8]}</html>",
+      "reason": "old raw_decode extracts arbitrary JSON from error body"
+    },
+    {
+      "id": "duplicate",
+      "response": "{\"boundaries\":[4,4,8]}"
+    },
+    {
+      "id": "descending",
+      "response": "{\"boundaries\":[7,4,8]}"
+    },
+    {
+      "id": "out_of_range",
+      "response": "{\"boundaries\":[4,99]}"
+    },
+    {
+      "id": "float",
+      "response": "{\"boundaries\":[4.0,8]}"
+    },
+    {
+      "id": "boolean",
+      "response": "{\"boundaries\":[true,8]}"
+    },
+    {
+      "id": "missing",
+      "response": "{\"ok\":true}"
+    },
+    {
+      "id": "truncated",
+      "response": "{\"boundaries\":[4,8]"
+    },
+    {
+      "id": "mutated_legacy",
+      "response": "{\"segmented_text\":\"先看右边，|再看左边\"}"
+    },
+    {
+      "id": "normal",
+      "response": "{\"boundaries\":[4,8]}",
+      "accept": true
+    }
+  ]
+}

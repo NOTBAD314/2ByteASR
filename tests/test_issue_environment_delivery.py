@@ -89,3 +89,50 @@ def test_pillow_has_compatible_windows_and_macos_wheels():
     root = Path(__file__).resolve().parents[1]
     assert 'Pillow==12.3.0' in (root/'requirements-main.txt').read_text('utf8')
     assert 'Pillow==12.3.0' in (root/'packaging/macos/requirements-gui.txt').read_text('utf8')
+
+
+def test_worker_broken_interpreter_and_timeout_have_exact_runtime(tmp_path,monkeypatch):
+    from twobyteasr.system import environment
+    broken=tmp_path/'broken.exe';broken.write_bytes(b'not an executable')
+    with pytest.raises(RuntimeError) as caught:
+        environment.check_worker_dependencies('main',str(broken),{'qwen-asr':'qwen_asr'})
+    assert str(broken) in str(caught.value) and '模型工坊' in str(caught.value)
+    slow=tmp_path/'slow.py';slow.write_text('import time\ntime.sleep(10)\n','utf8')
+    monkeypatch.setattr(environment,'probe_script_path',lambda:str(slow))
+    with pytest.raises(RuntimeError,match='超时') as caught:
+        environment.check_worker_dependencies('main',sys.executable,{'qwen-asr':'qwen_asr'},timeout_seconds=.1)
+    assert sys.executable in str(caught.value)
+
+
+def test_broken_worker_import_is_reported_by_actual_child(tmp_path):
+    from twobyteasr.recognition.asr import _run_isolated_asr_worker
+    with pytest.raises(RuntimeError) as caught:
+        _run_isolated_asr_worker([sys.executable,'-I','-c','import nonexistent_issue_worker_package'],
+            tmp_path/'output.json',model_id='QWEN3',audio_input='fixture',model_path='fixture',entrypoint='qwen_asr_worker.py')
+    assert sys.executable in str(caught.value)
+    assert 'nonexistent_issue_worker_package' in str(caught.value)
+    assert '模型工坊' in str(caught.value)
+
+
+def test_failed_delivery_is_needs_recovery_not_success(tmp_path,monkeypatch):
+    import time
+    from twobyteasr.recognition.pipeline_runtime import complete_media_run
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    from twobyteasr.recognition import recognition_result
+    from twobyteasr.subtitle_rules import recognition_translation
+    events=[];reports=[]
+    monkeypatch.setattr(core,'record_run_event',lambda name,**data:events.append((name,data)))
+    monkeypatch.setattr(core,'print_review_summary',lambda:[])
+    monkeypatch.setattr(core,'finish_media_report',lambda status,**kw:(reports.append((status,kw)) or ('','')))
+    monkeypatch.setattr(recognition_translation,'translate_runtime_cues',lambda *a:{})
+    monkeypatch.setattr(recognition_result,'media_identity_for_task',lambda *a:{})
+    monkeypatch.setattr(projects,'create_studio_outputs',lambda *a,**k:{'project':'','project_error':'disk full',
+        'recovery_project':str(tmp_path/'recovery.2byteproj')})
+    context=RuntimeContext();context.media_path=str(tmp_path/'media.mp4')
+    with activate_runtime_context(context,legacy=core):
+        complete_media_run(cues=[core.SubtitleCue(1,0,1,'已完成识别')],segments=[],file_index=1,file_total=1,
+            started=time.perf_counter(),audio_seconds=1,txt_path='',srt_path='',stage_index=1,stage_total=1,
+            legacy=core,runtime_context=context)
+    assert reports[0][0]=='needs_recovery'
+    assert not any(name=='studio_project_saved' for name,_ in events)
+    assert reports[0][1]['outputs']['project_error']=='disk full'

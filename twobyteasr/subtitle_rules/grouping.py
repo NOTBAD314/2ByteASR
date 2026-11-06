@@ -65,7 +65,8 @@ def _source_bound_candidate(function):
             return function(segments, *args, **kwargs)
         from .grouping_contract import capture_grouping_source, validate_grouping_result, runtime_task_binding
         from ..recognition.service import CancelledError
-        original = list(segments)
+        from .cue_cleanup import prepare_effective_sources
+        original = prepare_effective_sources(segments, speech_regions=kwargs.get('speech_regions'))
         owner = get_runtime_context()
         task_binding = runtime_task_binding(owner)
         source = capture_grouping_source(original, job_id=owner.job_id,
@@ -1152,6 +1153,8 @@ def group_subtitles(
     max_workers=None,
 ):
     from ..providers.asr_provider_snapshot import task_provider_snapshot, digest, GroupedBatchResult, validate_grouped_text, restore_source_text
+    from .cue_cleanup import prepare_effective_sources
+    segments = prepare_effective_sources(segments, speech_regions=speech_regions)
     use_ai = bool(use_ai)
     snapshot = (provider_snapshot or task_provider_snapshot("group")) if use_ai else None
     from .segmentation_profiles import current_profile,task_language_tag

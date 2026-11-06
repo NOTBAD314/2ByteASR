@@ -36,6 +36,15 @@ def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
     if not cues:
         return cues
 
+    from ..recognition.caption_arbitration import placeholder_transcript
+    if any(placeholder_transcript(row.text) for row in segments):
+        from .cue_cleanup import drop_placeholder_source_rows, prepare_effective_sources
+        cues, segments = list(cues), list(segments)
+        drop_placeholder_source_rows(cues, segments)
+        segments = prepare_effective_sources(segments)
+    if any(placeholder_transcript(cue.text) for cue in cues):
+        raise ValueError('占位字幕缺少可证明的有效来源；保留结果，停止逐字时间修复。')
+
     ordered_segments = sorted(
         segments,
         key=lambda item: (item.start, item.end, item.segment_id),
@@ -179,6 +188,8 @@ def _locally_repair_resegmented_cue(*args, **kwargs):
 
 def build_local_source_cues(segments, firered_tokens=()):
     """Rebuild a conservative cue list from source segments with no cloud output."""
+    from .cue_cleanup import prepare_effective_sources
+    segments = prepare_effective_sources(segments)
     cues = []
     ordered = sorted(
         segments,
