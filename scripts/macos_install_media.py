@@ -98,7 +98,8 @@ def main(argv=None):
     for key in ('HOMEBREW_FORCE_API_AUTO_UPDATE','HOMEBREW_API_DOMAIN','HOMEBREW_BOTTLE_DOMAIN','HOMEBREW_ARTIFACT_DOMAIN'):
         env.pop(key,None)
     env.update(HOMEBREW_NO_AUTO_UPDATE='1',HOMEBREW_NO_INSTALL_FROM_API='1',
-               HOMEBREW_NO_INSTALL_CLEANUP='1',HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK='1',HOMEBREW_NO_ANALYTICS='1')
+               HOMEBREW_NO_INSTALL_CLEANUP='1',HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK='1',HOMEBREW_NO_ANALYTICS='1',
+               HOMEBREW_DEVELOPER='1')
     record=dict(target='darwin-arm64',macos=platform.mac_ver()[0],lock_sha256=digest(args.lock),
                 core_commit=core['commit'],passed=False,stage='inspect_host',media={})
     receipt=out/'media-install.json'
@@ -199,7 +200,7 @@ def main(argv=None):
         from scripts.macos_compat_native import build_tesseract
         record.update(stage='rebuild_tesseract_for_target');save()
         record['compatibility_rebuilds']={'tesseract':build_tesseract(out/'tesseract-compat',lock['compatibility_rebuilds']['tesseract'],environment=env)}
-        record.update(stage='verified',passed=True,runner_core_restored=True,selected_core_snapshot=str(selected),environment_used={k:env[k] for k in ('HOMEBREW_NO_AUTO_UPDATE','HOMEBREW_NO_INSTALL_FROM_API','HOMEBREW_NO_INSTALL_CLEANUP','HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK','HOMEBREW_NO_ANALYTICS')})
+        record.update(stage='verified',passed=True,runner_core_restored=True,selected_core_snapshot=str(selected),environment_used={k:env[k] for k in ('HOMEBREW_NO_AUTO_UPDATE','HOMEBREW_NO_INSTALL_FROM_API','HOMEBREW_NO_INSTALL_CLEANUP','HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK','HOMEBREW_NO_ANALYTICS','HOMEBREW_DEVELOPER')})
         (out/'brew-installed.txt').write_text(command([brew,'list','--versions'])+'\n','utf8')
         save();print(json.dumps(dict(passed=True,receipt=str(receipt),core_commit=core['commit'])))
         return 0
