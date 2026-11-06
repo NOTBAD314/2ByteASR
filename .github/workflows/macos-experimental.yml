@@ -33,11 +33,11 @@ on:
         default: true
         type: boolean
       app_runner:
-        description: 'Runner for the app checks (xlarge = paid larger runner)'
+        description: 'Standard Apple Silicon runner for the app checks'
         required: false
-        default: macos-14
+        default: macos-15
         type: choice
-        options: [macos-14, macos-14-xlarge]
+        options: [macos-15, macos-26]
       mlx_keys:
         description: 'MLX models for the timed MLX check'
         required: false
@@ -53,7 +53,7 @@ on:
         required: false
         default: macos-15
         type: choice
-        options: [macos-15, macos-15-xlarge, macos-14-xlarge]
+        options: [macos-15, macos-15-xlarge, macos-26-xlarge]
       local_models_args:
         description: 'Arguments for scripts/macos_local_models_bench.py (devices, models, MOSS dtypes, clips)'
         required: false
@@ -97,7 +97,7 @@ jobs:
     if: ${{ inputs.run_app_checks }}
     outputs:
       has_installer: ${{ steps.dmg.outcome == 'success' }}
-    runs-on: ${{ inputs.app_runner || 'macos-14' }}
+    runs-on: ${{ inputs.app_runner || 'macos-15' }}
     # 24 before 2026-10-13; the optional cloud/MLX checks need up to ~20 more,
     # the optional Studio performance check up to ~35 (2026-10-14).
     # Runs without them finish as before; this only caps a hung run.
@@ -335,7 +335,7 @@ jobs:
   same-candidate-newer-macos:
     needs: native-arm64
     if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     defaults:
       run:
@@ -391,7 +391,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
     permissions:
