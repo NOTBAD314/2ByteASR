@@ -1517,6 +1517,8 @@ class StudioAudioEngine(QObject):
     @Slot(object)
     def _capture_telemetry(self, payload: object) -> None:
         if isinstance(payload, Mapping):
+            if payload.get('endpoint_generation') is not None and not self._endpoint_observation_current(payload):
+                return
             generation = int(payload.get("session_generation") or 0)
             if generation == self._session_generation:
                 expected=getattr(self,'_last_payload',{}).get('transport_generation')
@@ -1705,12 +1707,24 @@ class StudioAudioEngine(QObject):
         self._flush_sync()
 
     def telemetry_snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot = {
             **dict(self._telemetry),
             "engine_thread_alive": bool(self._thread.isRunning()),
             "engine_thread_count": 1 if self._thread.isRunning() else 0,
             "session_generation": self._session_generation,
         }
+        if (snapshot.get('endpoint_generation') is not None
+                and not self._endpoint_observation_current(snapshot)):
+            snapshot.update(state='ENDPOINT_STARTING',buffer_bytes=0,sink_consumed_bytes=0,
+                clock_sequence=0,observation_endpoint_generation=snapshot['endpoint_generation'],
+                observation_endpoint_pid=snapshot.get('endpoint_pid'),endpoint_pid=None,
+                launcher_pid=getattr(getattr(self._worker,'process',None),'pid',None),
+                endpoint_generation=getattr(self._worker,'_endpoint_generation',0))
+        return snapshot
+
+    def _endpoint_observation_current(self, payload):
+        current=int(getattr(getattr(self,'_worker',None),'_endpoint_generation',0))
+        return not current or int(payload.get('endpoint_generation') or 0)==current
 
     def ready_for_playback(self) -> bool:
         return self.playback_readiness().ready
@@ -1731,7 +1745,9 @@ class StudioAudioEngine(QObject):
         self._output_suppressed=bool(selected)
 
     def playback_readiness(self):
-        from .audio_readiness import audio_readiness
+        from .audio_readiness import audio_readiness,AudioReadiness
+        if self._last_payload.get('audible') and not self._endpoint_observation_current(self._telemetry):
+            return AudioReadiness(False,False,'endpoint_recovering')
         return audio_readiness(self._last_payload, self._telemetry,
             sync_inflight=bool(getattr(self, '_sync_inflight', False)),
             default_bps=BYTES_PER_SECOND, prebuffer_seconds=PREBUFFER_SECONDS)
@@ -1757,6 +1773,7 @@ class StudioAudioEngine(QObject):
         The GUI never touches QAudioSink directly; this immutable-ish copy is
         the hand-off used by the ProjectClock for audio-only preview.
         """
+        if not self._endpoint_observation_current(self._telemetry):return {}
         return self.telemetry_snapshot()
 
     def capture_pcm(self, name: str, enabled: bool) -> None:

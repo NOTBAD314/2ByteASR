@@ -195,13 +195,14 @@ class AudioProcessBridge(QObject):
                     if message.get('kind') == 'telemetry':
                         state = message['payload']
                         state.setdefault('endpoint_pid', process.pid)
+                        state['launcher_pid']=process.pid
                         state['endpoint_backend'] = audio_backend()
                         state['endpoint_generation']=generation
                         state['endpoint_alive']=process.poll() is None
                         state['pipe_state']='connected'
                         self.telemetry.emit(state)
                     elif message.get('kind') == 'ready':
-                        self._diagnostic('ready_handshake', child_pid=process.pid)
+                        self._diagnostic('ready_handshake', child_pid=process.pid,worker_pid=message.get('worker_pid'))
                     elif message.get('kind') == 'milestone':
                         self._diagnostic(str(message.get('phase', 'worker_progress')), **message.get('payload', {}))
                     elif message.get('kind') == 'ack':
@@ -253,6 +254,7 @@ class AudioProcessBridge(QObject):
             self._broken=True;self._ack_pending=False
             self.telemetry.emit({'state':'ENDPOINT_FAILED','windows_sink_count':0,
                                  'session_generation':self._session,'decoder_error':str(exc),
+                                 'endpoint_generation':self._endpoint_generation,
                                  'recovery_attempts':self._recovery.attempts,
                                  'recovery_exhausted':self._recovery.attempts>=self._recovery.maximum,
                                  'retry_after_seconds':max(0.,self._recovery.next_attempt_at-time.monotonic())})
@@ -371,7 +373,7 @@ def main(args=None):
         except (OSError, EOFError):
             app.quit()
     threading.Thread(target=writer, name='audio-observation-writer', daemon=True).start()
-    queue_control({'kind':'ready'})
+    queue_control({'kind':'ready','worker_pid':os.getpid()})
     worker.telemetry.connect(telemetry)
     worker.synchronize_complete.connect(lambda: queue_control({'kind':'ack'}))
 
