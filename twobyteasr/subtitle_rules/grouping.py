@@ -161,6 +161,13 @@ def _restore_grouped_source(segments, cues):
     speakers = {segment.speaker or 'S00' for segment in segments}
     if {cue.speaker or 'S00' for cue in cues} != speakers:
         return False
+    # A result that already satisfies the source contract needs no rewriting.
+    # Re-slicing such a result can move non-content characters (the '<' of a
+    # silence placeholder) onto the neighbouring cue and make that cue claim a
+    # far-away source second; the contract then rejects the batch and the whole
+    # media fails even though nothing was mutated (2026-11-06).
+    if _validate_grouped_sources(segments, cues):
+        return True
     candidate = copy.deepcopy(cues)
     for speaker in speakers:
         if not restore_source_text(
