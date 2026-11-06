@@ -2656,7 +2656,99 @@ class MpvCanvas(QFrame):
         self._reconcile_position(preparing=True)
         return True
 
+    def frame_step(self, backwards=False, *, repeat=False):
+        """Request one real decoded frame; wait for its position, never add ms."""
+        if (not self.controller or not self.controller.running
+                or self._playback_clock.exact_seek_pending
+                or getattr(self, '_frame_step_pending', None) is not None):
+            return False
+        # Re-pausing an already paused canvas would enqueue an exact seek to
+        # the old clock position and undo the frame command that follows it.
+        if not self._paused:
+            self.set_paused(True)
+        observation = self.controller.observed_position()
+        intent = dict(controller=self.controller, clock_generation=self._playback_clock.generation,
+            source_epoch=self.controller.source_epoch, backwards=bool(backwards), repeat=bool(repeat), started=False, cancelled=False,
+            baseline_sequence=int(observation.get('actor_sequence', 0)),
+            source_generation=int(observation.get('source_generation', 0)),
+            baseline_position=observation.get('position'), deadline=perf_counter()+1.0)
+        self._frame_step_pending = intent
+        self._eof_reached = False
+        post = getattr(self.controller, 'post_frame_step', None)
+        if callable(post):
+            if not post(backwards, intent=intent):
+                self._frame_step_pending = None
+                return False
+        else:
+            # Other platform controllers keep their existing step operation;
+            # only their subsequently observed position may advance the clock.
+            intent['started'] = True
+            self.controller.frame_step(backwards)
+        timer = getattr(self, '_frame_step_timer', None)
+        if timer is None:
+            timer = self._frame_step_timer = QTimer(self)
+            timer.setInterval(10)
+            timer.setTimerType(Qt.TimerType.PreciseTimer)
+            timer.timeout.connect(self._consume_frame_step)
+        timer.start()
+        return True
+
+    def cancel_frame_step(self, *, cancel_initial=False):
+        intent = getattr(self, '_frame_step_pending', None)
+        if (intent is not None and not intent.get('started')
+                and (intent.get('repeat') or cancel_initial)):
+            intent['cancelled'] = True
+            self._finish_frame_step()
+
+    def _finish_frame_step(self):
+        intent = getattr(self, '_frame_step_pending', None)
+        if intent is not None:
+            intent['cancelled'] = True
+        self._frame_step_pending = None
+        timer = getattr(self, '_frame_step_timer', None)
+        if timer is not None:
+            timer.stop()
+
+    def _consume_frame_step(self):
+        intent = getattr(self, '_frame_step_pending', None)
+        if intent is None:
+            return
+        controller = self.controller
+        if (controller is not intent['controller'] or not controller.running
+                or controller.source_epoch != intent['source_epoch']
+                or self._playback_clock.generation != intent['clock_generation']
+                or intent.get('error') or perf_counter() >= intent['deadline']):
+            self._finish_frame_step()
+            return
+        if not intent.get('started'):
+            return
+        observation = controller.observed_position()
+        position = observation.get('position')
+        baseline = intent.get('baseline_position')
+        if (position is None or baseline is None or not observation.get('paused', True)
+                or int(observation.get('actor_sequence', 0)) <= intent['baseline_sequence']
+                or int(observation.get('source_generation', 0)) != intent['source_generation']):
+            return
+        delta = float(position)-float(baseline)
+        if (delta >= -1e-9 if intent['backwards'] else delta <= 1e-9):
+            return
+        snapshot, accepted, _ = self._playback_clock.observe(
+            self._source_position_to_project_ms(float(position)),
+            source_generation=int(observation['source_generation']), actor_sequence=int(observation['actor_sequence']),
+            observed_monotonic_ts=float(observation['observed_monotonic_ts']),
+            playback_rate=float(observation.get('playback_rate', self._playback_rate)),
+            paused=True, seeking=False, source='frame_step', discontinuity=True,
+            presentation_media_ms=self.visual_position()*1000,
+            observed_perf_counter_ts=observation.get('observed_perf_counter_ts'))
+        if accepted:
+            self._last_mpv_time_pos_ms = float(position)*1000
+            self._finish_frame_step()
+            self._adopt_playback_snapshot(snapshot)
+
     def _reconcile_position(self, *, preparing=False) -> None:
+        if getattr(self, '_frame_step_pending', None) is not None:
+            self._consume_frame_step()
+            return
         if not self._navigation_visible:
             from .studio_readiness import owns_hidden_preparation
             if not preparing or not owns_hidden_preparation(self._studio_page()):

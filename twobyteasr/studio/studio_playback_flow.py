@@ -920,7 +920,7 @@ class StudioPlaybackFlowMixin:
 
     def _frame_step(self, backwards: bool) -> None:
         if not getattr(self, "_empty_playback_state", False) and self.video.controller:
-            self.video.controller.frame_step(backwards)
+            self.video.frame_step(backwards, repeat=getattr(self, '_shortcut_is_repeat', False))
             self._sync_play_button(True)
 
     def _sync_play_button(self, paused: bool) -> None:
