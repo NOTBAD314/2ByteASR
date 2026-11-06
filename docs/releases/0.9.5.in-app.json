@@ -1,0 +1,4 @@
+{
+  "zh": "· 默认自动选择普通字幕单/双路编码，高级导出随包预构建并复用相关缓存。\n· 减少长工程交互开销和导出临时磁盘占用，纳入术语/颜色与播放修订。\n· 修正部署代理回退、云字幕参数/短尾及隐藏字幕预览命中。性能、长稳和其他硬件边界仍保留；Mac保持0.9.3。",
+  "en": "Automatic single/dual-segment selection for ordinary captions; prebuilt advanced-export code and targeted cache reuse. Less repeated long-project work and lower export scratch usage. Deployment-proxy fallback, cloud caption parameters/short tails and hidden-caption hit fixes. Hardware, cold-operation and endurance limits remain. Mac stays at 0.9.3."
+}
