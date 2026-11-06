@@ -8,6 +8,19 @@ def inputs():
     return request,state
 
 
+@pytest.mark.parametrize('error',['OpenError','IOError','FatalError'])
+def test_output_device_failure_cannot_be_ready_with_old_buffered_pcm(error):
+    request,state=inputs();state.update(state='StoppedState',sink_error=error)
+    result=audio_readiness(request,state)
+    assert result.failed and not result.ready and error in result.reason
+
+
+def test_recoverable_underrun_keeps_the_pcm_gate_instead_of_silent_bypass():
+    request,state=inputs();state.update(sink_error='UnderrunError',buffer_bytes=0)
+    result=audio_readiness(request,state)
+    assert not result.failed and not result.ready
+
+
 @pytest.mark.parametrize('failure', ['ENDPOINT_FAILED','DECODER_FAILED','NO_OUTPUT_DEVICE','UNSUPPORTED_OUTPUT_FORMAT'])
 def test_failure_is_not_ready_even_with_stale_pcm_or_eof(failure):
     request,state=inputs();state.update(state=failure,decoder_eof=True,decoded_bytes=96000)

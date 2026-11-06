@@ -23,6 +23,9 @@ def audio_readiness(request, observation, *, sync_inflight=False, default_bps=19
     state = str(observation.get('state') or '').upper()
     if state in FAILURE_STATES:
         return AudioReadiness(False, True, state)
+    error=str(observation.get('sink_error') or '')
+    if error in {'OpenError','IOError','FatalError'}:
+        return AudioReadiness(False, True, 'output_device_failed:'+error)
     if request.get('paused', True) and sync_inflight:
         return AudioReadiness(False, False, 'control_pending')
     if (observation.get('source_path') != request.get('source_path')

@@ -1051,11 +1051,12 @@ class StudioPlaybackFlowMixin:
 
     def _audio_output_state_changed(self, state):
         self.video._advance_buffered_play()
-        failed = self.audio_engine.playback_readiness().failed
+        readiness = self.audio_engine.playback_readiness()
+        failed = readiness.failed
         if failed and not getattr(self, '_silent_preview_selected', False):
             if not self.video._paused:
                 self.video.set_paused(True)
-                self._audio_playback_failed(str(state.get('decoder_error') or state.get('state')))
+                self._audio_playback_failed(str(state.get('decoder_error') or readiness.reason))
             self._show_audio_status('音频输出不可用 · 工程可编辑，播放已暂停')
         elif self.audio_engine.ready_for_playback() and not getattr(self, '_silent_preview_selected', False):
             self.audio_status_banner.hide()
@@ -1070,6 +1071,8 @@ class StudioPlaybackFlowMixin:
         self._show_audio_status('正在重新准备音频 · 可继续编辑或暂停取消')
         self.audio_engine.retry_playback_output()
         self.video.playback_prepare()
+        if getattr(self.video,'_clock_only',False):
+            self.video.set_external_clock_enabled(bool(getattr(getattr(self,'_audio_playback_decision',None),'has_owner',False)))
         self.video.set_paused(False)
 
     def _select_silent_preview(self):
@@ -1078,7 +1081,9 @@ class StudioPlaybackFlowMixin:
         self.audio_engine.set_output_suppressed(True)
         self._silent_preview_selected=True
         self._show_audio_status('无声预览 · 音频输出已停用；点击“重试音频”恢复声音')
-        if getattr(self.video,'_clock_only',False):self.video.set_external_clock_enabled(False)
+        if not getattr(self.video,'_media_has_video',True):
+            self.video._clock_only=True
+        self.video.set_external_clock_enabled(False)
         self.video.set_paused(False)
 
     def _audio_playback_failed(self, reason):

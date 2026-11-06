@@ -401,17 +401,25 @@ class MpvCanvas(QFrame):
             self._recovery_candidate=token
             def confirm():
                 if getattr(self, '_recovery_candidate', None) is not token:return
-                self._recovery_candidate=None
                 if (self.controller is not old or token[1] != getattr(self, '_load_generation', 0)
                         or token[2] != old._subtitle_binding_epoch or token[3] != self._playback_clock.generation):
+                    self._recovery_candidate=None
                     return
                 status=old.actor_status()
                 progress=status.get('last_media_progress') or {}
                 progressed=(progress.get('media_epoch')==token[2] and progress.get('source_generation')==old.source_epoch
                     and progress.get('monotonic', 0)>=token[4])
                 if old.source_alive() and (progressed or not getattr(old, '_needs_media_reload', False)):
+                    self._recovery_candidate=None
                     self._studio_page()._studio_trace('PLAYER_RECOVERY_SUPERSEDED', reason='current_generation_progress')
                     return
+                loaded=status.get('last_file_loaded') or {}
+                if (old.source_alive() and loaded.get('media_epoch')==token[2]
+                        and loaded.get('source_generation')==old.source_epoch
+                        and time.monotonic()-loaded.get('monotonic',0)<1.5):
+                    QTimer.singleShot(50,confirm)
+                    return  # bounded current-event path verification, no reopen
+                self._recovery_candidate=None
                 self._request_player_recovery(reason, confirmed=True)
             QTimer.singleShot(100, confirm)
             return True
@@ -1894,6 +1902,7 @@ class MpvCanvas(QFrame):
         self._playback_clock = clock
         self._external_clock_sequence = -1
         self._external_clock_source_generation = -1
+        self._external_clock_owner = None
         self.position_changed.emit(0.0)
         self._release_media_caches_after_idle()
 
@@ -2010,6 +2019,7 @@ class MpvCanvas(QFrame):
         self._external_clock_provider = provider if callable(provider) else None
         self._external_clock_sequence = -1
         self._external_clock_source_generation = -1
+        self._external_clock_owner = None
         self._external_clock_enabled = bool(enabled and self._external_clock_provider)
 
     def set_media_time_mapping(
@@ -2055,12 +2065,16 @@ class MpvCanvas(QFrame):
         return sync_map.source_to_content_ms(float(source_ms))
 
     def set_external_clock_enabled(self, enabled: bool) -> None:
+        page=self._studio_page()
+        if getattr(page,'video',None) is self and getattr(page,'_silent_preview_selected',False):
+            enabled=False
         enabled = bool(enabled and self._external_clock_provider)
         if enabled == self._external_clock_enabled:
             return
         self._external_clock_enabled = enabled
         self._external_clock_sequence = -1
         self._external_clock_source_generation = -1
+        self._external_clock_owner = None
 
     def _external_clock_active(self) -> bool:
         provider = self._external_clock_provider
@@ -2112,6 +2126,14 @@ class MpvCanvas(QFrame):
             observed_ms = float(value)
         except (TypeError, ValueError):
             return False
+        owner=(int(payload.get('session_generation') or 0),int(payload.get('endpoint_generation') or 0),
+               int(payload.get('source_generation') or 0))
+        previous_owner=getattr(self,'_external_clock_owner',None)
+        if previous_owner is not None and owner<previous_owner:return False
+        new_owner=owner!=previous_owner
+        if new_owner:
+            self._external_clock_sequence=-1
+            self._external_clock_owner=owner
         if sequence <= self._external_clock_sequence:
             self._complete_external_clock_startup(payload)
             return False
@@ -2127,7 +2149,7 @@ class MpvCanvas(QFrame):
         if self._clock_only and self._project_time_mapping_enabled:
             rate /= self._project_playback_rate
         discontinuity = (
-            source_generation != self._external_clock_source_generation
+            new_owner or source_generation != self._external_clock_source_generation
             or self._playback_clock.snapshot().source == "reset"
         )
         self._external_clock_source_generation = source_generation

@@ -520,6 +520,7 @@ class _MpvCommandActor:
             "transport_failures": self._transport_failures,
             "recovery_exhausted": self.recovery_exhausted(),
             "last_media_progress": getattr(self, '_last_media_progress', None),
+            "last_file_loaded": getattr(self, '_last_file_loaded', None),
         }
 
     def recovery_exhausted(self):
@@ -775,6 +776,16 @@ class _MpvCommandActor:
 
     def _handle_event(self, payload: dict[str, Any]) -> None:
         name=payload.get('event')
+        if name=='file-loaded':
+            # Receiving a complete event proves the pipe progressed. Allow
+            # the queued, path-verified bind to run before an old timeout can
+            # retire this actor; this alone never declares a frame ready.
+            self._last_file_loaded=dict(monotonic=time.monotonic(),
+                media_epoch=self.controller._subtitle_binding_epoch,source_generation=self._source_generation)
+            self._transport_failures=0
+            self._outage_started=None
+            self._degraded=False
+            self.mark_exchange_ok()
         if name in {'file-loaded', 'playback-restart'}:
             actual = str(self.property('path', '') or '')
             intended = str(self.controller._subtitle_media_path or '')
@@ -2027,6 +2038,15 @@ class MpvController:
             if not actual or os.path.normcase(os.path.abspath(actual)) != os.path.normcase(os.path.abspath(source)):
                 return
             self._subtitle_media_ready = True
+            self._needs_media_reload = False
+            actor=self._actor
+            if actor is not None:
+                actor._last_media_progress=dict(monotonic=time.monotonic(),media_epoch=epoch,
+                    source_generation=self.source_epoch)
+                actor._degraded=False
+                actor._transport_failures=0
+                actor._outage_started=None
+                actor.mark_exchange_ok()
             pending=getattr(self,'_pending_media_seek',None)
             self._pending_media_seek=None
             if pending is not None and pending[0]==epoch:
