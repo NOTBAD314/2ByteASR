@@ -51,6 +51,7 @@ class MpvCanvas(QFrame):
     video_display_size_changed = Signal(int, int)
     error = Signal(str)
     workshop_requested = Signal(str)
+    _initial_player_ready = Signal(object, object, str)
     _player_recovered = Signal(object, object, str)
 
     def __init__(self, parent=None):
@@ -169,6 +170,8 @@ class MpvCanvas(QFrame):
         self._startup_state = "READY"
         self._startup_play_requested = False
         self._startup_started_at = 0.0
+        self._initial_player_request = None
+        self._initial_player_ready.connect(self._receive_initial_player, Qt.ConnectionType.QueuedConnection)
         self._recovery_request = None
         self._recovery_attempts = 0
         self._recovery_deadline = 0.0
@@ -202,9 +205,17 @@ class MpvCanvas(QFrame):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        # 十八轮：双击视频层 = 打开 AI 字幕工坊（播头处是特效字幕时）。
-        self.workshop_requested.emit("")
-        super().mouseDoubleClickEvent(event)
+        from .canvas_visibility import visible_object_at
+        page = self._studio_page()
+        hit = visible_object_at(page, event.position()) if page is not None else None
+        if hit is not None and event.button() == Qt.MouseButton.LeftButton:
+            cue_id, layer = hit
+            page.timeline.set_subtitle_layer(layer)
+            page.select_cue(cue_id)
+            self.workshop_requested.emit(cue_id)
+            event.accept()
+            return
+        event.ignore()
 
     @property
     def playback_source_dead(self) -> bool:
@@ -295,6 +306,57 @@ class MpvCanvas(QFrame):
         self._playback_source_dead = False
         if self._preview_scale < 1.0:
             self._apply_preview_scale()
+
+    def _start_initial_player(self, media_path, ass_path, start_seconds):
+        """Prepare the first native child off-thread; controls keep editing the graph."""
+        page = self._studio_page()
+        intent = dict(generation=self._load_generation, project=getattr(page, 'project', None),
+                      path=media_path, ass=ass_path, seconds=start_seconds)
+        pending = self._initial_player_request
+        if pending is not None:
+            pending['intent'] = intent
+            return
+        controller = create_preview_controller(self)
+        hwnd = int(self.winId())
+        self._embed_hwnd = hwnd
+        log_path = studio_data_root() / 'logs' / 'mpv.log'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        token = self._initial_player_request = dict(intent=intent)
+        completed = self._initial_player_ready
+        def work():
+            try:
+                controller.start(hwnd, log_path=str(log_path))
+                completed.emit(token, controller, '')
+            except Exception as exc:
+                try:completed.emit(token, controller, str(exc))
+                except RuntimeError:controller.close()
+        threading.Thread(target=work, daemon=True, name='studio-initial-player').start()
+
+    def _receive_initial_player(self, token, controller, error):
+        intent = token['intent']
+        page = self._studio_page()
+        current = (self._initial_player_request is token and intent['generation'] == self._load_generation
+                   and intent['project'] is getattr(page, 'project', None)
+                   and not getattr(page, '_close_requested', False))
+        if self._initial_player_request is token:self._initial_player_request = None
+        if not current or error:
+            threading.Thread(target=controller.close, daemon=True).start()
+            if current and error:self.error.emit(error)
+            return
+        self.controller = controller
+        self._playback_source_dead = False
+        self._native_subtitle_visibility_controller = None
+        self._request_native_region_sync(recheck=True)
+        if page is not None and page.project is intent['project']:
+            # Resolve the CURRENT graph before any load/play. An eye/mute/Solo
+            # change made during startup must win over the old load's defaults.
+            page._active_video_preview_key = ''
+            page._active_video_preview_volume = None
+            page._active_mpv_audio_enabled = None
+            page._refresh_edit_playback_state()
+            page._sync_multitrack_preview_at(int(page.timeline.playhead_ms))
+        else:
+            self.load(intent['path'], intent['ass'], start_seconds=intent['seconds'])
 
     PLAYER_REBUILD_LIMIT = 2
     PLAYER_RECOVERY_BUDGET_S = 15.0
@@ -1179,6 +1241,9 @@ class MpvCanvas(QFrame):
                 if not self.controller.running or status.get('recovery_exhausted'):
                     self._request_player_recovery('unhealthy_instance_on_load')
                     return
+            if self.controller is None and sys.platform == 'win32':
+                self._start_initial_player(media_path, ass_path, start_seconds)
+                return
             self._ensure_controller_started()
             self._publish_first_picture(media_path)
             self._startup_play_requested = False
@@ -1857,6 +1922,9 @@ class MpvCanvas(QFrame):
             return
         self._media_path = str(media_path or self._media_path)
         self._ass_path = str(ass_path or "")
+        if self.controller is None and sys.platform == 'win32':
+            self.load(self._media_path, self._ass_path, start_seconds=0.)
+            return
         if not self.controller or not self.controller.running:
             # A controller that died while the hub was open must be replaced,
             # otherwise the reopened project inherits a permanently dead one.

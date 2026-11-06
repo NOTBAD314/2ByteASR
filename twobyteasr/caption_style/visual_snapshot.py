@@ -275,7 +275,8 @@ def _materialize_recipe_appearance(
                 graph, enabled=style.border_style == 3, color=style.back_color,
             )
         recipe.visual_graph = graph
-    return recipe
+    from .effect_paints import apply_effect_paints
+    return apply_effect_paints(recipe)
 
 
 def _anchor(style: SubtitleStyle, playres_x: int, playres_y: int) -> tuple[float, float, float, float]:

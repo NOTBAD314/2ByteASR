@@ -53,6 +53,34 @@ class _WebLiveBridge(QObject):
 class StudioAdvancedFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
+    def _sync_canvas_selection(self):
+        """Keep handles and hits on the same current display layer as pixels."""
+        overlay = getattr(self, 'position_overlay', None)
+        if overlay is None:return
+        cue = getattr(self, '_cue_lookup', {}).get(self.selected_cue_id)
+        panel = getattr(self, 'caption_transform_panel', None)
+        language = panel.language.currentData() if panel is not None else 'original'
+        from .canvas_visibility import layer_is_shown
+        button = getattr(self, 'position_edit_button', None)
+        shown = (layer_is_shown(self, cue, language) and button is not None and button.isChecked()
+                 and bool(getattr(self.video, '_paused', True))
+                 and getattr(self, 'export_workspace', None) is None
+                 and getattr(self, '_canvas_editor', None) is None and self.isVisible())
+        geometry = getattr(self, '_selection_geometry', None)
+        if not shown:
+            if geometry is not None:geometry.invalidate()
+            else:overlay.clear_hit_region()
+            overlay.hide()
+            return
+        overlay.setVisible(True)
+        overlay.sync_to_video(self.video)
+        if geometry is None:
+            from .selection_geometry import SelectionGeometryController
+            geometry = self._selection_geometry = SelectionGeometryController(self)
+        geometry.sync(cue, self.project.style_recipes.get(cue.style_id, {}))
+        overlay.raise_()
+        overlay._schedule_compositor_publish()
+
     def _present_caption_scene(self):
         if self.project is None or getattr(self, '_empty_playback_state', False):
             return False
@@ -67,6 +95,7 @@ class StudioAdvancedFlowMixin:
                getattr(self, '_caption_tick_time_ms', None),
                getattr(self, '_caption_transform_preview_serial', 0))
         if sample is not None and sample.get('presented_key') == key:
+            self._sync_canvas_selection()
             return True
         from ..rendering.caption_scene import CaptionScene, active_cues
         milliseconds = self._caption_sample_ms()
@@ -82,6 +111,7 @@ class StudioAdvancedFlowMixin:
         presented = scene.present(cues, milliseconds)
         if presented and sample is not None:
             sample['presented_key'] = key
+        if presented:self._sync_canvas_selection()
         return presented
 
     def _prepare_loading_subtitles(self):
@@ -2436,29 +2466,7 @@ class StudioAdvancedFlowMixin:
             }
             else ""
         )
-        transform = getattr(self, "position_overlay", None)
-        transform_should_show = bool(
-            transform is not None
-            and getattr(self, "export_workspace", None) is None
-            and page_ready
-            and cue_inside
-            and bool(self.selected_cue_id) and cue is not None and cue.id == self.selected_cue_id
-            and bool(getattr(self.video, "_paused", True))
-            and getattr(self, "position_edit_button", None) is not None
-            and self.position_edit_button.isChecked()
-            and getattr(self, "_canvas_editor", None) is None
-        )
-        if transform is not None:
-            transform.setVisible(transform_should_show)
-            if transform_should_show:
-                transform.sync_to_video(self.video)
-                if not hasattr(self,'_selection_geometry'):
-                    from .selection_geometry import SelectionGeometryController
-                    self._selection_geometry=SelectionGeometryController(self)
-                self._selection_geometry.sync(cue,payload)
-                # Required stack: mpv -> Advanced -> interaction overlay.
-                transform.raise_()
-                transform._schedule_compositor_publish()
+        self._sync_canvas_selection()
 
         if previous_owner is not current_owner:
             self._studio_trace(

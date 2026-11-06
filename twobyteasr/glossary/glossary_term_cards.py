@@ -153,6 +153,15 @@ class TermCardDelegate(QStyledItemDelegate):
         QToolTip.showText(event.globalPos(), "<qt>" + "<br>".join(escape(line) for line in lines) + "</qt>", view)
         return True
 
+    def category_rect(self, rect: QRect, index: QModelIndex, font: QFont | None = None) -> QRect:
+        """One geometry for the painted category and its independent hit target."""
+        parts = card_parts(self._row(index))
+        px = self.metrics(rect).px
+        header = self.content_rects(rect, parts)[0]
+        metrics = QFontMetrics(self._font(font or QApplication.font(), px(11), QFont.Weight.DemiBold))
+        width = min(header.width() - px(18) - px(8), metrics.horizontalAdvance(translate(parts['category'])) + px(24))
+        return QRect(header.x(), header.y(), max(px(30), width), header.height())
+
     def button_rect(self, rect: QRect, index: QModelIndex) -> QRect | None:
         parts = card_parts(self._row(index))
         if not parts["action"]:
@@ -202,8 +211,7 @@ class TermCardDelegate(QStyledItemDelegate):
         pill_metrics = QFontMetrics(pill_font)
         category = translate(parts["category"])
         mark_size = px(18)
-        pill_width = min(header.width() - mark_size - px(8), pill_metrics.horizontalAdvance(category) + px(24))
-        pill = QRectF(x, header.y(), max(px(30), pill_width), header.height())
+        pill = QRectF(self.category_rect(rect, index, option.font))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
         painter.drawRoundedRect(pill, px(9), px(9))
@@ -309,6 +317,7 @@ class TermCardView(QListView):
     # A plain click (or Enter) on a confirmed card: edit it.  The press does not
     # select, so the selection bar never flashes and nothing moves under the pointer.
     edit_requested = Signal(QModelIndex)
+    category_requested = Signal(str)
     GAP = 10
     COLUMNS = 6
     VISIBLE_ROWS = 4
@@ -336,6 +345,7 @@ class TermCardView(QListView):
         self.setItemDelegate(self.card_delegate)
         self._pressed_action: QPersistentModelIndex | None = None
         self._pressed_edit: QPersistentModelIndex | None = None
+        self._pressed_category: QPersistentModelIndex | None = None
         self._overlay = None
         self._columns = 0
         self._layout_timer = QTimer(self)
@@ -401,8 +411,20 @@ class TermCardView(QListView):
         button = self.card_delegate.button_rect(self.visualRect(index), index)
         return index if button is not None and button.contains(pos) else QModelIndex()
 
+    def _category_at(self, pos) -> QModelIndex:
+        index = self.indexAt(pos)
+        if index.isValid() and self.card_delegate.category_rect(self.visualRect(index), index, self.font()).contains(pos):
+            return index
+        return QModelIndex()
+
     def mousePressEvent(self, event):  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
+            index = self._category_at(event.position().toPoint())
+            if index.isValid():
+                self._pressed_category = QPersistentModelIndex(index)
+                self._pressed_edit = self._pressed_action = None
+                event.accept()
+                return
             index = self._action_at(event.position().toPoint())
             if index.isValid():
                 self._pressed_action = QPersistentModelIndex(index)
@@ -429,6 +451,14 @@ class TermCardView(QListView):
         super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt API
+        if self._pressed_category is not None:
+            pressed = QModelIndex(self._pressed_category)
+            self._pressed_category = None
+            index = self._category_at(event.position().toPoint())
+            if pressed.isValid() and index == pressed:
+                self.category_requested.emit(card_parts(self.card_delegate._row(index))['category'])
+            event.accept()
+            return
         if self._pressed_edit is not None:
             pressed = QModelIndex(self._pressed_edit)
             self._pressed_edit = None

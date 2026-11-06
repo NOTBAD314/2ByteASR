@@ -104,5 +104,8 @@ def caption_input(layer):
 def caption_filter(layer, label, fps):
     if layer.get('sparse'):
         rate = Fraction(str(fps)).limit_denominator(100100)
-        return f'{label}fps={rate}:round=near:start_time=0,format=rgba[captionpixels];', '[captionpixels]'
+        # Entries already lie on the output frame lattice. Framesync holds the
+        # last PNG until the next entry. Expanding that sparse stream to video
+        # rate repeats format conversion/cropping/upload for unchanged pixels.
+        return f'{label}settb=expr=1/({rate}),format=rgba[captionpixels];', '[captionpixels]'
     return '', label

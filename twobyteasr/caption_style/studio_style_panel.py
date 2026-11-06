@@ -105,6 +105,12 @@ class StudioStylePanelMixin:
 
     @staticmethod
     def _new_fill_editor_dialog(*args, **kwargs) -> FillEditorDialog:
+        parent = args[1] if len(args) > 1 else kwargs.get('parent')
+        controller = getattr(parent, 'style_controller', None)
+        if controller is not None and kwargs.get('allow_gradients', True) and kwargs.get('preview_update') is None:
+            return controller._shared_color_editor(args[0] if args else kwargs.get('fill'),
+                title=kwargs.get('title', '填充'), preview_snapshot=kwargs.get('preview_snapshot'),
+                edit_target=kwargs.get('edit_target', 'fill'))
         return FillEditorDialog(*args, **kwargs)
 
     @staticmethod

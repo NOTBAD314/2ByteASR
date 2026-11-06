@@ -120,8 +120,14 @@ __all__ = [
 ]
 
 
-POLISH_OUTPUT_TOKENS = 4096
-POLISH_RETRY_OUTPUT_TOKENS = (8192, 16384)
+POLISH_OUTPUT_TOKENS = 10000
+
+
+def _polish_output_tokens():
+    from ..providers.asr_provider_snapshot import task_provider_snapshot
+    return task_provider_snapshot('polish').max_output_tokens
+
+POLISH_RETRY_OUTPUT_TOKENS = ()
 STRUCTURED_SPLIT_MAX_DEPTH = 3
 SPACED_STRUCTURED_SPLIT_MAX_DEPTH = 1
 
@@ -744,7 +750,7 @@ def _budget_correction_body(body, prompt, candidates):
     def fits(value):
         prepare_input([{'role': 'system', 'content': prompt},
             {'role': 'user', 'content': json.dumps(_wire_correction_body(value), ensure_ascii=False, separators=(',', ':'))}],
-            max_tokens=POLISH_OUTPUT_TOKENS, operation='polish')
+            max_tokens=_polish_output_tokens(), operation='polish')
     # If editable evidence alone does not fit, the existing cue packer must
     # split it. Never pretend dropping all vocabulary fixes an oversized cue.
     try:
@@ -837,7 +843,7 @@ def _prepared_correction_request(segment_batch, glossary, context_before, contex
     try:
         key = hashlib.sha256(json.dumps([
             # The request budget decides which term evidence is admitted.
-            dataclasses.asdict(POLICIES['polish']), POLISH_OUTPUT_TOKENS, RULE_VERSION,
+            dataclasses.asdict(POLICIES['polish']), _polish_output_tokens(), RULE_VERSION,
             POLISH_PROMPT_VERSION, prompt, segments, glossary, context_before, context_after, media_title,
             project_context, stable_term_candidates, approved_global_mappings, verified_terms, glossary_evidence,
             get_runtime_context().game_name, scene.to_dict(), term_snapshot.digest,
@@ -980,7 +986,7 @@ def call_correction_api(
         for segment in segment_batch
     }
     from ..providers.asr_provider_snapshot import task_provider_snapshot
-    snapshot = task_provider_snapshot('polish') if not _messages_only else None
+    snapshot = task_provider_snapshot('polish')
     rejected = (_retry_budget.snapshot_rejection('polished', snapshot.fingerprint)
         if not _messages_only else None)
     if rejected:
@@ -1013,7 +1019,7 @@ def call_correction_api(
         prepare_input([{'role':'user','content':json.dumps(
             [{'id':cue.segment_id,'primary_text':cue.text} for cue in segment_batch],
             ensure_ascii=False,separators=(',',':'))}],operation='polish',
-            max_tokens=POLISH_OUTPUT_TOKENS,scope={'kind':'target_lower_bound'})
+            max_tokens=_polish_output_tokens(),scope={'kind':'target_lower_bound'})
     from ..providers.provider_input_budget import pack_items, failure_category, retry_delay, wait_retry
     from twobyteasr.providers.asr_provider_snapshot import task_provider_snapshot, request_record
     if not _planned and not _messages_only:
@@ -1021,7 +1027,7 @@ def call_correction_api(
             return call_correction_api(child,glossary,context_before,context_after,media_title,
                 project_context,stable_term_candidates,approved_global_mappings,verified_terms,
                 glossary_evidence=glossary_evidence,_messages_only=True)
-        parts, rejected = pack_items(segment_batch,build,operation='polish',max_tokens=POLISH_OUTPUT_TOKENS)
+        parts, rejected = pack_items(segment_batch,build,operation='polish',max_tokens=snapshot.max_output_tokens)
         if rejected or len(parts) > 1:
             result = PolishBatchResult(baseline,succeeded=(),batches=0)
             for cue, report in rejected:
@@ -1170,12 +1176,12 @@ def call_correction_api(
             diag['handed_to_provider'] = True
             options = dict(
                 stage="polished", batch_index=batch_index, operation_kind='polish',
-                max_tokens=POLISH_OUTPUT_TOKENS, temperature=0.0,
+                max_tokens=snapshot.max_output_tokens, temperature=0.0,
                 timeout=request_policy.total, _timeout_policy=request_policy,
                 request_diagnostics=diag,
                 _task_failure_scope=(_retry_budget, 'polished', snapshot.fingerprint),
                 cancel_check=lambda: cancelled() or bool(abort_event is not None and abort_event.is_set()),
-                enable_thinking=False, on_stream_event=on_stream_event)
+                enable_thinking=snapshot.enable_thinking, thinking_protocol=snapshot.thinking_protocol, on_stream_event=on_stream_event)
             structured = getattr(provider, 'structured_complete', None)
             quarantined = CueValidationFailures()
             if callable(structured):
@@ -1189,12 +1195,12 @@ def call_correction_api(
             # production AIClient always owns structured_complete.
             content = provider.complete(
                 working_messages, stage="polished", batch_index=batch_index, operation_kind='polish',
-                max_tokens=POLISH_OUTPUT_TOKENS, temperature=0.0,
+                max_tokens=snapshot.max_output_tokens, temperature=0.0,
                 timeout=request_policy.total, _timeout_policy=request_policy,
                 request_diagnostics=diag,
                 _task_failure_scope=(_retry_budget, 'polished', snapshot.fingerprint),
                 cancel_check=lambda: cancelled() or bool(abort_event is not None and abort_event.is_set()),
-                enable_thinking=False, response_format={"type": "json_object"}, json_schema=POLISH_SCHEMA,
+                enable_thinking=snapshot.enable_thinking, thinking_protocol=snapshot.thinking_protocol, response_format={"type": "json_object"}, json_schema=POLISH_SCHEMA,
                 on_stream_event=on_stream_event,
             )
             if _retry_budget.expired:

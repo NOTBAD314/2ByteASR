@@ -41,7 +41,7 @@ def split_mixed_captions(project):
 
 
 def prepare_mixed_stills(project, root, folder, *, width, height, fps, start, duration,
-                         cancelled=None, progress=None, trace=None):
+                         cancelled=None, progress=None, trace=None, render_stills=None):
     from PIL import Image
     from ..rendering.advanced_renderer import (compile_composition_data, _composition_browser,
         _export_browser, _run_streaming_process, _renderer_cache_fingerprint, _overlay_cache_dir,
@@ -75,9 +75,8 @@ def prepare_mixed_stills(project, root, folder, *, width, height, fps, start, du
             else:active.discard(index)
         if not active:continue
         last = boundaries[position+1]
-        key = hashlib.sha256(json.dumps([fingerprint, width, height,
-            [(cues[i]['text'], cues[i]['visual']) for i in sorted(active)]],
-            sort_keys=True, ensure_ascii=False).encode('utf8')).hexdigest()
+        from ..rendering.caption_asset_identity import asset_key
+        key = asset_key(props, first, first, still=True,fingerprint=fingerprint)
         scenes.append((key, first, last))
         scene_cues[key] = [cues[i]['id'] for i in sorted(active)]
         if key in paths:continue
@@ -95,14 +94,20 @@ def prepare_mixed_stills(project, root, folder, *, width, height, fps, start, du
                 item = json.loads(value)
             except ValueError:
                 return
+            if trace and item.get('type') != 'still': trace('browser_renderer_stage', item)
             if progress and item.get('type') == 'still':
                 progress(export_progress('advanced_render', message=f"静态字幕 {item['done']}/{item['total']}…",
                     percent=25*item['done']/item['total']))
-        with export_phase('mixed_static_stills', requested=len(props['cues']), rendered=len(pending)):
-            code, logs = _run_streaming_process([*renderer_node_command(root, root/'render-caption-stills.mjs'), str(manifest)],
-                cwd=root, on_line=line, cancelled=cancelled, stall_timeout=120)
-        if code:
-            raise renderer_failure(code, logs)
+        if render_stills:
+            # The caller can render static and moving batches in one owned
+            # browser. Caching, alpha bounds and sparse scheduling stay here.
+            render_stills(manifest, line)
+        else:
+            with export_phase('mixed_static_stills', requested=len(props['cues']), rendered=len(pending)):
+                code, logs = _run_streaming_process([*renderer_node_command(root, root/'render-caption-stills.mjs'), str(manifest)],
+                    cwd=root, on_line=line, cancelled=cancelled, stall_timeout=120)
+            if code:
+                raise renderer_failure(code, logs)
     layers, cropped = [], {}
     for key, first, last in scenes:
         if cancelled and cancelled():raise InterruptedError('render cancelled')
@@ -135,4 +140,5 @@ def prepare_mixed_stills(project, root, folder, *, width, height, fps, start, du
     if trace:
         trace('mixed_static_captions', dict(captions=len(layers), rendered_stills=len(pending),
             cache_hits=len(paths)-len(pending), scenes=sparse['scenes']))
+    sparse['asset_cache']=dict(total=len(paths),rendered=len(pending),hits=len(paths)-len(pending))
     return sparse

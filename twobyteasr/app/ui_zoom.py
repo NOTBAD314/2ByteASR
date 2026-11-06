@@ -408,7 +408,10 @@ def window_shown(window: QWidget) -> None:
     controller = getattr(QApplication.instance(), "_ui_zoom_controller", None)
     if controller is not None and window is controller._toast:
         return
-    apply_to(window)
+    if getattr(window, '_owns_theme_sheet', False):
+        apply_to_changed(window)
+    else:
+        apply_to(window)
 
 
 def _shows_studio(window) -> bool:

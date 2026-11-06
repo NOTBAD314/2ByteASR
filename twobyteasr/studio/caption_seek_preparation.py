@@ -65,6 +65,7 @@ class CaptionSeekPreparation(QObject):
             mapped=source_to_timeline(sequence_of(page.project),held,segment=page._mapped_sequence_segment())
             if mapped is not None:held=mapped.timeline_ms
         record=dict(serial=self.serial,scope=self._scope(),target=target,accurate=bool(accurate),
+                    revision=getattr(getattr(page.session,'runtime',None),'revision',None),
                     started=time.perf_counter(),phase='prepare',held_sample_ms=held,
                     initial_generation=video._playback_clock.generation)
         self.pending=record
@@ -165,6 +166,13 @@ class CaptionSeekPreparation(QObject):
         page=self.page;video=page.video
         if (request['scope']!=self._scope() or getattr(page,'_close_requested',False)):
             self.cancel();return
+        revision=getattr(getattr(page.session,'runtime',None),'revision',None)
+        if request.get('revision')!=revision:
+            # Editing/undo can finish while an old frame is decoding. Keep the
+            # latest requested position, but prepare and acknowledge its new
+            # subtitle state before revealing anything from the old revision.
+            self.request(request['target']/1000,request['accurate'])
+            return
         elapsed=time.perf_counter()-request['started']
         if elapsed>.1 and self.status_owned is None:
             from ..i18n import tr

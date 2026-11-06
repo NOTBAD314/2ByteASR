@@ -29,13 +29,14 @@ export async function localBrowserExecutable(root, configured) {
   throw new Error('Local renderer browser is missing; repair the bundled Chromium installation (automatic download is disabled).');
 }
 
-export async function openExportBrowser(executable, referenceExecutable) {
+export async function openExportBrowser(executable, referenceExecutable, observe=()=>{}) {
   if (!await existingExecutable(executable)) throw new Error('Local renderer browser is missing: '+executable);
   let reference;
   let referencePage;
   let fontFamilies;
   let fontSource='bundled-defaults';
   if (referenceExecutable !== executable && await existingExecutable(referenceExecutable)) try {
+    observe('reference_browser_start',{});
     reference=await openBrowser('chrome',{browserExecutable:referenceExecutable,chromeMode:browserModeForExecutable(referenceExecutable),logLevel:'error'});
     const page=await reference.newPage({context:null,logLevel:'error',indent:false,pageIndex:0,onBrowserLog:null,onLog:()=>{}});
     referencePage=page;
@@ -58,19 +59,24 @@ export async function openExportBrowser(executable, referenceExecutable) {
       fontFamilies[key]=selected.familyName;
     }
     fontSource='installed-reference';
+    observe('reference_fonts_ready',{});
   } catch {
     fontFamilies=undefined;
   } finally {
     if(referencePage) await referencePage.close().catch(()=>{});
     if(reference) await reference.close({silent:true}).catch(()=>{});
   }
+  observe('browser_start',{});
   const browser=await openBrowser('chrome',{browserExecutable:executable,chromeMode:browserModeForExecutable(executable),logLevel:'error'});
+  browser.exportPagesCreated=0;
+  observe('browser_ready',{});
   // Remotion's public page factory is invoked once per worker. CDP preferences
   // are installed before navigation, without rewriting any authored font stack.
   for(const context of browser.browserContexts()){
     const create=context.newPage.bind(context);
     context.newPage=async(options)=>{
       const page=await create(options);
+      browser.exportPagesCreated++;
       if(fontFamilies) await page._client().send('Page.setFontFamilies',{fontFamilies,forScripts:[{script:'Hans',fontFamilies},{script:'Latn',fontFamilies}]});
       return page;
     };

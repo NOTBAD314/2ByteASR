@@ -539,11 +539,19 @@ def start_encoder_capability_scan(
 
 
 def select_encoder(ffmpeg_path: str | os.PathLike[str], settings: RenderSettings) -> str:
-    choices = encoder_choices(ffmpeg_path, settings.codec)
     if settings.encoder != "auto":
-        if settings.encoder not in choices:
+        # A concrete selection needs one functional probe, not discovery of
+        # every other vendor. In particular two workers must not concurrently
+        # open NVENC and then probe AMF/QSV while their video is starting.
+        cached = cached_encoder_choices(ffmpeg_path, settings.codec)
+        working = (settings.encoder in cached if cached is not None else
+                   settings.encoder in VIDEO_ENCODERS[settings.codec]
+                   and settings.encoder in available_encoders(ffmpeg_path)
+                   and probe_encoder(str(Path(ffmpeg_path).resolve()), settings.encoder))
+        if not working:
             raise RuntimeError(f"encoder is not available: {settings.encoder}")
         return settings.encoder
+    choices = encoder_choices(ffmpeg_path, settings.codec)
     if not choices:
         raise RuntimeError(f"no FFmpeg encoder is available for {settings.codec}")
     return choices[0]
@@ -971,8 +979,31 @@ def run_render_job(
         current = replace(current, settings=replace(current.settings,
             encoder=select_encoder(ffmpeg_path, current.settings)))
     from .parallel_video_export import parallel_native_supported, render_parallel_native
-    if parallel_native_supported(current):
-        return render_parallel_native(ffmpeg_path, current, progress=progress, cancelled=cancelled, trace=trace)
+    if parallel_native_supported(current,ffmpeg_path):
+        try:
+            return render_parallel_native(ffmpeg_path, current, progress=progress, cancelled=cancelled, trace=trace)
+        except Exception as error:
+            # A driver can exhaust its session budget after the initial target
+            # probe. Retry only that resource failure, after all children and
+            # private files have been closed by the parallel route.
+            message = str(error).lower()
+            if not any(marker in message for marker in ('openencodesessionex failed',
+                    'too many concurrent sessions', 'no free encode sessions', 'out of memory (10)')):
+                raise
+            from .export_run_log import note_export
+            note_export('parallel_retry', dict(segments=1, reason='NVENC concurrent session budget exhausted', error=str(error)))
+            from .export_acceleration import note_session_failure
+            try:note_session_failure(current)
+            except (OSError,ValueError,TypeError):pass
+            if progress: progress({'notice':'显卡并行编码会话不足，已改为单路重试。'})
+            decision=current.export_context.get('parallel_decision', {})
+            decision.update(segments=1,reason='NVENC concurrent session budget exhausted; single-session retry')
+            current.completion_metadata['parallel_selection']=decision
+            current.completion_metadata['parallel_segments']=1
+            current = replace(current, export_context=dict(current.export_context, parallel_segments=1))
+    decision = current.export_context.get('parallel_decision', {})
+    if decision.get('requested_segments', 1) > 1 and decision.get('segments') == 1 and progress:
+        progress({'notice':'当前路线或可用内存、临时磁盘不满足双路条件，本次使用单路；选择原因已记录。'})
     preview = None
     try:
         if current.preview_callback and not current.edit_segments:

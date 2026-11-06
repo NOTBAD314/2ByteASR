@@ -53,10 +53,10 @@ def intentional_empty_reason(snapshot):
     if panel.get('primitive','NONE')!='NONE':
         if panel.get('primitive')!='ROUNDED_PANEL':return None
         params=panel.get('params') or {}
-        if visible_brush(params.get('gradient') or params.get('fill') or params.get('color','#CC111111')):return None
+        if visible_brush(params.get('paint') or params.get('gradient') or params.get('fill') or params.get('color','#CC111111')):return None
         if _number(params,'outlineWidth','borderWidth',default=0)>0 and _color(params.get('outlineColor',params.get('borderColor',params.get('color'))),'#FF111111').alpha():return None
     background=recipe.get('background') or {}
-    if not graph and background.get('enabled') and _color(background.get('color'),'#99000000',opacity=_number(background,'opacity',default=1)).alpha():
+    if not graph and background.get('enabled') and _number(background,'opacity',default=1)>0 and visible_brush(background.get('paint') or background.get('color')):
         return None
     if not snapshot.text.strip():
         return 'empty_display_text'
@@ -65,9 +65,9 @@ def intentional_empty_reason(snapshot):
     if visible_brush(snapshot.fill):
         return None
     for stroke in snapshot.strokes:
-        if float(stroke.get('width',0) or 0)>0 and _color(stroke.get('color'),'#FF000000',opacity=float(stroke.get('opacity',1))).alpha():
+        if float(stroke.get('width',0) or 0)>0 and float(stroke.get('opacity',1))>0 and visible_brush(stroke.get('paint') or stroke.get('color')):
             return None
     for effect in (snapshot.shadow,snapshot.glow):
         if effect and effect.get('enabled',float(effect.get('strength',0) or 0)>0):
-            if _color(effect.get('color'),'#FFFFFFFF',opacity=float(effect.get('opacity',1))).alpha():return None
+            if float(effect.get('opacity',1))>0 and visible_brush(effect.get('paint') or effect.get('color')):return None
     return 'explicitly_transparent_paint'

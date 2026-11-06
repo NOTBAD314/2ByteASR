@@ -110,16 +110,23 @@ def _geometry_original(project, cue):
     return materialize_layer(shown, 'original')
 
 
-def resolved_values(project, cue, language, *, geometry_only=False):
+def resolved_values(project, cue, language, *, geometry_only=False, displayed=None, resolved_style=None):
     from .resolved_caption_style import resolve_caption_style
     from .visual_snapshot import _anchor
-    shown = _geometry_original(project, cue) if geometry_only and language == 'original' else None
+    # An overlay already needs the displayed cue and resolved style for its
+    # font/text. Reuse those operation-local values rather than laying out the
+    # same bilingual glyphs again; no persistent cache or invalidation key.
+    shown = displayed
+    if shown is None:
+        shown = _geometry_original(project, cue) if geometry_only and language == 'original' else None
     if shown is None:
         shown = displayed_layer(project, cue, language)
     if shown is None:
         return None
     width, height = (int(project.render_settings.get(k,d)) for k,d in (('play_res_x',1920),('play_res_y',1080)))
-    if geometry_only:
+    if resolved_style is not None:
+        style = resolved_style
+    elif geometry_only:
         from .style_resolution import resolve_cue_visual
         style=resolve_cue_visual(project,shown).style
     else:style = resolve_caption_style(project.styles,project.speakers,shown,project.style_recipes,width).style

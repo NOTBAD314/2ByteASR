@@ -804,7 +804,7 @@ def run_cached_stage(
                 from ..providers.asr_provider_snapshot import GroupedBatchResult
                 return GroupedBatchResult(decoded, origin=payload.get("producer", "local"),
                     validated=stage == "grouped" or payload.get("producer") == "local_fast",
-                    cache_hit=True, data_validated=True)
+                    cache_hit=True, data_validated=True, result_status=payload.get("result_status"))
             return decoded
         rejected_reason = ",".join(reasons) or rejected_reason
         record_run_event("CACHE_REJECTED", stage=stage, path=cache_path, reason=rejected_reason)
@@ -838,7 +838,7 @@ def run_cached_stage(
                 "identity": cache_context["identity"],
                 "signature": signature,
                 "dependency_hash": dependency_hash,
-                **({"producer": getattr(value, "origin", "local"), "validation": "source_contract_v1"}
+                **({"producer": getattr(value, "origin", "local"), "result_status":getattr(value,"result_status",None), "validation": "source_contract_v1"}
                     if stage in {"grouped", "grouped_local"} else {}),
                 "model_identity": (extra_signature.get("model_identity") if isinstance(extra_signature, dict) else ""),
                 "runtime_version": (extra_signature.get("runtime_version") if isinstance(extra_signature, dict) else "") or PIPELINE_BUILD_ID,
@@ -909,6 +909,7 @@ def run_cached_api_batch(
     if strict_group and provider_snapshot is None:
         provider_snapshot = task_provider_snapshot("group")
     signature = cache_stage_signature(stage, provider_snapshot=provider_snapshot)
+    batch_id = (diagnostics or {}).get("batch_id", stable_digest(dependency)[:12])
     batch_key = stable_digest(
         {
             "identity": cache_context["identity"],
@@ -943,23 +944,23 @@ def run_cached_api_batch(
                 partial = stage == 'polished' and bool(getattr(decoded, 'failures', {}))
                 if not partial:
                     extend_review_items(payload.get("review_items", []))
-                print(f"      [逐批缓存命中] {stage}")
-                record_run_event("CACHE_ACCEPTED", stage=f"{stage}_batch", path=cache_path, reason="fingerprint_match,model_hash_match,upstream_hash_match,schema_match")
-                record_run_event("cache_hit", stage=f"{stage}_batch", path=cache_path)
+                print(f"      [逐批缓存命中] {stage} batch={batch_id} status={payload.get('result_status', 'legacy')}")
+                record_run_event("CACHE_ACCEPTED", stage=f"{stage}_batch", batch_id=batch_id, path=cache_path, reason="fingerprint_match,model_hash_match,upstream_hash_match,schema_match")
+                record_run_event("cache_hit", stage=f"{stage}_batch", batch_id=batch_id, path=cache_path)
                 if diagnostics is not None:
                     diagnostics["cache_hit"] = True
                 if grouped_data:
                     return GroupedBatchResult(decoded, origin=payload.get("producer", "local"),
                         validated=strict_group or payload.get("producer") == "local_fast",
-                        cache_hit=True, data_validated=True)
+                        cache_hit=True, data_validated=True, result_status=payload.get("result_status"))
                 if partial and resume is not None:
                     cached_partial = decoded
                 else:
                     return decoded
             if cached_partial is None:
-                record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", path=cache_path, reason="signature_or_dependency_mismatch")
+                record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", batch_id=batch_id, path=cache_path, reason="signature_or_dependency_mismatch")
         except (OSError, ValueError, TypeError):
-            record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", path=cache_path, reason="missing_artifact")
+            record_run_event("CACHE_REJECTED", stage=f"{stage}_batch", batch_id=batch_id, path=cache_path, reason="missing_artifact")
 
     with capture_review_items() as batch_review_items:
         value = resume(cached_partial) if cached_partial is not None else runner()
@@ -994,7 +995,7 @@ def run_cached_api_batch(
                     'retained_ids': sorted(value.failures), 'succeeded_ids': sorted(value.succeeded)}
                    if persist_polish_state else {}),
                 **({"provider_fingerprint": provider_snapshot.fingerprint,
-                    "cache_version": GROUP_CACHE_VERSION, "producer": "ai",
+                    "cache_version": GROUP_CACHE_VERSION, "producer": "ai", "result_status":getattr(value,"result_status",None),
                     "validation": "source_contract_v1"} if strict_group else {}),
                 **({"producer": "local_fast", "validation": "source_contract_v1"}
                     if stage == "grouped_local" and getattr(value, "origin", "") == "local_fast"
@@ -1003,11 +1004,11 @@ def run_cached_api_batch(
                 "data": encoder(value),
             },
         )
-        print(f"      [逐批缓存写入] {stage}")
-        record_run_event("cache_write", stage=f"{stage}_batch", path=cache_path)
+        print(f"      [逐批缓存写入] {stage} batch={batch_id}")
+        record_run_event("cache_write", stage=f"{stage}_batch", batch_id=batch_id, path=cache_path)
     else:
-        print(f"      [逐批缓存跳过] {stage} 当前批次使用回退。")
-        record_run_event("cache_skip_fallback", stage=f"{stage}_batch", cache_key=batch_key,
+        print(f"      [逐批缓存跳过] {stage} batch={batch_id} origin={getattr(value, 'origin', 'unvalidated')} 云端成功缓存不接收本地回退。")
+        record_run_event("cache_skip_fallback", stage=f"{stage}_batch", batch_id=batch_id, cache_key=batch_key,
                          result_origin=getattr(value, "origin", "unvalidated"))
     if grouped_data:
         if not isinstance(value, GroupedBatchResult):

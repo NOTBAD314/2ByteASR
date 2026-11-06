@@ -868,12 +868,13 @@ class StudioWorkspaceBuilder:
         page.context_stack = QStackedWidget(page.context_panel)
         page.context_drawer = QTabWidget(page.context_stack)
         page.context_drawer.setObjectName("contextDrawer")
+        page.context_drawer.tabBar().hide()
         # Keep tab geometry inside a narrow context drawer. The page toggles
         # scroll buttons only when measured tab content exceeds the available
         # width, so wide layouts retain the clean non-scrolling baseline.
         # Expanding tabs share the full drawer width so the tool group sits
         # centered instead of piling up at the left edge.
-        page.context_drawer.tabBar().setUsesScrollButtons(False)
+        page.context_drawer.tabBar().setUsesScrollButtons(True)
         page.context_drawer.tabBar().setExpanding(True)
         page.context_drawer.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
         page.context_drawer.setIconSize(QSize(18, 18))
@@ -917,6 +918,10 @@ class StudioWorkspaceBuilder:
             ("fa5s.photo-video", "secondary"),
         ])
         page.context_drawer.currentChanged.connect(page._remember_context_tab)
+        from .tool_tab_bar import ToolTabSelector
+        page.context_tools = ToolTabSelector(page.context_drawer, page.context_panel)
+        context_layout.addWidget(page.context_tools)
+        page.context_stack.currentChanged.connect(lambda _index:page.context_tools.setVisible(page.context_stack.currentWidget() is page.context_drawer))
         page.context_stack.addWidget(page.context_drawer)
         context_layout.addWidget(page.context_stack, 1)
         page.upper_splitter.addWidget(page.context_panel)

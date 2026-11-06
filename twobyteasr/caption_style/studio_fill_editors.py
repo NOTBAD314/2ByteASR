@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QButtonGroup,
     QDialog,
@@ -462,12 +463,20 @@ class _FillPreview(QWidget):
         super().__init__(parent)
         self._fill: str | dict = "#FFFFFFFF"
         self._desc = ""
+        self._snapshot = None
+        self._raster = None
         self.backdrop = "scene"
         self.setFixedHeight(156)
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def set_fill(self, fill: str | dict, desc: str = "") -> None:
         self._fill = fill
+        self._desc = desc
+        self.update()
+
+    def set_snapshot(self, snapshot, desc=''):
+        self._snapshot = snapshot
+        self._raster = None
         self._desc = desc
         self.update()
 
@@ -532,20 +541,28 @@ class _FillPreview(QWidget):
         painter.setClipPath(card)
         self._paint_backdrop(painter, rect)
 
-        font = QFont()
-        font.setFamilies(list(TITLE_FONT_FAMILIES))
-        font.setPixelSize(34)
-        font.setWeight(QFont.Weight.Black)
-        text = QPainterPath()
-        text.addText(0, 0, font, self.SAMPLE)
-        bounds = text.boundingRect()
-        text.translate(rect.center().x() - bounds.center().x(), rect.center().y() - 6 - bounds.center().y())
-        painter.setPen(QPen(QColor("#1a1320"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(text)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(resolve_fill_brush(self._fill, text.boundingRect()))
-        painter.drawPath(text)
+        if self._snapshot is not None:
+            from ..rendering.advanced_live_renderer import render_live_snapshot
+            key = (self.width(), self.height(), self.devicePixelRatioF())
+            if self._raster is None or self._raster[0] != key:
+                self._raster = (key, render_live_snapshot(self._snapshot, width=self.width(),
+                    height=self.height(), device_pixel_ratio=self.devicePixelRatioF()))
+            painter.drawImage(QPointF(0, 0), self._raster[1])
+        else:
+            font = QFont()
+            font.setFamilies(list(TITLE_FONT_FAMILIES))
+            font.setPixelSize(34)
+            font.setWeight(QFont.Weight.Black)
+            text = QPainterPath()
+            text.addText(0, 0, font, self.SAMPLE)
+            bounds = text.boundingRect()
+            text.translate(rect.center().x() - bounds.center().x(), rect.center().y() - 6 - bounds.center().y())
+            painter.setPen(QPen(QColor("#1a1320"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(text)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(resolve_fill_brush(self._fill, text.boundingRect()))
+            painter.drawPath(text)
 
         if self._desc:
             tag_font = mono_font(12, QFont.Weight.Bold)
@@ -619,6 +636,8 @@ class FillEditorDialog(QDialog):
     Still a Qt-modal QDialog: ``exec()`` / ``value()`` are unchanged.
     """
 
+    from ..design.widget_teardown import delete_tree_before_collection as __del__
+
     recent_colors: list[str] = []
     COMMON_COLORS = ("#FFFFFF", "#000000", "#FFE45E", "#FF4FA3", "#20D9FF", "#7C5CFF", "#FF6B6B", "#7CF29A")
     GRADIENT_PRESETS = (
@@ -635,17 +654,28 @@ class FillEditorDialog(QDialog):
     SHADOW = 18
 
     def __init__(self, fill: str | Mapping[str, object] | None = None, parent=None, *,
-                 title='填充', allow_gradients=True, preview_update=None):
-        super().__init__(parent)
+                 title='填充', allow_gradients=True, preview_update=None, preview_snapshot=None, edit_target='fill'):
+        # A complete appearance surface owns its style sheet. Keeping it in
+        # Studio's QObject style tree repolished the entire large workspace
+        # when the modal appeared and closed. Native transient ownership still
+        # keeps it above, and modal to, the editing window.
+        super().__init__(None)
+        import weakref
+        self._owner_widget = weakref.ref(parent) if parent is not None else lambda: None
+        self._owns_theme_sheet = True
+        self._startup_gc_timer = None
+        self._native_transitions_disabled = False
         from ..design.fill_picker import AngleDial, FillColorPicker, PillField, PillSegment, round_button
 
         self.allow_gradients = bool(allow_gradients)
         self._preview_update = preview_update
+        self._preview_snapshot = preview_snapshot
+        self.edit_target = edit_target
         bind_text(self, title, property='windowTitle')
         self.setObjectName("fillEditorDialog")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(self.SHADOW, self.SHADOW - 6, self.SHADOW, self.SHADOW + 6)
@@ -665,8 +695,9 @@ class FillEditorDialog(QDialog):
         titles = QVBoxLayout()
         titles.setSpacing(0)
         title_label = QLabel(title)
+        self._title_label = title_label
         title_label.setObjectName("fillTitle")
-        self.subtitle = QLabel("字幕正文" if allow_gradients else '字幕'+title+' · 纯色')
+        self.subtitle = QLabel('字幕正文' if edit_target == 'fill' else '字幕' + title)
         self.subtitle.setObjectName("fillSubtitle")
         titles.addWidget(title_label)
         titles.addWidget(self.subtitle)
@@ -692,15 +723,11 @@ class FillEditorDialog(QDialog):
         left = QVBoxLayout(left_host)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-        if preview_update is None:
-            self.preview = _FillPreview()
-        else:
-            from .studio_style_widgets import StylePreview
-            self.preview = StylePreview()
-            self.preview.setFixedHeight(156)
+        self.preview = _FillPreview()
         left.addWidget(self.preview)
 
         self.gradient = GradientEditor(self, compact=True)
+        self._default_gradient_value = self.gradient.value()
         self.gradient.colorRequested.connect(self._pick_gradient_stop)
         self.gradient.selectionChanged.connect(self._select_gradient_stop)
         self.gradient.gradientChanged.connect(self._gradient_changed)
@@ -733,7 +760,7 @@ class FillEditorDialog(QDialog):
         self.angle_dial.angleChanged.connect(lambda angle: self.gradient._set_angle(angle))
         angle_row.addWidget(self.angle_dial)
         angle_field = PillField(self.gradient.angle_spin, suffix="°")
-        angle_field.setFixedWidth(62)
+        angle_field.setFixedWidth(78)
         angle_row.addWidget(angle_field)
         self._angle_chips: list[QPushButton] = []
         for angle in (0, 45, 90):
@@ -742,11 +769,23 @@ class FillEditorDialog(QDialog):
             chip.setCheckable(True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.setProperty("angle", angle)
-            chip.setFixedWidth(42)
+            chip.setFixedWidth(36)
             chip.clicked.connect(lambda _c=False, a=angle: self.gradient._set_angle(a))
             angle_row.addWidget(chip)
             self._angle_chips.append(chip)
         tools.addWidget(self._angle_host)
+        self._radius_host = QWidget()
+        radius_row = QHBoxLayout(self._radius_host)
+        radius_row.setContentsMargins(0, 0, 0, 0)
+        radius_row.addWidget(QLabel('范围'))
+        self.radius_spin = ScrubDoubleSpinBox()
+        self.radius_spin.setRange(5, 400)
+        self.radius_spin.setDecimals(0)
+        self.radius_spin.setSingleStep(5)
+        self.radius_spin.setValue(100)
+        radius_row.addWidget(PillField(self.radius_spin, suffix='%'))
+        self.radius_spin.valueChanged.connect(lambda _v: self._refresh_preview())
+        tools.addWidget(self._radius_host)
         tools.addStretch(1)
         self.reverse_button = round_button("fa5s.exchange-alt", "反转渐变方向")
         self.reverse_button.clicked.connect(self.gradient._reverse)
@@ -827,6 +866,7 @@ class FillEditorDialog(QDialog):
         if isinstance(fill, Mapping):
             kind = str(fill.get("type") or "solid")
             self.gradient.set_value(dict(fill))
+            self.radius_spin.setValue(float(fill.get('radius', 1))*100)
             stops = fill.get("stops") or []
             if stops and isinstance(stops[0], Mapping):
                 initial = str(stops[0].get("color", "#FFFFFF"))
@@ -845,6 +885,96 @@ class FillEditorDialog(QDialog):
         self._set_palette("gradient" if mode_id else "common")
         self._sync_mode()
         self._sync_angle_controls()
+        if parent is not None:
+            owner = parent.window()
+            handle = owner.windowHandle()
+            if handle is not None:
+                self.winId()
+                self.windowHandle().setTransientParent(handle)
+            owner.destroyed.connect(self._owner_destroyed)
+        if QApplication.instance() is not None and QApplication.instance().platformName() == 'windows':
+            import ctypes
+            from ctypes import wintypes
+            try:
+                disable = wintypes.BOOL(True)
+                function = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                function.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+                function.restype = wintypes.LONG
+                DWMWA_TRANSITIONS_FORCEDISABLED = 3
+                self._native_transitions_disabled = function(int(self.winId()), DWMWA_TRANSITIONS_FORCEDISABLED,
+                    ctypes.byref(disable), ctypes.sizeof(disable)) == 0
+            except (OSError, AttributeError):
+                pass
+
+    def exec(self):
+        # Publish the already prepared surface before unrelated queued work.
+        # A short, bounded GC lease protects this first interactive frame only.
+        from ..playback.playback_gc_budget import hold_full_collections, release_full_collections
+        key = ('appearance-show', id(self))
+        held = hold_full_collections(key)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: release_full_collections(key))
+        if held:
+            self._startup_gc_timer = timer
+            timer.start(2000)
+        try:
+            import time
+            self.setResult(QDialog.DialogCode.Rejected)
+            began = time.perf_counter()
+            self.show()
+            shown = time.perf_counter()
+            self.repaint()
+            self._open_timing = {'show_ms': (shown-began)*1000, 'repaint_ms': (time.perf_counter()-shown)*1000}
+            if not self.isVisible():return self.result()
+            return super().exec()
+        finally:
+            self._startup_gc_timer = None
+            from shiboken6 import isValid
+            if isValid(timer):
+                timer.stop()
+                timer.deleteLater()
+            if held:release_full_collections(key)
+
+    def _owner_destroyed(self, *_args):
+        self._retain_for_style = False
+        self.reject()
+        QDialog.deleteLater(self)
+
+    def reset_draft(self, fill, *, title='填充', preview_snapshot=None, edit_target='fill'):
+        from .style_recipe import FillSpec
+        spec = FillSpec.from_value(fill)
+        self._preview_snapshot = preview_snapshot
+        self._preview_update = None
+        self.edit_target = edit_target
+        self._owner_positioned = False
+        bind_text(self, title, property='windowTitle')
+        bind_text(self._title_label, title)
+        bind_text(self.subtitle, '字幕正文' if edit_target == 'fill' else '字幕' + title)
+        value = spec.to_dict()
+        self.gradient.set_value(value if spec.kind != 'solid' else self._default_gradient_value)
+        self.radius_spin.setValue(float(value.get('radius', 1))*100)
+        initial = spec.color if spec.kind == 'solid' else str(spec.stops[0]['color'])
+        self._solid = QColor(initial)
+        self._set_picker_color(QColor(initial))
+        self.picker.set_previous(QColor(initial))
+        self.mode_group.button(self.MODES.index(spec.kind)).setChecked(True)
+        self._set_palette('common' if spec.kind == 'solid' else 'gradient')
+        self._sync_mode()
+        self._sync_angle_controls()
+        self.layout().activate()
+        self.adjustSize()
+
+    def prepare_language(self):
+        language = current_language()
+        if getattr(self, '_prepared_language', None) != language:
+            apply_ui_language(self, language)
+            self._prepared_language = language
+
+    def refresh_theme_palette(self):
+        from ..design.theme_manager import theme_key
+        if getattr(self, '_theme_key', None) != theme_key():
+            self._apply_theme()
 
     # --- shell ----------------------------------------------------------
     def _apply_theme(self) -> None:
@@ -855,26 +985,31 @@ class FillEditorDialog(QDialog):
 
         theme = theme_definition(theme_key())
         self._theme_key = theme.key
-        self.setStyleSheet(build_secondary_surface_qss(theme) + fill_editor_qss(theme))
+        from ..app.ui_zoom import set_sheet
+        set_sheet(self, build_secondary_surface_qss(theme) + fill_editor_qss(theme))
         self.mode_segment.refresh_icons()
 
     def showEvent(self, event) -> None:
         from ..design.theme_manager import theme_key
-        from ..design.ui_motion import MOTION_STANDARD_MS, motion_duration
 
         if getattr(self, "_theme_key", None) != theme_key():
             self._apply_theme()
-        apply_ui_language(self, current_language())
+        self.prepare_language()
+        # Appearance editors are frequent actions: their first frame is fully
+        # visible and interactive. Sampling alone temporarily clears opacity.
+        self.setWindowOpacity(1.0)
+        owner = self._owner_widget()
+        if owner is not None and not getattr(self, '_owner_positioned', False):
+            frame = self.frameGeometry()
+            frame.moveCenter(owner.window().frameGeometry().center())
+            screen = self.screen()
+            if screen is not None:
+                bounds = screen.availableGeometry()
+                frame.moveLeft(max(bounds.left(), min(frame.left(), bounds.right()-frame.width()+1)))
+                frame.moveTop(max(bounds.top(), min(frame.top(), bounds.bottom()-frame.height()+1)))
+            self.move(frame.topLeft())
+            self._owner_positioned = True
         super().showEvent(event)
-        duration = motion_duration(MOTION_STANDARD_MS)
-        if duration:
-            self.setWindowOpacity(0.0)
-            self._entrance = QPropertyAnimation(self, b"windowOpacity", self)
-            self._entrance.setDuration(duration)
-            self._entrance.setStartValue(0.0)
-            self._entrance.setEndValue(1.0)
-            self._entrance.setEasingCurve(QEasingCurve.Type.OutCubic)
-            self._entrance.start()
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.header and event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -904,6 +1039,10 @@ class FillEditorDialog(QDialog):
         painter.setPen(QPen(QColor(theme.border), 1))
         painter.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         painter.end()
+        timer = self._startup_gc_timer
+        if timer is not None and self.isVisible():
+            self._startup_gc_timer = None
+            timer.start(250)
 
     # --- palette --------------------------------------------------------
     def _set_palette(self, key: str) -> None:
@@ -911,17 +1050,25 @@ class FillEditorDialog(QDialog):
 
         if key == "gradient" and self.mode_group.checkedId() == 0:
             key = "common"
+        signature = (key, repr(self.GRADIENT_PRESETS) if key == 'gradient' else
+                     tuple(self.COMMON_COLORS if key == 'common' else self.recent_colors[:7]))
+        if getattr(self, '_palette_signature', None) == signature:
+            self._palette_tabs[key].setChecked(True)
+            self._sync_swatches()
+            return
+        self._palette_signature = signature
         self._palette = key
         self._palette_tabs[key].setChecked(True)
         while self._palette_grid.count():
             item = self._palette_grid.takeAt(0)
             if item.widget() is not None:
+                item.widget().hide()
                 item.widget().deleteLater()
         swatches = []
         if key == "gradient":
             for name, stops in self.GRADIENT_PRESETS:
                 button = SwatchButton(stops=stops)
-                button.setToolTip(name)
+                bind_text(button, name, property='toolTip')
                 button.clicked.connect(lambda _c=False, s=stops: self._apply_preset(s))
                 swatches.append(button)
         else:
@@ -974,6 +1121,7 @@ class FillEditorDialog(QDialog):
         gradient_mode = mode != 0
         self._gradient_card.setVisible(gradient_mode)
         self._angle_host.setVisible(mode == 1)
+        self._radius_host.setVisible(mode == 2)
         self._palette_tabs["gradient"].setVisible(gradient_mode)
         if gradient_mode != (self._palette == "gradient"):
             self._set_palette("gradient" if gradient_mode else "common")
@@ -1049,33 +1197,42 @@ class FillEditorDialog(QDialog):
         self._sync_target_label()
         self._refresh_preview()
 
+    def _current_value(self):
+        if self.mode_group.checkedId() <= 0:
+            return self.picker.color().name(QColor.NameFormat.HexArgb)
+        value = self.gradient.value()
+        value['type'] = self.MODES[self.mode_group.checkedId()]
+        if self.mode_group.checkedId() == 2:
+            value['radius'] = self.radius_spin.value()/100
+        return value
+
     def _refresh_preview(self) -> None:
+        value = self._current_value()
         if self._preview_update is not None:
-            self._preview_update(self.preview,self.picker.color())
-            return
+            self._preview_update(self.preview, self.picker.color())
         mode = self.mode_group.checkedId()
         if mode <= 0:
             color = self.picker.color()
-            desc = f"{color.name(QColor.NameFormat.HexRgb).upper()} · {round(color.alpha() * 100 / 255)}%"
-            self.preview.set_fill(color.name(QColor.NameFormat.HexArgb), desc)
-            return
-        value = self.gradient.value()
-        value["type"] = self.MODES[mode]
-        count = len(value.get("stops", []))
-        desc = f"线性渐变 · {count} 色 · {round(value.get('angle', 0))}°" if mode == 1 else f"径向渐变 · {count} 色"
-        self.preview.set_fill(value, desc)
+            desc = f'{color.name(QColor.HexRgb).upper()} · {round(color.alphaF()*100)}%'
+        else:
+            desc = ('线性渐变' if mode == 1 else '径向渐变') + f" · {len(value['stops'])} 色"
+            desc += f" · {round(value.get('angle', 0))}°" if mode == 1 else f" · {round(self.radius_spin.value())}%"
+        if self._preview_snapshot is not None:
+            from .effect_paints import picker_snapshot
+            snapshot = picker_snapshot(self._preview_snapshot, self.edit_target, value)
+            self.preview.set_snapshot(snapshot, desc)
+        else:
+            self.preview.set_fill(value, desc)
 
     def value(self) -> str | dict:
-        if self.mode_group.checkedId() == 0:
-            color = self.picker.color().name(QColor.NameFormat.HexArgb)
-            self.recent_colors[:] = [color] + [item for item in self.recent_colors if item != color][:7]
-            return color
-        value = self.gradient.value()
-        value["type"] = "radial-gradient" if self.mode_group.checkedId() == 2 else "linear-gradient"
+        value = self._current_value()
+        if isinstance(value, str):
+            self.recent_colors[:] = [value] + [item for item in self.recent_colors if item != value][:7]
         return value
 
     def selectedColor(self) -> QColor:
-        return QColor(self.value())
+        value = self._current_value()
+        return QColor(value if isinstance(value, str) else value['stops'][0]['color'])
 
 
 class FontPickerDialog(QDialog):

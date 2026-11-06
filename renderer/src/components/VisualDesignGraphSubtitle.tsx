@@ -1,3 +1,4 @@
+import {PaintedTextEffect, paintCss, type Paint} from './EffectPaint';
 import React from 'react';
 import {useVideoConfig} from 'remotion';
 import type {Recipe} from '../SubtitleComposition';
@@ -152,7 +153,7 @@ export const VisualDesignGraphSubtitle:React.FC<{text:string; recipe:Recipe; gra
   const stops = Array.isArray(fill.stops) ? fill.stops as Array<Record<string,unknown>> : [];
   const fillStyle:React.CSSProperties = stringValue(fill.type,'solid') === 'solid'
     ? {color:cssColor(fill.color,'#ffffffff')}
-    : {color:'transparent',WebkitTextFillColor:'transparent',backgroundClip:'text',WebkitBackgroundClip:'text',backgroundImage:`linear-gradient(${90-numberValue(fill.angle,0)}deg,${stops.map((item)=>`${cssColor(item.color)} ${numberValue(item.position,0)*100}%`).join(',')})`};
+    : {color:'transparent',WebkitTextFillColor:'transparent',backgroundClip:'text',WebkitBackgroundClip:'text',backgroundImage:paintCss(fill as Paint)};
   const panel = graph.panelLayer;
   const panelValues = values[panel.id] ?? {};
   const panelColor = cssColor(panel.params.color,'#000000aa');
@@ -160,7 +161,7 @@ export const VisualDesignGraphSubtitle:React.FC<{text:string; recipe:Recipe; gra
     ? panel.params.gradient as Record<string,unknown> : null;
   const panelStops = panelGradient && Array.isArray(panelGradient.stops)
     ? panelGradient.stops as Array<Record<string,unknown>> : [];
-  const panelBackground = panelStops.length >= 2
+  const panelBackground = panel.params.paint ? paintCss(panel.params.paint as Paint) : panelStops.length >= 2
     ? `linear-gradient(${numberValue(panelGradient?.angle,90)}deg,${panelStops.map((item)=>`${cssColor(item.color)} ${numberValue(item.position,0)*100}%`).join(',')})`
     : panelColor;
   const panelClip = panel.primitive === 'COMIC_BURST' ? burstClip
@@ -188,7 +189,7 @@ export const VisualDesignGraphSubtitle:React.FC<{text:string; recipe:Recipe; gra
     ? `${frameCorners}${panel.primitive === 'TECH_FRAME' ? techTicks : ''}`
     : panelBackground;
   const panelStyle:React.CSSProperties = {
-    position:'absolute',left:`${-numberValue(panel.params.paddingX,28)*scale}px`,right:`${-numberValue(panel.params.paddingX,28)*scale}px`,top:`${-numberValue(panel.params.paddingY,14)*scale}px`,bottom:`${-numberValue(panel.params.paddingY,14)*scale}px`,
+    position:'absolute',left:`${-numberValue(panel.params.paddingX,numberValue(panel.params.padding,28))*scale}px`,right:`${-numberValue(panel.params.paddingX,numberValue(panel.params.padding,28))*scale}px`,top:`${-numberValue(panel.params.paddingY,numberValue(panel.params.padding,14))*scale}px`,bottom:`${-numberValue(panel.params.paddingY,numberValue(panel.params.padding,14))*scale}px`,
     background:frameBackground,border:framePanel ? undefined : `${numberValue(panel.params.outlineWidth,glassPanel?1:0)*scale}px solid ${cssColor(panel.params.outlineColor ?? panel.params.rimColor ?? (glassPanel?'#66ffffff':'#00000000'))}`,
     borderRadius:panel.primitive === 'RIBBON' || panel.primitive === 'PILL' ? `${9999}px` : `${numberValue(panel.params.radius,6)*scale}px`,
     clipPath:panelClip,
@@ -218,8 +219,9 @@ export const VisualDesignGraphSubtitle:React.FC<{text:string; recipe:Recipe; gra
     {panel.primitive !== 'NONE' && <div data-vdg-layer={panel.id} style={panelStyle}/>}
     {graph.decorationLayers.map((layer)=><Decoration key={layer.id} layer={layer} values={values[layer.id]} scale={scale}/>)}
     {Math.abs(rgbOffset)+Math.abs(sliceOffset) > .05 && <><span style={{...fillStyle,position:'absolute',inset:0,color:'#ff365f',WebkitTextFillColor:'#ff365f',opacity:splitAlpha,transform:`translateX(${rgbOffset+sliceOffset}px)`,clipPath:'inset(0 0 52% 0)',filter:textFilter}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></span><span style={{...fillStyle,position:'absolute',inset:0,color:'#20e8ff',WebkitTextFillColor:'#20e8ff',opacity:splitAlpha,transform:`translateX(${-rgbOffset-sliceOffset}px)`,clipPath:'inset(48% 0 0 0)',filter:textFilter}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></span></>}
-    {Boolean(shadow.enabled) && numberValue(shadow.opacity,0) > 0 && <span data-vdg-layer="shadow" style={{position:'absolute',inset:0,color:cssColor(shadow.color,'#000000ff'),WebkitTextFillColor:cssColor(shadow.color,'#000000ff'),WebkitTextStroke:`${numberValue(shadow.spread,0)*2*scale}px ${cssColor(shadow.color,'#000000ff')}`,opacity:numberValue(shadow.opacity,0),translate:`${numberValue(shadow.offset_x,numberValue(shadow.offsetX,0))*scale}px ${numberValue(shadow.offset_y,numberValue(shadow.offsetY,0))*scale}px`,filter:shadowFilter,transform:layerTransform(textValues),pointerEvents:'none'}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></span>}
-    {[...(textLayer.strokes ?? [])].reverse().map((stroke,index)=><OutsideStrokeText key={index} radius={numberValue(stroke.width,0)*scale} color={cssColor(stroke.color,'#000000ff')} opacity={numberValue(stroke.opacity,1)} style={{position:'absolute',inset:0,transform:layerTransform(textValues),filter:textFilter,...textReveal}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></OutsideStrokeText>)}
+    {Boolean(textLayer.glow?.enabled) && Boolean(textLayer.glow?.paint) && <PaintedTextEffect mode="glow" paint={textLayer.glow.paint as Paint} blur={numberValue(textLayer.glow.radius,numberValue(textLayer.glow.blur,4))*scale} radius={numberValue(textLayer.glow.spread,0)*scale} opacity={numberValue(textLayer.glow.opacity,1)} style={{position:'absolute',inset:0,transform:layerTransform(textValues),filter:textFilter}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></PaintedTextEffect>}
+    {Boolean(shadow.enabled) && numberValue(shadow.opacity,0) > 0 && (shadow.paint ? <PaintedTextEffect mode="shadow" paint={shadow.paint as Paint} radius={numberValue(shadow.spread,0)*scale} blur={shadowBlur*scale} opacity={numberValue(shadow.opacity,0)} style={{position:'absolute',inset:0,translate:`${numberValue(shadow.offset_x,0)*scale}px ${numberValue(shadow.offset_y,0)*scale}px`,transform:layerTransform(textValues),filter:textFilter}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></PaintedTextEffect> : <span data-vdg-layer="shadow" style={{position:'absolute',inset:0,color:cssColor(shadow.color,'#000000ff'),WebkitTextFillColor:cssColor(shadow.color,'#000000ff'),WebkitTextStroke:`${numberValue(shadow.spread,0)*2*scale}px ${cssColor(shadow.color,'#000000ff')}`,opacity:numberValue(shadow.opacity,0),translate:`${numberValue(shadow.offset_x,numberValue(shadow.offsetX,0))*scale}px ${numberValue(shadow.offset_y,numberValue(shadow.offsetY,0))*scale}px`,filter:shadowFilter,transform:layerTransform(textValues),pointerEvents:'none'}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></span>)}
+    {[...(textLayer.strokes ?? [])].reverse().map((stroke,index)=><OutsideStrokeText key={index} radius={numberValue(stroke.width,0)*scale} color={cssColor(stroke.color,'#000000ff')} paint={stroke.paint as Paint | undefined} opacity={numberValue(stroke.opacity,1)} style={{position:'absolute',inset:0,transform:layerTransform(textValues),filter:textFilter,...textReveal}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/></OutsideStrokeText>)}
     <span style={{...(recipe.wordAnimation?.units?.length?{}:fillStyle),position:'relative',display:'inline-block',transform:layerTransform(textValues),filter:textFilter,...textReveal}}><TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000} fill paint={fillStyle} paintFont={textStyle}/></span>
   </div>;
 };

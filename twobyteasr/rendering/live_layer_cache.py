@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 
-from .advanced_live_renderer import LIVE_RENDERER_VERSION, LiveLayerImages
+from .advanced_live_renderer import LIVE_RENDERER_VERSION, LiveLayerImages, live_renderer_version
 
 CACHE_SCHEMA = "live-layer-cache-v1"
 DEFAULT_MAX_ENTRIES = 8
@@ -41,10 +41,11 @@ def live_layer_cache_key(
 ) -> str:
     digest = hashlib.sha256()
     digest.update(CACHE_SCHEMA.encode("utf-8"))
-    digest.update(LIVE_RENDERER_VERSION.encode("utf-8"))
+    version = live_renderer_version(snapshot)
+    digest.update(version.encode("utf-8"))
     try:
         pixel = snapshot.pixel_hash(
-            renderer_version=LIVE_RENDERER_VERSION,
+            renderer_version=version,
             resolution=(int(width), int(height)),
             device_pixel_ratio=float(device_pixel_ratio),
         )

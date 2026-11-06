@@ -498,9 +498,9 @@ def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> di
         provider = provider_for_stage(provider_snapshot.execution_settings(), "group", sender=post_chat_completion)
 
         def complete(messages):
-            return provider.complete(messages, stage="grouped", operation_kind="group", max_tokens=1200,
+            return provider.complete(messages, stage="grouped", operation_kind="group", max_tokens=provider_snapshot.max_output_tokens,
                                      temperature=0.0, timeout=provider_snapshot.timeout_policy.total,
-                                     _timeout_policy=provider_snapshot.timeout_policy, enable_thinking=False,
+                                     _timeout_policy=provider_snapshot.timeout_policy, enable_thinking=provider_snapshot.enable_thinking, thinking_protocol=provider_snapshot.thinking_protocol,
                                      response_format={"type": "json_object"})
     lex = lexicon or ENGLISH
     _core, length_of, split_of, _join = _tools(lex)

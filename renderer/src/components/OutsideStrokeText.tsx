@@ -1,9 +1,11 @@
 import React, {useId} from 'react';
+import {PaintedTextEffect, type Paint} from './EffectPaint';
 
 type OutsideStrokeTextProps = {
   children: React.ReactNode;
   radius: number;
   color: string;
+  paint?: Paint;
   opacity?: number;
   style?: React.CSSProperties;
   layer?: string;
@@ -16,10 +18,12 @@ export const OutsideStrokeText: React.FC<OutsideStrokeTextProps> = ({
   opacity = 1,
   style,
   layer = 'outside-stroke',
+  paint,
 }) => {
   const filterId = `outside-stroke-${useId().replace(/:/g, '')}`;
   const safeRadius = Math.max(0, radius);
   if (safeRadius <= 0) return null;
+  if (paint) return <PaintedTextEffect mode="stroke" paint={paint} radius={safeRadius} opacity={opacity} style={style} layer={layer}>{children}</PaintedTextEffect>;
 
   return <>
     <svg aria-hidden="true" width="0" height="0" style={{position: 'absolute'}}>

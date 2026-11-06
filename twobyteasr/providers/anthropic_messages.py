@@ -157,6 +157,9 @@ def _usage(diagnostics, usage):
     prompt = sum(int(merged.get(key) or 0) for key in
                  ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
     completion = int(merged.get("output_tokens") or 0)
+    reasoning=(merged.get('output_tokens_details') or {}).get('thinking_tokens')
+    if reasoning is not None:
+        diagnostics.update(reasoning_tokens=reasoning, reasoning_tokens_status='provided')
     diagnostics.update(prompt_tokens=prompt, completion_tokens=completion, total_tokens=prompt + completion,
                        usage=normalize_usage(merged))
 
@@ -270,7 +273,7 @@ def messages_final(packet, diagnostics):
 
 
 def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=None, json_wanted=False,
-             effort=None, on_stream_event=None, request_diagnostics=None, total_deadline=None, input_budget=None):
+             effort=None, enable_thinking=None, on_stream_event=None, request_diagnostics=None, total_deadline=None, input_budget=None):
     """One Messages request; returns the answer text or raises ``LLMRequestError`` (category set)."""
     import requests
     from .llm_adapter import (LLMRequestError, _DIAGNOSTIC_LOCAL, _record_answered_call, _redact,
@@ -279,11 +282,31 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
     model, api_key, url = str(endpoint.get("model") or ""), str(endpoint.get("api_key") or ""), str(endpoint.get("url") or "")
     if not api_key:
         raise LLMRequestError("Claude 缺少 API Key：请在设置里填写 Anthropic Console 的 API Key。", category="auth_config")
-    body = request_body(model, messages, max_tokens=output_budget(max_tokens), json_wanted=json_wanted, effort=effort)
+    body = request_body(model, messages, max_tokens=int(max_tokens) if enable_thinking is not None else output_budget(max_tokens), json_wanted=json_wanted, effort=effort)
+    thinking_mode, compatibility = "model_default", "not_requested"
+    if enable_thinking is not None:
+        from urllib.parse import urlsplit
+        official = (urlsplit(url).hostname or '').lower() == 'api.anthropic.com'
+        # Official per-model rules checked 2026-11-05. Unknown relays/models
+        # keep an explicit unsupported receipt; no guessed fields are sprayed.
+        if official and enable_thinking is False and model.startswith('claude-sonnet-5-5'):
+            body['thinking'] = {'type':'between_tools'}
+            thinking_mode, compatibility = 'no_upfront_thinking', 'requested_unverified'
+        elif official and enable_thinking is False and model.startswith(('claude-sonnet-5','claude-haiku-5-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8')):
+            body['thinking'] = {'type':'disabled'}
+            thinking_mode, compatibility = 'disabled', 'requested_unverified'
+        elif official and enable_thinking is True:
+            body['thinking'] = {'type':'adaptive'}
+            thinking_mode, compatibility = 'adaptive', 'requested_unverified'
+        else:
+            thinking_mode, compatibility = 'model_default', 'unsupported_or_unknown'
     headers = request_headers(api_key, model)
     diagnostics = dict(provider="anthropic", model=model, endpoint=url, base_url=endpoint.get("base_url", ""),
                        stream=True, max_tokens=body["max_tokens"], effort=effort or "model_default",
-                       fallbacks=body.get("fallbacks"), thinking_mode="adaptive")
+                       fallbacks=body.get("fallbacks"), thinking_mode=thinking_mode,
+                       thinking_requested=enable_thinking, thinking_compatibility=compatibility,
+                       thinking_sent=body.get('thinking'), reasoning_parameters_sent={'thinking':body['thinking']} if 'thinking' in body else {},
+                       reasoning_tokens=None, reasoning_tokens_status='unknown',output_budget_kind='maximum_output_tokens')
     _DIAGNOSTIC_LOCAL.value = diagnostics
     started = time.perf_counter()
 
@@ -316,6 +339,7 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
         diagnostics.pop("_anthropic_usage", None)
         _DIAGNOSTIC_LOCAL.value = dict(diagnostics)
         if request_diagnostics is not None:
+            request_diagnostics.update({k:v for k,v in diagnostics.items() if k not in {"api_key"}})
             request_diagnostics.update(
                 http_status=diagnostics.get("http_status"), http_request_id=diagnostics.get("request_id"),
                 first_activity_ms=diagnostics.get("first_activity_ms"), prompt_tokens=diagnostics.get("prompt_tokens"),

@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Mapping
 
 from PySide6.QtCore import Qt, QTimer, QSignalBlocker
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtGui import QColor, QFontDatabase, QImage
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -158,7 +158,10 @@ def _refresh_appearance_summaries(page) -> None:
             kind_label = "径向渐变" if spec.kind == "radial-gradient" else "线性渐变"
             colors = [str(stop.get("color", "#FFFFFF")) for stop in spec.stops]
             angle = float(getattr(spec, "angle", 0) or 0)
-            rows["fill"].set_summary(tr("{kind} · {count}色 · {angle:.0f}°", kind=tr(kind_label), count=len(colors), angle=angle))
+            if spec.kind == 'radial-gradient':
+                rows['fill'].set_summary(f'{tr(kind_label)} · {len(colors)}色 · {round(spec.radius*100)}%')
+            else:
+                rows["fill"].set_summary(tr("{kind} · {count}色 · {angle:.0f}°", kind=tr(kind_label), count=len(colors), angle=angle))
             rows["fill"].set_chip_colors(colors)
 
     outline_width = float(page.style_outline_width.value())
@@ -218,7 +221,7 @@ def _refresh_appearance_summaries(page) -> None:
 class StudioStyleController:
     """Coordinate Style/Motion UI against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow", "_control_baseline", "_application", "_bulk_application", "_mixed_value_cache", "__weakref__")
+    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow", "_control_baseline", "_application", "_bulk_application", "_mixed_value_cache", "_color_editor", "_color_editor_warm_scheduled", "__weakref__")
 
     def __init__(self, page, session):
         self.page = page
@@ -229,6 +232,8 @@ class StudioStyleController:
         self._mixed_value_cache = {}
         self._application = None
         self._bulk_application = None
+        self._color_editor = None
+        self._color_editor_warm_scheduled = False
 
 
     def _apply_ai_style_draft(self) -> None:
@@ -567,16 +572,13 @@ class StudioStyleController:
         # click applies exactly once.
         page.style_preset.activated.connect(page._preset_activated)
         preset_row = QHBoxLayout()
-        preset_row.setSpacing(5)
+        preset_row.setSpacing(STYLE_LABEL_GAP)
         # The preset keeps the flexible width; the language picker is compact.
         page.style_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         page.style_preset.setMinimumContentsLength(6)
         grid_width(page.style_preset, 110)
-        # This compact action row does not inherit the widest property label.
-        preset_caption = QLabel()
-        bind_text(preset_caption,'预设')
-        preset_caption.setObjectName('stylePropertyRowTitle')
-        preset_caption.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
+        # Preset and property fields share the same control-column origin.
+        preset_caption = outer_label('预设')
         preset_row.addWidget(preset_caption)
         preset_row.addWidget(page.style_preset, 1)
         preset_more = QToolButton()
@@ -2001,6 +2003,54 @@ class StudioStyleController:
         page._update_color_swatch(swatch, editor.text())
         return host
 
+    def _shared_color_editor(self, value, *, title='填充', preview_snapshot=None, edit_target='fill'):
+        from .studio_fill_editors import FillEditorDialog
+        from shiboken6 import isValid
+        dialog = self._color_editor
+        if dialog is None or not isValid(dialog):
+            dialog = FillEditorDialog(value, self.page, title=title,
+                preview_snapshot=preview_snapshot, edit_target=edit_target)
+            dialog._retain_for_style = True
+            self._color_editor = dialog
+        elif dialog.isVisible():
+            return FillEditorDialog(value, self.page, title=title,
+                preview_snapshot=preview_snapshot, edit_target=edit_target)
+        else:
+            dialog.reset_draft(value, title=title, preview_snapshot=preview_snapshot, edit_target=edit_target)
+        return dialog
+
+    @staticmethod
+    def _release_color_editor(dialog):
+        from PySide6.QtCore import QObject
+        from shiboken6 import isValid
+        if isinstance(dialog, QObject) and not isValid(dialog):
+            return
+        if getattr(dialog, '_retain_for_style', False):
+            dialog.hide()
+        else:
+            dialog.deleteLater()
+
+    def _warm_color_editor(self):
+        self._color_editor_warm_scheduled = False
+        from shiboken6 import isValid
+        if not isValid(self.page) or self.page._close_requested or self.session.project is None:
+            return
+        if self._color_editor is not None and isValid(self._color_editor):
+            return
+        from PySide6.QtWidgets import QApplication
+        if QApplication.instance() is not None and QApplication.instance().platformName() == 'offscreen':
+            return
+        from ..app.ui_zoom import apply_to_changed
+        dialog = self._shared_color_editor('#FFFFFFFF')
+        dialog.prepare_language()
+        apply_to_changed(dialog)
+        dialog.ensurePolished()
+        dialog.layout().activate()
+        dialog.adjustSize()
+        image = QImage(dialog.size(), QImage.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        dialog.render(image)
+
     def _open_fill_editor(self) -> None:
         page = self.page
         from .style_application import context_key
@@ -2009,7 +2059,8 @@ class StudioStyleController:
             page, "_fill_spec",
             FillSpec.solid(page.style_fill_color.text() or "#FFFFFFFF"),
         )
-        dialog = page._new_fill_editor_dialog(current.to_dict(), page)
+        dialog = page._new_fill_editor_dialog(current.to_dict(), page,
+            preview_snapshot=self._color_preview_snapshot(), edit_target='fill')
         try:
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -2018,7 +2069,7 @@ class StudioStyleController:
                 return
             fill = FillSpec.from_value(dialog.value())
         finally:
-            dialog.deleteLater()
+            self._release_color_editor(dialog)
         page._updating_style_ui = True
         try:
             page._fill_spec = fill
@@ -2056,6 +2107,18 @@ class StudioStyleController:
             if hasattr(page, "style_back_button") and button is page.style_back_button:
                 enabled = bool(getattr(page, "style_background", None) and page.style_background.isChecked())
             button.set_color_value(value, label, enabled=enabled)
+            targets = {'outline':'outline', 'outline2':'outline2', 'shadow':'shadow', 'glow':'glow'}
+            target = 'background' if button is getattr(page, 'style_back_button', None) else None
+            for key, name in targets.items():
+                host = getattr(page, 'style_' + name + '_swatch', None)
+                if host is not None and host.findChild(page._style_color_button_type()) is button:
+                    target = key
+                    break
+            paint = getattr(page, '_effect_paints', {}).get(target)
+            if paint is not None:
+                button.set_fill_value(paint)
+                button._enabled_state = enabled
+                button.setToolTip({'solid':'纯色','linear-gradient':'线性渐变','radial-gradient':'径向渐变'}[FillSpec.from_value(paint).kind] + ' · 点击编辑')
             return
         fill = color.name(QColor.NameFormat.HexArgb if color.alpha() < 255 else QColor.NameFormat.HexRgb) if color.isValid() else "#ffffff"
         if color.alpha() == 0:
@@ -2116,54 +2179,85 @@ class StudioStyleController:
             if context_key(page)!=target:
                 page._load_style_inspector()
                 return
-            color = dialog.selectedColor()
-            if color.isValid():
-                page._set_style_color(editor, color.name(QColor.NameFormat.HexArgb))
+            value = dialog.value()
+            if isinstance(value, dict):
+                self._apply_effect_paint(self._effect_color_target(editor), value)
+            else:
+                color = QColor(value)
+                if color.isValid():
+                    page._set_style_color(editor, color.name(QColor.NameFormat.HexArgb))
         finally:
-            dialog.deleteLater()
+            self._release_color_editor(dialog)
             if getattr(page, '_caption_draft', None) is not None:
                 page.subtitle_edit_input.setFocus(Qt.FocusReason.PopupFocusReason)
 
-    def _create_style_color_dialog(self, editor: QLineEdit):
-        page = self.page
-        from .studio_fill_editors import FillEditorDialog
+    def _effect_color_target(self, editor):
+        p = self.page
+        return {p.style_fill_color:'fill', p.style_outline_color:'outline',
+                p.style_outline2_color:'outline2', p.style_back_color:'background',
+                p.style_shadow_color:'shadow', p.style_glow_color:'glow'}.get(editor, 'fill')
 
-        initial = QColor(editor.text())
-        if editor is page.style_shadow_color and initial.isValid():
-            initial.setAlphaF(page.style_shadow_opacity.value()/100)
-        fields = {page.style_fill_color:('填充','primary_color'),
-                  page.style_outline_color:('描边','outline_color'),
-                  page.style_outline2_color:('第二层描边','outline2_color'),
-                  page.style_back_color:('背景','back_color'),
-                  page.style_shadow_color:('阴影','shadow.color'),
-                  page.style_glow_color:('发光','glow.color')}
-        title,field = fields.get(editor,('颜色','primary_color'))
-        source = page._selected_style_source()
-        base = page._style_from_controls(source) if source is not None else None
-        shadow = self._shadow_from_controls(base.shadow) if base is not None else {}
-        glow = dict(enabled=page.style_glow.isChecked(),color=page.style_glow_color.text(),
-                    blur=page.style_glow_strength.value(),opacity=1.0)
-        gradient = page._current_gradient()
-        def preview(widget,color):
-            if base is None:return
-            style=copy.deepcopy(base)
-            shadow_value=copy.deepcopy(shadow);glow_value=dict(glow)
-            value=color.name(QColor.NameFormat.HexArgb)
-            if field=='shadow.color':
-                shadow_value['color']=color.name(QColor.NameFormat.HexRgb)
-                shadow_value['opacity']=color.alphaF()
-            elif field=='glow.color':glow_value['color']=value
-            else:setattr(style,field,value)
-            widget.set_style(style)
-            widget.set_strokes(style.stroke_layers())
-            widget.set_shadow(shadow_value);widget.set_glow(glow_value)
-            widget.set_gradient(gradient if field!='primary_color' else None)
-        dialog = FillEditorDialog(
-            initial.name(QColor.NameFormat.HexArgb) if initial.isValid() else '#FFFFFFFF',
-            page,
-            title=title,allow_gradients=False,preview_update=preview,
-        )
-        return dialog
+    def _color_preview_snapshot(self):
+        p = self.page
+        if not self.session.project or not self.session.selected_cue_id:
+            return None
+        from ..timeline.studio_edit_sequence import source_cue_id_of
+        from .caption_layer_transform import displayed_layer
+        from .visual_snapshot import build_visual_cue_snapshot
+        cue = next((c for c in self.session.project.cues if c.id == source_cue_id_of(self.session.selected_cue_id)), None)
+        if cue is None: return None
+        layer = p.style_layer.currentData() or 'original'
+        shown = displayed_layer(self.session.project, cue, 'translation' if layer == 'translation' else 'original') or cue
+        return build_visual_cue_snapshot(self.session.project, shown.id, resolved_cue=shown)
+
+    def _create_style_color_dialog(self, editor: QLineEdit):
+        from .studio_fill_editors import FillEditorDialog
+        from .effect_paints import paint_value
+        p = self.page
+        target = self._effect_color_target(editor)
+        title = dict(fill='填充', outline='描边', outline2='第二层描边', background='背景', shadow='阴影', glow='发光')[target]
+        snapshot = self._color_preview_snapshot()
+        initial = QColor(getattr(p, '_web_adjust_color_value', '#FFFFFFFF') if editor is getattr(p, 'web_adjust_color', None) else editor.text())
+        if not initial.isValid(): initial = QColor('#FFFFFFFF')
+        if target == 'shadow': initial.setAlphaF(p.style_shadow_opacity.value()/100)
+        value = paint_value(snapshot.style_recipe if snapshot is not None else {}, target, initial.name(QColor.HexArgb))
+        if target == 'shadow' and FillSpec.from_value(value).kind == 'solid':
+            value = initial.name(QColor.HexArgb)
+        is_theme_hint = editor is getattr(p, 'web_adjust_color', None)
+        if is_theme_hint:
+            return FillEditorDialog(value, p, title='目标文字颜色', allow_gradients=False,
+                preview_snapshot=snapshot, edit_target=target)
+        return self._shared_color_editor(value, title=title, preview_snapshot=snapshot, edit_target=target)
+
+    def _apply_effect_paint(self, target, value):
+        from .effect_paints import effect_paint_patch
+        from .style_application import StyleApplication, context_key, changed_count
+        from .scoped_style import style_patch_command
+        from ..studio.presentation_scope import capture_scope
+        p = self.page
+        if not self.session.project: return
+        scope = capture_scope(p)
+        patch = effect_paint_patch(target, value)
+        action = self._current_application()
+        if action is None:
+            action = self._application = StyleApplication(context_key(p))
+        action.extend(patch)
+        if len(scope.cue_ids) >= 128 or getattr(p, '_style_application_busy', False):
+            from .bulk_style_preparation import BulkStylePreparation
+            if self._bulk_application is None: self._bulk_application = BulkStylePreparation(self)
+            # Consecutive accepted paints must compose with the pending plan,
+            # exactly like the existing numeric/color inspector edits.
+            self._bulk_application.submit_delta(patch, action, scope)
+            return
+        command = style_patch_command(self.session.project, scope.cue_ids, patch['fields'],
+            recipe_patch=patch['recipe'], layer=scope.layer, changed=p._changed, allow_paint=False)
+        if changed_count(command):
+            p._style_publication_owned = True
+            try: self.session.undo_stack.push(command)
+            finally: p._style_publication_owned = False
+            p._style_dirty = True
+            p._load_style_inspector()
+
 
     def _apply_ai_preview(self) -> None:
         page = self.page
@@ -2813,6 +2907,9 @@ class StudioStyleController:
             return
         if page._updating_style_ui:
             return
+        if self.session.project is not None and self._color_editor is None and not self._color_editor_warm_scheduled:
+            self._color_editor_warm_scheduled = True
+            QTimer.singleShot(0, self._warm_color_editor)
         self._current_application()
         if getattr(page,'_style_application_busy',False) and self._application is not None:
             from ..studio.presentation_scope import capture_scope,describe_scope
@@ -2989,6 +3086,7 @@ class StudioStyleController:
                 else:
                     page.position_overlay.set_composition_overflow(0.0)
             page._update_advanced_style_status(recipe if isinstance(recipe, Mapping) else {})
+            page._effect_paints = copy.deepcopy(recipe.get('colors', {}).get('effectPaints', {})) if isinstance(recipe, dict) else {}
             fill = recipe.get("colors", {}).get("fill") if isinstance(recipe, dict) else None
             glow = recipe.get("effects", {}).get("glow", {}) if isinstance(recipe, dict) else {}
             if hasattr(page, "style_glow") and isinstance(glow, dict):
@@ -3287,6 +3385,16 @@ class StudioStyleController:
             fields.update(font_weight=700 if fields['bold'] else 400, font_style_name='')
         if 'primary_color' in explicit:
             patch.setdefault('recipe', {}).setdefault('colors', {})['fill'] = copy.deepcopy(after['recipe']['colors']['fill'])
+        from .effect_paints import FIELDS, scope_has_effect_paint
+        for target, field in FIELDS.items():
+            if field in explicit and scope_has_effect_paint(self.session.project, scope.cue_ids, target, scope.layer):
+                patch.setdefault('recipe', {}).setdefault('colors', {}).setdefault('effectPaints', {})[target] = FillSpec.solid(after['fields'][field]).to_dict()
+        for target in ('shadow', 'glow'):
+            if target + '.color' in explicit and scope_has_effect_paint(self.session.project, scope.cue_ids, target, scope.layer):
+                parent = 'outline' if target == 'shadow' else 'effects'
+                color = after['recipe'][parent][target]['color']
+                patch.setdefault('recipe', {}).setdefault('colors', {}).setdefault('effectPaints', {})[target] = FillSpec.solid(color).to_dict()
+
         layer_control = getattr(page, 'style_layer', None)
         if patch.get('fields') or patch.get('recipe'):
             from .style_application import StyleApplication, context_key

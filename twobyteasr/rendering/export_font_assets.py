@@ -17,6 +17,20 @@ _BUNDLED=frozenset({'Cubic 11','Source Han Sans SC','Source Han Sans SC Heavy','
     'Source Han Sans SC Medium','Smiley Sans','ZCOOL KuaiLe','ZCOOL QingKe HuangYou'})
 
 
+def font_identity(snapshot):
+    """Freeze the actual resolved face even when a TTC cannot be embedded."""
+    from .caption_asset_identity import file_digest
+    resolved=getattr(snapshot,'resolved_caption',None)
+    if resolved is None:return None
+    face=json.loads(resolved.font_face_json)
+    path=Path(face.get('file') or '')
+    if not path.is_file():return None
+    try:
+        return dict(sha256=file_digest(path),index=int(face.get('index',0)),
+            family=face.get('family',''),style=face.get('style',''),weight=face.get('weight',0))
+    except OSError:return None
+
+
 def font_asset(snapshot):
     resolved=getattr(snapshot,'resolved_caption',None)
     if resolved is None:return None

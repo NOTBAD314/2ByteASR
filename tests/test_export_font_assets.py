@@ -15,6 +15,17 @@ def snapshot(file,family='Private export alias'):
     return SimpleNamespace(resolved_caption=resolved,font_family=family,font_weight=500)
 
 
+def test_ttc_identity_covers_actual_bytes_without_embedding_or_temporary_path(tmp_path):
+    from twobyteasr.rendering.export_font_assets import font_identity
+    font=tmp_path/'one.ttc';font.write_bytes(b'ttcf font one')
+    first=font_identity(snapshot(font))
+    assert font_asset(snapshot(font)) is None
+    relocated=tmp_path/'other'/font.name;relocated.parent.mkdir();relocated.write_bytes(font.read_bytes())
+    assert font_identity(snapshot(relocated))==first
+    font.write_bytes(b'ttcf font two')
+    assert font_identity(snapshot(font))!=first
+
+
 def test_composition_owns_font_bytes_after_source_changes(tmp_path):
     original=face_file();file=tmp_path/('private'+Path(original.file).suffix)
     data=Path(original.file).read_bytes();file.write_bytes(data)

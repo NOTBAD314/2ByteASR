@@ -101,7 +101,7 @@ QPushButton#libraryManageDanger {{ min-height: 34px; padding: 0 16px; border-rad
     background: {t.danger_soft}; color: {t.danger}; border: 1px solid {t.danger}; font-weight: 700; }}
 QPushButton#libraryManageDanger:hover {{ background: {t.danger}; color: {t.surface}; }}
 QPushButton#libraryManageDanger:disabled {{ color: {t.disabled}; border-color: {t.border}; background: {t.panel}; }}
-QTabWidget#contextDrawer QTabBar::tab {{ min-width: 36px; max-width: 88px; min-height: 32px; padding: 2px 4px; font-size: 12px; }}
+QTabWidget#contextDrawer QTabBar::tab {{ min-width: 36px; min-height: 32px; padding: 2px 4px; font-size: 12px; }}
 QTabWidget#contextDrawer[tabMode="icon"] QTabBar::tab {{ min-width: 36px; max-width: 44px; min-height: 32px; padding: 2px 4px; }}
 QFrame#settingsSurface {{ background: transparent; border: 0; border-radius: 0; }}
 {_header_navigation_qss(t)}

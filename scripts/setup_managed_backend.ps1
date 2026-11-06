@@ -150,8 +150,8 @@ function RunUv([string[]]$arguments) {
     }
 }
 function Use-SystemProxy($system=$null) {
-    # Weight downloads (requests) already follow the Windows proxy setting;
-    # curl.exe and uv only read *_PROXY variables. A user's own value wins.
+    # requests and uv can discover the Windows proxy independently. Export a
+    # usable system proxy for curl too; a user's explicit proxy always wins.
     foreach ($name in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) {
         if ([Environment]::GetEnvironmentVariable($name,'Process') -or [Environment]::GetEnvironmentVariable($name.ToLowerInvariant(),'Process')) { return }
     }
@@ -167,10 +167,17 @@ function Use-SystemProxy($system=$null) {
     # A proxy app that exited can leave the Windows setting on; direct is better then.
     $client=New-Object Net.Sockets.TcpClient
     try { $reachable=$client.ConnectAsync($resolved.Host,$resolved.Port).Wait(2000) } catch { $reachable=$false } finally { $client.Dispose() }
-    if (-not $reachable) { Write-Host ('[网络] Windows 系统代理 '+$value+' 无法连接，按直连下载'); return }
+    if (-not $reachable) {
+        # Merely omitting HTTPS_PROXY still lets uv/requests rediscover the
+        # dead Windows proxy. Bypass it for this deployment process and its
+        # children only; never change the user's Windows proxy settings.
+        $env:NO_PROXY='*'
+        Write-Host ('[网络] Windows 系统代理 '+$value+' 无法连接，本次部署已禁用代理，按直连下载')
+        return
+    }
     $env:HTTPS_PROXY=$value; $env:HTTP_PROXY=$value
     if (-not $env:NO_PROXY -and -not $env:no_proxy) { $env:NO_PROXY='localhost,127.0.0.1,::1' }
-    Write-Host ('[网络] 使用 Windows 系统代理 '+$value+'（curl/uv 不会自行读取系统代理）')
+    Write-Host ('[网络] 本次部署使用 Windows 系统代理 '+$value)
 }
 function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination,[int]$minimumRate=20480) {
     # Returns '' on success, otherwise a short reason. Nothing unverified stays.

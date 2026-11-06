@@ -34,6 +34,20 @@ def run(a, window, output):
     yield a.wait(a.ready, 'real project ready', 110)
     a.page = p = window.built_page('studio')
     t = p.timeline
+    if os.environ.get('INTERACTIONS_DUMP_SCENE') == '1':
+        import json
+        from ..rendering.caption_scene import SceneRasterizer
+        original_frame = SceneRasterizer.frame
+        recorded = set()
+        def dump_frame(rasterizer, cues, milliseconds, width, height, **kwargs):
+            for cue, prepared in cues:
+                snapshot = getattr(prepared, 'snapshot', None)
+                if snapshot is not None and str(snapshot.cue_id) in {'11', '11#tr'} and snapshot.cue_id not in recorded:
+                    recorded.add(snapshot.cue_id)
+                    (Path(output)/('snapshot-'+str(snapshot.cue_id).replace('#','-')+'.json')).write_text(
+                        json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2, default=str), 'utf8')
+            return original_frame(rasterizer, cues, milliseconds, width, height, **kwargs)
+        SceneRasterizer.frame = dump_frame
     p.video.set_paused(True)
     p.volume_slider.setValue(0)
     if os.environ.get('INTERACTIONS_VISIBLE')=='1':
@@ -66,8 +80,15 @@ def run(a, window, output):
     t._paint_timeline = measured
     yield .6
     part=os.environ.get('INTERACTIONS_PART','all')
+    if part=='long':
+        from .long_interaction_performance_audit import run as run_long
+        yield from run_long(a,window,output)
     if part in ('all','timeline','proofread'):
         yield from timeline_suite(a,window,output)
+    if float(os.environ.get('INTERACTIONS_PLAYBACK_SECONDS', '0')) > 0:
+        yield from playback_budget_suite(a,window,output)
+    if part == 'instant' or os.environ.get('INTERACTIONS_INSTANT_COLORS') == '1':
+        yield from instant_color_suite(a,window,output)
     if part in ('all','proofread'):
         yield from review_suite(a,window,output)
     if part in ('all','source'):
@@ -532,3 +553,126 @@ def colors_suite(a,window,output):
     p._close_export_workspace()
 
 
+
+
+def playback_budget_suite(a,window,output):
+    from PySide6.QtCore import QEvent,QObject
+    from ..timeline.selection_scope import SelectionScope
+    p=a.page;t=p.timeline;cue=p.project.cues[3480]
+    p._set_major_panel_visible('context',True);p.context_drawer.setCurrentIndex(1)
+    p.select_cue(cue.id)
+    p.cue_controller.apply_selection_scope(SelectionScope.explicit([cue.id],cue.id))
+    p.style_scope.setCurrentIndex(p.style_scope.findData('current'))
+    seconds=float(os.environ['INTERACTIONS_PLAYBACK_SECONDS'])
+    rows=a.result['playback_budget']=[]
+    modes=(('normal',90000,1.),('overview',p.project.media.duration_ms,1.))
+    if os.environ.get('INTERACTIONS_PART')=='long':
+        modes=(*modes,('rate-2',90000,2.),('rate-4',90000,4.))
+    for name,span,rate in modes:
+        yield from a.seek(cue.start_ms+100,'play-budget-'+name)
+        t.set_visible_window(0 if name=='overview' else max(0,cue.start_ms-2000),span)
+        yield .3
+        a.set_phase('play-budget-'+name)
+        p._set_speed(rate)
+        def transport():
+            controller=p.video.controller
+            values={}
+            for key in ('frame-drop-count','decoder-frame-drop-count','avsync','audio-pts'):
+                try:values[key]=controller.get_property(key)
+                except RuntimeError as exc:values[key]=dict(available=False,error=type(exc).__name__)
+            return values
+        before=transport()
+        positions=[]
+        def position(value):positions.append((time.perf_counter(),float(value)))
+        p.video.position_changed.connect(position)
+        began=time.perf_counter();p.video.set_paused(False)
+        yield seconds/2
+        middle=transport()
+        yield seconds/2
+        after=transport()
+        p.video.set_paused(True);elapsed=time.perf_counter()-began
+        p.video.position_changed.disconnect(position)
+        paints=[x for x in a.result['timeline_measurements'] if x['phase']=='play-budget-'+name]
+        beats=[x['gap_ms'] for x in a.heartbeats if x['phase']=='play-budget-'+name]
+        deltas=[(y[0]-x[0])*1000 for x,y in zip(positions,positions[1:])]
+        values=sorted(x['ms'] for x in paints)
+        rows.append(dict(name=name,rate=rate,wall_seconds=elapsed,positions=positions,
+            transport_before=before,transport_middle=middle,transport_after=after,
+            position_gap_max_ms=max(deltas,default=0),heartbeat_max_ms=max(beats,default=0),
+            paint_count=len(paints),paint_p50_ms=values[len(values)//2] if values else 0,
+            paint_p95_ms=values[int((len(values)-1)*.95)] if values else 0))
+        a.check('real playback advances '+name,len(positions)>2 and positions[-1][1]>positions[0][1])
+        yield .3
+    p._set_speed(1.)
+
+
+def instant_color_suite(a,window,output):
+    from PySide6.QtCore import QEvent,QObject,QTimer,QPropertyAnimation,QAbstractAnimation
+    from PySide6.QtWidgets import QApplication
+    from ..caption_style.studio_fill_editors import FillEditorDialog
+    app=QApplication.instance();p=a.page;records=a.result['instant_color_dialogs']=[]
+    class Probe(QObject):
+        def eventFilter(self,obj,event):
+            if isinstance(obj,FillEditorDialog) and obj.isVisible() and event.type()==QEvent.Paint and not obj.property('_instantPaintObserved'):
+                obj.setProperty('_instantPaintObserved',True)
+                running=any(x.propertyName()==b'windowOpacity' and x.targetObject() is obj and x.state()==QAbstractAnimation.State.Running for x in obj.findChildren(QPropertyAnimation))
+                records.append(dict(native_transitions_disabled=getattr(obj,"_native_transitions_disabled",False),modal_is_self=app.activeModalWidget() is obj,target=self.target,first_paint_ms=(time.perf_counter()-self.began)*1000,
+                    opacity=obj.windowOpacity(),opacity_animation=running,constructor_ms=self.constructor_ms))
+                self.close_timer.start(350 if os.environ.get('INTERACTIONS_VISIBLE')=='1' else 100)
+            return False
+    probe=Probe();app.installEventFilter(probe)
+    import gc,threading
+    from ..playback import playback_gc_budget as budget
+    from ..system.memory_budget import memory_status
+    collections=a.result['dialog_gc']=[];started={}
+    def gc_trace(phase,info):
+        generation=info.get('generation')
+        if phase=='start':started[(threading.get_ident(),generation)]=time.perf_counter()
+        else:
+            at=started.pop((threading.get_ident(),generation),None)
+            if at is not None:collections.append(dict(target=getattr(probe,'target','preparing'),generation=generation,
+                ms=(time.perf_counter()-at)*1000,holders=[x[0] if isinstance(x,tuple) else str(x) for x in budget._holders]))
+    gc.callbacks.append(gc_trace)
+    a.result['dialog_environment']=dict(collector_active=getattr(budget._collector,'active',False),gc_enabled=gc.isenabled(),available_bytes=memory_status()['available'])
+    try:
+        p.select_cue(p.project.cues[3480].id)
+        yield .2
+        p._set_major_panel_visible('context',True);p.context_drawer.setCurrentIndex(1)
+        for target,attribute in (('fill','style_fill_color'),('outline','style_outline_color'),('outline2','style_outline2_color'),('background','style_back_color'),('shadow','style_shadow_color'),('glow','style_glow_color')):
+            a.set_phase('instant-'+target);a.timer.stop();probe.target=target;probe.began=time.perf_counter()
+            profiler=None
+            if os.environ.get('INTERACTIONS_DIALOG_PROFILE')=='1':
+                import cProfile
+                profiler=cProfile.Profile();profiler.enable()
+            dialog=p._create_style_color_dialog(getattr(p,attribute));dialog.setProperty('_instantPaintObserved',False);probe.constructor_ms=(time.perf_counter()-probe.began)*1000
+            close={}
+            def finish():
+                if os.environ.get('INTERACTIONS_VISIBLE')=='1':
+                    marker.write_text(json.dumps(dict(target=target,phase='closing')),'utf8')
+                before=time.perf_counter();dialog.reject();close['ms']=(time.perf_counter()-before)*1000
+            close_timer=QTimer();close_timer.setSingleShot(True);close_timer.timeout.connect(finish)
+            probe.close_timer=close_timer
+            close_timer.start(5000)
+            marker=Path(output)/'visible-dialog-marker.json'
+            if os.environ.get('INTERACTIONS_VISIBLE')=='1':
+                import json
+                marker.write_text(json.dumps(dict(target=target,pid=os.getpid(),hwnd=int(dialog.winId()),started=probe.began,phase='opening')),'utf8')
+            try:dialog.exec()
+            finally:
+                close_timer.stop();close_timer.deleteLater()
+                if os.environ.get('INTERACTIONS_VISIBLE')=='1':
+                    marker.write_text(json.dumps(dict(target=target,phase='closed')),'utf8')
+                a.timer.start()
+                if profiler is not None:
+                    profiler.disable();profiler.dump_stats(str(Path(output)/('dialog-'+target+'.pstats')))
+            found=[r for r in records if r['target']==target]
+            a.check(target+' dialog first paint recorded',bool(found))
+            found[-1]['reject_ms']=close.get('ms')
+            found[-1].update(getattr(dialog,'_open_timing',{}))
+            a.check(target+' dialog immediate opaque frame',found[-1]['opacity']==1 and not found[-1]['opacity_animation'])
+            a.check(target+' dialog owns modal input',found[-1]['modal_is_self'])
+            a.check(target+' dialog closes immediately',not dialog.isVisible())
+            p.style_controller._release_color_editor(dialog);yield .1
+    finally:
+        app.removeEventFilter(probe)
+        if gc_trace in gc.callbacks:gc.callbacks.remove(gc_trace)

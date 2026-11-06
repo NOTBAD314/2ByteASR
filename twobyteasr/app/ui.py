@@ -791,6 +791,8 @@ def persist_ai_configuration(
         models["ai_service"] = active_service
         models["provider_profiles"] = profile_view["models"].get("provider_profiles", {})
     for stage, values in (('polish', polish), ('group', group)):
+        for key, default in (("max_output_tokens", 10000), ("enable_thinking", False), ("thinking_protocol", "auto")):
+            models[f"{stage}_{key}"] = values.get(key, models.get(f"{stage}_{key}", default))
         models[f'{stage}_json_mode'] = bool(values.get('json_mode', True))
         models[f'{stage}_structured_output'] = bool(values.get('structured_output', True))
     if dry_run:

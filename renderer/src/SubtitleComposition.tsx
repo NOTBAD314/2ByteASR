@@ -1,9 +1,11 @@
-import React, {useEffect, useState} from 'react';
+import type {Paint} from './components/EffectPaint';
+import React, {useEffect, useLayoutEffect, useMemo, useState} from 'react';
 import {AbsoluteFill, useCurrentFrame, useVideoConfig, delayRender, continueRender, cancelRender} from 'remotion';
 import {TrustedSubtitle} from './components/TrustedSubtitle';
 import {VisualDesignGraphSubtitle} from './components/VisualDesignGraphSubtitle';
 import {WebThemeCue, WebThemeStage} from './components/WebThemeSubtitle';
-import {bundledThemeFontCss} from './webThemeFonts';
+import {bundledThemeFontCss, cssFontStack} from './webThemeFonts';
+import {clearCaptionInkAnchors} from './components/captionInkAnchor';
 import type {WordAnimation} from './components/TimedText';
 
 export type CaptionLayout = {
@@ -18,12 +20,12 @@ export type Recipe = {
   name: string;
   components: string[];
   typography: {fontFamily: string; fontSize: number; fontWeight?: number; bold: boolean; italic: boolean; spacing: number};
-  fill: {type: 'solid'; color: string} | {type: 'gradient'; kind?: 'linear'|'radial'; angle: number; stops: {color: string; pos: number}[]};
-  strokes: {color: string; width: number}[];
-  glow: {color: string; blur: number; opacity: number};
-  shadow: {enabled: boolean; color: string; opacity: number; offsetX: number; offsetY: number; blur: number; spread: number};
+  fill: {type: 'solid'; color: string} | {type: 'gradient'; kind?: 'linear'|'radial'; radius?: number; angle: number; stops: {color: string; pos: number}[]};
+  strokes: {color: string; width: number; paint?: Paint}[];
+  glow: {color: string; blur: number; opacity: number; paint?: Paint};
+  shadow: {enabled: boolean; color: string; paint?: Paint; opacity: number; offsetX: number; offsetY: number; blur: number; spread: number};
   background: {
-    enabled: boolean; type: string; color: string; opacity: number;
+    enabled: boolean; type: string; color: string; paint?: Paint; opacity: number;
     gradient: {colors: string[]; angle: number};
     paddingX: number; paddingY: number; radius: number;
     border: {color: string; width: number};
@@ -46,12 +48,25 @@ export type SubtitleProps = {
 };
 
 export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes, fontFaces}) => {
-  const [fontGate] = useState(()=>delayRender('caption font faces'));
+  const fonts = useMemo(()=>[...new Set(cues.map(cue=>cue.visual ?? recipes[cue.styleId]).filter(Boolean).map(recipe=>
+    `${recipe.typography.italic?'italic ':''}${recipe.typography.fontWeight || (recipe.typography.bold?700:400)} 90px ${cssFontStack(recipe.typography.fontFamily)}`))], [cues,recipes]);
+  const fontSignature=JSON.stringify([fonts,(fontFaces??[]).map(face=>[face.family,face.weight,face.style,face.sha256])]);
+  const fontGate=useMemo(()=>({handle:delayRender('caption font faces'),released:false}),[fontSignature]);
+  const [loadedFonts,setLoadedFonts]=useState('');
+  const fontsReady=loadedFonts===fontSignature;
   useEffect(()=>{
-    Promise.all(cues.map(cue=>cue.visual ?? recipes[cue.styleId]).filter(Boolean).map(recipe=>
-      document.fonts.load(`${recipe.typography.italic?'italic ':''}${recipe.typography.fontWeight || (recipe.typography.bold?700:400)} 90px ${JSON.stringify(recipe.typography.fontFamily)}`, '字幕Aa')))
-      .then(()=>document.fonts.ready).then(()=>continueRender(fontGate)).catch(cancelRender);
-  }, [fontGate, cues, recipes, fontFaces]);
+    let active=true;
+    Promise.all(fonts.map(font=>document.fonts.load(font,'字幕Aa')))
+      .then(()=>document.fonts.ready).then(()=>{
+        if(active){clearCaptionInkAnchors();setLoadedFonts(fontSignature);}
+      }).catch(error=>{if(active)cancelRender(error);});
+    return ()=>{active=false;if(!fontGate.released){fontGate.released=true;continueRender(fontGate.handle);}};
+  }, [fontGate,fontSignature]);
+  // Cue measurement must start after CSS font faces have been registered and
+  // loaded. A nonzero first frame used to cache fallback ink metrics forever.
+  useLayoutEffect(()=>{
+    if(fontsReady&&!fontGate.released){fontGate.released=true;continueRender(fontGate.handle);}
+  },[fontsReady,fontGate]);
   const frame = useCurrentFrame();
   const {fps, width, height} = useVideoConfig();
   const nowMs = frame / fps * 1000;
@@ -64,10 +79,10 @@ export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes, fon
     <style>{[...new Set(cues.map(cue=>(cue.visual ?? recipes[cue.styleId])?.typography.fontFamily).filter(Boolean))].map(family=>bundledThemeFontCss(family)).join('\n')}</style>
     <style>{(fontFaces??[]).filter(face=>/^data:font\/(ttf|otf);base64,[A-Za-z0-9+/]+=*$/.test(face.source))
       .map(face=>`@font-face{font-family:${JSON.stringify(face.family)};src:url("${face.source}");font-weight:${Math.max(100,Math.min(900,face.weight))};font-style:${face.style==='italic'?'italic':'normal'};font-display:block;}`).join('\n')}</style>
-    {activeStageTheme
+    {fontsReady && activeStageTheme
       ? <WebThemeStage key="wt-stage" theme={activeStageTheme} nowMs={nowMs} width={width} height={height}/>
       : null}
-    {cues.filter((cue) => nowMs >= cue.startMs && nowMs < cue.endMs).map((cue) => {
+    {fontsReady && cues.filter((cue) => nowMs >= cue.startMs && nowMs < cue.endMs).map((cue) => {
       const recipe = cue.visual ?? recipes[cue.styleId];
       if (!recipe) return null;
       const localFrame = Math.max(0, frame - Math.round(cue.startMs / 1000 * fps)) + (cue.localOffsetMs || 0)/1000*fps;

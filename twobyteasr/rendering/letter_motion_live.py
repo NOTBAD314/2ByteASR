@@ -26,7 +26,7 @@ def _remember(key, tile):
 
 def paint_units(painter, pieces, snapshot, local_bounds, em, type_scale, text_layer, effects_layer):
     from .advanced_live_renderer import (resolve_fill_brush, outside_stroke_ring, _color,
-        _blurred_layer, _draw_shadow_path, _draw_soft_path)
+        _blurred_layer, _draw_shadow_path, _draw_soft_path, resolve_effect_brush)
     static_key = (snapshot.text, snapshot.font_family, snapshot.font_weight, snapshot.italic,
         snapshot.letter_spacing, em, type_scale, str(snapshot.fill), str(snapshot.strokes),
         str(snapshot.shadow), str(snapshot.glow), str(getattr(snapshot, 'text_marks', None)), text_layer, effects_layer,
@@ -75,16 +75,16 @@ def paint_units(painter, pieces, snapshot, local_bounds, em, type_scale, text_la
                 brush.translate(float(shadow.get('offset_x',shadow.get('offsetX',0)))*type_scale,
                                 float(shadow.get('offset_y',shadow.get('offsetY',0)))*type_scale)
                 _draw_shadow_path(brush,path,color=_color(shadow.get('color'),'#88000000',opacity=shadow.get('opacity',1)),
-                    radius=float(shadow.get('blur',0))*type_scale,spread=float(shadow.get('spread',0))*type_scale,fill_core=True)
+                    radius=float(shadow.get('blur',0))*type_scale,spread=float(shadow.get('spread',0))*type_scale,fill_core=True, paint=shadow.get('paint'), paint_rect=local_bounds)
                 brush.restore()
             glow=snapshot.glow or {}
             if effects_layer and glow.get('enabled',False):
                 _draw_soft_path(brush,path,color=_color(glow.get('color'),'#FFFFFFFF',opacity=glow.get('opacity',.45)),
                     radius=float(glow.get('radius',glow.get('blur',4)))*type_scale*2.2,
-                    spread=float(glow.get('spread',0))*type_scale,fill_core=False,intensity=float(glow.get('intensity',1)))
+                    spread=float(glow.get('spread',0))*type_scale,fill_core=False,intensity=float(glow.get('intensity',1)),paint=glow.get('paint'),paint_rect=local_bounds)
             if text_layer:
                 for stroke in reversed(snapshot.strokes):
-                    brush.setBrush(_color(stroke.get('color'),opacity=stroke.get('opacity',1)))
+                    brush.setBrush(resolve_effect_brush(stroke,local_bounds))
                     brush.drawPath(outside_stroke_ring(path,float(stroke.get('width',0))*type_scale))
                 brush.setBrush(resolve_fill_brush(snapshot.fill, local_bounds))
                 brush.drawPath(path)

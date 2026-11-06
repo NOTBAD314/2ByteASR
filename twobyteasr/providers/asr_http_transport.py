@@ -20,7 +20,7 @@ from .usage_ledger import tracked_diagnostics, dispatch
 def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
              timeout=(10, 120), provider="custom", base_url="", enable_thinking=False,
              response_format=None, request_diagnostics=None, cancel_check=None,
-             _total_deadline=None, protocol="chat", json_schema=None, extra_body=None, **ignored):
+             _total_deadline=None, protocol="chat", json_schema=None, extra_body=None, thinking_protocol="auto", **ignored):
     import requests
     from .llm_adapter import LLMRequestError, extract_chat_message_text, llm_provider_capabilities
     from .asr_provider_snapshot import classify_request_error
@@ -42,13 +42,19 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             body["text"] = {"format": {"type": "json_schema", "name": "asr", "schema": json_schema, "strict": True}}
     else:
         body = {"model": model, "messages": list(messages), "max_tokens": max_tokens, "temperature": temperature}
-        caps = llm_provider_capabilities(provider, base_url)
-        if caps["supports_deepseek_thinking"] and enable_thinking is not None:
-            body["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
-        elif caps["supports_enable_thinking"] and enable_thinking is not None:
-            body["enable_thinking"] = bool(enable_thinking)
         if response_format is not None:
             body["response_format"] = response_format
+    from .subtitle_request_policy import apply_thinking
+    diag.update(apply_thinking(body, provider=provider, base_url=base_url or url,
+        enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body, api=protocol))
+    if protocol != 'responses' and thinking_protocol == 'auto':
+        from .llm_adapter import _gemini_fast_reasoning
+        gemini = _gemini_fast_reasoning(provider, base_url or url, model, enable_thinking)
+        if gemini:
+            body.update(gemini)
+            diag.update(reasoning_parameters_sent=gemini,thinking_mode='low',
+                        thinking_compatibility='disable_not_supported_low_requested')
+    diag["parse_status"] = "not_run"
     dashscope_search=bool(provider=='bailian' and (extra_body or {}).get('enable_search'))
     if dashscope_search:
         from urllib.parse import urlsplit,urlunsplit
@@ -71,9 +77,6 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
         # Preserve supported caller options without allowing an extra-body
         # object to replace the immutable model or target text.
         body.update({k:v for k,v in extra_body.items() if k not in body})
-    diag.update(thinking_sent=body.get('thinking'),
-        thinking_mode=(body.get('thinking') or {}).get('type', 'provider_default'),
-        enable_thinking_sent=body.get('enable_thinking'))
 
     done = threading.Event()
     stop = threading.Event()
@@ -166,6 +169,7 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             error = packet.get('error', {})
             code = str(error.get('code') or error.get('type') or '').casefold() if isinstance(error, dict) else ''
         except (ValueError, UnicodeError, AttributeError):
+            error = {}
             code = ''
         if code in {'model_not_found','model_not_supported','unsupported_model'}:
             category = 'model_not_supported'
@@ -175,7 +179,16 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             category = 'provider_refusal'
         elif code in {'insufficient_quota','billing_hard_limit_reached','quota_exceeded'}:
             category = 'quota_exhausted'
-        raise LLMRequestError(f"HTTP {status}：{category}", category=category, response=state.get("response"))
+        if isinstance(error, dict):
+            parameter = str(error.get('param') or error.get('parameter') or '')
+            if parameter in {'thinking','enable_thinking','reasoning','reasoning_effort','max_tokens','max_output_tokens','max_completion_tokens'}:
+                diag['rejected_parameter'] = parameter
+                if parameter.startswith('max_'):diag['output_budget_compatibility'] = 'request_rejected'
+        if status in (400, 422) and (diag.get("reasoning_parameters_sent") or b"max_tokens" in raw):
+            diag["thinking_compatibility"] = "request_rejected"
+        diag["parse_status"] = "http_rejected"
+        raise LLMRequestError(f"HTTP {status}：{category}", category=category, response=state.get("response"), diagnostics=diag)
+
     if not raw.strip():
         raise LLMRequestError("HTTP响应为空。", category="empty_response")
     try:
@@ -193,6 +206,7 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             if isinstance(v,(int,float)) and not isinstance(v,bool)}]
         from .api_usage import normalize_usage
         diag['usage']=normalize_usage(payload['usage'])
+        diag['reasoning_tokens']=(diag['usage'] or {}).get('reasoning_tokens')
     if dashscope_search:
         output=payload.get('output',{})
         urls=[row['url'] for row in output.get('search_info',{}).get('search_results',[])
@@ -201,25 +215,38 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
         payload=output
     try:
         if protocol=="responses":
-            content="".join(part.get("text", "") for item in payload.get("output", []) for part in item.get("content", []) if part.get("type")=="output_text")
+            from .provider_stream import responses_final, StreamProtocolError
+            try:content = responses_final(payload, diag)
+            except StreamProtocolError as exc:
+                raise LLMRequestError(str(exc), category=exc.category, diagnostics=diag) from exc
         else:
             choice=payload["choices"][0]
-            if choice.get('finish_reason') == 'content_filter' or choice.get('message', {}).get('refusal'):
+            message_evidence(payload, diag, api_key=api_key)
+            message = choice.get("message") or {}
+            diag.update(finish_reason=choice.get("finish_reason"),
+                body_empty=not bool(str(message.get("content") or "").strip()),
+                reasoning_content_present=bool(message.get("reasoning_content") or message.get("reasoning")),
+                reasoning_tokens_status="provided" if diag.get("reasoning_tokens") is not None else "unknown")
+            from .subtitle_request_policy import observe_response_policy
+            observe_response_policy(diag)
+            if choice.get('finish_reason') == 'content_filter'  or choice.get('message', {}).get('refusal'):
                 raise LLMRequestError("服务商明确拒绝此请求。", category="provider_refusal")
-            if choice.get("finish_reason")=="length":
-                diag['finish_reason']='length'
+            if choice.get("finish_reason") in {"length", "max_tokens"}:
+                diag['parse_status']='truncated'
                 before_answer=not str(choice.get('message',{}).get('content') or '').strip()
                 category='structured_output_truncated_before_answer' if before_answer else 'structured_output_truncated'
                 # Preserve the actionable error so the caller's bounded
                 # batch splitter can run; the transport itself never retries.
-                raise LLMRequestError("HTTP正文因长度限制被截断。",category=category)
+                raise LLMRequestError("HTTP正文因长度限制被截断。",category=category, diagnostics=diag)
             content=extract_chat_message_text(choice["message"], prefer_structured=True)
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMRequestError("HTTP响应缺少正文结构。", category="format_mismatch") from exc
     diag["raw_response_length"]=len(content)
-    if protocol!='responses':message_evidence(payload,diag,api_key=api_key)
-    else:diag.update(summary(diag))
+    if protocol=="responses":diag.update(summary(diag))
     diag["timing_observation"] = "first_activity_is_http_body_byte; connect_and_model_ttft_unavailable_nonstreaming"
     if not content.strip():
-        raise LLMRequestError("HTTP正文为空。", category="empty_response")
+        category = "reasoning_only" if diag.get("reasoning_content_present") else "empty_response"
+        diag["parse_status"] = category
+        raise LLMRequestError("HTTP最终正文为空。", category=category, diagnostics=diag)
+    diag["parse_status"] = "body_received"
     return content

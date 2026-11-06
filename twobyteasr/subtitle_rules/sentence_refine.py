@@ -516,6 +516,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         if index + 1 < len(ordered):
             following_gaps[cue.id] = ordered[index + 1].start_ms - cue.end_ms
 
+    from ..providers.subtitle_request_policy import provider_policy
+    policy = provider_policy(provider)
     outcome = RefineOutcome()
     for group in _batch(ordered, batch_size):
         if cancel_check and cancel_check():
@@ -533,17 +535,18 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 return outcome
             receipt = dict(stage='sentence_refine', provider=getattr(provider,'provider_id',''),
                 model=getattr(provider,'model',''), cue_ids=sorted(group_ids), attempt=attempt+1,
-                input_chars=sum(len(cue.text) for cue in group),max_tokens=6000,enable_thinking=False)
+                input_chars=sum(len(cue.text) for cue in group),max_tokens=policy["max_output_tokens"],enable_thinking=policy["enable_thinking"])
             try:
                 content = provider.complete(
             [
                 {"role": "system", "content": refine_system_prompt(language)},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            max_tokens=6000,
+            max_tokens=policy["max_output_tokens"],
             temperature=0.1,
             timeout=(10, 60),
-            enable_thinking=False,
+            enable_thinking=policy["enable_thinking"],
+            thinking_protocol=policy["thinking_protocol"],
             response_format={"type": "json_object"},
             stage="sentence_refine",
             json_schema=REFINE_SCHEMA,

@@ -10,6 +10,7 @@ import time
 from .export_validation import record_completion, publish_output, notify_after_publication
 from .export_failure import ExportFailure, ffmpeg_failure
 from .static_caption_timeline import build_caption_timeline, caption_input, caption_filter
+from ..rendering.caption_asset_identity import renderer_identity_scope
 
 
 def _run_static_command(command, folder, runner, **kwargs):
@@ -76,6 +77,7 @@ def static_graph_project(project, *, start_ms=None, end_ms=None):
 
 
 @record_completion
+@renderer_identity_scope
 def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, trace=None):
     from ..caption_style.bilingual_layout import materialize_display_project
     project = materialize_display_project(project)
@@ -113,7 +115,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         from ..rendering.alpha_geometry import alpha_metrics
         from ..subtitle_rules.current_issues import digest
         from PySide6.QtCore import QRect
-        invisible_count=0
+        invisible_count=0;persistent_hits=0;rasterized=0
         def raster_progress(payload):
             data=dict(payload)
             if data.get('percent') is not None:data['percent']=float(data['percent'])*.7
@@ -133,7 +135,9 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                             media_size=[project.media.width,project.media.height])
                 try:
                     snapshot=build_visual_cue_snapshot(project,cue['id'],width=width,height=height,fps=fps,resolved_cue=by_id[cue['id']])
-                    key=snapshot.pixel_hash(renderer_version='qt-static-v1',resolution=(width,height),device_pixel_ratio=1.)
+                    from ..rendering.static_export_cache import cache_key,restore,store
+                    persistent_key=cache_key(snapshot,width,height)
+                    key=persistent_key or snapshot.pixel_hash(renderer_version='qt-static-v1',resolution=(width,height),device_pixel_ratio=1.)
                     detail.update(snapshot_hash=snapshot.stable_hash(),cache_identity=key,
                         text_length=len(snapshot.text),text_digest=digest(snapshot.text),
                         display_summary=dict(length=len(snapshot.text),digest=digest(snapshot.text)),
@@ -151,7 +155,13 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                     cached=raster_cache.get(key)
                     reused=cached is not None
                     if cached is None:
+                        cached=restore(persistent_key,temp/f'caption-{i}.png',width,height)
+                        reused=cached is not None
+                        if reused:persistent_hits+=1
+                        if reused and trace:trace('static_caption_asset_cache',dict(cue_id=cue['id'],hit=True))
+                    if cached is None:
                         preparation.step('raster')
+                        rasterized+=1
                         geometry={}
                         image=render_live_snapshot(snapshot,width=width,height=height,diagnostics=geometry)
                         detail['raster_geometry']=geometry
@@ -182,6 +192,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                                 raise OSError('Cannot write static caption raster')
                             x,y,w,h=bounds
                             cached=(path,(x,y,x+w,y+h),None)
+                            store(persistent_key,path,cached[1],width,height)
                         raster_cache[key]=cached
                     if cancelled and cancelled():raise InterruptedError('render cancelled')
                     path,box,empty_reason=cached
@@ -207,6 +218,10 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                         category='output_io' if isinstance(exc,OSError) else 'subtitle_render',
                         cue_id=cue['id'],cue_index=i,cue_time_ms=cue['startMs']) from exc
         timings['subtitle_stills']=time.perf_counter()-started
+        from ..rendering.advanced_renderer import _trim_overlay_cache
+        _trim_overlay_cache()
+        job.completion_metadata['caption_assets']=dict(static=dict(total=len(props['cues']),
+            rendered=rasterized,hits=persistent_hits))
         filters=[];inputs=[];native_filter=None
         native=_native_segment_project(project,round(start*1000),round((start+duration)*1000))
         base='[staticfps]'
@@ -234,8 +249,10 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         box=sparse['bounds']
         inputs=caption_input(sparse)
         pre,label=caption_filter(sparse,'[1:v]',fps)
-        filters.append(pre+f"{base}{label}overlay=x={box[0]}:y={box[1]}:eof_action=repeat:format=auto[captioned]")
-        base='[captioned]'
+        if pre:filters.append(pre.rstrip(';'))
+        from .caption_composite_region import append_region_overlay
+        base=append_region_overlay(filters,base,label,bounds=box,width=width,height=height,
+            pixel_format=job.settings.pixel_format,tag='captioned')
         encoder=select_encoder(ffmpeg,job.settings)
         command=[str(ffmpeg),'-hide_banner','-loglevel','level+info','-xerror','-y','-benchmark','-filter_complex_threads','2']
         if job.direct_video_graph:

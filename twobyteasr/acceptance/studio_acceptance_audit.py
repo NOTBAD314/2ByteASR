@@ -111,7 +111,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -266,7 +266,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity'}:
+    if scenario in {'toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','cloud-preview-integrity'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -481,6 +481,11 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'cloud-preview-integrity':
+        from .cloud_preview_integrity_audit import start
+        output = audit_directory()
+        if output is not None:start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-release':
         from .export_release_audit import start
         output = audit_directory()
@@ -1004,6 +1009,11 @@ def start_acceptance(window) -> None:
             else:
                 from .real_glossary_repair_audit import start
             start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-colors':
+        from .glossary_colors_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-card-layout':
         from .glossary_card_layout_audit import start

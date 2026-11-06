@@ -7,7 +7,7 @@ import copy
 import os
 from collections.abc import Mapping
 
-from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -151,6 +151,7 @@ class StyleGridLabel(QLabel):
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
         self.setObjectName("stylePropertyRowTitle")
+        self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._label_column = None
 
     def setText(self, text: str) -> None:  # noqa: N802 - Qt API
@@ -526,17 +527,41 @@ class StyleScopeSelector(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_single_row(self, short_labels: Mapping[str, str]) -> None:
-        """All options on one row with short labels; the full label stays in
-        the tooltip (2026-10-09, M16: scope sits at the top of the panel)."""
+        """Prefer one short row; keep every full label inside on narrow panels."""
         self._short = dict(short_labels)
         self._layout.setHorizontalSpacing(4)
         for index, button in enumerate(self._buttons):
-            self._layout.addWidget(button, 0, index)
-            # Chips are as tall as the one-row selector.
             button.setFixedHeight(STYLE_FIELD_HEIGHT - 6)
             self._apply_label(index)
         self.setMinimumHeight(0)
-        self.setFixedHeight(STYLE_FIELD_HEIGHT - 6)
+        self._reflow()
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        return QSize(0, size.height()) if self._short else size
+
+    def _reflow(self):
+        if not self._short or not self._buttons:
+            return
+        widest = 0
+        for button in self._buttons:
+            font = QFont(button.font());font.setWeight(QFont.Weight.Bold)
+            widest = max(widest, QFontMetrics(font).horizontalAdvance(button.text()) + 20, button.minimumSizeHint().width())
+        gap = max(0, self._layout.horizontalSpacing())
+        columns = next((n for n in (4, 2, 1) if n*widest+(n-1)*gap <= self.width()), 1)
+        if getattr(self, '_scope_columns', 0) != columns:
+            while self._layout.count(): self._layout.takeAt(0)
+            for column in range(4): self._layout.setColumnStretch(column, 0)
+            for index, button in enumerate(self._buttons): self._layout.addWidget(button,index//columns,index%columns)
+            for column in range(columns): self._layout.setColumnStretch(column,1)
+            self._scope_columns = columns
+        rows = (len(self._buttons)+columns-1)//columns
+        height = max(button.height() for button in self._buttons)*rows + max(0,self._layout.verticalSpacing())*(rows-1)
+        if self.height() != height: self.setFixedHeight(height)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow()
 
     def _apply_label(self, index: int) -> None:
         label, data = self._items[index]
@@ -552,6 +577,7 @@ class StyleScopeSelector(QWidget):
         else:
             bind_text(button, label)
         bind_text(button, '应用到{label}', property='toolTip', label=full)
+        if self._short: self._reflow()
 
     def addItem(self, label: str, data: str) -> None:
         index = len(self._items)

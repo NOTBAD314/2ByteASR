@@ -237,6 +237,12 @@ def caption_replacement_receipts(project, removed, inserted):
     """Keep proven token order for structural splits/merges, with local undo data."""
     if not independent_captions(project) or KEY not in project.studio_state:
         return None, None
+    if not inserted:
+        # Deletion neither derives new words nor changes existing receipts.
+        # Keep this branch empty rather than reading/alignment-scanning every
+        # removed cue and copying its identical before/after word evidence.
+        # The splice still owns cue/translation undo; receipts stay untouched.
+        return {}, {}
     from ..recognition.cue_word_alignment import content_positions
     receipts=project.studio_state[KEY].get('instances', {})
     keys={c.id for c in (*removed,*inserted)}

@@ -14,6 +14,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
+from .caption_asset_identity import renderer_identity_scope,current_identity_cache
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -112,6 +113,7 @@ def normalize_shadow(value: object) -> dict[str, object]:
         "offsetY": float(raw["offset_y"]),
         "blur": float(raw["blur"]),
         "spread": float(raw["spread"]),
+        **({'paint': deepcopy(raw['paint'])} if raw.get('paint') else {}),
     }
     return normalized
 
@@ -124,6 +126,7 @@ def normalize_glow(value: object) -> dict[str, object]:
         "color": _css_color_with_opacity(raw["color"], "#20D6E8", opacity),
         "blur": float(raw["radius"]) if enabled else 0.0,
         "opacity": opacity,
+        **({'paint': deepcopy(raw['paint'])} if raw.get('paint') else {}),
     }
 
 
@@ -219,6 +222,17 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                            cancelled: Callable[[], bool] | None = None,
                            stall_timeout: float | None = None,
                            purpose: str = "advanced preview/render child") -> tuple[int, str]:
+    if command and Path(command[0]).name.lower() in {'node.exe', 'node'}:
+        from .renderer_export_temp import renderer_temporary_environment
+        with renderer_temporary_environment(renderer_child_environment()) as child_env:
+            return _run_streaming_process_impl(command, cwd=cwd, on_line=on_line,
+                cancelled=cancelled, stall_timeout=stall_timeout, purpose=purpose, child_env=child_env)
+    return _run_streaming_process_impl(command, cwd=cwd, on_line=on_line,
+        cancelled=cancelled, stall_timeout=stall_timeout, purpose=purpose)
+
+
+def _run_streaming_process_impl(command, *, cwd=None, on_line=None, cancelled=None,
+                                stall_timeout=None, purpose="advanced preview/render child", child_env=None):
     import queue
     from ..exports.export_failure import ErrorEvidence, ProcessEvidence
     separate = Path(str(command[0])).stem.lower().startswith('ffmpeg')
@@ -230,7 +244,7 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
         purpose=purpose,
         own_process_tree=True,
-        env=renderer_child_environment() if command and Path(command[0]).name.lower() in {'node.exe','node'} else None,
+        env=child_env,
     )
     tail: list[str] = []
     state = {"last_line": time.monotonic(), "stall_killed": False, "cancelled": False}
@@ -389,6 +403,7 @@ def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
         fill: object = {
             "type": "gradient",
             "kind": "radial" if fill_spec.kind == "radial-gradient" else "linear",
+            "radius": fill_spec.radius,
             "angle": float(fill_spec.angle), "stops": stops,
         }
     else:
@@ -460,6 +475,7 @@ def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
         "shadow": normalized_shadow,
         "background": {
             "enabled": bool(background.get("enabled", False)),
+            **({'paint': deepcopy(background['paint'])} if background.get('paint') else {}),
             "type": background_type,
             "color": _css_color(background.get("fill", background.get("color", recipe.colors.get("background"))), "#00000000"),
             "gradient": {
@@ -467,8 +483,8 @@ def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
                 "angle": float(background_gradient.get("angle", 0) or 0),
             },
             "opacity": min(1.0, max(0.0, float(background.get("opacity", 1) or 0))),
-            "paddingX": min(120.0, max(0.0, float(background.get("padding_x", background.get("paddingX", 22)) or 0))),
-            "paddingY": min(80.0, max(0.0, float(background.get("padding_y", background.get("paddingY", 10)) or 0))),
+            "paddingX": min(120.0, max(0.0, float(background.get("padding_x", background.get("paddingX", background.get("padding", 22))) or 0))),
+            "paddingY": min(80.0, max(0.0, float(background.get("padding_y", background.get("paddingY", background.get("padding", 10))) or 0))),
             "radius": min(40.0, max(0.0, float(background.get("radius", 8) or 0))),
             "border": {
                 "color": _css_color(border.get("color"), "#00000000"),
@@ -589,6 +605,7 @@ def normalized_visual_snapshot(snapshot: VisualCueSnapshot) -> dict[str, object]
         else {
             "type": "gradient",
             "kind": "radial" if snapshot_fill.kind == "radial-gradient" else "linear",
+            "radius": snapshot_fill.radius,
             "angle": snapshot_fill.angle,
             "stops": [
                 {
@@ -709,6 +726,7 @@ def compile_composition_data(
     recipes: dict[str, object] = {}
     cues = []
     font_faces={}
+    font_identities={}
     seen_font_faces=set()
     for cue in project.cues:
         if cue.end_ms <= start_ms or cue.start_ms >= end_ms:
@@ -719,13 +737,14 @@ def compile_composition_data(
         snapshot = build_visual_cue_snapshot(
             project, cue.id, width=width, height=height, fps=fps, resolved_cue=cue,
         )
-        from .export_font_assets import font_asset
+        from .export_font_assets import font_asset,font_identity
         face_key=(snapshot.font_family,snapshot.font_weight,snapshot.italic,
                   getattr(snapshot.resolved_caption,'font_face_json',''))
         if face_key not in seen_font_faces:
             # One job freezes each face once, including a font larger than
             # the persistent cache budget. Never re-encode it for every cue.
             seen_font_faces.add(face_key)
+            font_identities[face_key]=font_identity(snapshot)
             asset=font_asset(snapshot)
             if asset is not None:font_faces[(asset['family'],asset['weight'],asset['style'])]=asset
         visual = scale_visual_for_composition(normalized_visual_snapshot(snapshot), width)
@@ -746,6 +765,7 @@ def compile_composition_data(
             "visual": visual,
             "snapshotHash": snapshot.stable_hash(),
             "resolvedStyleHash": snapshot.resolved_caption.style_hash if snapshot.resolved_caption else "",
+            "fontIdentity":font_identities.get(face_key),
             "lineCount": snapshot.resolved_caption.line_count if snapshot.resolved_caption else len(snapshot.text.split('\n')),
             "layout": snapshot.resolved_caption.layout if snapshot.resolved_caption else {},
         })
@@ -793,28 +813,45 @@ def _overlay_cache_dir() -> Path:
 
 
 def _overlay_cache_path(props: Mapping[str, object]) -> Path:
-    encoded = json.dumps([_renderer_cache_fingerprint(), props], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest = hashlib.sha1(encoded).hexdigest()
+    from .caption_asset_identity import asset_key
+    digest = asset_key(props)
     return _overlay_cache_dir() / f"{digest}.mov"
 
 
-@lru_cache(maxsize=1)
 def _renderer_cache_fingerprint() -> str:
+    scoped=current_identity_cache()
+    if scoped is not None and 'fingerprint' in scoped:return scoped['fingerprint']
+    result=_compute_renderer_cache_fingerprint()
+    if scoped is not None:scoped['fingerprint']=result
+    return result
+
+
+def _compute_renderer_cache_fingerprint() -> str:
     root = Path(__file__).resolve().parents[2]/'renderer'
     digest = hashlib.sha256()
     # Browser/driver changes invalidate pixels even when authored props match.
-    digest.update(b'headless-shell-export-v2')
-    for name in ('render-overlays.mjs','render-caption-stills.mjs','export-browser.mjs','resource-boundary.mjs'):
+    digest.update(b'headless-shell-export-v3-local-assets')
+    for name in ('render-overlays.mjs','render-caption-stills.mjs','export-browser.mjs','resource-boundary.mjs',
+                 'export-bundle.mjs','export_bootstrap.cjs','navigation_response.cjs','process_policy.cjs','package-lock.json'):
         runner=root/name
-        if runner.is_file():digest.update(runner.read_bytes())
+        if runner.is_file():
+            from .caption_asset_identity import file_digest
+            digest.update(file_digest(runner).encode())
     for browser in sorted({_export_browser(root, web=True),_export_browser(root,web=False)}):
         if browser.is_file():
-            stat = browser.stat()
-            digest.update(f'{browser.name}:{stat.st_size}:{stat.st_mtime_ns}'.encode())
-    for path in sorted([*root.joinpath('src').rglob('*'), *root.joinpath('public/fonts').glob('*')]):
+            from .caption_asset_identity import file_digest
+            digest.update(file_digest(browser).encode())
+    for path in sorted(root.joinpath('src').rglob('*')):
         if path.is_file():
             digest.update(str(path.relative_to(root)).encode())
-            digest.update(path.read_bytes())
+            digest.update(file_digest(path).encode())
+    for package in ('@remotion/bundler','@remotion/renderer','remotion','react','react-dom','gsap'):
+        for path in sorted((root/'node_modules'/package).rglob('*')):
+            if path.is_file() and path.suffix in {'.js','.mjs','.cjs','.json'}:
+                digest.update(path.relative_to(root/'node_modules').as_posix().encode())
+                digest.update(file_digest(path).encode())
+    for path in (root/'node_modules/.package-lock.json',root.parent/'tools/node/node.exe'):
+        if path.is_file():digest.update(file_digest(path).encode())
     return digest.hexdigest()
 
 
@@ -848,6 +885,8 @@ def _trim_overlay_cache() -> None:
             if used > 2*1024**3:
                 path.unlink()
                 path.with_suffix('.sha256').unlink(missing_ok=True)
+                path.with_suffix('.roi.json').unlink(missing_ok=True)
+                path.with_suffix('.geometry.json').unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -895,11 +934,8 @@ def _store_overlay_cache(props: Mapping[str, object], overlay: Path) -> None:
 
 
 def _segment_cache_path(props: Mapping[str, object], frame_start: int, frame_end: int) -> Path:
-    encoded = json.dumps(
-        [_renderer_cache_fingerprint(), props, int(frame_start), int(frame_end)],
-        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")
-    return _overlay_cache_dir() / f"{hashlib.sha1(encoded).hexdigest()}-seg.mov"
+    from .caption_asset_identity import asset_key
+    return _overlay_cache_dir() / f"{asset_key(props,int(frame_start),int(frame_end))}-seg.mov"
 
 
 def _segment_cache_store(props: Mapping[str, object], frame_start: int, frame_end: int, segment: Path) -> None:
@@ -980,202 +1016,67 @@ class AdvancedRendererBackend:
     def _render_overlay_segments(
         self, *, props, props_path: Path, temp: Path, windows, cli: Path,
         chrome: Path, fps: float, progress, cancelled, trace, timings: dict,
+        stills_manifest=None, still_line=None,
     ) -> list[tuple[int, int, Path]]:
-        """Render cue-active windows as parallel remotion segments.
+        """One job-owned browser, at most two render pages, bounded batches.
 
-        Each segment renders only `--frames=a-b` into its own ProRes mov
-        (segment-cached), skipping blank stretches and multiplying
-        throughput across processes. Progress aggregates global frames and
-        computes ETA from measured throughput — Remotion's own
-        "time remaining" is unreliable (stuck at 2s for minutes).
+        Static PNGs and animated ProRes windows share the same bundle/browser.
+        Each window retains the existing frame clock and verified cache key.
+        The process is always closed at the end of the export batch.
         """
-        segment_specs: list[tuple[int, int, Path]] = []
+        segment_specs = []
         for index, (a, b) in enumerate(windows):
-            seg_path = temp / f"overlay-seg{index}-{a}-{b}.mov"
-            cached = _segment_cache_path(props, a, b)
-            if _copy_verified_overlay(cached, seg_path):
-                if trace:
-                    trace("advanced_overlay_segment_cache", {"start": a, "end": b})
-            else:
-                seg_path = seg_path  # rendered below
-            segment_specs.append((a, b, seg_path))
-        missing = [
-            (a, b, path) for a, b, path in segment_specs
-            if not path.is_file() or path.stat().st_size <= 0
-        ]
-        if missing:
-            if _web_theme_composition(props):
-                pages=min(4,max(2,(os.cpu_count() or 4)//2))
-                manifest=temp/'html-segments.json'
-                manifest.write_text(json.dumps({'props':str(props_path),'browser':str(chrome),'referenceBrowser':str(_export_browser(self.root,web=False)),'pages':pages,
-                    'segments':[{'start':a,'end':b,'output':str(path)} for a,b,path in missing]}),encoding='utf8')
-                started=time.perf_counter()
-                if trace:trace('advanced_overlay_parallelism',{'processes':1,'pages_per_process':pages,'total_pages':pages,'persistent_browser':True})
-                def line(value):
-                    try:row=json.loads(value)
-                    except ValueError:return
-                    if not isinstance(row,dict):return
-                    if trace and row.get('type')!='progress':trace('html_renderer_stage',row)
-                    if progress and row.get('total'):
-                        progress(export_progress(STAGE_ADVANCED_RENDER,percent=2+97*row['done']/row['total'],
-                            message=f"渲染 HTML 字幕帧 {row['done']}/{row['total']}",indeterminate=False))
-                code,log=_run_streaming_process(renderer_node_command(self.root,self.root/'render-overlays.mjs',manifest),
-                    cwd=self.root,on_line=line,cancelled=cancelled,stall_timeout=300.)
-                if code:
-                    from ..exports.export_failure import renderer_failure
-                    raise renderer_failure(code,log)
-                for a,b,path in missing:
-                    if not path.is_file() or path.stat().st_size<=0:raise RuntimeError(f'HTML 字幕分段缺失：{a}-{b}')
-                    _segment_cache_store(props,a,b,path)
-                timings.update(remotion=time.perf_counter()-started,overlay_segments=len(missing),overlay_cache='segments')
-                return sorted(segment_specs,key=lambda item:item[0])
-            parallel = min(4, len(missing))
-            cpu_count = os.cpu_count() or 8
-            per_process = max(2, min(8, cpu_count // max(1, parallel)))
-            if _web_theme_composition(props):
-                # Full-stage HTML/filter/SVG pages have much higher compositor
-                # pressure than text. Bound total pages, including segments.
-                parallel = min(2, len(missing))
-                page_budget = min(4, max(2, cpu_count//2)) if chrome.name=='chrome-headless-shell.exe' else 2
-                per_process = max(1, page_budget // parallel)
+            target = temp / f'overlay-seg{index}-{a}-{b}.mov'
+            if _copy_verified_overlay(_segment_cache_path(props, a, b), target) and trace:
+                trace('advanced_overlay_segment_cache', {'start': a, 'end': b})
+            segment_specs.append((a, b, target))
+        missing = [(a, b, target) for a, b, target in segment_specs
+                   if not target.is_file() or target.stat().st_size <= 0]
+        timings.update(dynamic_assets=len(segment_specs),dynamic_assets_rendered=len(missing),
+                       dynamic_asset_cache_hits=len(segment_specs)-len(missing))
+        if missing or stills_manifest:
+            pages = 2
+            manifest = temp / 'html-segments.json'
+            data = dict(props=str(props_path), browser=str(chrome),
+                referenceBrowser=str(_export_browser(self.root, web=False)), pages=pages,
+                segments=[dict(start=a, end=b, output=str(target)) for a, b, target in missing])
+            if stills_manifest: data['stillsManifest'] = str(stills_manifest)
+            manifest.write_text(json.dumps(data), encoding='utf8')
+            started = time.perf_counter()
             if trace:
-                trace('advanced_overlay_parallelism', {'processes':parallel,
-                    'pages_per_process':per_process,'total_pages':parallel*per_process})
-            total_missing = sum(b - a + 1 for a, b, _path in missing)
-            done_all = {"frames": 0}
-            per_tag_done: dict[Path, int] = {}
-            state_lock = threading.Lock()
-            failure: dict[str, str] = {}
-            render_started = time.perf_counter()
-            last_reported = {"percent": -1.0, "trace": -1.0}
-
-            def report() -> None:
-                if progress is None:
-                    return
-                done = done_all["frames"]
-                percent = 2.0 + 97.0 * done / max(1, total_missing)
-                if percent <= last_reported["percent"] + 0.4:
-                    return
-                last_reported["percent"] = percent
-                elapsed = max(0.5, time.perf_counter() - render_started)
-                remaining = max(0, total_missing - done)
-                eta_seconds = int(remaining * elapsed / max(1.0, done))
-                eta = (
-                    f"剩约 {eta_seconds // 60} 分 {eta_seconds % 60} 秒"
-                    if eta_seconds >= 90 else f"剩约 {eta_seconds} 秒"
-                )
-                progress(export_progress(
-                    STAGE_ADVANCED_RENDER,
-                    message=(
-                        f"{parallel} 路并行渲染高级字幕帧 {done}/{total_missing} · {eta}"
-                    ),
-                    percent=percent,
-                    indeterminate=False,
-                    speed="Remotion×并行",
-                ))
-                if trace is not None and percent - last_reported["trace"] >= 5.0:
-                    last_reported["trace"] = percent
-                    trace("advanced_overlay_progress", {
-                        "frame": done, "total": total_missing,
-                        "percent": round(percent, 1), "parallel": parallel,
-                    })
-
-            def segment_worker(a: int, b: int, seg_path: Path) -> None:
-                seg_command = [
-                    *renderer_node_command(self.root,self.root/'node_modules/@remotion/cli/remotion-cli.js'), "render", "src/index.ts", "SubtitleOverlay", str(seg_path),
-                    f"--props={props_path}", "--codec=prores", "--prores-profile=4444",
-                    "--pixel-format=yuva444p10le", "--image-format=png", "--log=verbose",
-                    f"--frames={a}-{b}", f"--concurrency={per_process}",
-                ]
-                if chrome.is_file():
-                    seg_command.append(f"--browser-executable={chrome}")
-                if trace:
-                    trace("advanced_overlay_segment_command",
-                          {"start": a, "end": b, "frames": b - a + 1,
-                           "concurrency": per_process})
-
-                def on_line(line: str) -> None:
-                    clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
-                    match = re.search(r"Rendered\s+(\d+)\s*/\s*(\d+)", clean)
-                    if not match:
-                        return
-                    with state_lock:
-                        previous = per_tag_done.get(seg_path, 0)
-                        current = int(match.group(1))
-                        if current > previous:
-                            per_tag_done[seg_path] = current
-                            done_all["frames"] += current - previous
-                        report()
-
-                def cancelled_or_failed() -> bool:
-                    return bool(failure) or bool(cancelled and cancelled())
-
-                try:
-                    code, log = _run_streaming_process(
-                        seg_command, cwd=self.root, on_line=on_line,
-                        cancelled=cancelled_or_failed, stall_timeout=300.0,
-                    )
-                    if code != 0 or not seg_path.is_file() or seg_path.stat().st_size <= 0:
-                        from ..exports.export_failure import renderer_failure
-                        raise renderer_failure(code,log)
-                    _segment_cache_store(props, a, b, seg_path)
-                except BaseException as exc:  # noqa: BLE001 - first failure wins
-                    with state_lock:
-                        if not failure:
-                            failure[f"{a}-{b}"] = f"{type(exc).__name__}: {exc}"[:500]
-
-            if progress:
-                estimate_minutes = max(
-                    1, round(total_missing / 9.0 / 60.0 / parallel * 1.4),
-                )
-                progress(export_progress(
-                    STAGE_ADVANCED_RENDER,
-                    message=(
-                        f"{parallel} 路并行渲染 {len(missing)} 段高级字幕"
-                        f"（约 {total_missing} 帧，估 {estimate_minutes} 分钟）——"
-                        "只渲染字幕出现的区间，请勿关闭应用"
-                    ),
-                ))
-            from contextvars import copy_context
-            threads = [
-                threading.Thread(
-                    target=copy_context().run, args=(segment_worker, a, b, path),
-                    daemon=True, name=f"remotion-seg-{a}",
-                )
-                for a, b, path in missing
-            ]
-            # bounded start: at most `parallel` concurrent render processes
-            started_threads: list[threading.Thread] = []
-            queue = list(threads)
-            while queue or any(t.is_alive() for t in started_threads):
-                if failure or (cancelled and cancelled()):
-                    break
-                while queue and len([t for t in started_threads if t.is_alive()]) < parallel:
-                    thread = queue.pop(0)
-                    thread.start()
-                    started_threads.append(thread)
-                time.sleep(0.2)
-            for thread in started_threads:
-                thread.join(timeout=5.0)
-            if failure:
-                raise RuntimeError(f"Remotion 并行分段渲染失败：{list(failure.values())[0]}")
-            timings["remotion"] = time.perf_counter() - render_started
-            timings["overlay_segments"] = len(missing)
-            timings["overlay_cache"] = "segments"
-            if progress:
-                progress(export_progress(
-                    STAGE_ADVANCED_RENDER,
-                    message="高级字幕分段渲染完成，正在合成…",
-                    percent=99,
-                    indeterminate=False,
-                    speed="Remotion",
-                ))
+                trace('advanced_overlay_parallelism', dict(processes=1, pages_per_process=pages,
+                    total_pages=pages, persistent_browser=True, static_batch=bool(stills_manifest)))
+            def line(value):
+                try: row = json.loads(value)
+                except ValueError: return
+                if not isinstance(row, dict): return
+                kind = row.get('type')
+                if kind not in {'progress','still'}:timings.setdefault('browser_stages',[]).append(row)
+                if kind == 'still' and still_line: still_line(value)
+                elif kind not in {'progress', 'still'}:
+                    if trace: trace('browser_renderer_stage', row)
+                if progress and kind == 'progress' and row.get('total'):
+                    progress(export_progress(STAGE_ADVANCED_RENDER,
+                        percent=25+74*row['done']/row['total'],
+                        message=f"渲染高级字幕帧 {row['done']}/{row['total']}", indeterminate=False))
+            code, logs = _run_streaming_process(
+                renderer_node_command(self.root, self.root/'render-overlays.mjs', manifest),
+                cwd=self.root, on_line=line, cancelled=cancelled, stall_timeout=300.)
+            if code:
+                from ..exports.export_failure import renderer_failure
+                raise renderer_failure(code, logs)
+            for a, b, target in missing:
+                if not target.is_file() or target.stat().st_size <= 0:
+                    raise RuntimeError(f'高级字幕分段缺失：{a}-{b}')
+                _segment_cache_store(props, a, b, target)
+            timings.update(remotion=time.perf_counter()-started, overlay_segments=len(missing),
+                           overlay_cache='segments', browser_processes=1, browser_pages=pages)
         else:
-            timings["remotion"] = 0.0
-            timings["overlay_cache"] = "segments-hit"
+            timings.update(remotion=0., overlay_cache='segments-hit', browser_processes=0)
         return sorted(segment_specs, key=lambda item: item[0])
 
     @record_completion
+    @renderer_identity_scope
     def render(
         self,
         project: SubtitleProject,
@@ -1206,6 +1107,13 @@ class AdvancedRendererBackend:
         if not project_requires_advanced(project):
             from ..exports.studio_render import run_render_job
             return run_render_job(ffmpeg_path, job, progress=progress, cancelled=cancelled, trace=trace)
+        from ..exports.export_acceleration import advanced_selection
+        advanced_selection(job)
+        from ..exports.parallel_video_export import requested_segments
+        if requested_segments(job) > 1:
+            note_export('parallel_selection', dict(requested_segments=2, segments=1,
+                reason='advanced captions use their dedicated compositor; native video partitioning is not enabled'))
+            if progress: progress({'notice':'高级字幕使用专用合成路线，本次不启用双路视频加速。'})
         if job.video_graph:
             from ..exports.timeline_media import resolve_video_graph, export_range_graph
             graph = export_range_graph(job.video_graph, start, duration)
@@ -1267,9 +1175,23 @@ class AdvancedRendererBackend:
             trace("advanced_window", {"start": overlay_start, "duration": overlay_duration, "job_start": start, "job_duration": duration})
         with tempfile.TemporaryDirectory(prefix="2byteasr-advanced-", dir=str(output.parent)) as temp_name:
             temp = Path(temp_name)
-            sparse = prepare_mixed_stills(still_project, self.root, temp, width=width, height=height,
-                fps=fps, start=start, duration=duration, cancelled=cancelled, progress=progress, trace=trace) if still_project else None
             props_path = temp / "recipe.json"
+            props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
+            batch_segments = []
+            def render_browser_batch(manifest, on_line):
+                from ..exports.export_performance import export_phase
+                total = int(props.get('durationInFrames') or max(1, round(overlay_duration*fps)))
+                from .caption_asset_identity import asset_windows
+                windows = asset_windows(props, total)
+                with export_phase('mixed_browser_batch', overlaps='static stills, moving frames and encoding share one browser'):
+                    batch_segments.extend(self._render_overlay_segments(
+                        props=props, props_path=props_path, temp=temp, windows=windows or [(0,total-1)],
+                        cli=self.root/'node_modules/.bin/remotion', chrome=_composition_browser(self.root,props),
+                        fps=fps, progress=progress, cancelled=cancelled, trace=trace, timings=timings,
+                        stills_manifest=manifest, still_line=on_line))
+            sparse = prepare_mixed_stills(still_project, self.root, temp, width=width, height=height,
+                fps=fps, start=start, duration=duration, cancelled=cancelled, progress=progress, trace=trace,
+                render_stills=render_browser_batch) if still_project else None
             overlay = temp / "subtitle-overlay.mov"
             native_ass = temp / "native-subtitles.ass"
             props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1282,103 +1204,17 @@ class AdvancedRendererBackend:
                 trace("advanced_overlay_cache", {"hit": cache_hit})
             cli = self.root / "node_modules" / ".bin" / ("remotion.cmd" if os.name == "nt" else "remotion")
             chrome = _composition_browser(self.root, props)
-            command = [
-                *renderer_node_command(self.root,self.root/'node_modules/@remotion/cli/remotion-cli.js'), "render", "src/index.ts", "SubtitleOverlay", str(overlay),
-                f"--props={props_path}", "--codec=prores", "--prores-profile=4444",
-                "--pixel-format=yuva444p10le", "--image-format=png", "--log=verbose",
-            ]
-            # Full glyph renders need an explicit page budget too.
-            pages = max(1, min(4, (os.cpu_count() or 4)//2)) if chrome.name=='chrome-headless-shell.exe' else 2
-            command.append(f'--concurrency={pages}')
-            if chrome.is_file():
-                command.append(f"--browser-executable={chrome}")
-            if trace: trace("advanced_overlay_command", command)
             expected_frames = max(1, round(overlay_duration * fps))
-            last_overlay_progress = -1.0
-            last_overlay_trace = -1.0
-            remotion_started = time.perf_counter()
-
-            def _eta_text(seconds_text: str) -> str:
-                try:
-                    seconds = int(seconds_text)
-                except (TypeError, ValueError):
-                    return ""
-                if seconds >= 90:
-                    return f"剩约 {seconds // 60} 分 {seconds % 60} 秒"
-                return f"剩约 {seconds} 秒"
-
-            def overlay_line(line: str) -> None:
-                nonlocal last_overlay_progress, last_overlay_trace
-                clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
-                # Remotion 4 的帧进度行（verbose）：`Rendered 123/4145, time remaining: 42s`
-                rendered = re.search(
-                    r"Rendered\s+(\d+)\s*/\s*(\d+)(?:,\s*time remaining:\s*(\d+)s?)?", clean,
-                )
-                if rendered:
-                    done, total = int(rendered.group(1)), max(1, int(rendered.group(2)))
-                    eta = _eta_text(rendered.group(3) or "")
-                    value = max(0.0, min(100.0, 2.0 + 97.0 * done / total))
-                    if value <= last_overlay_progress + 0.4:
-                        return
-                    last_overlay_progress = value
-                    message = f"正在渲染高级字幕帧 {done}/{total}"
-                    if eta:
-                        message += f" · {eta}"
-                    if progress:
-                        progress(export_progress(
-                            STAGE_ADVANCED_RENDER,
-                            message=message,
-                            percent=value,
-                            indeterminate=False,
-                            speed="Remotion",
-                        ))
-                    if trace and value - last_overlay_trace >= 5.0:
-                        last_overlay_trace = value
-                        trace("advanced_overlay_progress", {
-                            "frame": done, "total": total, "percent": round(value, 1),
-                        })
-                    return
-                bundling = re.search(r"Bundling\s+(\d{1,3}(?:\.\d+)?)\s*%", clean)
-                if bundling:
-                    value = min(2.0, float(bundling.group(1)) / 100.0 * 2.0)
-                    if value <= last_overlay_progress:
-                        return
-                    last_overlay_progress = value
-                    if progress:
-                        progress(export_progress(
-                            STAGE_ADVANCED_RENDER,
-                            message="正在打包渲染工程…",
-                            percent=value,
-                            indeterminate=False,
-                            speed="Remotion",
-                        ))
-                    return
-                percent_match = re.search(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%", clean)
-                if percent_match:
-                    value = max(0.0, min(2.0, float(percent_match.group(1)) / 100.0 * 2.0))
-                    if value <= last_overlay_progress:
-                        return
-                    last_overlay_progress = value
-                    if progress:
-                        progress(export_progress(
-                            STAGE_ADVANCED_RENDER,
-                            message="正在准备高级字幕渲染…",
-                            percent=value,
-                            indeterminate=False,
-                            speed="Remotion",
-                        ))
             # ---- 十七轮提速：只渲染字幕活动窗口、多进程并行 ----
             # 旧版把整个 overlay 窗口逐帧渲染（含字幕间的长空白段），
             # 且 Remotion 自己的 "time remaining" 会长时间停在 2s。
             total_frames = int(props.get("durationInFrames") or expected_frames)
-            windows = _overlay_active_windows(props, total_frames)
-            covered = sum(b - a + 1 for a, b in windows) if windows else 0
-            use_segments = bool(windows) and (
-                len(windows) >= 2
-                or covered < total_frames - max(30, int(total_frames * 0.05))
-            )
+            from .caption_asset_identity import asset_windows
+            windows = asset_windows(props, total_frames)
             segment_overlays: list[tuple[int, int, Path]] = []
-            if cache_hit:
+            if batch_segments:
+                segment_overlays = batch_segments
+            elif cache_hit:
                 timings["remotion"] = 0.0
                 timings["overlay_cache"] = "hit"
                 if progress:
@@ -1389,39 +1225,30 @@ class AdvancedRendererBackend:
                         indeterminate=False,
                         speed="cache",
                     ))
-            elif use_segments or _web_theme_composition(props):
-                # 分段并行：每段一个 remotion 进程（--frames=a-b），段级缓存，
-                # 进度按全局完成帧数聚合、剩余时间按实测吞吐自算。
+            else:
+                # One owned batch renders only missing cue-overlap groups;
+                # all cached windows retain the original composition clock.
                 segment_overlays = self._render_overlay_segments(
-                    props=props, props_path=props_path, temp=temp, windows=windows if use_segments else [(0, total_frames-1)],
+                    props=props, props_path=props_path, temp=temp, windows=windows or [(0, total_frames-1)],
                     cli=cli, chrome=chrome, fps=fps,
                     progress=progress, cancelled=cancelled, trace=trace,
                     timings=timings,
                 )
-            else:
-                if progress:
-                    hint = (
-                        f"首次高级字幕渲染约需 {max(2, round(expected_frames / 8 / 60))} 分钟"
-                        f"（{expected_frames} 帧），进度与剩余时间会实时显示，请勿关闭应用"
-                        if expected_frames >= 2400
-                        else "正在准备高级字幕渲染…"
-                    )
-                    progress(export_progress(
-                        STAGE_ADVANCED_RENDER,
-                        message=hint,
-                    ))
-                overlay_code, overlay_log = _run_streaming_process(
-                    command, cwd=self.root, on_line=overlay_line, cancelled=cancelled,
-                    stall_timeout=300.0,
-                )
-                if overlay_code != 0 or not overlay.is_file():
-                    from ..exports.export_failure import renderer_failure
-                    raise renderer_failure(overlay_code,overlay_log)
-                _store_overlay_cache(props, overlay)
-                timings["remotion"] = time.perf_counter() - remotion_started
-                timings["overlay_cache"] = "miss"
             if cancelled and cancelled():
                 raise InterruptedError("render cancelled")
+            if mixed and not job.composition_resolved and job.settings.pixel_format == 'yuv420p':
+                from ..exports.caption_composite_region import moving_alpha_bounds
+                from ..exports.export_performance import export_phase
+                regions = {}
+                with export_phase('moving_alpha_bounds', coverage='every alpha sample in each short mixed window'):
+                    for a, b, path in segment_overlays:
+                        bounds = moving_alpha_bounds(path, width=width, height=height, frames=b-a+1,
+                            cached=_segment_cache_path(props,a,b), cancelled=cancelled)
+                        if bounds: regions[str(path)] = bounds
+                job.export_context['overlay_alpha_bounds'] = regions
+                note_export('caption_compositing', dict(mode='local straight-RGBA before final YUV420 conversion',
+                    static_bounds=sparse['bounds'] if sparse else None, moving_bounds=regions,
+                    canvas=[width,height], global_and_large_layers='full canvas'))
             start_ms, end_ms = round(start * 1000), round((start + duration) * 1000)
             native_project = _native_segment_project(project, start_ms, end_ms)
             if native_project.cues:
@@ -1467,26 +1294,28 @@ class AdvancedRendererBackend:
                 static_inputs = caption_input(sparse)
                 pre, static_label = caption_filter(sparse, '[1:v]', fps)
                 x, y, *_ = sparse['bounds']
-                parts.append(';'+pre+f'[base]{static_label}overlay=x={x}:y={y}:format=auto:eof_action=repeat[mixedbase]')
-                prev_label = 'mixedbase'
+                if pre:parts.append(pre.rstrip(';'))
+                from ..exports.caption_composite_region import append_region_overlay
+                prev_label=append_region_overlay(parts,'[base]',static_label,bounds=sparse['bounds'],
+                    width=width,height=height,pixel_format=job.settings.pixel_format if not job.composition_resolved else '',
+                    tag='mixedstatic')[1:-1]
             for input_index, (window_start, window_end, overlay_path) in enumerate(overlay_inputs):
                 input_id = input_index + 1 + bool(sparse)
                 stream_label = f"ov{input_index}"
                 next_label = "v" if input_index == len(overlay_inputs) - 1 else f"m{input_index}"
                 parts.append(
-                    f";[{input_id}:v]setpts={overlay_pts_shift(max(0.0,window_start),fps)}[{stream_label}]"
+                    f"[{input_id}:v]setpts={overlay_pts_shift(max(0.0,window_start),fps)}[{stream_label}]"
                 )
                 enable = (
                     f"enable='between(t,{max(0.0, window_start):.5f},{window_end:.5f})'"
                     if segment_overlays else ""
                 )
-                overlay_filter = (
-                    f"[{prev_label}][{stream_label}]overlay=0:0:format=auto:"
-                    f"eof_action=pass{':' + enable if enable else ''}[{next_label}]"
-                )
-                parts.append(";" + overlay_filter)
-                prev_label = next_label
-            filter_graph = "".join(parts)
+                from ..exports.caption_composite_region import append_region_overlay
+                bounds=(job.export_context.get('overlay_alpha_bounds') or {}).get(str(overlay_path)) or (0,0,width,height)
+                prev_label=append_region_overlay(parts,f'[{prev_label}]',f'[{stream_label}]',bounds=bounds,
+                    width=width,height=height,pixel_format=job.settings.pixel_format if not job.composition_resolved else '',
+                    tag=f'advancedmoving{input_index}',eof_action='pass',enable=enable,full_canvas=True)[1:-1]
+            filter_graph = ";".join(parts)
             encoder = select_encoder(ffmpeg_path, job.settings)
             quality = _quality_arguments(encoder, job.settings)
             pix = job.settings.pixel_format or "yuv420p"
@@ -1500,7 +1329,7 @@ class AdvancedRendererBackend:
                 composite.extend([*video_input_acceleration(job), "-i", str(Path(job.media_path).resolve()), *static_inputs])
                 for _window_start, _window_end, overlay_path in overlay_inputs:
                     composite.extend(["-i", str(overlay_path)])
-                composite.extend(["-t", f"{duration:.9f}", "-filter_complex", filter_graph, "-map", "[v]", "-map", audio_map])
+                composite.extend(["-t", f"{duration:.9f}", "-filter_complex", filter_graph, "-map", f"[{prev_label}]", "-map", audio_map])
             composite.extend(["-c:v", encoder, *quality, "-pix_fmt", pix])
             preset = encoder_preset(encoder, job.settings.preset)
             if preset:
@@ -1553,6 +1382,12 @@ class AdvancedRendererBackend:
                 progress(export_progress("validate", message="检查成片…"))
             from ..exports.export_validation import validate_output, output_validation_options
             metadata = validate_output(ffmpeg_path, partial, duration=duration, fps=fps, cancelled=cancelled,preview_path=job.completion_preview_path, **output_validation_options(job))
+            metadata['caption_assets']=dict(dynamic_total=timings.get('dynamic_assets',0),
+                dynamic_rendered=timings.get('dynamic_assets_rendered',0),
+                dynamic_hits=timings.get('dynamic_asset_cache_hits',0),
+                static=(sparse or {}).get('asset_cache',{}))
+            metadata['renderer_preparation']=dict(browser_stages=timings.get('browser_stages',[]),
+                remotion_seconds=timings.get('remotion',0),encode_and_mux_seconds=timings.get('ffmpeg_composite',0))
             if trace:
                 trace("validated_output", metadata)
             publish_output(partial, output, job, metadata, cancelled=cancelled)

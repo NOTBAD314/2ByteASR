@@ -1,3 +1,4 @@
+import {PaintedTextEffect, paintCss} from './EffectPaint';
 import React from 'react';
 import {interpolate} from 'remotion';
 import type {Recipe} from '../SubtitleComposition';
@@ -9,9 +10,10 @@ const KNOWN_DECORATIONS = new Set(['corner_brackets','left_bracket','right_brack
 
 const gradient = (recipe: Recipe): string => {
   if (recipe.fill.type === 'solid') return recipe.fill.color;
-  const stops = recipe.fill.stops.map((stop) => `${stop.color} ${Math.round(stop.pos * 100)}%`).join(', ');
+  const radius = recipe.fill.kind === 'radial' ? recipe.fill.radius ?? 1 : 1;
+  const stops = recipe.fill.stops.map((stop) => `${stop.color} ${Math.round(stop.pos * 100 * radius)}%`).join(', ');
   return recipe.fill.kind === 'radial'
-    ? `radial-gradient(circle, ${stops})`
+    ? `radial-gradient(circle farthest-side at center, ${stops})`
     : `linear-gradient(${90 - recipe.fill.angle}deg, ${stops})`;
 };
 
@@ -134,7 +136,7 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
     lineHeight: (recipe.layout as Record<string, unknown>).lineHeightPx ? `${(recipe.layout as Record<string, unknown>).lineHeightPx}px` : numberValue((recipe.layout as Record<string, unknown>).lineGap, 1.12), opacity,
     maxWidth: ((recipe.layout as Record<string, unknown>).maxWidthPx as number) ?? `${numberValue((recipe.layout as Record<string, unknown>).maxWidth, 94)}vw`,
     clipPath: clipProgress < .999 ? `inset(0 ${(1-clipProgress)*100}% 0 0)` : undefined,
-    filter: `${recipe.glow.blur > 0 ? `drop-shadow(0 0 ${recipe.glow.blur*glowSettle}px ${recipe.glow.color})` : ''}${exitType === 'blur_out' ? ` blur(${exitProgress*12}px)` : ''}`.trim() || undefined,
+    filter: `${!recipe.glow.paint && recipe.glow.blur > 0 ? `drop-shadow(0 0 ${recipe.glow.blur*glowSettle}px ${recipe.glow.color})` : ''}${exitType === 'blur_out' ? ` blur(${exitProgress*12}px)` : ''}`.trim() || undefined,
   };
   const visibleText = entranceActive && entranceType === 'type_on' ? text.slice(0, Math.ceil(text.length * entryProgress)) : text;
   const perLetter = (entranceActive && entranceType === 'letter_stagger') || (holdActive && holdType === 'per_letter_bounce');
@@ -171,7 +173,7 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
       position:'absolute',
       left:`-${panel.paddingX}px`, right:`-${panel.paddingX}px`,
       top:`-${panel.paddingY}px`, bottom:`-${panel.paddingY}px`,
-      background:panelGradient, borderRadius:panel.type === 'pixel_panel' ? 0 : panel.radius,
+      background:panel.paint ? paintCss(panel.paint) : panelGradient, borderRadius:panel.type === 'pixel_panel' ? 0 : panel.radius,
       opacity:panel.opacity,
       border:`${panel.border.width}px solid ${panel.border.color}`,
       boxShadow:`${panel.shadow.offsetX}px ${panel.shadow.offsetY}px ${panel.shadow.blur}px ${panel.shadow.color}${panel.type === 'neon_frame' ? ',0 0 16px currentColor' : ''}`,
@@ -185,14 +187,15 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
       item === 'scanline' ? <div key={`${item}-${index}`} style={{position:'absolute',left:'-28px',right:'-28px',height:'3px',top:motionEnabled ? `${(frame*numberValue(hold.scan_speed,1.7))%110-5}%` : '50%',pointerEvents:'none',opacity:.32,background:'linear-gradient(90deg,transparent,#20d6e8,transparent)',boxShadow:'0 0 8px #20d6e8'}}/> :
       <div key={`${item}-${index}`} style={{position:'absolute',inset:'-10px -28px',opacity:Math.min(1,entryProgress*1.8),borderTop:'2px solid #20d6e8',borderBottom:'2px solid #ff4db8',clipPath:`inset(0 ${Math.max(0,(1-entryProgress)*50)}% 0 ${Math.max(0,(1-entryProgress)*50)}%)`}}/>
     )}
-    {shadow.enabled && shadow.opacity > 0 && <span data-layer="shadow" style={{
+    {recipe.glow.paint && recipe.glow.blur > 0 && <PaintedTextEffect mode="glow" paint={recipe.glow.paint} blur={recipe.glow.blur*glowSettle} radius={recipe.glow.blur*.5} opacity={recipe.glow.opacity} style={{position:'absolute',inset:0,zIndex:1}}>{textContent}</PaintedTextEffect>}
+    {shadow.enabled && shadow.opacity > 0 && (shadow.paint ? <PaintedTextEffect mode="shadow" paint={shadow.paint} radius={shadow.spread} blur={shadow.blur} opacity={shadow.opacity} style={{position:'absolute',inset:0,zIndex:1,translate:`${shadow.offsetX}px ${shadow.offsetY}px`}}>{textContent}</PaintedTextEffect> : <span data-layer="shadow" style={{
       position:'absolute', inset:0, zIndex:1, pointerEvents:'none',
       color:shadow.color, WebkitTextFillColor:shadow.color,
       WebkitTextStroke:shadow.spread > 0 ? `${shadow.spread}px ${shadow.color}` : '0 transparent',
       opacity:shadow.opacity, translate:`${shadow.offsetX}px ${shadow.offsetY}px`,
       filter:shadow.blur > 0 ? `blur(${shadow.blur}px)` : undefined,
-    }}>{textContent}</span>}
-    {[...recipe.strokes].reverse().map((stroke, index) => <OutsideStrokeText key={`stroke-${index}`} radius={stroke.width} color={cssColor(stroke.color)} style={{position:'absolute',inset:0,zIndex:2}}>{textContent}</OutsideStrokeText>)}
+    }}>{textContent}</span>)}
+    {[...recipe.strokes].reverse().map((stroke, index) => <OutsideStrokeText key={`stroke-${index}`} radius={stroke.width} color={cssColor(stroke.color)} paint={stroke.paint} style={{position:'absolute',inset:0,zIndex:2}}>{textContent}</OutsideStrokeText>)}
     <span data-layer="fill" style={{...(recipe.wordAnimation?.units?.length?{}:fillStyle),position:'relative',zIndex:3,display:'inline-block',backgroundSize:'100% 100%',WebkitTextStroke:'0 transparent'}}>{timedText ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000} fill paint={fillStyle} paintFont={base}/> : perLetter ? letterContent(true) : textContent}</span>
     {activeGlitch && <>
       {Array.from({length:sliceCount}).map((_,index) => <span key={`slice-${index}`} style={{...fillStyle,position:'absolute',inset:0,opacity:.54,transform:`translateX(${Math.sin(index*7+frame)*chromaticOffset*(1-entryProgress)}px)`,clipPath:`inset(${index/sliceCount*100}% 0 ${100-(index+1)/sliceCount*100}% 0)`,WebkitTextStroke:`1px ${index%2?'#ff4db8':'#20d6e8'}`}}>{text}</span>)}

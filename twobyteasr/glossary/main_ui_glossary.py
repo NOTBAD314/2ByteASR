@@ -522,6 +522,8 @@ class TermLibraryDialog(QWidget):
         # P0 perf: in-memory cache so switching between games (e.g. 原神 <-> 异环) is instant after first load.
         # 650 rows should switch in <200ms when cached. We still pay the first load cost once per game.
         self._mappings_cache: dict[str, list] = {}
+        self._library_stats_cache: dict[str, dict[str, int]] = {}
+        self._confirming_references = False
         self._builtin_cache: dict[str, tuple] = {}
         self._builtin_entry_cache: dict[str, list[dict[str, str]]] = {}
         self._learning_store = GlossaryLearningStore()
@@ -579,6 +581,8 @@ class TermLibraryDialog(QWidget):
     def _notify_library_changed(self):
         # An explicit mutation signal, never a periodic full-library reload.
         self._mappings_cache.clear()
+        self._library_stats_cache.clear()
+        self._builtin_cache.clear()
         self._builtin_entry_cache.clear()
         self.libraries_changed.emit()
 
@@ -643,7 +647,7 @@ class TermLibraryDialog(QWidget):
                                 "name": name,
                                 "category": category,
                                 "source": source,
-                                "aliases": [],
+                                "aliases": list(item.get('aliases') or []),
                                 "hidden": name in hidden,
                             },
                         )
@@ -924,6 +928,7 @@ class TermLibraryDialog(QWidget):
         sidebar.setObjectName("termLibrarySidebar")
         sidebar.setMinimumWidth(210)
         sidebar.setMaximumWidth(236)
+        sidebar.setProperty('uiZoomOwnSize', True)
         sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.library_sidebar = sidebar
         sidebar_layout = QVBoxLayout(sidebar)
@@ -1004,14 +1009,16 @@ class TermLibraryDialog(QWidget):
         content.setObjectName("termLibraryContent")
         self.library_content = content
         content_layout = QVBoxLayout(content)
-        content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        content_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
         content_header = QFrame()
         content_header.setObjectName("termLibraryContentHeader")
         content_header_layout = QVBoxLayout(content_header)
-        content_header_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        content_header_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        content_header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         content_header_layout.setContentsMargins(18, 14, 16, 8)
         content_header_layout.setSpacing(10)
 
@@ -1036,7 +1043,14 @@ class TermLibraryDialog(QWidget):
         self.selected_type.hide()
         name_row.addWidget(self.selected_type, 0, Qt.AlignmentFlag.AlignVCenter)
         title_column.addLayout(name_row)
-        meta_row = name_row  # 2026-11-03: name, type and counts on one line
+        self.header_meta = QWidget()
+        self.header_meta.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        meta_row = QHBoxLayout(self.header_meta)
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(10)
+        name_row.addWidget(self.header_meta)
+        self._header_name_row, self._header_title_column = name_row, title_column
+        self._header_narrow = False
         meta_row.addSpacing(2)
         self.selected_stats = QLabel()
         self.selected_stats.setObjectName("termMeta")
@@ -1253,7 +1267,8 @@ class TermLibraryDialog(QWidget):
         content_body = QFrame()
         content_body.setObjectName("termLibraryBody")
         content_body_layout = QVBoxLayout(content_body)
-        content_body_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        content_body_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        content_body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         content_body_layout.setContentsMargins(14, 0, 14, 8)
         content_body_layout.setSpacing(8)
 
@@ -1329,16 +1344,23 @@ class TermLibraryDialog(QWidget):
         bind_text(self.import_terms, '一次导入多条：粘贴文字，或选 .json / .csv / .txt 文件', property='toolTip')
         self.import_terms.clicked.connect(self.show_import_dialog)
         term_tools.addWidget(self.import_terms)
-        # The category and status combos stay as the filter state (tests, MCP and
-        # audits set them); the status segment drives filter_status, and the
-        # search box also matches category names, so neither combo is shown.
+        # Classification is independent of the new-word category composer.
+        # Filter the complete row universe before the virtual card view paints it.
         self.filter_category = FramelessPopupCombo()
         self.filter_category.setObjectName("termToolCombo")
         self.filter_category.addItem("全部分类", "")
         self.filter_category.setMinimumWidth(104)
         self.filter_category.currentIndexChanged.connect(self.apply_filter)
-        self.filter_category.setParent(content_body)
-        self.filter_category.hide()
+        self.filter_category.setMaximumWidth(148)
+        self.filter_category.setAccessibleName('筛选已有词条分类')
+        bind_text(self.filter_category, '筛选当前词库的已有词条；选择全部分类可清除', property='toolTip')
+        term_tools.insertWidget(2, self.filter_category)
+        self.confirm_all_button = AnimatedButton('全部确认参考词（0）')
+        self.confirm_all_button.setObjectName('termAccentButton')
+        bind_text(self.confirm_all_button, '确认当前词库内全部参考词，包含未显示和被搜索、分类、状态筛掉的词；不含已隐藏和待学习记录', property='toolTip')
+        self.confirm_all_button.clicked.connect(self.confirm_all_references)
+        self.confirm_all_button.setEnabled(False)
+        term_tools.insertWidget(3, self.confirm_all_button)
         self.filter_status = FramelessPopupCombo()
         self.filter_status.setObjectName("termToolCombo")
         for label, value in (
@@ -1353,7 +1375,33 @@ class TermLibraryDialog(QWidget):
         self.filter_status.currentIndexChanged.connect(self._sync_status_segment)
         self.filter_status.setParent(content_body)
         self.filter_status.hide()
-        content_body_layout.addLayout(term_tools)
+        self.term_filter_pair = QWidget()
+        self.term_filter_pair.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        pair_layout = QHBoxLayout(self.term_filter_pair)
+        pair_layout.setContentsMargins(0, 0, 0, 0)
+        pair_layout.setSpacing(6)
+        for control in (self.search, self.filter_category): term_tools.removeWidget(control)
+        pair_layout.addWidget(self.search, 1)
+        pair_layout.addWidget(self.filter_category)
+        pair_layout.addStretch(1)
+        self.term_actions = QWidget()
+        actions_row = QHBoxLayout(self.term_actions)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(6)
+        for action in (self.confirm_all_button, self.ai_menu_button, self.import_terms):
+            term_tools.removeWidget(action)
+            actions_row.addWidget(action)
+        term_tools.addWidget(self.term_actions)
+        self.term_toolbar = QWidget()
+        self.term_toolbar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.term_toolbar_stack = QVBoxLayout(self.term_toolbar)
+        self.term_toolbar_stack.setContentsMargins(0, 0, 0, 0)
+        self.term_toolbar_stack.setSpacing(4)
+        self.term_toolbar_stack.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.term_toolbar_stack.addLayout(term_tools)
+        self.term_toolbar_stack.addWidget(self.term_filter_pair)
+        self._term_toolbar_narrow = False
+        content_body_layout.addWidget(self.term_toolbar)
         content_body_layout.addWidget(quick_add_panel)
         content_body_layout.addWidget(self.term_try_panel)
 
@@ -1401,7 +1449,7 @@ class TermLibraryDialog(QWidget):
         ai_status_layout.addWidget(self.ai_update_status)
         content_body_layout.addWidget(self.ai_status_area)
 
-        # 待学习：一行提示，点「逐条确认」才展开清单。
+        # 待学习仅提示候选数量；用户要求移除逐条确认入口，保留候选数据。
         self.learning_panel = QFrame()
         self.learning_panel.setObjectName("termNotice")
         learning_layout = QVBoxLayout(self.learning_panel)
@@ -1416,13 +1464,9 @@ class TermLibraryDialog(QWidget):
         self.learning_count = QLabel()
         self.learning_count.setObjectName("termNoticeStrong")
         learning_head.addWidget(self.learning_count)
-        self.learning_title = QLabel("你在字幕里手动改过的词，确认后才加入词库")
+        self.learning_title = QLabel("你在字幕里手动改过的词，单独记录为学习候选")
         self.learning_title.setObjectName("termHint")
         learning_head.addWidget(self.learning_title, 1)
-        self.learning_toggle = AnimatedButton("逐条确认")
-        self.learning_toggle.setObjectName("termLinkButton")
-        self.learning_toggle.clicked.connect(self._toggle_learning_list)
-        learning_head.addWidget(self.learning_toggle)
         learning_layout.addLayout(learning_head)
         self.learning_box = QWidget()
         learning_box = QVBoxLayout(self.learning_box)
@@ -1505,6 +1549,7 @@ class TermLibraryDialog(QWidget):
         self.listing.doubleClicked.connect(self._on_table_double_click)
         self.listing.edit_requested.connect(self._on_card_clicked)
         self.listing.action_requested.connect(self._on_card_action)
+        self.listing.category_requested.connect(self._choose_category_filter)
         # The selection bar floats over the cards so Ctrl+clicks never move them.
         content_body_layout.removeWidget(self.selection_bar)
         self.listing.set_overlay(self.selection_bar)
@@ -1795,7 +1840,6 @@ class TermLibraryDialog(QWidget):
     def _toggle_learning_list(self):
         visible = self.learning_box.isHidden()
         self.learning_box.setVisible(visible)
-        bind_text(self.learning_toggle, '收起' if visible else '逐条确认')
 
     def _sync_batch_switch(self):
         in_batch = bool(self.state.get("game")) and self._current_game_in_batch()
@@ -1849,15 +1893,62 @@ class TermLibraryDialog(QWidget):
             return
         self.hide()
 
+    def _sync_term_toolbar(self):
+        if not hasattr(self, 'term_toolbar'):
+            return
+        if hasattr(self, 'listing') and self.listing.isVisibleTo(self):
+            from ..app.ui_zoom import zoom_factor
+            factor = zoom_factor()
+            normal_min, normal_max = round(210*factor), round(236*factor)
+            needed = 1 + self.listing.COLUMNS * (self.listing.MIN_CARD_WIDTH + self.listing.GAP)
+            # The current viewport + sidebar is invariant across this reflow.
+            # A scaled minimum must not silently defeat the narrower maximum.
+            target_max = max(180, min(normal_max,
+                self.listing.viewport().width() + self.library_sidebar.width() - needed))
+            target_min = normal_min if target_max >= normal_min else 180
+            changed = (self.library_sidebar.minimumWidth(), self.library_sidebar.maximumWidth()) != (target_min,target_max)
+            if changed:
+                if target_min < self.library_sidebar.minimumWidth(): self.library_sidebar.setMinimumWidth(target_min)
+                self.library_sidebar.setMaximumWidth(target_max)
+                self.library_sidebar.setMinimumWidth(target_min)
+                QTimer.singleShot(0, self._sync_term_toolbar)
+        header_required = (self.selected_title.sizeHint().width() + self.selected_type.sizeHint().width()
+                           + self.header_meta.sizeHint().width() + self.use_game.sizeHint().width()
+                           + self.share_button.sizeHint().width() + self.more_button.width() + 100)
+        header_narrow = self.library_content.width() < header_required
+        if header_narrow != self._header_narrow:
+            self._header_narrow = header_narrow
+            if header_narrow:
+                self._header_name_row.removeWidget(self.header_meta)
+                self._header_title_column.addWidget(self.header_meta)
+            else:
+                self._header_title_column.removeWidget(self.header_meta)
+                self._header_name_row.addWidget(self.header_meta)
+        status_width = max(self.status_segment.sizeHint().width(),
+                           self.status_segment.minimumSizeHint().width())
+        required = status_width + self.term_actions.sizeHint().width() + 18
+        narrow = self.term_toolbar.width() < required
+        if narrow == self._term_toolbar_narrow:
+            return
+        self._term_toolbar_narrow = narrow
+        if narrow:
+            self.term_tools_layout.removeWidget(self.term_actions)
+            self.term_toolbar_stack.addWidget(self.term_actions, 0, Qt.AlignmentFlag.AlignRight)
+        else:
+            self.term_toolbar_stack.removeWidget(self.term_actions)
+            self.term_tools_layout.addWidget(self.term_actions)
+
+    def apply_ui_zoom(self, _factor):
+        if hasattr(self, 'term_toolbar'): QTimer.singleShot(0, self._sync_term_toolbar)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, 'term_toolbar'):
+            QTimer.singleShot(0, self._sync_term_toolbar)
         # P0 Resize: do NOT force fixed width on sidebar; let it keep a comfortable min and let content grow.
         # The sidebar has a reasonable initial fixed in _build; here we only ensure minimums for usability.
-        if hasattr(self, "library_sidebar"):
-            try:
-                self.library_sidebar.setMinimumWidth(210)
-            except Exception:
-                pass
+        # The toolbar reflow owns sidebar constraints, including UI zoom.
+        # Resetting the minimum here would override its compact desktop mode.
 
     # ------------------------------------------------------------ 列表与刷新
 
@@ -1911,27 +2002,18 @@ class TermLibraryDialog(QWidget):
             self.game_list.setCurrentItem(item)
         return item
 
+    def _library_stats(self, game_name, library_id=None):
+        identity = str(library_id or self._library_key(game_name))
+        if identity not in self._library_stats_cache:
+            mappings = getattr(self.legacy, 'user_confirmed_mappings_for_game', self.legacy.learned_mappings_for_game)(identity) if game_name else []
+            self._library_stats_cache[identity] = self._count_term_cards(self._group_term_rows(self._unified_term_rows(game_name, mappings)))
+        return self._library_stats_cache[identity]
+
     def _game_term_count(self, game_name, library_id=None):
-        mappings = (
-            getattr(
-                self.legacy,
-                "user_confirmed_mappings_for_game",
-                self.legacy.learned_mappings_for_game,
-            )(library_id or self._library_key(game_name))
-            if game_name
-            else []
-        )
-        return len(mappings or [])
+        return self._library_stats(game_name, library_id)['confirmed']
 
     def _game_reference_count(self, game_name, library_id=None):
-        if not game_name:
-            return 0
-        if str(library_id or self._library_key(game_name)).startswith('library:'):
-            return 0
-        if game_name not in self._builtin_cache:
-            self._builtin_cache[game_name] = self.builtin_for_game(game_name)
-        names, _loaded, hidden = self._builtin_cache[game_name]
-        return len([name for name in names if name not in set(hidden)])
+        return self._library_stats(game_name, library_id)['reference'] if game_name else 0
 
     def _game_type_label(self, game_name, library_id=None):
         content_type = getattr(
@@ -2001,9 +2083,12 @@ class TermLibraryDialog(QWidget):
     def _mapping_category(item: dict) -> str:
         from twobyteasr.design.ui_widgets import category_label
 
-        return category_label(str(item.get("category") or "其他").strip())
+        raw = _reference_category_label(str(item.get('category') or '其他').strip())
+        label = category_label(raw)
+        # Real libraries may introduce categories beyond the composer defaults.
+        return raw if label == '其他' and raw.casefold() not in {'other', '其他', '其它'} else label
 
-    def _unified_term_rows(self) -> list[dict]:
+    def _unified_term_rows(self, game_name=None, mappings=None) -> list[dict]:
         """Merge learned mappings and builtin references into one row universe.
 
         来源/状态/启用是三个概念：来源标签可叠加（内置参考 + 已确认），
@@ -2013,10 +2098,12 @@ class TermLibraryDialog(QWidget):
         """
         from .glossary_skill import quote_normalize_term
 
-        game_name = self.state["game"]
+        game_name = self.state['game'] if game_name is None else game_name
         if not game_name:
             return []
-        mappings = self.state.get("mappings") or []
+        mappings = (self.state.get('mappings') or []) if mappings is None else mappings
+        if game_name not in self._builtin_cache:
+            self._builtin_cache[game_name] = self.builtin_for_game(game_name)
         references = self._reference_entries_for_game(game_name)
         reference_by_name = {quote_normalize_term(entry["name"]): entry for entry in references}
         rows: list[dict] = []
@@ -2028,6 +2115,7 @@ class TermLibraryDialog(QWidget):
             target = str(item.get("to", ""))
             if not source or not target:
                 continue
+            confirmed_names.add(quote_normalize_term(target))
             origin_label = self._mapping_origin(item)
             category = self._mapping_category(item)
             reason = str(item.get("reason", ""))
@@ -2163,12 +2251,61 @@ class TermLibraryDialog(QWidget):
     def _member_rows(row: dict) -> list[dict]:
         return list(row.get("members") or [row])
 
-    def _term_stats(self) -> dict[str, int]:
-        rows = self._unified_term_rows()
-        stats = {"total": len(rows), "confirmed": 0, "reference": 0, "hidden": 0}
-        for row in rows:
-            stats[row.get("status", "reference")] = stats.get(row.get("status", "reference"), 0) + 1
+    @staticmethod
+    def _count_term_cards(cards):
+        stats = {'total': len(cards), 'confirmed': 0, 'reference': 0, 'hidden': 0}
+        for row in cards:
+            status = str(row.get('status', 'reference'))
+            stats[status] = stats.get(status, 0) + 1
         return stats
+
+    def _term_stats(self) -> dict[str, int]:
+        return self._count_term_cards(self._group_term_rows(self._unified_term_rows()))
+
+    def _choose_category_filter(self, category):
+        index = self.filter_category.findData(category)
+        if index >= 0:
+            self.filter_category.setCurrentIndex(index)
+
+    def _update_confirm_all_button(self):
+        count = getattr(self, '_card_stats', {}).get('reference', 0)
+        busy = self._confirming_references
+        self.confirm_all_button.setText('正在确认…' if busy else f'全部确认参考词（{count}）')
+        self.confirm_all_button.setEnabled(bool(self.state.get('game') and count and not busy))
+
+    def _confirm_reference_rows(self, rows, *, library_key=None):
+        references = [dict(row.get('reference') or {}, name=(row.get('reference') or {}).get('name') or row.get('source', ''))
+                      for row in rows if row.get('status') == 'reference']
+        count = self.legacy.confirm_reference_terms(library_key or self._library_key(), references)
+        if count:
+            self._notify_library_changed()
+            self.refresh_current_game()
+        return count
+
+    @glossary_write_errors
+    def confirm_all_references(self):
+        if self._confirming_references or not self.state.get('game'):
+            return
+        rows = [row for row in self._unified_term_rows() if row.get('status') == 'reference']
+        if not rows:
+            self._update_confirm_all_button()
+            return
+        self._confirming_references = True
+        self.game_list.setEnabled(False)
+        self._update_confirm_all_button()
+        library_key = self._library_key()
+        # Paint the busy state once, then perform one transaction and one refresh.
+        QTimer.singleShot(0, lambda: self._finish_confirm_all_references(rows, library_key))
+
+    @glossary_write_errors
+    def _finish_confirm_all_references(self, rows, library_key):
+        try:
+            count = self._confirm_reference_rows(rows, library_key=library_key)
+            self._show_toast(f'已确认当前词库 {count} 条参考词。')
+        finally:
+            self._confirming_references = False
+            self.game_list.setEnabled(True)
+            self._update_confirm_all_button()
 
     def refresh_learned(self):
         """Populate the unified term table (learned + builtin references)."""
@@ -2199,10 +2336,10 @@ class TermLibraryDialog(QWidget):
         status_filter = str(self.filter_status.currentData() or "")
         items_for_model = []
         cards = self._group_term_rows(rows)
-        self._card_stats = {"total": len(cards), "confirmed": 0, "reference": 0, "hidden": 0}
-        for card in cards:
-            status = str(card.get("status", "reference"))
-            self._card_stats[status] = self._card_stats.get(status, 0) + 1
+        self._card_stats = self._count_term_cards(cards)
+        if game_name:
+            self._library_stats_cache[self._library_key()] = dict(self._card_stats)
+        self._update_confirm_all_button()
         for row in cards:
             if query and query not in str(row.get("searchable", "")):
                 continue
@@ -2215,9 +2352,7 @@ class TermLibraryDialog(QWidget):
         self._term_model.set_data(items_for_model)
         _t_model1 = _t.perf_counter()
         # 标题计数（统一口径：去重后的词条宇宙）
-        stats = {"total": len(rows), "confirmed": 0, "reference": 0, "hidden": 0}
-        for row in rows:
-            stats[row.get("status", "reference")] = stats.get(row.get("status", "reference"), 0) + 1
+        stats = self._card_stats
         if current_language() == "en":
             title = f"Terms · {stats['total']} total"
             title += f" · {stats['confirmed']} confirmed · {stats['reference']} reference"
@@ -2233,6 +2368,7 @@ class TermLibraryDialog(QWidget):
                 title += f"，当前显示 {len(items_for_model)} 条"
         self.learned_title.setText(title)
         self._update_status_counts(self._card_stats)
+        QTimer.singleShot(0, self._sync_term_toolbar)
         has_rows = len(items_for_model) > 0
         self.listing.setVisible(has_rows)
         # 空态区分：完全没词 vs 筛选后没词
@@ -2376,24 +2512,8 @@ class TermLibraryDialog(QWidget):
         if not game_name:
             return
         rows = self._selected_rows_by_status().get("reference", [])
-        added = 0
-        for row in rows:
-            reference = row.get("reference") or {}
-            name = str(reference.get("name") or row.get("source") or "").strip()
-            if name and self.legacy.add_learned_mapping(
-                self._library_key(game_name),
-                name,
-                name,
-                category=str(reference.get("category") or "其他"),
-                origin="用户确认",
-            ):
-                added += 1
+        added = self._confirm_reference_rows(rows)
         if added:
-            self._notify_library_changed()
-            self._mappings_cache.pop(game_name, None)
-            self._builtin_entry_cache.pop(game_name, None)
-            self.refresh_current_game()
-            self._refresh_game_item_counts()
             self._show_toast(tr('已确认 {value0} 条参考词条。', value0=added))
         elif rows:
             self._show_toast("所选参考已在已确认词条中。")
@@ -2507,7 +2627,7 @@ class TermLibraryDialog(QWidget):
             print(f"[perf] Term row creation (model set) ~{int((t_row1-t_row0)*1000)}ms")
         stats = dict(getattr(self, "_card_stats", None) or self._term_stats())  # one card = one term
         ((bind_text(self.selected_stats, f"{stats['confirmed']} confirmed") if current_language() == 'en' else bind_text(self.selected_stats, '{value0} 条已确认', value0=stats['confirmed'])) if game_name else bind_text(self.selected_stats, translate('尚未选择', current_language())))
-        ((bind_text(self.official_stats, f"{stats['reference']} references" + (f" · {stats['hidden']} hidden" if stats['hidden'] else '')) if current_language() == 'en' else bind_text(self.official_stats, '{value0} 条参考{value1}', value0=stats['reference'], value1=f" · {stats['hidden']}tr(' 已隐藏')" if stats['hidden'] else '')) if game_name else bind_text(self.official_stats, translate('0 条参考', current_language())))
+        ((bind_text(self.official_stats, f"{stats['reference']} references" + (f" · {stats['hidden']} hidden" if stats['hidden'] else '')) if current_language() == 'en' else bind_text(self.official_stats, '{value0} 条参考{value1}', value0=stats['reference'], value1=f" · {stats['hidden']} 已隐藏" if stats['hidden'] else '')) if game_name else bind_text(self.official_stats, translate('0 条参考', current_language())))
         # Schedule the viewport paint without entering a nested event loop from
         # a selection handler.
         try:
@@ -2607,7 +2727,12 @@ class TermLibraryDialog(QWidget):
         game_name = str(current.data(Qt.ItemDataRole.UserRole)) if current else ""
         self.state["game"] = game_name
         self.state["library_id"] = str(current.data(Qt.ItemDataRole.UserRole + 1) or self._game_identity(game_name)) if current else ""
+        self.search.blockSignals(True)
         self.search.clear()
+        self.search.blockSignals(False)
+        self.filter_category.blockSignals(True)
+        self.filter_category.setCurrentIndex(0)
+        self.filter_category.blockSignals(False)
         # P0 perf: switch header instantly (<100ms feel), defer the 650-row table build.
         type_labels = self._type_labels()
         selected_type = (
@@ -3574,17 +3699,7 @@ class TermLibraryDialog(QWidget):
             game_name = self.state.get("game", "")
             reference = rd.get("reference") or {}
             name = str(reference.get("name") or rd.get("source") or "").strip()
-            if game_name and name and self.legacy.add_learned_mapping(
-                self._library_key(game_name),
-                name,
-                name,
-                category=str(reference.get("category") or "其他"),
-                origin="用户确认",
-            ):
-                self._notify_library_changed()
-                self._mappings_cache.pop(game_name, None)
-                self._builtin_entry_cache.pop(game_name, None)
-                self.refresh_current_game()
+            if game_name and name and self._confirm_reference_rows([rd]):
                 self._show_toast(tr('已确认「{value0}」。', value0=name))
         elif status == "hidden":
             game_name = self.state.get("game", "")

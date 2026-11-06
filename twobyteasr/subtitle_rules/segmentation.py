@@ -1863,15 +1863,16 @@ def locally_repair_resegmented_cue(
             if not line_keeps_numbers(start_index, end_index):
                 continue
 
-            cost = 10.0 + 0.22 * (length - _current_language_profile().preferred) ** 2
+            cost = 35.0 + 0.22 * (length - _current_language_profile().preferred) ** 2
+            if duration < _current_language_profile().min_seconds:
+                cost += 160.0 * (1 - max(0.0, duration) / _current_language_profile().min_seconds)
+            if duration > 0:
+                cost += max(0.0, length / duration - _current_language_profile().critical_cps) * 4.0
             if length < MIN_BALANCED_SEGMENT_CHARS:
                 cost += 16.0 * (MIN_BALANCED_SEGMENT_CHARS - length) ** 2
             # 超过常规 12 的完整短语略罚，但仍优于残尾两刀。
             if length > _current_language_profile().hard_max:
                 cost += 6.0 * (length - _current_language_profile().hard_max) ** 2
-            # 回退舒适模式：超舒适长度的整段重罚，逼 DP 落到 ~8-12 字两刀。
-            if comfort_max_chars is not None and length > comfort_max_chars:
-                cost += 30.0 * (length - comfort_max_chars)
             if end_index < count:
                 gap = max(0.0, units[end_index].start - units[end_index - 1].end)
                 cost -= min(10.0, gap * 20.0)
@@ -1988,7 +1989,7 @@ def locally_repair_resegmented_cue(
         cues = []
         for part, (start_index, end_index) in zip(split_text_at_content_ranges(text, ranges), ranges):
             start = units[start_index].start
-            acoustic_end = max(units[end_index - 1].end, start + MIN_SUBTITLE_SECONDS)
+            acoustic_end = units[end_index - 1].end
             cues.append(SubtitleCue(0, start, min(acoustic_end, start + _current_language_profile().max_seconds), part))
         print(f"   [硬切兜底] 常规词边界无法满足字幕上限，已保全文字并拆为 {len(cues)} 条。")
         record_run_event("local_hard_split_recovery", cue_count=len(cues), character_count=count)
@@ -2007,7 +2008,7 @@ def locally_repair_resegmented_cue(
     cues = []
     for part, (start_index, end_index) in zip(parts, ranges):
         start = units[start_index].start
-        end = max(units[end_index - 1].end, start + MIN_SUBTITLE_SECONDS)
+        end = units[end_index - 1].end
         cues.append(SubtitleCue(0, start, end, part))
     return cues
 

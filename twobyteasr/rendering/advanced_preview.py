@@ -72,21 +72,28 @@ class AdvancedPreviewIdentity:
         recipe = snapshot.style_recipe if isinstance(snapshot.style_recipe, Mapping) else {}
         graph = recipe.get("visualGraph") if isinstance(recipe, Mapping) else {}
         graph_hash = _hash_key("visual-graph-v1", graph) if isinstance(graph, Mapping) and graph else ""
+        from ..caption_style.effect_paints import needs_effect_paint_pixels
+        fill = snapshot.fill if isinstance(snapshot.fill, Mapping) else {}
+        background = recipe.get('background') or {}
+        updated = (needs_effect_paint_pixels(snapshot)
+                   or str(fill.get('type', '')).startswith('radial')
+                   or ('padding' in background and ('padding_x' not in background or 'padding_y' not in background)))
+        version = 'v7-effect-paints' if updated else 'v6'
         glyph_key = _hash_key(
-            "pixel-v6",
-            snapshot.pixel_hash(renderer_version="remotion-fidelity-v6", resolution=resolution),
+            "pixel-" + version,
+            snapshot.pixel_hash(renderer_version="remotion-fidelity-" + version, resolution=resolution),
         )
-        motion_key = _hash_key("motion-v6", glyph_key, snapshot.motion_recipe, fps)
+        motion_key = _hash_key("motion-" + version, glyph_key, snapshot.motion_recipe, fps)
         # Quantize only the frame request. The motion cache bucket remains
         # stable across playhead movement and can hold multiple seek-safe frames.
         # v2: preview frames now rescale type to the composition width; v1
         # frames were rendered at play-resolution font sizes and must expire.
         frame_ms = round(max(0, int(motion_time_ms)) * fps / 1000.0) * 1000.0 / max(1.0, fps)
         request_key = (
-            _hash_key("frame-v6-static", glyph_key, snapshot.project_id, job_kind)
+            _hash_key("frame-" + version + "-static", glyph_key, snapshot.project_id, job_kind)
             if motion_mode(snapshot.motion_recipe) == MOTION_MODE_NONE
             else _hash_key(
-                "frame-v6-animated", motion_key, round(frame_ms, 3),
+                "frame-" + version + "-animated", motion_key, round(frame_ms, 3),
                 snapshot.project_id, job_kind,
             )
         )

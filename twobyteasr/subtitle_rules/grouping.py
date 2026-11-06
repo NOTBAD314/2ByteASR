@@ -45,9 +45,12 @@ from twobyteasr.subtitle_rules.segmentation import (
 # Resolve cache-backed helpers lazily. This module is imported through
 # subtitle_core during cache initialization, so eager wildcard imports can
 # otherwise miss functions defined later in that cycle.
+_batch_trace = threading.local()
+
 def record_run_event(event, **payload):
     from twobyteasr.recognition.cache import record_run_event as implementation
 
+    payload.setdefault("batch_id", payload.get("batch_index", getattr(_batch_trace, "batch_id", None)))
     return implementation(event, **payload)
 
 
@@ -88,7 +91,13 @@ def _source_bound_candidate(function):
         result.data_validated = True
         result.source_fingerprint = source.fingerprint
         return result
-    return bound
+    @wraps(bound)
+    def correlated(*args, **kwargs):
+        previous = getattr(_batch_trace, "batch_id", None)
+        _batch_trace.batch_id = kwargs.get("batch_index", previous)
+        try:return bound(*args, **kwargs)
+        finally:_batch_trace.batch_id = previous
+    return correlated
 
 
 def _texts_at(text, boundaries):
@@ -126,8 +135,8 @@ __all__ = [
 ]
 
 
-GROUPING_OUTPUT_TOKENS = 4096
-GROUPING_RETRY_OUTPUT_TOKENS = (8192, 16384)
+GROUPING_OUTPUT_TOKENS = 10000
+GROUPING_RETRY_OUTPUT_TOKENS = ()
 STRUCTURED_SPLIT_MAX_DEPTH = 3
 GROUPING_SCHEMA = {
     'type':'object',
@@ -353,7 +362,9 @@ def cues_from_resegmented_texts(
         if len(units) != length:
             raise ValueError("Qwen 重切范围超出原文。")
         start = units[0].start
-        end = max(units[-1].end, start + MIN_SUBTITLE_SECONDS)
+        end = units[-1].end
+        if end <= start:
+            raise ValueError("断句对齐时间无效。")
 
         forced_inside = {
             offset - cursor
@@ -375,9 +386,6 @@ def cues_from_resegmented_texts(
         repair_reasons = []
         if length > _current_language_profile().hard_max:
             repair_reasons.append(f"{length} 字")
-        elif comfort_max_chars is not None and length > comfort_max_chars:
-            # 仅本地回退路径使用：13-16 字的段重切到舒适长度，防止单行折行。
-            repair_reasons.append(f"{length} 字（回退舒适长度）")
         # 10 字只是观看舒适目标，不是本地硬切条件。11-16 字若 Qwen 判断语义
         # 尚未说完就保持完整，避免用均匀字时长伪造断点并造成时间轴漂移。
         if end - start > _current_language_profile().max_seconds + 0.05:
@@ -398,8 +406,11 @@ def cues_from_resegmented_texts(
                 for cue in repaired
             )
             print(
-                f"   [本地修复] 断句结果单条 {'+'.join(repair_reasons)} -> {summary}"
+                f"   [本地优化] batch={getattr(_batch_trace, 'batch_id', None)} 断句结果单条 {'+'.join(repair_reasons)} -> {summary}"
             )
+            record_run_event("grouping_local_repair", source_segment_ids=[x.segment_id for x in segment_batch],
+                reason="hard_length_or_duration_or_pause", reasons=repair_reasons,
+                source_text=text, result=[dict(text=x.text,start=x.start,end=x.end) for x in repaired])
             cues.extend(repaired)
             running_offset = cursor
             for cue in repaired:
@@ -428,6 +439,58 @@ def cues_from_resegmented_texts(
 
     if cursor != len(timeline):
         raise ValueError("Qwen 重切未覆盖完整原文。")
+    # Semantic restart repair can introduce a short tail *before* the length
+    # guard runs (12 characters / 3.5s + 6 / .35s at 然后). Reconsider only an
+    # affected neighbouring window, using the same source word edges. Source
+    # boundaries and real pauses remain mandatory; never pad acoustic time.
+    minimum = _current_language_profile().min_seconds
+    source_offsets = source_segment_character_offsets(segment_batch)
+    index = offset = 0
+    while index + 1 < len(cues):
+        pair = cues[index:index + 2]
+        sizes = [display_length(c.text) for c in pair]
+        end_offset = offset + sum(sizes)
+        before_score = sum(max(0., minimum - (c.end-c.start)) ** 2 for c in pair)
+        if before_score > 0 and end_offset <= len(timeline):
+            forced = {cut-offset for cut in set(hard_offsets) | set(source_offsets)
+                      if offset < cut < end_offset}
+            try:
+                repaired = locally_repair_resegmented_cue(
+                    "".join(c.text for c in pair), timeline[offset:end_offset],
+                    forced_boundaries=forced)
+            except (ValueError, TypeError):
+                repaired = pair
+            after_score = sum(max(0., minimum - (c.end-c.start)) ** 2 for c in repaired)
+            conserved = content_exact("".join(c.text for c in repaired)) == content_exact("".join(c.text for c in pair))
+            bounded = all(pair[0].start-1e-6 <= c.start < c.end <= pair[-1].end+1e-6 for c in repaired)
+            if conserved and bounded and len(repaired) <= 2 and after_score + 1e-6 < before_score:
+                running = offset
+                for cue in repaired:
+                    cue.timing_locked = span_is_timing_locked(running, running+display_length(cue.text))
+                    running += display_length(cue.text)
+                record_run_event("grouping_short_span_repair", reason="semantic_cut_created_short_aligned_tail",
+                    source_segment_ids=[s.segment_id for s in segment_batch],
+                    before=[dict(text=c.text,start=c.start,end=c.end) for c in pair],
+                    after=[dict(text=c.text,start=c.start,end=c.end) for c in repaired],
+                    protected_boundaries=sorted(forced))
+                print(f"   [短尾优化] batch={getattr(_batch_trace,'batch_id',None)} "
+                      + "/".join(f"{display_length(c.text)}字 {c.end-c.start:.2f}秒" for c in pair)
+                      + " -> " + "/".join(f"{display_length(c.text)}字 {c.end-c.start:.2f}秒" for c in repaired))
+                cues[index:index + 2] = repaired
+                offset += display_length(repaired[0].text)
+                index += 1
+                continue
+            record_run_event("grouping_short_span_retained", reason="protected_boundary_or_no_safer_source_edge",
+                source_segment_ids=[s.segment_id for s in segment_batch],
+                spans=[dict(text=c.text,start=c.start,end=c.end) for c in pair],
+                protected_boundaries=sorted(forced))
+        offset += sizes[0]
+        index += 1
+    cue_end_offsets = set()
+    running = 0
+    for cue in cues:
+        running += display_length(cue.text)
+        cue_end_offsets.add(running)
     # 词中硬边界已在本地修复前贴到词边；这里同步期望的句末偏移。
     hard_offsets = set(
         snap_boundaries_away_from_word_interiors(
@@ -461,12 +524,13 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
     # A rejected/unavailable cloud model must not make the local result worse.
     # MOSS already emits phrase-level utterances close to the supplied human
     # manuscript; keep them verbatim whenever they satisfy the real hard limits.
-    # 13-16 字的段重切到舒适长度：单行放不下会被播放器折行（2026-09-03 用户反馈）。
+    # 舒适目标不是硬限制；保留本语言硬上限内的完整来源语句。
     source_cues = [individual_cue(segment) for segment in segment_batch]
     for cue, segment in zip(source_cues, segment_batch):
         cue.text = segment.text
+        cue.start, cue.end = segment.start, segment.end
     if all(
-        display_length(cue.text) <= FALLBACK_COMFORT_MAX_CHARS
+        display_length(cue.text) <= _current_language_profile().hard_max
         and cue.end - cue.start <= _current_language_profile().max_seconds + 0.05
         and cue.end > cue.start
         for cue in source_cues
@@ -478,7 +542,7 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
             [segment.text for segment in segment_batch],
             firered_tokens,
             speech_regions,
-            comfort_max_chars=FALLBACK_COMFORT_MAX_CHARS,
+            comfort_max_chars=None,
         )
         if _restore_grouped_source(segment_batch, repaired):
             return repaired
@@ -499,6 +563,7 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
         pass
     for cue, segment in zip(source_cues, segment_batch):
         cue.text = segment.text
+        cue.start, cue.end = segment.start, segment.end
     return source_cues
 
 
@@ -680,8 +745,12 @@ def call_grouping_api(
         return messages
 
     def run_child(child, child_id, *, retry_child=False):
+        child_diag = dict(batch_id=child_id, parent_batch_id=batch_index)
         def execute():
             if retry_child and not _retry_budget.take():
+                child_diag['fallback_reason'] = 'retry_budget_exhausted'
+                record_run_event('grouping_api_fallback', batch_index=child_id, parent_batch_id=batch_index,
+                    category='retry_budget_exhausted', request_dispatched=False)
                 return GroupedBatchResult(fallback_group(child, firered_tokens, speech_regions),
                     origin='fallback', data_validated=True)
             return call_grouping_api(child,
@@ -690,18 +759,24 @@ def call_grouping_api(
                 firered_tokens=firered_tokens,speech_regions=speech_regions,
                 abort_event=abort_event,batch_index=child_id,batch_total=batch_total,
                 _split_depth=_split_depth+1,provider_snapshot=snapshot,
-                batch_diagnostics=batch_diagnostics,_retry_budget=_retry_budget,
+                batch_diagnostics=child_diag,_retry_budget=_retry_budget,
                 _cache_context=_cache_context,_read_only_context=_read_only_context)
         if _cache_context is None:
-            return execute()
-        return run_cached_api_batch('grouped',_cache_context,
-            {'protocol':'speaker-labelled-protected-boundaries-v2-packed','segments':_grouping_dependency_segments(child),
-             'messages':build_messages(child)},execute,
-            encoder=serialize_cues,decoder=deserialize_cues,
-            fallback_categories=('断句回退',),provider_snapshot=snapshot,
-            validator=lambda values:_validate_grouped_sources(child, values,
-                protect_all_source_boundaries=protect_all_source_boundaries,
-                protected_after_source_ids=protected_after_segment_ids))
+            result = execute()
+        else:
+            result = run_cached_api_batch('grouped',_cache_context,
+                {'protocol':'speaker-labelled-protected-boundaries-v2-packed','segments':_grouping_dependency_segments(child),
+                 'messages':build_messages(child)},execute,
+                encoder=serialize_cues,decoder=deserialize_cues,
+                fallback_categories=('断句回退',),provider_snapshot=snapshot,diagnostics=child_diag,
+                validator=lambda values:_validate_grouped_sources(child, values,
+                    protect_all_source_boundaries=protect_all_source_boundaries,
+                    protected_after_source_ids=protected_after_segment_ids))
+        if batch_diagnostics is not None and getattr(result,'origin','') == 'fallback':
+            reason = child_diag.get('fallback_reason') or 'child_failed'
+            batch_diagnostics.setdefault('child_failures',[]).append(dict(batch_id=child_id,reason=reason))
+            batch_diagnostics['fallback_reason'] = reason
+        return result
 
     def build_messages(child):
         return call_grouping_api(child,
@@ -714,7 +789,7 @@ def call_grouping_api(
     if not _packed:
         from ..providers.provider_input_budget import pack_items
         packed,rejected=pack_items(segment_batch,build_messages,
-            operation='group',max_tokens=GROUPING_OUTPUT_TOKENS,schema=GROUPING_SCHEMA)
+            operation='group',max_tokens=snapshot.max_output_tokens,schema=GROUPING_SCHEMA)
         if rejected or len(packed)>1:
             rejected_ids={item.segment_id for item,_ in rejected}
             by_first={batch[0].segment_id:batch for batch in packed}
@@ -739,7 +814,7 @@ def call_grouping_api(
     group_settings = snapshot.endpoint()
     provider = provider_for_stage(snapshot.execution_settings(), "group", sender=post_chat_completion)
     print(
-        f"   [断句] {snapshot.provider}/{snapshot.model} · {snapshot.transport}（数字 boundaries，原文不可变）"
+        f"   [断句] batch={batch_index} {snapshot.provider}/{snapshot.model} · {snapshot.transport}（数字 boundaries，原文不可变）"
     )
     last_error = None
     last_category = "request_error"
@@ -761,7 +836,7 @@ def call_grouping_api(
                 stage="grouped",
                 operation_kind='group',
                 batch_index=batch_index,
-                max_tokens=GROUPING_OUTPUT_TOKENS,
+                max_tokens=snapshot.max_output_tokens,
                 temperature=0.0,
                 timeout=snapshot.timeout_policy.total,
                 _timeout_policy=snapshot.timeout_policy,
@@ -769,7 +844,8 @@ def call_grouping_api(
                 _task_failure_scope=(_retry_budget, 'grouped', snapshot.fingerprint),
                 cancel_check=lambda: bool(abort_event is not None and abort_event.is_set()) or bool(
                     getattr(get_runtime_context().cancellation_token, "is_cancelled", False)),
-                enable_thinking=False,
+                enable_thinking=snapshot.enable_thinking,
+                thinking_protocol=snapshot.thinking_protocol,
                 response_format={"type": "json_object"},
                 structured_retry_system_prompt=None,
                 structured_retry_max_tokens=(),
@@ -951,7 +1027,7 @@ def call_grouping_api(
                 boundary_offsets = sorted(set(boundary_offsets) | {
                     image for image in images if 0 < image <= total_length})
             if before_validate != boundary_offsets:
-                print("   [断句校验] 已应用云端模型竖线校正与本地护栏。")
+                print(f"   [断句校验] batch={batch_index} 已应用云端模型竖线校正与本地护栏。")
             proposed_texts = texts_from_boundary_offsets(
                 segment_batch,
                 boundary_offsets,
@@ -967,6 +1043,9 @@ def call_grouping_api(
                 raise AIProviderError("断句结果未通过逐字符原文校验。", category="text_mutation_rejected")
             diag["final_cues_sha256"] = hashlib.sha256(json.dumps(serialize_cues(result),
                 sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+            repaired_locally = model_boundaries != boundary_offsets or proposed_texts != [c.text for c in result]
+            diag.update(result_status="cloud_repaired" if repaired_locally else "cloud_direct",
+                        parse_status="valid", body_empty=False)
             diag.update(boundary_count=len(boundary_offsets), validator_result="exact_text_and_boundaries",
                         total_duration_ms=round((time.perf_counter()-attempt_started)*1000, 3), result_origin="ai")
             # 2026-10-10: keep the model's own answer next to what local
@@ -983,7 +1062,9 @@ def call_grouping_api(
             if batch_diagnostics is not None:
                 batch_diagnostics["fallback_reason"] = None
             record_run_event("asr_provider_request", **diag)
-            return GroupedBatchResult(result, validated=True)
+            accepted = GroupedBatchResult(result, validated=True)
+            accepted.result_status = diag["result_status"]
+            return accepted
         except Exception as exc:
             last_error = exc
             last_category = classify_request_error(exc)
@@ -1084,7 +1165,11 @@ def call_grouping_api(
             child_result=run_child(child,f'{batch_index}.{part}',retry_child=not quality_rebatch)
             all_validated=all_validated and bool(getattr(child_result,'validated',False))
             child_cues.extend(child_result)
-        return GroupedBatchResult(child_cues,validated=all_validated,origin='ai' if all_validated else 'fallback')
+        if batch_diagnostics is not None:
+            batch_diagnostics['retry_reason'] = last_category
+            if all_validated:batch_diagnostics['fallback_reason'] = None
+        return GroupedBatchResult(child_cues,validated=all_validated,origin='ai' if all_validated else 'fallback',
+                                  result_status='cloud_repaired' if all_validated else 'local_fallback')
 
     print(f"   [警告] 断句连续失败，当前批次使用本地均衡分段：{last_error}")
     record_run_event(
@@ -1254,6 +1339,7 @@ def group_subtitles(
 
     def run_job(job):
         index, speaker, batch, dependency, local_fast = job
+        _batch_trace.batch_id = index
         batch_tokens=dependency['firered_tokens']
         batch_speech=dependency['speech_regions']
         batch_protected=set(dependency['protected_after'])
@@ -1261,7 +1347,7 @@ def group_subtitles(
         record_run_event("cloud_batch_started", stage="grouped" if use_ai else "grouped_local",
                          batch_index=index, batch_total=len(batches), cue_count=len(batch))
         started_at = time.perf_counter()
-        batch_diag = {"scheduler_queue_wait_ms": round((started_at-dispatched_at)*1000, 3),
+        batch_diag = {"batch_id": index, "scheduler_queue_wait_ms": round((started_at-dispatched_at)*1000, 3),
                       'scheduler_submitted_monotonic': dispatched_at,
                       'scheduler_started_monotonic': started_at}
 
@@ -1335,6 +1421,7 @@ def group_subtitles(
             cache_key=batch_diag.get("cache_key", ""), cache_hit=batch_diag.get("cache_hit", False),
             result_origin=getattr(batch_cues, "origin", "local" if not use_ai else "fallback"),
             fallback_reason=batch_diag.get("fallback_reason"),
+            result_status=getattr(batch_cues, "result_status", "local_fallback" if getattr(batch_cues, "origin", "") == "fallback" else "cloud_direct" if getattr(batch_cues, "origin", "") == "ai" else "local"),
             scheduler_queue_wait_ms=batch_diag.get('scheduler_queue_wait_ms'),
             scheduler_submitted_monotonic=dispatched_at,
             scheduler_started_monotonic=started_at,

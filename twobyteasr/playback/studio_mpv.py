@@ -1686,12 +1686,29 @@ class MpvController:
             coalesce_key="seek",
         )
 
+    def _load_output_options(self, options=None, source_audio_stream=None):
+        """Read last user intent at execution, not at queued-load creation."""
+        value = dict(options or {})
+        with self._desired_lock:
+            desired = dict(self._desired_commands)
+        audio = desired.get('audio-output')
+        if audio:
+            value['aid'] = 'no' if audio[-1] == 'no' else (str(int(source_audio_stream)+1) if source_audio_stream is not None else str(audio[-1]))
+        elif source_audio_stream is not None:
+            value['aid'] = str(int(source_audio_stream)+1)
+        for key, option in (('volume', 'volume'), ('pause', 'pause')):
+            command = desired.get(key)
+            if command:
+                raw = command[-1]
+                value[option] = ('yes' if raw else 'no') if isinstance(raw, bool) else str(raw)
+        return value
+
     def post_load(self, media_path: str | os.PathLike[str]) -> bool:
         target = str(Path(media_path).resolve())
         self._begin_subtitle_media(target)
         epoch = self._subtitle_binding_epoch
         return self._post(
-            lambda: self._send(['loadfile', target, 'replace']) if epoch == self._subtitle_binding_epoch else None,
+            lambda: self._send(['loadfile', target, 'replace', -1, self._load_output_options()]) if epoch == self._subtitle_binding_epoch else None,
             coalesce_key="loadfile",
             foreground=True,
         )
@@ -1741,6 +1758,7 @@ class MpvController:
                 self._send(['set_property', 'pause', bool(paused)])
             if epoch != self._subtitle_binding_epoch:
                 return {}
+            command[-1] = self._load_output_options(command[-1], source_audio_stream)
             result = self._send(command)
             if epoch != self._subtitle_binding_epoch:
                 return {}

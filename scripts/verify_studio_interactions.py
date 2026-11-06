@@ -14,7 +14,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--project',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--part',default='all',choices=['all','timeline','proofread','source','colors'])
+    parser.add_argument('--part',default='all',choices=['all','timeline','proofread','source','colors','instant','long'])
     parser.add_argument('--cycles',type=int,default=5)
     parser.add_argument('--baseline',type=Path)
     parser.add_argument('--exe',type=Path)
@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--scale',default='1')
     parser.add_argument('--restart',type=Path)
     parser.add_argument('--complex',action='store_true')
+    parser.add_argument('--instant-colors',action='store_true')
+    parser.add_argument('--playback-seconds',type=float,default=0)
     args=parser.parse_args()
     out=args.output.resolve()
     if out.exists() or not out.is_relative_to(root/'tmp'):
@@ -52,6 +54,8 @@ def main():
         INTERACTIONS_OBSERVE=str(int(args.observe_failures)),
         INTERACTIONS_COLOR_RESTART=str(args.restart.resolve()) if args.restart else '',
         INTERACTIONS_COMPLEX=str(int(args.complex)),
+        INTERACTIONS_INSTANT_COLORS=str(int(args.instant_colors)),
+        INTERACTIONS_PLAYBACK_SECONDS=str(max(0,args.playback_seconds)),
         INTERACTIONS_VISIBLE=str(int(args.visible)),
         TWOBYTEASR_SEEK_CACHE_ROOT=str(root/'tmp/interactions-seek-cache'))
     env.pop('TWOBYTEASR_STARTUP_OPEN_STUDIO',None)
@@ -82,7 +86,9 @@ def main():
     r=json.loads(result_path.read_text('utf8')) if result_path.exists() else {}
     r.update(exit_code=code,input_unchanged=hashlib.sha256(original.read_bytes()).hexdigest()==digest,
              original_sha256=digest)
-    r['passed']=bool(r.get('passed') and all(r.get('checks',{}).values()))
+    stderr=(out/'process/stderr.log').read_text('utf8',errors='replace')
+    r['python_failure_detected']='Traceback (most recent call last)' in stderr
+    r['passed']=bool(r.get('passed') and all(r.get('checks',{}).values()) and not r['python_failure_detected'])
     result_path.write_text(json.dumps(r,ensure_ascii=False,indent=2,default=str),'utf8')
     print(json.dumps({**{k:r.get(k) for k in ('passed','error','exit_code','input_unchanged')},
         'checked':len(r.get('checks',{})),'failed':[k for k,v in r.get('checks',{}).items() if not v]},ensure_ascii=False))

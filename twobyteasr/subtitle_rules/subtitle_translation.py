@@ -1474,7 +1474,8 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
 
 
 def _max_tokens(batch: TranslationBatch) -> int:
-    return int(min(8192, 1024 + 2 * batch.source_chars + 24 * len(batch.target_ids)))
+    from ..providers.subtitle_request_policy import DEFAULT_OUTPUT_TOKENS
+    return DEFAULT_OUTPUT_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -1910,9 +1911,13 @@ def _restore_formulas(source: TranslationSource, accepted: Mapping[str, str],
     return kept, issues
 
 
-def _call_provider(provider, messages, *, max_tokens: int, timeout: float, cancel_check):
+def _call_provider(provider, messages, *, max_tokens: int, timeout: float, cancel_check, batch_id=None):
+    from ..providers.subtitle_request_policy import provider_policy
     kwargs = dict(max_tokens=max_tokens, temperature=0.2, timeout=timeout, stage=PROVIDER_STAGE,
-                  cancel_check=cancel_check, operation_kind=BUDGET_OPERATION, enable_thinking=False)
+                  batch_index=batch_id,
+                  cancel_check=cancel_check, operation_kind=BUDGET_OPERATION,
+                  enable_thinking=provider_policy(provider)["enable_thinking"],
+                  thinking_protocol=provider_policy(provider)["thinking_protocol"])
     if callable(getattr(provider, "structured_complete", None)):
         return provider.structured_complete(messages, RESPONSE_SCHEMA, **kwargs)
     return provider.complete(messages, response_format={"type": "json_object"}, json_schema=RESPONSE_SCHEMA,
@@ -1988,6 +1993,9 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     lock = threading.RLock()
     local = threading.local()
 
+    from ..providers.subtitle_request_policy import provider_policy
+    request_policy = provider_policy(provider)
+
     def client():
         if not hasattr(local, 'client'):
             fork = getattr(provider, 'concurrent_client', None)
@@ -2042,7 +2050,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         term_context = result.sources[cue_id] + '\n' + '\n'.join(window)
         result.term_versions[cue_id] = rule_version(terminology, pairs, source_language, target, term_context)
         key_inputs=dict(target=target,model=model,provider=provider_id,glossary_digest=result.term_versions[cue_id],
-                        prompt_version=prompt_version,extra=_cache_extra(source,cue_id,game_context))
+                        prompt_version=prompt_version,extra=_digest([_cache_extra(source,cue_id,game_context),request_policy]))
         keys[cue_id] = cache_key(result.sources[cue_id],window,**key_inputs)
         previous=source.records.get(cue_id,{})
         rejected=previous.get('rejected_response') or {}
@@ -2101,7 +2109,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             if any('preserve_quantities' in hint for hint in repair_hints):
                 body['validation_repairs']['quantity_instruction']='原文中的夸张数字也须按相同数值保留，勿自行规整为常见百分比或分数；允许等值中文单位。'
             messages=[*messages[:-1],{**messages[-1],'content':json.dumps(body,ensure_ascii=False,separators=(',',':'))}]
-        max_tokens = max(_max_tokens(batch), min(8192, output_floor))
+        max_tokens = request_policy["max_output_tokens"]
         try:
             prepare_input(messages, schema=RESPONSE_SCHEMA, max_tokens=max_tokens, operation=BUDGET_OPERATION)
         except InputBudgetError:
@@ -2119,7 +2127,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         delay = None
         try:
             payload = _call_provider(client(), messages, max_tokens=max_tokens, timeout=timeout,
-                                     cancel_check=request_cancelled)
+                                     cancel_check=request_cancelled, batch_id=batch_no)
         except Exception as exc:  # noqa: BLE001 - classified below, reported per cue
             category = failure_category(exc)
             emit("error", batch=batch_no, category=category, error=str(exc),
@@ -2142,9 +2150,9 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             accepted, problems = {}, {cue_id: reason for cue_id in ids}
             delay = retry_delay(exc, 1)
             if category in _TRUNCATED_CATEGORIES:
-                # Smaller batches need fewer answer tokens, but reasoning still
-                # needs room. Never shrink the output reserve after truncation.
-                retry_output_floor = min(8192, max(4096, max_tokens * 2))
+                # Keep the user's output ceiling; retry fewer affected cues.
+                # A retry never silently increases or shrinks that ceiling.
+                retry_output_floor = max_tokens
                 delay = None
         else:
             emit("response", batch=batch_no, output=payload,

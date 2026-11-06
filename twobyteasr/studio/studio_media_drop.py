@@ -50,8 +50,13 @@ class MediaDropCommand(QUndoCommand):
             if track is None:
                 track = create_video_track(working, locked=False,
                     synchronize=not str(result.source_path).lower().endswith('.gif'))
+            if not primary:
+                # The first lane did not exist when primary was resolved.
+                # Its clips must enter the same sequence used by seek/reload.
+                primary = primary_video_track_id(working)
             clip = add_video_clip(working, track.id, asset.asset_id, timeline_in_ms=position)
             if track.id == primary:
+                sequence.empty_timeline = False
                 sequence.segments.append(VideoSegment(id=clip.id, source_path=result.source_path,
                     source_in_ms=0, source_out_ms=result.duration_ms,
                     timeline_in_ms=position, timeline_out_ms=position+result.duration_ms))

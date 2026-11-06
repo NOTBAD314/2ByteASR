@@ -27,7 +27,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QSpinBox,
 )
 
 from ..app.main_ui_helpers import _active_theme_definition, _icon
@@ -849,6 +849,24 @@ class EndpointEditor(QFrame):
         grid.addWidget(self.capabilities_label, 5, 0)
         grid.addWidget(self.capabilities_host, 5, 1)
         grid.addWidget(self.json_capability_status, 6, 1)
+        self.max_output_tokens = QSpinBox()
+        self.max_output_tokens.setRange(1, 2147483647)
+        self.max_output_tokens.setValue(int(models.get(f"{prefix}_max_output_tokens", 10000)))
+        self.max_output_tokens.setToolTip("仅限制输出；不是输入与输出总量，也不要求用满预算。")
+        grid.addWidget(QLabel("最大输出 Token"), 7, 0)
+        grid.addWidget(self.max_output_tokens, 7, 1)
+        self.enable_thinking = QCheckBox("开启字幕处理思考")
+        self.enable_thinking.setChecked(bool(models.get(f"{prefix}_enable_thinking", False)))
+        grid.addWidget(self.enable_thinking, 8, 1)
+        self.thinking_protocol = FramelessPopupCombo()
+        for label, value in (("自动（中转能力未知）", "auto"),
+                ("DeepSeek thinking（已确认）", "deepseek"),
+                ("enable_thinking（已确认）", "enable_thinking"),
+                ("reasoning_effort（已确认）", "reasoning_effort")):
+            self.thinking_protocol.addItem(label, value)
+        self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(models.get(f"{prefix}_thinking_protocol", "auto"))))
+        grid.addWidget(QLabel("思考控制协议"), 9, 0)
+        grid.addWidget(self.thinking_protocol, 9, 1)
         grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(grid)
         self.advanced_box.hide()
@@ -905,7 +923,8 @@ class EndpointEditor(QFrame):
         self.key.textChanged.connect(self._invalidate_model_discovery)
         for signal in (self.model.currentTextChanged, self.base_url.textChanged,
                 self.key.textChanged, self.protocol.currentIndexChanged,
-                self.json_mode.toggled, self.structured_output.toggled):
+                self.json_mode.toggled, self.structured_output.toggled, self.enable_thinking.toggled,
+                self.max_output_tokens.valueChanged, self.thinking_protocol.currentIndexChanged):
             signal.connect(self._invalidate_endpoint_tasks)
         self._queue_model_discovery()
         self.refresh_theme_palette()
@@ -1329,6 +1348,9 @@ class EndpointEditor(QFrame):
             "json_mode": self.json_mode.isChecked(),
             "structured_output": self.structured_output.isChecked(),
             "stream": False,
+            "max_output_tokens": self.max_output_tokens.value(),
+            "enable_thinking": self.enable_thinking.isChecked(),
+            "thinking_protocol": self.thinking_protocol.currentData(),
         }
 
     def restore_profile_values(self, values: dict, settings: dict) -> None:
@@ -1357,6 +1379,9 @@ class EndpointEditor(QFrame):
             self._last_key_scope = (values["provider"], values["base_url"])
         finally:
             del blockers
+        self.max_output_tokens.setValue(int(values.get("max_output_tokens", 10000)))
+        self.enable_thinking.setChecked(bool(values.get("enable_thinking", False)))
+        self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(values.get("thinking_protocol", "auto"))))
         self.refresh_secret_status()
         self._refresh_endpoint_hint()
 
@@ -1386,6 +1411,8 @@ class EndpointEditor(QFrame):
         service_id = str(values.get("service") or "custom")
         if service_id in AI_SERVICE_SPECS:
             activate_ai_service(overlay, service_id, stage=self.stage)
+        for key in ("max_output_tokens", "enable_thinking", "thinking_protocol"):
+            overlay["models"][f"{self.stage}_{key}"] = values[key]
         overlay["models"][f"{self.stage}_transport"] = values["transport"]
         overlay["models"][f"{self.stage}_provider"] = values["provider"]
         overlay["models"][f"{self.stage}_protocol"] = values["protocol"]

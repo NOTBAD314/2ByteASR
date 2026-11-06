@@ -87,6 +87,10 @@ class _ThemeRootFilter(QObject):
         return False
 
     def apply_root(self, widget):
+        if getattr(widget, '_owns_theme_sheet', False):
+            refresh = getattr(widget, 'refresh_theme_palette', None)
+            if callable(refresh):refresh()
+            return
         sheet = getattr(self.parent(), "_theme_window_qss", "")
         if not sheet or getattr(widget, "_theme_root_busy", False):
             return

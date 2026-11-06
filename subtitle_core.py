@@ -665,12 +665,14 @@ def validate_grouping_boundaries_with_llm(
         {"role": "system", "content": prompt},
         {"role": "user", "content": json.dumps(request_body, ensure_ascii=False)},
     ]
+    from twobyteasr.providers.asr_provider_snapshot import task_provider_snapshot
     try:
         from twobyteasr.providers.ai_providers import provider_for_stage
         content = provider_for_stage(snapshot.execution_settings(), "group", sender=post_chat_completion).complete(
-            messages, stage="grouped_validate", operation_kind='group', max_tokens=min(4096, max(512, total_length * 2)),
+            messages, stage="grouped_validate", operation_kind='group', max_tokens=snapshot.max_output_tokens,
             temperature=0.0, timeout=snapshot.timeout_policy.total, _timeout_policy=snapshot.timeout_policy,
-            request_diagnostics=diag, enable_thinking=False, response_format={"type": "json_object"},
+            request_diagnostics=diag, enable_thinking=snapshot.enable_thinking,
+            thinking_protocol=snapshot.thinking_protocol, response_format={"type": "json_object"},
             cancel_check=lambda: bool(getattr(get_runtime_context().cancellation_token, "is_cancelled", False)),
         )
         diag["raw_response_length"] = len(content)
@@ -1605,6 +1607,79 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     return True
 
 
+def confirm_reference_terms(game_name, references):
+    """Confirm canonical reference terms and their aliases in one atomic write.
+
+    Existing user spellings, corrections and metadata stay owned by their rows.
+    Candidate rows are promoted without dropping evidence. A conflicting alias
+    is retained; a conflicting canonical is left for explicit review.
+    Returns the number of canonical terms actually confirmed, not alias rows.
+    """
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
+
+    if not game_name or not references:
+        return 0
+    payload = load_learned_term_payload(strict=True)
+    games = payload.setdefault('games', {})
+    identity = _glossary_write_key(game_name, games)
+    entry = games.setdefault(identity, {'game': canonicalize_runtime_game_name(game_name), 'mappings': []})
+    mappings = entry.setdefault('mappings', [])
+    by_source = {}
+    spellings = {}
+    for record in mappings:
+        if not isinstance(record, dict):
+            continue
+        by_source.setdefault(str(record.get('from', '')).casefold(), []).append(record)
+        if mapping_is_confirmed(record, inferred_manual=learned_mapping_provenance(record) == TERM_PROVENANCE_USER_CONFIRMED):
+            spellings.setdefault(str(record.get('to', '')).casefold(), str(record.get('to', '')))
+    hidden = {str(name).casefold() for name in entry.get('hidden_reference_terms', [])}
+    # Use the normal hidden-reference reader too (legacy profiles use a separate key).
+    hidden.update(str(name).casefold() for name in hidden_reference_terms_for_game(game_name))
+    added, seen, dirty = 0, set(), False
+    for reference in references:
+        name = clean_glossary_term(reference.get('name', ''))
+        key = name.casefold()
+        if not name or key in seen or key in hidden or reference.get('hidden'):
+            continue
+        seen.add(key)
+        target = spellings.get(key, name)
+        owned = by_source.get(key, [])
+        if any(mapping_is_confirmed(row, inferred_manual=learned_mapping_provenance(row) == TERM_PROVENANCE_USER_CONFIRMED)
+               and str(row.get('to', '')).casefold() != key for row in owned):
+            continue
+        already = any(mapping_is_confirmed(row, inferred_manual=learned_mapping_provenance(row) == TERM_PROVENANCE_USER_CONFIRMED)
+                      and str(row.get('to', '')).casefold() == key for row in owned)
+        aliases = list(dict.fromkeys([name, *[clean_glossary_term(a) for a in reference.get('aliases', ()) if a]]))
+        for alias in aliases:
+            if not alias:
+                continue
+            rows = by_source.get(alias.casefold(), [])
+            if any(mapping_is_confirmed(row, inferred_manual=learned_mapping_provenance(row) == TERM_PROVENANCE_USER_CONFIRMED) for row in rows):
+                continue  # Never redirect an established mapping, including a conflicting alias.
+            record = next((row for row in rows if str(row.get('to', '')).casefold() == key), None)
+            if record is None:
+                record = {'from': alias, 'to': target,
+                          'category': clean_subtitle_text(reference.get('category', '其他')) or '其他',
+                          'reason': str(reference.get('reason') or '确认参考词条'),
+                          'sources': list(reference.get('sources') or ([reference['source']] if reference.get('source') else [])),
+                          'verification': str(reference.get('verification') or 'reference_confirmed')}
+                mappings.append(record)
+                dirty = True
+                by_source.setdefault(alias.casefold(), []).append(record)
+            dirty = True
+            record.update(confirmed=True, provenance=TERM_PROVENANCE_USER_CONFIRMED,
+                          origin='用户确认', updated=time.strftime('%Y-%m-%d'))
+        if not already:
+            added += 1
+        spellings.setdefault(key, target)
+    if dirty:
+        payload['schema'] = max(2, int(payload.get('schema', 1) or 1))
+        _touch_glossary_entry(entry, identity)
+        os.makedirs(os.path.dirname(LEARNED_TERMS_PATH), exist_ok=True)
+        atomic_write_json(LEARNED_TERMS_PATH, payload)
+    return added
+
+
 def edit_learned_mapping(game_name, old_key, source, target, *, category="其他", origin=None, correction_enabled=None, emphasis_enabled=None):
     """One atomic edit, including case-only edits and existing aliases."""
     source, target = clean_glossary_term(source), clean_glossary_term(target)
@@ -2096,7 +2171,7 @@ CACHE_STAGE_VERSIONS = {
 # API 阶段只依赖各自逻辑版本，不再散列整个 6800 行模块。以后修改时间轴、
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
-GROUP_LOGIC_VERSION = "group-v59-word-safe-comfort-length"
+GROUP_LOGIC_VERSION = "group-v61-source-edge-short-tail-rebalance"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
 TIMING_LOGIC_VERSION = "timing-v14-positive-acoustic-cut-edges"
 

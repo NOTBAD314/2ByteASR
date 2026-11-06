@@ -598,10 +598,13 @@ class ReviewTriageAI:
             "instruction": "只判断是否值得人工查看，不改写字幕文本。",
         }
         try:
+            from ..providers.subtitle_request_policy import provider_policy
+            policy = provider_policy(provider)
             payload = provider.structured_complete(
                 [{"role": "system", "content": "You are a subtitle review triage assistant."}, {"role": "user", "content": __import__("json").dumps(request, ensure_ascii=False)}],
                 self.SCHEMA,
-                max_tokens=3000,
+                max_tokens=policy["max_output_tokens"],
+                enable_thinking=policy["enable_thinking"], thinking_protocol=policy["thinking_protocol"],
                 temperature=0.0,
                 stage="studio_review_triage",
             )

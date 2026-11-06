@@ -1,8 +1,8 @@
 """Keep automatic full-heap GC out of transport ticks with bounded deferral.
 
-Reference counting and generations 0/1 stay enabled. A 128 MiB process-private
-growth guard restores normal policy even during playback. Explicit gc.collect
-calls are never intercepted. Pause/hide/close restore the caller's policy.
+Reference counting continues. Automatic GUI collections can wait for fresh
+input to become idle, with a 128 MiB private-growth/low-memory guard. Explicit
+gc.collect calls are never intercepted. Pause/hide/close restore the caller's policy.
 An optional paused sweep skips active editing, an already completed full GC
 and plays that grew the heap less than SWEEP_GROWTH.
 
@@ -125,6 +125,9 @@ class GuiThreadCollector(QObject):
     FULL_GROWTH_SHARE = 0.25
     # Without a memory reading, at most one full collection per interval.
     FULL_FALLBACK_S = 30.0
+    INPUT_IDLE_S = 1.0
+    INPUT_MAX_GROWTH = 128 * 1024 * 1024
+    INPUT_FALLBACK_S = 2.0
 
     def __init__(self, parent=None, *, memory_reader=private_bytes, clock=time.monotonic):
         super().__init__(parent)
@@ -134,6 +137,9 @@ class GuiThreadCollector(QObject):
         self.collections = [0, 0, 0]
         self._baseline = None
         self._last_full = clock()
+        self._input_until = 0.0
+        self._input_started = 0.0
+        self._input_baseline = None
         self.timer = QTimer(self)
         self.timer.setInterval(self.INTERVAL_MS)
         self.timer.timeout.connect(self.tick)
@@ -191,6 +197,24 @@ class GuiThreadCollector(QObject):
                 full_growth_threshold_bytes=threshold)
         return due
 
+    def note_interaction(self):
+        """Reuse the existing Studio input filter, without another global filter."""
+        now = self._clock()
+        if now >= self._input_until:
+            self._input_started = now
+            self._input_baseline = self._memory_reader()
+        self._input_until = now + self.INPUT_IDLE_S
+
+    def _input_is_busy(self):
+        now = self._clock()
+        if now >= self._input_until:
+            self._input_baseline = None
+            return False
+        current = self._memory_reader()
+        if current is None or self._input_baseline is None:
+            return now-self._input_started < self.INPUT_FALLBACK_S
+        return current-self._input_baseline < self.INPUT_MAX_GROWTH
+
     def tick(self):
         if not self.active or gc.isenabled():
             return
@@ -201,6 +225,10 @@ class GuiThreadCollector(QObject):
         if _holders:
             from ..system.memory_budget import memory_status
             if memory_status()['available']>1024**3:return
+        if self._input_is_busy():
+            from ..system.memory_budget import memory_status
+            if memory_status()['available'] > 1024**3:
+                return
         if time.monotonic() >= getattr(self, '_next_cache_pressure', 0):
             self._next_cache_pressure = time.monotonic()+2
             from ..projects.project_read_cache import trim
@@ -232,6 +260,19 @@ def install_gui_thread_collector(app):
     if collector.start():
         app.aboutToQuit.connect(collector.timer.stop)
     return _collector
+
+
+def note_gui_interaction():
+    """Let selection/input paint before an automatic full-heap collection."""
+    if _collector is not None and _collector.active:
+        _collector.note_interaction()
+
+
+def input_collection_deferred():
+    if _collector is None or not _collector.active or not _collector._input_is_busy():
+        return False
+    from ..system.memory_budget import memory_status
+    return memory_status()['available'] > 1024**3
 
 
 class PlaybackGcBudget(QObject):
@@ -326,7 +367,7 @@ class PlaybackGcBudget(QObject):
         # Pausing to type is interaction, not idle. Normal automatic GC was
         # already restored; skipping this optional extra sweep does not hold
         # the heap or disable collection during a long edit.
-        if self.busy() or due is None or gc.get_stats()[2]['collections'] != due:
+        if self.busy() or input_collection_deferred() or due is None or gc.get_stats()[2]['collections'] != due:
             return
         _collect_observed(2,owner='playback_paused_sweep',reason='paused_growth_and_idle')
 
@@ -395,7 +436,10 @@ class ProjectHeapPolicy(QObject):
     def settle(self):
         if self.loading:
             return
-        if self.busy() or (_holders - {('project-load', id(self))}):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        editing_dialog = isinstance(app, QApplication) and app.activeModalWidget() is not None
+        if self.busy() or editing_dialog or input_collection_deferred() or (_holders - {('project-load', id(self))}):
             self.settle_timer.start()  # pointer down, playing: try again later
             return
         self.settle_timer.stop()

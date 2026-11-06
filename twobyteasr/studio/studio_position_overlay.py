@@ -335,6 +335,7 @@ class SubtitlePositionOverlay(QWidget):
         self._schedule_compositor_publish(force=True)
 
     def hideEvent(self, event) -> None:
+        self.clear_hit_region()
         owner = self.parentWidget()
         remover = getattr(owner, "remove_compositor_overlay", None)
         if callable(remover):
@@ -436,8 +437,28 @@ class SubtitlePositionOverlay(QWidget):
             pad + extra_y,
         )
 
+    def clear_hit_region(self):
+        self._dragging = False
+        self._resize_handle = self._hover_handle = ""
+        self._origin_bounds = None
+        self._measured_bounds = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        owner = self.parentWidget()
+        remover = getattr(owner, 'remove_compositor_overlay', None)
+        if callable(remover):remover(owner.TRANSFORM_OVERLAY_ID)
+        self.update()
+
+    def _can_interact(self):
+        guard = getattr(self, 'interaction_guard', None)
+        valid = (not self._requires_measured_bounds or self._measured_bounds is not None)
+        if valid and callable(guard):valid = bool(guard())
+        if not valid:self.clear_hit_region()
+        return valid
+
     def set_measured_bounds(self,rect):
         self._measured_bounds=QRectF(rect) if rect is not None else None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, rect is None)
         if rect is None:
             owner=self.parentWidget()
             remover=getattr(owner,'remove_compositor_overlay',None)
@@ -459,6 +480,7 @@ class SubtitlePositionOverlay(QWidget):
         }
 
     def _handle_at(self, point: QPoint) -> str:
+        if self._subtitle_rect().isEmpty():return ""
         rect = self._subtitle_rect()
         if rect.isEmpty():return ""
         half = self.HANDLE_HIT_SIZE / 2.0
@@ -489,6 +511,7 @@ class SubtitlePositionOverlay(QWidget):
         return self._video_point(anchor + point - self._drag_origin)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self._can_interact():event.ignore();return
         if event.button() != Qt.MouseButton.LeftButton:
             event.ignore(); return
         point = event.position().toPoint()
@@ -510,6 +533,7 @@ class SubtitlePositionOverlay(QWidget):
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if not self._can_interact():event.ignore();return
         if not self._dragging:
             point = event.position().toPoint()
             previous = self._hover_handle
@@ -562,6 +586,7 @@ class SubtitlePositionOverlay(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if not self._can_interact():event.ignore();return
         if event.button() != Qt.MouseButton.LeftButton or not self._dragging:
             return
         self._dragging = False
@@ -596,6 +621,7 @@ class SubtitlePositionOverlay(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if not self._can_interact():event.ignore();return
         if event.button() == Qt.MouseButton.LeftButton and self._subtitle_rect().contains(event.position().toPoint()):
             self.doubleClickRequested.emit()
             event.accept()

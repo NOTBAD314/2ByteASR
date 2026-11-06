@@ -112,6 +112,10 @@ def test_render_error_retains_original_traceback_and_output(tmp_path,app,monkeyp
     def broken(*args,**kwargs):
         raise ValueError('fixture glyph failure')
     monkeypatch.setattr(live,'render_live_snapshot',broken)
+    # A verified persistent hit intentionally does not invoke the renderer.
+    # Force this fault-injection case to exercise a cache miss.
+    from twobyteasr.rendering import static_export_cache
+    monkeypatch.setattr(static_export_cache,'restore',lambda *args:None)
     with pytest.raises(ExportFailure) as caught:
         render_static_graph(project,FFMPEG,job)
     assert caught.value.evidence['cue_id']=='0'

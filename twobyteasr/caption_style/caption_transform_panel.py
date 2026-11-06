@@ -451,11 +451,11 @@ class CaptionTransformPanel(FoldCard):
         if not targets or overlay is None or overlay._dragging:return
         cue=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
         shown=displayed_layer(self.page.project,cue,self.language.currentData())
-        values=resolved_values(self.page.project,cue,self.language.currentData())
-        if shown is None or values is None:return
+        if shown is None:return
         from .resolved_caption_style import resolve_caption_style
         width=int(self.page.project.render_settings.get('play_res_x',1920));height=int(self.page.project.render_settings.get('play_res_y',1080))
         style=resolve_caption_style(self.page.project.styles,self.page.project.speakers,shown,self.page.project.style_recipes,width).style
+        values=resolved_values(self.page.project,cue,self.language.currentData(),displayed=shown,resolved_style=style)
         overlay.set_text(shown.text)
         overlay.set_video_position(round(values['position_x']),round(values['position_y']),width,height)
         overlay.set_font_spec(style.font_family,style.font_size,style.spacing,style.alignment,

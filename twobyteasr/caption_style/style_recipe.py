@@ -67,7 +67,7 @@ NATIVE_SECTION_KEYS = {
         "alignment", "marginL", "marginR", "marginV", "positionX", "positionY",
     },
     # For native we only allow solid color here. Gradient objects force advanced.
-    "colors": {"fill", "outline", "background"},
+    "colors": {"fill", "outline", "background", "effectPaints"},
     "outline": {"color", "width", "alignment", "layers", "shadow"},
     "background": {"enabled", "color"},
     "motion": {
@@ -128,6 +128,7 @@ class FillSpec:
     color: str = "#FFFFFFFF"
     stops: tuple[dict[str, Any], ...] = ()
     angle: float = 0.0
+    radius: float = 1.0
 
     @classmethod
     def solid(cls, color: str) -> "FillSpec":
@@ -157,6 +158,7 @@ class FillSpec:
             normalized,
             stops=tuple(copy.deepcopy(list(value.get("stops") or ()))),
             angle=float(value.get("angle", 0) or 0),
+            radius=float(value.get("radius", 1) or 1),
         ).validate()
 
     def validate(self) -> "FillSpec":
@@ -167,6 +169,7 @@ class FillSpec:
             if not _valid_color(self.color):
                 raise StyleRecipeValidationError("solid fill color invalid")
             return self
+        _finite_number(self.radius, "fill.radius", 0.05, 4.0)
         _validate_gradient(self.to_dict())
         return self
 
@@ -183,6 +186,7 @@ class FillSpec:
                 for stop in self.stops
             ],
             "angle": float(self.angle),
+            **({'radius': float(self.radius)} if self.kind == 'radial-gradient' and self.radius != 1 else {}),
         }
 
     def to_recipe_value(self) -> str | dict[str, Any]:
@@ -325,6 +329,7 @@ def normalize_shadow_contract(value: Any) -> dict[str, Any]:
         "blur": blur,
         "spread": spread,
         "strength": strength,
+        **({'paint': FillSpec.from_value(value['paint']).to_dict()} if isinstance(value, Mapping) and value.get('paint') else {}),
     }
 
 
@@ -368,6 +373,7 @@ def normalize_glow_contract(value: Any) -> dict[str, Any]:
         "intensity": intensity,
         "spread": spread,
         "strength": strength if strength > 0 else radius,
+        **({'paint': FillSpec.from_value(raw['paint']).to_dict()} if raw.get('paint') else {}),
     }
 
 
@@ -616,6 +622,8 @@ class StyleRecipe:
             self.engine = "remotion"
         if "fill" in self.colors:
             FillSpec.from_value(self.colors.get("fill"))
+        from .effect_paints import apply_effect_paints
+        apply_effect_paints(self)
         _safe_json(self.to_dict(validate=False))
 
     def to_dict(self, *, validate: bool = True) -> dict[str, Any]:

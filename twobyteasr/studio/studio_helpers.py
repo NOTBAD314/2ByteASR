@@ -118,7 +118,7 @@ def resolve_fill_brush(fill: object, rect: QRectF) -> QBrush:
         radius = max(.001,(abs(dx)*rect.width()+abs(dy)*rect.height())/2)
         gradient = QLinearGradient(center.x() - dx * radius, center.y() - dy * radius, center.x() + dx * radius, center.y() + dy * radius)
     elif kind in {"radial", "radial-gradient"}:
-        gradient = QRadialGradient(rect.center(), max(rect.width(), rect.height()) / 2)
+        gradient = QRadialGradient(rect.center(), max(rect.width(), rect.height()) / 2 * max(.05, float(fill.get("radius", 1))))
     else:
         return QBrush(_preview_color(fill.get("color")))
     for stop in stops:
@@ -128,6 +128,20 @@ def resolve_fill_brush(fill: object, rect: QRectF) -> QBrush:
             continue
         gradient.setColorAt(position, _preview_color(stop.get("color")))
     return QBrush(gradient)
+
+
+def resolve_effect_brush(effect, rect, fallback='#FF000000'):
+    brush = resolve_fill_brush(effect.get('paint') or effect.get('color') or fallback, rect)
+    opacity = max(0., min(1., float(effect.get('opacity', 1))))
+    gradient = brush.gradient()
+    if gradient is not None:
+        for position, color in gradient.stops():
+            color.setAlphaF(color.alphaF() * opacity)
+            gradient.setColorAt(position, color)
+        return QBrush(gradient)
+    color = brush.color()
+    color.setAlphaF(color.alphaF() * opacity)
+    return QBrush(color)
 
 
 def render_style_sample(

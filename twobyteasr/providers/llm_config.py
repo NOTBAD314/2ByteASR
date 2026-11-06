@@ -976,7 +976,8 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
     from .asr_provider_snapshot import snapshot_in_settings
     snapshot = snapshot_in_settings(settings)
     if snapshot is not None:
-        return snapshot.endpoint()
+        return {**snapshot.endpoint(), "max_output_tokens": snapshot.max_output_tokens,
+                "enable_thinking": snapshot.enable_thinking, "thinking_protocol": snapshot.thinking_protocol}
     models = settings.get("models", {})
     unified_model = bool(
         settings.get("switches", {}).get("unified_glm_processing", False)
@@ -1040,7 +1041,9 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
         api_key, key_source = resolve_api_key(credential_stage)
     if not api_key and ephemeral_key:
         api_key, key_source = ephemeral_key, "当前输入"
+    from .subtitle_request_policy import settings_policy
     return {
+        **settings_policy(settings, stage),
         "provider": provider,
         "model": model,
         "base_url": base_url,

@@ -2133,18 +2133,22 @@ class StudioMediaFlowMixin:
         def trace_log(event: str, fields: dict) -> None:
             GLOBAL_STUDIO_TRACE.emit(event, {"media_path": media_key, **fields})
 
+        waveform_project = self.project
         def resolve_duration_ms() -> int:
             duration = 0
-            if self.project is not None:
-                if str(Path(self.project.media.path).resolve()) == source_key:
-                    duration = int(self.project.media.duration_ms or 0)
-                for asset in self.project.media_pool:
+            if waveform_project is not None:
+                if str(Path(waveform_project.media.path).resolve()) == source_key:
+                    duration = int(waveform_project.media.duration_ms or 0)
+                for asset in waveform_project.media_pool:
                     if str(Path(asset.canonical_source).resolve()) == source_key:
                         duration = max(duration, int(asset.duration_ms or 0))
-            if not duration and self.project is not None:
-                mapping = getattr(self.project, "studio_state", {}).get("media_time_mapping", {})
+            if not duration and waveform_project is not None:
+                mapping = getattr(waveform_project, "studio_state", {}).get("media_time_mapping", {})
                 duration = int(dict(mapping).get("duration_ms", 0) or 0)
             return duration
+
+        waveform_duration_ms = resolve_duration_ms()
+        waveform_mapping = stream_time_mapping(waveform_project, source_key, audio_stream)
 
         def decode_source_resolver():
             # ffmpeg decodes the selected audio directly from FLV; making an
@@ -2176,7 +2180,7 @@ class StudioMediaFlowMixin:
                     media_path,
                     ffmpeg,
                     cancelled=cancel_event.is_set,
-                    time_mapping=stream_time_mapping(self.project, source_key, audio_stream),
+                    time_mapping=waveform_mapping,
                     audio_stream=audio_stream,
                     on_ready=publish,
                     before_refine=lambda: self._resource_governor.wait_until_allowed(

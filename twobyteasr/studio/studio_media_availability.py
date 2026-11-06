@@ -171,6 +171,11 @@ class StudioMediaAvailability(QObject):
         self.refresh()
 
     def refresh(self, *, update_timeline=True):
+        if getattr(self.page,'_close_requested',False) or getattr(self.page,'timeline',None) is None:
+            return
+        from shiboken6 import isValid
+        if isinstance(self.page.timeline, QObject) and not isValid(self.page.timeline):
+            return
         project = self.page.project
         missing = [a for a in project.media_pool if a.offline] if project else []
         self.banner.setVisible(bool(missing))

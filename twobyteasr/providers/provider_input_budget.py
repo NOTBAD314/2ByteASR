@@ -34,12 +34,12 @@ POLICIES={
     'numeric_patch':InputPolicy(6000,4096,12288,0,0,0,128_000),
     'visual_feedback':InputPolicy(8000,6000,16384,1,960,120_000,400_000),
     'general':InputPolicy(32768,16384,65536,3,768,160_000,1_500_000),
-    'polish':InputPolicy(20000,8192,32768,0,0,0,180_000),
+    'polish':InputPolicy(20000,262144,32768,0,0,0,180_000),
     'domain_terms':InputPolicy(18000,8192,32768,0,0,0,160_000),
     # 联网词库更新：64 词条 × 全证据字段（sources/evidence）≈ 9-12k 输出；
     # 沿用 domain_terms 的 8k 输出上限，实测会让模型丢弃全部来源字段。
     'glossary_update':InputPolicy(18000,16000,49152,0,0,0,240_000),
-    'group':InputPolicy(20000,8192,32768,0,0,0,180_000),
+    'group':InputPolicy(20000,262144,32768,0,0,0,180_000),
 }
 
 
@@ -263,10 +263,10 @@ DETERMINISTIC_FAILURES = frozenset({
     'request_too_large', 'payload_too_large', 'transport_length',
     'authentication_required', 'cancelled', 'permission_denied', 'forbidden',
     'configuration_error', 'not_installed', 'unsupported_cli', 'unsupported_search',
-    'model_unavailable', 'unknown_model', 'upgrade_required',
+    'model_unavailable', 'unknown_model', 'upgrade_required', 'output_budget_unsupported', 'unsupported_parameters',
 })
 
-TASK_CONFIGURATION_FAILURES = frozenset({'unknown_model', 'model_unavailable', 'configuration_error'})
+TASK_CONFIGURATION_FAILURES = frozenset({'unknown_model', 'model_unavailable', 'configuration_error', 'output_budget_unsupported', 'unsupported_parameters'})
 
 
 def failure_category(error):

@@ -36,7 +36,8 @@ ROOT_FILES = {"LICENSE", "THIRD_PARTY_NOTICES.md", "PROJECT_LICENSE.md", "SOURCE
               "BUILD_FROM_SOURCE.md", "CHANGELOG.md", "CONTRIBUTING.md", "UPDATING.md", "RELEASING.md",
               "2byteasr_version.json", "dependencies.lock.json", "game_profiles.json", "glossary.txt",
               "requirements-main.txt"}
-EXCLUDED_PREFIXES = ("renderer/node_modules/", "renderer/public/", "wheels/", "tools/", "tests/data/")
+EXCLUDED_PREFIXES = ("renderer/node_modules/", "renderer/public/", "renderer/prebuilt-export/",
+                     "renderer/tmp/", "wheels/", "tools/", "tests/data/")
 # Build inputs outside the scoped prefixes: the EXE icon (PyInstaller spec), the Setup
 # icon (Inno script) and the window/brand images loaded at runtime.
 BUILD_INPUT_FILES = {"assets/app_icon.ico", "assets/2byteasr.ico", "assets/app_icon_256.png",

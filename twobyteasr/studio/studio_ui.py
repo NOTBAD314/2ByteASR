@@ -564,6 +564,7 @@ class SubtitleStudioPage(
         self.project_controller = StudioProjectController(self, self.session)
         self.cue_controller = StudioCueController(self, self.session)
         self.style_controller = StudioStyleController(self, self.session)
+        self._caption_consumed_commit_key = None
         self._revision_store: StudioRevisionStore | None = None
         self._ass_actor: AssCompileActor | None = None
         self._ass_snapshot_ms: dict[int, float] = {}
@@ -1335,12 +1336,34 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        if event_type == QEvent.Type.MouseMove:
+            if event.buttons():
+                from ..playback.playback_gc_budget import note_gui_interaction
+                note_gui_interaction()
+            return False
         # Application-wide filters also receive every Polish/Paint/style
         # event generated while hundreds of hidden controls settle. Reject
         # those before Python property and Qt viewport lookups; keep the
         # three early handlers that are not in the main dispatch set.
         if event_type not in self._FILTERED_EVENT_TYPES and event_type not in (
                 QEvent.Type.FocusIn, QEvent.Type.InputMethod, QEvent.Type.KeyRelease):
+            return False
+        state = self.__dict__
+        if event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
+                          QEvent.Type.KeyPress, QEvent.Type.Wheel, QEvent.Type.InputMethod):
+            from ..playback.playback_gc_budget import note_gui_interaction
+            note_gui_interaction()
+        if (event_type in (QEvent.Type.KeyPress,QEvent.Type.InputMethod,QEvent.Type.FocusIn)
+                and getattr(self,'cue_controller',None) is not None):
+            self.cue_controller.flush_table_activation()
+        if event_type == QEvent.Type.Resize and self._hub_ui_ready and not self._close_requested:
+            scroll = state.get('project_library_scroll')
+            if scroll is not None and watched is scroll.viewport():
+                if self.project is None and hasattr(self, '_hub_card_widgets'):
+                    self._refresh_studio_empty_state(rescan=False)
+        if (event_type in _GEOMETRY_EVENT_TYPES
+                and watched not in (self, state.get('video'), state.get('context_drawer'), state.get('video_overlay_host'))
+                and watched is not self.window()):
             return False
         consumed = getattr(self, '_caption_consumed_commit_key', None)
         if (consumed is not None and isinstance(event,QKeyEvent) and event.key()==consumed
@@ -1357,19 +1380,7 @@ class SubtitleStudioPage(
         if event_type == QEvent.Type.InputMethod:
             self._studio_ime_composing=bool(event.preeditString())
             return False
-        scroll = getattr(self, 'project_library_scroll', None)
-        if (event_type == QEvent.Type.Resize and self._hub_ui_ready and not self._close_requested
-                and scroll is not None and watched is scroll.viewport()):
-            if self.project is None and hasattr(self, '_hub_card_widgets'):
-                self._refresh_studio_empty_state(rescan=False)
         if event_type not in self._FILTERED_EVENT_TYPES:
-            return False
-        if (event_type in _GEOMETRY_EVENT_TYPES and watched is not getattr(self, "video", None)
-                and watched is not getattr(self, "context_drawer", None)
-                and watched is not getattr(self, 'video_overlay_host', None)
-                and watched is not self and watched is not self.window()):
-            # 2026-10-22: a panel-divider step moves/resizes ~200 widgets;
-            # only these three use the geometry events below.
             return False
         if event_type in (QEvent.Type.MouseButtonDblClick, QEvent.Type.MouseButtonPress):
             if watched in {
@@ -2067,31 +2078,18 @@ class SubtitleStudioPage(
             return
         tabbar = drawer.tabBar()
         tabbar.setElideMode(Qt.TextElideMode.ElideNone)
-        tabbar.setUsesScrollButtons(False)
-        # Expanding stays on: tabs share the drawer width (centered group).
-        full = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
-        medium = ("AI", "样式", "动效", "视频", "剪辑", "素材")
-        width = max(1, drawer.width())
-        # Compact glyphs leave room for readable labels in the default drawer.
-        if width >= 530:
-            labels, mode, icon_only = full, "full", False
-        elif width >= 350:
-            labels, mode, icon_only = medium, "medium", False
-        else:
-            labels, mode, icon_only = ("", "样式", "动效", "", "", ""), "icon", True
-        if getattr(self, "_context_tab_mode", "") == mode:
-            return
-        self._context_tab_mode = mode
-        drawer.setProperty("tabMode", mode)
-        drawer.style().unpolish(drawer)
-        drawer.style().polish(drawer)
-        tabbar.style().unpolish(tabbar)
-        tabbar.style().polish(tabbar)
+        tabbar.setUsesScrollButtons(True)
+        labels = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
+        full = labels
+        self._context_tab_mode = 'full'
+        drawer.setProperty('tabMode', 'full')
         for index, label in enumerate(labels):
             if index >= drawer.count():
                 break
             drawer.setTabText(index, tr(label))
             drawer.setTabToolTip(index, tr(full[index]))
+        selector = getattr(self, 'context_tools', None)
+        if selector is not None: selector.sync()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

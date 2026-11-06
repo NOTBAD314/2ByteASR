@@ -1,4 +1,5 @@
 import type {WordAnimation} from './TimedText';
+import {cssFontStack} from '../webThemeFonts';
 
 type Metrics = {
   text: string; family: string; size: number; weight: number; italic: boolean;
@@ -10,10 +11,11 @@ type Metrics = {
 // shadow and fill copies and by every frame of the same caption/font/layout.
 const cache = new Map<string, {x: number; y: number}>();
 let canvas: HTMLCanvasElement | undefined;
+export const clearCaptionInkAnchors = () => cache.clear();
 
 export const captionInkAnchor = (input: Metrics): {x: number; y: number} => {
   if (typeof document === 'undefined') return {x: 0, y: 0};
-  const font = `${input.italic ? 'italic' : 'normal'} ${input.weight} ${input.size}px ${JSON.stringify(input.family)}`;
+  const font = `${input.italic ? 'italic' : 'normal'} ${input.weight} ${input.size}px ${cssFontStack(input.family)}`;
   const marks = input.plan?.marks || [];
   const units = (input.plan?.units || []).map(unit => [unit.char_start, unit.char_end]);
   // A first render may precede document.fonts.ready. Its fallback metrics may
@@ -51,7 +53,7 @@ export const captionInkAnchor = (input: Metrics): {x: number; y: number} => {
       const attrs = Object.assign({}, ...marks.filter(mark => mark.start <= a && mark.end >= b));
       const weight = attrs.bold === undefined ? input.weight : attrs.bold ? Math.max(700, input.weight) : 400;
       const italic = attrs.italic === undefined ? input.italic : attrs.italic;
-      context.font = `${italic ? 'italic' : 'normal'} ${weight} ${input.size}px ${JSON.stringify(input.family)}`;
+      context.font = `${italic ? 'italic' : 'normal'} ${weight} ${input.size}px ${cssFontStack(input.family)}`;
       const text = characters.slice(a-sourceStart, b-sourceStart).join('');
       const ink = context.measureText(text);
       if (text.trim()) {

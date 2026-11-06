@@ -706,6 +706,13 @@ def _start_screen_eyedrop(self) -> None:
     window = self.window()
     opacity = window.windowOpacity() if window is not None else 1.0
     if window is not None:
+        # An in-progress entrance fade must not make the dialog reappear while
+        # the screen sampler is looking through it, or leave it half transparent.
+        from PySide6.QtCore import QAbstractAnimation
+        entrance = getattr(window, '_entrance', None)
+        if entrance is not None and entrance.state() == QAbstractAnimation.State.Running:
+            opacity = float(entrance.endValue())
+            entrance.stop()
         # hide() ends QDialog.exec() with Rejected. The caller then loses
         # the eventual picked value, even though the swatch changes.
         window.setWindowOpacity(0.0)

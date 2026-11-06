@@ -29,8 +29,10 @@ from twobyteasr.storage.settings import DEFAULT_SETTINGS
 from twobyteasr.diagnostics.build_identity import is_current_delivery_file
 defaults_dir = ROOT / 'tmp' / 'frozen-defaults'
 defaults_dir.mkdir(parents=True, exist_ok=True)
-(defaults_dir / '2byteasr_settings.json').write_text(
-    json.dumps(DEFAULT_SETTINGS, ensure_ascii=False, indent=2), encoding='utf-8')
+_defaults_file = defaults_dir / '2byteasr_settings.json'
+_defaults_text = json.dumps(DEFAULT_SETTINGS, ensure_ascii=False, indent=2)
+if not _defaults_file.is_file() or _defaults_file.read_text(encoding='utf-8') != _defaults_text:
+    _defaults_file.write_text(_defaults_text, encoding='utf-8')
 datas.append((str(defaults_dir / '2byteasr_settings.json'), '.'))
 if os.environ.get('TWOBYTEASR_QA_BUILD') == '1':
     marker = defaults_dir / '2byteasr-qa-profile.marker'
@@ -190,6 +192,9 @@ excluded_modules = [
     "torch",
     "torchaudio",
     "transformers",
+    # PyInstaller's analysis adds this automatically; list it explicitly so
+    # the next run can reuse the identical completed Analysis exclusions.
+    "__main__",
 ]
 
 # Local MCP server (2026-10-12): ``2ByteASR.exe --mcp-stdio`` imports the
@@ -236,6 +241,36 @@ _unused_qt_binaries = {
 }
 a.binaries = [entry for entry in a.binaries
               if Path(entry[0]).as_posix() not in _unused_qt_binaries]
+# A local daily may retain validated native/Tcl bytes while rebuilding its
+# Python/archive and external scripts. Pin before COLLECT, never splice DLLs
+# into the frozen output afterwards. Every selected file must already exist.
+_pin_root = os.environ.get('TWOBYTEASR_PIN_PACKAGE_ROOT')
+if _pin_root:
+    _pin_root = Path(_pin_root).resolve()
+    def pinned_entry(entry):
+        previous = _pin_root / entry[0]
+        if not previous.is_file():
+            raise RuntimeError('Baseline package lacks build dependency: '+entry[0])
+        return (entry[0], str(previous), *entry[2:])
+    a.binaries = [pinned_entry(entry) for entry in a.binaries]
+    a.datas = [pinned_entry(entry) if (entry[0].replace('\\', '/').startswith(('_tcl_data/', '_tk_data/'))
+               or entry[0] == 'base_library.zip') else entry for entry in a.datas]
+    # Source-only snapshots omit unmodified images and API-guide assets.
+    # Retain the verified predecessor's resources before collection too.
+    _known = {entry[0].replace('\\', '/') for entry in a.binaries + a.datas}
+    for _resource_folder in ('assets', 'docs'):
+        for _resource in sorted((_pin_root / _resource_folder).rglob('*')):
+            if not _resource.is_file():
+                continue
+            _destination = _resource.relative_to(_pin_root).as_posix()
+            if _destination not in _known:
+                a.datas.append((_destination, str(_resource), 'DATA'))
+                _known.add(_destination)
+    # Finalize provenance after a valid Analysis cache is reused; changing
+    # only build identity must not force analysis of unchanged Python code.
+    from twobyteasr.diagnostics.build_identity import write_build_metadata
+    write_build_metadata(ROOT, build_metadata, channel=os.environ.get('TWOBYTEASR_BUILD_CHANNEL', ''))
+    print('Validated native/Tcl inputs pinned before collection:', _pin_root)
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -249,7 +284,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=str(ROOT / "assets" / "app_icon.ico"),
+    icon=str((_pin_root if _pin_root else ROOT) / "assets" / "app_icon.ico"),
     version=str(ROOT / "packaging" / "version_info.txt"),
     contents_directory=".",
 )

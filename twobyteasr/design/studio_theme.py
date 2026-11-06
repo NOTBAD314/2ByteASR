@@ -352,7 +352,7 @@ QWidget#subtitleStudio {{ background: {theme.app_background}; color: {theme.text
 QFrame#contextPanel {{ background: {theme.panel}; }}
 QTabWidget#contextDrawer::pane {{ background: {theme.panel}; border-top: 1px solid {theme.border}; }}
 QTabWidget#contextDrawer QTabBar::tab {{
-    min-height: 44px; padding: 2px 6px; min-width: 44px; max-width: 92px;
+    min-height: 44px; padding: 2px 6px; min-width: 44px;
     color: {theme.text_muted}; background: transparent;
 }}
 QTabWidget#contextDrawer QTabBar::tab:hover {{ background: {theme.selected}; color: {theme.text}; }}

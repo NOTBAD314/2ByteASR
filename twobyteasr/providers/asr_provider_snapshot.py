@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from ..subtitle_rules.grouping_request import GROUPING_PROMPT_VERSION
 
 GROUP_PROMPT_VERSION = "numeric-boundaries-v5-shared-scene-compact-short-material:" + GROUPING_PROMPT_VERSION
-GROUP_CACHE_VERSION = "snapshot-validated-grouped-v6-source-contract"
+GROUP_CACHE_VERSION = "snapshot-validated-grouped-v7-request-policy-comfort"
 POLISH_PROMPT_VERSION = "correction-edits-v18-language-risk-locale-repair"
 
 
@@ -75,6 +75,9 @@ class ProviderSnapshot:
     prefer_arabic_numbers: bool = True
     json_mode: bool = True
     structured_output: bool = True
+    max_output_tokens: int = 10000
+    enable_thinking: bool = False
+    thinking_protocol: str = "auto"
     timeout_policy: TimeoutPolicy = field(default_factory=TimeoutPolicy)
     prompt_versions: tuple[tuple[str, str], ...] = field(default_factory=lambda: (
         ("polished", POLISH_PROMPT_VERSION), ("grouped", GROUP_PROMPT_VERSION)))
@@ -96,13 +99,16 @@ class ProviderSnapshot:
                 "configuration_source": self.configuration_source, "speaker_source": self.speaker_source,
                 "numeric_rules": self.numeric_rules, "terminology_retrieval_rules": self.terminology_retrieval_rules,
                 "prefer_arabic_numbers": self.prefer_arabic_numbers,
-                "json_mode": self.json_mode, "structured_output": self.structured_output}
+                "json_mode": self.json_mode, "structured_output": self.structured_output,
+                "max_output_tokens": self.max_output_tokens, "enable_thinking": self.enable_thinking,
+                "thinking_protocol": self.thinking_protocol}
 
     def public_identity(self) -> dict:
         return {**self.cache_identity(), "fingerprint": self.fingerprint}
 
     def endpoint(self) -> dict:
-        return dict(self._endpoint)
+        return {**dict(self._endpoint), "max_output_tokens": self.max_output_tokens,
+                "enable_thinking": self.enable_thinking, "thinking_protocol": self.thinking_protocol}
 
     def execution_settings(self) -> dict:
         # Only the typed private marker is honored by the production resolver.
@@ -112,7 +118,9 @@ class ProviderSnapshot:
             for key, value in (("provider", self.provider), ("model", self.model),
                                ("transport", self.transport), ("protocol", self.protocol),
                                ("capabilities", list(self.capabilities)),
-                               ("json_mode", self.json_mode), ("structured_output", self.structured_output))}}
+                               ("json_mode", self.json_mode), ("structured_output", self.structured_output),
+                               ("max_output_tokens", self.max_output_tokens), ("enable_thinking", self.enable_thinking),
+                               ("thinking_protocol", self.thinking_protocol))}}
 
 
 def snapshot_in_settings(settings) -> ProviderSnapshot | None:
@@ -156,7 +164,9 @@ def resolve_provider_snapshot(settings, *, timeout_policy=None, stage="group") -
               "endpoint": endpoint_identity(endpoint.get("base_url", "")),
               "protocol": endpoint["protocol"], "transport": transport, "capabilities": capabilities,
               "json_mode": json_mode, "structured_output": structured_output}
-    return ProviderSnapshot(provider=endpoint["provider"], profile_id=profile_id,
+    from .subtitle_request_policy import settings_policy
+    policy = settings_policy(frozen, stage)
+    return ProviderSnapshot(**policy, provider=endpoint["provider"], profile_id=profile_id,
         profile_revision=digest(public), model=endpoint["model"],
         kind="cli" if transport.endswith("_cli") else "http", transport=transport,
         endpoint_identity=public["endpoint"], protocol=endpoint["protocol"], capabilities=capabilities,
@@ -313,11 +323,12 @@ def restore_source_text(segments, cues) -> bool:
 
 class GroupedBatchResult(list):
     def __init__(self, values=(), *, origin="ai", validated=False, cache_hit=False,
-                 data_validated=False, source_fingerprint=""):
+                 data_validated=False, source_fingerprint="", result_status=None):
         # validated retains legacy AI/fast-path cache eligibility. A safe
         # local fallback is data_validated without claiming AI approval.
         super().__init__(values)
         self.origin = origin
+        self.result_status = result_status or ("cloud_direct" if origin == "ai" else "local_fallback" if origin == "fallback" else "local")
         self.validated = bool(validated)
         self.cache_hit = bool(cache_hit)
         self.data_validated = bool(data_validated)

@@ -8,7 +8,20 @@ class TranslationSplice:
     def __init__(self, project, before, after):
         self.ids = {cue.id for cue in before+after}
         metadata = project.generation_metadata
-        container, _ = translation._migrated_container(metadata, project.cues)
+        stored = metadata.get(translation.RECORDS_KEY)
+        if translation._valid_container(stored):
+            # Reconciliation is pure. This command only consumes the touched
+            # records, and an existing container retains every other record in
+            # place. Migrate a narrow view rather than cloning the whole bank.
+            narrow = dict(metadata)
+            narrow[translation.RECORDS_KEY] = dict(stored, records={
+                key:stored['records'][key] for key in self.ids if key in stored['records']})
+            narrow[translation.RENDER_KEY] = {key:metadata.get(translation.RENDER_KEY,{}).get(key)
+                                             for key in self.ids}
+            container, _ = translation._migrated_container(narrow, before)
+        else:
+            # First migration needs the complete legacy bank as its template.
+            container, _ = translation._migrated_container(metadata, project.cues)
         records = (container or {}).get('records', {})
         self.before_container_present = 'translation_records' in metadata
         self.before_view_present = 'translations' in metadata
@@ -19,8 +32,15 @@ class TranslationSplice:
         surviving = {cue.id for cue in after}
         for key in self.ids - surviving:
             self.after[key] = None
-        self.template = deepcopy(container or {'version': 1, 'records': {}})
-        if self.before_container_present: self.template['records'] = {}
+        if self.before_container_present:
+            # Only top-level metadata is used as a template when records
+            # already exist; copying the entire history only to discard it
+            # made even local edits pay for every translation in the project.
+            self.template = {key:deepcopy(value) for key,value in (container or {'version':1}).items()
+                             if key != 'records'}
+            self.template['records'] = {}
+        else:
+            self.template = deepcopy(container or {'version': 1, 'records': {}})
         for key in self.ids:
             self.after_view[key] = None
         source = [(cue, self.before.get(cue.id)) for cue in before if self.before.get(cue.id)]
@@ -90,7 +110,9 @@ class TranslationSplice:
     def apply(self, project, forward):
         if not self.active: return
         meta = project.generation_metadata
-        records = meta.setdefault('translation_records', deepcopy(self.template)).setdefault('records', {})
+        if 'translation_records' not in meta:
+            meta['translation_records'] = deepcopy(self.template)
+        records = meta['translation_records'].setdefault('records', {})
         view = meta.setdefault('translations', {})
         for key, value in (self.after if forward else self.before).items():
             if value is None: records.pop(key, None)

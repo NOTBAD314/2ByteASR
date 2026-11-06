@@ -136,9 +136,12 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                                      for source, target in pairs] if container_target(project) in languages else [],
             "reference_terms": list(snapshot.canonical_terms)[:400] if any(e.target.layer == 'original' for e in batch) else []}
         try:
+            from ..providers.subtitle_request_policy import provider_policy
+            policy = provider_policy(provider)
             raw = provider.complete([{"role": "system", "content": SYSTEM + '\n' + TERM_PROMPT},
                                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-                max_tokens=5000, temperature=.1, timeout=(10, 90), enable_thinking=False,
+                max_tokens=policy["max_output_tokens"], temperature=.1, timeout=(10, 90),
+                enable_thinking=policy["enable_thinking"], thinking_protocol=policy["thinking_protocol"],
                 response_format={"type": "json_object"}, stage="studio_translation_proofread",
                 structured_retry_system_prompt=SYSTEM, json_schema=schema, cancel_check=token.raise_if_cancelled)
             token.raise_if_cancelled()

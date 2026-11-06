@@ -12,7 +12,7 @@ from PySide6.QtGui import (
     QPainterPathStroker, QPen, QPolygonF, QRadialGradient,
 )
 
-from ..studio.studio_helpers import resolve_fill_brush
+from ..studio.studio_helpers import resolve_fill_brush, resolve_effect_brush
 from ..caption_design.visual_design_graph import (
     COORDINATE_SPACE_VIDEO_CANVAS,
     CompiledLiveScene,
@@ -22,7 +22,14 @@ from ..caption_design.visual_design_graph import (
 from ..caption_style.visual_snapshot import VisualCueSnapshot
 
 
-LIVE_RENDERER_VERSION = "qt-live-v7-affine-line-loop"
+LIVE_RENDERER_VERSION = "qt-live-v8-effect-paints"
+LEGACY_LIVE_RENDERER_VERSION = "qt-live-v7-affine-line-loop"
+
+
+def live_renderer_version(snapshot):
+    from ..caption_style.effect_paints import needs_effect_paint_pixels
+    return LIVE_RENDERER_VERSION if needs_effect_paint_pixels(snapshot) else LEGACY_LIVE_RENDERER_VERSION
+
 
 
 class LiveLayerImages(dict[str, QImage]):
@@ -113,11 +120,18 @@ def _draw_soft_path(
     spread: float = 0.0,
     fill_core: bool,
     intensity: float = 1.0,
+    paint=None,
+    paint_rect=None,
 ) -> None:
     """Paint a bounded soft halo without a QWidget/scene blur round trip."""
     radius = max(0.0, float(radius))
     spread = max(0.0, float(spread))
     intensity = max(0.0, float(intensity))
+    def ink(alpha):
+        if paint is None:
+            return QBrush(_alpha_color(color, alpha))
+        return resolve_effect_brush({'paint': paint, 'opacity': color.alphaF() * alpha},
+                                    paint_rect if paint_rect is not None else path.boundingRect())
     steps = max(1, min(8, int(ceil(radius))))
     painter.setBrush(Qt.BrushStyle.NoBrush)
     for step in range(steps, 0, -1):
@@ -127,7 +141,7 @@ def _draw_soft_path(
             continue
         ring_alpha = min(1.0, intensity * (0.10 + 0.18 * (1.0 - ratio)) / steps * 4.0)
         painter.setPen(QPen(
-            _alpha_color(color, ring_alpha),
+            ink(ring_alpha),
             max(0.6, extent * 2.0),
             Qt.PenStyle.SolidLine,
             Qt.PenCapStyle.RoundCap,
@@ -136,17 +150,17 @@ def _draw_soft_path(
         painter.drawPath(path)
     if fill_core:
         painter.setPen(QPen(
-            _alpha_color(color, min(1.0, intensity)),
+            ink(min(1.0, intensity)),
             max(0.0, spread * 2.0),
             Qt.PenStyle.SolidLine,
             Qt.PenCapStyle.RoundCap,
             Qt.PenJoinStyle.RoundJoin,
         ))
-        painter.setBrush(_alpha_color(color, min(1.0, intensity)))
+        painter.setBrush(ink(min(1.0, intensity)))
         painter.drawPath(path)
 
 
-def _draw_shadow_path(painter, path, *, color, radius, spread=0.0, fill_core=True):
+def _draw_shadow_path(painter, path, *, color, radius, spread=0.0, fill_core=True, paint=None, paint_rect=None):
     """Blur one opaque glyph mask, then apply color alpha exactly once.
 
     Drawing translucent rings and the core onto the video compounds opacity.
@@ -173,8 +187,20 @@ def _draw_shadow_path(painter, path, *, color, radius, spread=0.0, fill_core=Tru
     if radius > 0:
         alpha = alpha.filter(ImageFilter.GaussianBlur(radius))
     rgba = np.empty((mask.height(), mask.width(), 4), dtype=np.uint8)
-    rgba[:, :, :3] = (color.red(), color.green(), color.blue())
-    rgba[:, :, 3] = np.rint(np.asarray(alpha).astype(np.float32) * color.alphaF()).astype(np.uint8)
+    if paint is not None:
+        palette = QImage(bounds.size(), QImage.Format_RGBA8888)
+        palette.fill(Qt.transparent)
+        ink = QPainter(palette)
+        ink.translate(-bounds.left(), -bounds.top())
+        ink.fillRect(QRectF(bounds), resolve_fill_brush(paint, paint_rect if paint_rect is not None else path.boundingRect()))
+        ink.end()
+        pixels = np.ndarray((palette.height(), palette.width(), 4), dtype=np.uint8,
+                            buffer=palette.constBits(), strides=(palette.bytesPerLine(), 4, 1))
+        rgba[:, :, :3] = pixels[:, :, :3]
+        rgba[:, :, 3] = np.rint(np.asarray(alpha).astype(np.float32) * pixels[:, :, 3] / 255. * color.alphaF()).astype(np.uint8)
+    else:
+        rgba[:, :, :3] = (color.red(), color.green(), color.blue())
+        rgba[:, :, 3] = np.rint(np.asarray(alpha).astype(np.float32) * color.alphaF()).astype(np.uint8)
     image = QImage(rgba.data, mask.width(), mask.height(), mask.width()*4, QImage.Format_RGBA8888).copy()
     painter.drawImage(bounds.topLeft(), image)
 
@@ -239,7 +265,7 @@ def _draw_panel(
         return
     params = panel.params
     rect = _expanded_bounds(bounds, params, type_scale)
-    fill_value = params.get("gradient") or params.get("fill") or params.get("color", "#CC111111")
+    fill_value = params.get("paint") or params.get("gradient") or params.get("fill") or params.get("color", "#CC111111")
     outline = _color(
         params.get("outlineColor", params.get("borderColor", params.get("color"))),
         "#FF111111",
@@ -968,8 +994,9 @@ def render_live_snapshot(
         radius = _number(background, "radius", "borderRadius", default=6.0) * type_scale
         opacity = _number(background, "opacity", default=1.0)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_color(background.get("color"), "#99000000", opacity=opacity))
-        painter.drawRoundedRect(local_bounds.adjusted(-padding, -padding, padding, padding), radius, radius)
+        panel_rect = local_bounds.adjusted(-padding, -padding, padding, padding)
+        painter.setBrush(resolve_effect_brush(background, panel_rect, "#99000000"))
+        painter.drawRoundedRect(panel_rect, radius, radius)
 
     if animated_pieces:
         from .letter_motion_live import paint_units
@@ -992,6 +1019,7 @@ def render_live_snapshot(
             spread=_number(glow, "spread", default=0.0) * type_scale,
             fill_core=False,
             intensity=max(1.0, _number(glow, "intensity", default=1.0)),
+            paint=glow.get('paint'), paint_rect=local_bounds,
         )
 
     shadow = snapshot.shadow if isinstance(snapshot.shadow, Mapping) else {}
@@ -1010,7 +1038,7 @@ def render_live_snapshot(
                 _number(shadow, "blur_radius", "blur", default=0.0) * type_scale,
             ),
             spread=_number(shadow, "spread", default=0.0) * type_scale,
-            fill_core=True,
+            fill_core=True, paint=shadow.get('paint'), paint_rect=local_bounds,
         )
 
     if text_layer:
@@ -1025,10 +1053,7 @@ def render_live_snapshot(
             if width_px <= 0:
                 continue
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(_color(
-                stroke.get("color"),
-                opacity=_number(stroke, "opacity", default=1.0),
-            ))
+            painter.setBrush(resolve_effect_brush(stroke, local_bounds))
             if opaque_fill:
                 # The opaque glyph fill below covers the inward half exactly;
                 # avoid an expensive Boolean subtraction for ordinary captions.

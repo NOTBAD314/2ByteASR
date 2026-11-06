@@ -187,6 +187,11 @@ def publish_output(staged, output, job, metadata, *, cancelled=None):
     receipt.update(published_monotonic=published,
                    elapsed_seconds=max(0.0, published - receipt.get('started_monotonic', published)))
     receipt['publication_seconds'] = time.perf_counter() - publication_started
+    try:
+        from .export_acceleration import record_outcome
+        record_outcome(job)
+    except (OSError,ValueError,TypeError,KeyError):
+        pass  # Derived performance history cannot undo a published export.
     from .export_run_log import note_export
     note_export('output_published', dict(output_path=str(output), video_bitrate=frozen.get('video_bitrate'),
         audio_bitrate=frozen.get('audio_bitrate'), container_bitrate_bps=frozen.get('average_bitrate_bps'),

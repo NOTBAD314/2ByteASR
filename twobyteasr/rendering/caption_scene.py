@@ -929,8 +929,18 @@ class CaptionScene(QObject):
                     static = (isinstance(token[5],tuple) and token[5] and token[5][0]=='content-v1'
                               and all(p is not None and getattr(p,'web',None) is None
                                       and not animated_caption(p) for _,p in cues))
-                    disk_key = disk.key((self.frame_key(token)[1:], width, height)) if static else None
-                    cached = disk.get(disk_key) if disk_key else None
+                    if static:
+                        from .advanced_live_renderer import live_renderer_version, LIVE_RENDERER_VERSION
+                        versions = {live_renderer_version(prepared.snapshot) for _, prepared in cues}
+                        version = next(iter(versions)) if len(versions) == 1 else LIVE_RENDERER_VERSION
+                        disk_keys = disk.compatible_keys((self.frame_key(token)[1:], width, height), renderer_version=version)
+                        disk_key = disk_keys[0]
+                    else:
+                        disk_keys, disk_key = (), None
+                    cached = None
+                    for candidate in disk_keys:
+                        cached = disk.get(candidate)
+                        if cached is not None:break
                     if cached is not None:
                         image, rows = cached
                     else:
@@ -1050,10 +1060,7 @@ class CaptionScene(QObject):
         if accepted:
             self._last_published_token=token
             self._last_published_sample_ms=trace.get('sample_ms',0)
-        geometry=getattr(page,'_selection_geometry',None)
-        selected=getattr(page,'_cue_lookup',{}).get(getattr(page,'selected_cue_id',''))
-        if geometry is not None and selected is not None:
-            geometry.sync(selected,page.project.style_recipes.get(selected.style_id,{}))
+        page._sync_canvas_selection()
         failed = [row for row in trace['cue_pixels'] if row['status'] in ('failed', 'fallback')]
         if failed:
             bind_text(page.save_state, '{value0} 条字幕主题异常 · 使用基础预览', value0=len(failed))

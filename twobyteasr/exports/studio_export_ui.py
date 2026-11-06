@@ -1687,6 +1687,16 @@ class StudioExportWorkspace(QWidget):
         # The range choice lives under the preview, beside the in / out points.
         self.export_range = self._combo((("整个视频", "all"), ("入点到出点", "in_out")))
         self.export_range.currentIndexChanged.connect(self._range_mode_changed)
+        self.parallel_segments = self._combo((("自动", 0), ("标准（单路）", 1), ("加速（双路）", 2)))
+        self.parallel_segments.setObjectName('exportParallelSegments')
+        acceleration = QHBoxLayout()
+        acceleration.addWidget(captioned("导出加速", self.parallel_segments), 1)
+        self.parallel_hint = QLabel()
+        self.parallel_hint.setObjectName('cardMeta')
+        self.parallel_hint.setWordWrap(True)
+        bind_text(self.parallel_hint, '自动根据任务和可用资源选择。并行加速时，完成后显示成片预览。')
+        acceleration.addWidget(self.parallel_hint, 2)
+        form.addLayout(acceleration)
         layout.addWidget(group)
 
     def _audio_settings(self, layout: QVBoxLayout) -> None:
@@ -2701,6 +2711,7 @@ class StudioExportWorkspace(QWidget):
             video_graph=capture_video_graph(self._export_project),
             export_project_data=project_data,
             export_context=dict(job_id=uuid.uuid4().hex, project_revision='sha256:' + revision,
+                parallel_segments=int(self.parallel_segments.currentData() or 0),
                 caption_canvas=getattr(self._export_project, '_output_canvas', {}),
                 project_path=str(self.project_path or ''), requested_encoder=str(self.encoder.currentData() or 'auto'),
                 requested_settings=asdict(settings)),

@@ -321,6 +321,9 @@ class OpenAICompatibleProvider(AIProvider):
             and scope.get('kind') in {'one_candidate','render_repair','implementation_completion'})
         if implementation_only:
             design_thinking=False
+        if operation in {"group", "polish", "translate", "translation", "subtitle_translation"}:
+            kwargs.setdefault("enable_thinking", self.endpoint.get("enable_thinking", False))
+        kwargs.setdefault("thinking_protocol", self.endpoint.get("thinking_protocol", "auto"))
         crops=kwargs.pop('image_crops',None)
         comparison=kwargs.pop('image_comparison',False)
         search=kwargs.pop('enable_search',False)
@@ -338,7 +341,8 @@ class OpenAICompatibleProvider(AIProvider):
                     model_limits=limits,user_limits=kwargs.pop('_user_limits',None))
             except InputBudgetError as exc:
                 self.last_timings={'request_budget':exc.report}
-                error=AIProviderError(str(exc),category='request_too_large');error.report=exc.report
+                category = 'output_budget_unsupported' if max_tokens > exc.report.get('policy', {}).get('output_tokens', max_tokens) else 'request_too_large'
+                error=AIProviderError(str(exc),category=category);error.report=exc.report
                 raise error from exc
             self.last_timings={'request_budget':budget}
         # Interactive stages pass on_stream_event; HTTP transports now try a
@@ -374,7 +378,9 @@ class OpenAICompatibleProvider(AIProvider):
                     key_source=str(self.endpoint.get("key_source") or ""),
                     on_stream_event=on_stream_event,
                     cancel_check=cancel_check,
-                    enable_thinking=True if design_thinking else False if implementation_only else None,
+                    enable_thinking=True if design_thinking else False if implementation_only else kwargs.get("enable_thinking"),
+                    thinking_protocol=kwargs.get("thinking_protocol", "auto"),
+                    extra_body=kwargs.get("extra_body"), batch_index=kwargs.get("batch_index"),
                     total_deadline=kwargs.get('_total_deadline'),
                     input_budget=getattr(self,'last_timings',{}).get('request_budget'),
                 )
@@ -483,10 +489,11 @@ class OpenAICompatibleProvider(AIProvider):
         """Claude: the Messages API over the same request layer (2026-10-18, user)."""
         from .anthropic_messages import complete
         from .llm_adapter import LLMRequestError, get_last_llm_response_diagnostics
-        effort = None if operation in self._DESIGN_OPERATIONS else "low"
+        requested_thinking = kwargs.get("enable_thinking")
+        effort = None if operation in self._DESIGN_OPERATIONS or requested_thinking is True else "low"
         try:
             return complete(self.endpoint, list(messages), max_tokens=max_tokens, timeout=timeout, stage=stage,
-                            cancel_check=cancel_check, json_wanted=json_wanted, effort=effort,
+                            cancel_check=cancel_check, json_wanted=json_wanted, effort=effort, enable_thinking=requested_thinking,
                             on_stream_event=on_stream_event, request_diagnostics=kwargs.get("request_diagnostics"),
                             total_deadline=kwargs.get("_total_deadline"),
                             input_budget=getattr(self, "last_timings", {}).get("request_budget"))

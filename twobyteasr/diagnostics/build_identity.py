@@ -117,6 +117,11 @@ _RENDERER_SOURCE_FILES = {
     "renderer/render-overlays.mjs",
     "renderer/render-caption-stills.mjs",
     "renderer/export-browser.mjs",
+    "renderer/export-bundle.mjs",
+    "renderer/prebuild-export.mjs",
+    "renderer/export_bootstrap.cjs",
+    "renderer/navigation_response.cjs",
+    "renderer/populate-fonts.mjs",
     "renderer/resource-boundary.mjs",
     "renderer/tsconfig.json",
 }

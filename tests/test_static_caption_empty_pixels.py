@@ -49,6 +49,28 @@ def test_empty_display_text_keeps_visible_neighbours_and_timing(fixture):
     assert empty[0]['reason_code']=='empty_display_text'
 
 
+def test_persistent_stills_skip_unchanged_rasters_after_one_text_edit(fixture,monkeypatch):
+    app,project,ffmpeg,job=fixture
+    from twobyteasr.rendering import advanced_live_renderer
+    project.cues=[c for c in project.cues if c.id!='invisible']
+    project.styles[0].font_family='Source Han Sans SC'
+    original=advanced_live_renderer.render_live_snapshot
+    drawn=[]
+    def render(snapshot,**kw):
+        drawn.append(snapshot.text);return original(snapshot,**kw)
+    monkeypatch.setattr(advanced_live_renderer,'render_live_snapshot',render)
+    render_static_graph(project,ffmpeg,job)
+    assert len(drawn)==2
+    drawn.clear()
+    warm=replace(job,output_path=str(Path(job.output_path).with_name('warm.mp4')),completion_metadata={})
+    render_static_graph(project,ffmpeg,warm)
+    assert drawn==[] and warm.completion_metadata['caption_assets']['static']['hits']==2
+    project.cues[0].text='Edited'
+    changed=replace(job,output_path=str(Path(job.output_path).with_name('edited.mp4')),completion_metadata={})
+    render_static_graph(project,ffmpeg,changed)
+    assert drawn==['Edited'] and changed.completion_metadata['caption_assets']['static']['hits']==1
+
+
 def test_unexpected_empty_ink_still_fails_with_identity_and_preserves_output(fixture,monkeypatch):
     app,project,ffmpeg,job=fixture
     from twobyteasr.rendering import advanced_live_renderer

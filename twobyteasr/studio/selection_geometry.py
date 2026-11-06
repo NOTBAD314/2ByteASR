@@ -76,33 +76,69 @@ class SelectionGeometryController(QObject):
         self.key=None;self.pending=None;self.worker=None;self.measurements=0
         self._last_data=None
         self.overlay._requires_measured_bounds=True
+        self.overlay.interaction_guard = self.interaction_valid
         self.completed.connect(self._accept)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(90)
         self.timer.timeout.connect(self._measure)
 
+    def invalidate(self):
+        self.timer.stop()
+        self.key = self.pending = self._last_data = None
+        self.overlay.clear_hit_region()
+
+    def interaction_valid(self):
+        p = self.page
+        if self.key is None or self.key[0] != id(p.project):
+            return False
+        cue = getattr(p, '_cue_lookup', {}).get(p.selected_cue_id)
+        panel = getattr(p, 'caption_transform_panel', None)
+        language = panel.language.currentData() if panel is not None else 'original'
+        from .canvas_visibility import layer_is_shown
+        if not layer_is_shown(p, cue, language) or self.key[1] != cue.id:
+            return False
+        scene = getattr(p, '_caption_scene', None)
+        if scene is not None and scene.active:
+            from ..caption_style.bilingual_layout import companion_id, settings_from_state
+            target = companion_id(cue.id) if language == 'translation' and settings_from_state(p.project.studio_state).mode == 'bilingual' else cue.id
+            token = getattr(scene, 'token', None)
+            if token is None or not scene.still_current(token):
+                return False
+            trace = scene.trace()
+            if not trace.get('visible', False):return False
+            row = next((r for r in trace.get('cue_pixels', ()) if r.get('cue_id') == target), None)
+            return bool(row and row.get('bounds') and row.get('alpha_nonzero', 1) > 0)
+        return bool(self._last_data and self._last_data.get('bounds'))
+
     def sync(self,cue,recipe):
         recipe=recipe or {}
         self.overlay._web_theme_transform = bool(recipe.get('webTheme'))
-        if self.overlay._dragging:
-            return  # Freeze the measured handle geometry for this transaction.
         p=self.page;content=self.overlay._content_rect()
         panel=getattr(p,'caption_transform_panel',None)
         language=panel.language.currentData() if panel is not None else 'original'
-        if not cue or p.selected_cue_id!=cue.id or not getattr(p.video,'_paused',True):return
+        from .canvas_visibility import layer_is_shown
+        if (not layer_is_shown(p, cue, language) or p.selected_cue_id != cue.id
+                or not getattr(p.video, '_paused', True)):
+            self.invalidate()
+            return
+        if self.overlay._dragging:
+            return  # Only a still-visible target may keep gesture geometry.
         scene=getattr(p,'_caption_scene',None)
         if scene is not None and scene.active:
             from ..caption_style.bilingual_layout import companion_id
-            target=companion_id(cue.id) if language=='translation' else cue.id
+            from ..caption_style.bilingual_layout import settings_from_state
+            target=companion_id(cue.id) if language=='translation' and settings_from_state(p.project.studio_state).mode=='bilingual' else cue.id
             trace=scene.trace()
+            if not trace.get('visible', False):
+                self.invalidate()
+                return
             row=next((r for r in trace.get('cue_pixels',[]) if r['cue_id']==target),None)
             if row and row.get('bounds'):
                 self.timer.stop()
                 self.key=(id(p.project),cue.id,row.get('snapshot_hash'),language)
                 self._accept(self.key,dict(bounds=row['bounds'],viewport=row['viewport'],renderer='published-caption-scene'))
-            elif self._last_data is not None and self.key and self.key[1]==cue.id and self.key[-1]==language:
-                self._accept(self.key,self._last_data)
             else:
-                self.overlay.set_measured_bounds(None)
+                # A missing/zero-alpha current render is not the last frame.
+                self.invalidate()
             return
         web=getattr(p,'_web_live_worker',None) if recipe.get('webTheme') else None
         canvas=getattr(p,'advanced_cue_overlay',None)
@@ -162,7 +198,7 @@ class SelectionGeometryController(QObject):
 
     def _accept(self,key,data):
         p=self.page
-        if (key!=self.key or p.selected_cue_id!=key[1] or not getattr(p.video,'_paused',True)
+        if (key is None or key!=self.key or key[0]!=id(p.project) or p.selected_cue_id!=key[1] or not getattr(p.video,'_paused',True)
                 or not self.overlay.isVisible()):return
         self._last_data=data
         content=self.overlay._content_rect();box=data.get('bounds')
@@ -171,6 +207,8 @@ class SelectionGeometryController(QObject):
             rect=QRectF(content.x()+x*content.width()/width,content.y()+y*content.height()/height,
                         w*content.width()/width,h*content.height()/height)
             self.overlay.set_measured_bounds(rect)
+        else:
+            self.overlay.clear_hit_region()
         diagnostic=dict(data,selected_id=p.selected_cue_id,
             content_rect=list(content.getRect()),preview_viewport=[p.video.width(),p.video.height()],
             project_resolution=[p.project.media.width,p.project.media.height],dpr=p.video.devicePixelRatioF(),

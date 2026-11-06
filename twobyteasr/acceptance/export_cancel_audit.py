@@ -133,7 +133,7 @@ def start(window, output):
             record = dict(at=time.perf_counter()-self.started, event=event, value=value, **fields)
             with self.event_lock:
                 self.events.append(record)
-            if event == 'html_renderer_stage' and isinstance(value, dict) and value.get('type') == 'composition':
+            if event in {'html_renderer_stage', 'browser_renderer_stage'} and isinstance(value, dict) and value.get('type') == 'composition':
                 self.composition.set()
 
         def cancelled(self):

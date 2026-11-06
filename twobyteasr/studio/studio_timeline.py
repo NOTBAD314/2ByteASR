@@ -4268,30 +4268,61 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 painter.drawLine(QPointF(c.x()-h+shift*h,c.y()+row*h),QPointF(c.x()+h*.6+shift*h,c.y()+row*h))
         painter.restore()
 
-    def _selection_items(self):
+    def _selection_items(self, selection=None):
         if not self.project:
             return []
         from ..timeline.studio_clip_edit import video_track_locked
-        result=[]
-        for kind,tracks,rects in (('video',self.project.video_tracks,self._video_track_rects()),
-                                  ('audio',self.project.audio_tracks,self._audio_track_rects())):
+        result = []
+        for kind, tracks, rectangles in (
+            ('video', self.project.video_tracks, self._video_track_rects),
+            ('audio', self.project.audio_tracks, self._audio_track_rects),
+        ):
+            selected = getattr(selection, kind + '_ids') if selection is not None else None
+            if selected is not None and not selected:
+                continue
+            rects = rectangles()
             for track in tracks:
-                if track.locked or (kind=='video' and video_track_locked(self.project,track)):
+                if track.locked or (kind == 'video' and video_track_locked(self.project, track)):
                     continue
-                row=rects.get(track.id)
+                row = rects.get(track.id)
                 if row is None:
                     continue
                 for clip in track.clips:
-                    if clip.timeline_out_ms < self.visible_start_ms or clip.timeline_in_ms > self.visible_start_ms+self.visible_duration_ms:
+                    if selected is not None and clip.id not in selected:
                         continue
-                    result.append((kind,clip.id,QRectF(self._time_to_x(clip.timeline_in_ms),row.top()+4,
-                        max(1.,self._time_to_x(clip.timeline_out_ms)-self._time_to_x(clip.timeline_in_ms)),row.height()-8)))
-        rows,_,_=self._track_layout()
-        for cue in self.visible_cues():
-            row=rows.get(cue.speaker_id)
+                    if clip.timeline_out_ms < self.visible_start_ms or clip.timeline_in_ms > self.visible_start_ms + self.visible_duration_ms:
+                        continue
+                    result.append((kind, clip.id, QRectF(self._time_to_x(clip.timeline_in_ms), row.top()+4,
+                        max(1., self._time_to_x(clip.timeline_out_ms)-self._time_to_x(clip.timeline_in_ms)), row.height()-8)))
+        rows, _, _ = self._track_layout()
+        if selection is None:
+            cues = self.visible_cues()
+        elif len(selection.cue_ids) > 32 and len(selection.cue_ids) > len(self.visible_cues()):
+            # A large explicit selection is usually almost entirely offscreen.
+            # The existing interval query includes moved timing previews and
+            # long overlapping cues, so its cost follows the visible window.
+            cues = [cue for cue in self.visible_cues() if cue.id in selection.cue_ids]
+        else:
+            # Painting one selection must not build 7000 unselected rectangles.
+            # Marquee hit testing still requests the complete visible geometry.
+            cues = []
+            end = self.visible_start_ms + self.visible_duration_ms
+            for cue_id in selection.cue_ids:
+                cue = self._timeline_cue_by_id.get(cue_id)
+                if cue is None:
+                    continue
+                preview = self._timing_preview.get(cue_id)
+                if preview is not None:
+                    cue = replace(cue, start_ms=preview.start_ms, end_ms=preview.end_ms,
+                                  speaker_id=preview.speaker_id)
+                if cue.end_ms > self.visible_start_ms and cue.start_ms < end:
+                    cues.append(cue)
+        for cue in cues:
+            row = rows.get(cue.speaker_id)
             if row is not None and cue.speaker_id not in self.locked_speakers:
-                row=self._cue_band(cue,row)
-                result.append(('subtitle',cue.id,QRectF(self._time_to_x(cue.start_ms),row.top()+5,max(1.,self._time_to_x(cue.end_ms)-self._time_to_x(cue.start_ms)),row.height()-10)))
+                row = self._cue_band(cue, row)
+                result.append(('subtitle', cue.id, QRectF(self._time_to_x(cue.start_ms), row.top()+5,
+                    max(1., self._time_to_x(cue.end_ms)-self._time_to_x(cue.start_ms)), row.height()-10)))
         return result
 
     def _selection_at_rect(self, rect):
@@ -4404,19 +4435,23 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.save()
         painter.setPen(QPen(color,2.2,Qt.SolidLine))
         painter.setBrush(fill)
-        items = self._selection_items()
-        if drag and getattr(drag['selection'], 'subtitle_layer', '') == 'translation':
+        items = self._selection_items(selection)
+        if drag and getattr(drag.get('selection'), 'subtitle_layer', '') == 'translation':
             track = self._track_layout()[1]
             items = [('subtitle', c.id, QRectF(self._time_to_x(c.start_ms), track.top()+6,
                      max(4, self._time_to_x(c.end_ms)-self._time_to_x(c.start_ms)), track.height()-12))
-                     for c in self._cues_by_start if c.id in selection.cue_ids] if track is not None else []
-        for kind,key,rect in items:
-            ids=getattr(selection,{'video':'video_ids','audio':'audio_ids','subtitle':'cue_ids'}[kind])
-            if key in ids:
-                if drag:rect=rect.translated(offset,0)
+                     for key in selection.cue_ids
+                     if (c := self._timeline_cue_by_id.get(key)) is not None] if track is not None else []
+        if drag and drag.get('copy'):
+            for _kind, _key, rect in items:
+                rect = rect.translated(offset, 0)
                 painter.drawRect(self._selection_highlight_rect(rect))
-                if drag and drag.get('copy'):
-                    painter.drawText(rect.adjusted(5, 1, -2, -1), Qt.AlignLeft | Qt.AlignTop, tr('副本'))
+                painter.drawText(rect.adjusted(5, 1, -2, -1), Qt.AlignLeft | Qt.AlignTop, tr('副本'))
+        else:
+            rectangles = [self._selection_highlight_rect(rect.translated(offset, 0) if drag else rect)
+                          for _kind, _key, rect in items]
+            if rectangles:
+                painter.drawRects(rectangles)
         painter.restore()
 
     def mousePressEvent(self, event: QMouseEvent):

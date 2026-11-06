@@ -141,7 +141,7 @@ def mono_font(size: int = 13, weight: QFont.Weight = QFont.Weight.DemiBold) -> Q
 
 
 class PillSegment(QWidget):
-    """Segmented control whose accent pill springs between the options.
+    """Segmented control with its accent pill bound to the selected option.
 
     ``group`` is an exclusive QButtonGroup of the option buttons;
     ``currentIndex`` / ``setCurrentIndex`` keep QComboBox-style callers working.
@@ -216,16 +216,9 @@ class PillSegment(QWidget):
     def _toggled(self, index: int, checked: bool) -> None:
         if not checked:
             return
-        target = self._target()
-        duration = motion_duration(420)
-        if not duration or self._pill.isNull() or not self.isVisible():
-            self._set_pill(target)
-        else:
-            self._pill_animation.stop()
-            self._pill_animation.setDuration(duration)
-            self._pill_animation.setStartValue(QRectF(self._pill))
-            self._pill_animation.setEndValue(target)
-            self._pill_animation.start()
+        # Selection and its text change together. A spring could overshoot
+        # the track and leave the accent pill under a neighbouring label.
+        self._snap()
         self.currentIndexChanged.emit(index)
 
     def resizeEvent(self, event) -> None:
@@ -637,8 +630,11 @@ class SwatchButton(QAbstractButton):
         theme = _theme()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        center = QPointF(self.width() / 2, self.height() / 2 - 1.5 * self.hover)
-        radius = self._diameter / 2 * (1.0 + 0.14 * self.hover)
+        scale = min(self.width(), self.height()) / max(1., self._diameter + 12)
+        painter.translate(self.width()/2, self.height()/2)
+        painter.scale(scale, scale)
+        center = QPointF(0, 0 if self.selected else -1.5 * self.hover)
+        radius = self._diameter / 2 * (1.0 + (0.03 if self.selected else 0.14) * self.hover)
         if self.add:
             painter.setPen(QPen(QColor(theme.accent if self.hover > 0.5 else theme.border_strong), 1.5, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)

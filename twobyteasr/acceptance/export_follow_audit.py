@@ -155,12 +155,18 @@ def start(window, output: Path):
         forced = next((o.split('=', 1)[1] for o in options if o.startswith('encoder=')), '')
         if forced:
             workspace.encoder.setCurrentIndex(workspace.encoder.findData(forced))
+        segments=next((int(o.split('=',1)[1]) for o in options if o.startswith('segments=')),None)
+        if segments is not None:
+            workspace.parallel_segments.setCurrentIndex(workspace.parallel_segments.findData(segments))
+            check('acceleration is selected in the normal GUI',workspace.parallel_segments.currentData()==segments)
         result['metrics']['encoder_choice'] = dict(selected=workspace.encoder.currentData(),
                                                    resolved=workspace._resolved_encoder(),
                                                    hint=workspace.actual_encoder_hint.text())
         workspace.directory.setText(str(exports))
         workspace.filename.setText('export-follow')
         yield 300
+        grab(window,'export-settings-window')
+        grab(workspace.settings_scroll.widget(),'export-settings-full-column')
 
         timing = dict(show_success=None, success_done=None, success_paint=None, notified=None)
         gaps, slow_mpv = [], []
@@ -273,14 +279,59 @@ def start(window, output: Path):
             job_mode=workspace._last_job.settings.quality_mode,
             output_mb=round(Path(workspace._last_job.output_path).stat().st_size / 1e6, 1)
             if Path(workspace._last_job.output_path).is_file() else None,
-            receipt={k: (workspace._last_job.completion_metadata or {}).get(k) for k in
-                     ('elapsed_seconds', 'average_bitrate_bps', 'duration_seconds')})
+            receipt=dict(workspace._last_job.completion_metadata or {}),
+            parallel_decision=dict(workspace._last_job.export_context.get('parallel_decision') or {}))
         result['metrics']['export'] = export
         check('export: finished on the result page', export['on_success_page'] and export['output'], export)
         check('export: result page painted within 1 s', export['paint_after_success_ms'] is not None
               and export['paint_after_success_ms'] < 1000, export)
         check('export: the app keeps responding after the finish (no gap over 500 ms)',
               export['max_gap_after_success_ms'] < 500, export)
+        import psutil,gc
+        owner=psutil.Process()
+        def memory_after():
+            gc.collect()
+            children=[]
+            for child in owner.children(recursive=True):
+                try:
+                    if child.name().lower() in {'node.exe','chrome.exe','chrome-headless-shell.exe','ffmpeg.exe'}:
+                        children.append(dict(pid=child.pid,name=child.name(),rss=child.memory_info().rss,command=child.cmdline()))
+                except psutil.Error:pass
+            export_folder=str(Path(workspace._last_job.output_path).parent).lower()
+            export_children=[child for child in children if export_folder in '\n'.join(child['command']).lower()]
+            return dict(rss=owner.memory_info().rss,export_children=export_children,
+                background_children=[child for child in children if child not in export_children])
+        result['repetitions']=[dict(iteration=1,receipt=export['receipt'],memory_after=memory_after())]
+        repetitions=next((int(o.split('=',1)[1]) for o in options if o.startswith('repeat=')),1)
+        for iteration in range(2,max(1,min(6,repetitions))+1):
+            QTest.mouseClick(workspace.success_page.again,Qt.MouseButton.LeftButton)
+            yield 400
+            edit=None
+            if 'edit-repeat' in options and iteration in (3,4):
+                wanted='g' if iteration==3 else 'animated'
+                target=next(c for c in page.project.cues if c.style_id==wanted)
+                before=target.text;after=before+'改'
+                accepted=page.cue_controller.set_text(target.id,after)
+                check(f'repeat {iteration}: one cue edit uses the normal undoable controller',
+                    accepted and target.text==after,dict(cue_id=target.id,kind='static' if iteration==3 else 'moving'))
+                edit=dict(cue_id=target.id,before=before,after=after,kind='static' if iteration==3 else 'moving')
+                yield 500
+            workspace.filename.setText(f'export-follow-{iteration}')
+            QTest.mouseClick(workspace.export_button,Qt.MouseButton.LeftButton)
+            yield 'repeat export started',lambda:workspace._running,30
+            yield 'repeat export finished',lambda:not workspace._running,1800
+            yield 800
+            check(f'repeat {iteration}: validated output and result page',
+                workspace.pages.currentWidget() is workspace.success_page and Path(workspace._last_job.output_path).is_file())
+            result['repetitions'].append(dict(iteration=iteration,receipt=dict(workspace._last_job.completion_metadata),
+                memory_after=memory_after(),edit=edit))
+            if edit:
+                assets=workspace._last_job.completion_metadata.get('caption_assets') or {}
+                if iteration==3:
+                    check('one static cue edit retains the moving asset',assets.get('dynamic_rendered')==0,assets)
+                check(f'repeat {iteration}: unaffected static assets are reused',
+                    assets.get('static',{}).get('hits',0)>=assets.get('static',{}).get('total',0)-2,assets)
+            grab(window,f'export-repeat-{iteration}-finished')
         page._close_export_workspace()
         yield 800
         page.save()

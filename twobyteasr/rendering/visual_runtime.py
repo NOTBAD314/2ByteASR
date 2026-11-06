@@ -232,6 +232,14 @@ def recipe_capability_requirements(
     if _enabled_effect(glow):
         require(VisualCapability.GLOW, _FULL, "glyph glow")
 
+    effect_paints = _mapping(colors.get('effectPaints'))
+    active_paints = [item.get('paint') for item in active_layers if _positive(item.get('width'))]
+    if bool(background.get('enabled')): active_paints.append(background.get('paint') or effect_paints.get('background'))
+    for name, effect in (('shadow', shadow), ('glow', glow)):
+        if _enabled_effect(effect): active_paints.append(_mapping(effect).get('paint') or effect_paints.get(name))
+    if any(str(_mapping(paint).get('type', 'solid')) != 'solid' for paint in active_paints if paint):
+        require(VisualCapability.GRADIENT_FILL, _FULL, 'gradient effect paint')
+
     if bool(background.get("enabled", False)):
         advanced_background = set(background) - {"enabled", "color"}
         require(

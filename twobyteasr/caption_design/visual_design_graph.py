@@ -181,6 +181,7 @@ class TextLayer:
                 "type": "radial-gradient" if "radial" in fill_type else "linear-gradient",
                 "angle": _number(self.fill.get("angle", 0), "textLayer.fill.angle", -3600, 3600),
                 "stops": normalized,
+                **({'radius': _number(self.fill.get('radius'), 'textLayer.fill.radius', .05, 4)} if self.fill.get('radius') is not None else {}),
             }
         else:
             raise VisualDesignGraphValidationError("textLayer.fill.type is unsupported")

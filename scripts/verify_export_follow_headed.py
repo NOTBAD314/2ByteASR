@@ -66,6 +66,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--exe', type=Path)
+    parser.add_argument('--project', type=Path, help='Read-only existing project; run the same normal export-button audit on a copy')
+    parser.add_argument('--segments', type=int, choices=[0,1,2], help='0=automatic, 1=single, 2=dual')
+    parser.add_argument('--repeat', type=int, default=1, help='Use the real export-again button in the same app')
+    parser.add_argument('--edit-repeat',action='store_true',help='Edit one static cue before repeat 3, one moving cue before repeat 4')
     parser.add_argument('--timeout', type=int, default=900)
     parser.add_argument('--media-seconds', type=int, default=0,
                         help='export a generated 1080p clip this long instead of the 24 s sample')
@@ -78,6 +82,7 @@ def main() -> int:
     parser.add_argument('--real-desktop', action='store_true',
                         help='run on the visible desktop (real taskbar notification, composited video window)')
     parser.add_argument('--quiet', action='store_true', help='no completion beep')
+    parser.add_argument('--resources', action='store_true', help='sample the owned GUI process tree and temporary media')
     args = parser.parse_args()
     out = args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT / 'tmp'):
@@ -90,7 +95,13 @@ def main() -> int:
     install()
     from verify_ui_polish_headed import _fixture
     # The acceptance runner requires its own copied project.
-    fixture = _long_fixture(out, args.media_seconds, args.media) if args.media_seconds else _fixture(out)
+    if args.project:
+        from twobyteasr.projects.studio_project import load_project, save_project
+        fixture = out / 'projects' / 'copied-project' / args.project.name
+        fixture.parent.mkdir(parents=True)
+        save_project(load_project(args.project), fixture)
+    else:
+        fixture = _long_fixture(out, args.media_seconds, args.media) if args.media_seconds else _fixture(out)
     if args.advanced:
         _advanced(fixture)
     local, roaming = out / 'local', out / 'roaming'
@@ -106,12 +117,47 @@ def main() -> int:
                TWOBYTEASR_EXPORT_FOLLOW_OPTIONS=','.join(
                    name for name, on in (('skip-follow', args.skip_follow), ('minimize', args.minimize),
                                          ('details', args.details), ('quiet', args.quiet),
+                                         (f'segments={args.segments}', args.segments is not None),
+                                         (f'repeat={args.repeat}', args.repeat>1),
+                                         ('edit-repeat',args.edit_repeat),
                                          (f'encoder={args.encoder}', bool(args.encoder))) if on))
     if args.advanced:
         # Isolated runs make system Chrome refuse remote debugging; real users are unaffected.
         env['TWOBYTEASR_RENDERER_CHROME'] = str(ROOT / 'renderer' / 'node_modules' / '.remotion' / 'chrome-headless-shell'
                                                 / 'win64' / 'chrome-headless-shell-win64' / 'chrome-headless-shell.exe')
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
+    sampler_thread = sampler_stop = None
+    if args.resources:
+        if not args.exe or args.real_desktop:
+            raise ValueError('Resource capture requires a direct frozen EXE on the isolated desktop')
+        import threading
+        import time
+        sampler_stop = threading.Event()
+        def sample_gui():
+            import psutil
+            from benchmark_export_pipeline import resource_samples
+            samples, inventory = [], {}
+            started = time.monotonic()
+            identity = None
+            try:
+                launch = out/'process/desktop.json'
+                while not launch.is_file() and not sampler_stop.wait(.1):
+                    if time.monotonic()-started>30:raise TimeoutError('GUI launch receipt missing')
+                owner=psutil.Process(json.loads(launch.read_text('utf8'))['pid'])
+                if Path(owner.exe()).resolve()!=args.exe.resolve():raise ValueError('Unexpected GUI executable')
+                identity=dict(pid=owner.pid,created=owner.create_time(),executable=owner.exe(),started_monotonic=started)
+                from twobyteasr.system.processes import run_hidden_subprocess
+                def probe(argv,**kwargs):
+                    return run_hidden_subprocess(argv,purpose='owned GUI resource sampling',capture_output=True,
+                        text=True,encoding='utf8',errors='replace',check=True,**kwargs)
+                resource_samples(owner,out,profile,started,sampler_stop,probe,samples,inventory=inventory)
+            except Exception as error:
+                identity=dict(identity=identity,error=repr(error))
+            finally:
+                (out/'resources.json').write_text(json.dumps(dict(identity=identity,samples=samples),ensure_ascii=False),'utf8')
+                (out/'temporary-inventory.json').write_text(json.dumps(list(inventory.values()),ensure_ascii=False,indent=2),'utf8')
+        sampler_thread=threading.Thread(target=sample_gui,daemon=True)
+        sampler_thread.start()
     if args.real_desktop:
         import subprocess
         (out / 'process').mkdir()
@@ -121,6 +167,9 @@ def main() -> int:
     else:
         from isolated_windows_desktop import run_on_desktop
         code = run_on_desktop(command, cwd=ROOT, env=env, output=out / 'process', timeout=args.timeout)
+    if sampler_stop:
+        sampler_stop.set()
+        sampler_thread.join(10)
     path = out / 'result.json'
     result = json.loads(path.read_text('utf-8')) if path.exists() else dict(passed=False, error='no result')
     summary = dict(passed=bool(result.get('passed')) and code == 0 and bool(result.get('gui_shutdown')), exit=code,

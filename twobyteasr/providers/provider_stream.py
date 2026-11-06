@@ -104,7 +104,8 @@ def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
             diagnostics['raw_usage'] = usage
             for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
                 diagnostics[key] = usage.get(key)
-            diagnostics['reasoning_tokens'] = (usage.get('completion_tokens_details') or {}).get('reasoning_tokens')
+            diagnostics['reasoning_tokens'] = (normalize_usage(usage) or {}).get('reasoning_tokens')
+            diagnostics['reasoning_tokens_status'] = 'provided' if diagnostics['reasoning_tokens'] is not None else 'unknown'
             diagnostics['usage'] = normalize_usage(usage)
         if packet.get('error'):
             raise StreamProtocolError('Provider返回错误事件', 'provider_terminal_error')
@@ -157,8 +158,9 @@ def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
         raise StreamProtocolError('Provider连接结束但未收到完整终态', 'structured_output_truncated')
     body = ''.join(parts)
     if not body.strip():
-        raise StreamProtocolError('Provider已结束但没有正文', 'provider_no_body')
-    diagnostics.update(completed=True, content_sha256=hashlib.sha256(body.encode('utf-8')).hexdigest())
+        diagnostics['body_empty'] = True
+        raise StreamProtocolError('Provider已结束但没有正文', 'reasoning_only' if diagnostics.get('reasoning_chars') else 'provider_no_body')
+    diagnostics.update(completed=True, body_empty=False, content_sha256=hashlib.sha256(body.encode('utf-8')).hexdigest())
     emit('final', '')
     return body
 
@@ -178,8 +180,10 @@ def responses_final(packet, diagnostics):
     diagnostics['raw_usage'] = usage
     for source, target in [('input_tokens', 'prompt_tokens'), ('output_tokens', 'completion_tokens'), ('total_tokens', 'total_tokens')]:
         diagnostics[target] = usage.get(source)
-    diagnostics['reasoning_tokens'] = (usage.get('output_tokens_details') or {}).get('reasoning_tokens')
+    diagnostics['reasoning_tokens'] = (normalize_usage(usage) or {}).get('reasoning_tokens')
+    diagnostics['reasoning_tokens_status'] = 'provided' if diagnostics['reasoning_tokens'] is not None else 'unknown'
     diagnostics['usage'] = normalize_usage(usage)
+    diagnostics['reasoning_content_present'] = any(isinstance(item,dict) and item.get('type')=='reasoning' for item in packet.get('output') or [])
     status = packet.get('status')
     diagnostics['finish_reason'] = status
     if status != 'completed' or packet.get('error'):
@@ -199,7 +203,10 @@ def responses_final(packet, diagnostics):
                 parts.append(block['text'])
     content = ''.join(parts) or packet.get('output_text') or ''
     if not isinstance(content, str) or not content.strip():
-        raise StreamProtocolError('Responses已结束但没有正文', 'provider_no_body')
+        diagnostics['body_empty'] = True
+        category = 'reasoning_only' if diagnostics.get('reasoning_content_present') or (diagnostics.get('reasoning_tokens') or 0)>0 else 'provider_no_body'
+        raise StreamProtocolError('Responses已结束但没有正文', category)
+    diagnostics['body_empty'] = False
     return content
 
 
@@ -423,7 +430,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     raise StreamProtocolError(f'Provider未完整生成正文（finish_reason={reason}）', 'structured_output_truncated' if reason == 'length' else 'provider_terminal_error')
                 if not isinstance(content, str) or not content.strip():
                     raise StreamProtocolError('Provider没有字符串正文', 'provider_no_body')
-                diagnostics.update(completed=True, content_sha256=hashlib.sha256(content.encode('utf-8')).hexdigest())
+                diagnostics.update(completed=True, body_empty=False, content_sha256=hashlib.sha256(content.encode('utf-8')).hexdigest())
                 send('delta', content)
             else:
                 if protocol == 'anthropic':

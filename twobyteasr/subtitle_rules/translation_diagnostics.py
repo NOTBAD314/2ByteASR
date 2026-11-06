@@ -18,7 +18,9 @@ def provider_evidence(provider, error=None) -> dict:
         boundary = getattr(error, "diagnostics", None) or trace.get("response_boundary") or {}
         fields = ("endpoint", "http_status", "finish_reason", "max_tokens", "thinking_mode", "response_format_sent",
                   "response_format_fallback", "reasoning_parameters_sent", "final_content_preview",
-                  "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens")
+                  "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens", "reasoning_tokens_status",
+                  "thinking_requested", "thinking_compatibility", "output_budget_kind", "batch_id",
+                  "message_content_length", "selected_content_length", "body_empty", "reasoning_content_present", "output_budget_observation")
         return redact_diagnostics({"request_id": trace.get("request_id"),
             "usage": trace.get("reported_usage"),
             "timings": trace.get('timings', {}),

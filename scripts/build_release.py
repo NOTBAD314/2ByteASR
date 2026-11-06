@@ -56,6 +56,13 @@ def main():
     if not out.is_relative_to(ROOT / 'tmp') or out.exists():
         raise ValueError('Choose a NEW directory under repository tmp; existing outputs are never overwritten')
     validate_renderer_fonts(ROOT)
+    # Build fixed renderer code before freezing. End-user exports only provide
+    # props; a missing/changed developer build can still be built persistently.
+    sys.path.insert(0,str(ROOT))
+    from twobyteasr.system.processes import renderer_node_command
+    subprocess.run(renderer_node_command(ROOT/'renderer',ROOT/'renderer/prebuild-export.mjs'),
+                   cwd=ROOT/'renderer',check=True,
+                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     # This is production input for the workshop's service test, not a private
     # recording. A source snapshot with the sample missing must not silently
     # build a package whose diagnostic entry can no longer run.

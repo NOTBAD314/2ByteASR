@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Mapping
 from time import perf_counter
 
-from PySide6.QtCore import QItemSelection, QItemSelectionModel, QSignalBlocker, Qt
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QSignalBlocker, QTimer, Qt
 from PySide6.QtWidgets import QAbstractItemView
 
 from ..timeline.studio_commands import (
@@ -42,18 +42,31 @@ from ..i18n import bind_text, tr
 class StudioCueController:
     """Coordinate cue-domain actions against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session")
+    __slots__ = ("page", "session", "_table_refresh_serial", "_pending_table_activation")
 
     def __init__(self, page, session):
         self.page = page
         self.session = session
+        self._table_refresh_serial = 0
+        self._pending_table_activation = None
+
+    def _read_runtime(self, project):
+        """Session transactions maintain this index; legacy callers still validate.
+
+        state_for checks every source ID for unannounced legacy mutations.
+        Playback must not repeat that compatibility scan on every clock tick.
+        """
+        runtime = getattr(self.session, 'runtime', None)
+        if runtime is None or runtime is not getattr(project, '_studio_state_runtime', None):
+            runtime = state_for(project)
+        return runtime
 
     def resolve_playhead_target(self, milliseconds: int):
         """Resolve timeline position, including gaps; never reuse a stale selection."""
         project, page = self.session.project, self.page
         if project is None:
             return None
-        runtime = state_for(project)
+        runtime = self._read_runtime(project)
         timeline = page.timeline
         hidden = getattr(timeline, 'hidden_speakers', set())
         locked = getattr(timeline, 'locked_speakers', set())
@@ -96,7 +109,7 @@ class StudioCueController:
         project, page = self.session.project, self.page
         if project is None:
             return None
-        runtime = state_for(project)
+        runtime = self._read_runtime(project)
         timeline = page.timeline
         hidden = set(getattr(timeline, 'hidden_speakers', ()) or ())
         locked = set(getattr(timeline, 'locked_speakers', ()) or ())
@@ -167,6 +180,13 @@ class StudioCueController:
     def _mirror_clock_selection(self, cue_id: str, *, clear: bool = False) -> None:
         """Lightweight selection only: no editor hydration, focus, seek or dirty state."""
         page = self.page
+        if clear:
+            self._table_refresh_serial += 1
+            self._pending_table_activation = None
+        elif self._pending_table_activation is not None:
+            # A queued observation of the old decoded frame cannot take the
+            # just-clicked row away during its one-frame activation boundary.
+            return
         if not clear and page.timeline.active_subtitle_layer == "translation":
             return
         if not clear and getattr(page.timeline,"_unified_selection",False) and page.timeline.clip_selection().count:
@@ -218,6 +238,11 @@ class StudioCueController:
             return []
         page = self.page
         scope = page.selection_model.scope
+        if scope.mode == SelectionMode.EXPLICIT_IDS and len(scope.explicit_ids) == 1:
+            cue_id = next(iter(scope.explicit_ids))
+            runtime = self._read_runtime(self.session.project)
+            if cue_id in runtime.cue_by_id:
+                return [cue_id]
         if scope.mode != SelectionMode.EMPTY:
             selected = scope.materialize(
                 [cue.id for cue in self.session.project.cues]
@@ -258,6 +283,8 @@ class StudioCueController:
         *,
         sync_timeline: bool = True,
     ) -> None:
+        self.flush_table_activation()
+        self._table_refresh_serial += 1
         page = self.page
         page._caption_canvas_edit_target=None
         page.selection_model.set_scope(scope)
@@ -366,7 +393,18 @@ class StudioCueController:
             refresh_target()
         page.selection_model.set_scope(scope)
         page.timeline.set_selection_scope(scope)
-        page._load_style_inspector(selection_scope=scope)
+        self._table_refresh_serial += 1
+        serial = self._table_refresh_serial
+        self._pending_table_activation = None
+        generation = self.session.generation
+        project = self.session.project
+        def hydrate():
+            if (serial != self._table_refresh_serial or self.session.project is not project
+                    or self.session.generation != generation or getattr(page,'_close_requested',False)
+                    or page.selection_model.scope != scope):
+                return
+            page._load_style_inspector(selection_scope=scope)
+        QTimer.singleShot(0, page, hydrate)
 
     def smart_align_current(self) -> None:
         project = self.session.project
@@ -432,6 +470,8 @@ class StudioCueController:
     def select_cue(
         self, cue_id: str, *, refresh_advanced: bool = False, hydrate: bool = True,
     ) -> None:
+        self._table_refresh_serial += 1
+        self._pending_table_activation = None
         # Explicit selection has its own stable edit target. Clock-follow uses
         # _mirror_clock_selection and cannot replace this last user choice.
         remembered=getattr(self.page,'_caption_canvas_edit_target',None)
@@ -1679,6 +1719,27 @@ class StudioCueController:
             self.page.cue_model.index(index.row(), 0), Qt.ItemDataRole.UserRole
         )
         if cue_id and self.session.project:
-            self.select_cue(cue_id)
-            cue = cue_by_id(self.session.project, cue_id)
+            # selectionChanged already owns the visible row/selection. Avoid
+            # hydrating the inspector twice in this one mouse event, and let
+            # the highlight paint before editor/seek preparation runs.
+            self._table_refresh_serial += 1
+            serial = self._table_refresh_serial
+            self._pending_table_activation = (self.session.project,self.session.generation,str(cue_id))
+            self.page._selection_needs_hydration = True
+            def activate():
+                if serial == self._table_refresh_serial:
+                    self.flush_table_activation()
+            QTimer.singleShot(16, self.page, activate)
+
+    def flush_table_activation(self):
+        request, self._pending_table_activation = self._pending_table_activation, None
+        if request is None:
+            return
+        project,generation,cue_id = request
+        if (self.session.project is not project or self.session.generation != generation
+                or self.session.selected_cue_id != cue_id or getattr(self.page,'_close_requested',False)):
+            return
+        self.select_cue(cue_id)
+        cue = self._read_runtime(project).cue_by_id.get(cue_id)
+        if cue is not None:
             self.page._seek(cue.start_ms / 1000.0)

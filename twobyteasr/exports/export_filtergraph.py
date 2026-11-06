@@ -88,7 +88,8 @@ def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), c
         # FLV keyframe indexes can land after the requested timestamp. Decode
         # from the head for this container, including late/range exports; this
         # trades extra decode for correct content instead of hiding lost frames.
-        seek = Fraction(0) if Path(source_path).suffix.lower()=='.flv' else max(Fraction(0), source - 10)
+        from .video_seek_window import video_seek_window
+        seek = Fraction(str(video_seek_window(ffmpeg, job, source_path, source)))
         trim = source - seek
         source_window = trim + (last-first)/fps*rate + 2/fps
         inputs += ['-threads', '4']
@@ -134,15 +135,19 @@ def compile_video_filtergraph(ffmpeg, job, ass_filter, *, caption_overlays=(), c
         x,y,*_=layer['bounds']
         pre,label=caption_filter(layer,f'[{image_offset+i}:v]',fps)
         enable='' if layer.get('sparse') else f":enable='gte(t,{layer['start']:.9f})*lt(t,{layer['end']:.9f})'"
-        filters.append(pre+f"{video_label}{label}overlay=x={x}:y={y}:eof_action=repeat:format=auto{enable}[static{i}]")
-        video_label=f'[static{i}]'
+        if pre: filters.append(pre.rstrip(';'))
+        from .caption_composite_region import append_region_overlay
+        video_label=append_region_overlay(filters,video_label,label,bounds=layer['bounds'],
+            width=width,height=height,pixel_format=job.settings.pixel_format,tag=f'static{i}',enable=enable.lstrip(':'))
     for i, (start, end, path) in enumerate(video_overlays):
         index = inputs.count('-i')
         inputs += ['-i', str(path)]
         filters.append(f'[{index}:v]setpts={overlay_pts_shift(start, fps)}[movingpixels{i}]')
-        filters.append(f"{video_label}[movingpixels{i}]overlay=x=0:y=0:format=auto:eof_action=pass:"
-                       f"enable='gte(t,{start:.9f})*lt(t,{end:.9f})'[moving{i}]")
-        video_label = f'[moving{i}]'
+        from .caption_composite_region import append_region_overlay
+        bounds=(job.export_context.get('overlay_alpha_bounds') or {}).get(str(path)) or (0,0,width,height)
+        video_label=append_region_overlay(filters,video_label,f'[movingpixels{i}]',bounds=bounds,
+            width=width,height=height,pixel_format=job.settings.pixel_format,tag=f'moving{i}',
+            eof_action='pass',enable=f"enable='gte(t,{start:.9f})*lt(t,{end:.9f})'",full_canvas=True)
     if job.preview_url:
         filters.append(f'{video_label}split=2[vfinal][previewfull]')
         filters.append('[previewfull]fps=2:round=up:start_time=0:eof_action=pass,scale=640:-2[exportpreview]')

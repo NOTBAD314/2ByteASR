@@ -26,9 +26,18 @@ class CaptionDiskCache:
         self.hits = self.misses = self.writes = self.evictions = self.errors = 0
 
     @classmethod
-    def key(cls, dependencies):
+    def key(cls, dependencies, *, renderer_version=None):
         from .advanced_live_renderer import LIVE_RENDERER_VERSION
-        return hashlib.sha256(repr((cls.SCHEMA, LIVE_RENDERER_VERSION, dependencies)).encode('utf-8')).hexdigest()
+        return hashlib.sha256(repr((cls.SCHEMA, renderer_version or LIVE_RENDERER_VERSION, dependencies)).encode('utf-8')).hexdigest()
+
+    @classmethod
+    def compatible_keys(cls, dependencies, *, renderer_version):
+        from .advanced_live_renderer import LIVE_RENDERER_VERSION, LEGACY_LIVE_RENDERER_VERSION
+        primary = cls.key(dependencies, renderer_version=renderer_version)
+        if renderer_version == 'qt-live-v7-affine-line-loop':
+            # These two published contracts are identical for legacy pixels.
+            return (primary, cls.key(dependencies, renderer_version='qt-live-v8-effect-paints'))
+        return (primary,)
 
     def _scan(self):
         if self.entries is not None:
