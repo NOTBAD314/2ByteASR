@@ -8,6 +8,24 @@ from scripts.macos_media_contract import (digest,keg_version,formula_name,verify
     verify_keg_receipt,verify_binary_evidence,load_verified_tools)
 from scripts.macos_install_media import install_action,isolated_core_checkout
 
+
+def test_dependency_archive_checks_the_locked_bytes_before_pour(tmp_path):
+    from scripts.macos_install_media import acquire_dependency_bottle
+    archive = tmp_path/'library--1.arm64_sonoma.bottle.tar.gz'
+    archive.write_bytes(b'locked Sonoma bottle')
+    expected = dict(sha256=digest(archive), url='https://example.invalid/locked-bottle')
+    formula = dict(name='library', bottle=dict(stable=dict(files={'arm64_sonoma': expected})))
+    calls = []
+    def command(args):
+        calls.append(args)
+        return str(archive) if '--cache' in args else ''
+    record = acquire_dependency_bottle('/owned/brew', formula, 'arm64_sonoma', command)
+    assert record['path'] == str(archive) and record['sha256'] == expected['sha256']
+    assert all('--bottle-tag=arm64_sonoma' in args for args in calls)
+    archive.write_bytes(b'a different host bottle')
+    with pytest.raises(RuntimeError, match='dependency bottle digest differs'):
+        acquire_dependency_bottle('/owned/brew', formula, 'arm64_sonoma', command)
+
 LOCK=json.loads((Path(__file__).resolve().parents[1]/'packaging/macos/native-dependencies.lock.json').read_text('utf8'))
 
 

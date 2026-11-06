@@ -37,6 +37,21 @@ def dependency_bottle(formula: dict, tag: str) -> dict:
     return selected
 
 
+def acquire_dependency_bottle(brew, formula, tag, command) -> dict:
+    """Select and hash-check the locked bottle before Homebrew can pour it.
+
+    A newer build host otherwise selects its own OS bottle even after a
+    Sonoma fetch. Passing the checked cache file preserves the target closure.
+    """
+    bottle = dependency_bottle(formula, tag)
+    command([brew, 'fetch', '--bottle-tag=' + tag, formula['name']])
+    archive = Path(command([brew, '--cache', '--bottle-tag=' + tag, formula['name']]))
+    if digest(archive) != bottle['sha256']:
+        raise RuntimeError('Downloaded dependency bottle digest differs: ' + formula['name'])
+    return dict(path=str(archive), bytes=archive.stat().st_size,
+                sha256=bottle['sha256'], url=bottle['url'], tag=tag)
+
+
 @contextlib.contextmanager
 def isolated_core_checkout(core_path: Path,selected: Path,boundary: Path):
     """Keep the runner's entire tap, including deliberate image modifications.
@@ -67,8 +82,12 @@ def main(argv=None):
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--lock',type=Path,default=ROOT/'packaging/macos/native-dependencies.lock.json')
     args=parser.parse_args(argv)
-    if sys.platform!='darwin' or platform.machine()!='arm64' or platform.mac_ver()[0].split('.')[0]!='14':
-        raise SystemExit('Build the locked Sonoma dependency closure on native macOS 14 arm64; newer-OS execution checks reuse that same DMG')
+    if sys.platform!='darwin' or platform.machine()!='arm64':
+        raise SystemExit('Build the locked Sonoma dependency closure on native Apple Silicon macOS')
+    from twobyteasr.system.macos_compatibility import compatibility_problem
+    problem = compatibility_problem()
+    if problem:
+        raise SystemExit(problem)
     out=args.output.resolve()
     if 'tmp' not in {p.lower() for p in out.parts} or out.exists():raise SystemExit('Use a fresh isolated tmp media directory')
     out.mkdir(parents=True)
@@ -130,7 +149,10 @@ def main(argv=None):
                 record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],bottle=bottle))
             save()
             for name in dependencies:
-                command([brew,install_action(by_name[name]),'--force-bottle',name])
+                archive = acquire_dependency_bottle(brew, by_name[name], core['bottle_tag'], command)
+                next(item for item in record['dependency_bottles'] if item['name'] == name)['archive'] = archive
+                save()
+                command([brew,install_action(by_name[name]),'--force-bottle',archive['path']])
             record['stage']='fetch_selected_bottles';save()
             command([brew,'fetch','--bottle-tag='+core['bottle_tag'],*selected_names])
             for name,expected in lock['media'].items():
@@ -142,7 +164,8 @@ def main(argv=None):
                     if roots!={keg_version(expected)}:raise RuntimeError('Bottle pkg_version differs: '+name)
                 record['media'][name]['archive']=dict(path=str(archive),bytes=archive.stat().st_size,sha256=digest(archive),url=bottle_spec(expected)['url'],tag=core['bottle_tag'])
             record['stage']='homebrew_pour_and_relocate';save()
-            for name,expected in lock['media'].items():command([brew,record['media'][name]['action'],'--force-bottle',formula_name(name,expected)])
+            for name,expected in lock['media'].items():
+                command([brew,record['media'][name]['action'],'--force-bottle',record['media'][name]['archive']['path']])
             after=json.loads(command([brew,'info','--json=v2',*selected_names]))
             (out/'formula-after.json').write_text(json.dumps(after,indent=2)+'\n','utf8')
             cellar=Path(command([brew,'--cellar']))
