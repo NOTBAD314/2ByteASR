@@ -30,8 +30,13 @@ def test_two_lane_endpoint_recovers_at_current_position(tmp_path,monkeypatch):
             state=engine.telemetry_snapshot()
             if killed is None and state.get('sink_consumed_bytes',0)>20000:
                 process=engine._worker.process
-                killed=process.pid
-                process.kill()  # The exact Popen created by this test, no PID search.
+                # Windows venv python.exe can be a redirector whose child is
+                # the actual endpoint. Kill only this owned tree, and compare
+                # the worker's own PID rather than the redirector PID.
+                killed=state['endpoint_pid']
+                assert state['endpoint_generation']==engine._worker._endpoint_generation
+                from twobyteasr.system.processes import stop_process_tree
+                stop_process_tree(process)
             elif (killed and state.get('endpoint_pid') not in (None,killed)
                     and state.get('sink_consumed_bytes',0)>20000):
                 recovered=state;break
