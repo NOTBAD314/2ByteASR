@@ -103,10 +103,10 @@ def main(argv=None):
                 core_commit=core['commit'],passed=False,stage='inspect_host',media={})
     receipt=out/'media-install.json'
     def save():receipt.write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
-    def command(cmd,timeout=900):
-        result=subprocess.run(list(map(str,cmd)),env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
+    def command(cmd,timeout=900,cwd=None):
+        result=subprocess.run(list(map(str,cmd)),cwd=cwd,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
         with (out/'install.log').open('a',encoding='utf8') as log:
-            log.write('\nCOMMAND '+repr(list(map(str,cmd)))+'\n'+result.stdout+result.stderr)
+            log.write('\nCOMMAND '+repr(list(map(str,cmd)))+' CWD '+str(cwd or Path.cwd())+'\n'+result.stdout+result.stderr)
         if result.returncode:raise RuntimeError(f'Command failed ({result.returncode}): {cmd}; see install.log')
         return result.stdout.strip()
     save()
@@ -152,9 +152,10 @@ def main(argv=None):
                 archive = acquire_dependency_bottle(brew, by_name[name], core['bottle_tag'], command)
                 next(item for item in record['dependency_bottles'] if item['name'] == name)['archive'] = archive
                 save()
-                # Homebrew7 parses an absolute path as a tap before its
-                # bottle loader; an explicit relative path reaches that loader.
-                command([brew,install_action(by_name[name]),'--force-bottle','./'+os.path.relpath(archive['path'])])
+                # Homebrew7 also parses relative slash paths as qualified
+                # taps. A plain filename in its cache cwd is unambiguous.
+                local = Path(archive['path'])
+                command([brew,install_action(by_name[name]),'--force-bottle',local.name],cwd=local.parent)
             record['stage']='fetch_selected_bottles';save()
             command([brew,'fetch','--bottle-tag='+core['bottle_tag'],*selected_names])
             for name,expected in lock['media'].items():
@@ -167,7 +168,8 @@ def main(argv=None):
                 record['media'][name]['archive']=dict(path=str(archive),bytes=archive.stat().st_size,sha256=digest(archive),url=bottle_spec(expected)['url'],tag=core['bottle_tag'])
             record['stage']='homebrew_pour_and_relocate';save()
             for name,expected in lock['media'].items():
-                command([brew,record['media'][name]['action'],'--force-bottle','./'+os.path.relpath(record['media'][name]['archive']['path'])])
+                local = Path(record['media'][name]['archive']['path'])
+                command([brew,record['media'][name]['action'],'--force-bottle',local.name],cwd=local.parent)
             after=json.loads(command([brew,'info','--json=v2',*selected_names]))
             (out/'formula-after.json').write_text(json.dumps(after,indent=2)+'\n','utf8')
             cellar=Path(command([brew,'--cellar']))
