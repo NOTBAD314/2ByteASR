@@ -9,6 +9,18 @@ from scripts.macos_media_contract import (digest,keg_version,formula_name,verify
 from scripts.macos_install_media import install_action,isolated_core_checkout
 
 
+def test_fixed_media_closure_rejects_an_intersection_that_omits_private_dependencies():
+    from scripts.macos_install_media import verify_dependency_closure
+    roots = [dict(name='ffmpeg-full', dependencies=['shared', 'ffmpeg-only']),
+             dict(name='mpv', dependencies=['shared', 'mpv-only'])]
+    with pytest.raises(RuntimeError, match='ffmpeg-only'):
+        verify_dependency_closure(roots + [dict(name='shared')])
+    verify_dependency_closure(roots + [dict(name=n) for n in ['shared', 'ffmpeg-only', 'mpv-only']])
+    with pytest.raises(RuntimeError, match='mpv-only -> transitive'):
+        verify_dependency_closure(roots + [dict(name=n, dependencies=['transitive'] if n=='mpv-only' else [])
+                                          for n in ['shared', 'ffmpeg-only', 'mpv-only']])
+
+
 def test_dependency_archive_checks_the_locked_bytes_before_pour(tmp_path):
     from scripts.macos_install_media import acquire_dependency_bottle
     archive = tmp_path/'library--1.arm64_sonoma.bottle.tar.gz'

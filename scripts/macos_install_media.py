@@ -37,6 +37,18 @@ def dependency_bottle(formula: dict, tag: str) -> dict:
     return selected
 
 
+def verify_dependency_closure(formulae: list[dict]) -> None:
+    """Every declared runtime dependency must be part of the fixed closure."""
+    names = {formula['name'] for formula in formulae}
+    missing = []
+    for formula in formulae:
+        for dependency in formula.get('dependencies', []) + formula.get('recommended_dependencies', []):
+            if dependency not in names:
+                missing.append(formula['name'] + ' -> ' + dependency)
+    if missing:
+        raise RuntimeError('Incomplete media dependency closure: ' + ', '.join(sorted(set(missing))))
+
+
 def acquire_dependency_bottle(brew, formula, tag, command) -> dict:
     """Select and hash-check the locked bottle before Homebrew can pour it.
 
@@ -139,15 +151,29 @@ def main(argv=None):
             # tesseract library raised v0.8.3 to macOS 15.7.9 despite a 15.0 plist.
             # A fresh CI host is disposable; replace only the media dependency
             # closure, using the same official core snapshot and Sonoma bottles.
-            dependencies=command([brew,'deps','--topological','--formula',*selected_names]).splitlines()
+            # Multiple brew-deps roots default to their INTERSECTION. Include
+            # every FFmpeg-full and mpv dependency, including their private ones.
+            dependencies=command([brew,'deps','--union','--topological','--formula',*selected_names]).splitlines()
             dependencies=list(dict.fromkeys(name.strip() for name in dependencies if name.strip() and name.strip() not in selected_names))
             dependency_info=json.loads(command([brew,'info','--json=v2',*dependencies])) if dependencies else {'formulae':[]}
             by_name={formula['name']:formula for formula in dependency_info['formulae']}
+            verify_dependency_closure(before['formulae'] + dependency_info['formulae'])
+            recipe_dir = out/'formula-sources';recipe_dir.mkdir()
+            def recipe(formula):
+                path = formula['ruby_source_path']
+                expected = formula['ruby_source_checksum']['sha256']
+                original = core_path/path
+                if digest(original) != expected:
+                    raise RuntimeError('Dependency formula source differs: ' + formula['name'])
+                shutil.copy2(original, recipe_dir/(formula['name']+'.rb'))
+                return dict(path=path, sha256=expected, license=formula.get('license'), urls=formula.get('urls'))
+            record['selected_formula_sources'] = {f['name']: recipe(f) for f in before['formulae']}
             record['dependency_bottles']=[]
             for name in dependencies:
                 formula=by_name[name]
                 bottle=dependency_bottle(formula,core['bottle_tag'])
-                record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],bottle=bottle))
+                record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],
+                                                       bottle=bottle,formula_source=recipe(formula)))
             save()
             for name in dependencies:
                 archive = acquire_dependency_bottle(brew, by_name[name], core['bottle_tag'], command)
