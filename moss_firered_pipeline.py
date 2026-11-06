@@ -632,6 +632,8 @@ def _run_audited_model_stage(
 
 def check_runtime(legacy):
     legacy.check_runtime()
+    from twobyteasr.recognition.asr import check_selected_worker_dependencies
+    check_selected_worker_dependencies(legacy)
     from twobyteasr.system.hardware import (
         require_cuda_runtime,
         require_local_torch_runtime,
@@ -650,14 +652,14 @@ def check_runtime(legacy):
     if primary_key == "none":
         raise RuntimeError("尚未选择主力转写模型。请先在模型工坊选择一个主力模型。")
     if primary_key == "moss" and not getattr(sys, "frozen", False):
-        # 源码模式才做 speechbrain 元数据检查。打包运行不带 dist-info，且
-        # speechbrain 实际运行在 .venv-moss 的 MOSS worker 内部——由 worker
-        # 自己的导入给出明确错误。
+        # Source mode still computes ECAPA chunk stitching in this queue
+        # interpreter; unlike Qwen, this is a genuine in-process dependency.
         try:
             package_version("speechbrain")
         except PackageNotFoundError as exc:
             raise RuntimeError(
-                "缺少说话人分块拼接依赖 speechbrain。请运行：python -m pip install speechbrain==1.0.3"
+                f"主程序运行环境（{sys.executable}）缺少说话人分块拼接依赖 speechbrain。"
+                "请运行 setup_environment.bat 或 repair_environment.bat 安装主环境完整契约。"
             ) from exc
     paths = _script_paths(legacy)
     required = []
@@ -5165,6 +5167,9 @@ def process_media(
             runtime_context=runtime_context,
         )
 
+    save_speaker_evidence(speaker_audit_root, 'primary-before-placeholder-normalization', legacy.serialize_segments(segments))
+    from twobyteasr.subtitle_rules.cue_cleanup import prepare_effective_sources
+    segments = prepare_effective_sources(segments, speech_regions=speech_regions)
     speaker_processing['stages']['primary_segments'] = label_summary(segments)
     if primary_backend == 'moss':
         speaker_processing['stages'].update(moss_payload.get('metadata', {}).get('speaker_stages', {}))

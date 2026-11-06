@@ -57,7 +57,14 @@ def load(context):
     journal = getattr(context, 'task_journal', None)
     if not journal or not getattr(context, 'resume', False) or context.retry_incomplete:
         return None
-    return journal.load_artifact(f'delivery:{context.media_index}', dependency(context))
+    payload = journal.load_artifact(f'delivery:{context.media_index}', dependency(context))
+    if payload:
+        from .caption_arbitration import placeholder_transcript
+        if any(placeholder_transcript(row.get('text')) for row in payload['arguments']['segments']):
+            # Reject only this polluted artifact; raw ASR/unaffected stage
+            # caches are retained for delivery without paid retranscription.
+            return None
+    return payload
 
 
 def resume(context, legacy, payload):

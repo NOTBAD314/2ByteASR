@@ -580,7 +580,7 @@ def complete_media_run(
     from .transcript_delivery import terminal_status
     counts = dict((getattr(runtime_context, 'transcript_acceptance', {}) or {}).get('counts') or {})
     counts['final_cue_count'] = len(cues)
-    status = terminal_status(counts, len(cues), degraded=degraded or bool(
+    status = 'needs_recovery' if output_details.get('project_error') else terminal_status(counts, len(cues), degraded=degraded or bool(
         getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
     legacy.record_run_event('subtitle_delivery', status=status, **counts)
     report_json_path, report_text_path = legacy.finish_media_report(

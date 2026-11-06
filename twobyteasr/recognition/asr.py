@@ -271,6 +271,25 @@ def _main_worker_python():
     raise RuntimeError("模型运行库未准备完成，请在模型工坊准备该模型。应用会自行安装专用 Python。")
 
 
+def check_selected_worker_dependencies(legacy):
+    """Selected ASR packages belong to the actual model worker, not the GUI."""
+    selected = {str(legacy.PRIMARY_ASR_BACKEND), str(legacy.QWEN_ASR_BACKEND),
+                str(legacy.FIRERED_ASR_BACKEND)}
+    packages = {}
+    if selected & {'qwen_local', 'local', 'qwen_aligner'}:
+        # 'local' is Qwen only in the review slot; timeline 'local' is FireRed.
+        if (legacy.PRIMARY_ASR_BACKEND == 'qwen_local' or legacy.QWEN_ASR_BACKEND == 'local'
+                or legacy.FIRERED_ASR_BACKEND == 'qwen_aligner'):
+            packages['qwen-asr'] = 'qwen_asr'
+    if 'whisper_turbo' in selected:
+        packages['transformers'] = 'transformers'
+    if selected & {'sensevoice', 'funasr_nano', 'paraformer'}:
+        packages['funasr'] = 'funasr'
+    if packages:
+        from ..system.environment import check_worker_dependencies
+        return check_worker_dependencies('main', _main_worker_python(), packages)
+
+
 def probe_firered_environment(runtime="", model_path="", source_path=""):
     """Return executable FireRed-AED runtime evidence for audited events."""
     if not runtime:
@@ -3000,7 +3019,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                                  + '\n\n' + log)
             error.problem = problem
             raise error
-        raise RuntimeError(log)
+        raise RuntimeError(
+            f'模型运行时（{command[0]}）启动或执行失败。请在模型工坊校验与修复该模型运行环境。\n' + log)
     try:
         payload = json.loads(Path(output_path).read_text(encoding="utf-8"))
     except Exception as exc:

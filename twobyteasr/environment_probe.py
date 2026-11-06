@@ -256,13 +256,35 @@ def run(role, expected, *, project_root=None, firered_source_dir=None):
     return result
 
 
+def package_presence(packages):
+    """Cheap selected-worker gate: metadata/specs only, never load a model.
+
+    Actual imports and native startup are still checked by the real worker.
+    This mode shares the registered interpreter and isolated probe launcher.
+    """
+    import importlib.util
+    result = dict(interpreter=sys.executable, prefix=sys.prefix, packages={}, errors=[])
+    for name, module in packages.items():
+        installed = _installed_version(name)
+        result['packages'][name] = installed
+        if installed is None:
+            result['errors'].append(f'{name}: not installed')
+        try:
+            if importlib.util.find_spec(module) is None:
+                result['errors'].append(f'{name}: module {module} missing')
+        except (ImportError, ValueError, OSError) as exc:
+            result['errors'].append(f'{name}: {exc}')
+    result['ok'] = not result['errors']
+    return result
+
+
 def main():
     payload = json.loads(sys.stdin.read() or "{}")
     # Third-party imports may print diagnostics to stdout (including the pinned
     # Transformers snapshot). Keep the one-document probe protocol intact.
     from contextlib import redirect_stdout
     with redirect_stdout(sys.stderr):
-        result = run(
+        result = package_presence(payload['package_presence']) if 'package_presence' in payload else run(
             payload.get("role", "main"),
             payload.get("expected", {}),
             firered_source_dir=payload.get("firered_source_dir"),

@@ -2555,35 +2555,25 @@ def run_timed_stage(index, total, label, resource, runner):
 def check_runtime():
     from importlib.metadata import PackageNotFoundError, version as package_version
     missing = []
-    packages = ["pypinyin", "requests", "jieba", "PySide6", "QtAwesome"]
-    if QWEN_ASR_BACKEND == "local" or PRIMARY_ASR_BACKEND == "qwen_local":
-        packages.append("qwen-asr")
-    if QWEN_ASR_BACKEND == "whisper_turbo" or PRIMARY_ASR_BACKEND == "whisper_turbo":
-        packages.append("transformers")
-    if (
-        QWEN_ASR_BACKEND in {"sensevoice", "funasr_nano"}
-        or FIRERED_ASR_BACKEND == "paraformer"
-        or PRIMARY_ASR_BACKEND in {"sensevoice", "funasr_nano", "paraformer"}
-    ):
-        packages.append("funasr")
-    if FIRERED_ASR_BACKEND == "qwen_aligner" and "qwen-asr" not in packages:
-        packages.append("qwen-asr")
-    # 打包（frozen）运行里 PyInstaller 不带 dist-info，importlib.metadata 必然
-    # PackageNotFoundError——按真实可导入性校验；且 qwen-asr/transformers/funasr
-    # 等运行时包执行于外部 venv（bundle 刻意排除），不在进程内检查范围。
+    # Only dependencies used by this GUI/queue interpreter belong here.
+    # Selected engines are checked in their actual worker interpreter by the
+    # pipeline, in source and frozen mode alike. Never import a model here.
+    packages = ["pypinyin", "requests", "jieba", "PySide6", "QtAwesome",
+                "numpy", "Pillow", "jsonschema", "psutil", "av"]
     frozen = bool(getattr(sys, "frozen", False))
-    frozen_external_runtimes = {"qwen-asr", "transformers", "funasr"}
+    repair_hint = ("请使用安装包修复或重新安装主程序。" if frozen else
+        f'请执行：\n"{sys.executable}" -m pip install -r requirements-main.txt\n'
+        '或运行 setup_environment.bat / repair_environment.bat 修复主程序环境。')
     module_aliases = {
         "PySide6": "PySide6",
         "QtAwesome": "qtawesome",
+        "Pillow": "PIL.ImageFont",
     }
     for package_name in packages:
         if frozen:
-            if package_name in frozen_external_runtimes:
-                continue
             try:
                 __import__(module_aliases.get(package_name, package_name))
-            except ImportError:
+            except (ImportError, OSError):
                 missing.append(package_name)
             continue
         try:
@@ -2592,11 +2582,20 @@ def check_runtime():
             missing.append(package_name)
     if missing:
         raise RuntimeError(
-            "缺少运行依赖："
+            f"主程序运行环境（{sys.executable}）缺少依赖："
             + ", ".join(missing)
-            + "\n请执行：\n"
-            'python -m pip install -r requirements-main.txt'
+            + "\n" + repair_hint
         )
+    # A dist-info directory alone does not prove the Pillow native modules
+    # needed by layout/save work. Check this small import before running ASR.
+    try:
+        from PIL import ImageFont
+        ImageFont.load_default(size=16).getbbox("字幕")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            f"主程序运行环境（{sys.executable}）的 Pillow 字体依赖不可用：{exc}。\n"
+            + repair_hint
+        ) from exc
     for executable in ("ffmpeg", "ffprobe"):
         resolved = shutil.which(executable)
         if resolved is None:
@@ -2621,7 +2620,6 @@ def check_runtime():
                 "  winget install Gyan.FFmpeg\n"
                 "或从 https://www.gyan.dev/ffmpeg/builds/ 下载完整版解压到 C:\\ffmpeg\\bin"
             )
-
 
 # 兼容门面：subtitle_core 与 twobyteasr 互为循环导入，本处导入必须位于配置区之后，
 # 请勿上移或把函数定义插到这些 import 语句中间。

@@ -15,6 +15,7 @@ __all__ = [
     "merge_consecutive_short_repeated_cues",
     "merge_short_japanese_cues",
     "merge_japanese_sentence_cues",
+    "drop_placeholder_source_rows",
 ]
 
 def merge_same_speaker_dangling_cues(cues):
@@ -567,4 +568,76 @@ def _join_japanese_cues(cues, *, max_chars, max_seconds, sentences):
         record_run_event("japanese_short_cue_merge", merged=len(merged), samples=merged[:40],
                          max_gap_ms=round(JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS * 1000),
                          max_chars=max_chars)
+    return rows
+
+
+def drop_placeholder_source_rows(cues, segments):
+    """剔除识别器的静默/未知占位行，以及由它们切出的字幕。
+
+    2026-11-06: a 12.9 s "<sil>" source row was split into "<s", "i", "l>" by
+    the overlong-cue repair and delivered as three subtitle lines. With no
+    cues this normalizes recognition sources before grouping. For legacy
+    derived cues, deletion requires validated source IDs and exact spans;
+    another speaker's overlapping subtitle can never establish ownership.
+    """
+    from twobyteasr.recognition.caption_arbitration import placeholder_transcript
+    if not isinstance(cues, list) or not isinstance(segments, list):
+        return {"rows": 0, "cues": 0}
+    rows = [row for row in segments if placeholder_transcript(getattr(row, "text", ""))]
+    if not rows:
+        return {"rows": 0, "cues": 0}
+    eligible = {row.segment_id for row in rows}
+    owners = []
+    if cues:
+        # Rebuild proven source IDs/character spans/speaker ownership; text
+        # similarity and overlapping time ranges cannot establish derivation.
+        from .grouping_contract import attach_grouping_spans, GroupingContractError
+        import copy
+        try:
+            mapped = attach_grouping_spans(segments, copy.deepcopy(cues))
+        except (GroupingContractError, TypeError, AttributeError):
+            return {"rows": 0, "cues": 0, "reason": "source_ownership_unproven"}
+        owners = [{part['source_id'] for part in cue.source_spans} for cue in mapped]
+        while True:
+            blocked = set().union(*(ids & eligible for ids in owners if ids - eligible))
+            if not blocked:
+                break
+            eligible -= blocked
+    dropped_rows = [row for row in rows if row.segment_id in eligible]
+    dropped_cues = [cue for cue, ids in zip(cues, owners) if ids and ids <= eligible]
+    if not dropped_rows:
+        return {"rows": 0, "cues": 0}
+    drop_cues = {id(cue) for cue in dropped_cues}
+    drop_rows = {id(row) for row in dropped_rows}
+    cues[:] = [cue for cue in cues if id(cue) not in drop_cues]
+    segments[:] = [row for row in segments if id(row) not in drop_rows]
+    stats = {"rows": len(drop_rows), "cues": len(drop_cues),
+             "samples": [str(getattr(row, "text", "")) for row in dropped_rows[:10]],
+             "source_rows": [dict(source_id=row.segment_id, text=row.text,
+                 start=row.start, end=row.end, speaker=row.speaker) for row in dropped_rows]}
+    record_run_event("placeholder_source_rows_removed", **stats)
+    return stats
+
+
+def prepare_effective_sources(segments, *, speech_regions=None):
+    """Recognition-only normalization before source snapshots and caches.
+
+    Keep caller objects and raw ASR evidence. IDs are retained; opening,
+    saving and exporting human-edited projects never call this function.
+    """
+    rows = list(segments)
+    from ..recognition.caption_arbitration import placeholder_transcript
+    markers = [row for row in rows if placeholder_transcript(row.text)]
+    if not markers:
+        return rows
+    drop_placeholder_source_rows([], rows)
+    unknown = [row for row in markers if str(row.text).strip().casefold() == '<unk>']
+    if not rows:
+        if not unknown and speech_regions is not None and not speech_regions:
+            from ..recognition.transcript_delivery import NoSpeechDetected
+            raise NoSpeechDetected('识别器仅返回静默占位且未检测到语音；已有字幕保持。')
+        raise RuntimeError('识别器仅返回占位内容，无法得到有效转写；原始响应与已有字幕已保留。')
+    for row in unknown:
+        add_review_item(float(row.start), '识别占位待核对',
+            '<unk> 未提供有效转写；不是静音证明，请检查该范围。', priority=2, severity='warning')
     return rows
