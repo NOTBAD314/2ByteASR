@@ -187,3 +187,41 @@ def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported
     assert bool(calls) is expected
     scene.close()
     page.close()
+
+
+def test_queued_preroll_frames_cannot_replace_accepted_paused_target_but_seek_and_play_can(controller):
+    """Native R2: accepted0s was overwritten by0.92s queued during a busy GUI."""
+    class Frame:
+        def __init__(self, pts, color):
+            self.pts = round(pts*1_000_000)
+            self.image = QImage(8, 8, QImage.Format_ARGB32_Premultiplied)
+            self.image.fill(QColor(color))
+        def isValid(self): return True
+        def startTime(self): return self.pts
+        def endTime(self): return self.pts+33333
+        def toImage(self): return self.image
+    controller._loaded = True
+    controller._seek_target = 0.0
+    controller._seek_pending = True
+    controller._frame(Frame(0, 'red'))
+    accepted = controller.observed_properties()
+    sequence = controller._frame_sequence
+    for pts in (.033333, .1, .866667, .92):
+        controller._frame(Frame(pts, 'green'))
+    assert controller._frame_sequence == sequence
+    assert controller.observed_properties() == accepted
+    assert controller.surface.frame.pixelColor(0,0).name() == '#ff0000'
+    # A new paused seek still replaces the frozen image with its target.
+    controller.seek(1.2)
+    controller._frame(Frame(1.2, 'blue'))
+    assert controller.observed_property('video-frame-info')['pts'] == 1.2
+    assert controller.surface.frame.pixelColor(0,0).name() == '#0000ff'
+    # Normal playback must continue presenting every delivered frame.
+    controller.set_paused(False)
+    controller._frame(Frame(1.3, 'green'))
+    controller._frame(Frame(1.4, 'red'))
+    assert controller.observed_property('video-frame-info')['pts'] == 1.4
+    assert controller._frame_sequence == sequence+3
+    controller.set_paused(True)
+    controller._frame(Frame(1.7, 'blue'))
+    assert controller.observed_property('video-frame-info')['pts'] == 1.4

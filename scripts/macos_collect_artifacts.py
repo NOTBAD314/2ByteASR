@@ -10,7 +10,7 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ("media","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
+    for folder in ("regressions","media","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model
@@ -27,7 +27,7 @@ def selected_files(root: Path) -> list[Path]:
                 if path.is_file() and path.stat().st_size<=8*1024*1024:selected.append(path)
             for path in (directory/"exports").glob("*"):
                 if path.is_file() and path.suffix.lower() in {".srt",".ass",".txt",".json",".mp4"}:selected.append(path)
-    for name in ("doctor.json","runtime.json","runtime.pip-install.json","runtime.binary-compatibility.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json","runtime-identity.json","fixture-origin.json"):
+    for name in ("doctor.json","runtime.json","runtime.pip-install.json","runtime.binary-compatibility.json","brew-installed.txt","tests.xml","macos-regressions.json","ci-status.json","workflow-identity.json","runtime-identity.json","fixture-origin.json"):
         if (root/name).is_file():selected.append(root/name)
     return sorted(set(selected))
 

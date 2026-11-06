@@ -243,9 +243,10 @@ class MediaService:
         governor: ResourceGovernor | None = None,
         probe_runner: Callable[..., object] | None = None,
     ) -> None:
-        root = Path(__file__).resolve().parents[2]
+        from ..runtime_paths import detect_install_root
         from ..system.platform_media import ffmpeg_tool
-        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool("ffprobe", root=root))
+        root = detect_install_root()
+        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool('ffprobe', root=root))
         self.ffmpeg_path = Path(ffmpeg_path or ffmpeg_tool(root=root))
         if os.name == "nt":
             default_cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "2ByteASR" / "cache" / "media"

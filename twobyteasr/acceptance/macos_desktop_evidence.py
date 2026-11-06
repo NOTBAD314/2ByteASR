@@ -138,7 +138,9 @@ def preserve_studio_preview(page, output: Path, label: str) -> dict:
 
 def preserve_owned_project(path: Path, output: Path, label: str) -> dict:
     path, output = path.resolve(), output.resolve()
-    path.relative_to(output / 'projects')
+    roots = (output / 'projects', output / 'local' / '2ByteASR' / 'Projects')
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError('Project is outside the owned QA project roots')
     if path.suffix != '.2byteproj' or path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError('Only a bounded owned QA project may be archived')
     if label not in {'recognized', 'final', 'restart'}:

@@ -30,6 +30,8 @@ def summarize(root: Path) -> dict:
         runtime_identity=status(read('runtime-identity.json')),
         embedded_preview=status(read('native-media-smoke/result.json')),
         renderer=status(read('renderer-smoke/result.json')),
+        studio_perf=status(read('studio-perf/result.json')),
+        studio_perf_requested=os.environ.get('STUDIO_PERF_REQUESTED','false')=='true',
         hardware=status(read('hardware-probe/result.json'),'hardware_encode_passed'),
         cloud_only=status(read('cloud-only/result.json')),
         keychain=status(read('keychain/result.json')),
@@ -50,7 +52,8 @@ def main(argv=None):
     if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
-        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
+        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project','embedded_preview']+(['model_preparation','home_studio','restart_reuse','export_decode','cloud_only','keychain'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
+        if record.get('studio_perf_requested'):required.append('studio_perf')
         if 'renderer' in record:required.append('renderer')
         selection_path=args.qa_root/'artifacts/receipts/artifact-selection.json'
         selection=json.loads(selection_path.read_text('utf8')) if selection_path.is_file() else {}
