@@ -15,6 +15,7 @@ __all__ = [
     "merge_consecutive_short_repeated_cues",
     "merge_short_japanese_cues",
     "merge_japanese_sentence_cues",
+    "drop_placeholder_source_rows",
 ]
 
 def merge_same_speaker_dangling_cues(cues):
@@ -568,3 +569,46 @@ def _join_japanese_cues(cues, *, max_chars, max_seconds, sentences):
                          max_gap_ms=round(JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS * 1000),
                          max_chars=max_chars)
     return rows
+
+
+def drop_placeholder_source_rows(cues, segments):
+    """剔除识别器的静默/未知占位行，以及由它们切出的字幕。
+
+    2026-11-06: a 12.9 s "<sil>" source row was split into "<s", "i", "l>" by
+    the overlong-cue repair and delivered as three subtitle lines. This runs
+    after grouping, so source segments, batches and the grouping result stay
+    as they were; a row is dropped only when the cues over it reproduce its
+    whole content, and those cues are dropped with it so that the later text
+    conservation checks still pass.
+    """
+    from twobyteasr.recognition.caption_arbitration import placeholder_transcript
+    if not isinstance(cues, list) or not isinstance(segments, list) or not cues:
+        return {"rows": 0, "cues": 0}
+    rows = [row for row in segments if placeholder_transcript(getattr(row, "text", ""))]
+    dropped_cues, dropped_rows = [], []
+    for row in rows:
+        row_content = content_exact(getattr(row, "text", ""))
+        start, end = float(row.start), float(row.end)
+        matched = []
+        for cue in cues:
+            text = content_exact(getattr(cue, "text", ""))
+            if not text or text not in row_content:
+                continue
+            if float(cue.start) > end + 0.05 or float(cue.end) < start - 0.05:
+                continue
+            matched.append(cue)
+        matched.sort(key=lambda cue: (cue.start, cue.end, getattr(cue, "cue_id", 0)))
+        if not matched or "".join(content_exact(cue.text) for cue in matched) != row_content:
+            continue
+        dropped_cues.extend(matched)
+        dropped_rows.append(row)
+    if not dropped_rows:
+        return {"rows": 0, "cues": 0}
+    drop_cues = {id(cue) for cue in dropped_cues}
+    drop_rows = {id(row) for row in dropped_rows}
+    cues[:] = [cue for cue in cues if id(cue) not in drop_cues]
+    segments[:] = [row for row in segments if id(row) not in drop_rows]
+    stats = {"rows": len(drop_rows), "cues": len(drop_cues),
+             "samples": [str(getattr(row, "text", "")) for row in dropped_rows[:10]]}
+    record_run_event("placeholder_source_rows_removed", **stats)
+    return stats
