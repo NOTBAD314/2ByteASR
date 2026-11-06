@@ -76,6 +76,10 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'issue-frame-step':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'library-performance','library-lifecycle','recognition-recovery'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -481,6 +485,11 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'issue-frame-step':
+        from .issue_frame_step_audit import start
+        output = audit_directory()
+        if output is not None:start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-release':
         from .export_release_audit import start
         output = audit_directory()

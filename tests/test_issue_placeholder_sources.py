@@ -108,11 +108,16 @@ def test_long_silence_group_timing_save_reopen_export(tmp_path):
         assert '继续正常讲话' in text
 
 
-def test_existing_manual_placeholder_is_preserved_by_project_roundtrip(tmp_path):
+@pytest.mark.parametrize('text',['<sil>','<unk>','<sil> 是用户的正文','x < y','<code>'])
+def test_existing_manual_placeholder_is_preserved_by_project_roundtrip(tmp_path,text):
     from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
-    project=SubtitleProject(media=StudioMedia(path='fixture.mp4'),cues=[StudioCue('manual',0,1000,'<sil> 是用户的正文')])
+    project=SubtitleProject(media=StudioMedia(path='fixture.mp4'),cues=[StudioCue('manual',0,1000,text)])
     target=save_project(project,tmp_path/'manual.2byteproj')
-    assert load_project(target).cues[0].text=='<sil> 是用户的正文'
+    reopened=load_project(target)
+    assert reopened.cues[0].text==text
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
+    artifact=export_subtitle_artifacts(reopened,tmp_path/'exports','manual',SubtitleExportOptions())[0]
+    assert text in artifact.path.read_text('utf8')
 
 
 def test_local_no_key_and_cloud_failure_use_the_same_effective_sources(monkeypatch):

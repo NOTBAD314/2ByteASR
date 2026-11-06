@@ -1335,6 +1335,15 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        if event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.Wheel):
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
+        if event_type in (QEvent.Type.ApplicationDeactivate, QEvent.Type.WindowDeactivate):
+            self._cancel_frame_step(all_pending=True)
+        if event_type == QEvent.Type.KeyRelease and isinstance(event, QKeyEvent) and not event.isAutoRepeat():
+            self._cancel_frame_step()
+        if event_type == QEvent.Type.FocusIn and self._editing_has_focus():
+            self._cancel_frame_step(all_pending=True)
         # Application-wide filters also receive every Polish/Paint/style
         # event generated while hundreds of hidden controls settle. Reject
         # those before Python property and Qt viewport lookups; keep the
@@ -1587,7 +1596,7 @@ class SubtitleStudioPage(
                     and self._cue_list_has_focus()
                 ):
                     self._selection_latency.begin()
-                if not event.isAutoRepeat() and self._dispatch_shortcut_sequence(sequence):
+                if self._dispatch_shortcut_key(sequence, auto_repeat=event.isAutoRepeat(), timestamp=event.timestamp()):
                     event.accept()
                     return True
         return super().eventFilter(watched, event)
@@ -1599,6 +1608,41 @@ class SubtitleStudioPage(
         self._performance_dialog.show()
         self._performance_dialog.raise_()
         self._performance_dialog.activateWindow()
+
+    def _cancel_frame_step(self, *, all_pending=False):
+        if all_pending:
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
+        cancel = getattr(getattr(self, 'video', None), 'cancel_frame_step', None)
+        if callable(cancel):
+            cancel(cancel_initial=all_pending)
+
+    def _dispatch_shortcut_key(self, sequence, *, auto_repeat=False, timestamp=0, native=False):
+        from .shortcut_registry import normalize, REPEATABLE_COMMANDS
+        blocked = getattr(self, '_native_keys_blocked', None)
+        if callable(blocked) and blocked():
+            return False
+        sequence = normalize(sequence)
+        command = (getattr(self, '_review_shortcut_lookup', {}).get(sequence)
+                   if getattr(self, '_review_mode', False) else None)
+        command = command or self._shortcut_lookup.get(sequence)
+        if command not in REPEATABLE_COMMANDS:
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
+        if auto_repeat and command not in REPEATABLE_COMMANDS:
+            return False
+        identity = (sequence, int(timestamp))
+        if timestamp and getattr(self, '_native_shortcut_claim', None) == identity:
+            return True  # The same native MSG must not run again through Qt.
+        previous_repeat = getattr(self, '_shortcut_is_repeat', False)
+        self._shortcut_is_repeat = bool(auto_repeat)
+        try:
+            handled = self._dispatch_shortcut_sequence(sequence)
+        finally:
+            self._shortcut_is_repeat = previous_repeat
+        if native and timestamp and handled:
+            self._native_shortcut_claim = identity
+        return handled
 
     def _dispatch_shortcut_sequence(self, sequence: str) -> bool:
         """One key press → at most one command, from the shared registry.
@@ -3072,11 +3116,11 @@ class SubtitleStudioPage(
             self._exit_review()
             event.accept()
             return
-        if not self._editing_has_focus() and not event.isAutoRepeat():
+        if not self._editing_has_focus():
             sequence = QKeySequence(event.keyCombination()).toString(
                 QKeySequence.SequenceFormat.PortableText
             )
-            if self._dispatch_shortcut_sequence(sequence):
+            if self._dispatch_shortcut_key(sequence, auto_repeat=event.isAutoRepeat(), timestamp=event.timestamp()):
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -3508,6 +3552,7 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
+        self._cancel_frame_step(all_pending=True)
         if self.project is not None:
             self._navigation_view_token = getattr(self, '_navigation_view_token', 0)+1
             self._navigation_timeline_view = (self.project, self.session.generation,

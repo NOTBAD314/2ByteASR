@@ -116,9 +116,10 @@ class _StudioNativeKeyFilter(QAbstractNativeEventFilter):
             msg = ctypes.cast(int(message), _WindowsMessagePointer).contents
         except (TypeError, ValueError):
             return False, 0
-        if msg.message not in (0x0100, 0x0104):
+        if msg.message in (0x0101, 0x0105):
+            self.page._cancel_frame_step()
             return False, 0
-        if msg.lParam & (1 << 30):
+        if msg.message not in (0x0100, 0x0104):
             return False, 0
         page = self.page
         # An open canvas editor owns all keyboard/IME input even during the
@@ -159,7 +160,8 @@ class _StudioNativeKeyFilter(QAbstractNativeEventFilter):
         sequence = QKeySequence(QKeyCombination(modifiers, key)).toString(
             QKeySequence.SequenceFormat.PortableText
         )
-        return page._dispatch_shortcut_sequence(sequence), 0
+        return page._dispatch_shortcut_key(sequence, auto_repeat=bool(msg.lParam & (1 << 30)),
+            timestamp=int(msg.time), native=True), 0
 
 
 # ------------------------------------------------------------ key caps

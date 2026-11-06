@@ -1,5 +1,7 @@
 # 0.8.1 Docker 浏览器桌面打包
 
+2026-11-06发布分支补充：主环境声明Pillow==12.3.0，setup/repair在完整契约后验证字体模块；联网CPU torch使用官方CPU索引，离线分支保留。主进程与模型worker依赖分开检查，Mac声明补齐既有公式路径。本轮只修源码，下面Docker历史不因此改变；新EXE/Mac/3.12主GUI未验。[执行记录](../exec-plans/completed/2026-11-06-github-issues-11-15.md)。
+
 2026-10-19：此分支在 v0.8.1 上增加独立 Docker 分发。用户通过浏览器使用原桌面，视频与声音由 Selkies 传输；字幕和视频导出仍由原流水线执行。Windows/macOS 的现有入口不启用容器专属逻辑。
 
 ## 构建与入口
