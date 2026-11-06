@@ -15,7 +15,9 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--fps',default='25')
     parser.add_argument('--trim-head',action='store_true')
+    parser.add_argument('--cut-middle',action='store_true')
     parser.add_argument('--baseline',type=Path)
+    parser.add_argument('--tools-root',type=Path)
     args=parser.parse_args()
     out=args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):
@@ -46,20 +48,23 @@ def main():
     project=project_from_runtime_cues(str(media),[core.SubtitleCue(i+1,i*.2,(i+1)*.2,f'Caption {i+1:02}') for i in range(30)])
     if project.media.duration_ms<5900 or project.media.width!=640:
         raise RuntimeError('Fixture must have a real probed media contract: '+str(project.generation_metadata.get('media_contract_probe_error')))
-    if args.trim_head:
+    if args.trim_head or args.cut_middle:
         from twobyteasr.timeline.studio_edit_sequence import sequence_of
         from twobyteasr.timeline.studio_clip_edit import ripple_ranges_command
         sequence_of(project).video_track_locked=False
         for track in project.video_tracks:track.locked=False
-        command=ripple_ranges_command(project,[(0,1000)]);command.redo()
+        command=ripple_ranges_command(project,[(2000,4000)] if args.cut_middle else [(0,1000)]);command.redo()
     fixture=out/'fixture.2byteproj';save_project(project,fixture)
+    tools_root=(args.tools_root.resolve() if args.tools_root else next(
+        (base for base in (ROOT,*ROOT.parents) if (base/'tools/mpv/mpv.exe').is_file()),ROOT))
     env=dict(os.environ,TWOBYTEASR_TEST_ROOT=str(out),TWOBYTEASR_ACCEPTANCE_DIR=str(out),
         TWOBYTEASR_ACCEPTANCE_SCENARIO='issue-frame-step',TWOBYTEASR_STARTUP_PROJECT=str(fixture),
         TWOBYTEASR_STARTUP_OPEN_STUDIO='1',TWOBYTEASR_STARTUP_SIZE='1440x900',
         TWOBYTEASR_INVOKER_CWD=str(ROOT),TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         QT_QPA_PLATFORM='windows',QT_SCALE_FACTOR='1',PYTHONUTF8='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',
-        TWOBYTEASR_MPV=str(ROOT.parents[2]/'tools/mpv/mpv.exe'),
-        ISSUE_FRAME_FPS=args.fps,ISSUE_FRAME_TRIM_MS='1000' if args.trim_head else '0')
+        TWOBYTEASR_MPV=str(tools_root/'tools/mpv/mpv.exe'),
+        ISSUE_FRAME_FPS=args.fps,ISSUE_FRAME_TRIM_MS='1000' if args.trim_head else '0',
+        ISSUE_FRAME_CUT_MIDDLE='1' if args.cut_middle else '0')
     for name in list(env):
         if name.endswith(('_API_KEY','_ACCESS_TOKEN','_REFRESH_TOKEN')):env.pop(name)
     command=[sys.executable,'-B',str(ROOT/'quick_start.py')]

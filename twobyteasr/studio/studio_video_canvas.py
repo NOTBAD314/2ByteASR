@@ -2659,14 +2659,18 @@ class MpvCanvas(QFrame):
     def frame_step(self, backwards=False, *, repeat=False):
         """Request one real decoded frame; wait for its position, never add ms."""
         if (not self.controller or not self.controller.running
-                or self._playback_clock.exact_seek_pending
                 or getattr(self, '_frame_step_pending', None) is not None):
             return False
         # Re-pausing an already paused canvas would enqueue an exact seek to
         # the old clock position and undo the frame command that follows it.
         if not self._paused:
-            self.set_paused(True)
+            self.set_paused(True, align_position=False)
+        if self._playback_clock.exact_seek_pending:
+            return False  # Pause still wins over an in-flight seek/play intent.
         observation = self.controller.observed_position()
+        if (backwards and float(observation.get('position') or 0)<=0
+                or not backwards and getattr(self.controller,'observed_property',lambda *a:False)('eof-reached',False)):
+            return False
         intent = dict(controller=self.controller, clock_generation=self._playback_clock.generation,
             source_epoch=self.controller.source_epoch, backwards=bool(backwards), repeat=bool(repeat), started=False, cancelled=False,
             baseline_sequence=int(observation.get('actor_sequence', 0)),
@@ -2721,6 +2725,9 @@ class MpvCanvas(QFrame):
             self._finish_frame_step()
             return
         if not intent.get('started'):
+            return
+        if not intent['backwards'] and getattr(controller,'observed_property',lambda *a:False)('eof-reached',False):
+            self._finish_frame_step()
             return
         observation = controller.observed_position()
         position = observation.get('position')
@@ -2996,6 +3003,7 @@ class MpvCanvas(QFrame):
                 observed_at = time.monotonic()
                 source = "legacy_property_poll"
             project_actual_ms = self._source_position_to_project_ms(actual)
+            frame_boundary = getattr(page, '_frame_step_boundary_target', None) is not None
             clock_snapshot, accepted, _reason = self._playback_clock.observe(
                 project_actual_ms,
                 source_generation=source_generation,
@@ -3006,11 +3014,21 @@ class MpvCanvas(QFrame):
                 seeking=seeking,
                 seek_completed=bool(observation.get('seek_completed',False)),
                 source=source,
+                discontinuity=frame_boundary,
                 presentation_media_ms=self.visual_position() * 1000.0,
                 observed_perf_counter_ts=observation.get('observed_perf_counter_ts'),
             )
             if accepted:
                 self._adopt_playback_snapshot(clock_snapshot)
+            if (frame_boundary and frame_ready and not seeking and not self._playback_clock.exact_seek_pending
+                    and source_generation == self._playback_clock.generation
+                    and abs(self.visual_position()*1000-project_actual_ms)>.001):
+                # A rounded pause/seek target can overwrite an already seen
+                # fractional frame. Its current, epoch-bound decoded PTS is
+                # still authoritative even without a new property sequence.
+                actual_frame=self._playback_clock.force_position(project_actual_ms,paused=True,
+                    reason='frame_step_boundary_frame')
+                self._adopt_playback_snapshot(actual_frame)
             trace = self._active_seek_trace
             if trace is not None:
                 generation = int(trace.get("generation", -1))
@@ -3480,7 +3498,7 @@ class MpvCanvas(QFrame):
             self._startup_play_requested = False
             self.set_paused(False)
 
-    def set_paused(self, paused: bool) -> None:
+    def set_paused(self, paused: bool, *, align_position: bool = True) -> None:
         page = self._studio_page()
         from ..diagnostics.event_log import emit
         import traceback
@@ -3593,7 +3611,7 @@ class MpvCanvas(QFrame):
         elif paused and callable(invalidate_tail):
             invalidate_tail()
         try:
-            posted = callable(post) and post(paused, position_seconds=target if paused and not hold_entry else None)
+            posted = callable(post) and post(paused, position_seconds=target if paused and not hold_entry and align_position else None)
         except TypeError:
             posted = callable(post) and post(paused)
         if not posted:

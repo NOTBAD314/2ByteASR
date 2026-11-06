@@ -2093,10 +2093,18 @@ class MpvController:
         def perform():
             if intent.get('cancelled'):
                 return
+            # Pause acknowledgement can precede its cached time-pos event.
+            # Read the paused frame in the actor before issuing a step.
+            baseline=self._send(['get_property','time-pos']).get('data')
+            if intent.get('cancelled') or intent.get('source_epoch',self.source_epoch)!=self.source_epoch:
+                return
+            if baseline is None:
+                intent['error']='frame position unavailable'
+                return
             observation = self.observed_position()
             intent.update(started=True, baseline_sequence=int(observation.get('actor_sequence', 0)),
                 source_generation=int(observation.get('source_generation', 0)),
-                baseline_position=observation.get('position'))
+                baseline_position=float(baseline))
             try:
                 self.frame_step(backwards)
             except (OSError, RuntimeError, ValueError) as exc:

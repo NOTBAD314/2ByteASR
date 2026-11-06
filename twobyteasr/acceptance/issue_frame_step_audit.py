@@ -2,6 +2,7 @@
 import ctypes
 from fractions import Fraction
 import json
+import math
 import os
 import time
 import traceback
@@ -19,12 +20,8 @@ def start(window,output):
     from .blank_project_audit import _capture
     from ..studio.studio_helpers import format_timeline_timecode
     result={'passed':False,'checks':[],'samples':[],'input_kind':'Qt events and native WM_KEYDOWN repeat on private desktop'}
-    result['code']={name:{'path':str(Path(sys.modules[name].__file__).resolve()),
-        'sha256':hashlib.sha256(Path(sys.modules[name].__file__).read_bytes()).hexdigest()}
-        for name in ('twobyteasr.studio.studio_ui','twobyteasr.studio.studio_shortcuts',
-                     'twobyteasr.studio.studio_playback_flow','twobyteasr.studio.studio_video_canvas',
-                     'twobyteasr.playback.studio_mpv','twobyteasr.studio.shortcut_registry')}
     fps=float(Fraction(os.environ['ISSUE_FRAME_FPS']));trim=int(os.environ['ISSUE_FRAME_TRIM_MS'])
+    middle=os.environ.get('ISSUE_FRAME_CUT_MIDDLE')=='1'
     def save():(output/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),'utf8')
     def check(name,value,detail=None):
         result['checks'].append(dict(name=name,passed=bool(value),detail=detail));save()
@@ -46,19 +43,26 @@ def start(window,output):
         try:
             if not wait(lambda:page.project is not None and page.video.controller is not None
                     and page.video._startup_state=='READY' and page._project_view_state=='open'
-                    and not page._native_keys_blocked() and page.video._initial_player_request is None,45):
+                    and not page._native_keys_blocked() and getattr(page.video,'_initial_player_request',None) is None,45):
                 raise RuntimeError('normal app/player startup did not become ready')
             window._switch_page(page);window.activateWindow();QApplication.setActiveWindow(window)
+            result['code']={name:{'path':str(Path(sys.modules[name].__file__).resolve()),
+                'sha256':hashlib.sha256(Path(sys.modules[name].__file__).read_bytes()).hexdigest()}
+                for name in ('twobyteasr.studio.studio_ui','twobyteasr.studio.studio_shortcuts',
+                             'twobyteasr.studio.studio_playback_flow','twobyteasr.studio.studio_video_canvas',
+                             'twobyteasr.playback.studio_mpv','twobyteasr.studio.shortcut_registry')}
             controller=page.video.controller
             def actual():return float(controller.observed_position().get('position') or 0)
             def seek_settled(target):
                 request=getattr(getattr(page,'_caption_seek_preparation',None),'pending',None)
+                source_target=target*1000+trim+(2000 if middle and target>=2 else 0)
                 return (request is None and not page.video._playback_clock.exact_seek_pending
-                    and abs(actual()*1000-trim-target*1000)<100)
+                    and abs(actual()*1000-source_target)<=max(2,510/fps))
             page.video.set_paused(True);page._seek(1.5)
             if not wait(lambda:seek_settled(1.5),20):raise RuntimeError('initial real media seek did not settle')
             page.video.setFocus();pump(.1)
-            def settled():return getattr(page.video,'_frame_step_pending',None) is None
+            def settled():return (getattr(page.video,'_frame_step_pending',None) is None
+                and getattr(page,'_deferred_frame_step',None) is None)
             def sample(name):
                 pump(.05)
                 target=output/(name+'-video.png')
@@ -66,13 +70,15 @@ def start(window,output):
                 if not wait(target.is_file):raise RuntimeError('mpv screenshot missing')
                 image=Image.open(target).convert('RGB')
                 number=sum((1<<bit) for bit in range(10) if sum(image.getpixel((32+bit*40,32)))>380)
-                position=actual();expected=round(position*1000)-trim
+                position=actual();source_ms=round(position*1000)
+                expected=source_ms-trim-(2000 if middle and source_ms>=4000 else 0)
+                if middle and 2000<=source_ms<4000:expected=None
                 data=dict(name=name,source_ms=position*1000,picture_frame=number,clock_ms=page.video.visual_position()*1000,
                     playhead_ms=page.timeline.playhead_ms,timecode=page.position_label.text(),expected_ms=expected,
                     pending=not settled(),mode=page._playback_mode)
                 result['samples'].append(data);save()
                 check(name+' picture matches actual frame PTS',abs(number-position*fps)<.55,data)
-                check(name+' playhead follows actual source mapping',abs(page.timeline.playhead_ms-expected)<=3,data)
+                check(name+' playhead follows actual source mapping',expected is not None and abs(page.timeline.playhead_ms-expected)<=3,data)
                 check(name+' timecode follows playhead',page.position_label.text()==format_timeline_timecode(page.timeline.playhead_ms),data)
                 current=page._renderer_cue_at_playhead()
                 check(name+' current caption follows playhead',current is not None and current.start_ms<=page.timeline.playhead_ms<current.end_ms)
@@ -91,8 +97,11 @@ def start(window,output):
             released=actual();pump(.3);check('release stops repetition',abs(actual()-released)<1e-7)
             sample('03-qt-held-right')
             hwnd=int(page.video.winId());user=ctypes.windll.user32
-            before=actual();user.PostMessageW(hwnd,0x100,0x25,1);pump(.12);wait(settled)
-            check('one native key message executes exactly one frame',abs((before-actual())*fps-1)<.15)
+            page.video.setFocus();pump(.04)
+            before=actual();user.PostMessageW(hwnd,0x100,0x25,1)
+            wait(lambda:actual()!=before and settled(),3)
+            check('one native key message executes exactly one frame',abs((before-actual())*fps-1)<.15,
+                dict(before=before,after=actual(),frames=(before-actual())*fps))
             for _ in range(6):user.PostMessageW(hwnd,0x100,0x25,1|(1<<30));pump(.08)
             user.PostMessageW(hwnd,0x101,0x25,1|(1<<30)|(1<<31));wait(settled);pump(.15)
             check('held native Left advances multiple real frames',(before-actual())*fps>=3)
@@ -113,8 +122,12 @@ def start(window,output):
             viewport=page.timeline.visible_start_ms;QTest.keyClick(page.video,Qt.Key_Right);wait(settled);pump(.12)
             check('manual viewport with follow off is preserved',page.timeline.visible_start_ms==viewport)
             page.follow_playhead_toggle.setChecked(True);page.timeline._manual_view_hold=False
-            QTest.keyClick(page.timeline,Qt.Key_Right);wait(settled);pump(.12)
-            check('timeline focus steps and follow on reveals playhead',page.timeline.visible_start_ms>viewport)
+            page.timeline.setFocus();pump(.03);before=actual()
+            QTest.keyClick(page.timeline,Qt.Key_Right)
+            wait(lambda:actual()!=before and settled(),3)
+            wait(lambda:page.timeline.visible_start_ms>viewport,2)
+            check('timeline focus steps and follow on reveals playhead',page.timeline.visible_start_ms>viewport,
+                dict(before=before,after=actual(),viewport=page.timeline.visible_start_ms,manual_hold=page.timeline._manual_view_hold))
             sample('05-timeline-focus-follow')
             dialog=QDialog(window);edit=QLineEdit('modal',dialog);dialog.setModal(True);dialog.show();edit.setFocus();pump(.1)
             before=actual();QTest.keyClick(edit,Qt.Key_Left);pump(.15)
@@ -123,9 +136,22 @@ def start(window,output):
             QTest.keyClick(page.video,Qt.Key_Space)
             check('normal playback starts before frame-step pause',wait(lambda:not page.video._paused,5))
             pump(.35)
-            QTest.keyClick(page.video,Qt.Key_Left);wait(lambda:page.video._paused and settled(),3);pump(.1)
+            QTest.keyClick(page.video,Qt.Key_Left)
+            wait(lambda:page.video._paused and settled() and not page.video._playback_clock.exact_seek_pending
+                and getattr(getattr(page,'_caption_seek_preparation',None),'pending',None) is None,5)
+            pump(.1)
             check('stepping while playing pauses transport',page.video._paused)
             sample('06-step-during-playback')
+            if middle:
+                last_before_cut=(math.ceil(2*fps-1e-7)-1)/fps
+                page._seek(last_before_cut);wait(lambda:seek_settled(last_before_cut));QTest.keyClick(page.video,Qt.Key_Right)
+                wait(lambda:settled() and seek_settled(2),5);pump(.1)
+                check('forward skips deleted middle source',4<=actual()<4.1)
+                sample('07-cut-forward')
+                page._seek(2);wait(lambda:seek_settled(2));QTest.keyClick(page.video,Qt.Key_Left)
+                wait(lambda:settled() and seek_settled(1.96),5);pump(.1)
+                check('backward reaches previous retained real frame',1.8<actual()<2)
+                sample('08-cut-backward')
             page._seek(0);wait(lambda:seek_settled(0));QTest.keyClick(page.video,Qt.Key_Left);pump(1.1)
             check('first frame remains bounded',actual()*1000>=trim-2)
             from ..timeline.studio_edit_sequence import timeline_duration_ms

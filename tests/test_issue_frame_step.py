@@ -100,3 +100,58 @@ def test_released_native_intent_never_reaches_the_player_actor():
     intent['cancelled']=True
     callbacks[0]()
     assert not commands
+
+
+@pytest.mark.parametrize('fps,expected',[(25,1.96),(30000/1001,1.968)])
+def test_backward_cut_boundary_uses_source_rate_then_real_seek(fps,expected):
+    from twobyteasr.timeline.studio_edit_sequence import VideoSegment,EditSequence
+    from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
+    first=VideoSegment('a','fixture.mp4',0,2000,0,2000)
+    second=VideoSegment('b','fixture.mp4',4000,6000,2000,4000)
+    sequence=EditSequence(source_path='fixture.mp4',source_duration_ms=6000,segments=[first,second])
+    seeks=[]
+    page=SimpleNamespace(video=SimpleNamespace(controller=SimpleNamespace(observed_property=lambda *a:fps)),
+        _seek=lambda seconds:seeks.append(seconds))
+    assert StudioPlaybackFlowMixin._step_across_mapped_boundary(page,sequence,second,3960)
+    assert seeks==[expected]
+    assert StudioPlaybackFlowMixin._step_across_mapped_boundary(page,sequence,first,2000)
+    assert seeks[-1]==2.
+
+
+@pytest.mark.parametrize('mode',['ready','project_changed','cancelled','editor'])
+def test_one_deferred_initial_key_waits_without_surviving_context_changes(monkeypatch,mode):
+    from twobyteasr.studio import studio_playback_flow as flow
+    callbacks=[];frames=[];focus=[False]
+    monkeypatch.setattr(flow,'QTimer',SimpleNamespace(singleShot=lambda delay,callback:callbacks.append(callback)))
+    clock=SimpleNamespace(exact_seek_pending=True)
+    page=SimpleNamespace(project=object(),video=SimpleNamespace(controller=object(),_playback_clock=clock),
+        isVisible=lambda:True,_editing_has_focus=lambda:focus[0],_frame_step=lambda direction:frames.append(direction))
+    flow.StudioPlaybackFlowMixin._defer_frame_step(page,True,None)
+    callbacks.pop(0)()
+    assert len(callbacks)==1 and not frames
+    clock.exact_seek_pending=False
+    if mode=='project_changed':page.project=object()
+    if mode=='cancelled':page._deferred_frame_step=None
+    if mode=='editor':focus[0]=True
+    callbacks.pop(0)()
+    assert frames==([True] if mode=='ready' else [])
+
+
+def test_pause_wins_even_when_direct_frame_request_meets_a_seek():
+    value,observation,posted,samples=canvas()
+    pauses=[];value._paused=False;value.set_paused=lambda paused,**kwargs:pauses.append(paused)
+    value._playback_clock.begin_seek(4000)
+    assert not value.frame_step(True)
+    assert pauses==[True] and not posted
+
+
+def test_actor_samples_actual_paused_position_instead_of_stale_cache():
+    callbacks=[];frames=[]
+    controller=SimpleNamespace(source_epoch=1,
+        observed_position=lambda:{'actor_sequence':7,'source_generation':1,'position':3.0},
+        _send=lambda command:{'data':3.04},frame_step=lambda backwards:frames.append(backwards),
+        _post=lambda callback,**kwargs:(callbacks.append(callback) or True))
+    intent={'cancelled':False,'source_epoch':1}
+    assert MpvController.post_frame_step(controller,True,intent=intent)
+    callbacks[0]()
+    assert frames==[True] and intent['baseline_position']==3.04

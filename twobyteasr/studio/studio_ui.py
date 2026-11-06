@@ -1335,6 +1335,9 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        if event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.Wheel):
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
         if event_type in (QEvent.Type.ApplicationDeactivate, QEvent.Type.WindowDeactivate):
             self._cancel_frame_step(all_pending=True)
         if event_type == QEvent.Type.KeyRelease and isinstance(event, QKeyEvent) and not event.isAutoRepeat():
@@ -1607,6 +1610,9 @@ class SubtitleStudioPage(
         self._performance_dialog.activateWindow()
 
     def _cancel_frame_step(self, *, all_pending=False):
+        if all_pending:
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
         cancel = getattr(getattr(self, 'video', None), 'cancel_frame_step', None)
         if callable(cancel):
             cancel(cancel_initial=all_pending)
@@ -1620,6 +1626,9 @@ class SubtitleStudioPage(
         command = (getattr(self, '_review_shortcut_lookup', {}).get(sequence)
                    if getattr(self, '_review_mode', False) else None)
         command = command or self._shortcut_lookup.get(sequence)
+        if command not in REPEATABLE_COMMANDS:
+            self._deferred_frame_step = None
+            self._frame_step_boundary_target = None
         if auto_repeat and command not in REPEATABLE_COMMANDS:
             return False
         identity = (sequence, int(timestamp))
