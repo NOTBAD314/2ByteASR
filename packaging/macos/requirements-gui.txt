@@ -11,6 +11,7 @@ QtAwesome==1.4.0
 oss2==2.19.1
 # 2026-10-13: local MCP server (optional, off by default; official SDK), same pin as requirements-main.txt.
 mcp==2.3.0
+pylatexenc==2.11
 pytest==9.1.1
 psutil==7.2.2
 av==17.1.0

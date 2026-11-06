@@ -518,6 +518,8 @@ function Install-CompatibleCudaTorch {
     }
 }
 
+Assert-WorkbenchLayoutDependency -PythonExe $MainPython
+
 Invoke-External $MainPython @(
     "-m", "py_compile",
     (Join-Path $ProjectRoot "auto_asr.py"),

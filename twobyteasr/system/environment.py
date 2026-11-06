@@ -269,7 +269,7 @@ def runtime_trace(role, *, interpreter=None, repair_target=""):
     }
 
 
-def _run_probe_process(role, contract, *, interpreter=None):
+def _run_probe_process(role, contract, *, interpreter=None, package_presence=None, timeout_seconds=None):
     """Run the deep probe with a bounded timeout; kill the tree on timeout."""
     python_executable = interpreter or environment_interpreter(role)
     trace = runtime_trace(role, interpreter=python_executable)
@@ -302,6 +302,9 @@ def _run_probe_process(role, contract, *, interpreter=None):
             else ""
         ),
     }
+    if package_presence is not None:
+        payload['package_presence'] = dict(package_presence)
+    timeout_seconds = PROBE_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     # The probe runs inside the role's own interpreter as a standalone
     # script (stdlib-only, reads one JSON document from stdin). Pointing an
     # external venv python at the repo/bundle via sys.path does not work in
@@ -353,7 +356,7 @@ def _run_probe_process(role, contract, *, interpreter=None):
         )
         stdout, stderr = process.communicate(
             json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            timeout=PROBE_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
         if process.returncode != 0:
             return PreflightResult(
@@ -394,8 +397,11 @@ def _run_probe_process(role, contract, *, interpreter=None):
             role=role,
             ok=False,
             interpreter=python_executable,
-            problems=[f"{role} 运行环境检查超时（>{PROBE_TIMEOUT_SECONDS:.0f} 秒），已终止。"],
+            problems=[f"{role} 运行环境检查超时（>{timeout_seconds:.0f} 秒），已终止。"],
         )
+    except OSError as exc:
+        return PreflightResult(role=role, ok=False, interpreter=python_executable,
+            problems=[f'解释器启动失败：{type(exc).__name__}: {exc}'], detail={'stage': 'python_startup'})
     finally:
         if "process" in locals() and process.poll() is None:
             stop_process_tree(process)
@@ -519,6 +525,17 @@ def ensure_environment_ready(runtime_settings, *, roles=None):
         return
     messages = [human_message(item) for item in failures]
     raise EnvironmentPreflightError("；".join(messages), failures)
+
+
+def check_worker_dependencies(role, interpreter, packages, *, timeout_seconds=15):
+    """Probe the very interpreter selected by the worker, without engine import."""
+    result = _run_probe_process(role, {}, interpreter=interpreter,
+        package_presence=packages, timeout_seconds=timeout_seconds)
+    if not result.ok:
+        raise EnvironmentPreflightError(
+            f'模型运行时 {role}（{interpreter}）不可用：' + '；'.join(result.problems)
+            + '。请在模型工坊选择该模型并“校验与修复”专用运行环境；已有模型无需重新下载。', [result])
+    return result
 
 
 def reset_preflight_cache():

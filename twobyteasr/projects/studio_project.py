@@ -3060,13 +3060,13 @@ def create_studio_outputs(
         from ..playback.audio_graph import capture_audio_graph
         acceptance['audio_graph_digest'] = digest(capture_audio_graph(project))
         acceptance['source_identities'] = copy.deepcopy(project.generation_metadata.get('input_source_identities') or {})
-    from ..caption_style.subtitle_stacking import initialize_project_layout
-    initialize_project_layout(project)
-    if job_id:
-        from ..recognition.recognition_result import stamp_result
-        stamp_result(project, project_path, job_id=job_id, media_identity=metadata.get("media_identity"))
     # Validate duplicate/conflicting delivery before touching committed files.
     try:
+        from ..caption_style.subtitle_stacking import initialize_project_layout
+        initialize_project_layout(project)
+        if job_id:
+            from ..recognition.recognition_result import stamp_result
+            stamp_result(project, project_path, job_id=job_id, media_identity=metadata.get("media_identity"))
         project_path.parent.mkdir(parents=True, exist_ok=True)
         for child in ("subtitles", "reports", "source", "autosave", "cache", "preview", "backup", "renders", "exports"):
             (project_path.parent / child).mkdir(parents=True, exist_ok=True)
@@ -3079,7 +3079,7 @@ def create_studio_outputs(
         if report_path and Path(report_path).is_file():
             shutil.copy2(report_path, reports_dir / 'task-report.json')
         save_project(project, project_path, compact=True)
-    except OSError as exc:
+    except (OSError, ImportError, ValueError, RuntimeError) as exc:
         from ..recognition.recognition_recovery import checkpoint_failed_delivery
         from .project_paths import save_error_details
         recovery = checkpoint_failed_delivery(project, project_path, exc)
