@@ -152,9 +152,7 @@ def test_unloadable_mpv_fails_the_player_stage_at_once(tmp_path, monkeypatch):
         failures = []
         monkeypatch.setattr(gate, "fail", lambda stage, error: failures.append((stage, str(error))))
 
-        # This is the current startup result, not the exited controller that
-        # a replacement worker has not yet retired.
-        gate._player_loaded(gate.generation, SimpleNamespace(exit_code=None, running=True), '')
+        page.video.controller = SimpleNamespace(exit_code=None, running=True)
         gate._tick()
         assert failures == []                                   # still starting: keep waiting
 

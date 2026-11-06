@@ -1459,6 +1459,8 @@ class StudioAudioEngine(QObject):
     _sync_call = Signal(object)
     _shutdown_call = Signal()
     _capture_call = Signal(object)
+    _retry_call = Signal()
+    telemetry_changed = Signal(object)
 
     def __init__(self, parent: QObject | None = None, *, ffmpeg_path: Path | None = None, isolated: bool = True) -> None:
         super().__init__(parent)
@@ -1469,6 +1471,7 @@ class StudioAudioEngine(QObject):
             from .audio_process import AudioProcessBridge
             self._worker = AudioProcessBridge(ffmpeg_path or studio_ffmpeg_path())
             self._capture_call.connect(self._worker.capture)
+            self._retry_call.connect(self._worker.retry)
         else:
             self._worker = _AudioEngineWorker(ffmpeg_path or studio_ffmpeg_path())
         self._worker.moveToThread(self._thread)
@@ -1481,6 +1484,7 @@ class StudioAudioEngine(QObject):
         self._telemetry: dict[str, Any] = {"state": "IDLE", "windows_sink_count": 0}
         self._session_generation = 0
         self._shutdown_requested = False
+        self._output_suppressed = False
         self._sync_inflight = False
         self._pending_sync: dict[str, Any] | None = None
         self._last_transition: tuple[bool, tuple] | None = None
@@ -1519,6 +1523,13 @@ class StudioAudioEngine(QObject):
                 actual=payload.get('transport_generation')
                 if expected is not None and actual is not None and tuple(expected)!=tuple(actual):return
                 self._telemetry = dict(payload)
+                signature=(generation,tuple(payload.get('transport_generation') or ()),
+                    payload.get('endpoint_generation'),payload.get('state'),
+                    int(payload.get('buffer_bytes') or 0)>=PREBUFFER_BYTES,
+                    int(payload.get('sink_consumed_bytes') or 0)>0)
+                if signature != getattr(self, '_last_readiness_signature', None):
+                    self._last_readiness_signature=signature
+                    self.telemetry_changed.emit(dict(payload))
                 now=time.monotonic()
                 self._telemetry['received_monotonic']=now
                 if now-getattr(self,'_last_diagnostic_at',0.)>=1.:
@@ -1567,6 +1578,9 @@ class StudioAudioEngine(QObject):
         transport_rate: float,
         volume: float,
     ) -> None:
+        if getattr(self, '_output_suppressed', False):
+            audible=False
+            layer=None
         payload = _with_decode_source(dict(layer or {}))
         if self._av_sync_map_payload is not None:
             payload["av_sync_map"] = self._av_sync_map_payload
@@ -1610,6 +1624,7 @@ class StudioAudioEngine(QObject):
         if self._shutdown_requested:
             return
         self._last_payload = payload
+        payload['control_epoch'] = getattr(getattr(self, '_worker', None), '_control_epoch', 0)
         transition = (bool(paused), tuple(payload['transport_generation']))
         if transition != getattr(self, "_last_transition", None):
             # Pause/resume and new transport generations only (low volume):
@@ -1630,7 +1645,10 @@ class StudioAudioEngine(QObject):
         """
         if self._shutdown_requested:
             return self._session_generation
+        cancel=getattr(self, 'cancel_pending_recovery', None)
+        if callable(cancel):cancel()
         self._draining = False
+        self._output_suppressed = False
         self._last_payload = {}
         self._session_generation += 1
         generation = self._session_generation
@@ -1638,6 +1656,7 @@ class StudioAudioEngine(QObject):
             "state": "SILENT",
             "source_path": "",
             "session_generation": generation,
+            "control_epoch": getattr(getattr(self, '_worker', None), '_control_epoch', 0),
             "source_generation": 0,
             "windows_sink_count": int(self._telemetry.get("windows_sink_count") or 0),
             "clock_sequence": 0,
@@ -1652,9 +1671,14 @@ class StudioAudioEngine(QObject):
             "clip_rate": 1.0,
             "volume": 0.0,
             "session_generation": generation,
+            "control_epoch": getattr(getattr(self, '_worker', None), '_control_epoch', 0),
         }
         self._flush_sync()
         return generation
+
+    def cancel_pending_recovery(self):
+        cancel=getattr(self._worker, 'cancel_pending_io', None)
+        if callable(cancel):cancel()
 
     def _flush_sync(self) -> None:
         if self._sync_inflight or self._pending_sync is None or self._shutdown_requested:
@@ -1689,25 +1713,28 @@ class StudioAudioEngine(QObject):
         }
 
     def ready_for_playback(self) -> bool:
-        request = self._last_payload
-        if not request.get("audible"):
-            return True
-        state = self._telemetry
-        if state.get("state") in {"NO_OUTPUT_DEVICE", "UNSUPPORTED_OUTPUT_FORMAT"}:
-            return True
-        # PCM can become available while the preceding paused control is
-        # still in flight. Starting mpv now queues the audio resume behind
-        # that request and manufactures an initial video lead. Wait for its
-        # acknowledgement; ongoing playback and silent output do not wait.
-        if request.get("paused", True) and getattr(self, "_sync_inflight", False):
-            return False
-        if state.get("source_path") != request.get("source_path") or tuple(state.get("transport_generation") or ()) != tuple(request.get("transport_generation") or ()):
-            return False
-        rate = request.get("clip_rate", 1.) * request.get("transport_rate", 1.)
-        if abs(float(state.get("effective_rate", 1.))-rate) > .001:
-            return False
-        bps = (state.get("output_format") or {}).get("bytes_per_second", BYTES_PER_SECOND)
-        return bool(state.get("decoder_eof") or state.get("buffer_bytes", 0) >= bps * PREBUFFER_SECONDS)
+        return self.playback_readiness().ready
+
+    def retry_playback_output(self):
+        """Explicit user recovery, retaining media/clock/decoder routing."""
+        if self._shutdown_requested:return
+        self._output_suppressed=False
+        self._retry_call.emit()
+        self._telemetry={'state':'RETRYING','session_generation':self._session_generation}
+        if self._last_payload:
+            self._pending_sync=dict(self._last_payload)
+            self._pending_sync['control_epoch']=getattr(self._worker, '_control_epoch', 0)
+            self._flush_sync()
+
+    def set_output_suppressed(self, selected):
+        """Only an explicit silent-preview action may bypass an output failure."""
+        self._output_suppressed=bool(selected)
+
+    def playback_readiness(self):
+        from .audio_readiness import audio_readiness
+        return audio_readiness(self._last_payload, self._telemetry,
+            sync_inflight=bool(getattr(self, '_sync_inflight', False)),
+            default_bps=BYTES_PER_SECOND, prebuffer_seconds=PREBUFFER_SECONDS)
 
     def finish_playback(self) -> None:
         if self._draining or self._shutdown_requested:

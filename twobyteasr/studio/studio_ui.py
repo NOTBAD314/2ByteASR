@@ -1336,6 +1336,9 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        if event_type in (QEvent.Type.ApplicationActivate, QEvent.Type.WindowActivate,
+                          QEvent.Type.DevicePixelRatioChange) and watched in (self, self.window(), QApplication.instance()):
+            self._queue_foreground_transport_restore()
         if event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.Wheel):
             self._deferred_frame_step = None
             self._frame_step_boundary_target = None
@@ -3551,6 +3554,12 @@ class SubtitleStudioPage(
     @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
         self._cancel_frame_step(all_pending=True)
+        if self.window().isMinimized():
+            # A minimized top-level window delivers child Hide events too.
+            # It has not navigated away from Studio and still owns transport.
+            self._window_minimized=True
+            super().hideEvent(event)
+            return
         if self.project is not None:
             self._navigation_view_token = getattr(self, '_navigation_view_token', 0)+1
             self._navigation_timeline_view = (self.project, self.session.generation,
@@ -3614,9 +3623,15 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.show')
     def showEvent(self, event) -> None:
+        if getattr(self, '_window_minimized', False):
+            self._window_minimized=False
+            super().showEvent(event)
+            self._queue_foreground_transport_restore()
+            return
         self._presentation_hidden = False
         self._gui_thread_handoff.acquire()
         super().showEvent(event)
+        self._queue_foreground_transport_restore()
         saved_view = getattr(self, '_navigation_timeline_view', None)
         if saved_view is not None:
             token = self._navigation_view_token

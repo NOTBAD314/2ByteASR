@@ -22,7 +22,7 @@ def page_at(position=10500):
             presentation_media_ms=page.timeline.playhead_ms)),
         save_state=SimpleNamespace(setText=lambda text: calls.append(('status', text))))
     class Controller(StudioCueController):
-        def _mirror_clock_selection(self, cue_id, **_kwargs):
+        def _mirror_clock_selection(self, cue_id):
             page.selected_cue_id = session.selected_cue_id = cue_id
             page._manual_selection_hold = False
             calls.append(('mirror', cue_id))

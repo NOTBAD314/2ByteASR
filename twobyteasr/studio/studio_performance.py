@@ -31,6 +31,15 @@ def performance_snapshot(page, *, compact=False) -> dict:
     return {
         "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "clock": asdict(clock.snapshot()) if clock else None,
+        "playhead_display": {
+            "data_ms":getattr(getattr(page,'timeline',None),'playhead_ms',None),
+            "last_update":getattr(getattr(page,'timeline',None),'_playhead_last_update',None),
+            "last_paint":getattr(getattr(page,'timeline',None),'_playhead_paint',None),
+            "scrub_drag":getattr(getattr(page,'timeline',None),'_scrub_drag',None),
+            "navigation_visible":getattr(canvas,'_navigation_visible',None),
+            "visual_timer_active":bool(getattr(canvas,'_timer',None) and canvas._timer.isActive()),
+            "observation_timer_active":bool(getattr(canvas,'_sync_timer',None) and canvas._sync_timer.isActive()),
+        },
         "compositor": scene.performance_snapshot() if scene else None,
         "native_overlay": _native_overlay_snapshot(canvas),
         "render_geometry": _render_geometry(canvas, scene),

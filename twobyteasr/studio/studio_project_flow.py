@@ -241,6 +241,10 @@ class StudioProjectFlowMixin:
         # late old-project synchronize call can overwrite the SILENT request.
         if hasattr(self, "audio_engine"):
             self.audio_engine.unload()
+            self._silent_preview_selected=False
+            if hasattr(self, 'audio_status_banner'):self.audio_status_banner.hide()
+            dialog=getattr(self,'_audio_failure_dialog',None)
+            if dialog is not None:dialog.reject()
         # 2026-09-06：mix_all 混音池（第 2+ 叠加层音频引擎）随工程一起关停。
         if hasattr(self, "_silence_mix_audio_engines"):
             self._silence_mix_audio_engines()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import os
 import time as _time
 from PySide6.QtCore import QThread
 from PySide6.QtCore import Signal
@@ -348,8 +349,8 @@ class StudioVideoFlowMixin:
         asset = next(
             (
                 item for item in project.media_pool
-                if str(Path(item.canonical_source).resolve() if item.canonical_source else "")
-                == (str(Path(source).resolve()) if source else "")
+                if (os.path.normcase(os.path.abspath(item.canonical_source)) if item.canonical_source else "")
+                == (os.path.normcase(os.path.abspath(source)) if source else "")
             ),
             None,
         )
@@ -1357,7 +1358,7 @@ class StudioVideoFlowMixin:
             # A healthy graph may legitimately have a gap at this playhead.
             return None
         try:
-            source_path = str(Path(project.media.path).resolve())
+            source_path = os.path.abspath(project.media.path)
         except (OSError, ValueError):
             source_path = str(project.media.path)
         track_id = primary_video_track_id(project)
@@ -1453,7 +1454,7 @@ class StudioVideoFlowMixin:
         key = str(path)
         if key not in cache:
             try:
-                cache[key] = str(Path(key).resolve())
+                cache[key] = os.path.abspath(key)
             except (OSError, ValueError):
                 cache[key] = key
         resolved = cache[key]
@@ -1527,7 +1528,7 @@ class StudioVideoFlowMixin:
     def _active_playback_kind(self, path: str) -> str:
         resolved = str(path)
         try:
-            resolved = str(Path(path).resolve())
+            resolved = os.path.abspath(path)
         except (OSError, ValueError):
             pass
         if not resolved.lower().endswith(".flv"):
@@ -2024,7 +2025,7 @@ class StudioVideoFlowMixin:
                 playback_generation=self.video.playback_position_snapshot().playback_generation)
             current_path = str(getattr(self.video, "_media_path", "") or "")
             try:
-                same_path = Path(current_path).resolve() == Path(source_path).resolve()
+                same_path = os.path.normcase(os.path.abspath(current_path)) == os.path.normcase(os.path.abspath(source_path))
             except (OSError, ValueError):
                 same_path = current_path == source_path
             # Same path is not enough after a gap suspend: mpv was ``stop``-ed
@@ -2217,7 +2218,7 @@ class StudioVideoFlowMixin:
             project.media.duration_ms = content_ms
             for asset in project.media_pool:
                 try:
-                    same = str(Path(asset.canonical_source).resolve()) == str(Path(source).resolve())
+                    same = os.path.normcase(os.path.abspath(asset.canonical_source)) == os.path.normcase(os.path.abspath(source))
                 except (OSError, ValueError):
                     same = False
                 if same:

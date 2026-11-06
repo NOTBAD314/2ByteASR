@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
+from itertools import islice
 
 from ..system.processes import popen_hidden_subprocess, run_hidden_subprocess
 from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
@@ -58,10 +59,64 @@ class IndexedMediaCache:
         self._audio_seek_builds: set[str] = set()
         self._audio_seek_failures: set[str] = set()
         self._legacy_map_checked: set[str] = set()
+        self._gui_reads = {}
+        self._gui_reads_pending = set()
+        self._gui_read_generations = {}
+        self._gui_read_queues = {}
+        self._gui_active_keys = {}
+
+    def _gui_read(self, operation, source, compute, default):
+        """GUI reads memory; one background lookup owns each source/operation."""
+        from PySide6.QtCore import QCoreApplication,QThread
+        app=QCoreApplication.instance()
+        if app is None or QThread.currentThread()!=app.thread():return compute()
+        key=(operation,str(source));now=time.monotonic()
+        with self._lock:
+            known=self._gui_reads.get(key)
+            if known is not None and now-known[0]<15.:return known[1]
+            generation=self._gui_read_generations.get(str(source),0)
+            if self._gui_active_keys.get(key)==generation:
+                return known[1] if known is not None else default
+            queue=self._gui_read_queues.setdefault(str(source),{})
+            queue[key]=(compute,default,generation)
+            if str(source) in self._gui_reads_pending:return known[1] if known is not None else default
+            self._gui_reads_pending.add(str(source))
+        def work():
+            while True:
+                with self._lock:
+                    queue=self._gui_read_queues.get(str(source),{})
+                    if not queue:
+                        self._gui_reads_pending.discard(str(source))
+                        self._gui_read_queues.pop(str(source),None)
+                        return
+                    current,(read,fallback,epoch)=queue.popitem()
+                    self._gui_active_keys[current]=epoch
+                try:value=read()
+                except Exception:value=fallback
+                with self._lock:
+                    self._gui_active_keys.pop(current,None)
+                    if epoch==self._gui_read_generations.get(str(source),0):
+                        self._gui_reads[current]=(time.monotonic(),value)
+        threading.Thread(target=work,name='studio-media-cache-read',daemon=True).start()
+        return known[1] if known is not None else default
+
+    def invalidate_source(self, source):
+        with self._lock:
+            source=str(source)
+            self._gui_read_generations[source]=self._gui_read_generations.get(source,0)+1
+            self._gui_read_queues.pop(source,None)
+            for key in list(self._gui_reads):
+                if key[1]==source:self._gui_reads.pop(key,None)
+            self._audio_seek.pop(source,None)
+            self._ready.pop(source,None)
+            self._ready_identities.pop(source,None)
 
     # ------------------------------------------------------------------ API
 
     def resolve(self, source: str, *, reason: str = "") -> str:
+        return self._gui_read(('resolve',reason),source,lambda:self._resolve_blocking(source,reason=reason),str(source))
+
+    def _resolve_blocking(self, source: str, *, reason: str = "") -> str:
         """Use the original; prepare a stream-copy only for an explicit need.
 
         mpv and PyAV both accept FLV. A suffix alone is not evidence that an
@@ -108,7 +163,7 @@ class IndexedMediaCache:
     def _recover_missing_source(self, source: str) -> Path | None:
         """A validated cache may be the only remaining playable copy."""
         from ..storage.storage_service import safe_path
-        for manifest in self.root.glob('v2/*/ready.json'):
+        for manifest in islice(self.root.glob('v2/*/ready.json'),64):
             try:
                 payload = json.loads(manifest.read_text(encoding='utf-8'))
                 if str(payload.get('source')) != source:
@@ -122,7 +177,7 @@ class IndexedMediaCache:
                     return target
             except (OSError, ValueError, TypeError):
                 continue
-        for manifest in self.root.glob('v2/*/origin.json'):
+        for manifest in islice(self.root.glob('v2/*/origin.json'),64):
             try:
                 payload = json.loads(manifest.read_text(encoding='utf-8'))
                 if payload.get('producer') != 'indexed_media' or payload.get('source') != source:
@@ -147,7 +202,7 @@ class IndexedMediaCache:
     def optimized_target(self, source: str) -> Path | None:
         with self._lock:
             target = self._ready.get(str(source))
-        if target and target != str(source) and Path(target).is_file():
+        if target and target != str(source):
             return Path(target)
         return None
 
@@ -165,6 +220,9 @@ class IndexedMediaCache:
         return self.root / "v2" / key
 
     def sync_map(self, source: str):
+        return self._gui_read('sync_map',source,lambda:self._sync_map_blocking(source),None)
+
+    def _sync_map_blocking(self, source: str):
         """Cached AVSyncMap for an FLV source, or None while unknown.
 
         Kicks once a background timestamp scan on the original source (or an
@@ -241,6 +299,9 @@ class IndexedMediaCache:
         threading.Thread(target=verify, daemon=True, name="studio-avsync-verify").start()
 
     def playback_source(self, source: str):
+        return self._gui_read('playback_source',source,lambda:self._playback_source_blocking(source),(None,'original'))
+
+    def _playback_source_blocking(self, source: str):
         """Best preview-timebase artifact: proxy > optimized > (None, original)."""
         source = str(source)
         if not source.lower().endswith(".flv"):
@@ -306,6 +367,9 @@ class IndexedMediaCache:
 
     # --------------------------------------------- audio seek copy (FLV)
     def audio_seek_source(self, source: str) -> dict | None:
+        return self._gui_read('audio_seek',source,lambda:self._audio_seek_source_blocking(source),None)
+
+    def _audio_seek_source_blocking(self, source: str) -> dict | None:
         """Indexed audio-only copy of an FLV for the preview audio decoder.
 
         Returns ``{"path", "offset_ms"}`` when a validated copy for this exact
@@ -437,11 +501,7 @@ class IndexedMediaCache:
 
     def next_gap_after(self, source: str, content_ms: int, window_ms: int = 2000):
         """Nearest audio-clock hole within window after content_ms, if any."""
-        from ..playback.avsync import load_sync_map
-        folder = self._cache_folder(str(source))
-        if folder is None:
-            return None
-        sync_map = load_sync_map(folder)
+        sync_map=self.sync_map(source)
         if sync_map is None:
             return None
         for gap in sync_map.gaps:

@@ -48,6 +48,7 @@ class MpvCanvas(QFrame):
     VIDEO_TRANSFORM_OVERLAY_ID = VIDEO_TRANSFORM_OVERLAY_ID
     position_changed = Signal(float)
     playback_state_changed = Signal(bool)
+    audio_playback_failed = Signal(str)
     video_display_size_changed = Signal(int, int)
     error = Signal(str)
     workshop_requested = Signal(str)
@@ -162,8 +163,9 @@ class MpvCanvas(QFrame):
         if sys.platform == 'win32' and QApplication.platformName() == 'windows':
             self._replace_native_region_gate()
         self._buffered_play_timer = QTimer(self)
-        self._buffered_play_timer.setInterval(10)
-        self._buffered_play_timer.timeout.connect(lambda: self.set_paused(False))
+        self._buffered_play_timer.setInterval(150)
+        self._buffered_play_timer.timeout.connect(self._advance_buffered_play)
+        self._pending_play_intent = None
         self._external_clock_sequence = -1
         self._external_clock_enabled = False
         self._external_clock_source_generation = -1
@@ -384,7 +386,7 @@ class MpvCanvas(QFrame):
         self._sync_timer.stop()
         self.error.emit(detail)
 
-    def _request_player_recovery(self, reason):
+    def _request_player_recovery(self, reason, *, confirmed=False):
         """One worker owns shutdown/start; only the GUI installs its result."""
         if self._recovery_request is not None:
             self._recovery_request['intent'] = self._recovery_load_intent()
@@ -392,6 +394,27 @@ class MpvCanvas(QFrame):
         old = self.controller
         if not isinstance(old, MpvController) or not self._media_path:
             return False
+        if not confirmed and reason in {'mpv_transport_stalled', 'unhealthy_instance_on_load'}:
+            if getattr(self, '_recovery_candidate', None) is not None:return True
+            token=(old, getattr(self, '_load_generation', 0), old._subtitle_binding_epoch,
+                   self._playback_clock.generation, time.monotonic())
+            self._recovery_candidate=token
+            def confirm():
+                if getattr(self, '_recovery_candidate', None) is not token:return
+                self._recovery_candidate=None
+                if (self.controller is not old or token[1] != getattr(self, '_load_generation', 0)
+                        or token[2] != old._subtitle_binding_epoch or token[3] != self._playback_clock.generation):
+                    return
+                status=old.actor_status()
+                progress=status.get('last_media_progress') or {}
+                progressed=(progress.get('media_epoch')==token[2] and progress.get('source_generation')==old.source_epoch
+                    and progress.get('monotonic', 0)>=token[4])
+                if old.source_alive() and (progressed or not getattr(old, '_needs_media_reload', False)):
+                    self._studio_page()._studio_trace('PLAYER_RECOVERY_SUPERSEDED', reason='current_generation_progress')
+                    return
+                self._request_player_recovery(reason, confirmed=True)
+            QTimer.singleShot(100, confirm)
+            return True
         now = time.monotonic()
         if self._recovery_attempts == 0:
             self._recovery_deadline = now + self.PLAYER_RECOVERY_BUDGET_S
@@ -1577,7 +1600,7 @@ class MpvCanvas(QFrame):
         # The picture may be hidden by an audio-only/empty-media hint while
         # the active editor still needs its one project clock. Navigation is
         # owned by the whole workspace, not by the presence of video pixels.
-        if page is None or not page.isVisible() or (workspace is not None and not workspace.isVisible()):
+        if not self.window().isMinimized() and (page is None or not page.isVisible() or (workspace is not None and not workspace.isVisible())):
             self.set_navigation_visible(False)
         super().hideEvent(event)
 
@@ -3568,6 +3591,50 @@ class MpvCanvas(QFrame):
             self._startup_play_requested = False
             self.set_paused(False)
 
+    def _play_intent_owner(self):
+        page = self._studio_page()
+        return (id(getattr(page, 'project', None)), getattr(self, '_load_generation', 0),
+                self._playback_clock.generation, id(self.controller), str(self._media_path or ''))
+
+    def _wait_for_buffered_play(self):
+        from ..playback.play_intent import PendingPlay
+        owner = self._play_intent_owner()
+        pending = getattr(self, '_pending_play_intent', None)
+        if pending is None or pending.owner != owner:
+            now = time.monotonic()
+            self._pending_play_intent = PendingPlay(owner, now, now + 10.)
+            self._buffered_play_started = now
+        self._buffered_play_pending = True
+        self._buffered_play_timer.start()
+
+    def _advance_buffered_play(self):
+        pending = getattr(self, '_pending_play_intent', None)
+        if not self._buffered_play_pending or pending is None or not self._navigation_visible:
+            self._pending_play_intent = None
+            self._buffered_play_pending = False
+            self._buffered_play_timer.stop()
+            return
+        page = self._studio_page()
+        engine = getattr(page, 'audio_engine', None)
+        readiness = getattr(engine, 'playback_readiness', None)
+        audio = readiness() if callable(readiness) else None
+        ready = bool(callable(self.playback_ready) and self.playback_ready())
+        outcome = pending.decision(self._play_intent_owner(), time.monotonic(),
+            ready=ready, failure=bool(getattr(audio, 'failed', False)))
+        if outcome == 'waiting':
+            return
+        self._pending_play_intent = None
+        self._buffered_play_pending = False
+        self._buffered_play_timer.stop()
+        if outcome == 'ready':
+            self._apply_requested_pause(False, buffers_prepared=True)
+        elif outcome in {'failed', 'timeout'}:
+            detail = str(getattr(audio, 'reason', '') or '等待音频/画面超时')
+            self._trace_playback_gate('PLAYBACK_GATE_FAILED', reason=detail,
+                waited_ms=round((time.monotonic()-pending.started)*1000, 1))
+            self._end_seek_hold(resumed=False)
+            self.audio_playback_failed.emit(detail)
+
     def set_paused(self, paused: bool, *, align_position: bool = True) -> None:
         page = self._studio_page()
         from ..diagnostics.event_log import emit
@@ -3576,6 +3643,17 @@ class MpvCanvas(QFrame):
              requested_paused=bool(paused),previous_paused=self._paused,startup_state=self._startup_state,
              startup_play_requested=self._startup_play_requested,buffered_pending=self._buffered_play_pending,
              caller_frames=[dict(module=Path(f.filename).name,function=f.name,line=f.lineno) for f in traceback.extract_stack(limit=7)[:-1]])
+        self._apply_requested_pause(paused, align_position=align_position)
+
+    def _apply_requested_pause(self, paused: bool, *, align_position: bool = True, buffers_prepared: bool = False) -> None:
+        page = self._studio_page()
+        if paused:
+            cancel_requested=bool(self._buffered_play_pending or self._startup_play_requested or not self._paused)
+            self._pending_play_intent = None
+            self._buffered_play_pending = False
+            self._buffered_play_timer.stop()
+            cancel = getattr(getattr(page, 'audio_engine', None), 'cancel_pending_recovery', None)
+            if cancel_requested and callable(cancel):cancel()
         if not paused and not self._navigation_visible:
             return
         if self._recovery_request is not None:
@@ -3595,20 +3673,13 @@ class MpvCanvas(QFrame):
                     self._startup_play_requested = True
                     return
                 # Reuse the buffered-play timer and actual PCM readiness.
-                if self._paused and callable(self.playback_ready):
+                if self._paused and callable(self.playback_ready) and not buffers_prepared:
                     if not self._buffered_play_pending:
                         self._buffered_play_started = time.monotonic()
                         if callable(self.playback_prepare):
                             self.playback_prepare()
                     if not self.playback_ready():
-                        self._buffered_play_pending = True
-                        if time.monotonic()-self._buffered_play_started < 10:
-                            self._buffered_play_timer.start()
-                        else:
-                            self._buffered_play_pending = False
-                            self._buffered_play_timer.stop()
-                            self._trace_playback_gate('PLAYBACK_GATE_TIMEOUT')
-                            self._end_seek_hold(resumed=False)
+                        self._wait_for_buffered_play()
                         return
             self._buffered_play_pending = False
             self._buffered_play_timer.stop()
@@ -3641,22 +3712,13 @@ class MpvCanvas(QFrame):
         if self._startup_state != "READY":
             self._startup_play_requested = not bool(paused)
             return
-        if not paused and self._paused and callable(self.playback_ready):
+        if not paused and self._paused and callable(self.playback_ready) and not buffers_prepared:
             if not self._buffered_play_pending:
                 self._buffered_play_started = time.monotonic()
                 if callable(self.playback_prepare):
                     self.playback_prepare()
             if not self.playback_ready():
-                self._buffered_play_pending = True
-                if time.monotonic()-self._buffered_play_started < 10:
-                    self._buffered_play_timer.start()
-                    return
-                self._buffered_play_pending = False
-                self._buffered_play_timer.stop()
-                bind_text(self, '音频准备超时，请重试播放或检查素材。', property='toolTip')
-                self._trace_playback_gate("PLAYBACK_GATE_TIMEOUT", waited_ms=round((time.monotonic()-self._buffered_play_started)*1000, 1),
-                                          detail=self._playback_gate_detail())
-                self._end_seek_hold(resumed=False)
+                self._wait_for_buffered_play()
                 return
         if not paused and self._paused and callable(self.playback_ready) and getattr(self, "_buffered_play_started", 0.0):
             waited = (time.monotonic() - self._buffered_play_started) * 1000

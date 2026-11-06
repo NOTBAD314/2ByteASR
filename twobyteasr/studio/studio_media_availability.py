@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QImage, QPainter, QColor, QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QMessageBox
 
-from ..media.media_availability import apply_availability, media_available, probe_sources
+from ..media.media_availability import apply_availability, media_available, probe_sources, probe_due, availability_identity
 
 from ..i18n import bind_text
 
@@ -34,6 +34,9 @@ class StudioMediaAvailability(QObject):
         self.relink = QPushButton('重新链接 / 查看素材')
         self.relink.clicked.connect(self.choose_offline)
         row.addWidget(self.relink)
+        self.batch_relink=QPushButton('同目录批量定位')
+        self.batch_relink.clicked.connect(lambda:self.choose_offline(batch=True))
+        row.addWidget(self.batch_relink)
         layout.addWidget(self.banner)
         self.banner.hide()
         self.checked.connect(self.apply)
@@ -48,7 +51,7 @@ class StudioMediaAvailability(QObject):
         self.page._show_context_panel()
         self.page.context_drawer.setCurrentIndex(self.page.media_pool_tab_index)
 
-    def choose_offline(self):
+    def choose_offline(self, *, batch=False):
         from PySide6.QtWidgets import QInputDialog
         project = self.page.project
         missing = [a for a in project.media_pool if a.offline] if project else []
@@ -66,9 +69,9 @@ class StudioMediaAvailability(QObject):
             if not ok or self.page.project is not project:
                 return
             asset = missing[labels.index(label)]
-        self.choose_relink(asset.asset_id)
+        self.choose_relink(asset.asset_id, batch=batch)
 
-    def choose_relink(self, asset_id):
+    def choose_relink(self, asset_id, *, batch=False):
         from pathlib import Path
         from PySide6.QtWidgets import QFileDialog
         from .studio_media_pool_ui import MEDIA_FILTER
@@ -79,12 +82,10 @@ class StudioMediaAvailability(QObject):
             return
         # Nonexistent/network source directories must not trap the file picker.
         initial = Path.home()
-        source = Path(asset.canonical_source)
-        if not str(source).startswith(('\\\\', '//')) and source.parent.is_dir():
-            initial = source.parent
+        # Do not stat a sleeping/disconnected drive on the GUI thread.
         path, _ = QFileDialog.getOpenFileName(self.page, tr('重新链接素材'), str(initial), MEDIA_FILTER)
         if path and self.page.project is project:
-            self.begin_relink(asset_id, path)
+            self.begin_relink(asset_id, path, batch=batch)
 
     def cancel_relink(self):
         self.relink_generation += 1
@@ -92,13 +93,17 @@ class StudioMediaAvailability(QObject):
         bind_text(self.page.media_pool_panel.relink_button, '重新定位')
         bind_text(self.page.save_state, '素材检查已结束')
 
-    def begin_relink(self, asset_id, path):
+    def begin_relink(self, asset_id, path, *, batch=False):
         self.cancel_relink()
         project = self.page.project
         asset = next((a for a in project.media_pool if a.asset_id == asset_id), None)
         if asset is None:
             return
         old_path = asset.canonical_source
+        from pathlib import Path
+        siblings=[(a.asset_id,a.canonical_source) for a in project.media_pool if a is not asset
+            and a.offline and Path(a.canonical_source).parent==Path(old_path).parent][:100] if batch else []
+        prior_health=dict(getattr(project,'_media_availability',{}))
         generation = self.relink_generation
         event = self.relink_cancel = threading.Event()
         bind_text(self.page.media_pool_panel.relink_button, '取消检查')
@@ -108,6 +113,19 @@ class StudioMediaAvailability(QObject):
         def work():
             try:
                 result = probe_sources([path], decode=True, timeout=6, cancel_check=cancelled)[path]
+                matches=[]
+                if result['status']=='available' and siblings:
+                    from ..media.relocation_identity import verified_relocation
+                    for sibling_id, old_source in siblings:
+                        if cancelled():raise InterruptedError()
+                        candidate=str(Path(path).parent/Path(old_source).name)
+                        row=probe_sources([candidate],decode=True,timeout=6,cancel_check=cancelled)[candidate]
+                        original=next((a for a in project.media_pool if a.asset_id==sibling_id),None)
+                        previous=prior_health.get(old_source,{})
+                        if original is not None and original.canonical_source==old_source and verified_relocation(original,row,
+                                previous.get('identity') or previous.get('last_verified_identity')):
+                            matches.append(dict(asset_id=sibling_id,old_path=old_source,result=row))
+                    result=dict(result,batch_matches=matches,batch_checked=len(siblings))
                 if not cancelled():
                     self.relink_checked.emit(project, asset_id, old_path, generation, result)
             except InterruptedError:
@@ -153,11 +171,22 @@ class StudioMediaAvailability(QObject):
         from ..timeline.studio_media_commands import media_graph_command
         from ..timeline.studio_media_pool import relink_media_asset
         path = result['path']
-        command = media_graph_command(project, '重新链接素材',
-            lambda working: relink_media_asset(working, asset_id, path,
-                                               fingerprint=str(identity.get('fingerprint') or ''),identity=identity))
+        matches=[row for row in result.get('batch_matches',[]) if any(a.asset_id==row['asset_id']
+            and a.canonical_source==row['old_path'] for a in project.media_pool)]
+        if matches and QMessageBox.question(page,'同目录批量定位',
+                f'另有 {len(matches)} 份素材的原身份指纹与新位置一致。\n同时更新这些映射并保留现有剪辑吗？\n未验证或身份不符的素材保持原状。',
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.Yes)!=QMessageBox.Yes:
+            matches=[]
+        def apply_mapping(working):
+            relink_media_asset(working,asset_id,path,fingerprint=str(identity.get('fingerprint') or ''),identity=identity)
+            for row in matches:
+                candidate=row['result'];metadata=candidate['identity']
+                relink_media_asset(working,row['asset_id'],candidate['path'],
+                    fingerprint=str(metadata.get('fingerprint') or ''),identity=metadata)
+        command=media_graph_command(project,'重新链接素材',apply_mapping)
         # Publish verified health before the undo command triggers renderer hydration.
         project._media_availability = {**getattr(project, '_media_availability', {}), path: result}
+        for row in matches:project._media_availability[row['result']['path']]=row['result']
         page.undo_stack.push(command)
         page._active_video_preview_key = ''
         page._audio_contract_signature = None
@@ -167,7 +196,7 @@ class StudioMediaAvailability(QObject):
         page.ensure_active_subtitle_renderer(reason='media_relink')
         page.media_pool_panel.refresh()
         page.relink_button.setVisible(not media_available(project, project.media.path))
-        bind_text(page.save_state, '素材已重新链接 · 可撤销')
+        bind_text(page.save_state, '已定位 {count} 份素材 · 可撤销',count=1+len(matches))
         self.refresh()
 
     def refresh(self, *, update_timeline=True):
@@ -178,7 +207,11 @@ class StudioMediaAvailability(QObject):
             return
         project = self.page.project
         missing = [a for a in project.media_pool if a.offline] if project else []
-        self.banner.setVisible(bool(missing))
+        states = getattr(project, '_media_availability', {}) if project else {}
+        slow = [a for a in project.media_pool if states.get(a.canonical_source, {}).get('status') == 'slow'] if project else []
+        self.banner.setVisible(bool(missing or slow))
+        if slow and not missing:
+            bind_text(self.label, '素材读取较慢 · 字幕可继续编辑；可取消或重新定位（{count} 个）', count=len(slow))
         if missing:
             detail = '全部素材脱机 · 字幕和时间轴仍可编辑、播放' if len(missing) == len(project.media_pool) else '可用素材和字幕可继续编辑、播放'
             from ..playback.audio_playback_graph import solo_track_ids
@@ -243,6 +276,10 @@ class StudioMediaAvailability(QObject):
             return self.cancelled.is_set() or page.project is not project or getattr(page, '_close_requested', False)
 
         previous = dict(getattr(project, '_media_availability', {}))
+        paths = tuple(path for path in paths if probe_due(previous.get(path, {})))
+        if not paths:
+            self.pending = False
+            return
 
         def work():
             try:
@@ -257,8 +294,11 @@ class StudioMediaAvailability(QObject):
 
     def apply(self, project, paths, results):
         page = self.page
-        if page.project is not project or tuple(a.canonical_source for a in project.media_pool) != paths:
+        if page.project is not project or not set(paths).issubset({a.canonical_source for a in project.media_pool}):
             return
+        previous = getattr(project, '_media_availability', {})
+        playback_changed = any(availability_identity(previous.get(path, {})) != availability_identity(row)
+                               for path, row in results.items())
         changed = apply_availability(project, results)
         if not changed:
             # The periodic check found nothing new. Repainting the whole
@@ -269,6 +309,14 @@ class StudioMediaAvailability(QObject):
             return
         self.refresh()
         page.media_pool_panel.refresh()
+        if not playback_changed:
+            return
+        from ..media.media_service import GLOBAL_MEDIA_SERVICE
+        from ..media.indexed_media import GLOBAL_INDEXED_MEDIA
+        for path, row in results.items():
+            GLOBAL_MEDIA_SERVICE.invalidate_metadata(path, row.get('signature'))
+            if availability_identity(previous.get(path,{}))!=availability_identity(row):
+                GLOBAL_INDEXED_MEDIA.invalidate_source(path)
         page._audio_contract_signature = None
         from ..playback.playback_plan import invalidate_playback_plan
         invalidate_playback_plan(project, 'media_availability')

@@ -22,6 +22,36 @@ class _CaptionFrameBridge(QObject):
 class StudioPlaybackFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
+    def _queue_foreground_transport_restore(self):
+        if getattr(self, '_close_requested', False) or self.project is None:return
+        timer=getattr(self, '_foreground_transport_timer', None)
+        if timer is None:
+            timer=self._foreground_transport_timer=QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._restore_foreground_transport)
+        self._foreground_transport_owner=(id(self.project), self.session.generation)
+        if not timer.isActive():timer.start(0)
+
+    def _restore_foreground_transport(self):
+        if (getattr(self, '_close_requested', False) or self.project is None or not self.isVisible()
+                or getattr(self, '_project_view_state', '') != 'open'
+                or self._foreground_transport_owner != (id(self.project), self.session.generation)):
+            return
+        video=self.video
+        # Activation never navigates or reloads media, and never changes the
+        # user's play/pause intent. Consume only this controller's cache.
+        if not video._navigation_visible:return
+        if not video._sync_timer.isActive():video._sync_timer.start()
+        if not video._timer.isActive():video._timer.start()
+        video._reconcile_position()
+        self._playhead_ui_pending=None
+        self._position_changed(video.visual_position(), _bypass_throttle=True)
+        self.timeline.restore_transport_paint()
+        self._studio_trace('FOREGROUND_TRANSPORT_RESTORED',
+            generation=video._playback_clock.generation, paused=video._paused,
+            timeline_ms=self.timeline.playhead_ms, scrub=self.timeline._scrub_drag,
+            last_paint=getattr(self.timeline, '_playhead_paint', None))
+
     def _invalidate_audio_tail(self):
         self._owned_audio_tail = None
         self._audio_tail_seek_pending = None
@@ -80,8 +110,10 @@ class StudioPlaybackFlowMixin:
             return
         from ..media.media_service import GLOBAL_MEDIA_SERVICE
         try:
-            metadata = GLOBAL_MEDIA_SERVICE.metadata(self._active_video_preview_source_path)
+            metadata = GLOBAL_MEDIA_SERVICE.cached_metadata(self._active_video_preview_source_path)
         except (OSError, RuntimeError, ValueError):
+            return
+        if metadata is None:
             return
         end = float(metadata.video_stream_end_ms or 0)
         source_ms = float(source_seconds) * 1000
@@ -1001,7 +1033,7 @@ class StudioPlaybackFlowMixin:
     def _playback_buffers_ready(self, *, include_seek=True, include_audio=True) -> bool:
         seek=getattr(self,'_caption_seek_preparation',None)
         if include_seek and seek is not None and seek.pending is not None:return False
-        if include_audio and not self.audio_engine.ready_for_playback():
+        if include_audio and not getattr(self, '_silent_preview_selected', False) and not self.audio_engine.ready_for_playback():
             return False
         scene = getattr(self, "video_compositor", None)
         if scene is not None:
@@ -1016,6 +1048,65 @@ class StudioPlaybackFlowMixin:
                     if source.performance_snapshot().get("state") not in {"FAILED", "EOF"}:
                         return False
         return True
+
+    def _audio_output_state_changed(self, state):
+        self.video._advance_buffered_play()
+        failed = self.audio_engine.playback_readiness().failed
+        if failed and not getattr(self, '_silent_preview_selected', False):
+            if not self.video._paused:
+                self.video.set_paused(True)
+                self._audio_playback_failed(str(state.get('decoder_error') or state.get('state')))
+            self._show_audio_status('音频输出不可用 · 工程可编辑，播放已暂停')
+        elif self.audio_engine.ready_for_playback() and not getattr(self, '_silent_preview_selected', False):
+            self.audio_status_banner.hide()
+
+    def _show_audio_status(self, text):
+        self.audio_status_label.setText(text)
+        self.audio_status_banner.show()
+        self.audio_silent_button.setVisible(not getattr(self, '_silent_preview_selected', False))
+
+    def _retry_audio_output(self):
+        self._silent_preview_selected=False
+        self._show_audio_status('正在重新准备音频 · 可继续编辑或暂停取消')
+        self.audio_engine.retry_playback_output()
+        self.video.playback_prepare()
+        self.video.set_paused(False)
+
+    def _select_silent_preview(self):
+        self.video.set_paused(True)
+        self.audio_engine.unload()
+        self.audio_engine.set_output_suppressed(True)
+        self._silent_preview_selected=True
+        self._show_audio_status('无声预览 · 音频输出已停用；点击“重试音频”恢复声音')
+        if getattr(self.video,'_clock_only',False):self.video.set_external_clock_enabled(False)
+        self.video.set_paused(False)
+
+    def _audio_playback_failed(self, reason):
+        """A bounded failed play ends waiting; only explicit actions retry/silence."""
+        from PySide6.QtWidgets import QMessageBox
+        self._sync_play_button(True)
+        self._show_audio_status('音频输出失败 · 工程可编辑；请重试音频或选择无声预览')
+        if getattr(self, '_close_requested', False) or self.project is None:return
+        if getattr(self, '_audio_failure_dialog', None) is not None:return
+        box=QMessageBox(self)
+        box.setWindowTitle('音频输出未就绪')
+        box.setText('音频输出失败，播放已停止等待；工程仍可编辑。')
+        box.setInformativeText(str(reason)[:400]+'\n检查输出设备后可只重试音频，或明确选择无声预览。')
+        retry=box.addButton('重试音频',QMessageBox.ButtonRole.AcceptRole)
+        silent=box.addButton('无声预览',QMessageBox.ButtonRole.ActionRole)
+        box.addButton('保持暂停',QMessageBox.ButtonRole.RejectRole)
+        project=self.project
+        self._audio_failure_dialog=box
+        def completed(_result):
+            self._audio_failure_dialog=None
+            if self.project is not project or getattr(self,'_close_requested',False):return
+            if box.clickedButton() is retry:
+                self._retry_audio_output()
+            elif box.clickedButton() is silent:
+                self._select_silent_preview()
+            box.deleteLater()
+        box.finished.connect(completed)
+        box.open()
 
     def _playhead_target_rule(self) -> str:
         """'edit' while a paused user-placed playhead decides Q/W; else the clock rule."""

@@ -37,7 +37,7 @@ def test_timeout_and_cancel_reap_the_owned_probe_process(tmp_path):
     baseline = {p.pid for p in multiprocessing.active_children()}
     started = time.monotonic()
     result = probe_sources([str(source)], timeout=.001)
-    assert result[str(source)]['status'] == 'timeout'
+    assert result[str(source)]['status'] == 'slow'
     assert time.monotonic() - started < 3
     assert {p.pid for p in multiprocessing.active_children()} == baseline
     deadline = time.monotonic() + .03

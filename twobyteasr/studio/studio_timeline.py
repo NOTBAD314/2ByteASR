@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from functools import wraps
 from math import ceil
+import os
 from pathlib import Path
 from time import perf_counter
 
@@ -91,7 +92,7 @@ def _resolved_source(path: str) -> str:
     for the same few media paths three times per paint (every playback frame)."""
     resolved = _RESOLVED_SOURCES.get(path)
     if resolved is None:
-        resolved = str(Path(path).resolve())
+        resolved = os.path.normcase(os.path.abspath(os.fspath(path)))
         if len(_RESOLVED_SOURCES) > 256:
             _RESOLVED_SOURCES.clear()
         _RESOLVED_SOURCES[path] = resolved
@@ -1670,11 +1671,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     def set_cache(self, cache: WaveformCache | None) -> None:
         self.cache = cache
         if self.project and cache:
-            source = str(Path(cache.metadata.source_path).resolve())
+            source = _resolved_source(cache.metadata.source_path)
             target = next(
                 (
                     asset for asset in self.project.media_pool
-                    if str(Path(asset.canonical_source).resolve()) == source
+                    if _resolved_source(asset.canonical_source) == source
                 ),
                 None,
             )
@@ -1683,7 +1684,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 self.waveform_caches[waveform_cache_slot(target.asset_id, stream)] = cache
                 if not target.duration_ms:
                     target.duration_ms = cache.metadata.duration_ms
-            if (str(Path(self.project.media.path).resolve()) == source
+            if (_resolved_source(self.project.media.path) == source
                     and int(self.project.media.duration_ms or 0) <= 0):
                 # Waveform buckets round up to their block boundary. They are
                 # display data, not a replacement for the saved media clock.
@@ -1772,6 +1773,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if next_value == previous:
             return
         self.playhead_ms = next_value
+        self._playhead_last_update = perf_counter()
         self._refresh_pointer_feedback()
         self._thumbnails.note_activity()
         region = self._transport_cursor_region(previous) | self._transport_cursor_region(next_value)
@@ -4104,6 +4106,21 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.setFont(label_font)
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, playhead_label)
         painter.restore()
+        self._playhead_paint = dict(monotonic=perf_counter(), project_ms=int(self.playhead_ms),
+            x=round(x, 3), dpr=self.devicePixelRatioF(), visible=self.isVisible(),
+            updates_enabled=self.updatesEnabled(), count=getattr(self, '_playhead_paint_count', 0)+1)
+        self._playhead_paint_count=self._playhead_paint['count']
+
+    def restore_transport_paint(self):
+        """One foreground invalidation; the ordinary clock owns later frames."""
+        if not QApplication.mouseButtons():
+            self.finish_scrub(commit=False)
+            self._range_release(cancel=True)
+        overlay=self._transport_overlay
+        overlay.setGeometry(self.rect())
+        overlay.show()
+        overlay.raise_()
+        overlay.update(self._transport_cursor_region(self.playhead_ms))
 
     # ------------------------------------------------------------------
     # Razor / merge tool previews

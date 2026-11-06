@@ -15,26 +15,33 @@ import time
 _WORKER_IDLE_SECONDS = 60.0
 
 
-def stat_sources_in_reader(sources, *, cancel_check=lambda:False):
-    """First-open filesystem checks on the existing disposable read thread.
+def probe_due(previous, now=None):
+    """Memory-only policy; a foreground event never wakes a disk."""
+    return (time.monotonic() if now is None else now) >= float(previous.get('next_probe_monotonic', 0))
 
-    No decoder or additional interpreter is needed to hand subtitle data to
-    the GUI. Slow filesystems can only hold this daemon reader; generation
-    checks still reject its late result. Full decoding stays in probe_sources.
-    """
-    results={}
-    for source in dict.fromkeys(str(s) for s in sources if s):
-        if cancel_check():break
-        row={'path':source,'status':'available','reason':''}
-        try:
-            stat=os.stat(source)
-            with open(source,'rb') as stream:stream.read(1)
-            row['signature']=[stat.st_size,stat.st_mtime_ns]
-        except FileNotFoundError:row.update(status='missing',reason='文件不存在')
-        except PermissionError:row.update(status='unreadable',reason='文件存在但没有读取权限')
-        except OSError as exc:row.update(status='unavailable',reason=f'位置不可用或读取失败（{getattr(exc,"winerror",None) or exc.errno}）')
-        results[source]=row
-    return results
+
+def record_probe(result, previous, *, started, now=None):
+    now = time.monotonic() if now is None else now
+    failures = 0 if result['status'] == 'available' else int(previous.get('failures', 0)) + 1
+    delay = 15. if not failures else (3., 10., 30.)[min(failures-1, 2)]
+    return dict(result, checked_monotonic=now, next_probe_monotonic=now+delay,
+                failures=failures, probe_count=int(previous.get('probe_count', 0))+1,
+                last_verified_identity=(result.get('identity') if result['status']=='available'
+                    else previous.get('identity') or previous.get('last_verified_identity')),
+                probe_elapsed_ms=round((now-started)*1000, 2))
+
+
+def availability_identity(result):
+    """Only a usable-file transition invalidates decoder/render state."""
+    return (result.get('status') == 'available' or bool(result.get('verified_available')),
+            result.get('signature'), result.get('identity'))
+
+
+def stat_sources_in_reader(sources, *, cancel_check=lambda:False):
+    """First-open checks from the project reader, with a killable IO owner."""
+    # A kernel read on a sleeping external volume can outlive a Python
+    # thread's cancellation. The disposable reader can actually be reaped.
+    return probe_sources(sources, timeout=6., cancel_check=cancel_check)
 
 
 def _probe_worker(connection, idle_seconds=None):
@@ -46,22 +53,33 @@ def _probe_worker(connection, idle_seconds=None):
             if request is None:
                 return
             source, decode, previous = request
+            # Only inherited owned-profile audits may delay a disposable reader.
+            if os.environ.get('TWOBYTEASR_TEST_ROOT') and os.environ.get('TWOBYTEASR_TEST_MEDIA_DELAY'):
+                time.sleep(min(5.,max(0.,float(os.environ['TWOBYTEASR_TEST_MEDIA_DELAY']))))
             result = {'path': source, 'status': 'available', 'reason': ''}
+            started=time.monotonic()
             try:
                 stat = os.stat(source)
                 with open(source, 'rb') as stream:
                     stream.read(1)
                 result['signature'] = [stat.st_size, stat.st_mtime_ns]
+                result['path_probe_ms']=round((time.monotonic()-started)*1000,2)
                 if decode and previous.get('signature') == result['signature'] and previous.get('identity'):
                     result['identity'] = previous['identity']
+                    result['ffprobe_count']=0
                 elif decode:
                     from ..studio.studio_helpers import probe_media_identity
                     identity = dict(probe_media_identity(source))
                     if not identity.get('has_video') and not identity.get('has_audio'):
                         raise ValueError('没有可解码的音频或视频流')
                     result['identity'] = identity
+                    result['ffprobe_count']=1
+                    result['decode_probe_ms']=round((time.monotonic()-started)*1000-result['path_probe_ms'],2)
             except FileNotFoundError:
-                result.update(status='missing', reason='文件不存在')
+                drive=os.path.splitdrive(source)[0]
+                offline=bool(drive and not os.path.isdir(drive+os.sep))
+                result.update(status='offline' if offline else 'missing',
+                              reason='素材所在设备离线或盘符不可用' if offline else '文件不存在')
             except PermissionError:
                 result.update(status='unreadable', reason='文件存在但没有读取权限')
             except OSError as exc:
@@ -152,7 +170,12 @@ def shutdown_probe_worker():
 
 def probe_sources(sources, *, timeout=3.0, cancel_check=None, decode=False, previous=None):
     """Call on a background thread. Never wait indefinitely on a remote path."""
-    shared = _SHARED_LOCK.acquire(blocking=False)
+    # Coalesce all callers through the one disposable reader. Contention is
+    # cancellable; it must not create another process waking the same drive.
+    while not _SHARED_LOCK.acquire(timeout=.05):
+        if cancel_check and cancel_check():
+            raise InterruptedError('媒体探测已取消')
+    shared = True
     worker = None
     results = {}
     clean = False
@@ -175,7 +198,13 @@ def probe_sources(sources, *, timeout=3.0, cancel_check=None, decode=False, prev
         for source in dict.fromkeys(str(p) for p in sources if p):
             if cancel_check and cancel_check():
                 raise InterruptedError('媒体探测已取消')
-            request = (source, decode, (previous or {}).get(source, {}))
+            prior = (previous or {}).get(source, {})
+            if prior and not probe_due(prior):
+                results[source] = prior
+                continue
+            started = time.monotonic()
+            request = (source, decode, prior)
+            source_timeout = min(30., float(timeout) * 2**min(int(prior.get('failures', 0)), 3))
             # A reused worker may exit on its idle limit just as a request
             # arrives. That is not a media failure: retry once on a new one.
             retries = 1 if shared else 0
@@ -189,7 +218,7 @@ def probe_sources(sources, *, timeout=3.0, cancel_check=None, decode=False, prev
                         continue
                     results[source] = dict(path=source, status='probe_failed', reason='媒体探测进程退出')
                     break
-                deadline = time.monotonic() + timeout
+                deadline = time.monotonic() + source_timeout
                 reply = None
                 while True:
                     if cancel_check and cancel_check():
@@ -208,13 +237,17 @@ def probe_sources(sources, *, timeout=3.0, cancel_check=None, decode=False, prev
                     break
                 discard()
                 if reply == 'timeout':
-                    results[source] = dict(path=source, status='timeout', reason='媒体位置响应超时')
+                    results[source] = dict(path=source, status='slow', reason='素材读取较慢，尚未确认缺失',
+                        verified_available=bool(prior.get('status')=='available' or prior.get('verified_available')),
+                        signature=prior.get('signature'), identity=prior.get('identity'),
+                        probe_timeout_seconds=source_timeout)
                     break
                 if reply == 'eof' and retries:
                     retries -= 1
                     continue
                 results[source] = dict(path=source, status='probe_failed', reason='媒体探测进程退出')
                 break
+            results[source] = record_probe(results[source], prior, started=started)
         clean = True
         return results
     finally:
@@ -238,7 +271,11 @@ def apply_availability(project, results):
         if result is None:
             continue
         current[source] = result
-        offline = result['status'] != 'available'
+        status=result['status']
+        # A sleeping/slow device is not evidence that its file disappeared.
+        # Keep the last offline flag until an authoritative result arrives.
+        offline = (asset.offline if status in {'slow','timeout','probing','cancelled'}
+                   else status != 'available')
         changed |= asset.offline != offline or previous.get(source) != result
         asset.offline = offline
         if offline:
@@ -253,7 +290,7 @@ def media_available(project, source):
     """Cached GUI-side lookup; no filesystem or network IO."""
     result = getattr(project, '_media_availability', {}).get(str(source))
     if result is not None:
-        return result['status'] == 'available'
+        return result['status']=='available' or bool(result.get('verified_available'))
     asset = next((a for a in project.media_pool if a.canonical_source == str(source)), None)
     return bool(source) and (asset is None or not asset.offline)
 

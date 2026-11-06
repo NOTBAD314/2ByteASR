@@ -656,13 +656,19 @@ class StudioReadiness(QObject):
                     self.mark(skipped)
                 self.profile["diagnostic_player_disabled"] = True
             audio_state = page.audio_engine.telemetry_snapshot()
-            if audio_state.get('state') == 'ENDPOINT_FAILED':
+            if page.audio_engine.playback_readiness().failed:
                 now = time.monotonic()
                 if getattr(self, '_audio_failed_since', None) is None:
                     self._audio_failed_since = now
                 if now - self._audio_failed_since >= self.AUDIO_RECOVERY_GRACE_S:
-                    self.fail('准备音频', str(audio_state.get('decoder_error') or '音频进程已退出'))
-                    return
+                    # Audio failure resolves loading as editable, never as
+                    # audio-ready. Preserve the video/caption preparation.
+                    self.profile['audio_unavailable'] = str(audio_state.get('decoder_error') or audio_state.get('state'))
+                    self.profile['audio_ready'] = False
+                    if '准备音频' not in self.loading.completed:
+                        self.loading.skip('准备音频', '音频输出失败 · 仅编辑，播放需恢复或选择无声预览')
+                    page._show_audio_status('音频输出不可用 · 工程可编辑；请重试音频或选择无声预览')
+                    page.video.set_paused(True)
             else:
                 self._audio_failed_since = None
             surface_ready = player_surface_ready(page)
@@ -716,12 +722,13 @@ class StudioReadiness(QObject):
             if not no_caption_target and (page._preview_path is not None or not page.project.cues):
                 if web_ready:
                     self.mark('准备字幕')
-            resources_ready = all(stage in self.completed for stage in self.TASKS if stage != '首屏绘制')
+            skipped_audio = {'准备音频'} if self.profile.get('audio_unavailable') else set()
+            resources_ready = all(stage in self.completed or stage in skipped_audio for stage in self.TASKS if stage != '首屏绘制')
             if resources_ready and not self.painted and not StudioReadiness._prepare_timeline_surface(self):
                 return
             if self.painted:
                 self.mark('首屏绘制')
-            pending = [x for x in self.TASKS if x not in self.completed]
+            pending = [x for x in self.TASKS if x not in self.completed and x not in skipped_audio]
             if pending:
                 self._set_stage_label(pending[0])
                 return
@@ -931,7 +938,10 @@ class StudioReadiness(QObject):
         self.finished.emit()
         if not self._owns_request(allow_ready=True):
             return
-        self.page.video.resume_requested_playback()
+        if self.profile.get('audio_unavailable'):
+            self.page.video.set_paused(True)
+        else:
+            self.page.video.resume_requested_playback()
         # 2026-09-19：open 过程中创建/销毁的原生子窗口（mpv、overlay、内嵌
         # 预览）会把 Win32 焦点打到 NULL——Qt activeWindow=None 后快捷键全
         # 部静默失效（打开工程直接按空格无反应的根因）。ready 即收回焦点。

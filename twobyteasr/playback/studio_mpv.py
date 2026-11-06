@@ -519,6 +519,7 @@ class _MpvCommandActor:
             "media_epoch": self.controller._subtitle_binding_epoch,
             "transport_failures": self._transport_failures,
             "recovery_exhausted": self.recovery_exhausted(),
+            "last_media_progress": getattr(self, '_last_media_progress', None),
         }
 
     def recovery_exhausted(self):
@@ -774,6 +775,18 @@ class _MpvCommandActor:
 
     def _handle_event(self, payload: dict[str, Any]) -> None:
         name=payload.get('event')
+        if name in {'file-loaded', 'playback-restart'}:
+            actual = str(self.property('path', '') or '')
+            intended = str(self.controller._subtitle_media_path or '')
+            if (actual and intended and os.path.normcase(os.path.abspath(actual)) == os.path.normcase(os.path.abspath(intended))
+                    and self._observation_media_epoch == self.controller._subtitle_binding_epoch):
+                self._last_media_progress = dict(monotonic=time.monotonic(),
+                    media_epoch=self.controller._subtitle_binding_epoch, source_generation=self._source_generation)
+                self._transport_failures=0
+                self._outage_started=None
+                self._degraded=False
+                self.controller._needs_media_reload=False
+                self.mark_exchange_ok()
         if name == 'end-file' and payload.get('reason') == 'error':
             self.controller._last_media_failure = dict(media_epoch=self.controller._subtitle_binding_epoch,
                                                       category='media_read_failed')
@@ -1384,6 +1397,7 @@ class MpvController:
                     purpose="mpv studio preview",
                     process_factory=self._process_factory,
                     env=mpv_environment(),
+                    cwd=str(self.executable.parent),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -1704,7 +1718,7 @@ class MpvController:
         return value
 
     def post_load(self, media_path: str | os.PathLike[str]) -> bool:
-        target = str(Path(media_path).resolve())
+        target = os.path.abspath(os.fspath(media_path))
         self._begin_subtitle_media(target)
         epoch = self._subtitle_binding_epoch
         return self._post(
@@ -1729,7 +1743,7 @@ class MpvController:
         and leave PlaybackClock waiting forever for an acknowledgement.
         """
 
-        source = str(Path(media_path).resolve())
+        source = os.path.abspath(os.fspath(media_path))
         self._begin_subtitle_media(source)
         epoch = self._subtitle_binding_epoch
         target = max(0.0, float(seconds))
@@ -1971,8 +1985,9 @@ class MpvController:
         )
 
     def load(self, media_path: str | os.PathLike[str]) -> None:
-        self._begin_subtitle_media(str(Path(media_path).resolve()))
-        self._send(["loadfile", str(Path(media_path).resolve()), "replace"])
+        source=os.path.abspath(os.fspath(media_path))
+        self._begin_subtitle_media(source)
+        self._send(["loadfile", source, "replace"])
 
     def _begin_subtitle_media(self, source):
         self._subtitle_binding_epoch += 1
@@ -2009,7 +2024,7 @@ class MpvController:
             if epoch != self._subtitle_binding_epoch or not source:
                 return
             actual = str(self.get_property('path', '') or '')
-            if not actual or Path(actual).resolve() != Path(source).resolve():
+            if not actual or os.path.normcase(os.path.abspath(actual)) != os.path.normcase(os.path.abspath(source)):
                 return
             self._subtitle_media_ready = True
             pending=getattr(self,'_pending_media_seek',None)

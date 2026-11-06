@@ -258,6 +258,26 @@ class MediaService:
         self._probe_runner = probe_runner or run_hidden_subprocess
         self._proxy_jobs_lock = threading.Lock()
         self._proxy_jobs: dict[str, ProxyJob] = {}
+        self._known_metadata: dict[str, MediaMetadataSnapshot] = {}
+        self._metadata_lock = threading.RLock()
+        self._metadata_probe_lock = threading.Lock()
+
+    @staticmethod
+    def _path_key(path):
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    def cached_metadata(self, path):
+        """GUI/tick-safe lookup. Identity validation belongs to the reader."""
+        with self._metadata_lock:
+            return self._known_metadata.get(self._path_key(path))
+
+    def invalidate_metadata(self, path, signature=None):
+        key = self._path_key(path)
+        with self._metadata_lock:
+            known = self._known_metadata.get(key)
+            if known is not None and (signature is None or
+                    [known.source_size, known.source_mtime_ns] != list(signature)):
+                self._known_metadata.pop(key, None)
 
     def metadata(self, path: str | os.PathLike[str], *, refresh: bool = False) -> MediaMetadataSnapshot:
         source = Path(path).resolve()
@@ -269,13 +289,15 @@ class MediaService:
             "media-metadata", source, schema=MEDIA_METADATA_SCHEMA,
             settings={"ffprobe": str(self.ffprobe_path)},
         )
-        if refresh:
-            return self._probe(source)
-        value, _produced = self.cache_manager.get_or_create(
-            identity,
-            lambda: self._probe(source),
-            cache_result=lambda _snapshot: (2048, False),
-        )
+        with self._metadata_probe_lock:
+            if refresh:
+                value = self._probe(source)
+            else:
+                value, _produced = self.cache_manager.get_or_create(
+                    identity, lambda: self._probe(source),
+                    cache_result=lambda _snapshot: (2048, False))
+        with self._metadata_lock:
+            self._known_metadata[self._path_key(path)] = value
         return value
 
     def _probe(self, source: Path) -> MediaMetadataSnapshot:

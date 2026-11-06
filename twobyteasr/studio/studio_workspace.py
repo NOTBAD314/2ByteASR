@@ -504,6 +504,19 @@ class StudioWorkspaceBuilder:
 
         from .studio_media_availability import StudioMediaAvailability
         page.media_availability = StudioMediaAvailability(page, outer)
+        page.audio_status_banner = QFrame(page)
+        audio_row = QHBoxLayout(page.audio_status_banner)
+        page.audio_status_label = QLabel('')
+        page.audio_status_label.setWordWrap(True)
+        audio_row.addWidget(page.audio_status_label, 1)
+        page.audio_retry_button = QPushButton('重试音频')
+        page.audio_retry_button.clicked.connect(page._retry_audio_output)
+        audio_row.addWidget(page.audio_retry_button)
+        page.audio_silent_button = QPushButton('无声预览')
+        page.audio_silent_button.clicked.connect(page._select_silent_preview)
+        audio_row.addWidget(page.audio_silent_button)
+        outer.addWidget(page.audio_status_banner)
+        page.audio_status_banner.hide()
 
         page.workspace_host = QWidget(page)
         page.workspace_splitter = QSplitter(Qt.Orientation.Vertical, page.workspace_host)
@@ -562,6 +575,8 @@ class StudioWorkspaceBuilder:
         page.audio_engine = StudioAudioEngine(page)
         page.video.playback_prepare = lambda: page._sync_video_compositor(int(page.timeline.playhead_ms))
         page.video.playback_ready = page._playback_buffers_ready
+        page.audio_engine.telemetry_changed.connect(page._audio_output_state_changed)
+        page.video.audio_playback_failed.connect(page._audio_playback_failed)
         page.video.set_external_clock_provider(page.audio_engine.clock_observation)
         page.video_compositor.transform_preview.connect(page._video_transform_previewed)
         page.video_compositor.transform_committed.connect(page._video_transform_committed)
