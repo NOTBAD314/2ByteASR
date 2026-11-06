@@ -2552,6 +2552,18 @@ def run_timed_stage(index, total, label, resource, runner):
     return value
 
 
+def _runtime_module_present(python_executable, module_name):
+    """不看当前进程，只查目标运行时 site-packages 里是否装有该模块。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(python_executable)))
+    for packages in (
+        os.path.join(root, "Lib", "site-packages"),
+        os.path.join(root, "lib", "site-packages"),
+    ):
+        if os.path.isdir(os.path.join(packages, module_name)):
+            return True
+    return False
+
+
 def check_runtime():
     from importlib.metadata import PackageNotFoundError, version as package_version
     missing = []
@@ -2576,27 +2588,63 @@ def check_runtime():
     module_aliases = {
         "PySide6": "PySide6",
         "QtAwesome": "qtawesome",
+        "qwen-asr": "qwen_asr",
     }
+    # 源码模式：这些运行时包也不在 GUI 自身环境（requirements-main.txt 明确
+    # 不装 ASR 引擎），模型 worker 由 runtime_registry 用专用 main 运行时启动。
+    # 因此必须查实际执行 worker 的解释器，而不是当前进程的 dist-info。
+    worker_runtime = ""
+    if not frozen:
+        from twobyteasr.system.runtime_registry import resolve_runtime_python
+
+        resolved = resolve_runtime_python("main")
+        if resolved and os.path.normcase(os.path.abspath(resolved)) != os.path.normcase(
+            os.path.abspath(sys.executable)
+        ):
+            worker_runtime = resolved
     for package_name in packages:
+        is_runtime_package = package_name in frozen_external_runtimes
         if frozen:
-            if package_name in frozen_external_runtimes:
+            if is_runtime_package:
                 continue
             try:
                 __import__(module_aliases.get(package_name, package_name))
             except ImportError:
                 missing.append(package_name)
             continue
+        if is_runtime_package and worker_runtime:
+            if _runtime_module_present(
+                worker_runtime,
+                module_aliases.get(package_name, package_name.replace("-", "_")),
+            ):
+                continue
+            missing.append(package_name)
+            continue
         try:
             package_version(package_name)
         except PackageNotFoundError:
             missing.append(package_name)
     if missing:
-        raise RuntimeError(
-            "缺少运行依赖："
-            + ", ".join(missing)
-            + "\n请执行：\n"
-            'python -m pip install -r requirements-main.txt'
-        )
+        runtime_missing = [] if frozen else [
+            name for name in missing if name in frozen_external_runtimes
+        ]
+        desktop_missing = [name for name in missing if name not in runtime_missing]
+        messages = []
+        if desktop_missing:
+            messages.append(
+                "缺少运行依赖："
+                + ", ".join(desktop_missing)
+                + "\n请执行：\n"
+                "python -m pip install -r requirements-main.txt"
+            )
+        if runtime_missing:
+            messages.append(
+                "缺少运行依赖："
+                + ", ".join(runtime_missing)
+                + "\n请在「模型工坊」重新准备对应模型；"
+                "程序会自动安装专用 Python 运行环境，无需执行 requirements-main.txt。"
+            )
+        raise RuntimeError("\n".join(messages))
     for executable in ("ffmpeg", "ffprobe"):
         resolved = shutil.which(executable)
         if resolved is None:
