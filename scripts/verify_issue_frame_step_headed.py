@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--trim-head',action='store_true')
     parser.add_argument('--cut-middle',action='store_true')
     parser.add_argument('--baseline',type=Path)
+    parser.add_argument('--exe',type=Path,help='Run the fixed frozen EXE, not the source entry')
     parser.add_argument('--tools-root',type=Path)
     args=parser.parse_args()
     out=args.output.resolve()
@@ -67,7 +68,8 @@ def main():
         ISSUE_FRAME_CUT_MIDDLE='1' if args.cut_middle else '0')
     for name in list(env):
         if name.endswith(('_API_KEY','_ACCESS_TOKEN','_REFRESH_TOKEN')):env.pop(name)
-    command=[sys.executable,'-B',str(ROOT/'quick_start.py')]
+    command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(ROOT/'quick_start.py')]
+    if args.exe and args.baseline:parser.error('--baseline is source-only; do not replace modules in a frozen EXE')
     if args.baseline:
         names=['studio/studio_ui.py','studio/studio_shortcuts.py','studio/studio_playback_flow.py',
             'studio/studio_video_canvas.py','studio/shortcut_registry.py','playback/studio_mpv.py']

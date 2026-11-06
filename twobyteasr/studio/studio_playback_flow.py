@@ -922,20 +922,6 @@ class StudioPlaybackFlowMixin:
         except RuntimeError as exc:
             self._show_video_error(str(exc))
 
-    def _frame_step(self, backwards: bool) -> None:
-        if not getattr(self, "_empty_playback_state", False) and self.video.controller:
-            preparing=getattr(self,'_caption_seek_preparation',None)
-            request=getattr(preparing,'pending',None)
-            busy=(request is not None or self.video._playback_clock.exact_seek_pending
-                  or getattr(self.video,'_frame_step_pending',None) is not None)
-            if busy:
-                if not self.video._paused:self.video.set_paused(True,align_position=False)
-                if not getattr(self,'_shortcut_is_repeat',False):self._defer_frame_step(backwards,request)
-                return
-            self._frame_step_boundary_target=None
-            self.video.frame_step(backwards, repeat=getattr(self, '_shortcut_is_repeat', False))
-            self._sync_play_button(True)
-
     def _step_across_mapped_boundary(self, sequence, current, source_ms):
         """Keep a real decoded step out of deleted source ranges."""
         rows=list(sequence.segments)
@@ -965,6 +951,20 @@ class StudioPlaybackFlowMixin:
         self._frame_step_boundary_target=int(target)
         self._seek(target/1000)
         return True
+
+    def _frame_step(self, backwards: bool) -> None:
+        if not getattr(self, "_empty_playback_state", False) and self.video.controller:
+            preparing=getattr(self,'_caption_seek_preparation',None)
+            request=getattr(preparing,'pending',None)
+            busy=(request is not None or self.video._playback_clock.exact_seek_pending
+                  or getattr(self.video,'_frame_step_pending',None) is not None)
+            if busy:
+                if not self.video._paused:self.video.set_paused(True,align_position=False)
+                if not getattr(self,'_shortcut_is_repeat',False):self._defer_frame_step(backwards,request)
+                return
+            self._frame_step_boundary_target=None
+            self.video.frame_step(backwards, repeat=getattr(self, '_shortcut_is_repeat', False))
+            self._sync_play_button(True)
 
     def _defer_frame_step(self, backwards, seek_request):
         """One initial key may follow an owned seek; repeats never queue up."""

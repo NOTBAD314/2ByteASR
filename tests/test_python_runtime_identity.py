@@ -29,8 +29,7 @@ class RuntimeEntryTests(unittest.TestCase):
             if key.startswith("TWOBYTEASR_") or key in {"2BYTEASR_USER_DATA_ROOT","2BYTEASR_MODEL_ROOT"}:
                 env.pop(key)
         env.update(LOCALAPPDATA=str(self.root/"local"),APPDATA=str(self.root/"roaming"),
-                   TWOBYTEASR_CHILD_PROCESS_LOG=str(self.root/"children.jsonl"),
-                   TWOBYTEASR_DEVELOPER_RUNTIMES="1")
+                   TWOBYTEASR_CHILD_PROCESS_LOG=str(self.root/"children.jsonl"))
         self.environment=patch.dict(os.environ,env,clear=True);self.environment.start()
         registry.reset_runtime_registry_cache()
         # Disable only asynchronous window observation; the real canonical
@@ -115,7 +114,6 @@ class RuntimeEntryTests(unittest.TestCase):
         self.assertEqual(registry.registry_path().read_bytes(),original)
 
     def test_missing_runtime_and_boundary_are_not_silently_repaired_to_base(self):
-        os.environ.pop("TWOBYTEASR_DEVELOPER_RUNTIMES",None)
         os.environ["TWOBYTEASR_TEST_ROOT"]=str(self.root)
         os.environ["TWOBYTEASR_MAIN_PYTHON"]=str(self.root/"missing/bin/python")
         registry.reset_runtime_registry_cache()

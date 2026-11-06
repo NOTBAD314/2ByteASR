@@ -648,7 +648,7 @@ def test_invoke_environment_repair_returns_scalar_numeric_exit_code(tmp_path):
     fake_python = project / ".venv-main" / "Scripts" / "python.exe"
     fake_python.parent.mkdir(parents=True)
     shutil.copy2(sys.executable, fake_python)
-    shutil.copy2(Path(sys.prefix) / "pyvenv.cfg", project / ".venv-main" / "pyvenv.cfg")
+    shutil.copy2(PROJECT_ROOT / ".venv-main" / "pyvenv.cfg", project / ".venv-main" / "pyvenv.cfg")
     package = project / "twobyteasr"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="ascii")

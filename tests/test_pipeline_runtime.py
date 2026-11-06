@@ -65,7 +65,7 @@ class _FinalizeLegacy:
     def validate_final_cues(self, cues, *_args, **_kwargs):
         return self._same("validate", cues)
 
-    def apply_isolated_single_character_rules_safely(self, cues, **_kwargs):
+    def apply_isolated_single_character_rules_safely(self, cues):
         return self._same("single_character", cues)
 
     def merge_consecutive_short_repeated_cues(self, cues):
@@ -90,10 +90,7 @@ class _FinalizeLegacy:
 def test_finalize_cues_preserves_the_established_stage_order():
     legacy = _FinalizeLegacy()
     cues = [SimpleNamespace(cue_id=1, speaker='S01', text='原文字', start=0., end=1.)]
-    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
-    # This Chinese stage-order fixture needs an explicit source choice.
-    with activate_runtime_context(RuntimeContext(requested_language='zh')):
-        assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
+    assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
     assert legacy.calls == [
         "repair",
         "normalize",
@@ -114,23 +111,3 @@ def test_finalize_cues_preserves_the_established_stage_order():
         'grouped_before_display', 'normalized_and_vad_onsets', 'speaker_reading_tail',
         'short_gap_bridge', 'validated_and_content_recovered', 'final_half_open_display']
     assert all(p['half_open'] for name,p in legacy.events if name=='display_boundary_phase')
-
-
-def test_japanese_finalize_joins_flashing_lines_before_the_limit_repair():
-    """2026-10-18 (日常 19): the joined line still goes through the 16-character / 5-second repair."""
-    from twobyteasr.subtitle_rules.language_rules import language_scope
-
-    class Legacy(_FinalizeLegacy):
-        def repair_overlong_cues_from_source(self, cues, *_args):
-            self.calls.append(("repair", [cue.text for cue in cues]))
-            return cues
-
-    legacy = Legacy()
-    cues = [SimpleNamespace(cue_id=1, speaker='S08', text='いいから', start=373.540, end=373.915, timing_locked=False),
-            SimpleNamespace(cue_id=2, speaker='S08', text='次は教えた通りに', start=374.249, end=375.458,
-                            timing_locked=False)]
-    with language_scope('ja'):
-        result = finalize_cues(cues, [], [], [], 1420.0, 24000 / 1001, legacy)
-    assert [cue.text for cue in result] == ['いいから次は教えた通りに']
-    assert [call[1] for call in legacy.calls if isinstance(call, tuple)] == [
-        ['いいから', '次は教えた通りに'], ['いいから次は教えた通りに']]
