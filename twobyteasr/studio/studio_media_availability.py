@@ -21,6 +21,7 @@ class StudioMediaAvailability(QObject):
         super().__init__(page)
         self.page = page
         self.pending = False
+        self._probe_generation=0
         self.cancelled = threading.Event()
         self.relink_generation = 0
         self.relink_cancel = threading.Event()
@@ -39,13 +40,31 @@ class StudioMediaAvailability(QObject):
         row.addWidget(self.batch_relink)
         layout.addWidget(self.banner)
         self.banner.hide()
-        self.checked.connect(self.apply)
+        self.checked.connect(self._apply_checked)
         self.relink_checked.connect(self.apply_relink)
         self.timer = QTimer(self)
         self.timer.setInterval(3000)
         self.timer.timeout.connect(self.check)
         self.timer.start()
         page.destroyed.connect(lambda *_: self.cancelled.set())
+
+    def device_changed(self):
+        """A real device notification invalidates cached health, never edits."""
+        self._probe_generation+=1
+        project=self.page.project
+        if project is not None:
+            project._media_availability={path:dict(row,next_probe_monotonic=0,failures=0)
+                for path,row in getattr(project,'_media_availability',{}).items()}
+        timer=getattr(self,'_device_probe_timer',None)
+        if timer is None:
+            timer=self._device_probe_timer=QTimer(self)
+            timer.setSingleShot(True);timer.timeout.connect(self.check)
+        timer.start(1000)
+
+    def _apply_checked(self, project, token, results):
+        generation,paths=token
+        if generation!=self._probe_generation:return
+        self.apply(project,paths,results)
 
     def show_media(self):
         self.page._show_context_panel()
@@ -152,6 +171,10 @@ class StudioMediaAvailability(QObject):
         required_end = max((clip.source_out_ms for track in (*project.video_tracks, *project.audio_tracks)
                             for clip in track.clips if clip.asset_id == asset_id), default=0)
         warnings = []
+        from ..media.relocation_identity import verified_relocation
+        previous=getattr(project,'_media_availability',{}).get(old_path,{})
+        if not verified_relocation(asset,result,previous.get('identity') or previous.get('last_verified_identity')):
+            warnings.append('无法确认所选文件与原素材的身份一致（即使同名）。请确认选择了正确素材；现有剪辑会保留。')
         duration = int(identity.get('duration_ms') or 0)
         if duration and duration < required_end:
             warnings.append('所选素材比已编辑的源时间范围短，超出部分会显示空白或静音。')
@@ -271,9 +294,11 @@ class StudioMediaAvailability(QObject):
             self.refresh()
             return
         self.pending = True
+        generation=self._probe_generation
 
         def cancelled():
-            return self.cancelled.is_set() or page.project is not project or getattr(page, '_close_requested', False)
+            return (generation!=self._probe_generation or self.cancelled.is_set()
+                or page.project is not project or getattr(page, '_close_requested', False))
 
         previous = dict(getattr(project, '_media_availability', {}))
         paths = tuple(path for path in paths if probe_due(previous.get(path, {})))
@@ -285,7 +310,7 @@ class StudioMediaAvailability(QObject):
             try:
                 results = probe_sources(paths, cancel_check=cancelled, decode=True, previous=previous)
                 if not cancelled():
-                    self.checked.emit(project, paths, results)
+                    self.checked.emit(project, (generation,paths), results)
             except (InterruptedError, RuntimeError):
                 pass
             finally:

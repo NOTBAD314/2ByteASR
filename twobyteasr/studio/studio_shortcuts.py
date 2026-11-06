@@ -116,6 +116,11 @@ class _StudioNativeKeyFilter(QAbstractNativeEventFilter):
             msg = ctypes.cast(int(message), _WindowsMessagePointer).contents
         except (TypeError, ValueError):
             return False, 0
+        if msg.message==0x0219:  # WM_DEVICECHANGE: debounce, no filesystem IO here.
+            availability=getattr(self.page,'media_availability',None)
+            if availability is not None and int(msg.wParam) in {0x0007,0x8000,0x8004}:
+                availability.device_changed()
+            return False,0
         if msg.message in (0x0101, 0x0105):
             self.page._cancel_frame_step()
             return False, 0

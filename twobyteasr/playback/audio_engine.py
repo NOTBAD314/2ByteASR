@@ -600,6 +600,7 @@ class _AudioEngineWorker(QObject):
         self._session_generation = 0
         self._transport_generation = None
         self._last_state = "IDLE"
+        self._output_setup_failure = ''
         self._decoder_command: list[str] = []
         self._decoder_read_count = 0
         self._decoder_first_read_at = 0.0
@@ -624,8 +625,12 @@ class _AudioEngineWorker(QObject):
     def _ensure_sink(self) -> bool:
         if self.sink is not None and self.device is not None:
             return True
+        if self._output_setup_failure:
+            self._emit(self._output_setup_failure)
+            return False
         output = QMediaDevices.defaultAudioOutput()
         if output.isNull():
+            self._output_setup_failure = 'NO_OUTPUT_DEVICE'
             self._emit("NO_OUTPUT_DEVICE")
             return False
         audio_format = QAudioFormat()
@@ -636,6 +641,7 @@ class _AudioEngineWorker(QObject):
             audio_format = output.preferredFormat()
         spec = _audio_output_spec(audio_format)
         if spec is None:
+            self._output_setup_failure = 'UNSUPPORTED_OUTPUT_FORMAT'
             self._emit("UNSUPPORTED_OUTPUT_FORMAT")
             return False
         self._output_spec = spec
@@ -1254,6 +1260,9 @@ class _AudioEngineWorker(QObject):
                     self.sink.suspend()
                 self._emit("SILENT")
                 return
+            if self._output_setup_failure:
+                self._emit(self._output_setup_failure)
+                return
             source_ms = max(0, int(request.get("source_ms") or 0))
             self._requested_source_ms = source_ms
             effective_rate = max(
@@ -1364,6 +1373,8 @@ class _AudioEngineWorker(QObject):
                         self._emit('DECODER_FAILED');return
                     self._decode_recoveries.append(now)
                 self._start_decoder(source_path, source_ms, effective_rate)
+                if self._output_setup_failure:
+                    return  # the failure was emitted; never overwrite it with PAUSED/SYNCED
                 if self.sink is not None:
                     self.sink.setVolume(max(0.0, min(1.0, float(request.get("volume") or 0.0))))
             if self.sink is not None and self._sink_started:
@@ -1527,6 +1538,7 @@ class StudioAudioEngine(QObject):
                 self._telemetry = dict(payload)
                 signature=(generation,tuple(payload.get('transport_generation') or ()),
                     payload.get('endpoint_generation'),payload.get('state'),
+                    payload.get('sink_error'),
                     int(payload.get('buffer_bytes') or 0)>=PREBUFFER_BYTES,
                     int(payload.get('sink_consumed_bytes') or 0)>0)
                 if signature != getattr(self, '_last_readiness_signature', None):

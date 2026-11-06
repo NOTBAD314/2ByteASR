@@ -37,10 +37,16 @@ def start(window, output):
                 and page.video._startup_state=='READY' and not page._readiness.active,60))
             window._switch_page(page)
             page.volume_slider.setValue(0)
+            if os.environ.get('STABILITY_AUDIO_ONLY')=='1':
+                from .audio_only_stability_checks import run as audio_only
+                audio_only(page,output,check,pump,wait)
+                result['passed']=True
+                return
             page._seek(1.)
             check('real initial seek settles',wait(lambda:not page.video._playback_clock.exact_seek_pending,15))
             controller=page.video.controller
             original_pid=controller._process.pid
+            initial_media_epoch=controller._subtitle_binding_epoch
             media_path=page.video._media_path
             other=QWidget();other.setWindowTitle('2ByteASR owned focus verification')
             other.resize(480,240);other.setLayout(QVBoxLayout());other.layout().addWidget(QLabel('Owned focus target'))
@@ -103,18 +109,24 @@ def start(window, output):
                         abs(float(paint.get('x',-9999))-expected_x)<3 and
                         time.perf_counter()-float(paint.get('monotonic',0))<1.5 and not page.timeline._scrub_drag,row)
                     check(f'no media reload {paused}/{index}',page.video.controller is controller
-                        and controller._process.pid==original_pid and page.video._media_path==media_path)
+                        and controller._process.pid==original_pid and page.video._media_path==media_path
+                        and controller._subtitle_binding_epoch==initial_media_epoch)
             page.video.set_paused(True)
             window.grab().save(str(output/'window-after-focus.png'))
             result['focus_scope']=('20 playing +20 paused; '+('OS Alt+Tab' if native_focus else 'native activation')
                 +', minimize/restore, Studio navigation; physical multi-screen separately required')
+            controller._needs_media_reload=True
+            page.video._request_player_recovery('mpv_transport_stalled')
+            controller._subtitle_file_loaded()
+            pump(.4)
+            check('verified late file-loaded supersedes stale recovery',page.video.controller is controller
+                and controller._process.pid==original_pid and not controller._needs_media_reload
+                and page.video._recovery_request is None)
             # Real child faults exercise the same facade/IPC used by Studio.
             for fault in ('delay','exit','no-device'):
                 page.audio_engine.unload();pump(.25)
                 os.environ['TWOBYTEASR_TEST_AUDIO_FAULT']=fault
-                page.audio_engine.retry_playback_output()
-                page.video.playback_prepare()
-                page.video.set_paused(False)
+                page._retry_audio_output()
                 if fault=='delay':
                     pump(.3);started=time.monotonic();page.video.set_paused(True);page.audio_engine.unload()
                     pump(.5)
@@ -128,6 +140,16 @@ def start(window, output):
                     pump(2.)
                     check('automatic endpoint recovery is bounded',bridge._recovery.attempts<=3,bridge._recovery.attempts)
                     check('audio failure retains video instance',page.video.controller is controller and controller._process.pid==original_pid)
+                    if fault=='no-device':
+                        dialog=getattr(page,'_audio_failure_dialog',None)
+                        if dialog is not None:
+                            button=next(x for x in dialog.buttons() if x.text()=='无声预览')
+                            button.click()
+                        else:page.audio_silent_button.click()
+                        check('explicit silent-preview action starts without false audio readiness',
+                            wait(lambda:bool(getattr(page,'_silent_preview_selected',False)) and not page.video._paused,10)
+                            and page.audio_engine._output_suppressed and '无声预览' in page.audio_status_label.text())
+                        check('silent preview retains the same video instance',page.video.controller is controller)
                 dialog=getattr(page,'_audio_failure_dialog',None)
                 if dialog is not None:dialog.reject()
                 page.video.set_paused(True)
@@ -139,6 +161,23 @@ def start(window, output):
             page.video.set_paused(True)
             from .media_loading_checks import run as media_checks
             media_checks(output,check,pump)
+            import shutil
+            replacement=output/'switch-target.2byteproj'
+            shutil.copyfile(output/'project.2byteproj',replacement)
+            previous=page.project
+            old_session=page.audio_engine._session_generation
+            os.environ['TWOBYTEASR_TEST_AUDIO_FAULT']='delay'
+            page._retry_audio_output();pump(.2)
+            os.environ.pop('TWOBYTEASR_TEST_AUDIO_FAULT',None)
+            page.open_project(replacement,skip_dirty_guard=True)
+            check('switching projects cancels old loading ownership',wait(lambda:page.project is not previous
+                and page._project_view_state=='open' and not page._readiness.active,45))
+            pump(3.2)
+            check('late old endpoint cannot autoplay the next project',page.video._paused
+                and not page.video._buffered_play_pending and page.audio_engine._session_generation>old_session)
+            os.environ['TWOBYTEASR_TEST_AUDIO_FAULT']='delay'
+            page._retry_audio_output();pump(.2)
+            check('close begins with a cancellable owned audio startup',bool(page.video._buffered_play_pending or page.video._startup_play_requested))
             result['passed']=True
         except Exception:
             result['error']=traceback.format_exc()
