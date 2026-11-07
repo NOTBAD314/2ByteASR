@@ -20,6 +20,8 @@ import os
 import threading
 import time
 from multiprocessing.connection import Connection
+from multiprocessing.reduction import ForkingPickler
+from contextlib import nullcontext
 
 _PREFIX = "twobyteasr."
 
@@ -29,27 +31,51 @@ class ResidentJobCancelled(Exception):
 
 
 def _worker_main(connection: Connection) -> None:
+    from ..diagnostics.save_trace import SaveTrace, phase
     os.environ["TWOBYTEASR_PROCESS_ROLE"] = "resident-worker"
+    ready_ns = time.perf_counter_ns()
     try:
         while True:
             try:
-                request = connection.recv()
+                connection.poll(None)
+                receive_started = time.perf_counter_ns()
+                raw_request = connection.recv_bytes()
+                decode_started = time.perf_counter_ns()
+                request = ForkingPickler.loads(raw_request)
+                decoded_at = time.perf_counter_ns()
             except EOFError:
                 break
             if request is None:
                 break
-            token, job, payload = request
+            token, job, payload = request[:3]
+            trace = SaveTrace(request[3]) if len(request) > 3 else None
+            if trace:
+                trace.add('ipc.request_receive', receive_started, decode_started, processed_bytes=len(raw_request))
+                trace.add('ipc.request_decode', decode_started, decoded_at, processed_bytes=len(raw_request))
             started = time.perf_counter()
             try:
-                module_name, function_name = job.split(":", 1)
-                if not module_name.startswith(_PREFIX):
-                    raise ValueError(f"not a 2ByteASR job: {job}")
-                function = getattr(importlib.import_module(module_name), function_name)
-                reply = (token, function(payload), (time.perf_counter() - started) * 1000.0, "")
+                with trace.activate() if trace else nullcontext():
+                    with trace.observe_gc() if trace else nullcontext():
+                        with phase('worker.import'):
+                            module_name, function_name = job.split(":", 1)
+                            if not module_name.startswith(_PREFIX):
+                                raise ValueError(f"not a 2ByteASR job: {job}")
+                            function = getattr(importlib.import_module(module_name), function_name)
+                        with phase('worker.compute'):
+                            value = function(payload)
+                reply = (token, value, (time.perf_counter() - started) * 1000.0, "")
             except BaseException as exc:  # noqa: BLE001 - reported; the caller falls back
                 reply = (token, None, 0.0, f"{type(exc).__name__}: {exc}")
             try:
-                connection.send(reply)
+                encoded_at = time.perf_counter_ns()
+                encoded = ForkingPickler.dumps(reply)
+                sent_at = time.perf_counter_ns()
+                connection.send_bytes(encoded)
+                ended_at = time.perf_counter_ns()
+                if trace:
+                    trace.add('ipc.reply_pickle', encoded_at, sent_at, processed_bytes=len(encoded))
+                    trace.add('ipc.reply_send', sent_at, ended_at, processed_bytes=len(encoded))
+                connection.send(dict(ready_ns=ready_ns, pid=os.getpid(), trace=trace.payload() if trace else None))
             except (BrokenPipeError, EOFError, OSError):
                 break
     finally:
@@ -90,6 +116,9 @@ class ResidentWorker:
 
     def call(self, job: str, payload, *, wait: bool = True, cancel_check=None):
         """``job(payload)`` in the worker, or None. ``wait=False`` gives up when busy."""
+        from ..diagnostics.save_trace import current as current_save_trace, phase
+        trace = current_save_trace()
+        lock_started = time.perf_counter_ns()
         if wait and cancel_check is not None:
             while True:
                 if cancel_check():
@@ -99,18 +128,22 @@ class ResidentWorker:
         elif not self._lock.acquire(blocking=wait):
             return None
         try:
+            if trace:
+                trace.add('resident.queue_wait', lock_started, time.perf_counter_ns())
             if cancel_check is not None and cancel_check():
                 return None
+            process_started = time.perf_counter_ns() if not self.running else None
             if not self._ensure_process():
                 return None
             self._token += 1
             token = self._token
             connection, process = self._connection, self._process
             try:
+                request = (token, job, payload, trace.save_id) if trace else (token, job, payload)
                 if cancel_check is None:
-                    self._send(connection, process, (token, job, payload), time.monotonic() + self.SEND_TIMEOUT_S)
+                    self._send(connection, process, request, time.monotonic() + self.SEND_TIMEOUT_S)
                 else:
-                    self._send(connection, process, (token, job, payload), time.monotonic() + self.SEND_TIMEOUT_S,
+                    self._send(connection, process, request, time.monotonic() + self.SEND_TIMEOUT_S,
                                cancel_check=cancel_check)
                 deadline = time.monotonic() + self.CALL_TIMEOUT_S
                 while not connection.poll(0.05):
@@ -118,7 +151,21 @@ class ResidentWorker:
                         raise ResidentJobCancelled()
                     if self._closed or not process.is_alive() or time.monotonic() > deadline:
                         raise RuntimeError("resident worker unavailable")
-                reply_token, result, elapsed_ms, error = connection.recv()
+                with phase('ipc.reply_receive'):
+                    raw_reply = connection.recv_bytes()
+                with phase('ipc.reply_decode'):
+                    reply_token, result, elapsed_ms, error = ForkingPickler.loads(raw_reply)
+                if not connection.poll(5):
+                    raise RuntimeError('resident worker missing completion receipt')
+                metadata = connection.recv()
+                if trace:
+                    if process_started is not None:
+                        trace.add('resident.startup_ready', process_started, metadata['ready_ns'], worker_pid=metadata['pid'])
+                    child = metadata.get('trace') or {}
+                    trace.events.extend(child.get('events', ()))
+                    for key, value in child.get('counters', {}).items():
+                        worker_key = f"worker_{metadata['pid']}_{key}"
+                        trace.counters[worker_key] = trace.counters.get(worker_key, 0) + value
             except ResidentJobCancelled:
                 # This job holds the worker lock. Retire its process so a late
                 # reply cannot be mistaken for a later task's response.
@@ -148,11 +195,19 @@ class ResidentWorker:
         still importing a script without a ``__main__`` guard) would block
         the sender forever.
         """
+        from ..diagnostics.save_trace import current as current_save_trace, phase
         failure = []
+        trace = current_save_trace()
 
         def send():
             try:
-                connection.send(message)
+                with trace.activate() if trace else nullcontext():
+                    with phase('ipc.request_pickle'):
+                        encoded = ForkingPickler.dumps(message)
+                    if trace:
+                        trace.counters['ipc_request_bytes'] = trace.counters.get('ipc_request_bytes', 0) + len(encoded)
+                    with phase('ipc.request_send'):
+                        connection.send_bytes(encoded)
             except BaseException as exc:  # noqa: BLE001
                 failure.append(exc)
 

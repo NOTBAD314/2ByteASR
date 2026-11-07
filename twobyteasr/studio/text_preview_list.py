@@ -9,13 +9,17 @@ from PySide6.QtWidgets import QListView
 
 
 class PreviewItem:
-    def __init__(self, text=''):
+    def __init__(self, text='', *, content_factory=None):
         self._roles = {Qt.DisplayRole: str(text)}
+        self._content_factory = content_factory
         self._flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         self._model = None
         self._row = -1
 
     def data(self, role):
+        if self._content_factory is not None and role in (Qt.DisplayRole,Qt.ToolTipRole,Qt.UserRole+2):
+            factory,self._content_factory=self._content_factory,None
+            self._roles.update(factory())
         return self._roles.get(role)
 
     def setData(self, role, value):
@@ -31,6 +35,7 @@ class PreviewItem:
         return self.data(Qt.DisplayRole)
 
     def setText(self, text):
+        self._content_factory=None
         self.setData(Qt.DisplayRole,str(text))
 
     def flags(self):
@@ -107,6 +112,16 @@ class TextPreviewList(QListView):
 
     def replace_items(self,items):
         self._items.replace(items)
+
+    def append_items(self,items):
+        items=list(items)
+        if not items:return
+        row=self.count()
+        self._items.beginInsertRows(QModelIndex(),row,row+len(items)-1)
+        for offset,item in enumerate(items):
+            item._model,item._row=self._items,row+offset
+        self._items.items.extend(items)
+        self._items.endInsertRows()
 
     def clear(self):
         self.replace_items([])

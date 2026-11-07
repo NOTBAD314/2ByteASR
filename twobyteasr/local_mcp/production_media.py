@@ -384,19 +384,27 @@ class MediaOperations:
         return self._prepare_media_page('open_project', lambda page, job: self._open_media_project(page, path, job=job))
 
     def op_save_project(self, project_id, revision, socket=None):
-        from ..projects.studio_project import load_project, project_content_fingerprint
         page, project = self.require_project(project_id, revision)
         if not page.session.project_path:
             raise BridgeError('unsaved_project', '工程没有保存路径，请先在原生界面另存为')
         path = _path(str(page.session.project_path), file=False)
-        errors = []
-        page.project_controller.save(message_box_fn=lambda *args: errors.append(str(args[-1])))
-        if errors or not path.is_file() or not page.undo_stack.isClean():
-            raise BridgeError('save_failed', errors[0] if errors else '原生保存未完成，内存修改仍保留')
-        saved = load_project(path)
-        if saved.project_id != project.project_id or project_content_fingerprint(saved) != project_content_fingerprint(project):
-            raise BridgeError('save_failed', '磁盘工程与当前内存工程不一致')
-        return {**self.snapshot(page, project), 'saved': True, 'size_bytes': path.stat().st_size}
+        job = self.new_job('save_project', {})
+        requested = {}
+        def completed(saved, error):
+            try:
+                if error is not None:
+                    raise BridgeError('save_failed', str(error))
+                self.finish_job(job, {**requested, 'saved': True,
+                    'size_bytes': Path(saved).stat().st_size})
+            except Exception as exc:
+                self.fail_job(job, exc)
+        save_id = page.project_controller.save(on_finished=completed)
+        requested.update(self.snapshot(page, project))
+        if save_id is None and job['status'] == 'running':
+            self.fail_job(job, BridgeError('save_failed', '原生保存未启动，内存修改仍保留'))
+        else:
+            job['save_id'] = save_id
+        return self.public_job(job)
 
     def op_detect_speech_pauses(self, project_id, revision, mode='smart', minimum_s=1, padding_s=.2,
                                 audio_track_id='', socket=None):

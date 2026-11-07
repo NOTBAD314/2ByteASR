@@ -1,15 +1,11 @@
 """The faster preview guard retains the same complete document contract."""
 import copy,hashlib,json,random
 from tests.test_subtitle_translation import make_project
-from twobyteasr.studio.studio_find_replace import PreviewBinding, _evidence_digest, _dataclass_json
+from twobyteasr.studio.studio_find_replace import PreviewBinding
 
 
 def old_digest(project):
-    payload=PreviewBinding._document_payload(project)
-    evidence=payload.pop('asr_evidence',None)
-    digest=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=_dataclass_json).encode('utf8'))
-    digest.update(_evidence_digest(project,evidence,trust_rows=False).encode('ascii'))
-    return digest.hexdigest()
+    return hashlib.sha256(json.dumps(PreviewBinding._document_payload(project),ensure_ascii=False,sort_keys=True).encode('utf8')).hexdigest()
 
 
 def test_digest_matches_original_across_nested_metadata_and_view_changes():

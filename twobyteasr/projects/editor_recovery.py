@@ -43,6 +43,29 @@ def write_draft(path, payload):
         try:old.unlink()
         except OSError:pass
 
+
+def persist_snapshot(snapshot, autosave):
+    """Persist detached draft data using only a thread-safe cancellation lease."""
+    if snapshot is None or not snapshot['valid'].is_set():
+        return False
+    path = Path(snapshot['path'])
+    write_draft(path, dict(snapshot['payload'], autosave=str(autosave)))
+    if not snapshot['valid'].is_set():
+        path.unlink(missing_ok=True)
+        return False
+    previous = snapshot.get('previous_file')
+    if previous:
+        Path(previous).unlink(missing_ok=True)
+    return True
+
+
+def detach_snapshot(snapshot):
+    if snapshot is None:
+        return None
+    lease = snapshot['lease']
+    return dict(valid=lease['valid'], path=str(lease['path']), previous_file=lease.get('previous_file'),
+                revision=snapshot['revision'], payload=dict(snapshot['payload']))
+
 class DraftRecovery(QObject):
     def __init__(self,page):
         super().__init__(page)

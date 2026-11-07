@@ -148,7 +148,7 @@ class ApplicationSettingsDialog(SpringDialog):
             row(saving,'自动保存',self.auto_save,'在后台保留工作进度')
             self.interval=field_width(StudioComboBox(),'compact')
             for label,value in [('30 秒',30),('1 分钟',60),('2 分钟',120),('5 分钟',300)]:self.interval.addItem(label,value)
-            self.interval.setCurrentIndex(max(0,self.interval.findData(int(preferences.get('autosave_interval_seconds',60) or 60))))
+            self.interval.setCurrentIndex(max(0,self.interval.findData(int(preferences.get('autosave_interval_seconds',30) or 30))))
             row(saving,'保存间隔',self.interval)
             self.interval.setEnabled(self.auto_save.isChecked());self.auto_save.toggled.connect(self.interval.setEnabled)
             self.recovery_policy=field_width(StudioComboBox(),'preferred')

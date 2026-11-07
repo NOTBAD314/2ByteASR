@@ -13,6 +13,7 @@ import ctypes
 import gc
 import sys
 import time
+from contextlib import contextmanager
 
 from PySide6.QtCore import QObject, QTimer
 
@@ -22,6 +23,30 @@ _holders = set()
 _previous = None
 _applied = None
 _collector = None
+_interaction_windows = {}
+
+
+@contextmanager
+def gui_collection_window(owner, *, max_seconds=3):
+    """Finite GUI interaction deferral, with the existing memory guard.
+
+    Explicit collections remain unchanged, and low memory, 128MiB growth
+    or the deadline ends deferral even if the operation has not returned.
+    """
+    key=object()
+    _interaction_windows[key]=(str(owner),time.monotonic()+max_seconds,private_bytes())
+    try:yield
+    finally:_interaction_windows.pop(key,None)
+
+
+def _interaction_window_busy():
+    now=time.monotonic()
+    live=[window for window in _interaction_windows.values() if now<window[1]]
+    if not live:return False
+    from ..system.memory_budget import memory_status
+    if memory_status()['available']<=1024**3:return False
+    current=private_bytes()
+    return any(current is None or baseline is None or current-baseline<128*1024**2 for _,_,baseline in live)
 
 
 def _collect_observed(generation=None, *, owner, reason, counts=None, thresholds=None, decision=None):
@@ -218,6 +243,7 @@ class GuiThreadCollector(QObject):
     def tick(self):
         if not self.active or gc.isenabled():
             return
+        if _interaction_window_busy():return
         # Reader-owned JSON graphs generate millions of young containers.
         # Even gen-0/1 collections can scan them for hundreds of milliseconds.
         # Loading/playback holds are bounded by their existing deadlines and
@@ -269,6 +295,7 @@ def note_gui_interaction():
 
 
 def input_collection_deferred():
+    if _interaction_window_busy():return True
     if _collector is None or not _collector.active or not _collector._input_is_busy():
         return False
     from ..system.memory_budget import memory_status

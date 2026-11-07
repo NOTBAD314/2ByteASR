@@ -91,7 +91,7 @@ class StudioProjectController:
     def create_blank_project(self, *, focus_clip_assistant: bool = False, on_ready=None) -> None:
         """Open an empty Studio: no media, no cues, no XML."""
         page = self.page
-        if not self.dirty_guard.confirm("新建工程"):
+        if not self.dirty_guard.confirm("新建工程", on_saved=lambda: self.create_blank_project(focus_clip_assistant=focus_clip_assistant,on_ready=on_ready)):
             return
         library = project_library_root()
         base = "未命名工程"
@@ -116,9 +116,10 @@ class StudioProjectController:
     def show_project_hub(self, *, skip_dirty_guard: bool = False) -> bool:
         """Show the Studio entry surface without implicitly opening a project."""
         page = self.page
-        if getattr(page, "_manual_save_in_progress", False):
+        from .studio_save import defer_navigation_until_saved
+        if defer_navigation_until_saved(page, lambda: self.show_project_hub(skip_dirty_guard=skip_dirty_guard)):
             return False
-        if not skip_dirty_guard and not self.dirty_guard.confirm("关闭当前工程"):
+        if not skip_dirty_guard and not self.dirty_guard.confirm("关闭当前工程", on_saved=lambda: self.show_project_hub()):
             return False
         page._cancel_media_ingest()
         if hasattr(page, "_close_export_workspace"):
@@ -422,7 +423,7 @@ class StudioProjectController:
         """
         from PySide6.QtWidgets import QApplication
         page=self.page
-        if getattr(page, "_manual_save_in_progress", False):
+        if getattr(getattr(page, '_persistence_queue', None), 'busy', False):
             from .studio_save import defer_navigation_until_saved
             defer_navigation_until_saved(page, lambda: self.open_project_entry(
                 path, single_shot_fn=single_shot_fn, skip_dirty_guard=skip_dirty_guard,
@@ -487,7 +488,10 @@ class StudioProjectController:
         async_recovery=False,
     ) -> None:
         page = self.page
-        if getattr(page, "_manual_save_in_progress", False):
+        from .studio_save import defer_navigation_until_saved
+        if defer_navigation_until_saved(page, lambda: self.open_project(
+                path, single_shot_fn=single_shot_fn, skip_dirty_guard=skip_dirty_guard,
+                expected_result_ref=expected_result_ref)):
             return
         for name in ('_highlight_source_view', '_highlight_range_editor'):
             dialog = getattr(page, name, None)
@@ -509,7 +513,8 @@ class StudioProjectController:
             current_path is None
             or requested_path.resolve() != Path(current_path).resolve()
         )
-        if replacing and not skip_dirty_guard and not self.dirty_guard.confirm("打开其它工程"):
+        if replacing and not skip_dirty_guard and not self.dirty_guard.confirm("打开其它工程", on_saved=lambda: self.open_project(
+                path, single_shot_fn=single_shot_fn, expected_result_ref=expected_result_ref)):
             return
         page._cancel_media_ingest()
         page._studio_trace("OPEN_REQUEST", project_path=str(requested_path))
@@ -1278,102 +1283,7 @@ class StudioProjectController:
         page.speaker.blockSignals(False)
 
     @observed('project.save')
-    def save(self, *, save_project_fn=save_project, message_box_fn=studio_message_box) -> None:
-        page = self.page
-        project = self.session.project
-        if not project or getattr(page, "_manual_save_in_progress", False):
-            return
-        target = self.session.project_path
-        if target is None:
-            path, _selected = QFileDialog.getSaveFileName(
-                page, tr('保存 Subtitle Project'), "", "2ByteASR Project (*.2byteproj)"
-            )
-            if not path:
-                return
-            target = Path(path)
-        from .studio_save import (
-            capture_manual_save, manual_save_scope, observe_save_edits, persist_with_progress,
-        )
-        from ..diagnostics.editor_diagnostics import measure
-        phase='commit_editors'
-        caption_save_token = None
-        try:
-            with manual_save_scope(page):
-                style_controller=getattr(page,'style_controller',None)
-                if style_controller is not None and not style_controller.flush_pending_application():
-                    return
-                if getattr(page, "_canvas_editor", None) is not None:
-                    if getattr(page, '_caption_following', False):
-                        caption_save_token = page._commit_caption_for_manual_save()
-                        if caption_save_token is False:
-                            return
-                    else:
-                        committed = page._commit_canvas_inline_edit()
-                        if committed is False or (committed is None and getattr(page, '_canvas_editor', None) is not None):
-                            return  # genuine validation failure, never window visibility
-                timeline = getattr(page, "timeline", None)
-                if timeline is not None and getattr(timeline, "_inline_editor", None) is not None:
-                    timeline._commit_inline_edit()
-                    if getattr(timeline,'_inline_editor',None) is not None:return
-                translation_editor = getattr(page, "translation_text", None)
-                if callable(getattr(translation_editor, "commit", None)):
-                    if translation_editor.commit() is False:return
-                page._capture_studio_state()
-                page._autosave_timer.stop()
-                generation = self.session.generation
-                undo_index = self.session.undo_stack.index()
-                runtime = getattr(project, "_studio_state_runtime", None)
-                revision_id = getattr(runtime, "revision", 0)
-                save_generation = getattr(page, "_autosave_generation", 0)
-                from ..studio.text_edit_submission import save_operation_ids, record_text_save
-                edit_operations = save_operation_ids(page, project, revision_id)
-                with measure("MANUAL_SAVE_SNAPSHOT"):
-                    phase='snapshot'
-                    revision = capture_manual_save(page, project, revision_id)
-                with observe_save_edits(runtime) as new_edits, measure("MANUAL_SAVE"):
-                    phase='persist'
-                    saved = persist_with_progress(
-                        page, revision, target, save_project_fn=save_project_fn)
-                record_text_save(edit_operations, kind='formal', revision=revision_id, generation=save_generation)
-                # The modal guard blocks user navigation. Also reject stale
-                # publication if a programmatic callback bypasses that guard.
-                if self.session.project is not project or self.session.generation != generation:
-                    return
-                self.session.project_path = saved
-                project.updated_at = revision.updated_at
-                readiness = getattr(page, '_readiness', None)
-                if readiness is not None and readiness.ready:
-                    # Our own completed save is already represented by the live
-                    # session. External replacement still invalidates this stamp.
-                    from ..studio.studio_readiness import project_file_identity
-                    readiness.path = str(Path(saved).resolve())
-                    readiness.loaded_file_identity = project_file_identity(saved)
-                if (self.session.undo_stack.index() != undo_index
-                        or getattr(page, "_autosave_generation", 0) != save_generation
-                        or new_edits[0]):
-                    page._schedule_autosave()
-                    bind_text(page.save_state, '已保存较早版本；仍有未保存修改')
-                    return
-                self.session.undo_stack.setClean()
-                page._autosave_timer.stop()
-                page._recovered_autosave_pending = False
-                page._autosave_deadline.mark_succeeded()
-                bind_text(page.save_state, '已保存')
-                page.save_state.setToolTip("")
-                if caption_save_token:
-                    page._finish_caption_manual_save(caption_save_token)
-        except Exception as exc:
-            from ..diagnostics.event_log import emit, exception_info
-            emit('project.save_failed',level='ERROR',result='failed',project_id=project.project_id,
-                 stage=phase,revision_after=getattr(getattr(project,'_studio_state_runtime',None),'revision',None),
-                 exception=exception_info(exc))
-            page._schedule_autosave()
-            bind_text(page.save_state,'磁盘保存失败；当前修改仍在内存中，可重试保存')
-            page.save_state.setToolTip(str(exc))
-            if caption_save_token:
-                page._finish_caption_manual_save(caption_save_token, error=exc)
-            message_box_fn(page, QMessageBox.Icon.Critical, "保存失败", str(exc))
-        finally:
-            finished = getattr(page, 'manual_save_finished', None)
-            if finished is not None:
-                finished.emit()
+    def save(self, *, save_project_fn=save_project, message_box_fn=studio_message_box, on_finished=None):
+        from .studio_save import request_formal_save
+        return request_formal_save(self, save_project_fn=save_project_fn,
+                                   message_box_fn=message_box_fn, on_finished=on_finished)

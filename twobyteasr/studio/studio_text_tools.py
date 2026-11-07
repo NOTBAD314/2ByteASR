@@ -155,18 +155,21 @@ def find_occurrences(
     except re.error:
         return []
     wanted = set(cue_ids)
-    hits: list[TextOccurrence] = []
     if entries is None:
         from .subtitle_text_targets import text_entries
         entries = text_entries(project, mode="original", cue_ids=wanted)
     lookup = {cue.id: cue for cue in project.cues}
     locked_ids = set(locked_ids or ())
+    locked = {cue.id for cue in lookup.values() if cue_locked(cue,locked_ids)} if skip_locked else set()
+    entries = (entry for entry in entries if entry.target.cue_id in lookup and entry.target.cue_id in wanted)
+    return match_text_entries(entries, pattern, replacement, regex=regex, body_only=body_only, locked_ids=locked)
+
+
+def match_text_entries(entries, pattern, replacement, *, regex=False, body_only=False, locked_ids=()):
+    """Pure snapshot matching, shared by synchronous callers and GUI slices."""
+    hits = []
     for entry in entries:
-        cue = lookup.get(entry.target.cue_id)
-        if cue is None or cue.id not in wanted:
-            continue
-        if skip_locked and cue_locked(cue, locked_ids):
-            continue
+        if entry.target.cue_id in locked_ids:continue
         source = entry.text
         # Keep offsets in the real stored string; stripping ASS tags shifted
         # subsequent matches and could make preview/write disagree.
@@ -182,8 +185,8 @@ def find_occurrences(
             else:
                 replaced = replacement
             hits.append(TextOccurrence(
-                cue_id=cue.id,
-                start_ms=cue.start_ms,
+                cue_id=entry.target.cue_id,
+                start_ms=entry.start_ms,
                 original=match.group(0),
                 replacement=replaced,
                 span=(match.start(), match.end()),

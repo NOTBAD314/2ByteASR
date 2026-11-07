@@ -1161,21 +1161,21 @@ class SubtitleStudioPage(
             return {}
 
     def _schedule_autosave(self) -> None:
+        self._autosave_generation += 1
         preferences = self._studio_preferences()
         if preferences.get("autosave_enabled", True) is False:
             self._autosave_timer.stop()
             return
         try:
-            seconds = max(5, int(preferences.get("autosave_interval_seconds", 60)))
+            seconds = max(5, int(preferences.get("autosave_interval_seconds", 30)))
         except (TypeError, ValueError):
-            seconds = 60
+            seconds = 30
         try:
             idle_seconds = max(0.25, float(preferences.get("autosave_idle_seconds", 3)))
         except (TypeError, ValueError):
             idle_seconds = 3.0
         self._autosave_deadline.configure(seconds, idle_seconds)
         delay = self._autosave_deadline.mark_dirty(time.monotonic())
-        self._autosave_generation += 1
         self._autosave_timer.start(max(1, round(delay * 1000)))
 
     def _install_shortcuts(self) -> None:
@@ -1358,7 +1358,7 @@ class SubtitleStudioPage(
         # those before Python property and Qt viewport lookups; keep the
         # three early handlers that are not in the main dispatch set.
         if event_type not in self._FILTERED_EVENT_TYPES and event_type not in (
-                QEvent.Type.FocusIn, QEvent.Type.InputMethod, QEvent.Type.KeyRelease):
+                QEvent.Type.FocusIn, QEvent.Type.FocusOut, QEvent.Type.InputMethod, QEvent.Type.KeyRelease):
             return False
         state = self.__dict__
         if event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
@@ -1385,7 +1385,7 @@ class SubtitleStudioPage(
             event.accept()
             return True
         if (getattr(self, '_caption_following', False)
-                and event_type in {QEvent.Type.FocusIn, QEvent.Type.InputMethod}):
+                and event_type in {QEvent.Type.FocusIn, QEvent.Type.FocusOut, QEvent.Type.InputMethod}):
             self._caption_float_event(watched, event)
         if event_type == QEvent.Type.FocusIn and watched is getattr(self, "cue_text", None):
             self.timeline.set_subtitle_layer("original")
@@ -2730,9 +2730,10 @@ class SubtitleStudioPage(
     def selection_latency_snapshot(self) -> dict[str, object]:
         return self._selection_latency.snapshot()
 
-    def save(self) -> None:
+    def save(self, *, on_finished=None):
         return self.project_controller.save(
-            save_project_fn=save_project, message_box_fn=studio_message_box
+            save_project_fn=save_project, message_box_fn=studio_message_box,
+            on_finished=on_finished,
         )
 
     def _wait_for_autosave_worker(self, timeout: float = 2.0) -> None:
@@ -2743,6 +2744,11 @@ class SubtitleStudioPage(
             raise TimeoutError("自动保存仍在写入；正式保存未阻塞界面，可稍后重试。")
 
     def _autosave(self) -> None:
+        if self._studio_preferences().get('autosave_enabled', True) is False:
+            return
+        from ..projects.persistence_queue import queue_for
+        if queue_for(self).busy:
+            return
         if getattr(getattr(self, "_cue_timing_preview", None), "active", False):
             self._autosave_timer.start(100)
             return
@@ -2762,79 +2768,51 @@ class SubtitleStudioPage(
             self._start_autosave_worker(self._autosave_generation)
 
     def _start_autosave_worker(self, generation: int, *, draft_only: bool = False) -> None:
-        if not self.project:
+        from ..projects.persistence_queue import SaveRequest, queue_for
+        from ..projects.studio_save import capture_manual_save
+        from ..projects.editor_recovery import detach_snapshot
+        from ..diagnostics.save_trace import SaveTrace
+        from ..playback.playback_gc_budget import gui_collection_window
+        queue = queue_for(self)
+        if self.project is None or queue.busy:
             return
-        runtime = getattr(self.project, "_studio_state_runtime", None)
+        project = self.project
+        session_generation = self.session.generation
+        runtime = getattr(project, '_studio_state_runtime', None)
         if runtime is not None and runtime._active is not None:
             self._autosave_timer.start(25)
             return
-        if self._revision_store is None:
-            self._revision_store = StudioRevisionStore(self.project)
-        snapshot_started = perf_counter()
-        if draft_only and self._revision_store._persistence_pending is None:
-            revision = self._revision_store._persistence
-        else:
-            revision = self._revision_store.refresh_persistence(generation)
-        prior = getattr(self, "_draft_autosave_base", None)
-        reuse_target = prior[1] if draft_only and prior is not None and prior[0] is revision else None
-        snapshot_ms = (perf_counter() - snapshot_started) * 1000.0
-        project_path = self.project_path
-        session_id = self._autosave_session_id
-        draft = self._draft_recovery.snapshot()
-        self._autosave_worker_running = True
-        from .text_edit_submission import save_operation_ids, record_text_save
-        edit_revision = getattr(getattr(self.project, '_studio_state_runtime', None), 'revision', 0)
-        edit_operations = save_operation_ids(self, self.project, edit_revision)
+        trace = SaveTrace()
+        trace.start_gc()
+        try:
+            with trace.activate(), trace.span('gui.snapshot'), gui_collection_window('recovery_capture', max_seconds=1):
+                revision = capture_manual_save(self, project, generation)
+            draft = detach_snapshot(self._draft_recovery.snapshot())
+            writer = save_autosave if save_autosave is not _ORIGINAL_SAVE_AUTOSAVE else None
+            request = SaveRequest('recovery', revision, self.project_path, trace,
+                                  session_id=self._autosave_session_id, draft=draft, writer=writer)
+        except Exception as exc:
+            trace.stop_gc()
+            self._autosave_failed(generation, str(exc))
+            return
 
-        def work():
-            try:
-                persist_started = perf_counter()
-                with self._autosave_write_lock:
-                    if reuse_target is not None:
-                        _target = reuse_target
-                        phases = dict(materialize_ms=0.0, serialize_ms=0.0, persist_ms=0.0, fsync_ms=0.0)
-                    elif save_autosave is not _ORIGINAL_SAVE_AUTOSAVE:
-                        # Preserve test/plugin interception of the public save
-                        # boundary while production uses the phased DTO writer.
-                        _target = save_autosave(revision, project_path)
-                        phases = {
-                            "materialize_ms": 0.0, "serialize_ms": 0.0,
-                            "persist_ms": (perf_counter() - persist_started) * 1000.0,
-                            "fsync_ms": 0.0,
-                        }
-                    else:
-                        _target, phases = save_autosave_revision(revision, project_path, session_id=session_id)
-                    self._draft_autosave_base = (revision, _target)
-                    self._draft_recovery.persist(draft, _target)
-                self._autosave_profile.append({
-                    "generation": int(generation),
-                    "snapshot_ms": round(snapshot_ms, 3),
-                    "materialize_ms": round(phases["materialize_ms"], 3),
-                    "serialize_ms": round(phases["serialize_ms"], 3),
-                    "persist_ms": round(phases["persist_ms"], 3),
-                    "fsync_ms": round(phases["fsync_ms"], 3),
-                    "thread": threading.current_thread().name,
-                })
-                del self._autosave_profile[:-128]
-                from ..diagnostics.editor_diagnostics import record
-                record("AUTOSAVE", **self._autosave_profile[-1])
-            except Exception as exc:
-                record_text_save(edit_operations, kind='recovery', revision=edit_revision, generation=generation, error=exc)
-                try:
-                    self.autosave_failed_signal.emit(generation, str(exc))
-                except RuntimeError:
-                    pass
-            else:
-                record_text_save(edit_operations, kind='recovery', revision=edit_revision, generation=generation)
-                try:
-                    self.autosave_ready_signal.emit(generation)
-                except RuntimeError:
-                    pass
-
-        self._autosave_thread = threading.Thread(
-            target=work, daemon=True, name="studio-autosave"
-        )
-        self._autosave_thread.start()
+        def completed(outcome):
+            if outcome.superseded:
+                return
+            if self.project is not project or self.session.generation != session_generation:
+                return
+            if outcome.error is not None:
+                self._autosave_failed(generation, str(outcome.error))
+                return
+            self._draft_autosave_base = (revision, outcome.path)
+            lease = self._draft_recovery.lease
+            if draft is not None and lease is not None and lease['valid'] is draft['valid'] and draft['valid'].is_set():
+                self._draft_recovery.saved_revision = draft['revision']
+            self._autosave_profile.append(dict(generation=generation, save_id=trace.save_id,
+                **(outcome.phases or {}), thread='studio-persistence'))
+            del self._autosave_profile[:-128]
+            self._autosave_ready(generation)
+        queue.submit(request, completed)
 
     def _autosave_ready(self, generation: int) -> None:
         self._autosave_worker_running = False
@@ -2846,6 +2824,13 @@ class SubtitleStudioPage(
             return
         self._autosave_deadline.mark_succeeded()
         self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
+        if getattr(getattr(self, '_persistence_queue', None), 'saving_formal', False):
+            return
+        failure = getattr(self, '_formal_save_error', None)
+        if failure is not None and failure[:2] == (id(self.project), self.session.generation):
+            bind_text(self.save_state, '恢复点已保存，正式保存仍需按 Ctrl+S 重试')
+            self.save_state.setToolTip(failure[2])
+            return
         bind_text(self.save_state, '自动恢复点已保存 · {time}（Ctrl+S 正式保存）', time=self._last_autosave_at)
         bind_text(self.save_state, '恢复快照已安全写入磁盘；正式工程仍保留未保存修改。', property='toolTip')
         check = getattr(self, "_evidence_idle_check", None)
@@ -3553,6 +3538,11 @@ class SubtitleStudioPage(
 
     @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
+        if getattr(self,'_close_requested',False):
+            # Close has already revoked transport. The ensuing widget Hide
+            # must not enqueue a pause against the stopped media epoch.
+            super().hideEvent(event)
+            return
         self._cancel_frame_step(all_pending=True)
         if self.window().isMinimized():
             # A minimized top-level window delivers child Hide events too.

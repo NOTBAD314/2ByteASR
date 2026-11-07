@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass
 class AutosaveDeadline:
-    interval_seconds: float = 60.0
+    interval_seconds: float = 30.0
     idle_seconds: float = 3.0
     dirty_since: float | None = None
     last_edit_at: float | None = None

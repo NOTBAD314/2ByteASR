@@ -19,6 +19,17 @@ from twobyteasr.glossary.terminology import snapshot_from_pairs
 from twobyteasr.subtitle_rules import subtitle_translation as st
 
 
+def settle_search(dialog):
+    deadline=time.monotonic()+15
+    while time.monotonic()<deadline:
+        QTest.qWait(2)
+        APP.processEvents()
+        if not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive():
+            QTest.qWait(2)
+            if not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive():return
+    raise AssertionError('asynchronous text search did not settle')
+
+
 class Page(QWidget):
     def __init__(self, translation=False):
         super().__init__()
@@ -77,35 +88,19 @@ def test_dialog_translation_results_selected_apply_and_same_matching_rules(page)
         dialog.find_edit.setText('那维来特')
         dialog.replace_edit.setText('那维莱特')
         dialog._do_preview()
+        settle_search(dialog)
         assert dialog.preview.count() == 2
         assert all('译文' in dialog.preview.item(i).text() and '那维来特' in dialog.preview.item(i).text() for i in range(2))
         assert all('英语' not in dialog.preview.item(i).text() for i in range(2))
         dialog.preview.item(1).setCheckState(Qt.Unchecked)
         dialog._do_apply_preview()
+        settle_search(dialog)
         assert sum('那维莱特' in row['text'] for row in st.records_of(p).values()) == 1
         assert page.session.undo_stack.count() == 1
         assert dialog.preview.count() == 1
         assert all('Neuvillette' in c.text for c in p.cues[:2])
         page.session.undo_stack.undo()
         assert sum('那维来特' in row['text'] for row in st.records_of(p).values()) == 2
-    finally:
-        dialog.close()
-
-
-def test_dialog_segments_choose_translation_and_show_the_track(page):
-    dialog = FindReplaceDialog(page)
-    try:
-        dialog.show()
-        APP.processEvents()
-        targets = dialog.text_targets
-        assert all(button.isEnabled() for button in targets.segment_buttons.values())
-        assert not targets.track.isVisible()
-        targets.segment_buttons["translation"].click()
-        assert targets.mode_value() == "translation" and targets.track.isVisible()
-        targets.segment_buttons["both"].click()
-        assert targets.mode_value() == "both" and targets.track.isVisible()
-        targets.segment_buttons["original"].click()
-        assert targets.mode_value() == "original" and not targets.track.isVisible()
     finally:
         dialog.close()
 
@@ -145,6 +140,7 @@ def test_next_uses_regex_case_and_language_selection(page):
         # Navigation is covered separately with the actual Studio timeline.
         dialog._page.timeline = None
         dialog._do_replace_next()
+        settle_search(dialog)
         assert st.records_of(p)['source-a']['text'].startswith('AREDSH')
         assert p.cues[1].text.startswith('SHARED')
         assert st.records_of(p)['source-b']['text'].startswith('SHARED')

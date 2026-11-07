@@ -361,7 +361,11 @@ class StudioReadiness(QObject):
         if self.active:
             StudioReadiness._retire_preparation(self)
         if page.project is not None and not skip_dirty_guard:
-            confirmed = page.project_controller.dirty_guard.confirm('打开工程')
+            ready_callback = self.on_ready
+            def resume_after_save():
+                self.on_ready = ready_callback
+                self.begin(path, expected_result_ref=expected_result_ref)
+            confirmed = page.project_controller.dirty_guard.confirm('打开工程', on_saved=resume_after_save)
             if self.loading.generation != intent_generation:
                 return  # A newer request/cancel won during the modal prompt.
             if not confirmed:

@@ -412,11 +412,26 @@ class LinkDownloadController(QObject):
                 primary_track_id=bundle["manifest"].get("primary_track_id", ""),
                 output_file=bundle.get("media_path", ""), cue_count=command.result.get("cue_count", 0),
                 project_id=page.project.project_id)
-            self.queue.imported(task_id, dict(command.result, project_path=str(page.project_path or ""),
-                project_id=page.project.project_id, generation=page.session.generation))
+            imported = dict(command.result, project_path=str(page.project_path or ""),
+                            project_id=page.project.project_id, generation=page.session.generation)
             if target.get("newly_created"):
-                page.save()
-            self._notify_imported(page, task_id)
+                completed = []
+                expected_project = page.project
+                generation = page.session.generation
+                def saved(_path, error):
+                    completed.append(True)
+                    if error is not None:
+                        self.queue.pending(task_id, redact(error))
+                        self._show_error(str(error))
+                        return
+                    self.queue.imported(task_id, imported)
+                    if page.project is expected_project and page.session.generation == generation:
+                        self._notify_imported(page, task_id)
+                if page.save(on_finished=saved) is None and not completed:
+                    saved(None, RuntimeError('新工程尚未完成保存，导入内容仍保留在内存中。'))
+            else:
+                self.queue.imported(task_id, imported)
+                self._notify_imported(page, task_id)
         except Exception as exc:
             self.queue.pending(task_id, redact(exc))
             self._show_error(str(exc))

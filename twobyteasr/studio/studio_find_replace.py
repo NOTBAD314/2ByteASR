@@ -10,6 +10,7 @@ importable from here).
 from __future__ import annotations
 
 from ..diagnostics.studio_events import observed
+from ..diagnostics.text_work import operation_measured
 
 from collections import Counter
 from dataclasses import asdict, dataclass, fields, is_dataclass
@@ -223,6 +224,7 @@ class PreviewBinding:
         return current == self.document_fingerprint
 
 
+@dataclass(frozen=True)
 class TextReplaceBinding(PreviewBinding):
     """Literal replacement depends on addressed text, locks and media context.
 
@@ -230,24 +232,28 @@ class TextReplaceBinding(PreviewBinding):
     while this preview is open. They are not conflicts with its text spans.
     AI/cleanup previews retain the stricter full-document PreviewBinding.
     """
+    mode: str = 'both'
+    tracks: tuple | None = None
+    entries: tuple = ()
+
     @classmethod
     def _document_fingerprint(cls, project, *, trust_rows=False):
-        from .subtitle_text_targets import text_entries
-        payload = ([asdict(entry) for entry in text_entries(project)],
-                   project.studio_state.get('locked_cue_ids', []),
-                   [(cue.id, bool(getattr(cue, 'locked', False))) for cue in project.cues],
-                   cls._fingerprint(project))
-        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf8')).hexdigest()
+        from .text_search_snapshot import text_key
+        return text_key(project)
 
     @classmethod
-    def capture(cls, project):
+    def capture(cls, project, *, snapshot=None):
         from ..projects.studio_runtime_state import state_for
+        from .text_search_snapshot import text_key
+        key = snapshot.key if snapshot is not None else text_key(project)
         return cls(project, project.project_id, state_for(project).revision,
-                   cls._fingerprint(project), cls._document_fingerprint(project))
+                   key, key, snapshot.mode if snapshot else 'both',
+                   snapshot.tracks if snapshot else None, snapshot.entries if snapshot else ())
 
     def matches(self, project):
+        from .text_search_snapshot import text_key
         return (project is self.project and project.project_id == self.project_id
-                and self._document_fingerprint(project) == self.document_fingerprint)
+                and text_key(project,mode=self.mode,tracks=self.tracks) == self.document_fingerprint)
 
 
 class _GlossaryReviewThread(QThread):
@@ -389,7 +395,11 @@ def apply_occurrences(
             'selected_changes':[{'cue_id':hit.cue_id,'span':list(hit.span),'from':hit.original,
                 'to':hit.replacement,'source':hit.source,'default_selected':hit.default_selected} for hit in hits]}
     from .subtitle_text_targets import entry_lookup
-    entries = entry_lookup(page.session.project, targets=[hit.target for hit in hits])
+    if isinstance(binding,TextReplaceBinding) and binding.entries:
+        wanted={hit.target_key for hit in hits}
+        entries={entry.key:entry for entry in binding.entries if entry.key in wanted}
+    else:
+        entries = entry_lookup(page.session.project, targets=[hit.target for hit in hits])
     values = values_from_occurrences(page.session.project, hits, entries=entries)
     if not values:
         return 0, 0
@@ -726,34 +736,42 @@ class _TextPreviewDialog(QDialog):
         self._refresh_status()
 
     def _add_preview_rows(self,hits,texts,colors):
+        self.preview.replace_items(list(self._iter_preview_items(hits,texts,colors)))
+
+    def _iter_preview_items(self,hits,texts,colors):
         self._preview_row_hits=self._preview_rows(hits)
-        speakers={s.id:s.name for s in self._page.session.project.speakers}
-        items=[]
         for row in self._preview_row_hits:
             hit=row[0]
             entry=self._entry_by_key.get(hit.target_key)
             baseline=entry.text if entry else texts.get(hit.target_key,'')
-            label=target_label(entry.target) if entry else ''
-            meta=' · '.join(value for value in (label,speakers.get(entry.speaker_id,entry.speaker_id) if entry else '',
-                track_label(self._page.session.project,entry.target) if entry else '') if value)
-            before_after=baseline
-            for each in sorted(row,key=lambda h:h.span,reverse=True):
-                before_after=before_after[:each.span[0]]+each.replacement+before_after[each.span[1]:]
-            plain=(f'{clock_ms(hit.start_ms)} · {meta}\n'+tr('修改前：{text}',text=baseline)+'\n'
-                   +tr('建议：{text}',text=before_after)+'\n'+' · '.join(f'{h.original} → {h.replacement}' for h in row))
-            item=PreviewItem(plain)
-            row_html=self._item_html(row,baseline,colors,meta,entry)
-            if row_html:
-                item.setData(PREVIEW_HTML_ROLE,row_html)
+            # Format rich text when Qt actually requests a visible row. A
+            # 10k-result query must not format 10k offscreen HTML documents.
+            owner=weakref.ref(self)
+            def content(row=row,baseline=baseline,entry=entry,owner=owner):
+                dialog=owner()
+                return dialog._preview_content(row,baseline,colors,entry) if dialog is not None else {}
+            item=PreviewItem(content_factory=content)
             item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if all(h.default_selected for h in row) else Qt.Unchecked)
             item.setData(Qt.UserRole,entry.target.cue_id if entry else hit.cue_id)
             item.setData(Qt.UserRole+1,dict(surface=hit.original,canonical_options=[hit.replacement],state='proposal',cue_id=hit.cue_id))
             if entry:
                 item.setData(TEXT_TARGET_ROLE,entry.target)
-                item.setToolTip(tr('对应原文：{text}',text=entry.source_text) if entry.source_text else tr('无可靠原文关联；按当前文本校对。'))
-            items.append(item)
-        self.preview.replace_items(items)
+            yield item
+
+    def _preview_content(self,row,baseline,colors,entry):
+        hit=row[0]
+        speakers={s.id:s.name for s in self._page.session.project.speakers}
+        meta=' · '.join(value for value in (target_label(entry.target) if entry else '',
+            speakers.get(entry.speaker_id,entry.speaker_id) if entry else '',
+            track_label(self._page.session.project,entry.target) if entry else '') if value)
+        after=baseline
+        for each in sorted(row,key=lambda h:h.span,reverse=True):
+            after=after[:each.span[0]]+each.replacement+after[each.span[1]:]
+        plain=(f'{clock_ms(hit.start_ms)} · {meta}\n'+tr('修改前：{text}',text=baseline)+'\n'
+            +tr('建议：{text}',text=after)+'\n'+' · '.join(f'{h.original} → {h.replacement}' for h in row))
+        return {Qt.DisplayRole:plain,PREVIEW_HTML_ROLE:self._item_html(row,baseline,colors,meta,entry),
+            Qt.ToolTipRole:(tr('对应原文：{text}',text=entry.source_text) if entry and entry.source_text else tr('无可靠原文关联；按当前文本校对。'))}
 
     def _preview_item_clicked(self, item: QListWidgetItem) -> None:
         cue_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
@@ -808,6 +826,7 @@ class _TextPreviewDialog(QDialog):
 
     # ---------------------------------------------------------- apply
     @observed('cue.replace_apply')
+    @operation_measured('cue.replace_apply')
     def _do_apply_preview(self) -> None:
         self._apply_checked()
 
@@ -908,7 +927,10 @@ class _TextPreviewDialog(QDialog):
 
 
 
-class FindReplaceDialog(_TextPreviewDialog):
+from .cooperative_find import CooperativeFind
+
+
+class FindReplaceDialog(CooperativeFind, _TextPreviewDialog):
     """批量替换: find and replace with a checked preview, applied as one undo step."""
 
     _title = "批量替换"
@@ -943,7 +965,7 @@ class FindReplaceDialog(_TextPreviewDialog):
         column.addLayout(layout, 1)
 
         # 原文 / 译文 / 两者 on the left, the range on the right.
-        self.text_targets = TextTargetSelector(self, compact=True)
+        self.text_targets = TextTargetSelector(self, compact=True, defer_entries=True)
         self.text_targets.bind(self._page.session.project, self._page)
         self.text_targets.changed.connect(self._text_target_changed)
         self.text_targets.changed.connect(self._update_target_summary)
@@ -1087,9 +1109,13 @@ class FindReplaceDialog(_TextPreviewDialog):
             self.refresh_theme_palette()
         super().showEvent(event)
         QTimer.singleShot(0, self._fit_height)
+        if getattr(self,'_preview_binding',None) is None:self._queue_live_search()
 
     def _update_target_summary(self, *_args) -> None:
         label, count = self.text_targets.summary()
+        if getattr(self.text_targets,'defer_entries',False) and not getattr(self.text_targets,'_count_ready',False):
+            bind_text(self.target_summary,'{scope} · 正在读取…',scope=label)
+            return
         bind_text(self.target_summary, '{scope} · {count} 条文本', scope=label, count=count)
         self.target_summary.setToolTip(self.text_targets.note.text())
 
@@ -1101,6 +1127,7 @@ class FindReplaceDialog(_TextPreviewDialog):
         if not self.isVisible():
             return
         rows = self.preview.count() if self._preview_hits else 0
+        if not rows and getattr(self,'_keep_result_height',False):return
         self.layout().activate()
         if rows:
             self.setMaximumHeight(16777215)
@@ -1144,7 +1171,7 @@ class FindReplaceDialog(_TextPreviewDialog):
                 self.case_box.isChecked(), self.word_box.isChecked(), self.regex_box.isChecked(),
                 self.body_box.isChecked(), self.lock_box.isChecked(), self.text_targets.mode_value(),
                 self.text_targets.track.currentData(),
-                tuple(entry.key for entry in self._scoped_entries()) if self._current_scope() != SCOPE_ALL else ())
+                self._scope_query_key(),getattr(self._page.session,'generation',None))
 
     def _apply_from_keyboard(self) -> None:
         if not self.find_edit.text():
@@ -1220,18 +1247,18 @@ class FindReplaceDialog(_TextPreviewDialog):
         return extras
 
     def _apply_checked(self) -> None:
-        if self._preview_query != self._query():
-            self._do_preview()
+        if getattr(self,'_search_pending',False) or self._preview_query != self._query():
+            self.start_text_search(action='apply')
+            return
         # Per cue, how many rows were left unticked: after the apply those are what remains.
         self._skipped = (Counter(hit.target_key for hit in self._preview_hits)
                          - Counter(hit.target_key for hit in self._checked_hits()))
         super()._apply_checked()
 
     def _after_apply(self, total: int, cue_count: int) -> None:
+        self._keep_result_height=True
+        self._restore_skipped = self._skipped
         self._do_preview()
-        if total and self._skipped and Counter(hit.target_key for hit in self._preview_hits) == self._skipped:
-            # The rows left are the ones you unticked; a second Enter must not take them.
-            self._set_all_preview_checked(False)
         self._refresh_status()
         if total:
             result = self._page._last_text_edit_result
@@ -1243,6 +1270,12 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     # ---------------------------------------------------------- search
     def _queue_live_search(self, *_args) -> None:
+        from ..playback.playback_gc_budget import note_gui_interaction
+        note_gui_interaction()
+        self._keep_result_height=False
+        self.cancel_text_search()
+        self._preview_binding = None
+        self._preview_query = None
         self._refresh_status()
         self._search_timer.start()
 
@@ -1250,17 +1283,17 @@ class FindReplaceDialog(_TextPreviewDialog):
         self._do_preview()
 
     def _refresh_status(self, *_args) -> None:
-        super()._refresh_status()
         needle = self.find_edit.text()
         enabled = bool(needle) and self._page.session.project is not None
         self.next_button.setEnabled(enabled)
         has_rows=self.preview.count()>0
         self.select_all_button.setVisible(has_rows)
         self.select_none_button.setVisible(has_rows)
-        checked=len(self._checked_hits())
+        checked=(len(self._checked_hits()) if self._preview_binding is not None and not getattr(self,'_search_pending',False) else 0)
         if checked:bind_text(self.all_button,'替换 {value0} 处',value0=checked)
         else:bind_text(self.all_button,'替换所选')
-        self.all_button.setEnabled(bool(self._checked_hits()))
+        self.all_button.setEnabled(not getattr(self,'_search_pending',False)
+            and self._preview_binding is not None and bool(checked))
         self._show_list(bool(self._preview_hits))
         broken = enabled and self.regex_box.isChecked() and not self._pattern_ok(needle)
         if self.find_edit.property("regexError") != broken:
@@ -1280,12 +1313,9 @@ class FindReplaceDialog(_TextPreviewDialog):
         if self._preview_query == self._query() and self._preview_binding is not None:
             hits = self._preview_hits
         else:
-            hits = find_occurrences(
-                self._page.session.project, _scope_cue_ids(self._page, self._current_scope()),
-                needle, self.replace_edit.text(), case_sensitive=self.case_box.isChecked(),
-                whole_word=self.word_box.isChecked(), regex=self.regex_box.isChecked(),
-                body_only=self.body_box.isChecked(), skip_locked=self.lock_box.isChecked(),
-                locked_ids=_locked_ids(self._page), entries=self._scoped_entries())
+            self.count_badge.set_count(None, tr('正在查找…'))
+            bind_text(self.status_label, '正在查找…')
+            return
         self.count_badge.set_count(len(hits))
         if not hits:
             bind_text(self.status_label, '没有匹配的字幕')
@@ -1321,36 +1351,17 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     @observed('cue.search')
     def _do_preview(self) -> None:
-        project = self._page.session.project
-        if project is None:
-            return
-        self._preview_snapshot_digest = None
-        self._glossary_review_receipt = None
-        self._preview_query = self._query()
-        if not self.find_edit.text().strip():
-            self._fill_preview([])
-            return
-        binding = TextReplaceBinding.capture(project)
-        hits = find_occurrences(
-            project, list(dict.fromkeys(entry.target.cue_id for entry in self._scoped_entries())),
-            self.find_edit.text(), self.replace_edit.text(),
-            case_sensitive=self.case_box.isChecked(),
-            whole_word=self.word_box.isChecked(),
-            regex=self.regex_box.isChecked(),
-            body_only=self.body_box.isChecked(),
-            skip_locked=self.lock_box.isChecked(),
-            locked_ids=_locked_ids(self._page),
-            entries=self._scoped_entries(),
-        )
-        self._fill_preview(hits, binding)
+        self.start_text_search()
 
 
     @observed('cue.replace_next')
     def _do_replace_next(self) -> None:
+        self.start_text_search(action='next')
+
+    def _replace_next_ready(self) -> None:
         needle = self.find_edit.text()
         if not needle:
             return
-        self._do_preview()
         hits = self._checked_hits()
         current = self._page.session.selected_cue_id
         hit = next((h for h in hits if h.cue_id == current), hits[0] if hits else None)
@@ -1369,13 +1380,15 @@ class FindReplaceDialog(_TextPreviewDialog):
 
     @observed('cue.replace_all')
     def _do_replace_all(self) -> None:
-        self._do_preview()
-        self._do_apply_preview()
+        self.start_text_search(action='apply')
 
     def _external_text_change(self,*_args):
         if self.isVisible() and not self._applying:self._queue_live_search()
 
     def done(self, result):
+        from ..playback.playback_gc_budget import note_gui_interaction
+        note_gui_interaction()
+        self.cancel_text_search()
         self._search_timer.stop()
         if getattr(self, '_stack_connected', False):
             try:
@@ -1384,6 +1397,16 @@ class FindReplaceDialog(_TextPreviewDialog):
                 pass
             self._stack_connected = False
         super().done(result)
+        # Parent-owned dialogs can outlive exec(). Keep closed windows from
+        # retaining another whole project's text snapshot and result graph.
+        self._text_snapshot=None
+        self._entry_by_key={}
+        self._preview_hits=[]
+        self._preview_row_hits=[]
+        self._preview_binding=None
+        self._preview_query=None
+        self._regex_job=None
+        self.preview.clear()
 
 
 

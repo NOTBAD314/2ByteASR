@@ -395,6 +395,9 @@ class CaptionEditorMixin:
         editor = self.subtitle_edit_input
         inside = self._caption_window_owns(watched)
         if inside:
+            if kind == QEvent.Type.FocusOut and (watched is editor or editor.isAncestorOf(watched)):
+                draft = getattr(self, '_caption_draft', None)
+                QTimer.singleShot(0, lambda: self._caption_focus_out(draft))
             if ((watched is editor or editor.isAncestorOf(watched)) and kind in
                     {QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress, QEvent.Type.InputMethod}):
                 self._lock_caption_editor()
@@ -403,11 +406,33 @@ class CaptionEditorMixin:
                     {self.caption_pronoun_button, self.caption_ignore_button}):
                 self._lock_caption_editor()
         elif kind == QEvent.Type.MouseButtonPress and self.isVisible():
+            if getattr(self, '_save_capture_in_progress', False):
+                return
             popup = QApplication.activePopupWidget()
             if popup is not None and self._caption_window_owns(popup):
                 return
             # Native IME candidate windows never reach this QWidget branch.
             self._end_caption_editor(keep_open=False, restore_focus=False)
+
+    def _caption_focus_out(self, draft):
+        from ..diagnostics.event_log import emit
+        emit('caption.focus_transfer', module=__name__,
+             focused_widget=type(QApplication.focusWidget()).__name__,
+             draft_current=getattr(self, '_caption_draft', None) is draft,
+             capture_running=getattr(self, '_save_capture_in_progress', False),
+             ending=getattr(self, '_caption_ending', False),
+             popup_widget=type(QApplication.activePopupWidget()).__name__,
+             preediting=getattr(self.subtitle_edit_input, '_preediting', False))
+        if (draft is None or getattr(self, '_caption_draft', None) is not draft
+                or getattr(self, '_caption_ending', False) or getattr(self, '_save_capture_in_progress', False)):
+            return
+        focus = QApplication.focusWidget()
+        if focus is None or self._caption_window_owns(focus):
+            return
+        popup = QApplication.activePopupWidget()
+        if popup is not None or getattr(self.subtitle_edit_input, '_preediting', False):
+            return
+        self._end_caption_editor(keep_open=False, restore_focus=False)
 
     def _clear_caption_binding(self, *, terminal_state='retired'):
         draft = getattr(self, '_caption_draft', None)
@@ -463,18 +488,6 @@ class CaptionEditorMixin:
                     return False
             if getattr(self, '_caption_draft', None) is not None:
                 self._caption_edit_locked = True
-                draft = self._caption_draft
-                value = self.subtitle_edit_input.toPlainText()
-                if not keep_open and (value != draft.before or self._draft_patch_decisions(draft, value)
-                        or getattr(self, '_caption_disk_pending', None) == draft.target):
-                    # Use the existing persistence callback: command success
-                    # alone cannot close a draft if the disk write then fails.
-                    self._caption_close_on_save = True
-                    try:
-                        self.save()
-                    finally:
-                        self._caption_close_on_save = False
-                    return not getattr(self, '_caption_following', False)
                 if not self._submit_caption_draft():
                     return False
             if keep_open:
@@ -739,7 +752,7 @@ class CaptionEditorMixin:
         cursor = self.subtitle_edit_input.textCursor()
         cursor.setPosition(min(position, self.subtitle_edit_input.document().characterCount()-1))
         self.subtitle_edit_input.setTextCursor(cursor)
-        self._lock_caption_editor()
+        self._caption_edit_locked = False
         return (self.project, self._caption_draft.target, self.session.generation, self._caption_draft)
 
     def _finish_caption_manual_save(self, token, *, error=None):
@@ -749,7 +762,6 @@ class CaptionEditorMixin:
             return
         if error is not None:
             self._caption_disk_pending = token[1]
-            self._lock_caption_editor()
             self.subtitle_edit_card.set_error('工程尚未写入磁盘，修改和编辑对象已保留，可重试保存。',str(error))
             from ..diagnostics.event_log import emit, exception_info
             emit('caption.persistence', **self._caption_edit_context(token[3]), result='failed',
@@ -758,16 +770,8 @@ class CaptionEditorMixin:
         from ..diagnostics.event_log import emit
         emit('caption.persistence', **self._caption_edit_context(token[3]), result='completed', stage='persist')
         self._caption_disk_pending = None
-        if getattr(self, '_caption_close_on_save', False):
-            self._caption_following = False
-            self._clear_caption_binding()
-            self.position_overlay._inline_editing = False
-            self._set_subtitle_editor_visible(False)
-            self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            return
-        self._caption_edit_locked = False
-        self._follow_caption_editor(self.timeline.playhead_ms, force=True)
-        self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        # Completion acknowledges this committed version. The user may have
+        # typed a new draft or moved focus while the writer was running.
 
     def _reset_caption_input_method(self):
         editor = self.subtitle_edit_input
@@ -865,6 +869,9 @@ class CaptionEditorMixin:
         current = draft.target.read(self.project)
         if current is None:
             return reject('translation_language_changed', '译文目标语言已变化，输入已保留；可复制草稿。')
+        if draft.target.layer == 'translation':
+            from ..subtitle_rules.subtitle_translation import clean_translation
+            value = clean_translation(value)
         if (cue.speaker_id in self.timeline.locked_speakers or draft.target.layer == 'translation'
                 and 'translation' in self.timeline.locked_speakers):
             return reject('track_locked', '当前字幕轨道已锁定，输入已保留；解锁后可直接重试。')
@@ -872,6 +879,10 @@ class CaptionEditorMixin:
             return reject('text_conflict', '同一文本已有其他修改，草稿已保留；请比较当前文本后再保存。')
         changes = self._draft_patch_decisions(draft,value)
         changed = value != current
+        if not changed and not changes:
+            self._finish_caption_draft()
+            self._refresh_ass_preview()
+            return True
         cue_id = draft.target.cue_id
         applied = True
         if changed or changes:

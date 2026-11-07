@@ -2608,7 +2608,7 @@ class MainWindow(QWidget):
 
     def _handle_studio_recognition_request(
         self, action: str, media_path: str, project_path: str, *, noninteractive: bool = False,
-        handoff_guard=None, handoff_done=None,
+        handoff_guard=None, handoff_done=None, _save_ready=False,
     ) -> None:
         self._ensure_recognition_page()
         media = Path(str(media_path or ""))
@@ -2640,8 +2640,21 @@ class MainWindow(QWidget):
                     self._run_block_reason = '工程有未保存修改，请先保存工程。'
                     self._run_block_code = 'unsaved_project'
                     return
-            else:
-                self.studio_page.save()
+            elif not _save_ready or not self.studio_page.undo_stack.isClean():
+                page = self.studio_page
+                expected_project = page.project
+                generation = page.session.generation
+                def saved(_path, error):
+                    if page.project is not expected_project or page.session.generation != generation:
+                        return
+                    if error is not None:
+                        page.fail_recognition_runtime('工程保存失败：' + str(error))
+                        return
+                    self._handle_studio_recognition_request(action, media_path, project_path,
+                        handoff_guard=handoff_guard, handoff_done=handoff_done, _save_ready=True)
+                if page.save(on_finished=saved) is None:
+                    page.fail_recognition_runtime('工程尚未保存，请先完成有效编辑后重试。')
+                return
         except Exception as exc:
             self.studio_page.fail_recognition_runtime('工程保存失败：' + str(exc))
             if noninteractive:
@@ -7160,15 +7173,26 @@ class MainWindow(QWidget):
         from ..projects.studio_project import load_project
         from ..timeline.studio_edit_sequence import projected_cues
         studio = self.built_page("studio")
+        if studio is not None:
+            from ..projects.studio_save import defer_navigation_until_saved
+            if defer_navigation_until_saved(studio, self._return_to_main_menu):
+                return
         studio_path = str(getattr(studio, 'project_path', '') or '')
         if studio and studio_path and any(str(item.project_path) == studio_path for item, _ in getattr(self, '_completion_tasks', ())):
             stack = getattr(getattr(studio, 'session', None), 'undo_stack', None)
             if (stack is not None and not stack.isClean()) or getattr(studio, '_recovered_autosave_pending', False):
-                studio.project_controller.save()
-                if (stack is not None and not stack.isClean()) or getattr(studio, '_recovered_autosave_pending', False):
-                    bind_text(self.result_task_summary, '结果尚未安全保存，请先保存工作台修改。')
-                    self.result_task_summary.show()
-                    return
+                expected_project = studio.project
+                generation = studio.session.generation
+                def saved(_path, error):
+                    if studio.project is not expected_project or studio.session.generation != generation:
+                        return
+                    if error is None:
+                        self._return_to_main_menu()
+                    else:
+                        bind_text(self.result_task_summary, '结果尚未安全保存，请先保存工作台修改。')
+                        self.result_task_summary.show()
+                studio.project_controller.save(on_finished=saved)
+                return
         for item, project in getattr(self, '_completion_tasks', ()):
             expected = self._completion_task_evidence.get(self._completion_task_key(item), {}).get('outcome')
             if item.status not in {'success', 'degraded_success', 'completed'} and not (expected and expected.delivery_recovered):
@@ -12728,7 +12752,7 @@ class MainWindow(QWidget):
                 if answer != QMessageBox.StandardButton.Yes:
                     return False
             guard = getattr(getattr(studio, 'project_controller', None), 'dirty_guard', None)
-            return guard is None or guard.confirm('退出应用')
+            return guard is None or guard.confirm('退出应用', on_saved=self.close)
 
     def closeEvent(self, event):
         if self.__dict__.get('_studio_entry_discarding', False):
