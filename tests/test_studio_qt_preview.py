@@ -162,6 +162,23 @@ def test_stalled_playing_source_is_not_reported_alive(controller,monkeypatch):
     assert controller.source_alive(max_silence_s=5)
 
 
+@pytest.mark.parametrize('paused,pending,frame_pts,expected', [
+    (True, False, 0.0, 0.0),
+    (True, True, 0.0, .12),
+    (False, False, 0.0, .12),
+    (True, False, None, .12),
+])
+def test_paused_frame_position_ignores_late_preroll_clock(controller, paused, pending, frame_pts, expected):
+    controller._desired_paused = paused
+    controller._first_frame = True
+    controller._seek_pending = pending
+    controller._properties['video-frame-info'] = {'pts': frame_pts}
+    controller._position(120)
+    assert controller.observed_property('time-pos') == expected
+    assert controller.observed_property('playback-time') == expected
+    assert controller.observed_position()['position'] == expected
+
+
 def test_windows_shortcut_defaults_are_unchanged(app,monkeypatch):
     import sys
     from twobyteasr.studio.studio_shortcuts import STUDIO_COMMANDS,studio_default_shortcuts
