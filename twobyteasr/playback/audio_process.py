@@ -42,6 +42,7 @@ class AudioProcessBridge(QObject):
         self._endpoint_generation = 0
         self._broken = False
         self._ack_pending = False
+        self._sync_timeout = 10.
         self._sent_at = self._last_received_at = 0.
         self._attempts = deque(maxlen=3)
         from .audio_recovery import EndpointRecovery
@@ -84,7 +85,7 @@ class AudioProcessBridge(QObject):
     def _check_health(self):
         if self._closed or self.process is None:return
         if not self._failure_emitted and (self.process.poll() is not None or self._broken
-                or (self._ack_pending and time.monotonic()-self._sent_at>3.)):
+                or (self._ack_pending and time.monotonic()-self._sent_at>self._sync_timeout)):
             self._broken=True
             self._failure_emitted=True
             self._ack_pending=False
@@ -106,6 +107,10 @@ class AudioProcessBridge(QObject):
                 else '音频端点恢复退避中，等待有效恢复状态')
         self._broken=False
         self._failure_emitted=False
+        # Qt's first native device enumeration can exceed the ordinary
+        # control deadline. Give each new endpoint one bounded cold sync,
+        # then retain the short deadline for pause/seek and later requests.
+        self._sync_timeout=10.
         self._endpoint_generation+=1
         generation=self._endpoint_generation
         if self._watchdog is None:
@@ -206,6 +211,7 @@ class AudioProcessBridge(QObject):
                     elif message.get('kind') == 'milestone':
                         self._diagnostic(str(message.get('phase', 'worker_progress')), **message.get('payload', {}))
                     elif message.get('kind') == 'ack':
+                        self._sync_timeout=3.
                         self._ack_pending=False
                         self.synchronize_complete.emit()
             except (EOFError, OSError, ValueError):
