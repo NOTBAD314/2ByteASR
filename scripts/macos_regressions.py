@@ -18,6 +18,7 @@ SELECTORS.append('tests/test_loading_cover_first_show.py')
 SELECTORS.append('tests/test_hidden_caption_geometry.py')
 SELECTORS.append('tests/test_hidden_studio_preparation.py')
 SELECTORS.append('tests/test_hidden_studio_resize.py')
+SELECTORS.append('tests/test_audio_endpoint_startup_deadline.py')
 SELECTORS.append('tests/test_page_open_sidebar.py::test_settle_layout_walks_only_the_visible_tree')
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);a=parser.parse_args()
