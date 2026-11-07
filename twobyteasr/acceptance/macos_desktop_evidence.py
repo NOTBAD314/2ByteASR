@@ -38,6 +38,11 @@ def studio_snapshot(page) -> dict:
         ('video_followers', lambda: {key: source.performance_snapshot()
                                    for key, source in page.video_compositor._players.items()}),
         ('playback_buffers_ready', lambda: page._playback_buffers_ready()),
+        ('waveform', lambda: dict(state=page.timeline.waveform_state,
+            detail=page.timeline.toolTip(), inflight=sorted(page._waveform_inflight),
+            pending=list(page._waveform_pending_media),
+            cache_root=str(getattr(page.timeline.cache, 'root', '')),
+            cache_metadata=page.timeline.cache.metadata.to_dict() if page.timeline.cache is not None else None)),
         ('caption_scene', lambda: page._caption_scene.trace()),
     ):
         try:

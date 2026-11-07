@@ -2122,8 +2122,9 @@ class StudioMediaFlowMixin:
             self._waveform_cancel_event.set()
             cancel_event = threading.Event()
             self._waveform_cancel_event = cancel_event
-        root = Path(__file__).resolve().parents[2]
-        ffmpeg = root / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+        from ..runtime_paths import detect_install_root
+        from ..system.platform_media import ffmpeg_tool
+        ffmpeg = ffmpeg_tool(root=detect_install_root())
         self._waveform_generation += 1
         generation = self._waveform_generation
         self.timeline.set_waveform_state("LOADING", "正在生成音频波形…")
