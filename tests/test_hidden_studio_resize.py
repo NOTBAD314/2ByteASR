@@ -73,7 +73,7 @@ def test_resize_burst_commits_latest_stack_rect_once(shell, monkeypatch):
     window, queued = shell
     from twobyteasr.design import ui_motion
     settled = []
-    monkeypatch.setattr(ui_motion, 'settle_layout', lambda page:settled.append(page))
+    monkeypatch.setattr(ui_motion, 'settle_layout', lambda page, **kwargs:settled.append(page))
     window.studio.setGeometry(0, 0, 100, 30)
     window._queue_hidden_studio_geometry()
     window.resize(1100, 720)

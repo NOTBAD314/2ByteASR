@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace as NS
 import time
 
 import pytest
-from PySide6.QtCore import QEvent, QObject
+from PySide6.QtCore import QEvent, QObject, QRectF
 from PySide6.QtWidgets import QApplication, QWidget
 
 from twobyteasr.studio.studio_readiness import StudioReadiness, owns_hidden_preparation
@@ -88,7 +88,9 @@ def test_hidden_caption_cache_cannot_bypass_loading_ownership():
     cls=methods('twobyteasr/studio/studio_advanced_flow.py','StudioAdvancedFlowMixin',{'_present_caption_scene'})
     page,state=owned_page();obj=cls();obj.__dict__.update(page.__dict__)
     obj._caption_tick_time_ms=0
-    obj._caption_playhead_sample={'presented_key':(id(obj.project),None,None,0)}
+    obj.position_overlay=NS(_content_rect=lambda:QRectF(0,0,640,360))
+    obj._sync_canvas_selection=lambda:None
+    obj._caption_playhead_sample={'presented_key':(id(obj.project),None,None,0,0,(0,0,640,360))}
     assert obj._present_caption_scene()
     state['owns']=False
     assert not obj._present_caption_scene()
@@ -99,6 +101,8 @@ def test_prepared_advanced_pixels_must_belong_to_current_cue():
     page,state=owned_page();obj=cls();obj.__dict__.update(page.__dict__)
     calls=[];obj._activate_selected_advanced_if_needed=lambda:calls.append('prepare')
     obj._advanced_active_cue_id='current'
+    obj.video=object()
+    obj.position_overlay=NS(sync_to_video=lambda video:None)
     evidence={'foreground_owner_cue_id':'old','advanced_live_visible':True}
     obj.ensure_active_subtitle_renderer=lambda **kw:evidence
     assert not obj._prepare_loading_subtitles()
@@ -139,7 +143,8 @@ def test_cancel_passes_reveal_after_rejecting_old_callbacks():
     order=[]
     page=NS(video=NS(set_paused=lambda _x:None),timeline=NS(setUpdatesEnabled=lambda _x:None),
             project=object(),_studio_trace=lambda *a,**k:None)
-    gate=NS(page=page,generation=4,active=True,ready=False,steps=object(),timer=Timer(),on_ready=object(),path='A')
+    gate=NS(page=page,generation=4,active=True,ready=False,steps=object(),timer=Timer(),on_ready=object(),path='A',
+            _close_recovery_choice=lambda:None)
     def reveal():order.append(('reveal',gate.active,gate.generation))
     def abort(*,reveal):
         order.append(('abort',gate.active,gate.generation));reveal()
@@ -153,7 +158,7 @@ def test_cancel_without_reveal_keeps_legacy_abort_signature():
             project=object(),_studio_trace=lambda *a,**k:None)
     calls=[]
     gate=NS(page=page,generation=4,active=True,ready=False,steps=None,timer=Timer(),on_ready=None,path='A',
-            loading=NS(abort=lambda:calls.append('abort')))
+            loading=NS(abort=lambda:calls.append('abort')),_close_recovery_choice=lambda:None)
     StudioReadiness.cancel(gate,navigate=False)
     assert calls==['abort']
 
@@ -182,7 +187,8 @@ def caption_gate_fixture(monkeypatch, *, cue_start=None):
         _preview_path=None,isVisible=lambda:False,_studio_trace=lambda *a,**k:None,
         _revoke_advanced_preview=lambda **k:events.append(('revoke',k)),
         _playback_buffers_ready=lambda:True,_prepare_loading_subtitles=lambda:True,
-        _present_caption_scene=lambda:None,audio_engine=NS(telemetry_snapshot=lambda:{}))
+        _present_caption_scene=lambda:None,audio_engine=NS(telemetry_snapshot=lambda:{},
+                                                        playback_readiness=lambda:NS(failed=False)))
     completed=set(StudioReadiness.TASKS)-{'准备字幕','首屏绘制'}
     loading=NS(completed=completed,skip=lambda stage,reason:(completed.add(stage),events.append(('skip',stage,reason))),
                mark=completed.add)
