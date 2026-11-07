@@ -336,6 +336,7 @@ def reliability(page, output, check, wait, idle, result):
 
         # A real resident process termination must fall back to the same encoder.
         persistence._FORMAL_TEXT_CACHES.clear()
+        persistence._AUTOSAVE_TEXT_CACHES.clear()
         worker = shared_worker()
         prior_failures = len(worker.failures)
         prior_token = worker._token

@@ -266,7 +266,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -1002,6 +1002,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario == 'waveform-stability':
+        from .waveform_stability_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'edit-save':
         from .edit_save_audit import start
         output = audit_directory()

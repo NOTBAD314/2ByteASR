@@ -2752,8 +2752,15 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             cached = tiles.get(key)
             partials = getattr(self, '_waveform_partial_tiles', {})
             partial = partials.get(key)
-            if cached is None and partial is not None and partial[0] is cache and partial[3] > perf_counter():
-                cached = partial[1:3]
+            if cached is None and partial is not None and partial[0] is cache:
+                expired = partial[3] <= perf_counter()
+                asynchronous = getattr(self, '_paint_geometry_cache', None) is not None
+                if not expired or asynchronous:
+                    cached = partial[1:3]
+                if expired and asynchronous:
+                    jobs = getattr(self, '_waveform_tile_jobs', None)
+                    if jobs is not None:
+                        jobs[key] = (cache,start,end,max(1,round((end-start)/ms_per_px)),(end-start)/ms_per_px)
             if cached is not None:
                 if key in tiles:tiles.move_to_end(key)
                 self._paint_envelope_hits = getattr(self, '_paint_envelope_hits', 0) + 1
@@ -2783,6 +2790,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return
         path, stats, complete = result
         if complete:
+            getattr(self, '_waveform_partial_tiles', {}).pop(key, None)
             tiles = getattr(self, '_waveform_tile_cache', None)
             if tiles is None:self._waveform_tile_cache = tiles = OrderedDict()
             tiles[key] = (path,stats)
@@ -2806,7 +2814,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             _level, pairs = cache.read_window(source_in, source_out, pixels)
         except (OSError, ValueError):
             return None
+        from .waveform_tiles import window_complete
+        complete = window_complete(cache, _level, source_in, source_out, len(pairs))
         if not len(pairs):
+            if complete:
+                stats = dict(level=_level.level,milliseconds_per_bucket=_level.milliseconds_per_frame,
+                    buckets=0,vertices=0,render_ms=(perf_counter()-envelope_started)*1000)
+                self._last_waveform_envelope_stats = stats
+                return QPainterPath(),stats,True
             return None
         import numpy as np
         amplitude = height * 0.36 if amplitude is None else float(amplitude)
@@ -2838,7 +2853,6 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                      render_ms=round((perf_counter() - envelope_started) * 1000.0, 2))
         self._last_waveform_envelope_stats = stats
         self._trace_waveform_lod(_level, stats)
-        complete = len(pairs) >= expected_buckets * 0.98
         return envelope, stats, complete
 
     def _trace_waveform_lod(self, level, stats: dict) -> None:
