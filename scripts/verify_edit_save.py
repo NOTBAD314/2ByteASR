@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--launcher', type=Path)
-    parser.add_argument('--part', choices=['edits','saves','reliability','crash-recovery'], default='edits')
+    parser.add_argument('--part', choices=['edits','saves','reliability','crash-recovery','waveform'], default='edits')
     args = parser.parse_args()
     out = args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):
@@ -59,7 +59,8 @@ def main():
     target.parent.mkdir(parents=True, exist_ok=True)
     save_project(project, target, compact=True)
     entry = save_project(SubtitleProject(StudioMedia('')),out/'entry.2byteproj')
-    env = dict(os.environ, TWOBYTEASR_ACCEPTANCE_DIR=str(out),TWOBYTEASR_ACCEPTANCE_SCENARIO='edit-save',
+    env = dict(os.environ, TWOBYTEASR_ACCEPTANCE_DIR=str(out),
+        TWOBYTEASR_ACCEPTANCE_SCENARIO='waveform-stability' if args.part=='waveform' else 'edit-save',
         TWOBYTEASR_STARTUP_PROJECT=str(entry),EDIT_SAVE_PROJECT=str(target),
         EDIT_SAVE_PART='reliability' if args.part=='crash-recovery' else args.part,
         EDIT_SAVE_CRASH_AFTER_RECOVERY='1' if args.part=='crash-recovery' else '',

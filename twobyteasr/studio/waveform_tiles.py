@@ -13,12 +13,30 @@ from ..playback.waveform_cache import WaveformCache
 from ..rendering.latest_work import LatestWork
 
 
+def window_complete(cache, level, start, end, count):
+    """A completed source can have valid silence beyond its decoded audio tail."""
+    metadata = getattr(cache, 'metadata', None)
+    if metadata is not None and not bool(getattr(metadata, 'incomplete', True)):
+        return True
+    origin = float(getattr(metadata, 'sample_timeline_origin_ms', 0.0) or 0.0)
+    span = float(end)-max(float(start), origin)
+    if span <= 0:
+        return True
+    expected = max(1.0, span/level.milliseconds_per_frame)
+    return count >= expected*.98
+
+
 def build_envelope(cache, start, end, pixels, width):
     """No widgets or pixmaps; a path is private to this job until publication."""
     import numpy as np
     began=time.perf_counter()
     level,pairs=cache.read_window(start,end,pixels)
+    complete = window_complete(cache, level, start, end, len(pairs))
     if not len(pairs):
+        if complete:
+            return QPainterPath(),dict(level=level.level,
+                milliseconds_per_bucket=level.milliseconds_per_frame,
+                buckets=0,vertices=0,render_ms=(time.perf_counter()-began)*1000),True
         return None
     def heights(values):
         value=np.abs(values)
@@ -40,7 +58,7 @@ def build_envelope(cache, start, end, pixels, width):
     path=QPainterPath();path.addPolygon(QPolygonF(points));path.closeSubpath()
     stats=dict(level=level.level,milliseconds_per_bucket=level.milliseconds_per_frame,
         buckets=len(pairs),vertices=len(points),render_ms=(time.perf_counter()-began)*1000)
-    return path,stats,len(pairs)>=expected*.98
+    return path,stats,complete
 
 
 class WaveformTileWorker(QObject):
