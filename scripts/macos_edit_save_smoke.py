@@ -18,27 +18,44 @@ sys.path.insert(0, str(ROOT))
 from scripts.verify_blank_project_macos import audit_boundary, blank_environment
 
 
-def prepare_fixture(output: Path, ffmpeg: Path) -> Path:
+def prepare_fixture(output: Path, ffmpeg: Path, *, full_recording=False) -> Path:
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
     from twobyteasr.acceptance.studio_search_fixture import make_project
     from twobyteasr.media.media_service import MediaService
-    from twobyteasr.projects.studio_project import save_project
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
     from twobyteasr.timeline.studio_edit_sequence import persist_sequence, sequence_of
 
     media = output/'匿名・编辑保存.mp4'
+    if full_recording:
+        video_input = 'color=c=0x2a3344:s=640x360:r=1:d=21600'
+        audio_input = 'sine=frequency=440:sample_rate=8000:duration=21600'
+        duration = '21600'
+        audio_options = ['-b:a', '24k', '-ac', '1']
+        timeout = 300
+    else:
+        video_input = 'testsrc2=s=640x360:r=25:d=215'
+        audio_input = 'anullsrc=r=48000:cl=stereo'
+        duration = '215'
+        audio_options = []
+        timeout = 180
     with (output/'sample-media.log').open('wb') as stream:
-        subprocess.run([str(ffmpeg), '-v', 'warning', '-f', 'lavfi', '-i',
-                        'testsrc2=s=640x360:r=25:d=215', '-f', 'lavfi', '-i',
-                        'anullsrc=r=48000:cl=stereo', '-t', '215', '-c:v', 'libx264',
+        subprocess.run([str(ffmpeg), '-v', 'warning', '-f', 'lavfi', '-i', video_input,
+                        '-f', 'lavfi', '-i', audio_input, '-t', duration, '-c:v', 'libx264',
                         '-preset', 'ultrafast', '-crf', '32', '-pix_fmt', 'yuv420p',
-                        '-c:a', 'aac', str(media)], check=True, timeout=180,
+                        '-c:a', 'aac', *audio_options, str(media)], check=True, timeout=timeout,
                        stdout=stream, stderr=subprocess.STDOUT)
-    service = MediaService(ffmpeg_path=ffmpeg, ffprobe_path=ffmpeg.with_name('ffprobe'),
+    service = MediaService(ffmpeg_path=ffmpeg, ffprobe_path=ffmpeg.with_name('ffprobe'+ffmpeg.suffix),
                            cache_root=output/'metadata-cache')
     metadata = service.metadata(media)
     project = make_project()
+    if full_recording:
+        project = SubtitleProject(StudioMedia(str(media), duration_ms=metadata.duration_ms,
+            fingerprint=metadata.fingerprint, width=metadata.width, height=metadata.height),
+            speakers=project.speakers, cues=project.cues, generation_metadata=project.generation_metadata,
+            asr_evidence=project.asr_evidence)
+        project.validate()
     for index, cue in enumerate(project.cues):
         cue.evidence_refs = [f'segment:{index}']
     old_path = project.media.path
@@ -59,6 +76,10 @@ def prepare_fixture(output: Path, ffmpeg: Path) -> Path:
     persist_sequence(project)
     target = output/'anonymous.2byteproj'
     save_project(project, target, compact=True)
+    (output/'fixture-info.json').write_text(json.dumps(dict(full_recording=full_recording,
+        cue_count=len(project.cues), media_duration_ms=metadata.duration_ms,
+        project_duration_ms=project.media.duration_ms, per_cue_source_references=True,
+        generated_media=True), indent=2), 'utf8')
     return target
 
 
@@ -66,7 +87,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--part', choices=('edits', 'saves', 'waveform'), default='edits')
+    parser.add_argument('--part', choices=('edits', 'saves', 'waveform', 'waveform-full'), default='edits')
     args = parser.parse_args(argv)
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise SystemExit('Native Apple Silicon macOS is required')
@@ -85,17 +106,20 @@ def main(argv=None) -> int:
                    physical_input_latency_measured=False)
     process = None
     try:
-        target = prepare_fixture(output, ffmpeg)
+        target = prepare_fixture(output, ffmpeg, full_recording=args.part == 'waveform-full')
+        summary['fixture'] = json.loads((output/'fixture-info.json').read_text('utf8'))
+        summary.update(fixture_media_seconds=summary['fixture']['media_duration_ms']/1000,
+                       fixture_timeline_seconds=summary['fixture']['project_duration_ms']/1000)
         env = blank_environment(output, invoker, target)
-        scenario = 'macos-waveform-stability' if args.part == 'waveform' else 'macos-edit-save'
+        scenario = 'macos-waveform-stability' if args.part in {'waveform', 'waveform-full'} else 'macos-edit-save'
         env.update(TWOBYTEASR_ACCEPTANCE_SCENARIO=scenario, EDIT_SAVE_PROJECT=str(target),
-                   EDIT_SAVE_PART=args.part)
+                   EDIT_SAVE_PART=args.part, WAVEFORM_FULL_PROFILE='0')
         for folder in ('local', 'roaming', 'temp'):
             (output/folder).mkdir(exist_ok=True)
         with (output/'edit-save.log').open('wb') as stream:
             process = subprocess.Popen([str(executable), str(target)], env=env, cwd=invoker,
                                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-            summary['launcher_exit'] = process.wait(timeout=600)
+            summary['launcher_exit'] = process.wait(timeout=900)
         result = json.loads((output/'result.json').read_text('utf8'))
         identity = json.loads((output/'local/2ByteASR/logs/build_identity.json').read_text('utf8'))
         startup = json.loads((output/'startup-project-result.json').read_text('utf8'))
@@ -114,9 +138,13 @@ def main(argv=None) -> int:
         elif args.part == 'saves':
             case_passed = (len(result.get('saves', [])) == 4
                            and checks.get('saved content readback') is True)
-        else:
+        elif args.part == 'waveform':
             case_passed = (len(checks) >= 4 and result.get('serial_before') == result.get('serial_after')
                            and (output/'waveform-stable.png').is_file())
+        else:
+            case_passed = (len(result.get('views', [])) == 3 and len(result.get('interactions', [])) == 47
+                           and checks.get('decoded coverage reaches recording end') is True
+                           and (output/'whole-recording.png').is_file())
         summary['passed'] = bool(common_passed and case_passed)
     except Exception:
         summary['error'] = traceback.format_exc()

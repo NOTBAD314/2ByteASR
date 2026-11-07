@@ -33,7 +33,9 @@ def start(window, output):
         window.grab().save(str(output/'startup-project.png'))
         save()
         if ready:
-            if os.environ.get('EDIT_SAVE_PART') == 'waveform':
+            if os.environ.get('EDIT_SAVE_PART') == 'waveform-full':
+                from .waveform_full_audit import start as shared_start
+            elif os.environ.get('EDIT_SAVE_PART') == 'waveform':
                 from .waveform_stability_audit import start as shared_start
             else:
                 from .edit_save_audit import start as shared_start

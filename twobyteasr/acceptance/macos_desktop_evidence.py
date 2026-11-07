@@ -26,6 +26,9 @@ def studio_snapshot(page) -> dict:
     # Keep raster data out of a diagnostic JSON; availability is sufficient.
     result['video']['_web_last_decoded'] = result['video']['_web_last_decoded'] is not None
     for name, callback in (
+        ('render_geometry', lambda: dict(video_rect=list(page.video.rect().getRect()),
+                                        overlay_rect=list(page.position_overlay.geometry().getRect()),
+                                        content_rect=list(page.position_overlay._content_rect().getRect()))),
         ('video_actor', lambda: page.video.controller.actor_status()),
         ('video_visual', lambda: page.video.controller.applied_visual_state()),
         ('video_composition', lambda: page.video_compositor.performance_snapshot()),

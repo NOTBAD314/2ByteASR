@@ -10,8 +10,8 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ('edit-save', 'cold-save', 'waveform-stability'):
-        for name in ('edit-save-summary.json', 'result.json', 'startup-project-result.json', 'startup-project.png', 'after-thirty.png', 'waveform-stable.png', 'sample-media.log', 'edit-save.log'):
+    for folder in ('edit-save', 'cold-save', 'waveform-stability', 'full-waveform'):
+        for name in ('fixture-info.json', 'edit-save-summary.json', 'result.json', 'startup-project-result.json', 'startup-project.png', 'after-thirty.png', 'waveform-stable.png', 'beginning.png', 'middle.png', 'end.png', 'whole-recording.png', 'sample-media.log', 'edit-save.log'):
             path = root/folder/name
             if path.is_file():selected.append(path)
         for path in (root/folder/'runtime-evidence').glob('*'):

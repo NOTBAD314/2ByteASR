@@ -64,6 +64,8 @@ def main(argv=None):
              '--output',out/'cold-save'],timeout=840)
         run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','waveform',
              '--output',out/'waveform-stability'],timeout=840)
+        run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','waveform-full',
+             '--output',out/'full-waveform'],timeout=1250)
         run([app/'Contents/MacOS/2ByteASR','--macos-media-smoke',out/'native-media-smoke'],timeout=120)
         run([sys.executable,ROOT/'scripts/macos_renderer_smoke.py','--app',app,'--output',out/'renderer-smoke'],timeout=660)
         audio=out/'speech.wav'
