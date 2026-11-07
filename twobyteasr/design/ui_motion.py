@@ -42,7 +42,7 @@ def motion_duration(token_ms: int) -> int:
     return 0 if reduced_motion() else max(0, int(token_ms))
 
 
-def settle_layout(root: QWidget) -> None:
+def settle_layout(root: QWidget, *, invalidate: bool = False) -> None:
     """Drain geometry work only. Never run timers, input, network or paint."""
     root.ensurePolished()
     # Hidden pages can contain thousands of controls. They do not participate
@@ -56,6 +56,10 @@ def settle_layout(root: QWidget) -> None:
     while stack:
         widget = stack.pop()
         if widget.layout() is not None:
+            if invalidate:
+                # A hidden ancestor defers resize events. Cached nested
+                # layouts may still describe its pre-project placeholder.
+                widget.layout().invalidate()
             widget.layout().activate()
         QCoreApplication.sendPostedEvents(widget, layout_request)
         if isinstance(widget, QSplitter):

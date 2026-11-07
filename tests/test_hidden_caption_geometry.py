@@ -4,8 +4,8 @@ import copy
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QRectF
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QStackedWidget, QWidget
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QSplitter, QVBoxLayout, QStackedWidget, QWidget
 
 APP = QApplication.instance() or QApplication([])
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +80,65 @@ def test_hidden_caption_preparation_syncs_overlay_before_activation():
     assert observed and not observed[0].isEmpty()
     assert page.position_overlay.geometry() == page.video.rect()
     page.video.close()
+
+
+def test_hidden_nested_video_layout_drops_placeholder_geometry():
+    from twobyteasr.design.ui_motion import settle_layout
+    harness = methods('twobyteasr/app/ui.py', 'MainWindow', {'_prepare_hidden_studio_geometry'}, 'twobyteasr.app')
+    window = QWidget()
+    window.setLayout(QVBoxLayout())
+    pages = QStackedWidget(window)
+    window.layout().addWidget(pages)
+    loading, page = QWidget(), QWidget()
+    pages.addWidget(loading)
+    pages.addWidget(page)
+    pages.setCurrentWidget(loading)
+    page.setLayout(QVBoxLayout())
+    workspace = QSplitter(Qt.Orientation.Vertical)
+    page.layout().addWidget(workspace)
+    upper = QSplitter(Qt.Orientation.Horizontal)
+    workspace.addWidget(upper)
+    left, right = QWidget(), QWidget()
+    left.setMinimumWidth(275)
+    right.setMinimumWidth(360)
+    center = QSplitter(Qt.Orientation.Vertical)
+    for widget in (left, center, right):
+        upper.addWidget(widget)
+    host = QWidget()
+    host.setLayout(QVBoxLayout())
+    host.layout().setContentsMargins(0, 0, 0, 0)
+    center.addWidget(host)
+    overlay = QWidget()
+    overlay.setLayout(QGridLayout())
+    overlay.layout().setContentsMargins(0, 0, 0, 0)
+    host.layout().addWidget(overlay)
+    video = QFrame()
+    video.setMinimumHeight(120)
+    overlay.layout().addWidget(video)
+    workspace.addWidget(QWidget())
+    page.video = video
+    page.setGeometry(0, 0, 100, 30)
+    settle_layout(page)
+    window.resize(1008, 665)
+    window.show()
+    APP.processEvents()
+    page.setGeometry(pages.contentsRect())
+    upper.setSizes([275, 303, 420])
+    workspace.setSizes([281, 281])
+    settle_layout(page)
+    assert host.width() > 0 and video.width() == 0
+    owner = harness()
+    owner.pages = pages
+    owner.layout = window.layout
+    owner.built_page = lambda name: page
+    owner._studio_loading_session = SimpleNamespace(active=True, generation=1, view=loading)
+    try:
+        assert owner._prepare_hidden_studio_geometry(page)
+        assert video.size() == overlay.size() == host.size()
+        assert video.width() > 0 and video.height() >= 120
+        assert not page.isVisible() and pages.currentWidget() is loading
+    finally:
+        window.close()
 
 
 def test_empty_rect_then_same_paused_cue_submits_after_geometry_changes(monkeypatch):

@@ -2228,7 +2228,7 @@ class MainWindow(QWidget):
         from ..design.ui_motion import settle_layout
         # The first restore may follow a root-only Hub resize. Its newly
         # exposed workspace still needs one pass even at the same outer size.
-        settle_layout(page)
+        settle_layout(page, invalidate=True)
         if (page.size() != before or (timeline_before is not None
                 and isValid(timeline) and timeline.size() != timeline_before)):
             gate = getattr(page, '_readiness', None)
