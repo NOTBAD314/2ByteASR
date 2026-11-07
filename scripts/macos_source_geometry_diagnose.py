@@ -32,6 +32,8 @@ def install_observer():
                        rect=list(widget.geometry().getRect()), hidden=widget.isHidden(),
                        visible=widget.isVisible(), minimum=list(widget.minimumSize().toTuple()),
                        hint=list(widget.minimumSizeHint().toTuple()))
+            if widget.layout() is not None:
+                row['layout_rect'] = list(widget.layout().geometry().getRect())
             if isinstance(widget, QSplitter):
                 row['sizes'] = widget.sizes()
                 row['children'] = [type(widget.widget(i)).__name__ for i in range(widget.count())]
@@ -52,19 +54,14 @@ def install_observer():
                     'workspace_host', 'workspace_splitter', 'upper_splitter', 'center_splitter',
                     'video_overlay_host', 'position_overlay', 'source_tabs', 'context_panel')}))
             (output/'geometry.json').write_text(json.dumps(samples, indent=2), 'utf8')
-            if elapsed > 14 and 'settle' not in actions and not gate.ready:
-                actions.add('settle')
-                window._prepare_hidden_studio_geometry(page, force_settle=True)
-            if elapsed > 20 and 'wide' not in actions and not gate.ready:
-                actions.add('wide')
-                window.resize(1600, 1000)
-                window._prepare_hidden_studio_geometry(page, force_settle=True)
             if gate.ready or not gate.active or elapsed > 40:
                 timer.stop()
                 window.grab().save(str(output/'window.png'))
+                from twobyteasr.acceptance.macos_desktop_evidence import studio_snapshot
                 (output/'source-entry.json').write_text(json.dumps(dict(
                     ready=gate.ready, elapsed=elapsed, actions=sorted(actions),
                     native_backend=page.video.controller.backend,
+                    snapshot=studio_snapshot(page),
                     release_acceptance=False), indent=2), 'utf8')
                 window.close()
         timer.timeout.connect(observe)
