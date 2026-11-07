@@ -99,7 +99,7 @@ def test_undo_to_last_formal_content_still_supersedes_a_newer_recovery(tmp_path)
     page.project.cues[0].text = 'recovery B'
     page.undo_stack.push(QUndoCommand('B'))
     revision = capture_manual_save(page,page.project,2)
-    save_autosave_revision(revision,page.session.project_path,session_id='before-undo')
+    save_autosave_revision(revision,page.session.project_path,session_id='beforeundo')
     assert recoverable_autosave(page.session.project_path) is not None
     page.project.cues[0].text = 'N0'
     page.undo_stack.undo()
