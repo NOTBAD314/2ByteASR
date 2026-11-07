@@ -93,7 +93,8 @@ class StudioAdvancedFlowMixin:
         key = (id(self.project), getattr(revision, 'visual_revision', None),
                getattr(revision, 'mapping_revision', None),
                getattr(self, '_caption_tick_time_ms', None),
-               getattr(self, '_caption_transform_preview_serial', 0))
+               getattr(self, '_caption_transform_preview_serial', 0),
+               tuple(self.position_overlay._content_rect().toRect().getRect()))
         if sample is not None and sample.get('presented_key') == key:
             self._sync_canvas_selection()
             return True
@@ -119,6 +120,7 @@ class StudioAdvancedFlowMixin:
         from .studio_readiness import owns_hidden_preparation
         if not owns_hidden_preparation(self):
             return False
+        self.position_overlay.sync_to_video(self.video)
         self._activate_selected_advanced_if_needed()
         evidence = self.ensure_active_subtitle_renderer(reason='loading.prepare')
         if getattr(getattr(self, '_caption_scene', None), 'active', False):

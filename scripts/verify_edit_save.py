@@ -20,8 +20,10 @@ def main():
     parser.add_argument('--target', type=Path, required=True)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--exe', type=Path)
-    parser.add_argument('--launcher', type=Path)
-    parser.add_argument('--part', choices=['edits','saves','reliability','crash-recovery','waveform'], default='edits')
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument('--launcher', type=Path)
+    execution.add_argument('--foreground', action='store_true')
+    parser.add_argument('--part', choices=['edits','saves','reliability','crash-recovery','waveform','waveform-full'], default='edits')
     args = parser.parse_args()
     out = args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):
@@ -59,8 +61,9 @@ def main():
     target.parent.mkdir(parents=True, exist_ok=True)
     save_project(project, target, compact=True)
     entry = save_project(SubtitleProject(StudioMedia('')),out/'entry.2byteproj')
+    scenario = {'waveform': 'waveform-stability', 'waveform-full': 'waveform-full'}.get(args.part, 'edit-save')
     env = dict(os.environ, TWOBYTEASR_ACCEPTANCE_DIR=str(out),
-        TWOBYTEASR_ACCEPTANCE_SCENARIO='waveform-stability' if args.part=='waveform' else 'edit-save',
+        TWOBYTEASR_ACCEPTANCE_SCENARIO=scenario,
         TWOBYTEASR_STARTUP_PROJECT=str(entry),EDIT_SAVE_PROJECT=str(target),
         EDIT_SAVE_PART='reliability' if args.part=='crash-recovery' else args.part,
         EDIT_SAVE_CRASH_AFTER_RECOVERY='1' if args.part=='crash-recovery' else '',
@@ -82,13 +85,17 @@ def main():
             +'sys.meta_path.insert(0,Before())\nrunpy.run_path('+repr(str(ROOT/'quick_start.py'))+',run_name="__main__")\n','utf8')
         command=[sys.executable,'-B',str(driver)]
         env['EDIT_SAVE_BASELINE']='1'
-    if args.launcher:
+    if args.foreground:
+        with (out/'foreground.log').open('wb') as log:
+            code = subprocess.run(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW,timeout=900).returncode
+    elif args.launcher:
         from audit_launch_bridge import run_audit_on_desktop
         code = run_audit_on_desktop([str(args.launcher.resolve())],cwd=ROOT,env=env,
-                                   output=out,timeout=450,receipt=out/'result.json')
+                                   output=out,timeout=900 if args.part=='waveform-full' else 450,receipt=out/'result.json')
     else:
         from isolated_windows_desktop import run_on_desktop
-        code = run_on_desktop(command,cwd=ROOT,env=env,output=out/'process',timeout=450)
+        code = run_on_desktop(command,cwd=ROOT,env=env,output=out/'process',timeout=900 if args.part=='waveform-full' else 450)
     p = out/'result.json'
     result = json.loads(p.read_text('utf8')) if p.exists() else dict(passed=False,error='missing receipt')
     result.update(process_exit=code, original_unchanged=hashlib.sha256(args.project.read_bytes()).hexdigest()==original_hash)
