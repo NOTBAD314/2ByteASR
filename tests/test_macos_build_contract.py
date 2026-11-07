@@ -93,14 +93,14 @@ def test_real_app_spec_selects_arm64_and_does_not_claim_universal_or_developer_i
     assert "BUNDLE(coll,name='2ByteASR.app'" in text
 
 
-@pytest.mark.parametrize('failed', ['embedded_preview', 'studio_perf', 'edit_save'])
+@pytest.mark.parametrize('failed', ['embedded_preview', 'studio_perf', 'edit_save', 'waveform_stability'])
 def test_final_gate_rejects_failed_native_pixels_or_requested_studio_perf_even_when_other_steps_succeed(tmp_path, failed):
     from scripts.macos_ci_status import main
     root = tmp_path/'tmp/qa'
     receipts = root/'artifacts/receipts'; receipts.mkdir(parents=True)
     (receipts/'artifact-selection.json').write_text(json.dumps({'files': [{'path': 'dmg/real.dmg'}]}))
     record = dict.fromkeys(['runtime_identity','media','app','relocation','startup','dmg','blank_project',
-                           'edit_save','embedded_preview','renderer','studio_perf'], 'passed')
+                           'edit_save','waveform_stability','embedded_preview','renderer','studio_perf'], 'passed')
     record.update(model_requested=False, cloud_mlx_requested=False, studio_perf_requested=True, test_step='success')
     status = root/'ci-status.json'; status.write_text(json.dumps(record))
     assert main(['--qa-root', str(root), '--enforce']) == 0

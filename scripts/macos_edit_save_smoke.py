@@ -30,8 +30,8 @@ def prepare_fixture(output: Path, ffmpeg: Path) -> tuple[Path, Path]:
     media = output/'匿名・编辑保存.mp4'
     with (output/'sample-media.log').open('wb') as stream:
         subprocess.run([str(ffmpeg), '-v', 'warning', '-f', 'lavfi', '-i',
-                        'testsrc2=s=640x360:r=25:d=120', '-f', 'lavfi', '-i',
-                        'anullsrc=r=48000:cl=stereo', '-t', '120', '-c:v', 'libx264',
+                        'testsrc2=s=640x360:r=25:d=215', '-f', 'lavfi', '-i',
+                        'anullsrc=r=48000:cl=stereo', '-t', '215', '-c:v', 'libx264',
                         '-preset', 'ultrafast', '-crf', '32', '-pix_fmt', 'yuv420p',
                         '-c:a', 'aac', str(media)], check=True, timeout=180,
                        stdout=stream, stderr=subprocess.STDOUT)
@@ -65,6 +65,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--part', choices=('edits', 'waveform'), default='edits')
     args = parser.parse_args(argv)
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise SystemExit('Native Apple Silicon macOS is required')
@@ -79,13 +80,14 @@ def main(argv=None) -> int:
     output.mkdir(parents=True)
     summary = dict(passed=False, expected_executable=str(executable),
                    scope='Native installed app, synthetic Qt input, anonymous 5555-cue fixture',
-                   fixture_media_seconds=120, fixture_timeline_seconds=18325,
+                   part=args.part, fixture_media_seconds=215, fixture_timeline_seconds=18325,
                    physical_input_latency_measured=False)
     process = None
     try:
         entry, target = prepare_fixture(output, ffmpeg)
         env = blank_environment(output, invoker, entry)
-        env.update(TWOBYTEASR_ACCEPTANCE_SCENARIO='edit-save', EDIT_SAVE_PROJECT=str(target),
+        scenario = 'waveform-stability' if args.part == 'waveform' else 'edit-save'
+        env.update(TWOBYTEASR_ACCEPTANCE_SCENARIO=scenario, EDIT_SAVE_PROJECT=str(target),
                    EDIT_SAVE_PART='edits')
         for folder in ('local', 'roaming', 'temp'):
             (output/folder).mkdir(exist_ok=True)
@@ -94,19 +96,22 @@ def main(argv=None) -> int:
                                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
             summary['launcher_exit'] = process.wait(timeout=600)
         result = json.loads((output/'result.json').read_text('utf8'))
-        identity = result.get('build_identity', {})
+        identity = json.loads((output/'local/2ByteASR/logs/build_identity.json').read_text('utf8'))
         checks = result.get('checks', {})
         summary.update(application_result=result, checks=len(checks), identity=identity)
-        summary['passed'] = bool(summary['launcher_exit'] == 0 and result.get('passed') is True
-                                 and result.get('gui_shutdown') is True
-                                 and len(result.get('edits', [])) == 30
-                                 and len(result.get('saves', [])) == 4
-                                 and checks and all(checks.values())
-                                 and checks.get('saved content readback') is True
-                                 and result.get('manual_requests_during_E') == 0
-                                 and identity.get('packaged') is True
-                                 and Path(identity.get('executable_path', '')).resolve() == executable
-                                 and (output/'after-thirty.png').is_file())
+        common_passed = (summary['launcher_exit'] == 0 and result.get('passed') is True
+                         and result.get('gui_shutdown') is True and checks and all(checks.values())
+                         and identity.get('packaged') is True
+                         and Path(identity.get('executable_path', '')).resolve() == executable)
+        if args.part == 'edits':
+            case_passed = (len(result.get('edits', [])) == 30 and len(result.get('saves', [])) == 4
+                           and checks.get('saved content readback') is True
+                           and result.get('manual_requests_during_E') == 0
+                           and (output/'after-thirty.png').is_file())
+        else:
+            case_passed = (len(checks) >= 4 and result.get('serial_before') == result.get('serial_after')
+                           and (output/'waveform-stable.png').is_file())
+        summary['passed'] = bool(common_passed and case_passed)
     except Exception:
         summary['error'] = traceback.format_exc()
     finally:

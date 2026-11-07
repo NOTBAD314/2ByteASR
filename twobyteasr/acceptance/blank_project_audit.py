@@ -210,6 +210,7 @@ def start(window, output: Path) -> None:
             self.empty('02-first-new')
             first_path, first_id = Path(p.project_path), p.project.project_id
             self.click(p.save_button)
+            yield lambda: p.undo_stack.isClean() and not getattr(getattr(p, '_persistence_queue', None), 'busy', False)
             yield .15
             saved = load_project(first_path)
             self.check('normal save retains zero-duration project',

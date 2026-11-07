@@ -1339,7 +1339,9 @@ def start(window, out: Path):
             page.cue_controller.set_text(cue.id, cue.text + "·")
             yield 0.4
             yield from self.track("save", page.save)
-            yield 1.0
+            yield self.until(lambda: page.undo_stack.isClean()
+                             and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                             90, 'formal save durable')
             path = str(page.session.project_path)
             old = page.project
             t = time.perf_counter()
@@ -1359,6 +1361,9 @@ def start(window, out: Path):
                 page.cue_controller.set_text(page.project.cues[0].id, page.project.cues[0].text[:-1])
                 yield 0.3
                 page.save()
+                yield self.until(lambda: page.undo_stack.isClean()
+                                 and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                                 90, 'restore save durable')
             yield 2.0
 
         def phase_close_while_busy(self):
@@ -1370,7 +1375,9 @@ def start(window, out: Path):
             digest = lambda: hashlib.sha256(path.read_bytes()).hexdigest()
             self.clean_project()
             page.save()
-            yield 1.0
+            yield self.until(lambda: page.undo_stack.isClean()
+                             and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                             90, 'pre-close save durable')
             saved = digest()
             cue = page.project.cues[len(page.project.cues) // 2]
             original_text = cue.text
