@@ -56,6 +56,26 @@ def start(window,output):
     pulse=QTimer(window);pulse.setInterval(250);pulse.timeout.connect(sample);pulse.start()
     def execute():
         try:
+            if scenario == 'startup-project':
+                target=Path(os.environ['TWOBYTEASR_STARTUP_PROJECT'])
+                def startup_ready():
+                    page=window.built_page('studio')
+                    return bool(page is not None and page.project is not None
+                                and page.project_path == target and page._readiness.ready)
+                def failed():
+                    session=window.__dict__.get('_studio_loading_session')
+                    return bool(session and session.state == 'failed')
+                wait(lambda:startup_ready() or failed(),60)
+                sample()
+                check('CLI project reached ready workspace',startup_ready())
+                check('startup cover completed without failure',not failed())
+                page=window.built_page('studio')
+                result['project_path']=str(page.project_path)
+                result['cue_count']=len(page.project.cues)
+                result['loading']=window._studio_loading_session.snapshot()
+                _capture(window,out/'startup-project.png')
+                result['passed']=True
+                return
             window.open_studio_project(None,mode='hub')
             wait(lambda:window._studio_loading_session.state in {'failed','ready'},30)
             s=window._studio_loading_session;result['first']=s.snapshot();sample();_capture(window,out/'first.png')

@@ -745,8 +745,13 @@ class StudioLoadingSession(QObject):
         self._sync_surface()
 
     def _present_behind_native_cover(self, generation):
-        if (self._native_cover_fault or generation != self.generation
-                or not self.view.native_cover_state()['verified']):
+        if self._native_cover_fault or generation != self.generation:
+            return False
+        # The owner's first Show can stack its newly created native content
+        # above this already-painted cover. Restore our child order before
+        # checking that the editor is protected, as on the post-show handoff.
+        self.view.raise_()
+        if not self.view.native_cover_state()['verified']:
             return False
         input_ready = self._input_lease.acquire(self.view.native_cover_owner, self.view)
         if generation != self.generation:
