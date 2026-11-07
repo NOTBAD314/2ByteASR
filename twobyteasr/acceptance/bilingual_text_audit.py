@@ -68,6 +68,8 @@ def start(window, output):
         def timed(name, action):
             before = time.perf_counter()
             value = action()
+            if dialog is not None:
+                wait(lambda:not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive())
             result['timings_ms'][name] = round((time.perf_counter()-before)*1000, 2)
             save()
             return value
@@ -162,7 +164,7 @@ def start(window, output):
             dialog.find_edit.setText('那维来特')
             dialog.replace_edit.setText('那维莱特')
             dialog._do_preview()
-            pump()
+            wait(lambda:not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive())
             check('translation search results visible', dialog.preview.count() == 3)
             check('result identifies layer and language', all('译文' in dialog.preview.item(i).text() and '简体中文' in dialog.preview.item(i).text()
                   for i in range(dialog.preview.count())))
@@ -230,6 +232,7 @@ def start(window, output):
             dialog.text_targets.track.setCurrentIndex(dialog.text_targets.track.findData('translation-records:zh-Hans'))
             dialog.find_edit.setText('那维莱特')
             dialog._do_preview()
+            wait(lambda:not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive())
             dialog._edit_preview_item(dialog.preview.item(0))
             draft=getattr(page,'_caption_draft',None)
             check('search result opens translation text editor', draft is not None and draft.target.layer=='translation'
@@ -262,6 +265,7 @@ def start(window, output):
             check('large both matches separately', len(dialog._preview_hits)==4000)
             dialog.text_targets.mode.setCurrentIndex(1)
             dialog._do_preview()
+            wait(lambda:not getattr(dialog,'_search_pending',False) and not dialog._search_timer.isActive())
             if os.environ.get('TWOBYTEASR_AUDIT_PROFILE'):
                 import cProfile
                 profiler = cProfile.Profile()

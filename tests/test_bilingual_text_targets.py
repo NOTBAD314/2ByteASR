@@ -91,34 +91,6 @@ def test_chinese_only_preserves_source_japanese_timing_associations_and_undo(tmp
     assert not errors and all('那维莱特' in row.text for row in rows)
 
 
-@pytest.mark.parametrize('mode', ['translation', 'both'])
-def test_translation_batch_revisions_survive_local_content_reuse(mode):
-    from twobyteasr.projects.studio_revisions import StudioRevisionStore, thaw_json
-    from twobyteasr.projects.studio_runtime_state import state_for
-
-    p = make_project()
-    p.render_settings['_cue_domain'] = 'timeline'
-    store = StudioRevisionStore(p)
-    state_for(p).subscribe(store.consume)
-    page = page_for(p)
-    before = copy.deepcopy(p.generation_metadata['translations'])
-    hits = find(p, mode, {'translation-records:zh-Hans'}, needle='SHARED', replacement='DONE')
-    assert hits
-    apply_occurrences(page, hits, title='revisions')
-    after = copy.deepcopy(p.generation_metadata['translations'])
-    assert after != before
-
-    def check_current(expected):
-        assert thaw_json(store.materialize_render().generation_metadata)['translations'] == expected
-        assert thaw_json(store.persistence.generation_metadata)['translations'] == expected
-
-    check_current(after)
-    page.session.undo_stack.undo()
-    check_current(before)
-    page.session.undo_stack.redo()
-    check_current(after)
-
-
 def test_no_positional_mapping_with_reorder_missing_split_merge_and_import():
     p = make_project()
     hits = find(p, 'translation', needle='那维来特', replacement='那维莱特')

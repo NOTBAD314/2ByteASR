@@ -375,11 +375,13 @@ class ManualTranslationCommand(QUndoCommand):
             if not redo and not self.had_container and not records:
                 meta.pop(st.RECORDS_KEY, None)
             st.mark_manual_intent(self.project, self.cue_id)
-            invalidate(self.project)
+            invalidate(self.project, (self.cue_id,))
         _commit_mutation(self.project, action_id=self.text(), cue_ids=(self.cue_id,),
             dirty=(DirtyDomain.CUE_CONTENT | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE |
-                   DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.QC | DirtyDomain.AUTOSAVE | DirtyDomain.PROJECT_METADATA),
-            mutate=mutate, changed=self.changed)
+                   DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.AUTOSAVE | DirtyDomain.PROJECT_METADATA),
+            mutate=mutate, changed=self.changed,
+            studio_state_keys=(),
+            generation_metadata_keys=(st.RECORDS_KEY, st.RENDER_KEY))
 
     def redo(self):self._apply(self.after, redo=True)
     def undo(self):self._apply(self.before, redo=False)

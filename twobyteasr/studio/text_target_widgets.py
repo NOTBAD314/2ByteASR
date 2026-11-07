@@ -19,9 +19,11 @@ MODES = (("原文", "original"), ("译文", "translation"), ("原文＋译文", 
 class TextTargetSelector(QWidget):
     changed = Signal()
 
-    def __init__(self, parent=None, *, compact=False):
+    def __init__(self, parent=None, *, compact=False, defer_entries=False):
         super().__init__(parent)
         self.compact = compact
+        self.defer_entries = defer_entries
+        self._count = 0
         self.mode = QComboBox()
         for label, value in MODES:
             self.mode.addItem(tr(label), value)
@@ -87,18 +89,37 @@ class TextTargetSelector(QWidget):
         self.track.clear()
         self.track.addItem(tr("全部译文轨道"), "")
         speakers = {s.id: s.name for s in project.speakers} if project else {}
-        entries = text_entries(project, mode="translation")
+        if self.defer_entries:
+            from types import SimpleNamespace
+            from .subtitle_text_targets import discover_text_targets
+            entries=[SimpleNamespace(target=ref) for ref in discover_text_targets(project)]
+        else:entries = text_entries(project, mode="translation")
         timeline = getattr(page, "timeline", None)
         selected = getattr(getattr(page, "session", None), "selected_cue_id", "")
         current = next((e for e in entries if e.target.cue_id == selected and
                         (e.target.storage == "translation") == (getattr(timeline, "active_subtitle_layer", "") == "translation")), None)
+        if self.defer_entries and project is not None:
+            from ..subtitle_rules.subtitle_translation import translation_view
+            from ..subtitle_rules.language_rules import project_language
+            cue=next((c for c in project.cues if c.id==selected),None)
+            imported=project.generation_metadata.get('subtitle_imports',{}).get('tracks',{})
+            info=imported.get(cue.speaker_id,{}) if cue is not None else {}
+            foreign=(info.get('role')=='translation' or info.get('role')=='independent'
+                and bool(info.get('language')) and str(info['language']).split('-')[0]!=str(project_language(project)).split('-')[0])
+            if getattr(timeline,'active_subtitle_layer','')=='translation':
+                record=translation_view(project,include_status=False,cue_ids=[selected]).get(selected,{})
+                current=next((e for e in entries if e.target.storage=='translation'
+                    and e.target.language==record.get('target')),None)
+            else:
+                current=next((e for e in entries if foreign and cue is not None
+                    and e.target.storage=='cue' and e.target.track_id==cue.speaker_id),None)
         # Unclassified imports remain original on entry; they may be chosen
         # explicitly as a translation track without altering their metadata.
         if project is not None:
             imported = project.generation_metadata.get('subtitle_imports', {}).get('tracks', {})
             explicit = {key for key, info in imported.items() if info.get('role') == 'independent'}
             available = {entry.target.track_id for entry in entries}
-            entries += text_entries(project, mode='translation', tracks=explicit-available) if explicit-available else []
+            entries += text_entries(project, mode='translation', tracks=explicit-available) if explicit-available and not self.defer_entries else []
         seen = set()
         for entry in entries:
             ref = entry.target
@@ -141,10 +162,12 @@ class TextTargetSelector(QWidget):
         return label, self._count
 
     def _changed(self, *_args, emit=True):
+        if self.defer_entries:self._count_ready=False
         has_translation = self.track.count() > 1
         self.track.setEnabled(self.mode_value() != "original" and has_translation)
-        entries = self.entries() if hasattr(self, "_project") else []
-        self._count = len(entries)
+        if not self.defer_entries:
+            entries = self.entries() if hasattr(self, "_project") else []
+            self._count = len(entries)
         label, count = self.summary()
         note = tr("当前对象：{scope} · {count} 条文本。", scope=label, count=count)
         if self.mode_value() != 'original':

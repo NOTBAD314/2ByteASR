@@ -53,6 +53,18 @@ class _Page(QWidget):
         self.project_controller.save(message_box_fn=lambda *args: self.errors.append(str(args[-1])))
 
 
+def drain(page):
+    deadline = time.monotonic()+10
+    while time.monotonic()<deadline:
+        QApplication.processEvents()
+        time.sleep(.002)
+        queue = getattr(page, '_persistence_queue', None)
+        if queue is None or not queue.busy:
+            QApplication.processEvents()
+            return
+    raise AssertionError('persistence did not finish')
+
+
 @pytest.fixture
 def app():
     return QApplication.instance() or QApplication([])
@@ -75,53 +87,40 @@ def page(app, tmp_path):
     app.processEvents()
 
 
-def test_formal_save_slow_disk_keeps_timers_and_blocks_reentrant_navigation(page, monkeypatch):
+def test_formal_save_slow_disk_keeps_timers_and_defers_navigation(page, monkeypatch):
     import twobyteasr.projects.studio_project as persistence
     original = persistence._atomic_json_blob_write
+    workers, ticks, navigation = [], [], []
     gui_thread = threading.get_ident()
-    worker_threads = []
-    tick_times = []
-    navigation = []
-
-    def slow_write(path, payload):
-        worker_threads.append(threading.get_ident())
+    def slow_write(path, content):
+        workers.append(threading.get_ident())
         time.sleep(.22)
-        return original(path, payload)
-
-    monkeypatch.setattr(persistence, "_atomic_json_blob_write", slow_write)
+        return original(path, content)
+    monkeypatch.setattr(persistence, '_atomic_json_blob_write', slow_write)
     timer = QTimer()
     timer.setInterval(10)
-    timer.timeout.connect(lambda: tick_times.append(time.perf_counter()))
+    timer.timeout.connect(lambda:ticks.append(time.perf_counter()))
     timer.start()
-    QTimer.singleShot(35, lambda: navigation.append(
-        page.project_controller.show_project_hub(skip_dirty_guard=True)))
-    QTimer.singleShot(55, lambda: page.project_controller.open_project_entry(
-        "must-not-open.2byteproj", skip_dirty_guard=True, single_shot_fn=lambda *args: None))
-    QTimer.singleShot(75, page.save)
-    QTimer.singleShot(95, lambda: navigation.append(page.close()))
     target = page.session.project_path
     old_bytes = target.read_bytes()
-    try:
-        allowed = ProjectDirtyGuard(page).confirm(
-            "关闭", choice_provider=lambda _: DirtyGuardChoice.SAVE)
-    finally:
-        timer.stop()
-    assert allowed is True
-    assert len(tick_times) >= 10
-    assert max(b - a for a, b in zip(tick_times, tick_times[1:])) < .15
-    assert worker_threads and all(tid != gui_thread for tid in worker_threads)
-    assert navigation == [False, False]
-    assert page.errors == []
-    assert not page._manual_save_in_progress
-    assert page.isEnabled()
-    assert page.undo_stack.isClean()
-    assert page.session.project_path == target
-    assert project_backup_path(target).read_bytes() == old_bytes
-    loaded = load_project(target)
-    assert loaded.cues[0].text == "after direct edit"
-    assert loaded.speakers[0].hidden is True
-    assert loaded.speakers[0].is_host is True
-    assert loaded.studio_state["playhead_ms"] == 350
+    started = time.perf_counter()
+    allowed = ProjectDirtyGuard(page).confirm('关闭', choice_provider=lambda _:DirtyGuardChoice.SAVE,
+        on_saved=lambda:navigation.append('ready'))
+    assert time.perf_counter()-started < .15
+    assert allowed is False and page._manual_save_in_progress
+    assert QApplication.activeModalWidget() is None
+    QTimer.singleShot(50,page.save)
+    drain(page)
+    timer.stop()
+    assert navigation == ['ready']
+    assert len(ticks)>=10 and max(b-a for a,b in zip(ticks,ticks[1:])) < .15
+    assert all(t!=gui_thread for t in workers)
+    assert page.errors==[] and page.undo_stack.isClean()
+    assert project_backup_path(target).read_bytes()==old_bytes
+    loaded=load_project(target)
+    assert loaded.cues[0].text=='after direct edit'
+    assert loaded.speakers[0].hidden and loaded.speakers[0].is_host
+    assert loaded.studio_state['playhead_ms']==350
 
 
 def test_formal_save_failure_preserves_formal_copy_and_stays_dirty(page, monkeypatch):
@@ -135,6 +134,7 @@ def test_formal_save_failure_preserves_formal_copy_and_stays_dirty(page, monkeyp
     monkeypatch.setattr(persistence, "_atomic_json_blob_write", fail_write)
     allowed = ProjectDirtyGuard(page).confirm(
         "关闭", choice_provider=lambda _: DirtyGuardChoice.SAVE)
+    drain(page)
     assert allowed is False
     assert target.read_bytes() == original
     assert project_backup_path(target).read_bytes() == original
@@ -153,6 +153,7 @@ def test_formal_save_as_failure_does_not_install_unsaved_path(page, monkeypatch,
     monkeypatch.setattr(persistence, "_atomic_json_blob_write",
                         lambda *args: (_ for _ in ()).throw(OSError("full")))
     page.save()
+    drain(page)
     assert page.session.project_path is None
     assert not page.undo_stack.isClean()
 
@@ -172,6 +173,7 @@ def test_programmatic_edit_during_save_cannot_mark_newer_state_clean(page, monke
     monkeypatch.setattr(persistence, "_atomic_json_blob_write", slow_write)
     QTimer.singleShot(30, newer)
     page.save()
+    drain(page)
     assert load_project(page.session.project_path).cues[0].text == "after direct edit"
     assert page.project.cues[0].text == "newer committed change"
     assert not page.undo_stack.isClean()
@@ -219,6 +221,7 @@ def test_late_save_result_does_not_publish_into_replaced_session(page, monkeypat
     monkeypatch.setattr(persistence, "_atomic_json_blob_write", slow_write)
     QTimer.singleShot(30, bypass_navigation_guard)
     page.save()
+    drain(page)
     assert page.project is replacement
     assert page.session.project_path is None
     assert not page.undo_stack.isClean()
@@ -246,8 +249,9 @@ def test_pending_older_autosave_finishes_before_formal_file_without_gui_join(pag
     # Simulate an older completion scheduling its next generation during Save.
     QTimer.singleShot(25, lambda: page._autosave_timer.start(1))
     page.save()
+    drain(page)
     assert written and not page._autosave_thread.is_alive()
-    assert timeouts == []
+    assert timeouts == ['new autosave']
     assert not page._autosave_timer.signalsBlocked()
     assert recoverable_autosave(page.session.project_path) is None
     assert load_project(page.session.project_path).cues[0].text == "after direct edit"
@@ -258,6 +262,7 @@ def test_invalid_captured_cue_is_rejected_before_replacing_formal_file(page):
     old_bytes = target.read_bytes()
     page.project.cues[0].end_ms = -1
     page.save()
+    drain(page)
     assert page.errors and "invalid timing" in page.errors[0]
     assert target.read_bytes() == old_bytes
     assert not page.undo_stack.isClean()

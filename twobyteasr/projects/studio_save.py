@@ -1,4 +1,4 @@
-"""Immutable manual-save snapshots and an event-driven modal wait.
+"""Immutable save capture, asynchronous requests and legacy synchronous helper.
 
 Only the GUI captures mutable project data. The writer sees a frozen revision;
 materialization, JSON serialization, backup and fsync all run on its thread.
@@ -19,8 +19,10 @@ from .studio_project import SubtitleProject, _utc_now, save_project, save_projec
 from .studio_revisions import (
     RenderCueDTO, RenderStyleDTO, SpeakerDTO, StudioRevisionStore, freeze_json,
 )
+from ..diagnostics.text_work import TextWork, measured
 
 
+@measured('save_snapshot')
 def capture_manual_save(page, project, generation):
     """Freeze the exact committed state, including legacy direct assignments."""
     runtime = getattr(project, "_studio_state_runtime", None)
@@ -39,7 +41,7 @@ def capture_manual_save(page, project, generation):
     return replace(
         revision,
         updated_at=_utc_now(),
-        cues=tuple(RenderCueDTO.capture(cue) for cue in project.cues),
+        cues=store.manual_save_cues(),
         speakers=tuple(SpeakerDTO.capture(speaker) for speaker in project.speakers),
         styles=tuple(RenderStyleDTO.capture(style) for style in project.styles),
         effects=freeze_json(project.effects),
@@ -76,11 +78,15 @@ def manual_save_scope(page):
     page._manual_save_in_progress = True
     autosave_timer = page._autosave_timer
     previously_blocked = autosave_timer.blockSignals(True)
+    from ..playback.playback_gc_budget import gui_collection_window
+    work=TextWork('project.save')
     try:
-        yield
+        with gui_collection_window('manual_save',max_seconds=3),work.activate():
+            yield
     finally:
         autosave_timer.blockSignals(previously_blocked)
         page._manual_save_in_progress = False
+        page._last_save_work=work.finish()
 
 
 def cancel_navigation_after_save(page):
@@ -91,15 +97,20 @@ def cancel_navigation_after_save(page):
 def defer_navigation_until_saved(page, callback):
     """Keep one latest navigation, resumed after the complete save controller.
 
-    The save's nested event loop may receive external open requests. No loading
-    card starts yet. The completion signal is emitted after success/error UI,
-    then queued once; no polling or repeated zero-timers are needed.
+    No loading card starts until the asynchronous queue is idle. The latest
+    continuation is queued once and re-enters the normal dirty-state guard.
     """
-    if not getattr(page, '_manual_save_in_progress', False):
+    from .persistence_queue import queue_for
+    queue = queue_for(page)
+    if not queue.busy:
         return False
-    finished = getattr(page, 'manual_save_finished', None)
-    if finished is None:
-        return False
+    queue_navigation_after_save(page, callback)
+    return True
+
+
+def queue_navigation_after_save(page, callback):
+    from .persistence_queue import queue_for
+    queue = queue_for(page)
     session = page.session
     page._navigation_after_manual_save = (session.project, session.generation, callback)
     if not getattr(page, '_manual_save_navigation_connected', False):
@@ -108,15 +119,157 @@ def defer_navigation_until_saved(page, callback):
             if not isValid(page) or getattr(page, '_close_requested', False):
                 page._navigation_after_manual_save = None
                 return
-            if getattr(page, '_manual_save_in_progress', False):
-                return  # A new save has its own completion signal.
+            if queue.busy:
+                return
             pending = getattr(page, '_navigation_after_manual_save', None)
             page._navigation_after_manual_save = None
             if pending is not None and page.session.project is pending[0] and page.session.generation == pending[1]:
                 pending[2]()
-        finished.connect(dispatch, Qt.ConnectionType.QueuedConnection)
+        queue.idle.connect(dispatch, Qt.ConnectionType.QueuedConnection)
         page._manual_save_navigation_connected = True
-    return True
+
+
+def request_formal_save(controller, *, save_project_fn, message_box_fn, on_finished=None):
+    """Capture the requested version on GUI, then acknowledge durable completion."""
+    from ..diagnostics.save_trace import SaveTrace
+    from ..playback.playback_gc_budget import gui_collection_window
+    from ..studio.text_edit_submission import save_operation_ids, record_text_save
+    from .persistence_queue import SaveRequest, queue_for
+    from PySide6.QtWidgets import QFileDialog
+    from ..i18n import bind_text
+    page = controller.page
+    project = controller.session.project
+    if project is None or getattr(page, '_save_capture_in_progress', False):
+        return None
+    target = controller.session.project_path
+    if target is None:
+        page._save_capture_in_progress = True
+        try:
+            name, _ = QFileDialog.getSaveFileName(page, tr('保存 Subtitle Project'), '', '2ByteASR Project (*.2byteproj)')
+        finally:
+            page._save_capture_in_progress = False
+        if not name:
+            return None
+        target = Path(name)
+    trace = SaveTrace()
+    trace.start_gc()
+    page._save_capture_in_progress = True
+    token = None
+    watcher = None
+    try:
+        with trace.activate(), trace.span('gui.editor_commit'):
+            style = getattr(page, 'style_controller', None)
+            if style is not None and not style.flush_pending_application():
+                return None
+            if getattr(page, '_canvas_editor', None) is not None:
+                if getattr(page, '_caption_following', False):
+                    token = page._commit_caption_for_manual_save()
+                    if token is False:
+                        return None
+                elif page._commit_canvas_inline_edit() is False:
+                    return None
+            timeline = getattr(page, 'timeline', None)
+            if getattr(timeline, '_inline_editor', None) is not None:
+                timeline._commit_inline_edit()
+                if timeline._inline_editor is not None:
+                    return None
+            translation = getattr(page, 'translation_text', None)
+            if callable(getattr(translation, 'commit', None)) and translation.commit() is False:
+                return None
+            page._capture_studio_state()
+        session_generation = controller.session.generation
+        undo_index = controller.session.undo_stack.index()
+        edit_generation = getattr(page, '_autosave_generation', 0)
+        runtime = getattr(project, '_studio_state_runtime', None)
+        revision_id = getattr(runtime, 'revision', 0)
+        operation_ids = save_operation_ids(page, project, revision_id)
+        watcher = observe_save_edits(runtime)
+        new_edits = watcher.__enter__()
+        with trace.activate(), trace.span('gui.snapshot'), gui_collection_window('save_capture', max_seconds=1):
+            revision = capture_manual_save(page, project, revision_id)
+        from ..diagnostics.editor_diagnostics import record
+        record('MANUAL_SAVE_SNAPSHOT', save_id=trace.save_id,
+               duration_ms=trace.events[-1]['duration_ms'], revision=revision_id)
+        bind_text(page.save_state, '正在后台保存工程…')
+        request = SaveRequest('formal', revision, Path(target), trace,
+                              writer=save_project_fn if save_project_fn is not save_project else None)
+
+        def complete(outcome):
+            watcher.__exit__(None, None, None)
+            if outcome.superseded:
+                if on_finished is not None:
+                    on_finished(None, RuntimeError('保存请求已由较新版本合并，请按最新状态重试'))
+                return
+            if controller.session.project is not project or controller.session.generation != session_generation:
+                if on_finished is not None:
+                    on_finished(outcome.path, outcome.error)
+                return
+            error = outcome.error
+            if error is not None:
+                page._formal_save_error = (id(project), session_generation, str(error))
+                page._navigation_after_manual_save = None
+                page._schedule_autosave()
+                bind_text(page.save_state, '保存失败，修改仍在内存中，可按 Ctrl+S 重试')
+                page.save_state.setToolTip(str(error))
+                record_text_save(operation_ids, kind='formal', revision=revision_id, generation=edit_generation, error=error)
+                if token:
+                    page._finish_caption_manual_save(token, error=error)
+                from ..design.studio_theme import studio_message_box
+                if message_box_fn is not studio_message_box:
+                    from PySide6.QtWidgets import QMessageBox
+                    message_box_fn(page, QMessageBox.Icon.Critical, '保存失败', str(error))
+            else:
+                controller.session.project_path = Path(outcome.path)
+                project.updated_at = outcome.updated_at
+                page._formal_save_error = None
+                readiness = getattr(page, '_readiness', None)
+                if readiness is not None and readiness.ready:
+                    from ..studio.studio_readiness import project_file_identity
+                    readiness.path = str(Path(outcome.path).resolve())
+                    readiness.loaded_file_identity = project_file_identity(outcome.path)
+                newer = (controller.session.undo_stack.index() != undo_index
+                    or getattr(page, '_autosave_generation', 0) != edit_generation or new_edits[0])
+                if newer:
+                    if page._autosave_deadline.dirty_since is None:
+                        page._schedule_autosave()
+                    bind_text(page.save_state, '已保存请求版本，仍有新的未保存修改')
+                else:
+                    controller.session.undo_stack.setClean()
+                    page._recovered_autosave_pending = False
+                    page._autosave_deadline.mark_succeeded()
+                    page._autosave_timer.stop()
+                    draft = getattr(page, '_draft_recovery', None)
+                    if draft is not None and draft.snapshot() is not None:
+                        bind_text(page.save_state, '已保存工程，编辑草稿尚未确认')
+                    else:
+                        bind_text(page.save_state, '已保存')
+                page.save_state.setToolTip('')
+                record_text_save(operation_ids, kind='formal', revision=revision_id, generation=edit_generation)
+                if token:
+                    page._finish_caption_manual_save(token)
+            record('MANUAL_SAVE_WRITE', save_id=trace.save_id, generation=revision.generation,
+                   **(outcome.phases or {}), thread='studio-persistence')
+            if on_finished is not None:
+                on_finished(outcome.path, error)
+            finished = getattr(page, 'manual_save_finished', None)
+            if finished is not None:
+                finished.emit()
+
+        return queue_for(page).submit(request, complete)
+    except Exception as error:
+        if watcher is not None:
+            watcher.__exit__(None, None, None)
+        trace.stop_gc()
+        page._schedule_autosave()
+        bind_text(page.save_state, '保存准备失败，修改仍保留，可重试保存')
+        page.save_state.setToolTip(str(error))
+        if on_finished is not None:
+            on_finished(None, error)
+        return None
+    finally:
+        page._save_capture_in_progress = False
+        if watcher is None:
+            trace.stop_gc()
 
 
 
@@ -138,6 +291,7 @@ def observe_save_edits(runtime):
         if runtime is not None:
             runtime.unsubscribe(consume)
 
+@measured('save_wait')
 def persist_with_progress(page, revision, path, *, save_project_fn=save_project):
     """Return the durable result synchronously while Qt timers/paint keep running."""
     app = QApplication.instance()

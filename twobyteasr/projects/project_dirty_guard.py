@@ -60,7 +60,14 @@ class ProjectDirtyGuard:
         action: str,
         *,
         choice_provider: ChoiceProvider | None = None,
+        on_saved: Callable | None = None,
     ) -> bool:
+        queue = getattr(self.page, '_persistence_queue', None)
+        if queue is not None and queue.busy:
+            if on_saved is not None:
+                from .studio_save import queue_navigation_after_save
+                queue_navigation_after_save(self.page, on_saved)
+            return False
         if not self.is_dirty():
             return True
         choice = (choice_provider or self._prompt)(str(action))
@@ -73,5 +80,13 @@ class ProjectDirtyGuard:
         save = getattr(self.page, "save", None)
         if not callable(save):
             return False
+        if on_saved is not None:
+            from .studio_save import queue_navigation_after_save
+            queue_navigation_after_save(self.page, on_saved)
         save()
+        queue = getattr(self.page, '_persistence_queue', None)
+        if queue is not None and queue.busy:
+            return False
+        from .studio_save import cancel_navigation_after_save
+        cancel_navigation_after_save(self.page)
         return not self.is_dirty()

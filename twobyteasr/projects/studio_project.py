@@ -1583,18 +1583,23 @@ def _atomic_json_blob_write(path: Path, content: str | Iterable[str]) -> dict[st
     temporary = Path(temporary_name)
     write_started = time.perf_counter()
     fsync_ms = 0.0
+    from ..diagnostics.save_trace import phase
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            if isinstance(content, str):
-                stream.write(content)
-            else:
-                for piece in content:
-                    stream.write(piece)
-            stream.flush()
+            with phase('file.temp_write_flush'):
+                if isinstance(content, str):
+                    stream.write(content)
+                else:
+                    for piece in content:
+                        stream.write(piece)
+                stream.flush()
+                bytes_written = stream.buffer.tell()
             fsync_started = time.perf_counter()
-            os.fsync(stream.fileno())
+            with phase('file.fsync'):
+                os.fsync(stream.fileno())
             fsync_ms = (time.perf_counter() - fsync_started) * 1000.0
-        os.replace(temporary, path)
+        with phase('file.atomic_replace'):
+            os.replace(temporary, path)
     except BaseException:
         try:
             temporary.unlink()
@@ -1604,6 +1609,7 @@ def _atomic_json_blob_write(path: Path, content: str | Iterable[str]) -> dict[st
     return {
         "persist_ms": (time.perf_counter() - write_started) * 1000.0,
         "fsync_ms": fsync_ms,
+        "bytes_written": bytes_written,
     }
 
 
@@ -1704,15 +1710,15 @@ def audio_track_payload(track: AudioTrack) -> dict[str, Any]:
     return payload
 
 
-_FORMAL_TEXT_CACHES: dict[str, object] = {}
+_FORMAL_TEXT_CACHES: dict[tuple[str, bool], object] = {}
 
 
-def _formal_text_cache(target: Path):
+def _formal_text_cache(target: Path, *, compact=False):
     """Pretty text of unchanged evidence rows from this file's previous save."""
-    from .frozen_json_text import FrozenTextCache, pretty
-    key = str(target)
+    from .frozen_json_text import FrozenTextCache, pretty, dump
+    key = (str(target), bool(compact))
     with _AUTOSAVE_TEXT_CACHES_LOCK:
-        cache = _FORMAL_TEXT_CACHES.pop(key, None) or FrozenTextCache(pretty)
+        cache = _FORMAL_TEXT_CACHES.pop(key, None) or FrozenTextCache(dump if compact else pretty)
         _FORMAL_TEXT_CACHES[key] = cache
         while len(_FORMAL_TEXT_CACHES) > 2:
             _FORMAL_TEXT_CACHES.pop(next(iter(_FORMAL_TEXT_CACHES)))
@@ -1722,9 +1728,13 @@ def _formal_text_cache(target: Path):
 @project_io("save_revision")
 def save_project_revision(
     revision: object, path: str | os.PathLike[str],
+    *, compact=False,
 ) -> tuple[Path, dict[str, float]]:
     """Write a captured formal save with the same schema and previous-copy policy."""
     import time
+    from ..diagnostics.save_trace import current as current_save_trace
+    trace = current_save_trace()
+    stage_started = time.perf_counter_ns()
 
     target = Path(path)
     if target.suffix.lower() != PROJECT_SUFFIX:
@@ -1767,18 +1777,34 @@ def save_project_revision(
         frozen['studio_state'] = FrozenMap(tuple(sorted(
             {**{key: freeze_json(value) for key, value in (state or {}).items()}, **state_heavy}.items())))
     materialize_ms = (time.perf_counter() - started) * 1000.0
+    if trace:
+        trace.add('project.materialize_validate', stage_started, time.perf_counter_ns())
     started = time.perf_counter()
+    stage_started = time.perf_counter_ns()
     if frozen:
-        from .frozen_json_text import pretty_document_pieces
-        cache = _formal_text_cache(target)
-        _prefetch_evidence(cache, revision, caption_state=True)
-        content = list(_text_chunks(pretty_document_pieces(payload, frozen, cache)))
+        from .frozen_json_text import pretty_document_pieces, frozen_part, object_pieces, dump
+        cache = _formal_text_cache(target, compact=compact)
+        encoded_before, reused_before = cache.encoded, cache.reused
+        _prefetch_evidence(cache, revision, caption_state=True, wait=True)
+        if compact:
+            parts = {key: frozen_part(frozen[key], cache) if key in frozen else [dump(value)]
+                     for key, value in payload.items()}
+            content = list(_text_chunks([*object_pieces(parts), '\n']))
+        else:
+            content = list(_text_chunks(pretty_document_pieces(payload, frozen, cache)))
         cache.finish()
     else:
         content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     serialize_ms = (time.perf_counter() - started) * 1000.0
+    if trace:
+        trace.add('project.serialize', stage_started, time.perf_counter_ns())
+        trace.counters['compression_ms'] = 0
+        if frozen:
+            trace.counters['pieces_encoded'] = cache.encoded-encoded_before
+            trace.counters['pieces_reused'] = cache.reused-reused_before
     target.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
+    stage_started = time.perf_counter_ns()
     if target.is_file():
         backup = project_backup_path(target)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -1797,8 +1823,14 @@ def save_project_revision(
             except OSError:
                 pass
     backup_ms = (time.perf_counter() - started) * 1000.0
+    if trace:
+        trace.add('file.backup_fsync_replace', stage_started, time.perf_counter_ns(),
+                  processed_bytes=target.stat().st_size if target.is_file() else 0)
     phases = _atomic_json_blob_write(target, content)
     phases.update(materialize_ms=materialize_ms, serialize_ms=serialize_ms, backup_ms=backup_ms)
+    if frozen:
+        phases.update(pieces_encoded=cache.encoded-encoded_before, pieces_reused=cache.reused-reused_before)
+    phases['compression_ms'] = 0.0
     return target, phases
 
 
@@ -2269,7 +2301,7 @@ def _save_frozen_autosave_revision(revision, project_path, base, *, session_id: 
         "media_graph_integrity": graph_integrity(graph),
     }
     cache = _autosave_text_cache(target)
-    _prefetch_evidence(cache, revision)
+    _prefetch_evidence(cache, revision, caption_state=True, wait=True)
     parts = persistence_parts(revision, cache)
     rows = _evidence_row_texts(revision, cache)
     checkpoint = _AUTOSAVE_CHECKPOINTS.get(str(target))
@@ -2365,24 +2397,38 @@ def discard_autosave(candidate: Path) -> None:
             pass
 
 
-def _prefetch_evidence(cache, revision, *, caption_state: bool = False) -> None:
+def _prefetch_evidence(cache, revision, *, caption_state: bool = False, wait: bool = False) -> None:
     """Rows not encoded yet (first save of a session) go to the resident worker."""
     from .studio_revisions import FrozenMap, FrozenBlob
     evidence = getattr(revision, "asr_evidence", None)
-    if isinstance(evidence, FrozenMap):
-        cache.prefetch([value for _key, value in evidence.items])
+    evidence_values = [value for _key, value in evidence.items] if isinstance(evidence, FrozenMap) else []
+    blobs = []
     if caption_state:
         # Formal saves also contain the independent captions' word receipts.
         # Their JSON encoding belongs on the same resident process as ASR
         # evidence, so the writer thread does not compete with GUI Python.
-        blobs = []
         def collect(value):
             if isinstance(value, FrozenBlob):
                 blobs.append(value)
             elif isinstance(value, FrozenMap):
                 for _key, item in value.items:collect(item)
         collect(getattr(revision, 'studio_state', None))
-        cache.prefetch(blobs)
+        # Project metadata can be one very large blob. Counting blobs alone
+        # sent thousands of evidence rows to the process but left that entire
+        # translation/history graph on the GUI's competing Python thread.
+        metadata=getattr(revision,'generation_metadata',None)
+        if isinstance(metadata,FrozenBlob) and len(metadata.data)>=256*1024:blobs.append(metadata)
+    with _AUTOSAVE_TEXT_CACHES_LOCK:
+        sources = (*_AUTOSAVE_TEXT_CACHES.values(), *_FORMAL_TEXT_CACHES.values())
+    reused, characters = cache.reuse_from([*evidence_values, *blobs], sources)
+    from ..diagnostics.save_trace import current as current_save_trace
+    trace = current_save_trace()
+    if trace:
+        trace.counters['shared_encoded_chunks'] = reused
+        trace.counters['shared_encoded_characters'] = characters
+    cache.prefetch(evidence_values,wait=wait)
+    if caption_state:
+        cache.prefetch(blobs,wait=wait)
 
 
 def _evidence_row_texts(revision, cache) -> dict[str, str] | None:

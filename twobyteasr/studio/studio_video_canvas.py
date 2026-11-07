@@ -1231,7 +1231,17 @@ class MpvCanvas(QFrame):
         self._native_subtitle_visible = False  # 让下方统一路径重新执行
         self.set_native_subtitle_visible(True)
 
+    def _accept_new_media_load(self):
+        # Source-monitor canvases also use close_player() between previews.
+        # A new explicit load may reuse them; the closing workbench may not.
+        if getattr(self._studio_page(),'_close_requested',False):return False
+        if getattr(self,'_closing',False):
+            self._closing=False
+            self.set_navigation_visible(self.isVisible())
+        return True
+
     def load(self, media_path: str, ass_path: str = "", *, start_seconds: float | None = None) -> None:
+        if not self._accept_new_media_load():return
         # Opening media is a paused preview. Only a transport/audition action
         # may request playback; readiness itself must never create that intent.
         self._load_generation = getattr(self, '_load_generation', 0) + 1
@@ -1839,6 +1849,7 @@ class MpvCanvas(QFrame):
         retains the existing playback intent and polling policy, including the
         source monitor and the in-page Library switch.
         """
+        if getattr(self,'_closing',False):return
         visible = bool(visible)
         self.set_presentation_blocked('navigation', not visible)
         if visible == self._navigation_visible:
@@ -3396,6 +3407,7 @@ class MpvCanvas(QFrame):
         hold reuses the buffered-play gate that already protects play start
         and rate changes, so both clocks resume from the same anchor.
         """
+        if getattr(self,'_closing',False):return
         self._submitted_load_position = None
         hold = self._should_hold_for_seek()
         if hold:
@@ -3490,6 +3502,7 @@ class MpvCanvas(QFrame):
         accurate: bool = True,
         project_ms: int | None = None,
     ) -> None:
+        if getattr(self,'_closing',False):return
         if self._clock_only:
             target_ms = max(0, int(project_ms if project_ms is not None else seconds * 1000))
             snapshot = self._playback_clock.begin_unattached_position(target_ms, paused=self._paused)
@@ -3658,6 +3671,7 @@ class MpvCanvas(QFrame):
             self.audio_playback_failed.emit(detail)
 
     def set_paused(self, paused: bool, *, align_position: bool = True) -> None:
+        if getattr(self,'_closing',False):return
         page = self._studio_page()
         from ..diagnostics.event_log import emit
         import traceback
@@ -3668,6 +3682,7 @@ class MpvCanvas(QFrame):
         self._apply_requested_pause(paused, align_position=align_position)
 
     def _apply_requested_pause(self, paused: bool, *, align_position: bool = True, buffers_prepared: bool = False) -> None:
+        if getattr(self,'_closing',False):return
         page = self._studio_page()
         if paused:
             cancel_requested=bool(self._buffered_play_pending or self._startup_play_requested or not self._paused)
@@ -3833,6 +3848,12 @@ class MpvCanvas(QFrame):
 
     def detach_player_for_close(self) -> MpvController | None:
         """Stop Qt activity and detach the process owner for background shutdown."""
+        self._closing=True
+        self._load_generation=getattr(self,'_load_generation',0)+1
+        self._navigation_generation+=1
+        self._navigation_visible=False
+        self._media_attached=False
+        self._pending_play_intent=None
         token, self._recovery_request = self._recovery_request, None
         if token is not None:
             token['cancel'].set()

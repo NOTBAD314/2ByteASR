@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 from functools import lru_cache
+from ..diagnostics.text_work import measured, count
 
 KEY = 'translation_terminology'
 SOURCE_ENABLED = 'source_glossary_enabled'
@@ -19,6 +20,14 @@ class FrozenTerms:
     def __init__(self, policy):
         self.value = normalize(policy)
         self.serialized = json.dumps(self.value, ensure_ascii=False, sort_keys=True)
+        self._indices = {}
+
+    def index(self, source_language, target_language):
+        key = (source_language, target_language)
+        if key not in self._indices:
+            self._indices[key] = _index(self.serialized, *key)
+            count('term_rules_indexed', len(self._indices[key][0]))
+        return self._indices[key]
 
 
 def freeze(policy):
@@ -100,10 +109,10 @@ def _index(serialized, source_language, target_language):
     return rows, surfaces, re.compile('|'.join(patterns), re.IGNORECASE) if patterns else None
 
 
+@measured('relevant')
 def relevant(policy, source_language, target_language, text):
     """One indexed scan of a cue/context, no repeated whole-library payloads."""
-    rows, surfaces, pattern = _index(freeze(policy).serialized,
-                                     source_language, target_language)
+    rows, surfaces, pattern = freeze(policy).index(source_language, target_language)
     if pattern is None:
         return []
     indices = {i for hit in pattern.finditer(str(text or '')) for i in surfaces.get(hit.group().casefold(), ())}
@@ -119,9 +128,14 @@ def matched_pairs(pairs, text, source_language=''):
         ('(?!' + boundary + ')' if a[-1:].isascii() and a[-1:].isalnum() else ''), text, re.IGNORECASE)]
 
 
+@measured('rule_version')
 def rule_version(policy, pairs, source_language, target_language, text):
+    rows, surfaces, pattern = freeze(policy).index(source_language, target_language)
+    count('term_text_scans', bool(pattern))
+    indices = ({i for hit in pattern.finditer(str(text or ''))
+                for i in surfaces.get(hit.group().casefold(), ())} if pattern else ())
     rules = [{key: value for key, value in row.items() if key != 'library_name'}
-             for row in relevant(policy, source_language, target_language, text)]
+             for row in (rows[i] for i in sorted(indices))]
     inline = matched_pairs(pairs, text, source_language)
     return digest([rules, inline]) if rules or inline else ''
 

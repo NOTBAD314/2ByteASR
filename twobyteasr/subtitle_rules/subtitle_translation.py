@@ -33,6 +33,7 @@ import re
 import time
 import threading
 import unicodedata
+from ..diagnostics.text_work import measured, count
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
@@ -325,7 +326,7 @@ def _append_history(container: dict, entry: Mapping) -> None:
     container["history"] = history[-MAX_HISTORY:]
 
 
-def _migrated_container(meta: Mapping, cues: Sequence) -> tuple[dict | None, bool]:
+def _migrated_container(meta: Mapping, cues: Sequence, *, copy_records=True) -> tuple[dict | None, bool]:
     """Container after legacy migration/reconciliation, on a copy.
 
     Returns ``(container_or_None, changed)``. ``None`` means the project has no
@@ -336,7 +337,8 @@ def _migrated_container(meta: Mapping, cues: Sequence) -> tuple[dict | None, boo
     legacy = legacy if isinstance(legacy, Mapping) else {}
     if not _valid_container(stored) and not any(str(v or "").strip() for v in legacy.values()):
         return None, False
-    container = _json_copy(stored) if _valid_container(stored) else _empty_container()
+    container = (_json_copy(stored) if copy_records else
+        {**stored, 'records':dict(stored['records']), 'history':list(stored['history']) if isinstance(stored.get('history'),list) else []}) if _valid_container(stored) else _empty_container()
     changed = not _valid_container(stored)
     container.setdefault("version", RECORDS_VERSION)
     container.setdefault("target", DEFAULT_TARGET)
@@ -422,27 +424,47 @@ def status_of(record: Mapping | None, text: str, *, target: str | None = None) -
     return DONE
 
 
+@measured('statuses')
 def statuses(project, *, target: str | None = None) -> dict[str, str]:
     records = records_of(project)
+    count('status_cues_scanned', len(project.cues))
+    count('status_records_observed', len(records))
     result = {cue.id: status_of(records.get(cue.id), cue.text, target=target) for cue in project.cues}
-    from ..glossary.translation_terms import rule_version, relevant, matched_pairs, freeze
-    source = None
+    from ..glossary.translation_terms import rule_version, freeze, policy_of
     meta = getattr(project, 'generation_metadata', None) or {}
-    if _has_term_configuration(meta) or any(r.get('terminology_version') for r in records.values()):
-        source = translation_source(project)
-    if source is not None:
-        policy = freeze(source.terminology)
-        for cue in source.cues:
+    if records and (_has_term_configuration(meta) or any(r.get('terminology_version') for r in records.values())):
+        # Status derivation needs text and nearby cues, not a provider task's
+        # deep copy of records, history, references and recovery candidates.
+        policy = freeze(policy_of(project))
+        language = _translation_language(project, policy.value)
+        eligible = _source_cue_ids(project, language)
+        ordered = sorted((c for c in project.cues if c.id in eligible), key=lambda c: (c.start_ms,c.end_ms,c.id))
+        pairs = normalize_glossary(meta.get('translation_glossary', ()))
+        default_target = container_target(project)
+        previous_cache = getattr(project, '_translation_status_memo', None)
+        signature = (policy.serialized, pairs, language)
+        old = previous_cache[1] if previous_cache is not None and previous_cache[0] == signature else {}
+        current = {}
+        for index, cue in enumerate(ordered):
             record = records.get(cue.id, {})
             if result[cue.id] not in {DONE, MANUAL}:
                 continue
-            direction = target or record.get('target') or container_target(project)
-            text = cue.text + '\n' + '\n'.join(context_texts(source, cue.id))
-            expected = rule_version(policy, source.inline_pairs, source.language, direction, text)
-            has_rules = relevant(policy, source.language, direction, text) or matched_pairs(source.inline_pairs, text, source.language)
+            direction = target or record.get('target') or default_target
+            context = [c.text for c in ordered[max(0,index-3):index]] + ['␞'] + [c.text for c in ordered[index+1:index+4]]
+            text = cue.text + '\n' + '\n'.join(context)
+            key = (direction, text)
+            cached = old.get(cue.id)
+            if cached is not None and cached[0] == key:
+                expected = cached[1]
+                count('status_rule_cache_hits')
+            else:
+                expected = rule_version(policy, pairs, language, direction, text)
+            current[cue.id] = (key, expected)
             previous = record.get('terminology_version')
-            if expected != previous and (previous or has_rules):
+            if expected != previous and (previous or expected):
                 result[cue.id] = NEEDS_UPDATE
+        # One memo per instance. Exact inputs also detect direct assignments.
+        project._translation_status_memo = (signature, current)
     return result
 
 
@@ -468,7 +490,8 @@ def status_counts(project, *, target: str | None = None) -> dict[str, int]:
     return counts
 
 
-def translation_view(project, *, target: str | None = None) -> dict[str, dict]:
+@measured('translation_view')
+def translation_view(project, *, target: str | None = None, include_status=True, cue_ids=None) -> dict[str, dict]:
     """{cue_id: {text, status, origin, target}} for current cues (no mutation).
 
     Uses the migrated/reconciled records without writing them back, so it is
@@ -476,14 +499,31 @@ def translation_view(project, *, target: str | None = None) -> dict[str, dict]:
     """
     meta = getattr(project, "generation_metadata", None) or {}
     cues = list(getattr(project, "cues", ()) or ())
-    container, _changed = _migrated_container(meta, cues)
-    records = container["records"] if container else {}
-    default_target = container_target_value(container) if container else DEFAULT_TARGET
-    term_states = statuses(project, target=target) if _has_term_configuration(meta) or any(r.get('terminology_version') for r in records.values()) else {}
+    container = meta.get(RECORDS_KEY)
+    wanted = None if cue_ids is None else set(cue_ids)
+    if wanted is not None and not include_status:cues=[c for c in cues if c.id in wanted]
+    stored = container['records'] if _valid_container(container) else {}
+    records = dict(stored) if wanted is None or include_status else {k:stored[k] for k in wanted if k in stored}
+    default_target = container_target_value(container) if _valid_container(container) else DEFAULT_TARGET
+    texts = {c.id:c.text for c in cues}
+    legacy=meta.get(RENDER_KEY) or {}
+    legacy_items=legacy.items() if wanted is None or include_status else ((key,legacy[key]) for key in wanted if key in legacy)
+    for cue_id, value in legacy_items:
+        text = str(value or '')
+        old = records.get(cue_id)
+        if text.strip() and (not isinstance(old, Mapping) or
+                cue_id in texts and str(old.get('text') or '') != text):
+            records[cue_id] = _record(text, texts.get(cue_id,''), origin=ORIGIN_MANUAL,
+                target=default_target, legacy=not isinstance(old, Mapping))
+    term_states = statuses(project, target=target) if include_status and (_has_term_configuration(meta) or any(r.get('terminology_version') for r in records.values())) else {}
+    count('translation_view_scans')
+    count('translation_view_full_scans', wanted is None or include_status)
+    count('translation_records_observed', len(records))
     view = {}
     for cue in cues:
+        if wanted is not None and cue.id not in wanted:continue
         record = records.get(cue.id)
-        status = term_states.get(cue.id) or status_of(record, cue.text, target=target)
+        status = (term_states.get(cue.id) or status_of(record, cue.text, target=target)) if include_status else ''
         record = record if isinstance(record, Mapping) else {}
         view[cue.id] = {
             "text": str(record.get("text") or ""),
@@ -546,7 +586,9 @@ def snapshot(project) -> dict[str, Any]:
 
 
 def restore_snapshot(project, state: Mapping[str, Any]) -> None:
-    old_records = _json_copy(records_of(project))
+    # Replaced below, never mutated in place. Holding the previous mapping
+    # suffices for revision comparison; no third full-store copy is needed.
+    old_records = records_of(project)
     meta = _metadata(project)
     for key in (RECORDS_KEY, RENDER_KEY):
         value = state.get(key)
@@ -896,11 +938,11 @@ def manual_batch_state(project, values, *, source_values=None):
     """
     before = snapshot(project)
     cues = {cue.id: cue for cue in project.cues}
-    container, _changed = _migrated_container(_metadata(project), project.cues)
+    container, _changed = _migrated_container(before, project.cues, copy_records=False)
     if container is None:
         container = _empty_container()
     records = container["records"]
-    term_source = translation_source(project) if _has_term_configuration(_metadata(project)) else None
+    term_source = translation_text_source(project) if _has_term_configuration(_metadata(project)) else None
     if source_values and term_source is not None:
         term_source = replace(term_source, cues=tuple(replace(cue, text=source_values.get(cue.id, cue.text)) for cue in term_source.cues))
     from ..glossary.translation_terms import freeze
@@ -1184,6 +1226,18 @@ def translation_source(project) -> TranslationSource:
                              target_at_start=container_target(project),
                              terminology=term_policy,
                              inline_pairs=normalize_glossary(meta.get('translation_glossary', ())))
+
+
+def translation_text_source(project) -> TranslationSource:
+    """Text-only term-version input for manual edits; no provider evidence."""
+    from ..glossary.translation_terms import policy_of
+    policy=policy_of(project)
+    language=_translation_language(project,policy)
+    eligible=_source_cue_ids(project,language)
+    ordered=sorted((c for c in project.cues if c.id in eligible),key=lambda c:(c.start_ms,c.end_ms,c.id))
+    cues=tuple(SourceCue(c.id,str(c.text),int(c.start_ms),int(c.end_ms),str(c.speaker_id),'',i) for i,c in enumerate(ordered))
+    return TranslationSource(cues,{}, {},language, terminology=policy,
+        inline_pairs=normalize_glossary((project.generation_metadata or {}).get('translation_glossary',())))
 
 
 def _as_source(project_or_source) -> TranslationSource:

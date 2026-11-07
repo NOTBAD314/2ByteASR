@@ -381,6 +381,11 @@ class StudioRevisionStore:
         self.mapping_revision = 1
         self.visual_revision = 1
         self._cues = tuple(RenderCueDTO.capture(cue) for cue in project.cues)
+        self._manual_cue_memo = {}
+        import marshal
+        for cue,dto in zip(project.cues,self._cues):
+            try:self._manual_cue_memo[cue.id]=(marshal.dumps(cue.__dict__,4),dto)
+            except (TypeError,ValueError):pass
         self._render_cues = self._capture_render_cues()
         self._timeline_cues = self._capture_timeline_cues()
         self._styles = tuple(RenderStyleDTO.capture(style) for style in project.styles)
@@ -438,18 +443,47 @@ class StudioRevisionStore:
         """studio_state is ~280 KB on a long project (caption timeline) and
         most render revisions do not touch it. Reuse the previous frozen value
         when the content (marshal bytes: exact types and key order) is equal."""
-        import marshal
         state = self.project.studio_state or {}
-        try:
-            key = marshal.dumps(state, 2)
-        except ValueError:
-            return freeze_json(state)
-        memo = getattr(self, "_studio_state_memo", None)
-        if memo is not None and memo[0] == key:
-            return memo[1]
+        import marshal
+        memo = getattr(self, '_studio_state_memo', None)
+        heavy = ('caption_timeline', 'term_word_overrides')
+        signatures = tuple(hashlib.sha256(marshal.dumps(state.get(key), 4)).digest() for key in heavy)
+        if isinstance(memo, FrozenMap) and getattr(self, '_studio_heavy_signatures', None) == signatures:
+            previous = dict(memo.items)
+            frozen = FrozenMap(tuple((str(key), previous[key] if key in heavy and key in previous else freeze_json(value))
+                for key, value in sorted(state.items(), key=lambda pair: str(pair[0]))))
+            from ..diagnostics.save_trace import current as current_save_trace
+            trace = current_save_trace()
+            if trace:
+                trace.counters['studio_heavy_snapshot_cache_hits'] = 1
+            if frozen == memo:
+                return memo
+            self._studio_state_memo = frozen
+            return frozen
         frozen = self._freeze_studio_state_sharing(state)
-        self._studio_state_memo = (key, frozen)
+        # Each heavy receipt is already compared exactly below. Marshalling
+        # the complete state first duplicated all word evidence on every save.
+        self._studio_heavy_signatures = signatures
+        if frozen == memo:return memo
+        self._studio_state_memo = frozen
+        self._studio_heavy_signatures = signatures
         return frozen
+
+    def manual_save_cues(self):
+        """Exact direct-write fence, sharing unchanged immutable cue DTOs."""
+        import marshal
+        previous=self._manual_cue_memo
+        current={}
+        result=[]
+        for cue in self.project.cues:
+            try:signature=marshal.dumps(cue.__dict__,4)
+            except (TypeError,ValueError):signature=None
+            hit=previous.get(cue.id)
+            dto=hit[1] if signature is not None and hit is not None and hit[0]==signature else RenderCueDTO.capture(cue)
+            result.append(dto)
+            current[cue.id]=(signature,dto)
+        self._manual_cue_memo=current
+        return tuple(result)
 
     def _freeze_studio_state_sharing(self, state) -> FrozenJSON:
         """``freeze_json(state)``, reusing every unchanged caption receipt.
@@ -480,7 +514,7 @@ class StudioRevisionStore:
                 current[str(cue_id)] = (data, frozen)
             self._word_override_freeze_memo = current
             return FrozenMap(tuple((name, current[name][1]) for name in sorted(current)))
-        if not isinstance(instances, Mapping) or not instances:
+        if not isinstance(instances, Mapping):
             return FrozenMap(tuple((str(key), frozen_state_item(key, item))
                                    for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
         previous = getattr(self, "_receipt_freeze_memo", {})
@@ -652,6 +686,10 @@ class StudioRevisionStore:
         if not isinstance(evidence, dict) or any(type(key) is not str for key in evidence):
             return self._frozen_metadata("asr_evidence")
         previous = getattr(self, "_evidence_rows", None) or {}
+        from ..diagnostics.save_trace import current as current_save_trace
+        trace = current_save_trace()
+        if trace:
+            trace.counters['evidence_rows_checked'] = len(evidence)
         rows = {}
         changed = len(previous) != len(evidence) or getattr(self, "_evidence_frozen", None) is None
         for key, row in evidence.items():

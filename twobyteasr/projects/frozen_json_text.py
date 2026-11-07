@@ -16,6 +16,8 @@ hashing piece by piece never builds one 60 MB string.
 from __future__ import annotations
 
 import json
+from time import perf_counter_ns
+from ..diagnostics.save_trace import current as current_save_trace
 from typing import Any, Iterable
 
 from .studio_revisions import FrozenBlob, FrozenMap, PersistenceRevision, freeze_json, thaw_json
@@ -78,7 +80,25 @@ class FrozenTextCache:
         hit = self._current.get(id(value)) or self._previous.get(id(value))
         return hit is not None and hit[0] is value
 
-    def prefetch(self, values, *, minimum: int = 256) -> int:
+    def reuse_from(self, values, sources) -> tuple[int, int]:
+        """Borrow encoded immutable values from compatible bounded target caches."""
+        compatible = [source for source in sources
+                      if source is not self and source._encoder is self._encoder]
+        reused = characters = 0
+        for value in values:
+            if self.known(value):
+                continue
+            key = id(value)
+            for source in compatible:
+                hit = source._current.get(key) or source._previous.get(key)
+                if hit is not None and hit[0] is value:
+                    self._current[key] = hit
+                    reused += 1
+                    characters += len(hit[1])
+                    break
+        return reused, characters
+
+    def prefetch(self, values, *, minimum: int = 256, wait: bool = False) -> int:
         """Encode uncached blobs in the resident worker (stall stage 3).
 
         The first autosave or formal save of a session encodes every evidence
@@ -87,7 +107,7 @@ class FrozenTextCache:
         bytes. Skipped when few are missing or the worker is busy or off.
         """
         missing = [value for value in values if isinstance(value, FrozenBlob) and not self.known(value)]
-        if len(missing) < minimum:
+        if len(missing) < minimum and not any(len(value.data)>=256*1024 for value in missing):
             return 0
         from ..system.resident_worker import shared_worker
         worker = shared_worker()
@@ -95,7 +115,7 @@ class FrozenTextCache:
             return 0
         texts = worker.call("twobyteasr.projects.frozen_json_text:encode_blobs",
                             (self._encoder is pretty, [(value.data, value.plain) for value in missing]),
-                            wait=False)
+                            wait=wait)
         if not isinstance(texts, list) or len(texts) != len(missing):
             return 0
         for value, text in zip(missing, texts):
@@ -108,7 +128,23 @@ def encode_blobs(request) -> list[str]:
     """Resident-worker job: text of each ``(data, plain)`` FrozenBlob."""
     pretty_text, blobs = request
     encoder = pretty if pretty_text else dump
-    return [encoder(thaw_json(FrozenBlob(data, plain))) for data, plain in blobs]
+    trace = current_save_trace()
+    started = perf_counter_ns()
+    thaw_ms = encode_ms = 0.0
+    result = []
+    for data, plain in blobs:
+        before = perf_counter_ns()
+        value = thaw_json(FrozenBlob(data, plain))
+        middle = perf_counter_ns()
+        result.append(encoder(value))
+        ended = perf_counter_ns()
+        thaw_ms += (middle-before)/1e6
+        encode_ms += (ended-middle)/1e6
+    if trace:
+        trace.add('json.blob_batch', started, perf_counter_ns(), blob_count=len(blobs),
+                  processed_bytes=sum(len(data) for data, _ in blobs),
+                  thaw_ms=thaw_ms, json_ms=encode_ms, output_characters=sum(map(len, result)))
+    return result
 
 
 def _key(name: str) -> str:
@@ -127,7 +163,10 @@ def frozen_part(value, cache: FrozenTextCache, *, skip: Iterable[str] = ()) -> l
             if index:
                 pieces.append(",")
             pieces.append(_key(key))
-            pieces.append(cache.frozen(item))
+            if isinstance(item, FrozenMap):
+                pieces.extend(frozen_part(item, cache))
+            else:
+                pieces.append(cache.frozen(item))
         pieces.append("}")
         return pieces
     if isinstance(value, tuple) and value:
