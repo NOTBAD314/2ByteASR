@@ -8,6 +8,11 @@ DESELECTED='tests/test_playhead_edit_target.py::test_overlap_priority_stable_wit
 SELECTORS.insert(1, 'tests/test_audio_endpoint_observation_owner.py')
 SELECTORS[2:2] = ['tests/test_audio_output_failure_latch.py', 'tests/test_audio_clock_endpoint_epoch.py',
                   'tests/test_silent_preview_audio_clock.py', 'tests/test_audio_readiness_contract.py']
+SELECTORS.extend(['tests/test_async_save_callers.py', 'tests/test_bilingual_text_targets.py',
+                  'tests/test_bilingual_text_ui.py', 'tests/test_caption_commit_normalization.py',
+                  'tests/test_package_layout.py', 'tests/test_persistence_queue.py',
+                  'tests/test_studio_manual_save.py', 'tests/test_studio_save_lag.py',
+                  'tests/test_studio_search_lag.py'])
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);a=parser.parse_args()
  root=a.qa_root.resolve()

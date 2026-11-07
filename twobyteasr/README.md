@@ -25,6 +25,7 @@
 | `cover/` | 封面編輯 | `cover_editor.py` |
 | `design/` | 軟體本身的外觀與共用控制項：主題與配色、QSS、圖示、字型層級、介面動效 | `ui_theme.py`（主題定義）、`theme_manager.py`（套用） |
 | `local_models/` | 本機模型：模型清單與健康狀態、下載與儲存、模型工坊頁面、各模型支援哪些語言 | `model_registry.py`、`model_workshop.py`、`model_languages.py` |
+| `container/` | Linux 容器入口、模型掛載與容器內金鑰讀取 | `launch.py`、`models.py`、`secrets.py` |
 | `system/` | 這台電腦的執行環境：Python 執行環境登記與檢查、子程序、硬體、作業系統差異 | `processes.py`、`runtime_registry.py`、`environment.py` |
 | `storage/` | 使用者資料：設定檔、快取清點與清理、舊資料辨識、原子寫檔 | `settings.py`、`storage_service.py` |
 | `diagnostics/` | 不改變行為的觀測：啟動與延遲追蹤、卡頓監看、程序紀錄、建置身分、診斷報告 | `startup_trace.py`、`build_identity.py` |

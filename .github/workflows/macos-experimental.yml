@@ -189,6 +189,15 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); assert r["passed"] is True; print(r["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_blank_project_macos.py --app "$app" --output "$MAC_QA_ROOT/blank-project"
+      - name: Installed app E30 bilingual editing and asynchronous save readback
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: edit_save
+        continue-on-error: true
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)

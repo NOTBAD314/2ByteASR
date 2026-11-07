@@ -10,6 +10,9 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
+    for name in ('edit-save-summary.json', 'result.json', 'after-thirty.png', 'sample-media.log', 'edit-save.log'):
+        path = root/'edit-save'/name
+        if path.is_file():selected.append(path)
     for folder in ("regressions","media","media/formula-sources","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
         directory=root/folder
         if not directory.is_dir():continue

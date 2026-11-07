@@ -59,6 +59,7 @@ def main(argv=None):
         if not all(result[label]['passed'] for label in ('direct','finder')):
             raise RuntimeError('Normal installed startup failed')
         run([sys.executable,ROOT/'scripts/verify_blank_project_macos.py','--app',app,'--output',out/'blank-project'],timeout=240)
+        run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--output',out/'edit-save'],timeout=840)
         run([app/'Contents/MacOS/2ByteASR','--macos-media-smoke',out/'native-media-smoke'],timeout=120)
         run([sys.executable,ROOT/'scripts/macos_renderer_smoke.py','--app',app,'--output',out/'renderer-smoke'],timeout=660)
         audio=out/'speech.wav'
