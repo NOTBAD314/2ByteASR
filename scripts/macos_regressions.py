@@ -15,6 +15,8 @@ SELECTORS.extend(['tests/test_async_save_callers.py', 'tests/test_bilingual_text
                   'tests/test_studio_search_lag.py'])
 SELECTORS.append('tests/test_waveform_terminal_tiles.py')
 SELECTORS.append('tests/test_loading_cover_first_show.py')
+SELECTORS.append('tests/test_hidden_caption_geometry.py')
+SELECTORS.append('tests/test_hidden_studio_preparation.py')
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);a=parser.parse_args()
  root=a.qa_root.resolve()

@@ -2215,7 +2215,10 @@ class MainWindow(QWidget):
         if target.isEmpty():
             return False
         same_rectangle = page.geometry() == target
-        if same_rectangle and not force_settle:
+        video = getattr(page, 'video', None)
+        video_geometry_ready = (not isinstance(video, QWidget)
+                                or (isValid(video) and not video.size().isEmpty()))
+        if same_rectangle and not force_settle and video_geometry_ready:
             return True  # Ordinary LayoutRequest must not walk the tree again.
         before = page.size()
         timeline = getattr(page, 'timeline', None)
