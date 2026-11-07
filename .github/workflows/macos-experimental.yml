@@ -198,6 +198,7 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part saves --output "$MAC_QA_ROOT/cold-save"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform --output "$MAC_QA_ROOT/waveform-stability"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.

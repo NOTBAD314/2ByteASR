@@ -264,7 +264,7 @@ def test_setup_gate_requires_native_blank_checks_and_downloadable_installer(tmp_
     from scripts.macos_ci_status import main as status_main
     root=tmp_path/'tmp/qa'; root.mkdir(parents=True)
     record=dict(runtime_identity='passed', media='passed', app='passed', relocation='passed',
-                startup='passed', dmg='passed', blank_project='failed', edit_save='passed', waveform_stability='passed', embedded_preview='passed', model_requested=False,
+                startup='passed', dmg='passed', blank_project='failed', edit_save='passed', cold_save='passed', waveform_stability='passed', embedded_preview='passed', model_requested=False,
                 test_step='success')
     saved=root/'ci-status.json'
     saved.write_text(json.dumps(record))

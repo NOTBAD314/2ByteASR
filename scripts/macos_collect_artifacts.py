@@ -10,10 +10,12 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ('edit-save', 'waveform-stability'):
-        for name in ('edit-save-summary.json', 'result.json', 'after-thirty.png', 'waveform-stable.png', 'sample-media.log', 'edit-save.log'):
+    for folder in ('edit-save', 'cold-save', 'waveform-stability'):
+        for name in ('edit-save-summary.json', 'result.json', 'startup-project-result.json', 'startup-project.png', 'after-thirty.png', 'waveform-stable.png', 'sample-media.log', 'edit-save.log'):
             path = root/folder/name
             if path.is_file():selected.append(path)
+        for path in (root/folder/'runtime-evidence').glob('*'):
+            if path.is_file() and path.suffix in {'.log', '.json', '.jsonl'}:selected.append(path)
     for folder in ("regressions","media","media/formula-sources","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
         directory=root/folder
         if not directory.is_dir():continue

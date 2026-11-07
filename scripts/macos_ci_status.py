@@ -23,6 +23,7 @@ def summarize(root: Path) -> dict:
         installer=read('dmg/dmg-result.json').get('artifact'),
         blank_project=status(read('blank-project/blank-project-summary.json')),
         edit_save=status(read('edit-save/edit-save-summary.json')),
+        cold_save=status(read('cold-save/edit-save-summary.json')),
         waveform_stability=status(read('waveform-stability/edit-save-summary.json')),
         startup=status(validation.get('packaged_normal_entry_startup_smoke',{})),
         model_preparation=status(read('desktop-flow/workshop-result.json')),
@@ -54,7 +55,7 @@ def main(argv=None):
     if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
-        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project','edit_save','waveform_stability','embedded_preview']+(['model_preparation','home_studio','restart_reuse','export_decode','cloud_only','keychain'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
+        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project','edit_save','cold_save','waveform_stability','embedded_preview']+(['model_preparation','home_studio','restart_reuse','export_decode','cloud_only','keychain'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
         if record.get('studio_perf_requested'):required.append('studio_perf')
         if 'renderer' in record:required.append('renderer')
         selection_path=args.qa_root/'artifacts/receipts/artifact-selection.json'

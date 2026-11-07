@@ -271,3 +271,77 @@ def test_runtime_default_project_tree_is_owned_but_sibling_and_resolved_escape_a
     try: link.symlink_to(outside)
     except OSError: return  # Link creation requires privileges on some Windows hosts.
     with pytest.raises(ValueError): preserve_owned_project(link, output, 'final')
+
+
+@pytest.mark.parametrize('ready', [False, True])
+def test_mac_edit_entry_observes_cli_without_opening_and_records_real_shutdown(tmp_path, monkeypatch, ready):
+    from PySide6 import QtCore, QtWidgets
+    from twobyteasr.acceptance import edit_save_audit, macos_desktop_evidence, macos_edit_save_entry
+
+    class Signal:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+    class Timer:
+        def __init__(self, parent):
+            self.timeout = Signal()
+
+        def setInterval(self, value):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        @staticmethod
+        def singleShot(delay, callback):
+            callback()
+
+    target = tmp_path/'fixture.2byteproj'
+    target.write_text('{}')
+    page = SimpleNamespace(project=object(), project_path=target, _readiness=SimpleNamespace(ready=ready))
+    loading = SimpleNamespace(state='ready' if ready else 'failed', snapshot=lambda: {'state': 'observed'})
+    app = SimpleNamespace(aboutToQuit=Signal())
+    delegated = []
+
+    class Window:
+        _studio_loading_session = loading
+
+        @property
+        def studio_page(self):
+            raise AssertionError('The observer must not construct or switch a Studio page')
+
+        def built_page(self, name):
+            return page
+
+        def grab(self):
+            return SimpleNamespace(save=lambda path: Path(path).write_bytes(b'owned test raster'))
+
+        def close(self):
+            pass
+
+    window = Window()
+    # The real session is an instance-owned binding, as on MainWindow.
+    window._studio_loading_session = loading
+    monkeypatch.setattr(QtCore, 'QTimer', Timer)
+    monkeypatch.setattr(QtWidgets, 'QApplication', SimpleNamespace(instance=lambda: app))
+    monkeypatch.setattr(macos_desktop_evidence, 'studio_snapshot', lambda value: {'ready': ready})
+    monkeypatch.setattr(edit_save_audit, 'start', lambda owner, output: delegated.append(owner))
+    monkeypatch.setenv('EDIT_SAVE_PROJECT', str(target))
+    monkeypatch.setenv('EDIT_SAVE_PART', 'edits')
+    macos_edit_save_entry.start(window, tmp_path)
+    startup = json.loads((tmp_path/'startup-project-result.json').read_text('utf8'))
+    assert startup['passed'] is ready and startup['passive_cli_startup']
+    if ready:
+        assert delegated == [window]
+    else:
+        receipt = tmp_path/'result.json'
+        assert json.loads(receipt.read_text('utf8'))['gui_shutdown'] is False
+        for callback in app.aboutToQuit.callbacks:
+            callback()
+        assert json.loads(receipt.read_text('utf8'))['gui_shutdown'] is True
