@@ -1,47 +1,93 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: bounded-0.9.7-public-verification
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, for example v0.6.5"
         required: true
-
+        type: string
 permissions: {}
-
 jobs:
-  anonymous-download-check:
+  anonymous-downloads:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+      SPEC_B64: 'W3sibmFtZSI6ICIyQnl0ZUFTUi0wLjkuNy1hcHAtZWYzYmMyNWQ3YTNmLnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAxMTUxOTE2ODUsICJzaGEyNTYiOiAiZWVkYzAyZWNmNzVjODkwY2RmN2ZiMWY3ZTg1MzRjMWZkNTQzY2MxOTk3MGQwOGQ4YmJkZjJlNDQ2NTI2MmJmYyJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjctbGljZW5zZXMtNDg2MWY5MjFhYTNlLnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAyOTg0NjIwNCwgInNoYTI1NiI6ICJhYjIzZDQ3MWE4NzI4NmFkYjNmZWUzYzIzOGQ4NmFlNmM4N2I0MWYzM2YxYTFlNjYwZDJiYmI3MmEzMDI5ODkyIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi0wLjkuNy1tYWNvcy1hcm02NC1TZXR1cC5kbWciLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogNTgxMjgwMTkxLCAic2hhMjU2IjogIjdlNjk0NWQ1OWM4YjgyOGQxNDhmZWU1MTY0NzE0OTBmNjc3ZDM0MWEwZmJkZDk1ZGM3OTJkMTA3OTYyODZkNGYifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS43LW1hY29zLWFybTY0Lmpzb24iLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogMjQzMCwgInNoYTI1NiI6ICI1NTM0ZDIzZmY1ODIyODZkZTk4MzJhYmNjNmJiMjEzZDkyMmU5NDQ3NjE1NjE5YjQ1NGEzY2M0M2FkYTY5Njk4In0sIHsibmFtZSI6ICIyQnl0ZUFTUi0wLjkuNy1tYWNvcy1hcm02NC5qc29uLnNpZyIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAyOTEsICJzaGEyNTYiOiAiZjkwMmJjMTk5NDBlZTZjYWE4NTc5ZWQzZmIyYzgyODIwNmQ2MzAwMDAwNmQ1ZDlhYmNhMjg1MjI3ZDg3ZmNiOCJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItMC45LjctdG9vbHMtYWE4YWQyYWZiMjYxLnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAyMjg1ODQ4ODIsICJzaGEyNTYiOiAiZmQ4Mzc0YmI1MTU4MjhiMjZkMWNlNmU4ODhmYzJlN2FlZTBmZDE2OTlhZmM1YzM3ZTNjNTllNzIzZTcwNmFiZSJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItU2V0dXAtMC45LjcuZXhlIiwgInRhZyI6ICJ2MC45LjciLCAic2l6ZSI6IDExNTY1NzIwNTQsICJzaGEyNTYiOiAiMWM2YzY3NDNhYTNiNjA3NGI4YTA3MTJkNWY3ZDUxZjA2N2FlN2JhMGExNDdiNTlkZWU3YmI0NzZjZmVjZDJjMSJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItU291cmNlLTAuOS43LW1hY29zLWFybTY0LnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAxOTAyMzgxOTksICJzaGEyNTYiOiAiNGZiYmZkYWE1NjNiNjZkODkwOTllMzEwYWMzZTlkZDI2Mzg1ZmEyOGNhZDUyY2IxMWEwODE3NGVlM2JhYzA2YiJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItU291cmNlLTAuOS43LnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAxMDg1OTg1MjgxLCAic2hhMjU2IjogImM3MGZiNmZlMzk2MmY0MGE2MGFlN2IzMjkzMzIyNjM3NzM4Y2U0YTdiNzYzZGRlOGJhNzc4MDEzMDM5MTQ2OWQifSwgeyJuYW1lIjogIjJCeXRlQVNSLVRoaXJkUGFydHktTWF0ZXJpYWxzLTAuOS43LW1hY29zLWFybTY0LnppcCIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiA2NzE3NjI0NSwgInNoYTI1NiI6ICJlNGVhOWJmNzBiMDc1NGYyZWQ1NmYzYTNiNDU3MTdlNjgwYjc3MjllY2I5YTJlM2FjNDQ2N2U0ZGRmODAzMzUzIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi1UaGlyZFBhcnR5LU1hdGVyaWFscy0wLjkuNy56aXAiLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogMzAxMTI5NjgsICJzaGEyNTYiOiAiZWZlM2MwYmZjZmFjZjkwZTE5NjNkYzYxNmRmNWJjYWE2M2E5NDYxMDkwZmZjY2QwY2FkM2MzZTIxMmM1NTBjYyJ9LCB7Im5hbWUiOiAiMkJ5dGVBU1ItdXBkYXRlLmpzb24iLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogOTAyMiwgInNoYTI1NiI6ICI4ZWY5ZjBlNmZlM2ZhZjZmYTUyZjE3MTMyZGUzY2QyYWI4YTQwNGM1ZjQ4NzFkZDNlNGFjNzNmZWE2NDNlNTVhIn0sIHsibmFtZSI6ICIyQnl0ZUFTUi11cGRhdGUuanNvbi5zaWciLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogMjkxLCAic2hhMjU2IjogIjg2OWFkZDYzY2Q2MzJkNDk1YjE3MDBlZWI2MTNhODNjNzIxZjcwNjk5ZDFjN2I5OGM5NWE4YzgwYzlmYzc0ZDAifSwgeyJuYW1lIjogIm1pbmd3LXc2NC1saWJpY29udi0xLjE5LTEuc3JjLnRhci56c3QiLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogNTEzMTAyOSwgInNoYTI1NiI6ICI3NDQyODI4MGMxNzA5NGRhNWI3MDJjMjliMmUxYTBhYmFlNTk1NTZlYTVkZmRkNjU3MDVjYzhjY2MxZTAwMGZiIn0sIHsibmFtZSI6ICJtaW5ndy13NjQtbGliaWNvbnYtMS4xOS0xLnNyYy50YXIuenN0LnNpZyIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiA1NjYsICJzaGEyNTYiOiAiZDk5ZjI2NWJkNGU1MWQ3ZTg2MjY3MjU4ZDNkMDEwMWE3MmQ5MDFkOGMyYjhjNGYyZjU5Y2Y4NDU2NTZkYmU2MiJ9LCB7Im5hbWUiOiAiUkVBRE1FLm1hY29zLWFybTY0LnpoLUNOLm1kIiwgInRhZyI6ICJ2MC45LjciLCAic2l6ZSI6IDMxMDksICJzaGEyNTYiOiAiODhiZmFkNjRmZGRlZjEwOTJhNDNlZTgwZWFmYzUzYjgxZDhiYjFhOTViMmI5ODE1MWFlYzFlMWMxZjEzNjMyYiJ9LCB7Im5hbWUiOiAiUkVBRE1FLnpoLUNOLm1kIiwgInRhZyI6ICJ2MC45LjciLCAic2l6ZSI6IDI5MzYsICJzaGEyNTYiOiAiYjI2NGVhYTIyMTc3NTIzZGYwNDZiNGYyNTFhYzIyYTg4ZjQ4ZTlkM2U3Y2E4NDNlZmU1ZTYwODEyZDFhMzRlMyJ9LCB7Im5hbWUiOiAiU0hBMjU2U1VNUy1tYWNvcy1hcm02NC50eHQiLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogNjE5LCAic2hhMjU2IjogIjkwYjEzOTg3MzE1NTMxMDI0ODJiYmFhNjFjOGU4ZmU1ZmY4MzQyNTEzZGRhNGU0Nzg2YzBiMWFiZjZkNWM3Y2MifSwgeyJuYW1lIjogIlNIQTI1NlNVTVMtbWFjb3MtYXJtNjQudHh0LnNpZyIsICJ0YWciOiAidjAuOS43IiwgInNpemUiOiAyOTEsICJzaGEyNTYiOiAiMDM4YzhhNTJjOWNkYzhmODUwYjEyYTMzOTJiZTQzNGJlYjlkN2MxMWI1NWRlZDdhZmQ0ZGJiZjI4M2Y0MTEzYyJ9LCB7Im5hbWUiOiAiU0hBMjU2U1VNUy50eHQiLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogMTg4MywgInNoYTI1NiI6ICI1ZTU3MTBlODhmN2I0ODA4YTVhNDA0N2E5NzU2ZDNkMmJhZTMzYjRkZWY4ZmFiNmEyYThjZDc5M2UzNjU5NzEyIn0sIHsibmFtZSI6ICJTSEEyNTZTVU1TLnR4dC5zaWciLCAidGFnIjogInYwLjkuNyIsICJzaXplIjogMjkxLCAic2hhMjU2IjogIjM2OTlhOTZlOTg4OTM0NjAyNTE5MWE2MmNlM2U0YjViZWZkYzBiNmZiYmE3OTVlNTIwNzM0NGMyODk0ZTAxZDEifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXB5dGhvbi1ydW50aW1lLTJmM2YwNzZjMjU1ZS56aXAiLCAidGFnIjogInYwLjkuMyIsICJzaXplIjogMTQ4OTgyMjE5LCAic2hhMjU2IjogIjFmNjc4YjVmN2JhMWJmZjAwMDY2NzYzOTkyMGIwZDk2OTA4N2ViZGRkZGRmZjM0OTk3MjY4OTMzZGExYzkxYjYifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuNi41LWFzc2V0cy1lOGVhNjEzZTY3M2YuemlwIiwgInRhZyI6ICJ2MC42LjUiLCAic2l6ZSI6IDQ2NTQ4NzA0LCAic2hhMjU2IjogImQ2MDNiODA3NjI4YWMyMzYwMGVjMWY2NjMwYjY4YjQzYjY1ODdlZTVlMGM1MGYxYzAwM2I1OGM5MzMzYzM4M2MifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXJlbmRlcmVyLTZmYzk2YjY0NTU4Yi56aXAiLCAidGFnIjogInYwLjkuMyIsICJzaXplIjogMjM3MDMwNTg3LCAic2hhMjU2IjogIjRmZTk2NzEzNGJlOTI3ODQyYjNjOGZiYzY2NDg4MzQzZjVmYzRjYjljNmQ0YTk4ZmE2ZWIxZTNlNzY2N2UzYjEifSwgeyJuYW1lIjogIjJCeXRlQVNSLTAuOS4zLXdoZWVscy1lZGNiZGY3OTEzYjcuemlwIiwgInRhZyI6ICJ2MC45LjMiLCAic2l6ZSI6IDQ0Mjc1NzUzMywgInNoYTI1NiI6ICI2NWE4Y2Y3YmYwMjVkYjdjMmRjZDQwMWNjZWVjNWE2OTM3NWY1M2I1Y2VkNjk1ZDg1YzQyNzdhZmJkMzU5YmUyIn1d'
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Hash all public release bytes without credentials
         shell: bash
         run: |
-          set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
           python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          """Stream every public asset and referenced component without credentials."""
+          import base64
+          from concurrent.futures import ThreadPoolExecutor
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import time
+          import urllib.parse
+          import urllib.request
+
+          opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          spec=json.loads(base64.b64decode(os.environ['SPEC_B64']))
+          tag='v0.9.7'
+          assert os.environ['INPUT_TAG']==tag
+          bases=dict(github='https://github.com/NOTBAD314/2ByteASR/releases/download/',
+              gitcode='https://gitcode.com/Notbad314/2ByteASR/releases/download/')
+          latest_urls=dict(github='https://api.github.com/repos/NOTBAD314/2ByteASR/releases/latest',
+              gitcode='https://api.gitcode.com/api/v5/repos/Notbad314/2ByteASR/releases/latest')
+
+          def request(url):
+              return urllib.request.Request(url,headers={'User-Agent':'2ByteASR-anonymous-release-audit/0.9.7'})
+
+          latest={}
+          for host,url in latest_urls.items():
+              with opener.open(request(url),timeout=90) as response:
+                  latest[host]=json.load(response)['tag_name']
+          assert all(value==tag for value in latest.values()),latest
+
+          def check(task):
+              host,item=task
+              url=bases[host]+item['tag']+'/'+urllib.parse.quote(item['name'])
+              started=time.monotonic()
+              for attempt in range(3):
+                  try:
+                      digest=hashlib.sha256()
+                      count=0
+                      with opener.open(request(url),timeout=120) as response:
+                          status=response.status
+                          for block in iter(lambda:response.read(4*1024*1024),b''):
+                              digest.update(block)
+                              count+=len(block)
+                      result=dict(host=host,**item,url=url,status=status,length=count,actual_sha256=digest.hexdigest(),
+                          ok=count==item['size'] and digest.hexdigest()==item['sha256'],
+                          seconds=round(time.monotonic()-started,2))
+                      print(json.dumps(result),flush=True)
+                      return result
+                  except Exception as error:
+                      if attempt==2:
+                          result=dict(host=host,**item,url=url,ok=False,error=str(error)[:300])
+                          print(json.dumps(result),flush=True)
+                          return result
+                      time.sleep(3)
+
+          tasks=[(host,item) for host in bases for item in spec]
+          with ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,tasks))
+          report=dict(passed=all(item['ok'] for item in results),version='0.9.7',anonymous=True,
+              full_sha256=True,latest=latest,assets=results)
+          Path('anonymous-release-verification.json').write_text(json.dumps(report,indent=2),'utf8')
+          assert report['passed']
+          print('ALL_PUBLIC_BYTES_VERIFIED',len(results),flush=True)
+
           PY
+      - name: Retain bounded verification receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: anonymous-release-verification-0.9.7
+          path: anonymous-release-verification.json
+          retention-days: 1
