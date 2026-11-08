@@ -1910,6 +1910,10 @@ def _merge_moss_chunks(payload, audio_seconds, legacy, shared_audio=None):
             global_embeddings=global_embeddings,
         )
         voice_scores = {}
+        from twobyteasr.recognition.speech_coverage import recovery_speaker
+        for local in list(mapping):
+            if recovery_speaker(local):
+                mapping[local] = local
         for local, global_speaker in mapping.items():
             vector = local_embeddings.get(local)
             if vector is None:
@@ -2014,7 +2018,7 @@ def _flatten_firered_stage5_result(value):
     )
 
 
-def transcribe_moss_global(media_path, shared_audio, legacy, cache_context):
+def transcribe_moss_global(media_path, shared_audio, legacy, cache_context, *, window_recovery=True):
     _parallel_cancel_poll()
     task_owner = get_runtime_context()
     # MOSS 转写必须在主进程预检 CUDA：子进程内报错只会显示为“MOSS 子进程失败”，
@@ -2063,7 +2067,10 @@ def transcribe_moss_global(media_path, shared_audio, legacy, cache_context):
         output_path = os.path.join(temp_dir, "moss.json")
         command = [paths["moss_python"], "-I", paths["moss_worker"],
                    "--audio", job["audio"], "--output", output_path, "--model", MOSS_MODEL,
-                   "--title", Path(media_path).stem, "--task-audio-fingerprint", fingerprint]
+                   "--title", Path(media_path).stem, "--task-audio-fingerprint", fingerprint,
+                   "--checkpoint-dir", str(evidence / ("moss-windows-" + fingerprint[:16])),
+                   "--resume-output", str(evidence / 'moss-full-context-raw.json'),
+                   "--recovery-request-budget", "24" if window_recovery else "0"]
         print(f"[MOSS LAUNCH full_context] worker={paths['moss_worker']} runtime={paths['moss_python']} samples={len(shared_audio)} @ {legacy.AUDIO_SAMPLE_RATE}Hz", flush=True)
         lines = []
         try:
@@ -2281,47 +2288,28 @@ def detect_firered_vad(audio, legacy, *, _owned_polling=False):
     from twobyteasr.runtime_paths import detect_install_root
 
     python = resolve_runtime_python("main") or ('' if getattr(sys, 'frozen', False) else sys.executable)
-    worker = detect_install_root() / "firered_vad_worker.py"
+    worker = detect_install_root() / "workers" / "firered_vad_worker.py"
+    if not worker.is_file():
+        worker = detect_install_root() / "firered_vad_worker.py"
     if not os.path.isfile(python) or not worker.is_file():
         raise RuntimeError(f"FireRedVAD worker 运行环境缺失: python={python}, worker={worker}")
-    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.recognition.asr import _run_isolated_asr_worker
+    from twobyteasr.system.processes import python_utf8_command
+    from twobyteasr.recognition.vad import CHUNK_SECONDS, decode
 
     with tempfile.TemporaryDirectory(prefix="firered_vad_") as temp_dir:
         wav_path = os.path.join(temp_dir, "audio.wav")
         legacy.write_pcm16_wav(wav_path, audio)
         output_path = os.path.join(temp_dir, "regions.json")
-        if _owned_polling:
-            from twobyteasr.recognition.asr import _run_isolated_asr_worker
-            from twobyteasr.system.processes import python_utf8_command
-            payload=_run_isolated_asr_worker(python_utf8_command([python,'-I',str(worker),
-                '--wav',wav_path,'--model-dir',paths['firered_vad'],'--output',output_path]),
-                output_path,model_id='firered_vad',audio_input='owned PCM shard',model_path=paths['firered_vad'],
-                entrypoint='firered_vad_worker.py',timeout_seconds=1800)
-            regions=payload['regions']
-        else:
-            completed = run_hidden_subprocess(
-                [
-                    python, '-I', "-u", str(worker),
-                    "--wav", wav_path,
-                    "--model-dir", paths["firered_vad"],
-                    "--output", output_path,
-                ],
-                purpose="FireRedVAD worker",
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=1800,
-                env=utf8_worker_environment(),
-            )
-            if completed.returncode != 0:
-                stderr_tail = (completed.stderr or completed.stdout or "")[-1200:].strip()
-                raise RuntimeError(
-                    f"FireRedVAD worker failed (exit {completed.returncode}): {stderr_tail}"
-                )
-            regions = json.loads(Path(output_path).read_text(encoding="utf-8"))["regions"]
-    if not regions:
-        from twobyteasr.recognition.transcript_delivery import NoSpeechDetected
-        raise NoSpeechDetected("FireRedVAD 没有检测到语音。")
+        payload = _run_isolated_asr_worker(python_utf8_command([python, '-I', '-u', str(worker),
+            '--wav', wav_path, '--model-dir', paths['firered_vad'], '--output', output_path,
+            '--chunk-seconds', str(CHUNK_SECONDS)]), output_path,
+            model_id='firered_vad', audio_input='bounded PCM WAV', model_path=paths['firered_vad'],
+            entrypoint='firered_vad_worker.py', timeout_seconds=1800)
+        regions = decode(payload)
     print(f"   [完成] FireRedVAD：{len(regions)} 个人声区间。")
     return regions
+
 
 
 def detect_lightweight_vad(audio, legacy):
@@ -2337,14 +2325,9 @@ def detect_lightweight_vad(audio, legacy):
         raise RuntimeError("音频过短，无法检测有效语音。")
     frame = max(1, int(round(sample_rate * 0.030)))
     hop = max(1, int(round(sample_rate * 0.010)))
-    if samples.size < frame:
-        frames = samples.reshape(1, -1)
-    else:
-        count = 1 + (samples.size - frame) // hop
-        shape = (count, frame)
-        strides = (samples.strides[0] * hop, samples.strides[0])
-        frames = np.lib.stride_tricks.as_strided(samples, shape=shape, strides=strides)
-    rms = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1) + 1e-10)
+    from twobyteasr.recognition.vad import bounded_rms
+    from twobyteasr.recognition.asr import _raise_if_queue_cancelled
+    rms = bounded_rms(samples, frame, hop, check=_raise_if_queue_cancelled)
     peak = float(np.max(rms))
     floor = float(np.percentile(rms, 30))
     threshold = max(1e-4, floor * 2.2, peak * 0.025)
@@ -2376,7 +2359,7 @@ def detect_lightweight_vad(audio, legacy):
     if not regions:
         raise RuntimeError("轻量静音检测没有形成可用语音区间。")
     print(f"   [完成] 轻量静音检测：{len(regions)} 个人声区间（无需 FireRedVAD）。")
-    return regions
+    return [dict(region, detector='energy_vad') for region in regions]
 
 
 def _time_overlap(left_start, left_end, right_start, right_end):
@@ -2654,6 +2637,8 @@ def select_host_speakers(
     runtime_context=None,
     label_source="MOSS",
 ):
+    from twobyteasr.recognition.speech_coverage import recovery_speaker
+    moss_segments = [row for row in moss_segments if not recovery_speaker(row.get('speaker'))]
     speakers = sorted({str(item.get("speaker") or "S00") for item in moss_segments})
     requested = int(
         (
@@ -2844,6 +2829,10 @@ def build_moss_host_primary_segments(
         list(moss_payload.get("segments", [])), legacy
     )
     moss_payload["segments"] = moss_segments
+    from twobyteasr.recognition.speech_coverage import checkpoint as coverage_checkpoint, recovery_speaker
+    coverage_state = getattr(runtime_context, 'speech_coverage', {})
+    if coverage_state:
+        coverage_checkpoint(coverage_state, 'deduplication', moss_segments)
     from twobyteasr.recognition.speaker_evidence import label_summary
     speaker_stages = moss_payload.setdefault("metadata", {}).setdefault("speaker_stages", {})
     speaker_stages["before_host_filter"] = label_summary(moss_segments)
@@ -2883,6 +2872,13 @@ def build_moss_host_primary_segments(
         if coverage_mode == "host_only"
         else set(all_speakers)
     )
+    included_speakers.update(s for s in all_speakers if recovery_speaker(s))
+    excluded_ranges = [(row['start'], row['end']) for row in moss_segments
+                       if row['speaker'] not in included_speakers] if coverage_mode == 'host_only' else []
+    if coverage_state:
+        coverage_state.setdefault('excluded_ranges', []).extend([list(r) for r in excluded_ranges])
+        coverage_checkpoint(coverage_state, 'speaker_filter',
+                            [row for row in moss_segments if row['speaker'] in included_speakers], excluded=excluded_ranges)
     _rescue_transient_host_segments(
         moss_segments,
         host_speakers,
@@ -2927,6 +2923,7 @@ def build_moss_host_primary_segments(
     from twobyteasr.forced_alignment import segment_alignment_key
     japanese = getattr(runtime_context, "task_language", "") == _JA
     result = []
+    retained_native_rows = []
     dropped_no_speech = 0
     unchecked_other = []
     from types import SimpleNamespace
@@ -2982,6 +2979,7 @@ def build_moss_host_primary_segments(
         if (
             coverage_mode == "host_priority"
             and speaker not in host_speakers
+            and not recovery_speaker(speaker)
             and firered_similarity < 0.64
         ):
             if tokens or aligner_mode:
@@ -3055,7 +3053,11 @@ def build_moss_host_primary_segments(
                 priority=2,
             )
         result.append(segment)
+        retained_native_rows.append(moss)
 
+    if coverage_state:
+        coverage_checkpoint(coverage_state, 'speaker_filter', retained_native_rows, excluded=excluded_ranges)
+        coverage_checkpoint(coverage_state, 'alignment', result)
     result.sort(key=lambda segment: (segment.start, segment.end))
     for segment_id, segment in enumerate(result, 1):
         segment.segment_id = segment_id
@@ -3262,6 +3264,9 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
             if not words:
                 legacy.add_review_item(start,'VibeVoice 字级对齐未完成','保留主转写文字、原生身份和块级范围；未知模型概率不作为零概率。',priority=2)
             continue
+        if row.get('provider_source'):
+            import copy
+            segment.caption_arbitration['provider_source'] = copy.deepcopy(row['provider_source'])
         if aligned_own:
             segment.caption_arbitration = dict(segment.caption_arbitration or {}, forced_alignment_window={
                 "start": min(float(t["start"]) for t in aligned_own), "end": max(float(t["end"]) for t in aligned_own),
@@ -3416,10 +3421,11 @@ def apply_alternate_dialogue_coverage(
     # mode used to become "host only" there (2026-10-15, MOSS Pro).
     independent = any(str(token.get("source") or "") != "qwen-forced-aligner" for token in timeline_tokens or [])
     kept, decisions, unchecked = [], [], []
+    from twobyteasr.recognition.speech_coverage import recovery_speaker
     for segment, row in pairs:
         reason, similarity = "all_dialogue", None
         retain = True
-        if mode != "all_dialogue":
+        if mode != "all_dialogue" and not recovery_speaker(segment.speaker):
             overlap = sum(_time_overlap(segment.start, segment.end,
                           float(region["start"]), float(region["end"])) for region in speech_regions)
             retain = _trustworthy_dialogue_text(row, segment.text, overlap,
@@ -4036,6 +4042,8 @@ def process_media(
     legacy.begin_media_report(media_path, cache_context)
     paths = _script_paths(legacy)
     primary_backend = str(getattr(legacy, "PRIMARY_ASR_BACKEND", "moss"))
+    from twobyteasr.recognition.speech_recovery_project import validate_range_backend
+    validate_range_backend(runtime_context.recognition_snapshot, primary_backend)
     analysis_transcript = str(
         getattr(runtime_context, "recognition_purpose", "final") or "final"
     ) == "analysis"
@@ -4393,38 +4401,22 @@ def process_media(
             legacy.record_run_event("vad_backend_selected", backend="lightweight_vad",
                                     reason="main_runtime_missing")
 
+        from twobyteasr.recognition.vad import (ALGORITHM, selected_detection, encode, decode, cacheable)
+        from twobyteasr.recognition.asr import _raise_if_queue_cancelled
+        requested = 'firered_vad' if use_firered_vad else 'lightweight_vad'
         def detect_selected_vad():
-            if use_firered_vad:
-                try:
-                    return detect_firered_vad(shared_audio, legacy)
-                except Exception as exc:
-                    # 打包（frozen）运行没有进程内 torch/soundfile，FireRedVAD
-                    # 无法在主进程执行——降级到轻量静音检测并明示（行为差异
-                    # 如实记录，待 VAD 子进程路由落地后消除）。
-                    if primary_backend == "moss" and not getattr(sys, "frozen", False):
-                        raise
-                    print(
-                        f"   [提示] FireRedVAD 不可用，自动改用轻量静音检测：{exc}"
-                    )
-            return detect_lightweight_vad(shared_audio, legacy)
+            return selected_detection(lambda: detect_firered_vad(shared_audio, legacy),
+                lambda: detect_lightweight_vad(shared_audio, legacy), requested=requested,
+                duration=len(shared_audio)/legacy.AUDIO_SAMPLE_RATE, check=_raise_if_queue_cancelled,
+                event=legacy.record_run_event)
 
-        vad_result = legacy.run_timed_stage(
-            3,
-            stage_total,
-            "FireRedVAD 人声安全检查" if use_firered_vad else "轻量静音与人声区间检测",
-            "CPU",
-            lambda: legacy.run_cached_stage(
-                "firered_vad" if use_firered_vad else "lightweight_vad",
-                cache_context,
-                detect_selected_vad,
-                should_cache=bool,
-                extra_signature=(
-                    _path_signature(paths["firered_vad"])
-                    if use_firered_vad
-                    else {"engine": "energy-v1", "sample_rate": legacy.AUDIO_SAMPLE_RATE}
-                ),
-            ),
-        )
+        vad_result = legacy.run_timed_stage(3, stage_total, '人声区间检测', 'CPU',
+            lambda: legacy.run_cached_stage(requested, cache_context, detect_selected_vad,
+                encoder=encode, decoder=decode, should_cache=cacheable,
+                extra_signature=dict(algorithm_version=ALGORITHM, requested_backend=requested,
+                    model=_path_signature(paths['firered_vad']) if use_firered_vad else '',
+                    sample_rate=legacy.AUDIO_SAMPLE_RATE)))
+        legacy.record_run_event('vad_execution', **vad_result.execution)
         if long_pipeline is not None:
             long_pipeline.set_vad(vad_result)
         return vad_result
@@ -4750,7 +4742,25 @@ def process_media(
                         speech_regions=speech_regions, audio_seconds=audio_seconds, cache_context=cache_context,
                         requested_language=getattr(runtime_context, "requested_language", "auto"),
                         stage_total=stage_total,
-                        moss_runner=lambda audio: transcribe_moss_global(media_path, audio, legacy, cache_context))
+                        moss_runner=lambda audio: transcribe_moss_global(media_path, audio, legacy, cache_context,
+                                                                        window_recovery=False))
+    from twobyteasr.recognition.speech_coverage import audit_primary, checkpoint as coverage_checkpoint
+    def recover_coverage_range(start, end):
+        _parallel_cancel_poll()
+        if primary_backend == 'moss':
+            recovery_context = dict(cache_context, cache_dir=str(Path(cache_context['cache_dir']) /
+                                    'speech-recovery' / f'{round(start*16000)}-{round(end*16000)}'))
+            recovered = transcribe_moss_global(media_path,
+                shared_audio[round(start*16000):round(end*16000)], legacy, recovery_context, window_recovery=False)
+            return [dict(row, start=start+float(row['start']), end=start+float(row['end']),
+                         speaker=f"RECOVERY_{round(start*16000)}_{row.get('speaker', 'UNKNOWN')}")
+                    for row in recovered.get('segments', [])]
+        rows = legacy.transcribe_primary_reference(primary_backend, media_path,
+            [dict(start=start, end=end)], shared_audio, audio_seconds)
+        return [dict(row, speaker=f"RECOVERY_{round(start*16000)}_{row.get('speaker') or 'UNKNOWN'}")
+                for row in rows]
+    audit_primary(moss_payload, speech_regions, runtime_context, duration=audio_seconds, legacy=legacy,
+                  runner=recover_coverage_range, source=primary_backend)
     stage_index = 3
 
     # The language this task runs with: a manual choice, otherwise the kana
@@ -4771,6 +4781,7 @@ def process_media(
     language_audit = audit_primary_language(moss_payload.get('segments', []), runtime_context, legacy)
     from twobyteasr.recognition.transcript_acceptance import gate_primary
     moss_payload = gate_primary(moss_payload, shared_audio, runtime_context, legacy, cache_context, language_audit)
+    coverage_checkpoint(runtime_context.speech_coverage, 'language_acceptance', moss_payload.get('segments', []))
     if not moss_payload.get('segments') and any(r.get('status') != 'accepted'
             for r in runtime_context.transcript_acceptance.get('ranges', [])):
         # A remote SUCCESS can contain no accepted transcript. Save an empty
@@ -4827,20 +4838,6 @@ def process_media(
         runtime_context.speaker_recovery['needs_confirmation'] = True
     if not moss_payload.get("segments"):
         raise RuntimeError(f"{primary_backend} 主力转写没有生成可用片段。")
-
-    moss_last_end = max(float(item["end"]) for item in moss_payload["segments"])
-    vad_last_end = max(float(item["end"]) for item in speech_regions)
-    if vad_last_end - moss_last_end > 0.50:
-        legacy.add_review_item(
-            moss_last_end,
-            "主力转写提前结束",
-            f"{primary_backend} 到 {moss_last_end:.2f}s，FireRedVAD 人声到 {vad_last_end:.2f}s；尾段不自动臆造文字",
-            priority=3,
-        )
-        if primary_backend == 'moss':
-            legacy.record_run_event("moss_full_context_coverage", complete=False,
-                reason="vad_tail_uncovered", vad_last_end=vad_last_end, transcript_last_end=moss_last_end,
-                overlap_recognition_verified=False)
 
     if long_pipeline is not None:
         cues, segments = long_pipeline.collect()
@@ -5161,12 +5158,18 @@ def process_media(
     )
 
     if not (primary_backend == "moss" and speaker_mode == "moss"):
+        coverage_checkpoint(runtime_context.speech_coverage, "alignment", segments)
         segments = apply_alternate_dialogue_coverage(
             segments, moss_payload.get("references", []), firered_tokens,
             speech_regions, audio_seconds, legacy, primary_backend,
             runtime_context=runtime_context,
         )
 
+    filter_receipt = runtime_context.speaker_recovery.get('coverage_filter') or {}
+    intentional = [(r['start'], r['end']) for r in filter_receipt.get('decisions', [])
+                   if not r['retained'] and r.get('reason') == 'outside_selected_candidates']
+    runtime_context.speech_coverage.setdefault('excluded_ranges', []).extend([list(r) for r in intentional])
+    coverage_checkpoint(runtime_context.speech_coverage, 'speaker_filter', segments, excluded=intentional)
     save_speaker_evidence(speaker_audit_root, 'primary-before-placeholder-normalization', legacy.serialize_segments(segments))
     from twobyteasr.subtitle_rules.cue_cleanup import prepare_effective_sources
     segments = prepare_effective_sources(segments, speech_regions=speech_regions)
@@ -5533,6 +5536,7 @@ def process_media(
     # 2026-10-22 (MFA plan step 5): every step that moves caption times, in order (timing_ledger).
     from twobyteasr.recognition.timing_ledger import TimingLedger
     timing_ledger = TimingLedger()
+    coverage_checkpoint(runtime_context.speech_coverage, 'segmentation', cues)
     timing_ledger.checkpoint("grouped", cues, reason="captions as line breaking cut them, before the display rules")
     stage_index += 1
     timing_owner, timing_owner_counts = _timing_owners(segments)

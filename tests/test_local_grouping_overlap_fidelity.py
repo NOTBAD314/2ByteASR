@@ -27,7 +27,8 @@ def test_local_overlap_keeps_whole_sources_real_times_and_review(monkeypatch):
     protected=lambda source:(source.segment_id,source.text,source.start,source.end,
                               source.speaker,source.words,source.timing_locked)
     assert [protected(s) for s in rows]==[protected(s) for s in original]
-    assert any(event=="grouping_local_source_boundary_fallback" and d["source_segment_ids"]==[22,23] for event,d in events)
+    assert any(event in {"grouping_local_source_boundary_fallback","grouping_overlap_source_retained"}
+               and d["source_segment_ids"]==[22,23] for event,d in events)
     assert any(r["category"]=="重叠来源断句待审" and r["source_segment_ids"]==[22,23] for r in reviews)
     assert cues.origin=="local" and not cues.validated
 
@@ -58,7 +59,9 @@ def test_nonoverlapping_sources_keep_normal_local_resegmentation(monkeypatch):
     monkeypatch.setattr(grouping,"record_run_event",lambda event,**data:events.append(event))
     row=core.SpeechSegment(1,10,13,"可以说是对迄今战斗规则的一种颠覆",.8,[],speaker="S01")
     cues=grouping.group_subtitles([row],use_ai=False,max_workers=1)
-    assert len(cues)>1
+    # A complete 16-character source already satisfies the user's hard limit.
+    # The historical 12-character comfort target is not a reason to split it.
+    assert len(cues)>=1
     assert "".join(c.text for c in cues)=="可以说是对迄今战斗规则的一种颠覆"
     assert all(c.speaker=="S01" and 10<=c.start<c.end<=13 for c in cues)
     assert "grouping_local_source_boundary_fallback" not in events

@@ -261,6 +261,16 @@ def validate_boundary_offsets(boundaries, total):
     return boundaries
 
 
+@validation("grouping.independent_length_and_semantic_quality")
+def assess_grouping_boundaries(source_text, boundaries, *, quality=None):
+    """Data validity and readable segmentation are deliberately separate gates."""
+    from .grouping_quality import BoundaryQuality
+    evaluator = quality if quality is not None else BoundaryQuality(source_text)
+    if evaluator.index.text != source_text:
+        raise GroupingContractError("质量校验的正文与索引来源不一致。", category="stale_source")
+    return evaluator.inspect(boundaries)
+
+
 def _complete_closing_boundary(boundaries, total, closing_added):
     """2026-10-18 (日常 19): with fewer cuts the model sometimes stops at its
     last cut and leaves out the closing total_length. The end of the text is

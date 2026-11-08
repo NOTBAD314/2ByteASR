@@ -15,6 +15,7 @@ from ..subtitle_rules.current_issues import (DECISIONS, current_issue_view, dige
     suggestion_identity, patch_identity, suggestion_handled)
 from ..subtitle_rules.review_suggestions import review_suggestions, PRONOUN
 from ..subtitle_rules.pronouns import pronoun_positions, toggle_pronoun
+from .caption_split_editor import CaptionSplitEditorMixin
 
 
 def py_position(text, qt_position):
@@ -92,6 +93,7 @@ class IssueDecisionsCommand(QUndoCommand):
         super().__init__("处理当前建议")
         self.project, self.after, self.changed = project, dict(changes), changed
         decisions = project.studio_state.get(DECISIONS, {})
+        self._container_present = DECISIONS in project.studio_state
         self.before = {key: decisions.get(key) for key in changes}
 
     def _apply(self, values):
@@ -104,7 +106,10 @@ class IssueDecisionsCommand(QUndoCommand):
                     decisions.pop(key, None)
                 else:
                     decisions[key] = dict(value)
-            self.project.studio_state[DECISIONS] = decisions
+            if decisions or self._container_present:
+                self.project.studio_state[DECISIONS] = decisions
+            else:
+                self.project.studio_state.pop(DECISIONS, None)
             invalidate(self.project)
         if self.changed:
             self.changed()
@@ -120,7 +125,7 @@ class IssueDecisionsCommand(QUndoCommand):
 from .caption_editor_panel import CaptionSuggestionView as SuggestionText
 
 
-class CaptionEditorMixin:
+class CaptionEditorMixin(CaptionSplitEditorMixin):
     def _remember_canvas_edit_target(self, cue_id, layer):
         if layer not in {'original','translation'}:
             return
@@ -157,6 +162,12 @@ class CaptionEditorMixin:
         panel.confirm_button.clicked.connect(lambda: self._caption_trigger_commit('button'))
         panel.copy_draft_button.clicked.connect(lambda: QApplication.clipboard().setText(self.subtitle_edit_input.toPlainText()))
         panel.reload_current_button.clicked.connect(self._reload_current_caption_text)
+        panel.split_button.clicked.connect(self._split_caption_at_cursor)
+        panel.split_mode.toggled.connect(lambda checked: self._lock_caption_editor())
+        panel.split_previous.clicked.connect(lambda: self._navigate_split_part(-1))
+        panel.split_next.clicked.connect(lambda: self._navigate_split_part(1))
+        panel.split_undo.clicked.connect(lambda: self._undo_caption_split())
+        panel.split_redo.clicked.connect(lambda: self._undo_caption_split(redo=True))
         self._caption_tools_installed = True
 
     def _locate_caption_suggestion(self, start, end):
@@ -195,6 +206,9 @@ class CaptionEditorMixin:
         if target is None:
             return
         self._caption_following = True
+        self.subtitle_edit_card.split_mode.setChecked(False)
+        self.subtitle_edit_card.split_playhead.setChecked(False)
+        self.subtitle_edit_card.split_status.clear()
         self._caption_edit_locked = False
         self._caption_disk_pending = None
         self._caption_follow_track = target.track_id
@@ -265,6 +279,7 @@ class CaptionEditorMixin:
         self.caption_ignore_button.hide()
         self.caption_pronoun_button.setEnabled(True)
         self._caption_editor_opening = False
+        self._update_split_controls()
         self._set_subtitle_editor_visible(True)
         QTimer.singleShot(10, lambda: self._refresh_editor_suggestions() if getattr(self, '_caption_draft', None) is draft and self._caption_owns_draft(draft) else None)
         self._studio_trace('EDIT_CARD_OPEN', cue_id=target.cue_id, layer=target.layer,
@@ -464,6 +479,7 @@ class CaptionEditorMixin:
         undo_index, undo_count = self.undo_stack.index(), self.undo_stack.count()
         self._caption_following = False
         self._caption_disk_pending = None
+        self._cancel_split_session()
         self._clear_caption_binding(terminal_state='cancelled')
         self.position_overlay._inline_editing = False
         self._set_subtitle_editor_visible(False)
@@ -662,8 +678,35 @@ class CaptionEditorMixin:
         if editor.consume_ime_exit_key(ime_key):
             self._studio_ime_composing = False
             return True
+        plain_c = (key == Qt.Key.Key_C and mods in {
+            Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier})
+        composing = getattr(editor, '_preediting', False) or getattr(editor, '_ime_commit_key_pending', False)
+        if plain_c:
+            if composing:
+                return not text_focus
+            if self.subtitle_edit_card.split_mode.isChecked():
+                self._caption_consumed_commit_key = key
+                if not event.isAutoRepeat():
+                    self._split_caption_at_cursor()
+                return True
+            if not text_focus:
+                QApplication.setActiveWindow(self.subtitle_edit_dock)
+                editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                editor.insertPlainText(event.text() or ('C' if shifted else 'c'))
+                return True
         if getattr(editor, '_preediting', False):
             return False
+        if (getattr(self, '_caption_split_session', None) is not None
+                and mods in {Qt.KeyboardModifier.ControlModifier,
+                             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier}
+                and key in {Qt.Key.Key_Z, Qt.Key.Key_Y}):
+            redo = key == Qt.Key.Key_Y or bool(mods & Qt.KeyboardModifier.ShiftModifier)
+            available = editor.document().isRedoAvailable() if redo else editor.document().isUndoAvailable()
+            if text_focus and available:
+                (editor.redo if redo else editor.undo)()
+            else:
+                self._undo_caption_split(redo=redo)
+            return True
         suggestions = self.caption_suggestion_text
         candidate_focus = suggestions.owns_focus()
         if shifted and key == Qt.Key.Key_R:
@@ -878,6 +921,13 @@ class CaptionEditorMixin:
         if current != draft.before and current != value:
             return reject('text_conflict', '同一文本已有其他修改，草稿已保留；请比较当前文本后再保存。')
         changes = self._draft_patch_decisions(draft,value)
+        if getattr(self, '_caption_split_session', None) is not None:
+            if changes:
+                from .caption_split_editor import SplitStep
+                self._caption_split_session.stage(SplitStep(
+                    IssueDecisionsCommand(self.project, changes), draft.target, value,
+                    self.subtitle_edit_input.textCursor().position()))
+            return self._finish_split_session()
         changed = value != current
         if not changed and not changes:
             self._finish_caption_draft()

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+from collections import Counter
+from copy import deepcopy
 from .glossary_write_feedback import glossary_write_errors
 from pathlib import Path
 
@@ -282,9 +285,20 @@ class _TermMappingsModel(QAbstractTableModel):
         return True
 
     def set_data(self, items: list[dict]):
+        if items == self._rows:
+            return False
+        rows = deepcopy(items) if items else []
+        old_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in self._rows]
+        new_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in rows]
+        if old_keys == new_keys:
+            changed = [i for i, row in enumerate(rows) if row != self._rows[i]]
+            self._rows = rows
+            self.dataChanged.emit(self.index(changed[0], 0), self.index(changed[-1], self.columnCount() - 1), [])
+            return True
         self.beginResetModel()
-        self._rows = list(items) if items else []
+        self._rows = rows
         self.endResetModel()
+        return True
 
     def rowCount(self, parent=QModelIndex()):
         if parent.isValid():
@@ -526,6 +540,14 @@ class TermLibraryDialog(QWidget):
         self._confirming_references = False
         self._builtin_cache: dict[str, tuple] = {}
         self._builtin_entry_cache: dict[str, list[dict[str, str]]] = {}
+        self._term_rows_cache = None
+        self._filter_key = None
+        self._filter_running = False
+        self._filter_pending = False
+        self._diagnostics = Counter() if os.environ.get('TWOBYTEASR_GLOSSARY_DIAGNOSTICS') == '1' else None
+        self._toolbar_timer = QTimer(self)
+        self._toolbar_timer.setSingleShot(True)
+        self._toolbar_timer.timeout.connect(self._sync_term_toolbar)
         self._learning_store = GlossaryLearningStore()
         getattr(self.legacy, "migrate_user_verified_profile_terms", lambda: 0)()
         # P0 perf: build skeleton fast; do NOT load per-game mappings/builtins or select synchronously.
@@ -584,6 +606,8 @@ class TermLibraryDialog(QWidget):
         self._library_stats_cache.clear()
         self._builtin_cache.clear()
         self._builtin_entry_cache.clear()
+        self._term_rows_cache = None
+        self._filter_key = None
         self.libraries_changed.emit()
 
     def builtin_for_game(self, game_name):
@@ -1896,22 +1920,27 @@ class TermLibraryDialog(QWidget):
     def _sync_term_toolbar(self):
         if not hasattr(self, 'term_toolbar'):
             return
+        if self._diagnostics is not None:
+            self._diagnostics['toolbar'] += 1
         if hasattr(self, 'listing') and self.listing.isVisibleTo(self):
             from ..app.ui_zoom import zoom_factor
             factor = zoom_factor()
             normal_min, normal_max = round(210*factor), round(236*factor)
             needed = 1 + self.listing.COLUMNS * (self.listing.MIN_CARD_WIDTH + self.listing.GAP)
-            # The current viewport + sidebar is invariant across this reflow.
-            # A scaled minimum must not silently defeat the narrower maximum.
+            # Use the outer content allocation. The transient viewport width
+            # changes while QListView decides whether a scrollbar is needed.
+            margins = self.listing.viewportMargins()
+            card_width = (self.listing.contentsRect().width() - margins.left() - margins.right()
+                          - self.listing.verticalScrollBar().sizeHint().width())
             target_max = max(180, min(normal_max,
-                self.listing.viewport().width() + self.library_sidebar.width() - needed))
+                card_width + self.library_sidebar.width() - needed))
             target_min = normal_min if target_max >= normal_min else 180
             changed = (self.library_sidebar.minimumWidth(), self.library_sidebar.maximumWidth()) != (target_min,target_max)
             if changed:
                 if target_min < self.library_sidebar.minimumWidth(): self.library_sidebar.setMinimumWidth(target_min)
                 self.library_sidebar.setMaximumWidth(target_max)
                 self.library_sidebar.setMinimumWidth(target_min)
-                QTimer.singleShot(0, self._sync_term_toolbar)
+                self._queue_term_toolbar()
         header_required = (self.selected_title.sizeHint().width() + self.selected_type.sizeHint().width()
                            + self.header_meta.sizeHint().width() + self.use_game.sizeHint().width()
                            + self.share_button.sizeHint().width() + self.more_button.width() + 100)
@@ -1938,13 +1967,19 @@ class TermLibraryDialog(QWidget):
             self.term_toolbar_stack.removeWidget(self.term_actions)
             self.term_tools_layout.addWidget(self.term_actions)
 
+    def _queue_term_toolbar(self):
+        if not self._toolbar_timer.isActive():
+            self._toolbar_timer.start(0)
+
     def apply_ui_zoom(self, _factor):
-        if hasattr(self, 'term_toolbar'): QTimer.singleShot(0, self._sync_term_toolbar)
+        if hasattr(self, 'term_toolbar'):
+            self._queue_term_toolbar()
+            self.listing.request_layout('zoom')
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'term_toolbar'):
-            QTimer.singleShot(0, self._sync_term_toolbar)
+            self._queue_term_toolbar()
         # P0 Resize: do NOT force fixed width on sidebar; let it keep a comfortable min and let content grow.
         # The sidebar has a reasonable initial fixed in _build; here we only ensure minimums for usability.
         # The toolbar reflow owns sidebar constraints, including UI zoom.
@@ -2308,13 +2343,34 @@ class TermLibraryDialog(QWidget):
             self._update_confirm_all_button()
 
     def refresh_learned(self):
+        if self._filter_running:
+            self._filter_pending = True
+            return
+        self._filter_running = True
+        try:
+            self._apply_term_filter()
+        finally:
+            self._filter_running = False
+            if self._filter_pending:
+                self._filter_pending = False
+                QTimer.singleShot(0, self.refresh_learned)
+
+    def _apply_term_filter(self):
         """Populate the unified term table (learned + builtin references)."""
         import time as _t
         _t_rows0 = _t.perf_counter()
         game_name = self.state["game"]
         self._term_model.set_language(current_language())
         query = self.search.text().strip().lower()
-        rows = self._unified_term_rows() if game_name else []
+        data_state = self._term_data_state()
+        if self._term_rows_cache is None or data_state != self._term_rows_cache[0]:
+            rows = self._unified_term_rows() if game_name else []
+            cards = self._group_term_rows(rows)
+            self._term_rows_cache = (deepcopy(self._term_data_state()), rows, cards)
+            self._filter_key = None
+            if self._diagnostics is not None:
+                self._diagnostics['rows_built'] += 1
+        _, rows, cards = self._term_rows_cache
         # 分类筛选（保持当前选择，重建列表）
         categories = sorted({str(row.get("category", "")) for row in rows if row.get("category")})
         current_category = str(self.filter_category.currentData() or "")
@@ -2334,8 +2390,13 @@ class TermLibraryDialog(QWidget):
             self.filter_category.blockSignals(False)
         category_filter = str(self.filter_category.currentData() or "")
         status_filter = str(self.filter_status.currentData() or "")
+        key = (self._library_key(), query, category_filter, status_filter, current_language(), id(cards))
+        if key == self._filter_key:
+            return
+        self._filter_key = key
+        if self._diagnostics is not None:
+            self._diagnostics['filtered'] += 1
         items_for_model = []
-        cards = self._group_term_rows(rows)
         self._card_stats = self._count_term_cards(cards)
         if game_name:
             self._library_stats_cache[self._library_key()] = dict(self._card_stats)
@@ -2349,7 +2410,9 @@ class TermLibraryDialog(QWidget):
                 continue
             items_for_model.append(row)
         _t_model0 = _t.perf_counter()
-        self._term_model.set_data(items_for_model)
+        changed = self._term_model.set_data(items_for_model)
+        if changed and self._diagnostics is not None:
+            self._diagnostics['results_applied'] += 1
         _t_model1 = _t.perf_counter()
         # 标题计数（统一口径：去重后的词条宇宙）
         stats = self._card_stats
@@ -2368,7 +2431,7 @@ class TermLibraryDialog(QWidget):
                 title += f"，当前显示 {len(items_for_model)} 条"
         self.learned_title.setText(title)
         self._update_status_counts(self._card_stats)
-        QTimer.singleShot(0, self._sync_term_toolbar)
+        self._queue_term_toolbar()
         has_rows = len(items_for_model) > 0
         self.listing.setVisible(has_rows)
         # 空态区分：完全没词 vs 筛选后没词
@@ -2390,6 +2453,11 @@ class TermLibraryDialog(QWidget):
         except Exception:
             pass
         self.update_remove_action()
+
+    def _term_data_state(self):
+        game = self.state['game']
+        return (self._library_key(), self.state['mappings'], self.state['builtin_names'],
+                self._builtin_cache.get(game), self._builtin_entry_cache.get(game))
 
     def refresh_learning_suggestions(self):
         from .glossary_learning import ORIGIN_LABELS
@@ -2764,10 +2832,17 @@ class TermLibraryDialog(QWidget):
         QTimer.singleShot(0, self.refresh_current_game)
 
     def apply_filter(self, _text=""):
+        if self._diagnostics is not None:
+            self._diagnostics['search_triggered'] += 1
         self.refresh_learned()
         if self.state["game"]:
             stats = dict(getattr(self, "_card_stats", None) or self._term_stats())
             (bind_text(self.selected_stats, f"{stats['confirmed']} confirmed") if current_language() == 'en' else bind_text(self.selected_stats, '{value0} 条已确认', value0=stats['confirmed']))
+
+    def search_diagnostics(self):
+        return dict(counts=dict(self._diagnostics or {}), library=self._library_key(),
+                    query=self.search.text(), result_count=self._term_model.rowCount(),
+                    layout=self.listing.layout_diagnostics())
 
     def _toggle_search(self):
         self.search.setVisible(True)

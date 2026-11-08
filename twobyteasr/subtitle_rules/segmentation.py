@@ -1496,7 +1496,8 @@ def texts_from_boundary_offsets(
     firered_tokens=(),
 ):
     """只接受边界整数，并始终从本地原文切片，Qwen 无法改动任何字。"""
-    source_text = "".join(clean_subtitle_text(item.text) for item in segment_batch)
+    from .grouping_quality import enabled, SourceIndex
+    source_text = "".join(item.text if enabled() else clean_subtitle_text(item.text) for item in segment_batch)
     total_length = display_length(source_text)
     if total_length <= 0:
         raise ValueError("断句批次没有可用文字。")
@@ -1542,7 +1543,7 @@ def texts_from_boundary_offsets(
     for end in normalized:
         ranges.append((start, end))
         start = end
-    return split_text_at_content_ranges(source_text, ranges)
+    return SourceIndex.build(source_text).pieces(normalized) if enabled() else split_text_at_content_ranges(source_text, ranges)
 
 
 

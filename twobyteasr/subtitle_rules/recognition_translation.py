@@ -122,6 +122,7 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
                                            speaker_id=str(getattr(cue, "speaker", "S00") or "S00"))
                                  for cue_id, cue in zip(project_cue_ids(cues), cues)],
                            generation_metadata={"language": {"code": language}, KEY: term_policy}, studio_state={}, speakers=[])
+    snapshot = (getattr(runtime_context, "provider_snapshots", {}) or {}).get("polish")
     if provider is None:
         from ..providers.ai_providers import provider_for_stage
         from ..providers.asr_provider_snapshot import resolve_provider_snapshot
@@ -163,7 +164,7 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
                        max_items=RECOMMENDED_BATCH_ITEMS,
                        game_context=str(getattr(runtime_context, "game_name", "") or ""),
                        cancel_check=(lambda: bool(token and token.is_cancelled)), progress=progress, cache=cache,
-                       event=request_log, workers=workers)
+                       event=request_log, workers=workers, entrypoint="recognition_auto")
     if request_log.error:
         print(f"   [翻译] 请求日志写入失败：{request_log.error}")
     try:

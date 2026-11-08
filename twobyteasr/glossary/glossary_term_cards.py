@@ -9,6 +9,8 @@ misrecognitions only. Reference and hidden cards keep their 收下 / 恢复 acti
 from __future__ import annotations
 
 import zlib
+import os
+from collections import Counter
 from dataclasses import dataclass
 from html import escape
 
@@ -348,10 +350,12 @@ class TermCardView(QListView):
         self._pressed_category: QPersistentModelIndex | None = None
         self._overlay = None
         self._columns = 0
+        self._layout_running = False
+        self._diagnostics = Counter() if os.environ.get('TWOBYTEASR_GLOSSARY_DIAGNOSTICS') == '1' else None
         self._layout_timer = QTimer(self)
         self._layout_timer.setSingleShot(True)
         self._layout_timer.timeout.connect(self._relayout)
-        self._relayout()
+        self.request_layout('initial')
 
     def set_overlay(self, widget):
         """Float ``widget`` (the selection bar) over the bottom of the cards."""
@@ -377,27 +381,59 @@ class TermCardView(QListView):
     def columns(self) -> int:
         return self._columns
 
+    def request_layout(self, source='resize'):
+        if self._diagnostics is not None:
+            self._diagnostics['request:' + source] += 1
+        if not self._layout_timer.isActive():
+            self._layout_timer.start(0)
+
+    def layout_diagnostics(self):
+        bar = self.verticalScrollBar()
+        model = self.model()
+        actual_columns = 0
+        if model is not None and model.rowCount():
+            top = self.visualRect(model.index(0, 0)).top()
+            actual_columns = sum(self.visualRect(model.index(row, 0)).top() == top
+                                 for row in range(min(self.COLUMNS + 1, model.rowCount())))
+        return dict(counts=dict(self._diagnostics or {}), viewport=self.viewport().size().toTuple(),
+                    columns=self._columns, actual_columns=actual_columns, grid=self.gridSize().toTuple(),
+                    content_height=bar.maximum() + bar.pageStep(),
+                    scrollbar_visible=bar.isVisible(), scrollbar_range=bar.maximum())
+
     def _relayout(self):
-        # The viewport already excludes the actual scroll bar and margins.
-        # Keep six columns on desktop; smaller windows retain readable cards.
-        # IconMode treats its right edge as an inclusive coordinate: leave one
-        # pixel so an exactly divisible viewport does not wrap the sixth card.
-        width = max(1, self.viewport().width() - 1)
+        if self._layout_running:
+            self.request_layout('reentrant')
+            return
+        if self._diagnostics is not None:
+            self._diagnostics['runs'] += 1
+        # Reserve the same vertical gutter with and without a scrollbar. Using
+        # the current viewport width feeds QListView's intermediate scrollbar
+        # geometry back into the grid and can keep it resizing indefinitely.
+        margins = self.viewportMargins()
+        gutter = self.verticalScrollBar().sizeHint().width()
+        width = max(1, self.contentsRect().width() - margins.left() - margins.right() - gutter - 1)
         height = max(1, self.viewport().height())
-        columns = max(1, min(self.COLUMNS, (width + self.GAP) // (self.MIN_CARD_WIDTH + self.GAP)))
+        columns = max(1, min(self.COLUMNS, width // (self.MIN_CARD_WIDTH + self.GAP)))
         cell = QSize(width // columns, max(TermCardDelegate.CARD_HEIGHT + self.GAP, height // self.VISIBLE_ROWS))
         card = QSize(max(1, cell.width() - self.GAP), cell.height() - self.GAP)
         self._columns = columns
-        if card != self.card_delegate.card_size or cell != self.gridSize():
+        if card == self.card_delegate.card_size and cell == self.gridSize():
+            return
+        self._layout_running = True
+        try:
             self.card_delegate.card_size = card
             self.setGridSize(cell)
-        self.doItemsLayout()
+            self.doItemsLayout()
+            if self._diagnostics is not None:
+                self._diagnostics['executed'] += 1
+        finally:
+            self._layout_running = False
 
     def resizeEvent(self, event):  # noqa: N802 - Qt API
         super().resizeEvent(event)
         # QListView's icon layout can still be reserving the previous scrollbar
         # inside resizeEvent. Reflow once its viewport geometry has settled.
-        self._layout_timer.start(0)
+        self.request_layout('resize')
         self.place_overlay()
 
     def card_rect(self, index: QModelIndex) -> QRect:

@@ -7450,50 +7450,8 @@ class MainWindow(QWidget):
         return [gap for gap in (rows[-1].get('gaps') or ()) if gap.get('resplittable')] if rows else []
 
     def _resplit_blocked_cloud_segments(self):
-        """切成小段再交 MOSI…: the ranges MOSI's content review stopped go
-        again in pieces of about 3 minutes (2026-10-24). Billed again, outcome
-        uncertain; pieces still stopped are filled locally as before."""
-        tasks = getattr(self, '_completion_tasks', [])
-        index = self.result_task_selector.currentIndex()
-        snapshot = getattr(self, '_last_run_options', None)
-        if not 0 <= index < len(tasks) or snapshot is None or getattr(self, '_run_in_progress', False):
-            return
-        item, _project = tasks[index]
-        gaps = self._cloud_gap_resplit(item)
-        if not gaps:
-            return
-        from ..providers.mosi_asr import PIECE_SECONDS, PRICE_CNY_PER_HOUR, estimate_cost_cny
-        seconds = sum(max(0.0, float(gap['end']) - float(gap['start'])) for gap in gaps)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        bind_text(box, '切成小段再交 MOSI？', property='windowTitle')
-        bind_text(box, '被内容审查拦下的 {count} 段（共 {minutes} 分钟）会切成约 {piece} 分钟的小段，重新上传给 MOSS Pro 云端；已经有字幕的段不会重新上传。\n\n'
-                       '会再次计费：按每小时 ¥{price} 估算约 ¥{cost}（被拦下的小段收不收费，MOSI 官方没写）。\n\n'
-                       '能不能通过不确定：审查规则在服务商那边，小段可能都能通过，也可能仍被拦下；仍被拦下的小段照旧用本地模型补，没有本地模型时空着。',
-                  count=len(gaps), minutes=f'{seconds / 60:.1f}', piece=PIECE_SECONDS // 60,
-                  price=f'{PRICE_CNY_PER_HOUR:.2f}', cost=f'{estimate_cost_cny(seconds):.2f}')
-        again = box.addButton(tr('切成小段再交'), QMessageBox.ButtonRole.AcceptRole)
-        box.setDefaultButton(box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole))
-        box.exec()
-        if box.clickedButton() is not again:
-            return
-        try:
-            settings_json = snapshot.settings_snapshot_json
-            settings = json.loads(settings_json) if settings_json else copy.deepcopy(self.legacy.RUNTIME_SETTINGS)
-            models = settings.setdefault('models', {})
-            models.pop('cloud_resubmit_confirmed', None)
-            # For this one run only (asr_api_process reads it).
-            models['mosi_resplit_blocked'] = True
-            settings_json = json.dumps(settings, ensure_ascii=False)
-        except (TypeError, ValueError, AttributeError):
-            return
-        self.media_paths = _merge_media_paths([], [item.media_path])
-        self._retry_cached_failed = True
-        self._retry_run_options = replace(snapshot, force_refresh_polish=False, force_refresh_group=False,
-                                          overwrite_policy='overwrite', settings_snapshot_json=settings_json)
-        self._switch_page(0)
-        self._refresh_media_summary()
-        QTimer.singleShot(0, self, self._start_run)
+        """Legacy action opens retained captions for local range recovery."""
+        self._open_studio_from_result()
 
     @staticmethod
     def _supported_paths(paths):

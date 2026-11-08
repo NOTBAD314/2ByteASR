@@ -275,6 +275,13 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_status, label, title = "failed", "失败", "识别未完成"
         if final_cues > 0 and save_error:
             label, title = '工程保存失败，可恢复', '字幕已生成 · 工程保存失败，可恢复'
+    elif _int((result.get('transcript_counts') or {}).get('speech_gap_count')):
+        speech_count = _int(result['transcript_counts']['speech_gap_count'])
+        usable = final_cues > 0
+        core_status = 'partial' if usable else 'needs_recovery'
+        label = '部分完成'
+        title = f'部分完成，仍有{speech_count}处待恢复'
+        problems.append('语音覆盖仍有缺口，可在工作台逐处跳转和仅重试该范围。')
     elif pending or raw_status in {'needs_recovery', 'partial_recovery'}:
         usable = final_cues > 0
         core_status = 'partial' if usable else 'needs_recovery'

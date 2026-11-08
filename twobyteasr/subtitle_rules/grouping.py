@@ -2,6 +2,8 @@
 
 import copy
 from functools import wraps
+from .grouping_quality import enabled as _quality_enabled, quality_for_segments, cues_from_quality, SourceIndex
+from .grouping_quality_request import QualityRetryBudget, retry_quality_windows, split_request_source, context_text
 import hashlib
 import json
 import threading
@@ -103,17 +105,7 @@ def _source_bound_candidate(function):
 
 def _texts_at(text, boundaries):
     """Display-length boundaries of ``text`` as the pieces a reader sees."""
-    pieces, cursor, start = [], 0, 0
-    wanted = set(boundaries)
-    for index, char in enumerate(text):
-        cursor += display_length(char)
-        if cursor in wanted:
-            pieces.append(text[start:index + 1])
-            start = index + 1
-            wanted.discard(cursor)
-    if start < len(text):
-        pieces.append(text[start:])
-    return pieces
+    return SourceIndex.build(text).pieces(boundaries)
 
 
 def _timing_basis(seconds, tokens, edge):
@@ -283,6 +275,16 @@ def cues_from_resegmented_texts(
     speech_regions=(),
     comfort_max_chars=None,
 ):
+    if _quality_enabled():
+        boundaries, cursor = [], 0
+        source = "".join(segment.text for segment in segment_batch)
+        if "".join(proposed_texts) != source:
+            raise ValueError("断句候选改动了来源文字或顺序。")
+        for text in proposed_texts:
+            cursor += display_length(text)
+            boundaries.append(cursor)
+        cues, _, _ = cues_from_quality(segment_batch, boundaries, firered_tokens, record=record_run_event)
+        return cues
     source_exact = content_exact("".join(segment.text for segment in segment_batch))
     output_exact = content_exact("".join(proposed_texts))
     if output_exact != source_exact:
@@ -593,6 +595,8 @@ def call_grouping_api(
     _packed=False,
     _cache_context=None,
     _read_only_context=None,
+    _quality_budget=None,
+    _source_offsets=None,
 ):
     from .segmentation_profiles import current_profile,word_spans
     language_profile=current_profile()
@@ -620,6 +624,7 @@ def call_grouping_api(
             source_fingerprint=capture_grouping_source(segment_batch).fingerprint)
     from ..providers.provider_input_budget import RetryBudget
     _retry_budget=_retry_budget if _retry_budget is not None else RetryBudget(GROUPING_API_RETRIES-1)
+    _quality_budget = _quality_budget if _quality_budget is not None else QualityRetryBudget()
     from ..providers.asr_provider_snapshot import (
         task_provider_snapshot, request_record, classify_request_error,
         GroupedBatchResult, validate_grouped_text, restore_source_text,
@@ -669,8 +674,10 @@ def call_grouping_api(
         return GroupedBatchResult(fallback_group(segment_batch, firered_tokens, speech_regions),
                                   origin="fallback", data_validated=True)
     segment_payload = []
+    source_global_starts = {}
     content_cursor = 0
     for segment in segment_batch:
+        source_global_starts[segment.segment_id] = content_cursor
         length = display_length(segment.text)
         segment_payload.append(
             {
@@ -679,8 +686,14 @@ def call_grouping_api(
                 "end": round(segment.end, 2),
                 "content_start": content_cursor,
                 "content_end": content_cursor + length,
+                "global_content_start": segment.caption_arbitration.get('grouping_request_source',{}).get(
+                    'global_content_start',(_source_offsets or {}).get(segment.segment_id,content_cursor)),
+                "global_content_end": segment.caption_arbitration.get('grouping_request_source',{}).get(
+                    'global_content_end',(_source_offsets or {}).get(segment.segment_id,content_cursor)+length),
                 "text": segment.text,
                 "speaker": segment.speaker or 'S00',
+                "source_mapping": {key:value for key,value in segment.caption_arbitration.get(
+                    "grouping_request_source", {}).items() if key != "original_text"},
             }
         )
         content_cursor += length
@@ -743,8 +756,21 @@ def call_grouping_api(
         "pause_hints": pause_hints,
         "source_gap_hints": source_gap_hints,
         "segments": segment_payload,
-        "read_only_context": _read_only_context or {},
+        "read_only_context": _read_only_context or segment_batch[0].caption_arbitration.get("grouping_read_only_context", {}),
+        "body_range": [0, total_length],
+        "index_unit": "content_exact_unicode_codepoints",
+        "quality_version": "grouping-quality-v1",
+        "time_domain": "source_seconds",
     }
+    if _quality_enabled():
+        inherited_allowed = segment_batch[0].caption_arbitration.get('grouping_request_allowed') if len(segment_batch)==1 else None
+        if inherited_allowed is not None:
+            request_body['allowed_boundaries'] = inherited_allowed
+        else:
+            request_quality = quality_for_segments(segment_batch, firered_tokens,
+                protected=set(hard_break_offsets) | set(protected_source_offsets))
+            request_body["allowed_boundaries"] = request_quality.allowed
+            request_body["semantic_required_boundaries"] = sorted(request_quality.semantic_required)
     messages = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": json.dumps(request_body, ensure_ascii=False, separators=(',', ':'))},
@@ -768,7 +794,9 @@ def call_grouping_api(
                 abort_event=abort_event,batch_index=child_id,batch_total=batch_total,
                 _split_depth=_split_depth+1,provider_snapshot=snapshot,
                 batch_diagnostics=child_diag,_retry_budget=_retry_budget,
-                _cache_context=_cache_context,_read_only_context=_read_only_context)
+                _cache_context=_cache_context,
+                _read_only_context=child[0].caption_arbitration.get('grouping_read_only_context',_read_only_context),
+                _quality_budget=_quality_budget,_source_offsets=_source_offsets)
         if _cache_context is None:
             result = execute()
         else:
@@ -787,12 +815,15 @@ def call_grouping_api(
         return result
 
     def build_messages(child):
+        if len(child)==len(segment_batch) and all(a is b for a,b in zip(child,segment_batch)):
+            return messages
         return call_grouping_api(child,
             protect_all_source_boundaries=protect_all_source_boundaries,
             protected_after_segment_ids=protected_after_segment_ids,
             firered_tokens=firered_tokens,speech_regions=speech_regions,
             provider_snapshot=snapshot,_messages_only=True,_retry_budget=_retry_budget,
-            _read_only_context=_read_only_context)
+            _read_only_context=child[0].caption_arbitration.get('grouping_read_only_context',_read_only_context),
+            _source_offsets=_source_offsets)
 
     if not _packed:
         from ..providers.provider_input_budget import pack_items
@@ -802,15 +833,52 @@ def call_grouping_api(
             rejected_ids={item.segment_id for item,_ in rejected}
             by_first={batch[0].segment_id:batch for batch in packed}
             combined=[]
-            all_validated=not rejected
+            all_validated=True
             child_count=0
             for item in segment_batch:
                 if item.segment_id in rejected_ids:
-                    add_review_item(item.start,'断句回退','单条完整字幕超过模型预算，仅此条使用本地断句。',
-                        item.text,priority=3,severity='warning',batch_index=batch_index,batch_total=batch_total)
-                    record_run_event('grouping_api_fallback',batch_index=batch_index,
-                        category='request_too_large',source_ids=[item.segment_id],failure_stage='local_budget')
-                    combined.extend(fallback_group([item],firered_tokens,speech_regions))
+                    if not _quality_enabled():
+                        combined.extend(fallback_group([item],firered_tokens,speech_regions))
+                        all_validated=False
+                        add_review_item(item.start,'断句回退','此语言的单条来源超过请求预算，保留本地结果。',
+                            item.text,priority=3,severity='warning')
+                        continue
+                    try:
+                        children = split_request_source(item, build_messages,
+                            schema=GROUPING_SCHEMA, max_tokens=snapshot.max_output_tokens,
+                            tokens=firered_tokens, global_start=(_source_offsets or {}).get(item.segment_id,source_global_starts[item.segment_id]),
+                            context_before=context_text(_read_only_context,'before')+SourceIndex.build(source_text).slice(
+                                max(0,source_global_starts[item.segment_id]-32),source_global_starts[item.segment_id]),
+                            context_after=SourceIndex.build(source_text).slice(
+                                source_global_starts[item.segment_id]+display_length(item.text),
+                                min(total_length,source_global_starts[item.segment_id]+display_length(item.text)+32))+context_text(_read_only_context,'after'))
+                    except (ValueError, TypeError) as exc:
+                        record_run_event('grouping_api_fallback',batch_index=batch_index,
+                            category='input_budget_conflict', source_ids=[item.segment_id],
+                            failure_stage='local_budget', request_dispatched=False, reason=str(exc))
+                        add_review_item(item.start,'断句约束待复核',str(exc),item.text,
+                            priority=3,severity='warning')
+                        combined.extend(fallback_group([item],firered_tokens,speech_regions))
+                        all_validated=False
+                        continue
+                    record_run_event('grouping_request_source_split',batch_index=batch_index,
+                        source_id=item.segment_id, children=[c.caption_arbitration['grouping_request_source']
+                            | {'original_text':None} for c in children])
+                    child_cues=[]
+                    item_validated=True
+                    for part,child in enumerate(children,1):
+                        child_result=run_child([child],f'{batch_index}.source-{item.segment_id}.{part}')
+                        item_validated = item_validated and bool(getattr(child_result,'validated',False))
+                        child_cues.extend(child_result)
+                    offsets, cursor=[],0
+                    for cue in child_cues:
+                        cursor+=display_length(cue.text)
+                        offsets.append(cursor)
+                    # A request seam is merely a proposal. Re-evaluate its full
+                    # source context using the same semantic and length gate.
+                    reconciled,_,issues=cues_from_quality([item],offsets,firered_tokens,record=record_run_event)
+                    combined.extend(reconciled)
+                    all_validated = all_validated and item_validated and not issues
                 elif item.segment_id in by_first:
                     child_count+=1
                     child_result=run_child(by_first[item.segment_id],f'{batch_index}.{child_count}')
@@ -878,199 +946,218 @@ def call_grouping_api(
                 raw_response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 parsed_response_sha256=hashlib.sha256(json.dumps(returned,
                     sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest())
-            boundary_offsets = repair_lexical_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            boundary_offsets = repair_segmenter_word_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            boundary_offsets = repair_incomplete_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_latin_predicate_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_dependent_particle_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_hanging_attribute_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            missing_required = sorted(
-                (set(hard_break_offsets) | set(protected_source_offsets))
-                - set(boundary_offsets)
-            )
-            if missing_required:
-                # 这些边界来自真实停顿或另一位主播的插话。模型只负责语义断句，
-                # 漏报时由本地精确补回即可；不能因此丢掉整批其余自然断句。
-                boundary_offsets = sorted(
-                    set(boundary_offsets) | set(missing_required)
-                )
-                print(
-                    "   [边界保护] 本地补回模型漏报的 "
-                    f"{len(missing_required)} 个说话人/停顿边界。"
-                )
-            before_validate = list(boundary_offsets)
-            if SECOND_PASS_GROUP_VALIDATION:
-                boundary_offsets = validate_grouping_boundaries_with_llm(
+            quality_issues = []
+            if _quality_enabled():
+                quality = quality_for_segments(segment_batch, firered_tokens,
+                    protected=set(hard_break_offsets) | set(protected_source_offsets))
+                from .grouping_contract import assess_grouping_boundaries
+                diag["model_quality_issues"] = assess_grouping_boundaries(source_text, model_boundaries, quality=quality)
+                boundary_offsets, _ = quality.repair(model_boundaries, record=record_run_event)
+                boundary_offsets = retry_quality_windows(quality, model_boundaries, boundary_offsets,
+                    provider=provider, snapshot=snapshot, schema=GROUPING_SCHEMA,
+                    budget=_quality_budget, record=record_run_event, batch_index=batch_index,
+                    source_spans=segment_payload,
+                    cancel_check=lambda: bool(abort_event is not None and abort_event.is_set()) or bool(
+                        getattr(get_runtime_context().cancellation_token,"is_cancelled",False)))
+                result, boundary_offsets, quality_issues = cues_from_quality(segment_batch,
+                    boundary_offsets, firered_tokens,
+                    protected=set(hard_break_offsets) | set(protected_source_offsets), record=record_run_event)
+                proposed_texts = quality.index.pieces(boundary_offsets)
+            else:
+                boundary_offsets = repair_lexical_boundary_offsets(
                     segment_batch,
                     boundary_offsets,
+                    firered_tokens,
+                )
+                boundary_offsets = repair_segmenter_word_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
+                )
+                boundary_offsets = repair_incomplete_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
                     firered_tokens=firered_tokens,
-                    provider_snapshot=snapshot,
-                    batch_diagnostics=diag,
-                    retry_budget=_retry_budget,
                 )
-            boundary_offsets = repair_lexical_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            boundary_offsets = repair_segmenter_word_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            boundary_offsets = repair_dependent_particle_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_hanging_attribute_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = sorted(
-                set(boundary_offsets) | set(hard_break_offsets) | set(protected_source_offsets)
-            )
-            # hard/protected 并入后可能重新落入词中，再护栏一次。
-            boundary_offsets = repair_segmenter_word_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            boundary_offsets = sorted(
-                set(
-                    snap_boundaries_away_from_word_interiors(
-                        source_text,
+                boundary_offsets = repair_latin_predicate_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_dependent_particle_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_hanging_attribute_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                missing_required = sorted(
+                    (set(hard_break_offsets) | set(protected_source_offsets))
+                    - set(boundary_offsets)
+                )
+                if missing_required:
+                    # 这些边界来自真实停顿或另一位主播的插话。模型只负责语义断句，
+                    # 漏报时由本地精确补回即可；不能因此丢掉整批其余自然断句。
+                    boundary_offsets = sorted(
+                        set(boundary_offsets) | set(missing_required)
+                    )
+                    print(
+                        "   [边界保护] 本地补回模型漏报的 "
+                        f"{len(missing_required)} 个说话人/停顿边界。"
+                    )
+                before_validate = list(boundary_offsets)
+                if SECOND_PASS_GROUP_VALIDATION:
+                    boundary_offsets = validate_grouping_boundaries_with_llm(
+                        segment_batch,
                         boundary_offsets,
-                        blocked=set(protected_source_offsets),
+                        firered_tokens=firered_tokens,
+                        provider_snapshot=snapshot,
+                        batch_diagnostics=diag,
+                        retry_budget=_retry_budget,
                     )
+                boundary_offsets = repair_lexical_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
                 )
-                | set(
-                    snap_boundaries_away_from_word_interiors(
-                        source_text,
-                        hard_break_offsets,
+                boundary_offsets = repair_segmenter_word_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
+                )
+                boundary_offsets = repair_dependent_particle_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_hanging_attribute_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = sorted(
+                    set(boundary_offsets) | set(hard_break_offsets) | set(protected_source_offsets)
+                )
+                # hard/protected 并入后可能重新落入词中，再护栏一次。
+                boundary_offsets = repair_segmenter_word_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
+                )
+                boundary_offsets = sorted(
+                    set(
+                        snap_boundaries_away_from_word_interiors(
+                            source_text,
+                            boundary_offsets,
+                            blocked=set(protected_source_offsets),
+                        )
                     )
+                    | set(
+                        snap_boundaries_away_from_word_interiors(
+                            source_text,
+                            hard_break_offsets,
+                        )
+                    )
+                    | set(protected_source_offsets)
                 )
-                | set(protected_source_offsets)
-            )
-            boundary_offsets = repair_incomplete_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_compact_utterance_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_dependent_prefix_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                protected_offsets=(
-                    set(hard_break_offsets) | set(protected_source_offsets)
-                ),
-                firered_tokens=firered_tokens,
-            )
-            boundary_offsets = repair_segmenter_word_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            if boundary_offsets and boundary_offsets[-1] != total_length:
-                boundary_offsets = [offset for offset in boundary_offsets if 0 < offset < total_length] + [
-                    total_length
-                ]
-            # A hard break the repairs above moved off (or away from its word
-            # edge) is still a real pause: put its word-edge image back.
-            for offset in missing_hard_break_offsets(source_text, hard_break_offsets, boundary_offsets):
-                images = snap_boundaries_away_from_word_interiors(source_text, [offset])
-                boundary_offsets = sorted(set(boundary_offsets) | {
-                    image for image in images if 0 < image <= total_length})
-            if before_validate != boundary_offsets:
-                print(f"   [断句校验] batch={batch_index} 已应用云端模型竖线校正与本地护栏。")
-            proposed_texts = texts_from_boundary_offsets(
-                segment_batch,
-                boundary_offsets,
-                firered_tokens,
-            )
-            result = cues_from_resegmented_texts(
-                segment_batch,
-                proposed_texts,
-                firered_tokens,
-                speech_regions,
-            )
+                boundary_offsets = repair_incomplete_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_compact_utterance_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_dependent_prefix_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    protected_offsets=(
+                        set(hard_break_offsets) | set(protected_source_offsets)
+                    ),
+                    firered_tokens=firered_tokens,
+                )
+                boundary_offsets = repair_segmenter_word_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
+                )
+                if boundary_offsets and boundary_offsets[-1] != total_length:
+                    boundary_offsets = [offset for offset in boundary_offsets if 0 < offset < total_length] + [
+                        total_length
+                    ]
+                # A hard break the repairs above moved off (or away from its word
+                # edge) is still a real pause: put its word-edge image back.
+                for offset in missing_hard_break_offsets(source_text, hard_break_offsets, boundary_offsets):
+                    images = snap_boundaries_away_from_word_interiors(source_text, [offset])
+                    boundary_offsets = sorted(set(boundary_offsets) | {
+                        image for image in images if 0 < image <= total_length})
+                if before_validate != boundary_offsets:
+                    print(f"   [断句校验] batch={batch_index} 已应用云端模型竖线校正与本地护栏。")
+                proposed_texts = texts_from_boundary_offsets(
+                    segment_batch,
+                    boundary_offsets,
+                    firered_tokens,
+                )
+                result = cues_from_resegmented_texts(
+                    segment_batch,
+                    proposed_texts,
+                    firered_tokens,
+                    speech_regions,
+                )
             if not _restore_grouped_source(segment_batch, result):
                 raise AIProviderError("断句结果未通过逐字符原文校验。", category="text_mutation_rejected")
             diag["final_cues_sha256"] = hashlib.sha256(json.dumps(serialize_cues(result),
                 sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
             repaired_locally = model_boundaries != boundary_offsets or proposed_texts != [c.text for c in result]
-            diag.update(result_status="cloud_repaired" if repaired_locally else "cloud_direct",
+            diag.update(result_status="local_review" if quality_issues else "cloud_repaired" if repaired_locally else "cloud_direct",
                         parse_status="valid", body_empty=False)
-            diag.update(boundary_count=len(boundary_offsets), validator_result="exact_text_and_boundaries",
-                        total_duration_ms=round((time.perf_counter()-attempt_started)*1000, 3), result_origin="ai")
+            diag.update(boundary_count=len(boundary_offsets), validator_result="quality_review" if quality_issues else "exact_text_length_semantics_and_boundaries",
+                        total_duration_ms=round((time.perf_counter()-attempt_started)*1000, 3), result_origin="fallback" if quality_issues else "ai")
             # 2026-10-10: keep the model's own answer next to what local
             # repair and timing made of it (input -> response -> result).
             record_run_event("grouping_trace", batch_index=batch_index, attempt=attempt,
                 source_segment_ids=[segment.segment_id for segment in segment_batch],
-                source_text=source_text, hard_break_offsets=hard_break_offsets,
+                source_text=source_text, source_index_map=list(SourceIndex.build(source_text).raw_edges),
+                index_unit="content_exact_unicode_codepoints", hard_break_offsets=hard_break_offsets,
                 protected_source_offsets=protected_source_offsets,
                 model_boundaries=model_boundaries, model_texts=_texts_at(source_text, model_boundaries),
                 final_boundaries=list(boundary_offsets), final_texts=_texts_at(source_text, boundary_offsets),
                 cues=[{"text": cue.text, "start": round(cue.start, 3), "end": round(cue.end, 3),
-                       "speaker": cue.speaker, "start_basis": _timing_basis(cue.start, firered_tokens, "start"),
-                       "end_basis": _timing_basis(cue.end, firered_tokens, "end")} for cue in result])
+                       "speaker": cue.speaker, "start_basis": getattr(cue,"start_timing_basis",_timing_basis(cue.start, firered_tokens, "start")),
+                       "end_basis": getattr(cue,"end_timing_basis",_timing_basis(cue.end, firered_tokens, "end"))} for cue in result])
             if batch_diagnostics is not None:
-                batch_diagnostics["fallback_reason"] = None
+                batch_diagnostics["fallback_reason"] = "semantic_quality" if quality_issues else None
             record_run_event("asr_provider_request", **diag)
-            accepted = GroupedBatchResult(result, validated=True)
+            accepted = GroupedBatchResult(result, validated=not quality_issues, origin="fallback" if quality_issues else "ai")
             accepted.result_status = diag["result_status"]
             return accepted
         except Exception as exc:
@@ -1275,6 +1362,10 @@ def group_subtitles(
     global_position = {
         segment.segment_id: index for index, segment in enumerate(ordered_segments)
     }
+    global_source_offsets, global_cursor = {}, 0
+    for segment in ordered_segments:
+        global_source_offsets[segment.segment_id] = global_cursor
+        global_cursor += display_length(segment.text)
     speaker_groups = {}
     for segment in ordered_segments:
         speaker = segment.speaker or "S00"
@@ -1322,6 +1413,7 @@ def group_subtitles(
     grouping_abort_event = threading.Event()
     from ..providers.provider_input_budget import RetryBudget
     retry_budget=RetryBudget(GROUPING_API_RETRIES-1)
+    quality_budget=QualityRetryBudget()
     for index, (speaker, batch, local_fast) in enumerate(batches, 1):
         # Alignment diagnostics are observations, not semantic cache inputs.
         # The first unaligned run may add one without changing text or timing.
@@ -1392,6 +1484,8 @@ def group_subtitles(
                 provider_snapshot=snapshot,
                 batch_diagnostics=batch_diag,
                 _retry_budget=retry_budget,
+                _quality_budget=quality_budget,
+                _source_offsets=global_source_offsets,
                 _cache_context=cache_context,
                 _read_only_context=context,
             )
@@ -1485,21 +1579,43 @@ def group_subtitles(
             extend_review_items(review_items)
     for index in sorted(results):
         cues.extend(results[index])
-    if _restore_grouped_source(ordered_segments, copy.deepcopy(cues)):
-        cues = _contract_safe_pass('merge_same_speaker_dangling_cues', merge_same_speaker_dangling_cues,
-                                   cues, ordered_segments)
-        cues = _contract_safe_pass('merge_isolated_two_character_cues', merge_isolated_two_character_cues,
-                                   cues, ordered_segments)
-        cues = _contract_safe_pass('repair_mid_word_adjacent_cues',
-                                   lambda items: repair_mid_word_adjacent_cues(items, ordered_segments, firered_tokens),
-                                   cues, ordered_segments)
-        cues = _contract_safe_pass('merge_hanging_attribute_cues', merge_hanging_attribute_cues,
-                                   cues, ordered_segments)
+    final_quality_issues = []
+    if _quality_enabled():
+        try:
+            source_index = SourceIndex.build("".join(s.text for s in ordered_segments))
+            if not source_index.content:
+                raise ValueError('来源没有可编号正文。')
+        except ValueError as error:
+            final_quality_issues = [dict(kind='index_unit_mismatch',reason=str(error))]
+            for cue in cues:
+                cue.timing_basis='quality=grouping-quality-v1;domain=source_segment;review=index_unit_mismatch'
+            record_run_event('grouping_quality_review',issues=final_quality_issues,
+                source_segment_ids=[s.segment_id for s in ordered_segments])
+            add_review_item(ordered_segments[0].start,'断句索引待复核',
+                '当前字符索引无法安全细分此正文，保留来源文字与段级时间。',
+                "".join(s.text for s in ordered_segments),priority=3,severity='warning')
+        else:
+            offsets, cursor = [], 0
+            for cue in cues:
+                cursor += display_length(cue.text)
+                offsets.append(cursor)
+            cues, _, final_quality_issues = cues_from_quality(ordered_segments, offsets, firered_tokens, record=record_run_event)
     else:
-        cues = merge_same_speaker_dangling_cues(cues)
-        cues = merge_isolated_two_character_cues(cues)
-        cues = repair_mid_word_adjacent_cues(cues, ordered_segments, firered_tokens)
-        cues = merge_hanging_attribute_cues(cues)
+        if _restore_grouped_source(ordered_segments, copy.deepcopy(cues)):
+            cues = _contract_safe_pass('merge_same_speaker_dangling_cues', merge_same_speaker_dangling_cues,
+                                       cues, ordered_segments)
+            cues = _contract_safe_pass('merge_isolated_two_character_cues', merge_isolated_two_character_cues,
+                                       cues, ordered_segments)
+            cues = _contract_safe_pass('repair_mid_word_adjacent_cues',
+                                       lambda items: repair_mid_word_adjacent_cues(items, ordered_segments, firered_tokens),
+                                       cues, ordered_segments)
+            cues = _contract_safe_pass('merge_hanging_attribute_cues', merge_hanging_attribute_cues,
+                                       cues, ordered_segments)
+        else:
+            cues = merge_same_speaker_dangling_cues(cues)
+            cues = merge_isolated_two_character_cues(cues)
+            cues = repair_mid_word_adjacent_cues(cues, ordered_segments, firered_tokens)
+            cues = merge_hanging_attribute_cues(cues)
     postprocess_fallback = not _restore_grouped_source(ordered_segments, cues)
     if postprocess_fallback:
         record_run_event("grouping_postprocess_rejected", reason="source_contract_failed")
@@ -1516,7 +1632,7 @@ def group_subtitles(
     from .grouping_contract import attach_grouping_spans
     attach_grouping_spans(ordered_segments,cues)
     origins = {getattr(value, 'origin', 'fallback') for value in results.values()}
-    all_validated = bool(use_ai) and not postprocess_fallback and all(getattr(value, 'validated', False) for value in results.values())
+    all_validated = bool(use_ai) and not postprocess_fallback and not final_quality_issues and all(getattr(value, 'validated', False) for value in results.values())
     origin = 'ai' if all_validated and origins <= {'ai'} else 'local_fast' if all_validated and origins <= {'local_fast'} else 'mixed' if all_validated else 'fallback' if use_ai else 'local'
     record_run_event('cloud_batches_completed', stage='grouped' if use_ai else 'grouped_local',
         job_id=get_runtime_context().job_id, started_monotonic=dispatched_at,
@@ -1528,4 +1644,7 @@ def group_subtitles(
         result_origin=origin)
     from .grouping_contract import capture_grouping_source
     return GroupedBatchResult(cues, origin=origin, validated=all_validated,data_validated=True,
-        source_fingerprint=capture_grouping_source(ordered_segments).fingerprint)
+        source_fingerprint=capture_grouping_source(ordered_segments).fingerprint,
+        result_status='local_review' if final_quality_issues or any(getattr(v,'result_status','')=='local_review' for v in results.values())
+            else 'cloud_repaired' if any(getattr(v,'result_status','')=='cloud_repaired' for v in results.values())
+            else 'cloud_direct' if all_validated else 'local_fallback' if use_ai else 'local')

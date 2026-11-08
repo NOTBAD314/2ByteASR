@@ -160,9 +160,12 @@ def parse_transcript(raw):
     return rows
 
 
-def run(audio, processor, generate, usable, tmp_path):
+def run(audio, processor, generate, usable, tmp_path, checkpoint_dir=None):
     import torch
     receipt = {'generation_attempts': 0, 'retries': [], 'complete': False}
+    if checkpoint_dir is not None:
+        receipt.update(window_checkpoint_dir=str(checkpoint_dir),
+                       task_audio_fingerprint=worker.audio_fingerprint(audio, 16000))
     payload = {'chunks': []}
     original = worker.usable_device_bytes
     worker.usable_device_bytes = lambda torch_module: (int(usable), 16 * GIB, 0.9)
@@ -207,6 +210,44 @@ def test_short_task_keeps_one_context_and_reuses_the_planning_input(fake_gpu, tm
     assert receipt['window_mode'] == 'single_context' and len(payload['chunks']) == 1
     assert processor.lengths == [300 * 16000]           # no second processor pass
     assert payload['raw_text'] and receipt['input_tokens'] == worker.planning_prompt_length(processor, 300 * 16000, [])
+
+
+def test_completed_windows_resume_without_new_generation(fake_gpu, tmp_path, monkeypatch):
+    torch = fake_gpu
+    audio = noisy(300)
+    processor = Processor()
+    monkeypatch.setattr(worker, 'window_checkpoint_path', lambda *args: tmp_path/'window-unit.json')
+    calls = []
+    def generate(**kwargs):
+        calls.append(1)
+        return torch.cat([kwargs['input_ids'], torch.tensor([[7, 151645]])], dim=1)
+    first, original = run(audio, processor, generate, 13.3 * GIB, tmp_path)
+    second, resumed = run(audio, processor, generate, 13.3 * GIB, tmp_path)
+    assert len(calls) == 1 and second['generation_attempts'] == 0
+    assert second['window_cache_hits'] == 1 and second['generated_tokens'] == 0
+    assert resumed['chunks'][0]['segments'] == original['chunks'][0]['segments']
+
+
+def test_saved_schedule_survives_a_changed_free_memory_plan(fake_gpu, tmp_path, monkeypatch):
+    torch = fake_gpu
+    original_plan = worker.plan_windows
+    planned = []
+    def capacity_plan(*args, **kwargs):
+        value = original_plan(*args, **kwargs)
+        planned.append(1)
+        value.update(mode='context_windows', count=3 if len(planned) == 1 else 2)
+        return value
+    monkeypatch.setattr(worker, 'plan_windows', capacity_plan)
+    calls = []
+    def generate(**kwargs):
+        calls.append(1)
+        return torch.cat([kwargs['input_ids'], torch.tensor([[7, 151645]])], dim=1)
+    audio = noisy(900)
+    first, _ = run(audio, Processor(), generate, 13.3 * GIB, tmp_path, tmp_path/'checkpoints')
+    second, _ = run(audio, Processor(), generate, 12.5 * GIB, tmp_path, tmp_path/'checkpoints')
+    assert len(calls) == first['application_chunk_count'] == second['application_chunk_count'] == 3
+    assert second['window_plan']['checkpoint_schedule_reused'] and second['window_cache_hits'] == 3
+    assert second['generation_attempts'] == 0
 
 
 @pytest.mark.parametrize('samples, tokens', [(1, 101), (1279, 101), (1280, 101), (1281, 102),

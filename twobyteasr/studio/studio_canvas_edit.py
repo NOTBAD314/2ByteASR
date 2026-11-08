@@ -275,6 +275,10 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
     def _queue_edit_preview(self) -> None:
         if getattr(self, '_caption_editor_opening', False):
             return
+        split_session = getattr(self, '_caption_split_session', None)
+        if split_session is not None and not getattr(self, '_caption_split_restoring', False):
+            split_session.future.clear()
+            self._update_split_controls()
         if getattr(self, '_caption_draft', None) is not None:
             self._lock_caption_editor()
         if getattr(self, "_caption_draft", None) is not None:

@@ -6,11 +6,12 @@ cards), the painted 收下 button confirms a reference, the status segment drive
 the old status filter and the first-use strip is remembered once dismissed.
 """
 import os
+from collections import Counter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, Qt
+from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, Qt
 from PySide6.QtGui import QHelpEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QStyleOptionViewItem, QToolTip, QWidget
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QStyle
 import subtitle_core as legacy
 from twobyteasr.glossary import glossary_hub as hub
 from twobyteasr.glossary.glossary_term_cards import TermCardView, card_parts, category_colors
-from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog, _TermMappingsModel
 
 APP = QApplication.instance() or QApplication([])
 
@@ -139,7 +140,91 @@ def test_six_by_four_grid_fills_resized_viewport_and_scrolls(page):
     page._term_model.set_data(rows[:3])
     QTest.qWait(30)
     assert not view.verticalScrollBar().isVisible()
-    assert view.gridSize().width() == (view.viewport().width() - 1) // 6
+    margins = view.viewportMargins()
+    budget = view.contentsRect().width() - margins.left() - margins.right() - view.verticalScrollBar().sizeHint().width() - 1
+    assert view.gridSize().width() == budget // 6
+
+
+def test_filtered_cards_settle_at_scrollbar_boundary(page, monkeypatch):
+    monkeypatch.setattr(page.listing, '_diagnostics', Counter())
+    rows = [dict(target=f'鸣{i}', source=f'鸣{i}', status='confirmed') for i in range(16)]
+    page._term_model.set_data(rows)
+    page.resize(980, 650)
+    QTest.qWait(150)
+    before = page.listing.layout_diagnostics()
+    QTest.qWait(350)
+    assert page.listing.layout_diagnostics() == before
+    assert page.listing.columns() == 6
+
+
+def test_unchanged_refresh_keeps_model_selection_scroll_and_search_cursor(page):
+    page.search.setText('角色')
+    page.search.setFocus()
+    page.search.setCursorPosition(1)
+    QTest.qWait(50)
+    resets = []
+    page._term_model.modelReset.connect(lambda: resets.append(True))
+    first = page._term_model.index(0, 0)
+    page.listing.selectionModel().select(first, QItemSelectionModel.SelectionFlag.Select)
+    for _ in range(5):
+        page.apply_filter()
+        page.refresh_current_game()
+    assert resets == []
+    assert page.search.hasFocus() and page.search.cursorPosition() == 1
+    assert page.listing.selectionModel().selectedIndexes()
+
+
+def test_model_same_rows_skip_reset_but_changed_payload_updates(page):
+    from copy import deepcopy
+    rows = deepcopy(page._term_model._rows)
+    resets, updates = [], []
+    page._term_model.modelReset.connect(lambda: resets.append(True))
+    page._term_model.dataChanged.connect(lambda *args: updates.append(True))
+    assert not page._term_model.set_data(rows)
+    rows[0]['category'] = '新分类'
+    assert page._term_model.set_data(rows)
+    assert updates == [True] and not resets
+    rows[0]['category'] = '再次修改'
+    assert page._term_model.data_for_row(0)['category'] == '新分类'
+    assert page._term_model.set_data(rows)
+
+
+def test_refresh_during_result_application_keeps_latest_query(page):
+    changed = []
+    def newer_query():
+        if not changed:
+            changed.append(True)
+            page.search.setText('迪莫')
+    page._term_model.modelReset.connect(newer_query)
+    page.search.setText('冰点')
+    QTest.qWait(50)
+    assert page.search.text() == '迪莫'
+    assert [row['target'] for row in page._term_model._rows] == ['迪莫']
+
+
+@pytest.mark.parametrize('width,count', [(640, 16), (670, 16), (690, 24), (690, 25), (720, 674)])
+def test_grid_converges_across_column_and_scrollbar_boundaries(width, count):
+    view = TermCardView()
+    view._diagnostics = Counter()
+    model = _TermMappingsModel(view)
+    view.setModel(model)
+    model.set_data([dict(source=str(i), target=str(i)) for i in range(count)])
+    view.resize(width, 310)
+    view.show()
+    QTest.qWait(100)
+    before = view.layout_diagnostics()
+    QTest.qWait(200)
+    assert view.layout_diagnostics() == before
+    assert view.columns() in (5, 6)
+    view.close()
+
+
+def test_data_changed_in_place_rebuilds_same_query(page):
+    page.search.setText('新名字')
+    assert page._term_model.rowCount() == 0
+    page.state['mappings'][0]['to'] = '新名字'
+    page.refresh_learned()
+    assert page._term_model.rowCount() == 1
 
 
 def test_card_slots_stay_inside_uniform_geometry_for_long_content(page):
@@ -280,12 +365,12 @@ def test_painted_keep_button_confirms_a_reference(page, monkeypatch):
     button = page.listing.card_delegate.button_rect(page.listing.visualRect(index), index)
     assert button is not None
     added = []
-    monkeypatch.setattr(page.legacy, "add_learned_mapping",
-                        lambda game, source, target, **kwargs: added.append((source, target, kwargs)) or True)
+    monkeypatch.setattr(page.legacy, "confirm_reference_terms",
+                        lambda game, references: added.extend(references) or 1)
     monkeypatch.setattr(page, "refresh_current_game", lambda: None)
     QTest.mouseClick(page.listing.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, button.center())
     APP.processEvents()
-    assert added and added[0][:2] == ("火神", "火神") and added[0][2]["origin"] == "用户确认"
+    assert added and added[0]['name'] == '火神' and added[0]['category'] == '角色'
     assert not page.listing.selectionModel().hasSelection()
 
 

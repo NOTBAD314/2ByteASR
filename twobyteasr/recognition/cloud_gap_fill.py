@@ -104,73 +104,95 @@ def _clock(seconds: float) -> str:
 
 def fill_cloud_gaps(legacy, payload: dict, *, media_path, shared_audio, speech_regions, audio_seconds,
                     cache_context, requested_language, stage_total, moss_runner) -> None:
-    """Recognize ``payload['cloud_gaps']`` locally and merge the rows into
-    ``payload`` (``segments`` and ``references``). Raises only when the task
-    has no text at all."""
+    """Account for each gap separately, retaining partial results and refusals."""
+    import copy
+    import hashlib
+    import time
+    from .speech_coverage import automatic_speech, merge_rows, update_gap, union
     from ..subtitle_rules.language_rules import language_scope, resolve_task_language
     gaps = list(payload.get("cloud_gaps") or ())
     if not gaps:
         return
-    ranges = merged_ranges(gaps)
     texts = [str(row.get("text") or "") for row in payload.get("segments", [])]
     language, evidence = resolve_task_language(requested_language, texts)
     if evidence.get("decided_by") == "default_chinese":
-        language = ""  # nothing to go by: a multilingual model
+        language = ""
     chosen = choose_backend(language)
-    event = dict(gaps=[dict(gap) for gap in gaps], ranges=[[round(a, 3), round(b, 3)] for a, b in ranges],
-                 language=language, filled=False, rows=0, backend="", model="",
-                 resplittable=any(gap.get("resplittable") for gap in gaps))
-    rows, error = [], ""
-    if chosen is None:
-        event["reason"] = "no_local_model"
-    else:
-        backend, name = chosen
-        event.update(backend=backend, model=name)
-
-        def recognize():
-            with language_scope(language or None):
-                return _recognize(legacy, backend, ranges, media_path=media_path, shared_audio=shared_audio,
-                                  speech_regions=speech_regions, audio_seconds=audio_seconds,
-                                  moss_runner=moss_runner)
-        try:
-            rows = legacy.run_timed_stage(2, stage_total, STAGE_LABEL, name, lambda: legacy.run_cached_stage(
-                f"primary_gap_fill_{backend}", cache_context, recognize, should_cache=bool,
-                extra_signature={"gap_fill_v1": dict(ranges=event["ranges"], language=language,
-                                                     regions=len(speech_regions or ()))}))
-        except Exception as exc:  # noqa: BLE001 - the gap stays; the rest of the task is still good
-            if exc.__class__.__name__ == "CancelledError":
-                raise
-            error = str(exc)[:300]
-            event.update(reason="fill_failed", error=error)
-        rows = [row for row in rows or () if str(row.get("text") or "").strip()]
-        if not error:
-            event.update(filled=bool(rows), rows=len(rows), reason="" if rows else "no_text")
-    for row in rows:
-        speaker = str(row.get("speaker") or "")
-        row.update(source=f"{event['backend']}-gapfill", gap_fill=dict(backend=event["backend"], reason="content_blocked"),
-                   speaker=f"LOCAL_{speaker}" if speaker and speaker != "S00" else "S00")
-    legacy.record_run_event("cloud_asr_gap_fill", **event)
-    for start, end in ranges:
-        span = f"{_clock(start)}–{_clock(end)}"
-        if event["filled"]:
-            legacy.add_review_item(start, "这一段由本地模型补识别",
-                                   f"在线识别服务的内容审查拦下了 {span}，这一段改用本地 {event['model']} 识别；"
-                                   "字和说话人可能跟其他段不同。", priority=2, severity="review")
+    outcomes = []
+    requests, audio_used = 0, 0.0
+    for start, end in merged_ranges(gaps):
+        originals = [copy.deepcopy(g) for g in gaps if float(g['end']) > start and float(g['start']) < end]
+        regions = _regions_in(speech_regions, start, end)
+        targets = [(r['start'], r['end']) for r in regions]
+        eligible = [r for r in regions if automatic_speech(r, anomalous=True)]
+        eligible_ranges = [(r['start'], r['end']) for r in eligible]
+        gap_id = hashlib.sha256(f'{start}/{end}'.encode()).hexdigest()[:16]
+        gap = dict(id=gap_id, start=start, end=end, reason='content_blocked',
+            first_missing_stage='raw_response', status='pending', attempts=[],
+            recovered_ranges=[], remaining_ranges=[list(r) for r in union(targets)], service_gaps=originals)
+        event = dict(gaps=originals, ranges=[[start, end]], language=language, filled=False,
+            rows=0, backend='', model='', resplittable=any(g.get('resplittable') for g in originals))
+        rows, error = [], ''
+        before = time.monotonic()
+        if not targets:
+            gap.update(status='non_speech', remaining_ranges=[])
+            event['reason'] = 'no_speech_evidence'
+        elif not eligible:
+            gap.update(status='needs_confirmation', evidence='speech_unconfirmed')
+            event['reason'] = 'speech_unconfirmed'
+        elif chosen is None:
+            event['reason'] = 'no_local_model'
+        elif requests >= 24 or audio_used + end-start > 1800:
+            event['reason'] = 'recovery_budget_exhausted'
         else:
-            legacy.add_review_item(start, "这一段没有字幕",
-                                   f"在线识别服务的内容审查拦下了 {span}，本地也没能补上。", priority=3,
-                                   severity="warning")
-    if rows:
-        payload.setdefault("references", []).extend(dict(row) for row in rows)
-        payload.setdefault("segments", []).extend(
-            dict(row, start=float(row["start"]), end=float(row["end"]), text=str(row["text"])) for row in rows)
-        for key in ("references", "segments"):
-            payload[key].sort(key=lambda row: (float(row["start"]), float(row["end"])))
-    if not payload.get("segments"):
+            backend, name = chosen
+            event.update(backend=backend, model=name)
+            def recognize():
+                with language_scope(language or None):
+                    return _recognize(legacy, backend, [(start, end)], media_path=media_path,
+                        shared_audio=shared_audio, speech_regions=eligible,
+                        audio_seconds=audio_seconds, moss_runner=moss_runner)
+            requests += 1
+            audio_used += end-start
+            try:
+                rows = legacy.run_timed_stage(2, stage_total, STAGE_LABEL, name,
+                    lambda: legacy.run_cached_stage(f'primary_gap_fill_{backend}', cache_context,
+                        recognize, should_cache=bool, extra_signature={'gap_fill_v3':
+                            dict(range=[start, end], language=language, speech_ranges=eligible_ranges)}))
+            except Exception as exc:
+                if type(exc).__name__ == 'CancelledError':
+                    raise
+                error = str(exc)[:300]
+                event.update(reason='fill_failed', error=error,
+                             error_category=getattr(exc, 'category', type(exc).__name__))
+            valid = []
+            for row in rows or ():
+                speaker = str(row.get('speaker') or 'UNKNOWN')
+                valid.append(dict(row, source=f'{backend}-gapfill',
+                    gap_fill=dict(backend=backend, reason='content_blocked', gap_id=gap_id),
+                    speaker=f'LOCAL_{gap_id}_{speaker}'))
+            merged, rows = merge_rows(payload.get('segments', []), valid, eligible_ranges)
+            payload['segments'] = merged
+            refs, _ = merge_rows(payload.get('references', []), rows, [(start, end)])
+            payload['references'] = refs
+            update_gap(gap, rows, source=backend, elapsed=time.monotonic()-before, error=error)
+            event.update(filled=gap['status'] == 'recovered', rows=len(rows),
+                         reason=event.get('reason') or ('partial_coverage' if rows and gap['remaining_ranges'] else '' if rows else 'no_text'))
+        event.update(gap_id=gap_id, remaining_ranges=gap['remaining_ranges'],
+                     recovered_ranges=gap['recovered_ranges'], status=gap['status'])
+        legacy.record_run_event('cloud_asr_gap_fill', **event)
+        span = f'{_clock(start)}–{_clock(end)}'
+        if event['filled']:
+            legacy.add_review_item(start, '这一段由本地模型补识别',
+                f"在线服务的内容审查拦下了 {span}，由本地 {event['model']} 补识别，请核对文字和待确认说话人。",
+                priority=2, severity='review')
+        elif gap['status'] != 'non_speech':
+            legacy.add_review_item(start, '这一段仍有字幕缺口' if rows else '这一段没有字幕',
+                f'在线服务的内容审查拦下了 {span}，仍有未恢复范围。', priority=3, severity='warning')
+        outcomes.append(gap)
+    payload['speech_gap_results'] = outcomes
+    if not payload.get('segments'):
         from ..providers.cloud_api_worker import CONTENT_BLOCKED_ACTION, RESUBMIT_CATEGORIES
-        details = " ".join(str(gap.get("detail") or "") for gap in gaps)
-        local = {"no_local_model": "这台电脑上没有能补识别这段语言的本地主力模型。",
-                 "fill_failed": "本地模型补识别失败：" + error + "。",
-                 "no_text": "本地模型没有识别出文字。"}.get(event.get("reason"), "")
-        raise RuntimeError(" ".join(part for part in (RESUBMIT_CATEGORIES["content_blocked"], details, local,
-                                                       CONTENT_BLOCKED_ACTION) if part))
+        details = ' '.join(str(g.get('detail') or '') for g in gaps)
+        local = '这台电脑上没有能补识别这段语言的本地主力模型。' if chosen is None else '本地补识别未取得有效文字。'
+        raise RuntimeError(' '.join((RESUBMIT_CATEGORIES['content_blocked'], details, local, CONTENT_BLOCKED_ACTION)))

@@ -95,7 +95,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'language-range-recovery', 'moss-empty-recovery','moss-real-language'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'language-range-recovery', 'moss-empty-recovery','moss-real-language', 'speech-coverage'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -111,7 +111,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -266,7 +266,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'macos-edit-save','macos-waveform-stability','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'macos-edit-save','macos-waveform-stability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -481,6 +481,12 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speech-coverage':
+        from .speech_coverage_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-stability':
         from .playback_stability_audit import start
         output=audit_directory()
@@ -515,6 +521,11 @@ def start_acceptance(window) -> None:
         from .recognition_recovery_audit import start
         output=audit_directory()
         if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'translation-vad':
+        from .translation_vad_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'terms-color-export':
         from .terms_color_export_audit import start
@@ -1022,6 +1033,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if scenario == 'caption-caret-split':
+        from .caption_caret_split_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'studio-search-lag':
         from .studio_search_lag_audit import start
         output=audit_directory()
@@ -1029,6 +1045,11 @@ def start_acceptance(window) -> None:
         return
     if scenario == 'proofread-interactions':
         from .proofread_interactions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if scenario == 'qwen-grouping-quality':
+        from .qwen31_grouping_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -1049,6 +1070,12 @@ def start_acceptance(window) -> None:
             else:
                 from .real_glossary_repair_audit import start
             start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-search-stability':
+        from .glossary_search_stability_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-colors':
         from .glossary_colors_audit import start

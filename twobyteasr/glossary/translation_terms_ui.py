@@ -97,8 +97,8 @@ class TranslationTermsDialog(QDialog):
         self.target.setCurrentIndex(max(0, self.target.findData('zh-Hans')))
         row.addWidget(self.name, 1); row.addWidget(self.source); row.addWidget(QLabel('→')); row.addWidget(self.target)
         layout.addLayout(row)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels([tr(s) for s in ('源语言术语', '标准译名', '别名／常见误识别（用 | 分隔）', '语境限制／说明')])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels([tr(s) for s in ('源语言术语', '标准译名', '别名／常见误识别（用 | 分隔）', '语境限制／说明', '允许的目标别名（用 | 分隔）')])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
         actions = QHBoxLayout()
@@ -131,12 +131,12 @@ class TranslationTermsDialog(QDialog):
         lib = self.policy['libraries'][self._current]
         terms = []
         for i in range(self.table.rowCount()):
-            values = [self.table.item(i, j).text().strip() if self.table.item(i, j) else '' for j in range(4)]
+            values = [self.table.item(i, j).text().strip() if self.table.item(i, j) else '' for j in range(5)]
             if any(values):
                 if not values[0] or not values[1]:
                     raise ValueError(tr('每条术语必须同时填写源语言术语和标准译名'))
                 terms.append(dict(source=values[0], target=values[1],
-                    aliases=list(dict.fromkeys(a.strip() for a in values[2].split('|') if a.strip())), context=values[3]))
+                    aliases=list(dict.fromkeys(a.strip() for a in values[2].split('|') if a.strip())), context=values[3], target_aliases=[a.strip() for a in values[4].split('|') if a.strip()]))
         lib.update(name=self.name.text().strip() or tr('翻译术语库'), source_language=self.source.currentData(),
                    target_language=self.target.currentData(), terms=terms)
         self.list.item(self._current).setText(lib['name'])
@@ -164,7 +164,7 @@ class TranslationTermsDialog(QDialog):
         self.target.setCurrentIndex(max(0, self.target.findData(lib['target_language'])))
         self.table.setRowCount(len(lib['terms']))
         for i, term in enumerate(lib['terms']):
-            for j, value in enumerate((term['source'], term['target'], '|'.join(term['aliases']), term['context'])):
+            for j, value in enumerate((term['source'], term['target'], '|'.join(term['aliases']), term['context'], '|'.join(term.get('target_aliases', ())))):
                 self.table.setItem(i, j, QTableWidgetItem(value))
 
     def add_library(self):

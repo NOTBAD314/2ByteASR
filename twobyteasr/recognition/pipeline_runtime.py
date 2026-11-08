@@ -152,20 +152,40 @@ def finalize_cues(    cues,
         return finalize_streaming(cues,segments,firered_tokens,speech_regions,audio_seconds,timeline_fps,legacy,finalize_cues)
     import copy
     grouped_cues = copy.deepcopy(cues)
+    from ..subtitle_rules.grouping_quality import QUALITY_VERSION
+    quality_managed = bool(cues) and all(
+        f'quality={QUALITY_VERSION}' in str(getattr(c,'timing_basis','')) for c in cues)
+    def text_signature(rows):
+        speakers = {c.speaker for c in rows}
+        return {speaker:[c.text for c in rows if c.speaker==speaker] for speaker in speakers}
+    immutable_text = text_signature(grouped_cues)
     def boundary_phase(name, rows):
+        if quality_managed:
+            import math
+            if any(not math.isfinite(c.start) or not math.isfinite(c.end)
+                   or c.start < 0 or c.end <= c.start
+                   or audio_seconds and c.end > audio_seconds+1/max(1,float(timeline_fps or 30)) for c in rows):
+                raise ValueError('显示整理产生了非法时间。')
+        if quality_managed and text_signature(rows) != immutable_text:
+            legacy.record_run_event('grouping_finalization_rejected',rule=name,
+                reason='validated_text_or_boundaries_changed')
+            raise ValueError('显示整理改变了已通过质量验收的正文或断点。')
         legacy.record_run_event('display_boundary_phase', phase=name, fps=timeline_fps,
             frame_ms=1000 / max(1, float(timeline_fps or 30)), half_open=True,
             cues=[dict(id=c.cue_id, speaker=c.speaker, text=c.text,
                        start_ms=round(c.start*1000), end_ms=round(c.end*1000)) for c in rows])
     boundary_phase('grouped_before_display', grouped_cues)
-    # 语气词防拆：成片前把“哎 呦”等白名单拆分形态合并回“哎呦”
-    # （与人工校对稿一致；组合不在白名单的保持原样）
-    cues = merge_split_interjections_in_cues(cues)
-    finalized = legacy.repair_overlong_cues_from_source(
-        cues,
-        segments,
-        firered_tokens,
-    )
+    if quality_managed:
+        finalized = copy.deepcopy(cues)
+    else:
+        # 语气词防拆：成片前把“哎 呦”等白名单拆分形态合并回“哎呦”
+        # （与人工校对稿一致；组合不在白名单的保持原样）
+        cues = merge_split_interjections_in_cues(cues)
+        finalized = legacy.repair_overlong_cues_from_source(
+            cues,
+            segments,
+            firered_tokens,
+        )
     finalized = legacy.normalize_cue_times(finalized, timeline_fps)
     text_differences = legacy.final_text_conservation_differences(
         finalized,
@@ -186,27 +206,29 @@ def finalize_cues(    cues,
             firered_tokens,
         )
         finalized = legacy.normalize_cue_times(finalized, timeline_fps)
-    finalized = legacy.validate_final_cues(finalized, segments, audio_seconds)
-    # Fillers this pass drops on purpose; the final content check below must
-    # not count them as lost text (2026-10-23).
     omitted_fillers = []
-    finalized = legacy.apply_isolated_single_character_rules_safely(finalized, omitted=omitted_fillers)
-    # 2026-09-20：句内空格排版（用户既定规则）——独立语气词/重复应答/整句
-    # 重复用 U+0020 分隔。幂等；守恒校验走 content_only（忽略空白）不受影响；
-    # 无词级证据时只拆纯语气词（嗯/啊…），"好像还不错"等实词开头不拆。
-    finalized = _apply_intra_phrase_spacing_to_cues(finalized)
-    finalized = legacy.merge_consecutive_short_repeated_cues(finalized)
-    # Japanese only (2026-10-21): pieces of one sentence and flashing short lines
-    # join the same speaker's neighbour, up to two lines (26 characters / 7 s).
-    from ..subtitle_rules.cue_cleanup import merge_japanese_sentence_cues
-    finalized = merge_japanese_sentence_cues(finalized)
-    # Cleanup can legitimately merge two short fragments back into a readable
-    # phrase, but that new phrase must still obey the export limit (5 s; Japanese 7 s).
-    finalized = legacy.repair_overlong_cues_from_source(
-        finalized,
-        segments,
-        firered_tokens,
-    )
+    if not quality_managed:
+        finalized = legacy.validate_final_cues(finalized, segments, audio_seconds)
+        # Fillers this pass drops on purpose; the final content check below must
+        # not count them as lost text (2026-10-23).
+        omitted_fillers = []
+        finalized = legacy.apply_isolated_single_character_rules_safely(finalized, omitted=omitted_fillers)
+        # 2026-09-20：句内空格排版（用户既定规则）——独立语气词/重复应答/整句
+        # 重复用 U+0020 分隔。幂等；守恒校验走 content_only（忽略空白）不受影响；
+        # 无词级证据时只拆纯语气词（嗯/啊…），"好像还不错"等实词开头不拆。
+        finalized = _apply_intra_phrase_spacing_to_cues(finalized)
+        finalized = legacy.merge_consecutive_short_repeated_cues(finalized)
+        # Japanese only (2026-10-21): pieces of one sentence and flashing short lines
+        # join the same speaker's neighbour, up to two lines (26 characters / 7 s).
+        from ..subtitle_rules.cue_cleanup import merge_japanese_sentence_cues
+        finalized = merge_japanese_sentence_cues(finalized)
+        # Cleanup can legitimately merge two short fragments back into a readable
+        # phrase, but that new phrase must still obey the export limit (5 s; Japanese 7 s).
+        finalized = legacy.repair_overlong_cues_from_source(
+            finalized,
+            segments,
+            firered_tokens,
+        )
     finalized = legacy.normalize_cue_times(finalized, timeline_fps)
     finalized = legacy.snap_cue_starts_to_vad_onsets(
         finalized,
@@ -226,12 +248,13 @@ def finalize_cues(    cues,
         timeline_fps,
     )
     boundary_phase('short_gap_bridge', finalized)
-    finalized = legacy.validate_final_cues(
-        finalized,
-        segments,
-        audio_seconds,
-        validate_text=False,
-    )
+    if not quality_managed:
+        finalized = legacy.validate_final_cues(
+            finalized,
+            segments,
+            audio_seconds,
+            validate_text=False,
+        )
     legacy.collect_review_items(
         segments,
         finalized,
@@ -240,8 +263,9 @@ def finalize_cues(    cues,
     )
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.subtitle_fidelity import recover_final_content
-    finalized = recover_final_content(finalized, grouped_cues, segments, firered_tokens, legacy,
-                                      omitted=omitted_fillers)
+    if not quality_managed:
+        finalized = recover_final_content(finalized, grouped_cues, segments, firered_tokens, legacy,
+                                          omitted=omitted_fillers)
     boundary_phase('validated_and_content_recovered', finalized)
     overlap_audit = protect_runtime_display_tails(finalized, segments)
     legacy.record_run_event('display_overlap_protection', policy_version=4, pairs=overlap_audit)
@@ -372,6 +396,8 @@ def complete_media_run(
 ):
     """Write outputs transactionally, finish the report, and return public paths."""
     runtime_context = runtime_context or get_runtime_context()
+    from .speech_coverage import finalize as finalize_coverage
+    finalize_coverage(runtime_context, cues, legacy)
     from .delivery_checkpoint import save as save_delivery_checkpoint
     delivery_arguments = dict(cues=cues, segments=segments, file_index=file_index, file_total=file_total,
         audio_seconds=audio_seconds, txt_path=txt_path, srt_path=srt_path, stage_index=stage_index,
@@ -405,9 +431,8 @@ def complete_media_run(
         if cues:
             prepared = getattr(runtime_context,'translation_ready',None)
             if isinstance(prepared,dict):
-                import hashlib,json
-                current = hashlib.sha256(json.dumps([(str(c.cue_id),c.text,c.speaker) for c in cues],
-                    ensure_ascii=False,sort_keys=True,default=str).encode('utf-8')).hexdigest()
+                from .translation_overlap import binding
+                current = binding(cues,runtime_context)
                 if current == prepared.get('binding'):
                     translation_metadata=prepared['metadata']
                     legacy.record_run_event('translation_ready_reused', cues=len(cues), time_only_changes_allowed=True)
@@ -469,6 +494,7 @@ def complete_media_run(
                             "asr_manifest_key": str(getattr(runtime_context, "asr_manifest_key", "") or ""),
                             "asr_provisional_cues": list(getattr(runtime_context, "asr_provisional_cues", ()) or ()),
                             "speaker_recovery": dict(getattr(runtime_context, "speaker_recovery", {}) or {}),
+                            "speech_coverage": copy.deepcopy(runtime_context.speech_coverage),
                             "transcript_acceptance": copy.deepcopy(getattr(runtime_context, "transcript_acceptance", {}) or {}),
                             "terminology_status": dict(getattr(runtime_context,"terminology_status",{}) or {}),
                             "polishing_summary": dict(getattr(runtime_context,"polishing_summary",{}) or {}),
@@ -580,12 +606,15 @@ def complete_media_run(
     from .transcript_delivery import terminal_status
     counts = dict((getattr(runtime_context, 'transcript_acceptance', {}) or {}).get('counts') or {})
     counts['final_cue_count'] = len(cues)
+    from .speech_coverage import pending as pending_speech_gaps
+    counts['speech_gap_count'] = len(pending_speech_gaps(runtime_context.speech_coverage))
     status = 'needs_recovery' if output_details.get('project_error') else terminal_status(counts, len(cues), degraded=degraded or bool(
         getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
     legacy.record_run_event('subtitle_delivery', status=status, **counts)
     report_json_path, report_text_path = legacy.finish_media_report(
         status,
         transcript_counts=counts,
+        speech_coverage=copy.deepcopy(runtime_context.speech_coverage),
         elapsed_seconds=round(elapsed, 3),
         audio_seconds=round(audio_seconds, 3),
         cue_count=len(cues),

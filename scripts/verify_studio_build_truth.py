@@ -44,11 +44,11 @@ def main():
         elif (source.suffix in {'.spec', '.iss', '.cs'} or relative.as_posix() in {
                 'packaging/version_info.txt',
                 '.github/workflows/macos-experimental.yml'}
-                or relative.as_posix().startswith('packaging/macos/')):
+                or relative.as_posix().startswith(('packaging/macos/', 'packaging/docker/'))):
             result['build_inputs'].append({'path':relative.as_posix(),'sha256':hashlib.sha256(source.read_bytes()).hexdigest()})
         elif source.suffix!='.py':
             result['errors'].append(f'missing source input: {relative}')
-        if source.suffix=='.py':
+        if source.suffix=='.py' and not relative.as_posix().startswith('packaging/docker/'):
             module='.'.join(relative.with_suffix('').parts)
             if module.endswith('.__init__'):module=module[:-9]
             code=None

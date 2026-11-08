@@ -37,6 +37,8 @@ class TimingJournal:
 
     def consume(self, delta) -> None:
         """A runtime-state subscriber: diff the affected captions' times, append what moved."""
+        if delta.action_id == 'caption_editor_preview':
+            return
         if not delta.affected_cue_ids:
             return
         wanted = set(delta.affected_cue_ids)

@@ -73,11 +73,14 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         "failed_cues": [], "request_errors": [], "ai_requested": bool(use_ai), "missing_associations": 0,
         "rejected_changes": 0, "automatic_changes": 0, "confirmation_changes": 0, "terminology_conflicts": []}
     filtered = {language: language_snapshot(snapshot, language) for language in {e.target.language for e in entries}}
-    from .translation_terms import policy_of, relevant, violations, freeze, PROMPT as TERM_PROMPT
+    from .translation_terms import policy_of, relevant, validation_issues as violations, effective_policy, PROMPT as TERM_PROMPT
     from ..subtitle_rules.subtitle_translation import _translation_language
-    policy = freeze(policy_of(project))
+    from ..subtitle_rules.subtitle_translation import normalize_glossary
+    policy = policy_of(project)
+    inline_pairs = normalize_glossary(project.generation_metadata.get("translation_glossary", ()))
     source_language = _translation_language(project)
-    terms_by_key = {entry.key: relevant(policy, entry.source_language or source_language, entry.target.language, entry.source_text)
+    terms_by_key = {entry.key: relevant(effective_policy(policy, inline_pairs, entry.source_language or source_language, entry.target.language),
+                    entry.source_language or source_language, entry.target.language, entry.source_text)
                     if entry.target.layer == 'translation' and entry.source_cue_id else [] for entry in entries}
     drafts, hits = {}, []
     for entry in entries:

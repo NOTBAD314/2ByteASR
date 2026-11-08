@@ -409,6 +409,43 @@ class CaptionEditorPanel(QFrame):
         self.editor.document().setDefaultTextOption(option)
         self.editor.setFixedHeight(48)
         layout.addWidget(self.editor)
+        split_row = QHBoxLayout()
+        self.split_button = QPushButton('在光标处切割', self)
+        self.split_button.setToolTip('保留当前插入光标；使用最新草稿文字')
+        self.split_mode = QPushButton('C 切割模式 · 关', self)
+        self.split_mode.setCheckable(True)
+        self.split_playhead = QPushButton('播放头校准 · 关', self)
+        self.split_playhead.setCheckable(True)
+        self.split_playhead.setToolTip('主动开启后，下次切割使用当前播放头；须位于本条字幕内部')
+        for button in (self.split_button, self.split_mode, self.split_playhead):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setObjectName('captionQuiet')
+            split_row.addWidget(button)
+        split_row.addStretch(1)
+        layout.addLayout(split_row)
+        parts_row = QHBoxLayout()
+        self.split_previous = QPushButton('上一段', self)
+        self.split_next = QPushButton('下一段', self)
+        self.split_part = QLabel(self)
+        self.split_undo = QPushButton('撤销切割', self)
+        self.split_redo = QPushButton('重做切割', self)
+        for button in (self.split_previous, self.split_next, self.split_undo, self.split_redo):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setObjectName('captionQuiet')
+            button.setEnabled(False)
+        parts_row.addWidget(self.split_previous)
+        parts_row.addWidget(self.split_part)
+        parts_row.addWidget(self.split_next)
+        parts_row.addStretch(1)
+        parts_row.addWidget(self.split_undo)
+        parts_row.addWidget(self.split_redo)
+        layout.addLayout(parts_row)
+        self.split_status = QLabel(self)
+        self.split_status.setObjectName('captionEditorMeta')
+        self.split_status.setWordWrap(True)
+        layout.addWidget(self.split_status)
+        self.split_mode.toggled.connect(self.update_hint)
+        self.split_playhead.toggled.connect(self.update_hint)
         self.error_label = QLabel(self)
         self.error_label.setObjectName("captionEditorError")
         self.error_label.setWordWrap(True)
@@ -498,6 +535,8 @@ class CaptionEditorPanel(QFrame):
         if hasattr(self.window(),'schedule_fit'):self.window().schedule_fit()
 
     def update_hint(self):
+        self.split_mode.setText('C 切割模式 · 开' if self.split_mode.isChecked() else 'C 切割模式 · 关')
+        self.split_playhead.setText('播放头校准 · 开' if self.split_playhead.isChecked() else '播放头校准 · 关')
         candidate_mode = self.suggestions.owns_focus()
         if candidate_mode:
             text = "Shift+A/D 候选↔正文 · Shift+W 上一行 · 空格采纳 · Shift+Enter 换行 · Enter/Shift+R 保存并关闭"
@@ -505,6 +544,7 @@ class CaptionEditorPanel(QFrame):
             text = "Shift+A/D 光标 · Shift+Enter 换行 · Enter/Shift+R 保存并关闭"
             if self.suggestions.has_rows():
                 text = "Shift+A/D 候选↔正文 · Shift+W 候选 · Shift+Enter 换行 · Enter/Shift+R 保存并关闭"
+        text += ' · C 切割（输入法选字时暂停）' if self.split_mode.isChecked() else ' · c/C 正常输入'
         self.hint.setText(text)
         self.ignore_button.setEnabled(self.suggestions.selected[0] >= 0)
         self.updateGeometry()

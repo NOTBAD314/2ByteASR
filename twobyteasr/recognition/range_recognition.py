@@ -44,6 +44,7 @@ class RangePayload:
     acceptance: dict = field(default_factory=dict)
     speakers: list = field(default_factory=list)
     speaker_scope: str = ""
+    coverage: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +62,7 @@ class SplicePlan:
     acceptance: dict = field(default_factory=dict)
     replaced_translations: dict = field(default_factory=dict)
     extra_speakers: list = field(default_factory=list)
+    coverage: dict = field(default_factory=dict)
 
 
 def _overlaps(cue, start_ms: int, end_ms: int) -> bool:
@@ -322,7 +324,7 @@ def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bo
                       receipts, archive, speaker_map, translated, [asdict(c) for c in replaced],
                       copy.deepcopy(payload.acceptance),
                       {cid:copy.deepcopy(row) for cid,row in (project.generation_metadata.get('translation_records') or {}).get('records',{}).items()
-                       if cid in set(removed_ids)}, extras)
+                       if cid in set(removed_ids)}, extras, copy.deepcopy(payload.coverage))
 
 
 def payload_from_result(result, info: dict) -> RangePayload:
@@ -345,7 +347,8 @@ def payload_from_result(result, info: dict) -> RangePayload:
     return RangePayload(start, end, cues, evidence, receipts, archive,
                         {cid: copy.deepcopy(records[cid]) for cid in chosen if cid in records},
                         copy.deepcopy(result.generation_metadata.get('transcript_acceptance') or {}),
-                        copy.deepcopy(result.speakers))
+                        copy.deepcopy(result.speakers),
+                        coverage=copy.deepcopy(result.generation_metadata.get('speech_coverage') or {}))
 
 
 def history_entry(plan: SplicePlan, requested=None, **extra) -> dict:
@@ -386,5 +389,7 @@ def apply_plan(project, plan: SplicePlan, entry: dict | None = None) -> None:
     if plan.acceptance:
         from .language_recovery_project import merge_acceptance
         merge_acceptance(project, plan)
+    from .speech_recovery_project import merge_project_range
+    merge_project_range(project, plan)
     if entry is not None:
         project.generation_metadata.setdefault(HISTORY_KEY, []).append(copy.deepcopy(entry))

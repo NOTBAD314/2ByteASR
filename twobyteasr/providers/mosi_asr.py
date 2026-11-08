@@ -457,7 +457,7 @@ def gap_row(start: int, end: int, state: dict, segment) -> dict:
             'cloud_gap': {'provider': PROVIDER, 'reason': 'content_blocked', 'segment': [int(index), int(total)],
                           'task_id': str(state.get('task_id') or ''), 'provider_reason': _saved_reason(state),
                           'detail': failure_detail(state, segment),
-                          'resplittable': end - start > PIECE_SINGLE_SECONDS * 16000}}
+                          'resplittable': False}}
 
 
 def _remote_error(message: str, category: str, state: dict, segment) -> ASRProtocolError:
@@ -652,8 +652,8 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
         state = {}
         progress('explicit_restart_uncertain', 0, 1)
     if content_blocked(state):
-        # Never sent again unchanged, confirmed or not (2026-10-24): only cut
-        # into pieces (``resplit_blocked``), which are requests of their own.
+        # Keep the service refusal for local recovery, including when an
+        # older caller supplies a resubmit or resplit flag.
         raise _remote_error('已保存远端终态 ' + state['status'] + '：' + failure_detail(state, segment),
                             'content_blocked', state, segment)
     if state.get('status') in {'FAILED', 'UNKNOWN'}:
@@ -766,17 +766,17 @@ def _request_ranges(samples, root: Path, restart_terminal: bool, resplit_blocked
     keeps every request MOSI has finished or still has, so nothing is
     uploaded or billed twice, and keeps failed or uncertain ones until the
     user confirms resubmitting them. Everything else is planned in the
-    current, shorter requests. A request the content review stopped stays as
-    it is, unless the user asked to send it again in pieces
-    (``resplit_blocked``, 2026-10-24).
+    current, shorter requests. A request the content review stopped retains its original identity and
+    classification. The deprecated resplit flag never sends it again.
     """
+    resplit_blocked = False  # Legacy flag cannot resend service safety refusals.
     fresh = samples.ranges if getattr(samples, "prepared_pcm", False) else plan_ranges(samples)
     try:
         saved = [(int(row['start']), int(row['end']))
                  for row in json.loads((root / 'plan.json').read_text('utf8'))['requests']]
     except (OSError, ValueError, KeyError, TypeError):
         return fresh
-    if (not saved or (saved == fresh and not resplit_blocked) or saved[0][0] != 0 or saved[-1][1] != len(samples)
+    if (not saved or saved == fresh or saved[0][0] != 0 or saved[-1][1] != len(samples)
             or any(a[1] != b[0] for a, b in zip(saved, saved[1:]))):
         return fresh
     ranges = []
@@ -784,12 +784,7 @@ def _request_ranges(samples, root: Path, restart_terminal: bool, resplit_blocked
         folder = _request_dir(root, index, start, end)
         state = _load_state(folder)
         if content_blocked(state):
-            if resplit_blocked and end - start > PIECE_SINGLE_SECONDS * 16000:
-                ranges.extend((start + a, start + b) for a, b in plan_ranges(
-                    samples[start:end], single_seconds=PIECE_SINGLE_SECONDS, max_seconds=PIECE_SECONDS,
-                    search_seconds=PIECE_SEARCH_SECONDS))
-            else:
-                ranges.append((start, end))
+            ranges.append((start, end))
             continue
         status = state.get('status')
         blocked = status in {'FAILED', 'UNKNOWN'} or (status == 'SUBMITTING' and not state.get('task_id'))
@@ -868,9 +863,10 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
 
     A request MOSI's content review stops (now or in a saved state) is no
     error (2026-10-24): the others go on, and the request comes back as a
-    ``gap_row`` marker in its place. ``resplit_blocked`` sends stopped
-    requests again in pieces of about 3 minutes.
+    ``gap_row`` marker in its place. Recovery uses a local model, with the
+    refusal category retained. The old resplit flag is accepted and ignored.
     """
+    resplit_blocked = False  # Preserve refused requests for local recovery only.
     import numpy as np
     from concurrent.futures import ThreadPoolExecutor
     from . import network_policy
@@ -885,22 +881,16 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
     root = job_root(audio, endpoint, cache_root)
     prior=[]
     if prepared:
-        if resplit_blocked:
-            # A deliberate recut uses already completed canonical PCM while
-            # retaining this source's remote-task namespace.
-            ranges=_request_ranges(samples[0:len(samples)],root,restart_terminal,resplit_blocked)
-            prepared=False
-        else:
-            ranges=samples.ranges
-            try:prior=json.loads((root/'plan.json').read_text('utf8')).get('requests') or []
-            except (OSError,ValueError):prior=[]
-            if prior:
-                if (prior[0]['start']!=0 or any(a['end']!=b['start'] for a,b in zip(prior,prior[1:]))
-                        or len(prior)>len(ranges)):
-                    raise ASRProtocolError('已保存分片计划不一致，未重新提交。','input_limit')
-                ranges.known.update({index:(int(row['start']),int(row['end'])) for index,row in enumerate(prior)})
-            elif any(root.glob('request-*/task.json')):
-                raise ASRProtocolError('已存在远端任务但分片计划缺失，未重复上传。','submission_uncertain')
+        ranges=samples.ranges
+        try:prior=json.loads((root/'plan.json').read_text('utf8')).get('requests') or []
+        except (OSError,ValueError):prior=[]
+        if prior:
+            if (prior[0]['start']!=0 or any(a['end']!=b['start'] for a,b in zip(prior,prior[1:]))
+                    or len(prior)>len(ranges)):
+                raise ASRProtocolError('已保存分片计划不一致，未重新提交。','input_limit')
+            ranges.known.update({index:(int(row['start']),int(row['end'])) for index,row in enumerate(prior)})
+        elif any(root.glob('request-*/task.json')):
+            raise ASRProtocolError('已存在远端任务但分片计划缺失，未重复上传。','submission_uncertain')
     else:
         ranges=_request_ranges(samples,root,restart_terminal,resplit_blocked)
     total=len(ranges)

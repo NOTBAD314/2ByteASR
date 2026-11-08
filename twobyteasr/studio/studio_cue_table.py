@@ -150,7 +150,7 @@ class CueTableModel(QAbstractTableModel):
         from ..timeline.studio_edit_sequence import projected_cues
 
         view = projected_cues(self.project, domain="timeline")
-        self._view_cues = view
+        self._view_cues = list(view)
         needle = self.query.casefold().strip()
         scope = set(self.scope_ids) if self.scope_ids is not None else None
         risks = cached_review_risks(self.project)
@@ -274,6 +274,42 @@ class CueTableModel(QAbstractTableModel):
         self.endResetModel()
         if self.rowCount():
             self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 4))
+
+    def refresh_caption_splice(self, affected):
+        """Keep unrelated rows and selection indexes during a small editor splice."""
+        affected = set(affected)
+        visible = [self.cue_at(row).id for row in range(self.rowCount())]
+        for row in reversed(range(len(visible))):
+            if visible[row] in affected:
+                self.beginRemoveRows(QModelIndex(), row, row)
+                self._rows.pop(row)
+                visible.pop(row)
+                self.endRemoveRows()
+        self._view_cues = list(self.project.cues)
+        source = {cue.id: row for row, cue in enumerate(self._view_cues)}
+        self._rows = [source[key] for key in visible]
+        scope = set(self.scope_ids) if self.scope_ids is not None else None
+        needle = self.query.casefold().strip()
+        risks = cached_review_risks(self.project) if self.filter_status != 'all' else None
+        for cue in sorted((c for c in self._view_cues if c.id in affected), key=lambda c: (c.start_ms, source[c.id], c.id)):
+            if scope is not None and cue.id not in scope:
+                continue
+            if cue.id != self.review_anchor_id:
+                if self.filter_status in {'priority', 'critical'}:
+                    level = 'suggested' if self.filter_status == 'priority' else 'high'
+                    if _cue_review_level(self.project, cue, risks) != level:
+                        continue
+                elif self.filter_status != 'all' and _cue_status(self.project, cue, risks) != self.filter_status:
+                    continue
+                if needle and needle not in f'{self.display_text(cue)} {cue.speaker_id} {_speaker_name(self.project, cue.speaker_id)}'.casefold():
+                    continue
+            key = (cue.start_ms, source[cue.id], cue.id)
+            row = next((i for i, old in enumerate(self._rows) if
+                        (self._view_cues[old].start_ms, old, self._view_cues[old].id) > key), len(self._rows))
+            self.beginInsertRows(QModelIndex(), row, row)
+            self._rows.insert(row, source[cue.id])
+            self.endInsertRows()
+        self._cue_row_lookup = {self.cue_at(row).id: row for row in range(self.rowCount())}
 
     def refresh_cue(self, cue_id: str, columns: tuple[int, ...] | None = None) -> None:
         if (self.filter_status != "all" or self.query.strip()):

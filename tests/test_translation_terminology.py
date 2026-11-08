@@ -110,11 +110,12 @@ def test_library_rename_is_not_a_semantic_cache_invalidation():
     assert not provider.calls and st.cue_status(p,'c0')=='done'
 
 
-def test_explicit_manual_correction_is_current_until_relevant_rules_or_source_change():
+def test_explicit_manual_correction_stays_protected_when_terms_change():
     p=project(); st.set_manual(p,'c0','爱丽丝来了')
     assert st.cue_status(p,'c0')=='manual'
     p.generation_metadata[KEY]['libraries'][0]['terms'][0]['target']='艾丽丝'
-    assert st.cue_status(p,'c0')=='needs_update'
+    assert st.cue_status(p,'c0')=='manual'
+    assert st.records_of(p)['c0']['text']=='爱丽丝来了'
 
 
 def test_pending_manual_suggestion_is_rechecked_against_updated_terms():
