@@ -369,6 +369,8 @@ def start(window, out):
             page.show_project_hub(skip_dirty_guard=True)
             window.open_studio_project(target, mode='edit', source='home_release_reopen')
             wait(lambda: page.project is not None and cue.id in page._cue_lookup and page._readiness.ready, 90, 'normal reopen completes')
+            wait(lambda:page._readiness.loading.state == 'ready'
+                 and not page._readiness.overlay.isVisible(),30,'normal reopen input handoff completes')
             check('Chinese edit survives save and reopen', page._cue_lookup[cue.id].text == expected)
             if config.get('bilingual'):
                 check('manual translation survives save and reopen',
