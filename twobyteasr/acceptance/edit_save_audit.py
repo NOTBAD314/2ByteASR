@@ -63,6 +63,8 @@ def start(window, output):
             opened_at = time.perf_counter()
             page.project_controller.open_project_entry(os.environ['EDIT_SAVE_PROJECT'],single_shot_fn=QTimer.singleShot,skip_dirty_guard=True)
             wait(lambda:page.project is not None and page._readiness.ready,90)
+            wait(lambda:page._readiness.loading.state == 'ready'
+                 and not page._readiness.overlay.isVisible(),30)
             app.processEvents()
             check('workspace visibly presented', page.isVisible() and page.timeline.isVisible())
             result['open_ms'] = (time.perf_counter()-opened_at)*1000
