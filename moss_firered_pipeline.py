@@ -3265,7 +3265,6 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
                 legacy.add_review_item(start,'VibeVoice 字级对齐未完成','保留主转写文字、原生身份和块级范围；未知模型概率不作为零概率。',priority=2)
             continue
         if row.get('provider_source'):
-            import copy
             segment.caption_arbitration['provider_source'] = copy.deepcopy(row['provider_source'])
         if aligned_own:
             segment.caption_arbitration = dict(segment.caption_arbitration or {}, forced_alignment_window={
