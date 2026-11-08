@@ -280,8 +280,18 @@ if _pin_root:
             a.binaries.append((_retained_name, str(_retained_file), 'BINARY'))
     # Finalize provenance after a valid Analysis cache is reused; changing
     # only build identity must not force analysis of unchanged Python code.
-    from twobyteasr.diagnostics.build_identity import write_build_metadata
-    write_build_metadata(ROOT, build_metadata, channel=os.environ.get('TWOBYTEASR_BUILD_CHANNEL', ''))
+    from twobyteasr.diagnostics.build_identity import source_snapshot_sha256, write_build_metadata
+    if build_metadata.resolve().is_relative_to(ROOT.resolve()):
+        write_build_metadata(ROOT, build_metadata, channel=os.environ.get('TWOBYTEASR_BUILD_CHANNEL', ''))
+    else:
+        # Immutable release snapshots have a source-only Git index. Preserve
+        # the producing checkout's identity after verifying every runtime byte.
+        _origin = json.loads(build_metadata.read_text('utf8'))
+        _actual_source = source_snapshot_sha256(ROOT)
+        if _actual_source != (_origin.get('source_sha256'), _origin.get('source_file_count')):
+            raise RuntimeError('Fixed snapshot differs from its build identity')
+        if len(str(_origin.get('git_sha', ''))) != 40 or _origin.get('git_dirty'):
+            raise RuntimeError('Fixed snapshot requires a clean producing commit')
     print('Validated native/Tcl inputs pinned before collection:', _pin_root)
 pyz = PYZ(a.pure)
 
