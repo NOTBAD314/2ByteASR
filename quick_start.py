@@ -224,6 +224,9 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == '--caption-provider-self-test':
         from twobyteasr.acceptance.caption_provider_selftest import main as caption_self_test
         return caption_self_test(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == '--grouping-quality-audit':
+        from twobyteasr.acceptance.qwen31_grouping_audit import main as quality_audit
+        return quality_audit(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--asr-provider-self-test':
         from twobyteasr.acceptance.stage9_acceptance_audit import main as asr_self_test_main
         return asr_self_test_main(sys.argv[2])

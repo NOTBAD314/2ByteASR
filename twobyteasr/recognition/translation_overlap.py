@@ -4,10 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 from types import SimpleNamespace
+from dataclasses import replace
+from ..glossary.translation_terms import normalize
 
 
 def binding(cues, context):
     material = [context.task_language, context.subtitle_output, context.translation_script,
+                normalize(context.translation_terminology),
                 [(str(cue.cue_id), cue.text, str(getattr(cue, 'speaker', 'S00'))) for cue in cues]]
     return hashlib.sha256(json.dumps(material,ensure_ascii=False).encode('utf-8')).hexdigest()
 
@@ -15,7 +18,9 @@ def binding(cues, context):
 class TranslationTask:
     def __init__(self, cues, context, legacy):
         from .run_context import ContextExecutor
-        self.context, self.legacy = context, legacy
+        self.live_context, self.legacy = context, legacy
+        self.context = replace(context, root_context=getattr(context,"root_context",None) or context,
+            translation_terminology=normalize(context.translation_terminology))
         self.binding = binding(cues, context)
         # Only translation's actual inputs: no project/evidence deep copy.
         frozen = [SimpleNamespace(cue_id=cue.cue_id, text=cue.text, start=cue.start, end=cue.end,
@@ -34,7 +39,7 @@ class TranslationTask:
     def result(self, cues):
         from .run_context import context_is_current
         value, reviews = self.future.result()
-        if not context_is_current(self.context) or binding(cues,self.context) != self.binding:
+        if not context_is_current(self.live_context) or binding(cues,self.live_context) != self.binding:
             self.legacy.record_run_event('translation_late_result_rejected', input_version=self.binding)
             return None
         self.legacy.extend_review_items(reviews)

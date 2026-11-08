@@ -208,7 +208,7 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["PySide6.QtNetwork", "PIL.Image", "PIL.GifImagePlugin", "PIL.PngImagePlugin", "sqlite3", "qtawesome", "oss2", "oss2.defaults", "crcmod", *_mcp_hidden],
+    hiddenimports=["tkinter", "tkinter.messagebox", "PySide6.QtNetwork", "PIL.Image", "PIL.GifImagePlugin", "PIL.PngImagePlugin", "sqlite3", "qtawesome", "oss2", "oss2.defaults", "crcmod", *_mcp_hidden],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -258,14 +258,22 @@ if _pin_root:
     # Source-only snapshots omit unmodified images and API-guide assets.
     # Retain the verified predecessor's resources before collection too.
     _known = {entry[0].replace('\\', '/') for entry in a.binaries + a.datas}
-    for _resource_folder in ('assets', 'docs'):
+    for _resource_folder in ('assets', 'docs', '_tcl_data', '_tk_data', 'tcl8',
+                             'renderer/prebuilt-export', 'third_party'):
         for _resource in sorted((_pin_root / _resource_folder).rglob('*')):
             if not _resource.is_file():
                 continue
             _destination = _resource.relative_to(_pin_root).as_posix()
             if _destination not in _known:
-                a.datas.append((_destination, str(_resource), 'DATA'))
+                if _resource.suffix.lower() in {'.dll', '.pyd'}:
+                    a.binaries.append((_destination, str(_resource), 'BINARY'))
+                else:
+                    a.datas.append((_destination, str(_resource), 'DATA'))
                 _known.add(_destination)
+    for _retained_name in ('_tkinter.pyd', 'tcl86t.dll', 'tk86t.dll', '2ByteASRUpdater.exe'):
+        _retained_file = _pin_root / _retained_name
+        if _retained_name not in _known and _retained_file.is_file():
+            a.binaries.append((_retained_name, str(_retained_file), 'BINARY'))
     # Finalize provenance after a valid Analysis cache is reused; changing
     # only build identity must not force analysis of unchanged Python code.
     from twobyteasr.diagnostics.build_identity import write_build_metadata

@@ -294,7 +294,7 @@ def attach_timeline_result(result, snapshot):
 # describe its own anonymous result, so the captured project keeps its own.
 _RANGE_KEPT_METADATA = ("translations", "translation_records", "speaker_names", "asr_cue_states",
                         "asr_replacement_mapping", "cue_forced_alignment", "speaker_recovery",
-                        "speaker_recovery_error", "transcript_acceptance")
+                        "speaker_recovery_error", "transcript_acceptance", "speech_coverage")
 
 
 _FULL_RESULT_CAPTION_METADATA=(*_RANGE_KEPT_METADATA,"language","subtitle_output",
@@ -318,6 +318,8 @@ def _attach_range_result(captured, result, snapshot):
     for key in _RANGE_KEPT_METADATA:
         metadata.pop(key, None)
     metadata.update(kept)
+    if 'speech_coverage' not in kept and result.generation_metadata.get('speech_coverage'):
+        metadata['speech_coverage'] = copy.deepcopy(result.generation_metadata['speech_coverage'])
     captured.report_path = result.report_path
     captured.original_outputs = copy.deepcopy(result.original_outputs)
     info = {"fingerprint": snapshot["fingerprint"],

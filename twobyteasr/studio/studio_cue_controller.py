@@ -750,6 +750,8 @@ class StudioCueController:
         page = self.page
         dirty = delta.dirty
         affected = set(delta.affected_cue_ids)
+        from ..timeline.studio_caption_timeline import independent_captions
+        editor_splice = delta.action_id in {'caption_editor_preview', 'caption_editor_commit'} and independent_captions(project)
         if dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
                     | DirtyDomain.QC | DirtyDomain.CLIP_STATUS | DirtyDomain.PROJECT_METADATA
                     | DirtyDomain.SEQUENCE_STRUCTURE):
@@ -780,7 +782,10 @@ class StudioCueController:
                 cue.id: page._manual_text_baselines.get(cue.id, cue.text)
                 for cue in project.cues
             }
-            page.cue_model.refresh()
+            if editor_splice:
+                page.cue_model.refresh_caption_splice(affected)
+            else:
+                page.cue_model.refresh()
             if delta.selection_after != self.session.selected_cue_id:
                 self.session.selected_cue_id = delta.selection_after
         elif dirty & (
@@ -819,7 +824,10 @@ class StudioCueController:
             timing.request_warm()
 
         if dirty & DirtyDomain.TIMELINE_INDEX and not sequence_handled:
-            page.timeline.reindex_project(repaint=False)
+            if editor_splice:
+                page.timeline.patch_caption_index(affected)
+            else:
+                page.timeline.reindex_project(repaint=False)
             page.timeline.invalidate_ranges(delta.affected_ranges, affected)
         elif dirty & DirtyDomain.TIMELINE_PIXELS and not sequence_handled:
             if affected:

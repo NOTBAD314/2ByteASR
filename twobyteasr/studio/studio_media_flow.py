@@ -1826,6 +1826,8 @@ class StudioMediaFlowMixin:
             recognize.setVisible(not getattr(self, "_recognition_running", False))
         from .language_recovery_ui import sync_action
         sync_action(self)
+        from .speech_recovery_ui import sync_action as sync_speech_recovery
+        sync_speech_recovery(self)
 
     def _recognition_show_status(self, stage: str, detail: str = "") -> None:
         self._recognition_stage_message = stage

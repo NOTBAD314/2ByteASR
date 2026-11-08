@@ -2171,7 +2171,7 @@ CACHE_STAGE_VERSIONS = {
 # API 阶段只依赖各自逻辑版本，不再散列整个 6800 行模块。以后修改时间轴、
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
-GROUP_LOGIC_VERSION = "group-v61-source-edge-short-tail-rebalance"
+GROUP_LOGIC_VERSION = "group-v62-quality-source-windows"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
 TIMING_LOGIC_VERSION = "timing-v14-positive-acoustic-cut-edges"
 
@@ -2616,12 +2616,19 @@ def run_timed_stage(index, total, label, resource, runner):
             traceback=redact_runtime_secrets(traceback.format_exc()),
         )
         raise
+    from twobyteasr.recognition.vad import VadRegions, completion_label
+    execution = {}
+    if isinstance(value, VadRegions):
+        execution = value.execution
+        label = completion_label(value)
+        get_runtime_context().vad_execution = dict(execution)
     elapsed = time.perf_counter() - started
     record_run_event(
         "stage_completed",
         index=index,
         label=label,
         elapsed_seconds=round(elapsed, 3),
+        **execution,
     )
     print(f"[阶段完成] {label}：{format_elapsed(elapsed)}", flush=True)
     return value

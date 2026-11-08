@@ -82,7 +82,7 @@ def test_budget_uses_real_context_and_output_limit_is_incomplete():
     assert worker.generation_budget(223.296,3200,131072)==(5360,5360)
     assert worker.generation_budget(1000,13000,16000)==(2968,24000)
     with pytest.raises(ValueError):worker.generation_budget(223.296,130000,131072)
-    assert worker.ending_assessment(5360,5360,151645,151645)==("token_limit",False)
+    assert worker.ending_assessment(5360,5360,151645,151645)==("eos_at_token_limit",True)
     assert worker.ending_assessment(4000,5360,151645,151645)==("eos",True)
     assert worker.ending_assessment(4000,5360,99,151645)==("unexpected_stop",False)
 

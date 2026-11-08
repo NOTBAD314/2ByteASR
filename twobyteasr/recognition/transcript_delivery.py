@@ -39,7 +39,7 @@ def report_counts(report):
 
 
 def terminal_status(counts, final_cues, *, degraded=False):
-    if counts.get('pending_range_count'):
+    if counts.get('pending_range_count') or counts.get('speech_gap_count'):
         return 'needs_recovery' if not final_cues else 'partial_recovery'
     if not final_cues:
         return 'empty_result'

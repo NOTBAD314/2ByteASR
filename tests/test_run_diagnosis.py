@@ -307,7 +307,7 @@ def test_a_filled_content_review_gap_is_a_finished_task_with_a_note():
     finding = diagnosis.findings[0]
     assert finding.rule_id == "cloud_asr_gap_filled" and finding.issue.severity == "problem"
     assert specific_text(finding, "zh") == "被拦下的时间：21:16–41:46；补识别用的是本地 Qwen3-ASR 1.7B。"
-    assert finding.issue.actions == ("studio", "mosi_resplit")
+    assert finding.issue.actions == ("studio", "model_workshop")
 
 
 @pytest.mark.parametrize("reason, why", [("no_local_model", "这台电脑上没有能补这段语言的本地主力模型。"),
@@ -319,7 +319,7 @@ def test_an_unfilled_content_review_gap_names_the_range_and_why(reason, why):
     finding = diagnosis.findings[0]
     assert finding.rule_id == "cloud_asr_gap_unfilled"
     assert specific_text(finding, "zh") == "被拦下的时间：21:16–41:46。" + why
-    assert finding.issue.actions == ("model_workshop", "mosi_resplit")
+    assert finding.issue.actions == ("model_workshop", "studio")
     assert specific_text(finding, "en").endswith(".") and "21:16–41:46" in specific_text(finding, "en")
 
 
@@ -343,7 +343,7 @@ def test_a_task_failed_by_a_block_it_could_not_fill_keeps_the_failure_cause():
                          models={"primary_asr_backend": "api"})
     found = ids(data, ai_ready=True)
     assert found[0] == "cloud_asr_content_blocked" and "cloud_asr_gap_unfilled" not in found
-    assert "mosi_resplit" in ISSUES["cloud_asr_content_blocked"].actions
+    assert "mosi_resplit" not in ISSUES["cloud_asr_content_blocked"].actions
 
 
 @pytest.mark.parametrize("error, issue", [
@@ -525,3 +525,12 @@ def test_plain_report_is_redacted_and_lists_findings():
 def test_severity_and_confidence_constants():
     assert SEVERITIES[0] == "blocker" and CONFIDENCES[0] == "certain"
     assert diagnosis_checks.ai_category_issue("", "HTTP 429 Too Many Requests") == "ai_rate_limited"
+
+
+def test_later_filled_gap_does_not_hide_an_earlier_unfilled_one():
+    pending = _gap_event(gap_id='first', filled=False, rows=0, reason='no_local_model', ranges=[[10,20]])
+    recovered = _gap_event(gap_id='second', filled=True, ranges=[[40,50]])
+    data = with_settings(report(events=report()['events']+[pending,recovered]), models={'primary_asr_backend':'api'})
+    diagnosis = diagnose_run(DiagnosisInput(report=data, ai_ready=True))
+    found = {finding.rule_id for finding in diagnosis.findings}
+    assert 'cloud_asr_gap_unfilled' in found and 'cloud_asr_gap_filled' not in found

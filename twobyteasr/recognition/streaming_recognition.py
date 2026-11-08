@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .run_context import ContextExecutor, local_runtime_context
 
-VERSION = 'ready-native-shards-v4-chinese-acoustic-dependencies'
+VERSION = 'ready-native-shards-v6-scored-vad-translation-names'
 STRIDE = 1_000_000
 
 
@@ -115,7 +115,7 @@ class LongMediaPipeline:
         self.lock = threading.RLock()
         self.vad_ready = threading.Event()
         self.speech_regions = []
-        self.piece_vad=False;self.vad_by_index={};self.vad_events={}
+        self.piece_vad=False;self.vad_by_index={};self.vad_events={};self.vad_execution_by_index={};self.vad_execution={}
         self.inputs, self.futures, self.coarse, self.results = {}, {}, {}, {}
         self.total = 0
         self.extra_nodes = set()
@@ -174,11 +174,13 @@ class LongMediaPipeline:
         return [row for row in tokens if float(row['end'])>=bounds[0]-2. and float(row['start'])<=bounds[1]+2.]
 
     def set_vad(self, regions):
+        self.vad_execution=dict(getattr(regions,'execution',{}))
         self.speech_regions = list(regions or [])
         self.vad_ready.set()
 
-    def set_piece_vad(self,index,regions):
+    def set_piece_vad(self,index,regions,*,execution=None):
         with self.lock:
+            self.vad_execution_by_index[index]=dict(execution or {})
             self.vad_by_index[index]=list(regions)
             self.speech_regions=[row for values in self.vad_by_index.values() for row in values]
             self.vad_events.setdefault(index,threading.Event()).set()
@@ -210,6 +212,7 @@ class LongMediaPipeline:
             glossary=getattr(self.context.glossary_snapshot,'digest',None),
             providers={key:value.fingerprint for key,value in self.context.provider_snapshots.items()},
             output=self.context.subtitle_output,target=self.context.translation_script,
+            translation_terminology=self.context.translation_terminology,
             grouping=bool(self.text_plan.group),polish=bool(self.text_plan.polish)))
         with self.lock:
             if self.closed:
@@ -293,6 +296,13 @@ class LongMediaPipeline:
                 return None
             data=saved['data']
             if data.get('incomplete_roles'):return None
+            from .vad import ALGORITHM
+            execution=data.get('vad_execution') or {}
+            if (execution.get('algorithm_version') != ALGORITHM or not execution.get('actual_backend')
+                    or execution.get('degraded')):return None
+            current=self.vad_execution_by_index.get(data.get('index'),self.vad_execution)
+            if current and any(execution.get(key) != current.get(key)
+                    for key in ('requested_backend','actual_backend','algorithm_version')):return None
             from .caption_arbitration import placeholder_transcript
             if any(placeholder_transcript(row.get('text')) for row in data['segments']):return None
             cues=self.legacy.deserialize_cues(data['cues'])
@@ -310,7 +320,11 @@ class LongMediaPipeline:
         cues=self.legacy.serialize_cues(result.cues)
         for row,cue in zip(cues,result.cues):
             if getattr(cue,'forced_alignment',None):row['forced_alignment']=cue.forced_alignment
-        data=dict(index=result.index,primary=result.primary,segments=self.legacy.serialize_segments(result.segments),
+        execution=self.vad_execution_by_index.get(result.index,self.vad_execution)
+        if execution.get('degraded'):
+            self.legacy.record_run_event('ready_shard_cache_skipped',reason='degraded_vad',index=result.index,execution=execution)
+            return
+        data=dict(vad_execution=execution,index=result.index,primary=result.primary,segments=self.legacy.serialize_segments(result.segments),
                   cues=cues,translation=result.translation,reviews=result.reviews,
                   incomplete_roles=bool(getattr(result,'incomplete_roles',False)),polishing_summary=result.polishing_summary)
         write_text_atomic(path,json.dumps(dict(version=result.version,checksum=_digest(data),data=data),ensure_ascii=False))
@@ -324,8 +338,13 @@ class LongMediaPipeline:
                 result.primary=raw
                 with self.legacy.capture_review_items() as reviews:
                     path=self.root/f'r{index+1:03}-{version}.json'
+                    with self.lock:
+                        ready=self.vad_events.setdefault(index,threading.Event()) if self.piece_vad else self.vad_ready
+                    while not ready.wait(.1):self._check()
+                    self._check()
                     fresh=any((local.force_refresh_api_cache,local.force_refresh_polish_cache,local.force_refresh_group_cache))
-                    cached=None if fresh else self._load(path,version)
+                    execution=self.vad_execution_by_index.get(index,self.vad_execution)
+                    cached=None if fresh or execution.get('degraded') else self._load(path,version)
                     if cached is not None:
                         result=cached
                         with self.lock:
@@ -339,10 +358,6 @@ class LongMediaPipeline:
                                 backend=str(self.legacy.FIRERED_ASR_BACKEND),segment_count=len(result.cues),
                                 execution='validated_shard_checkpoint')
                         return result
-                    with self.lock:
-                        ready=self.vad_events.setdefault(index,threading.Event()) if self.piece_vad else self.vad_ready
-                    while not ready.wait(.1):self._check()
-                    self._check()
                     primary=self._prepare_primary(index,raw,local)
                     result.primary=primary
                     with self.lock:
@@ -593,7 +608,8 @@ class LongMediaPipeline:
                     else:
                         if name in target and target[name] != items:raise ValueError('译文元数据配置冲突。')
                         target[name]=items
-        self.context.translation_ready=dict(binding=_digest([(str(c.cue_id),c.text,c.speaker) for c in cues]),
+        from .translation_overlap import binding
+        self.context.translation_ready=dict(binding=binding(cues,self.context),
                                            metadata=metadata)
         self.legacy.record_run_event('long_pipeline_completed',shards=self.total,cues=len(cues),
             phases={key:dict(value,wall_seconds=value['finished']-value['started']) for key,value in self.phase_stats.items()},

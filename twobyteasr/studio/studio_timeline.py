@@ -908,6 +908,35 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if repaint:
             self.update()
 
+    def patch_caption_index(self, affected):
+        """Replace caption index entries without rebuilding tracks or other text layouts."""
+        from ..projects.studio_runtime_state import state_for
+        runtime = state_for(self.project)
+        affected = set(affected)
+        by_id = self._timeline_cue_by_id
+        for key in affected:
+            by_id.pop(key, None)
+        by_id.update((c.id, c) for c in runtime.view_cues if c.id in affected)
+        cues = sorted(by_id.values(), key=lambda c: (c.start_ms, c.end_ms, c.id))
+        self._cues_by_start = cues
+        self._timeline_row_by_id = {c.id: i for i, c in enumerate(cues)}
+        self._cue_starts = [c.start_ms for c in cues]
+        maximum = 0
+        self._cue_prefix_max_ends = []
+        for cue in cues:
+            maximum = max(maximum, cue.end_ms)
+            self._cue_prefix_max_ends.append(maximum)
+        self._cue_interval_index = IntervalEndIndex(c.end_ms for c in cues)
+        if self._group_members:
+            self._rebuild_speaker_group(cues)
+        self._text_layout_cache = {key: value for key, value in self._text_layout_cache.items() if key[0] not in affected}
+        self._visible_cue_window_key = None
+        self._dense_cue_span_cache.clear()
+        self._indexed_caption_token = (id(self.project.cues), runtime.language_source_revision)
+        present = set(by_id)
+        self.translation_selected_ids.intersection_update(present)
+        self.active_cue_ids = self.active_cue_ids & present
+
     def _content_right(self) -> int:
         # _render_extra_px is non-zero only while the static picture is drawn
         # wider than the view for playback follow (_paint_timeline).

@@ -29,17 +29,25 @@ def compute_silence_ranges_ms(
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
     if samples.size < max(1, sample_rate):
         return []
-    duration_s = samples.size / float(sample_rate)
     frame = max(1, int(round(sample_rate * 0.030)))
     hop = max(1, int(round(sample_rate * 0.010)))
-    if samples.size < frame:
-        frames = samples.reshape(1, -1)
-    else:
-        count = 1 + (samples.size - frame) // hop
-        shape = (count, frame)
-        strides = (samples.strides[0] * hop, samples.strides[0])
-        frames = np.lib.stride_tricks.as_strided(samples, shape=shape, strides=strides)
-    rms = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1) + 1e-10)
+    from ..recognition.vad import bounded_rms
+    rms = bounded_rms(samples, frame, hop)
+    return _silence_ranges(rms, len(samples), sample_rate, min_silence_s, padding_s)
+
+
+def compute_silence_ranges_wav(path, *, min_silence_s=5.0, padding_s=.35, check=lambda: None):
+    from ..recognition.vad import wav_rms
+    rms, samples = wav_rms(path, check=check)
+    if samples < 16000:
+        return []
+    return _silence_ranges(rms, samples, 16000, min_silence_s, padding_s)
+
+
+def _silence_ranges(rms, sample_count, sample_rate, min_silence_s, padding_s):
+    duration_s = sample_count/float(sample_rate)
+    frame = max(1, int(round(sample_rate*.030)))
+    hop = max(1, int(round(sample_rate*.010)))
     peak = float(np.max(rms))
     floor = float(np.percentile(rms, 30))
     threshold = max(1e-4, floor * 2.2, peak * 0.025)

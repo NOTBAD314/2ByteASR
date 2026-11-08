@@ -310,6 +310,8 @@ class SubtitleStudioPage(
 
     @project.setter
     def project(self, value: SubtitleProject | None) -> None:
+        if getattr(self, '_caption_split_session', None) is not None and value is not self.session.project:
+            self._cancel_bound_caption_editor(trigger='project_changed')
         clear=getattr(getattr(self,'video',None),'clear_caption_boundaries',None)
         if callable(clear):clear()
         previous = self.session.runtime
@@ -1427,7 +1429,12 @@ class SubtitleStudioPage(
         follow_confirm = (getattr(self,'_caption_following',False) and isinstance(event,QKeyEvent) and (
             event.key() in {Qt.Key_Return,Qt.Key_Enter} and not event.modifiers() & Qt.ShiftModifier
             or event.key() in {Qt.Key_R,Qt.Key_W,Qt.Key_A,Qt.Key_D,Qt.Key_P}
-                and event.modifiers()==Qt.ShiftModifier))
+                and event.modifiers()==Qt.ShiftModifier
+            or event.key() == Qt.Key_C
+                and event.modifiers() in {Qt.NoModifier, Qt.ShiftModifier}
+            or getattr(self, '_caption_split_session', None) is not None
+                and event.key() in {Qt.Key_Z, Qt.Key_Y}
+                and event.modifiers() in {Qt.ControlModifier, Qt.ControlModifier | Qt.ShiftModifier}))
         follow_context = (follow_confirm and isinstance(watched,QWidget) and (
             watched in {self,self.timeline,self.cue_table,self.cue_table.viewport()}
             or self.timeline.isAncestorOf(watched)))
@@ -1668,6 +1675,11 @@ class SubtitleStudioPage(
         """
         from .shortcut_registry import normalize
         sequence = normalize(sequence)
+        if getattr(self, '_caption_following', False) and (
+                sequence.casefold() in {'c', 'shift+c'} or
+                getattr(self, '_caption_split_session', None) is not None
+                and sequence.casefold() in {'ctrl+z', 'ctrl+y', 'ctrl+shift+z'}):
+            return False  # Native dispatch leaves these keys to the bound window.
         if self._editing_has_focus() or getattr(self,"_studio_ime_composing",False):
             # Do not record literal typing. Only modified application shortcuts
             # have a meaningful blocked-command diagnostic here. The record
@@ -2744,6 +2756,9 @@ class SubtitleStudioPage(
             raise TimeoutError("自动保存仍在写入；正式保存未阻塞界面，可稍后重试。")
 
     def _autosave(self) -> None:
+        if getattr(self, '_caption_split_session', None) is not None:
+            self._autosave_timer.start(1000)
+            return
         if self._studio_preferences().get('autosave_enabled', True) is False:
             return
         from ..projects.persistence_queue import queue_for
@@ -2768,6 +2783,9 @@ class SubtitleStudioPage(
             self._start_autosave_worker(self._autosave_generation)
 
     def _start_autosave_worker(self, generation: int, *, draft_only: bool = False) -> None:
+        if getattr(self, '_caption_split_session', None) is not None:
+            self._autosave_timer.start(1000)
+            return
         from ..projects.persistence_queue import SaveRequest, queue_for
         from ..projects.studio_save import capture_manual_save
         from ..projects.editor_recovery import detach_snapshot
@@ -2849,6 +2867,9 @@ class SubtitleStudioPage(
 
     def flush_autosave(self) -> Path | None:
         """Synchronously preserve the latest dirty state during normal shutdown."""
+        if getattr(self, '_caption_split_session', None) is not None:
+            self._autosave_timer.start(1000)
+            return None
         if not self.project or (self.undo_stack.isClean() and not self._recovered_autosave_pending):
             return None
         self._capture_studio_state()
@@ -3680,6 +3701,8 @@ class SubtitleStudioPage(
         """Make close visible immediately, then finish process cleanup off the GUI thread."""
         if self._close_requested:
             return float(self.last_close_profile.get("visible_response_ms", 0.0))
+        if getattr(self, '_caption_split_session', None) is not None:
+            self._cancel_bound_caption_editor(trigger='page_close')
         self._close_requested = True
         self._retire_library_work()
         export = getattr(self, 'export_workspace', None)

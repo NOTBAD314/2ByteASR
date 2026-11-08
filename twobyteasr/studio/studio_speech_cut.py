@@ -96,7 +96,6 @@ def analyze_speech_pauses(project, work, *, mode='smart', minimum_s=1.0, padding
     from ..runtime_paths import detect_install_root, resolve_model_dir
     from ..system.runtime_registry import resolve_runtime_python
     from ..timeline.studio_edit_sequence import projected_cues
-    import numpy as np
     started=time.monotonic()
     work=Path(work);work.mkdir(parents=True,exist_ok=True)
     snapshot=capture_recognition_snapshot(project)
@@ -108,7 +107,8 @@ def analyze_speech_pauses(project, work, *, mode='smart', minimum_s=1.0, padding
     if mode=='smart':
         model=resolve_model_dir('FireRedVAD')
         python=resolve_runtime_python('main',register=False)
-        worker=root/'firered_vad_worker.py'
+        worker=root/'workers/firered_vad_worker.py'
+        if not worker.is_file():worker=root/'firered_vad_worker.py'
         if not (model/'VAD/model.pth.tar').is_file() or not python or not worker.is_file():
             raise RuntimeError('模型未准备好：智能口播需要本地 FireRedVAD 和主运行库；可到模型工坊准备，或手动选择“仅静音”。不会自动启动 MOSS 或云端识别。')
     progress('准备当前时间轴音频',0,snapshot['duration_ms']/1000)
@@ -132,7 +132,9 @@ def analyze_speech_pauses(project, work, *, mode='smart', minimum_s=1.0, padding
             '--output',str(result_file),'--chunk-seconds','30','--speech-padding-frames','0',
             '--progress-file',str(progress_file)],work,'voice-detect',request,poll)
         detected=json.loads(result_file.read_text('utf8'))
-        speech=[(round(s['start']*1000),round(s['end']*1000)) for s in detected['regions']]
+        from ..recognition.vad import decode
+        detected_regions=decode(detected)
+        speech=[(round(s['start']*1000),round(s['end']*1000)) for s in detected_regions]
         # Existing subtitles protect possible missed words; their absence is
         # never used as evidence of a pause or of speaker ownership.
         speech += [(c.start_ms,c.end_ms) for c in projected_cues(project)]
@@ -140,11 +142,10 @@ def analyze_speech_pauses(project, work, *, mode='smart', minimum_s=1.0, padding
         diagnostic=('未获得可靠人声区间，保守保留整段；请检查目标音轨或试听' if not stats['speech_regions'] else
             '停顿均短于阈值或保护后过短' if stats['short_pauses'] or stats['protected_pauses'] else '检测到人声较连续')
     else:
-        from .studio_autocut import compute_silence_ranges_ms
-        with wave.open(str(wav),'rb') as stream:
-            samples=np.frombuffer(stream.readframes(stream.getnframes()),dtype='<i2').astype(np.float32)/32768
+        from .studio_autocut import compute_silence_ranges_wav
         progress('检测低音量区间',duration/1000,duration/1000)
-        ranges=compute_silence_ranges_ms(samples,16000,min_silence_s=minimum_s,padding_s=padding_s)
+        ranges=compute_silence_ranges_wav(wav,min_silence_s=minimum_s,padding_s=padding_s,
+                                        check=lambda:_check_cancel(request))
         candidates=[{'start_ms':max(a,lo),'end_ms':min(b,hi),'reason':'仅静音：自适应低能量检测（不等于无口播）',
             'confidence':'低 · 仅按音量'} for a,b in ranges for lo,hi in coverage if min(b,hi)-max(a,lo)>=250]
         stats={};diagnostic='没有检出符合阈值的低音量停顿'
@@ -154,7 +155,9 @@ def analyze_speech_pauses(project, work, *, mode='smart', minimum_s=1.0, padding
         + [c.timeline_out_ms for t in project.audio_tracks for c in t.clips
            if t.id not in linked_audio or not c.linked_video_clip_id]+[0])
     editable_end=max((hi for lo,hi in coverage),default=0)
-    result={'mode':mode,'candidates':candidates,'stats':stats,'diagnostic':diagnostic if not candidates else '检测完成，尚未应用；请检查或试听候选',
+    from ..recognition.vad import receipt
+    execution=detected['execution'] if mode=='smart' else receipt('lightweight_vad','lightweight_vad',duration/1000)
+    result={'vad_execution':execution,'mode':mode,'candidates':candidates,'stats':stats,'diagnostic':diagnostic if not candidates else '检测完成，尚未应用；请检查或试听候选',
         'duration_ms':duration,'removed_ms':sum(c['end_ms']-c['start_ms'] for c in candidates),
         'fixed_end_ms':fixed_end,'editable_end_ms':editable_end,
         'elapsed_seconds':round(time.monotonic()-started,3),'audio_track_id':audio_track_id,

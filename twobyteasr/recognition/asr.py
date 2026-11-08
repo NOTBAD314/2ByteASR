@@ -1570,9 +1570,13 @@ def _api_transcription_rows(result, chunk):
 
     # 组 = [rel_start, rel_end, speaker, words, fallback_text, confidence]
     groups: list[list] = []
+    source_by_group = {}
     owners = {}
     for index, word in enumerate(words):
         candidates = [s for s in segments if float(s['start'])-.05 <= float(word['start']) < float(s['end'])+.05]
+        if word.get('sentence_id') is not None and any(s.get('sentence_id') is not None for s in candidates):
+            candidates = [s for s in candidates if s.get('sentence_id')==word['sentence_id']
+                          and s.get('channel_id',0)==word.get('channel_id',0)]
         # speaker_id 0 is a real speaker (Qwen-Audio-3.1 numbers from 0), not "unknown".
         matching = [s for s in candidates if _normalize_speaker_id(word.get('speaker')) is not None
                     and _normalize_speaker_id(s.get('speaker')) == _normalize_speaker_id(word.get('speaker'))]
@@ -1592,6 +1596,7 @@ def _api_transcription_rows(result, chunk):
                 [seg_start, seg_end, seg_speaker, [], segment.get("text", ""),
                  float(segment.get("confidence", 0.78))]
             )
+            source_by_group[id(groups[-1])] = segment
             continue
         from .transcript_fidelity import transcript_spans
         source_text = str(segment.get('text') or '')
@@ -1601,6 +1606,7 @@ def _api_transcription_rows(result, chunk):
         if spans is None:
             groups.append([seg_start, seg_end, seg_speaker, [], source_text,
                            float(segment.get('confidence', 0.78))])
+            source_by_group[id(groups[-1])] = segment
             continue
         current = None
         source_groups = []
@@ -1612,6 +1618,7 @@ def _api_transcription_rows(result, chunk):
                     "", float(segment.get("confidence", 0.78)),
                 ]
                 groups.append(current)
+                source_by_group[id(current)] = segment
                 source_groups.append((current, []))
             else:
                 current[1] = max(current[1], float(word["end"]))
@@ -1647,7 +1654,9 @@ def _api_transcription_rows(result, chunk):
     rows = []
     floor = base
     from .transcript_fidelity import clean_transcript
-    for rel_start, rel_end, speaker, group_words, fallback_text, confidence in groups:
+    content_cursor = 0
+    for group in groups:
+        rel_start, rel_end, speaker, group_words, fallback_text, confidence = group
         # 整组落在块外（如提供方越界 segment）：丢弃，不得造 0.02s 垃圾行
         if base + float(rel_start) >= limit - 0.02:
             continue
@@ -1687,6 +1696,20 @@ def _api_transcription_rows(result, chunk):
             "text": text,
             "confidence": float(confidence),
         }
+        original = source_by_group.get(id(group), {})
+        from ..subtitle_rules.text_rules import content_exact
+        length = len(content_exact(text))
+        row['provider_source'] = dict(
+            sentence_id=original.get('sentence_id'), channel_id=original.get('channel_id',0),
+            raw_sentence_text=str(original.get('text') or fallback_text),
+            content_start=content_cursor, content_end=content_cursor+length,
+            index_unit='content_exact_unicode_codepoints', text_domain='provider_transcript', time_domain='source_seconds',
+            request_offset=base, source_start=start, source_end=end,
+            valid_word_times=[dict(start=base+float(w['start']),end=base+float(w['end']),
+                text=_word_text(w)) for i,w in enumerate(words)
+                if (owners.get(i) is original and 0 <= float(w['start']) < float(w['end'])
+                    and start-.01 <= base+float(w['start']) < base+float(w['end']) <= end+.01)])
+        content_cursor += length
         native_source = result.get('timestamp_source')
         if native_source in {'qwen31_native', 'qwen3_filetrans_native', 'mosi_native'}:
             # Word rows carry provider word times; sentence rows only provider
@@ -2350,7 +2373,7 @@ def _filetrans_task_rows(result_payload, audio_seconds: float) -> dict:
     segments = []
     words = []
     for transcript in transcripts:
-        for sentence in transcript.get("sentences") or []:
+        for sentence_index, sentence in enumerate(transcript.get("sentences") or []):
             begin = max(0.0, float(sentence.get("begin_time") or 0) / 1000.0)
             end = max(begin, float(sentence.get("end_time") or 0) / 1000.0)
             segment = {
@@ -2358,6 +2381,8 @@ def _filetrans_task_rows(result_payload, audio_seconds: float) -> dict:
                 "end": end,
                 "text": str(sentence.get("text") or ""),
                 "confidence": 0.78,
+                "sentence_id": sentence.get("sentence_id", sentence_index),
+                "channel_id": transcript.get("channel_id",0),
             }
             speaker = sentence.get("speaker_id")
             if speaker is not None:
@@ -2371,6 +2396,8 @@ def _filetrans_task_rows(result_payload, audio_seconds: float) -> dict:
                     "text": str(word.get("text") or word.get("word") or "") + str(word.get("punctuation") or ""),
                     "confidence": 0.78,
                 }
+                entry["sentence_id"] = segment["sentence_id"]
+                entry["channel_id"] = segment["channel_id"]
                 word_speaker=word.get('speaker_id',speaker)
                 if word_speaker is not None:
                     entry["speaker"] = word_speaker
@@ -2841,13 +2868,17 @@ def write_pcm16_wav(path, audio):
     """从统一 float32 采样直接写 WAV，避免 ffmpeg 分段 seek 的时间取整。"""
     import numpy as np
 
-    pcm = np.clip(np.asarray(audio), -1.0, 1.0)
-    pcm = np.rint(pcm * 32767.0).astype("<i2", copy=False)
-    with wave.open(path, "wb") as wav_file:
+    samples = np.asarray(audio)
+    with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(AUDIO_SAMPLE_RATE)
-        wav_file.writeframes(pcm.tobytes())
+        for start in range(0, len(samples), AUDIO_SAMPLE_RATE*30):
+            _raise_if_queue_cancelled()
+            pcm = np.clip(samples[start:start+AUDIO_SAMPLE_RATE*30], -1.0, 1.0)
+            pcm = np.rint(pcm*32767.0).astype('<i2', copy=False)
+            wav_file.writeframes(pcm.tobytes())
+
 
 
 def _reported_worker_device(stdout):
@@ -2898,7 +2929,7 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
     from .model_execution import canonical_model_id
     worker_identity = dict(model_id=canonical_model_id(model_id), backend=model_id.lower(), pid=process.pid,
                            worker=str(entrypoint), runtime=str(command[0]),
-                           role='speaker_diarization' if model_id=='diarizen' else 'primary_transcription' if model_id in {'PRIMARY_API','vibevoice_1_5b','vibevoice_7b'} else 'asr_worker',
+                           role='voice_activity' if model_id=='firered_vad' else 'speaker_diarization' if model_id=='diarizen' else 'primary_transcription' if model_id in {'PRIMARY_API','vibevoice_1_5b','vibevoice_7b'} else 'asr_worker',
                            execution='worker_process_started', loaded=None)
     record_run_event('asr_worker_started', **worker_identity)
     record_run_event('MODEL_STARTED', **worker_identity)
@@ -2965,6 +2996,10 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                     record_run_event('MODEL_LOADED',model_id=model_id,backend=model_id,loaded=True,pid=process.pid,role=worker_identity['role'])
                 if event_handler is not None:event_handler(event)
                 continue
+            if line.startswith('[2BYTEASR_FIRERED_VAD] '):
+                detail = json.loads(line[len('[2BYTEASR_FIRERED_VAD] '):])
+                record_run_event('vad_worker_progress', model_id='firered_vad', worker_pid=process.pid,
+                    worker_state=detail.pop('event', 'progress'), **detail)
             marker='[2BYTEASR_FIRERED_AED] '
             if line.startswith(marker):
                 try:event=json.loads(line[len(marker):])
@@ -3019,14 +3054,26 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                                  + '\n\n' + log)
             error.problem = problem
             raise error
-        raise RuntimeError(
+        error = RuntimeError(
             f'模型运行时（{command[0]}）启动或执行失败。请在模型工坊校验与修复该模型运行环境。\n' + log)
+        if model_id == 'firered_vad':
+            progress = {}
+            for line in stdout.splitlines():
+                if line.startswith('[2BYTEASR_FIRERED_VAD] '):
+                    progress = json.loads(line[len('[2BYTEASR_FIRERED_VAD] '):])
+            error.vad_execution = dict(progress, status='partial_failed' if progress.get('processed_seconds',0) else 'failed')
+            record_run_event('MODEL_FAILED', model_id='firered_vad', backend='firered_vad',
+                role='voice_activity', reason=log[-1600:], execution=error.vad_execution)
+        raise error
     try:
         payload = json.loads(Path(output_path).read_text(encoding="utf-8"))
     except Exception as exc:
         raise RuntimeError(f"{model_id} worker produced no valid output: {exc}") from exc
     from twobyteasr.recognition.cache import record_run_event
     count = len(payload.get("results", [])) if isinstance(payload, dict) else 0
+    if model_id == 'firered_vad':
+        record_run_event('MODEL_COMPLETED', model_id='firered_vad', backend='firered_vad',
+            role='voice_activity', segment_count=len(payload.get('regions',[])), execution=payload.get('execution',{}))
     if model_id in {'diarizen','vibevoice_1_5b','vibevoice_7b'}:
         record_run_event('optional_worker_result',model_id=model_id,revision=payload.get('revision'),
             role=worker_identity['role'],interval_count=len(payload.get('intervals',[])),text_count=count,

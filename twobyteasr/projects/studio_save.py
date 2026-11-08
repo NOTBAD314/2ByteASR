@@ -25,6 +25,8 @@ from ..diagnostics.text_work import TextWork, measured
 @measured('save_snapshot')
 def capture_manual_save(page, project, generation):
     """Freeze the exact committed state, including legacy direct assignments."""
+    if getattr(page, '_caption_split_session', None) is not None:
+        raise RuntimeError('请先确认或取消当前字幕切割草稿')
     runtime = getattr(project, "_studio_state_runtime", None)
     if runtime is not None and runtime._active is not None:
         raise RuntimeError("不能在媒体编辑事务提交前保存工程")

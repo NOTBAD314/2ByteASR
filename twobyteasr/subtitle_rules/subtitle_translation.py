@@ -447,21 +447,22 @@ def statuses(project, *, target: str | None = None) -> dict[str, str]:
         current = {}
         for index, cue in enumerate(ordered):
             record = records.get(cue.id, {})
-            if result[cue.id] not in {DONE, MANUAL}:
+            if result[cue.id] != DONE:
                 continue
             direction = target or record.get('target') or default_target
-            context = [c.text for c in ordered[max(0,index-3):index]] + ['␞'] + [c.text for c in ordered[index+1:index+4]]
-            text = cue.text + '\n' + '\n'.join(context)
-            key = (direction, text)
+            text = cue.text
+            key = (direction, text, str(record.get('text') or ''), record.get('terminology_version'))
             cached = old.get(cue.id)
-            if cached is not None and cached[0] == key:
-                expected = cached[1]
+            if cached is not None and cached[0] == key and len(cached) == 3:
+                expected, needs_update = cached[1:]
                 count('status_rule_cache_hits')
             else:
+                from ..glossary.translation_terms import effective_policy, relevant, validation_issues
+                rules = relevant(effective_policy(policy, pairs, language, direction), language, direction, cue.text)
                 expected = rule_version(policy, pairs, language, direction, text)
-            current[cue.id] = (key, expected)
-            previous = record.get('terminology_version')
-            if expected != previous and (previous or expected):
+                needs_update = bool(validation_issues(cue.text, str(record.get('text') or ''), rules))
+            current[cue.id] = (key, expected, needs_update)
+            if needs_update:
                 result[cue.id] = NEEDS_UPDATE
         # One memo per instance. Exact inputs also detect direct assignments.
         project._translation_status_memo = (signature, current)
@@ -628,7 +629,7 @@ def _manual_term_version(source, cue_id, target, policy=None):
     cue = source.cue(cue_id)
     if cue is None: return ''
     return rule_version(policy or freeze(source.terminology), source.inline_pairs, source.language, target,
-                        cue.text + '\n' + '\n'.join(context_texts(source, cue_id)))
+                        cue.text)
 
 
 def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
@@ -1427,15 +1428,17 @@ _TARGET_RULES = {
 
 def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]], source_language: str = "",
                     target: str = DEFAULT_TARGET) -> list[dict]:
-    text = "\n".join(line.text for line in batch.lines)
+    from ..glossary.translation_terms import matched_pairs
     source_key = source_language_of(source_language)
     target_key = TARGET_LANGUAGE.get(normalize_target(target), "zh")
-    if source_key == "en":
-        lowered = text.casefold()
-        relevant = [{"en": term, target_key: value} for term, value in pairs if term.casefold() in lowered]
-    else:
-        relevant = [{source_key: term, target_key: value} for term, value in pairs if term in text]
-    return relevant[:MAX_GLOSSARY_PAIRS_PER_BATCH]
+    current = "\n".join(line.text for line in batch.lines if line.translate)
+    context = "\n".join(line.text for line in batch.lines if not line.translate)
+    required = matched_pairs(pairs, current, source_language)
+    reference = [pair for pair in matched_pairs(pairs, context, source_language) if pair not in required]
+    # The soft reference limit must never drop a currently required name.
+    selected = required + reference[:max(0, MAX_GLOSSARY_PAIRS_PER_BATCH-len(required))]
+    return [{source_key: term, target_key: value} for term, value in selected]
+
 
 
 def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, game_context: str = "",
@@ -1452,6 +1455,10 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
     source_language=source_language_of(source_language)
     label = TARGET_LABELS[target]
     pairs = normalize_glossary(glossary_pairs)
+    from ..glossary.translation_terms import effective_policy
+    terminology = effective_policy(terminology, pairs, source_language, target)
+    pairs = tuple((row['source'], row['target']) for library in terminology.value['libraries']
+                  if library['id'] == '__inline_translation__' for row in library['terms'])
     names = {str(k): str(v) for k, v in (speaker_names or {}).items() if str(v or "").strip()}
     lines = []
     for line in batch.lines:
@@ -1489,7 +1496,12 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
     if glossary:
         payload["glossary"] = glossary
     from ..glossary.translation_terms import relevant, PROMPT as TERM_PROMPT
-    terms = relevant(terminology, source_language, target, '\n'.join(line.text for line in batch.lines))
+    terms = relevant(terminology, source_language, target, '\n'.join(line.text for line in batch.lines if line.translate))
+    reference_terms = relevant(terminology, source_language, target, '\n'.join(line.text for line in batch.lines if not line.translate))
+    if reference_terms:
+        payload['context_terminology'] = reference_terms[:MAX_GLOSSARY_PAIRS_PER_BATCH]
+    payload['required_terms_by_id'] = {line.id: relevant(terminology, source_language, target, line.text)
+                                      for line in batch.lines if line.translate}
     if terms:
         payload['translation_terminology'] = terms
     payload["lines"] = lines
@@ -1590,13 +1602,17 @@ def _nontechnical_latin_letters(output: str, allowed: set[str]) -> int:
 
 
 def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARGET,
-                         source_language: str = "") -> str | None:
+                         source_language: str = "", *, terms=()) -> str | None:
     """Reason a single translation is unusable, or None when acceptable."""
     output = clean_translation(text)
     if not output:
         return "empty"
     if _TIMESTAMP.search(output):
         return "timestamp"
+    from ..glossary.translation_terms import validation_issues
+    missing = validation_issues(source_text, output, terms)
+    if missing:
+        return 'terminology_mismatch:' + '; '.join(f"{row['source']} → {row['target']}" for row in missing)
     source = normalize_source(source_text)
     target_language = TARGET_LANGUAGE.get(normalize_target(target), "zh")
     if (target_language=='zh' and source.casefold().strip(' .!?') in {'no','not','never','non','mai'}
@@ -1764,7 +1780,7 @@ def _payload_items(payload: Any) -> list | None:
 
 
 def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAULT_TARGET,
-                      source_language: str = "") -> tuple[dict[str, str], dict[str, str]]:
+                      source_language: str = "", *, terminology=None) -> tuple[dict[str, str], dict[str, str]]:
     """``(accepted {id: text}, problems {id: reason})`` for one batch.
 
     Unknown ids are reported under their own id; batch-level notes (order,
@@ -1810,7 +1826,9 @@ def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAU
         elif cue_id not in seen:
             problems.setdefault(cue_id, "missing")
         else:
-            reason = validate_translation(batch.source_text(cue_id), seen[cue_id], target, source_language)
+            from ..glossary.translation_terms import relevant
+            terms = relevant(terminology, source_language, target, batch.source_text(cue_id))
+            reason = validate_translation(batch.source_text(cue_id), seen[cue_id], target, source_language, terms=terms)
             if reason:
                 problems[cue_id] = reason
             else:
@@ -1894,6 +1912,8 @@ class TranslationResult:
     glossary_digest: str = ""
     term_versions: dict[str, str] = field(default_factory=dict)
     terms_bound: bool = False
+    inline_pairs_at_start: tuple | None = None
+    request_pairs: tuple = ()
     source_language_at_start: str | None = None
     terminology_warnings: dict[str, list] = field(default_factory=dict)
     overwrite_manual: bool = False
@@ -1919,6 +1939,7 @@ class TranslationResult:
     source_bounds: dict[str, tuple] = field(default_factory=dict)
     target_at_start: str | None = None
     discarded: dict[str, str] = field(default_factory=dict)
+    diagnostic: Any = field(default=None, repr=False)
 
     @property
     def succeeded(self) -> tuple[str, ...]:
@@ -1985,7 +2006,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
               overwrite_legacy: bool = False, suggest_for_manual: bool = True,
               max_items: int = 40, max_chars: int = 2400, context_cues: int = 3, timeout: float = 180.0,
               retry_wait: Callable[[float], bool] | None = None,
-              event: Callable[[dict], None] | None = None, workers: int = 1) -> TranslationResult:
+              event: Callable[[dict], None] | None = None, workers: int = 1, entrypoint: str = "translate") -> TranslationResult:
     """Translate cues in timeline-ordered batches; never mutates the project.
 
     ``workers`` > 1 sends that many first-round batches at once (2026-10-22:
@@ -2013,9 +2034,10 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     prompt_version = prompt_version_for(source_language, target)
     check = cancel_check or (lambda: False)
     pairs = normalize_glossary(glossary_pairs or source.inline_pairs)
-    from ..glossary.translation_terms import relevant, rule_version, violations, review_warnings, freeze
-    terminology = freeze(source.terminology)
-    digest = glossary_digest(pairs)
+    from ..glossary.translation_terms import relevant, rule_version, validation_issues, review_warnings, freeze
+    from ..glossary.translation_terms import effective_policy, digest as terms_digest
+    terminology = effective_policy(source.terminology, pairs, source_language, target)
+    digest = terms_digest(terminology.value)
     model = str(getattr(provider, "model", "") or "")
     provider_id = str(getattr(provider, "provider_id", "") or "")
     speaker_names = {cue.speaker_id: cue.speaker_name for cue in source.cues if cue.speaker_name}
@@ -2025,7 +2047,10 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                                prompt_version=prompt_version,
                                overwrite_manual=bool(overwrite_manual), overwrite_legacy=bool(overwrite_legacy),
                                requested=tuple(requested))
-    result.terms_bound = bool(source.terminology.get('libraries') or source.inline_pairs)
+    result.inline_pairs_at_start = source.inline_pairs
+    result.request_pairs = pairs
+    result.terms_bound = True
+    result.diagnostic = event
     result.source_language_at_start = source.language
     result.sources = {cue_id: source.cue(cue_id).text for cue_id in requested}
     result.project_id = source.project_id
@@ -2074,7 +2099,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         return provider_evidence(client(), exc)
 
     emit("started", requested=len(requested), source_language=source_language,
-         prompt_version=prompt_version)
+         prompt_version=prompt_version, entrypoint=entrypoint, glossary_digest=digest,
+         selected_ids=terminology.value["selected_ids"], enabled=terminology.value["enabled"])
 
     def report(message: str) -> None:
         if progress is not None:
@@ -2101,7 +2127,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     for cue_id in work:
         window = context_texts(source, cue_id, context_cues)
         contexts[cue_id] = _digest(window)
-        term_context = result.sources[cue_id] + '\n' + '\n'.join(window)
+        term_context = result.sources[cue_id]
         result.term_versions[cue_id] = rule_version(terminology, pairs, source_language, target, term_context)
         key_inputs=dict(target=target,model=model,provider=provider_id,glossary_digest=result.term_versions[cue_id],
                         prompt_version=prompt_version,extra=_digest([_cache_extra(source,cue_id,game_context),request_policy]))
@@ -2113,14 +2139,15 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 and rejected.get('source_sha')==source_sha(result.sources[cue_id])
                 and rejected.get('request_key')==cache_key(result.sources[cue_id],window,**key_inputs,
                     validation_version=str(rejected.get('validation_version') or ''))
-                and validate_translation(result.sources[cue_id],candidate,target,source_language) is None):
+                and validate_translation(result.sources[cue_id],candidate,target,source_language,
+                    terms=relevant(terminology, source_language, target, result.sources[cue_id])) is None):
             succeed(cue_id,clean_translation(candidate),True)
             emit('recovered_rejected_response',id=cue_id,previous_rule_version=rejected.get('validation_version'),
                  rule_version=VALIDATION_VERSION)
             continue
         hit = cache_lookup(cache, keys[cue_id])
         if (hit and validate_translation(result.sources[cue_id], hit, target, source_language) is None
-                and not violations(result.sources[cue_id], hit, relevant(terminology, source_language, target, result.sources[cue_id]))):
+                and not validation_issues(result.sources[cue_id], hit, relevant(terminology, source_language, target, result.sources[cue_id]))):
             succeed(cue_id, clean_translation(hit), True)
     if result.cache_hits:
         report(f"缓存命中 {len(result.cache_hits)} 条")
@@ -2150,7 +2177,12 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                                   speaker_names=speaker_names, source_language=source_language, math=math,
                                   terminology=terminology)
         with lock:
-            repair_hints=[{'id':cue_id,**validation_repairs[cue_id]} for cue_id in ids if cue_id in validation_repairs]
+            repair_hints=[{'id':cue_id, **validation_repairs[cue_id]}
+                          for cue_id in ids if cue_id in validation_repairs]
+        for hint in repair_hints:
+            required = relevant(terminology, source_language, target, result.sources[hint['id']])
+            if required:
+                hint.update(source=result.sources[hint['id']], required_terms=required)
         if repair_hints:
             from .translation_fidelity import quantities
             for hint in repair_hints:
@@ -2175,7 +2207,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             result.requests += 1
         report(f"第 {batch_no} 批：请求翻译 {len(ids)} 条，等待模型返回…")
         emit("request", batch=batch_no, ids=ids, max_tokens=max_tokens,
-             timeout=timeout, messages=messages, schema=RESPONSE_SCHEMA)
+             timeout=timeout, messages=messages, schema=RESPONSE_SCHEMA, glossary_digest=digest,
+             matched_entries=sum(len(rows) for rows in json.loads(messages[-1]['content']).get('required_terms_by_id', {}).values()))
         started = time.monotonic()
         retry_output_floor = output_floor
         delay = None
@@ -2212,11 +2245,11 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             emit("response", batch=batch_no, output=payload,
                  elapsed_seconds=round(time.monotonic() - started, 3), **evidence())
             validation_started = time.monotonic()
-            accepted, problems = validate_response(batch, payload, target, source_language)
+            accepted, problems = validate_response(batch, payload, target, source_language, terminology=terminology)
             if math:
                 accepted, problems = _restore_formulas(source, accepted, problems)
             for cue_id, text in list(accepted.items()):
-                missing = violations(result.sources[cue_id], text,
+                missing = validation_issues(result.sources[cue_id], text,
                     relevant(terminology, source_language, target, result.sources[cue_id]))
                 if missing:
                     emit('terminology_conflict', id=cue_id, offered=text, required=missing)
@@ -2226,6 +2259,11 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                  validation_seconds=time.monotonic()-validation_started)
             candidates={str(row.get('id')):str(row.get('translation',row.get('text',''))) for row in (_payload_items(payload) or ())
                         if isinstance(row,Mapping)}
+            for cue_id, reason in problems.items():
+                if reason.startswith('terminology_mismatch:'):
+                    emit('terminology_conflict', id=cue_id, offered=candidates.get(cue_id,''),
+                        cleaned=clean_translation(candidates.get(cue_id,'')),
+                        required=relevant(terminology, source_language, target, result.sources.get(cue_id,'')))
             with lock:
                 for cue_id in ids:
                     if cue_id not in problems:continue
@@ -2389,9 +2427,12 @@ def _discard_terminology_changes(project, result):
         from ..glossary.translation_terms import rule_version, freeze
         current_source = translation_source(project)
         current_policy = freeze(current_source.terminology)
+        current_pairs = current_source.inline_pairs
+        if result.inline_pairs_at_start is not None and current_pairs == result.inline_pairs_at_start:
+            current_pairs = result.request_pairs
         for cue_id in set(result.translations) | set(result.suggestions) | set(result.failed):
-            expected = rule_version(current_policy, current_source.inline_pairs,
-                current_source.language, result.target, result.sources.get(cue_id, '') + '\n' + '\n'.join(context_texts(current_source, cue_id)))
+            expected = rule_version(current_policy, current_pairs,
+                current_source.language, result.target, result.sources.get(cue_id, ''))
             if result.term_versions.get(cue_id) != expected:
                 result.discarded[cue_id] = 'terminology_changed'
                 result.translations.pop(cue_id, None)
@@ -2411,6 +2452,12 @@ def apply_translation_result(project, result: TranslationResult, *, commit=True)
     _discard_stale(project, result)
     _discard_translation_edits(project, result)
     if result.discarded and not (result.translations or result.failed):
+        if result.diagnostic is not None:
+            try:
+                result.diagnostic(dict(event='writeback', glossary_digest=result.glossary_digest,
+                    applied=[], failed={}, discarded=dict(result.discarded), summary=result.summary()))
+            except Exception:
+                pass
         return before, before
     if not commit:
         # Check live project/instance/content revisions first, then prepare only
@@ -2461,6 +2508,12 @@ def apply_translation_result(project, result: TranslationResult, *, commit=True)
             records[cue_id]['rejected_response']=copy.deepcopy(candidate)
     _append_history(container, {"kind": "ai", **result.summary(), "applied": applied})
     _rebuild_view(project)
+    if result.diagnostic is not None:
+        try:
+            result.diagnostic(dict(event='writeback', glossary_digest=result.glossary_digest,
+                applied=list(result.translations), failed=dict(result.failed), discarded=dict(result.discarded), summary=result.summary()))
+        except Exception:
+            pass
     return before, snapshot(project)
 
 

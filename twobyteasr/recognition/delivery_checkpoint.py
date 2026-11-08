@@ -9,7 +9,7 @@ import time
 from .task_journal import public_config, digest
 
 _FIELDS = ('task_language', 'requested_language', 'language_evidence', 'language_mode', 'language_decision',
-           'review_items', 'speaker_recovery', 'transcript_acceptance', 'terminology_status', 'polishing_summary',
+           'review_items', 'speech_coverage', 'speaker_recovery', 'transcript_acceptance', 'terminology_status', 'polishing_summary',
            'asr_manifest_key', 'asr_provisional_cues', 'recognition_snapshot', 'media_identity', 'studio_project_path')
 
 

@@ -42,10 +42,10 @@ def generation_budget(duration, input_tokens, context_limit):
 
 def ending_assessment(generated_tokens, budget, last_token, eos_ids):
     eos_ids = eos_ids if isinstance(eos_ids, (list, tuple)) else [eos_ids]
+    if generated_tokens and last_token in eos_ids:
+        return ("eos_at_token_limit" if generated_tokens >= budget else "eos"), True
     if generated_tokens >= budget:
         return "token_limit", False
-    if generated_tokens and last_token in eos_ids:
-        return "eos", True
     return "unexpected_stop", False
 
 
@@ -771,21 +771,186 @@ def parse_window_segments(raw_text, window_seconds, chunk_id, record, parse_tran
     """Native MOSS rows of one window (times relative to the window start)."""
     import re
     segments = []
+    repeated = 0
     for segment in parse_transcript(raw_text):
         text = str(segment.text).strip()
         if text:
             start, end = float(segment.start), float(segment.end)
-            if start < 0 or end <= start or end > window_seconds + 1:
+            if not math.isfinite(start + end) or start < 0 or end <= start or end > window_seconds + 1:
                 record["complete"] = False
                 record.setdefault("truncation_reasons", []).append("invalid_timestamp")
-            segments.append({"start": start, "end": end,
-                             "speaker": parsed_speaker_label(segment.speaker, chunk_id), "text": text})
+                continue
+            row = {"start": start, "end": end,
+                   "speaker": parsed_speaker_label(segment.speaker, chunk_id), "text": text}
+            if segments and row == segments[-1]:
+                repeated += 1
+            segments.append(row)
+    if repeated >= 3:
+        record['complete'] = False
+        record.setdefault('truncation_reasons', []).append('timestamp_stagnation')
+        record['repeated_identical_timestamps'] = repeated
     segments.sort(key=lambda row: (row["start"], row["end"]))
     # A parser can silently skip an unfinished final clause: retain a review flag.
-    if segments and not re.search(r"\[[0-9]+(?:\.[0-9]+)?\]\s*$", raw_text):
+    if raw_text and not re.search(r"\[[0-9]+(?:\.[0-9]+)?\]\s*$", raw_text):
         record["complete"] = False
         record.setdefault("truncation_reasons", []).append("unfinished_transcript_tail")
     return segments
+
+
+def coverage_tools():
+    # -I workers run beside a different Python ABI. Load the stdlib-only file
+    # directly, without adding the frozen GUI directory to sys.path.
+    import importlib.util
+    root = Path(__file__).resolve().parent
+    if root.name == 'workers':
+        root = root.parent
+    path = root / 'twobyteasr' / 'recognition' / 'speech_coverage.py'
+    spec = importlib.util.spec_from_file_location('moss_speech_coverage', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def recover_moss_window(chunk, record, model, processor, audio, messages, device, dtype,
+                        progress, parse_transcript, budget, persist=lambda: None):
+    """Keep valid native output, re-hear only missing ranges with bounded context."""
+    if record.get('complete'):
+        return
+    tools = coverage_tools()
+    duration = float(chunk['duration'])
+    valid = tools.text_ranges(chunk['segments'])
+    last = max((end for _, end in valid), default=0)
+    reasons = record.get('truncation_reasons', [])
+    targets = tools.subtract([(0, duration)], valid, minimum=1) if 'invalid_timestamp' in reasons else [(last, duration)]
+    targets = [(a, b) for a, b in targets if b-a >= 1]
+    gap = chunk.setdefault('recovery', dict(reason=list(reasons), attempts=[],
+                                           target_ranges=targets, remaining_ranges=targets))
+    targets = gap.setdefault('target_ranges', copy.deepcopy(gap['remaining_ranges']))
+    # High output density reduces the local window before a repeated generation
+    # can spend the same budget. This does not raise global max_new_tokens.
+    density = (record.get('generated_tokens') or 0) / max(1, last)
+    seconds = min(90.0, max(8.0, duration / 2), max(8.0, 1600 / max(1, density)))
+    queue = [(a, min(b, a+seconds), b) for a, b in gap['remaining_ranges']]
+    ops = progress.ops
+    while queue and len(gap['attempts']) < 12:
+        low, high, stop = queue.pop(0)
+        if progress.stop.is_set():
+            raise RuntimeError('MOSS recovery cancelled')
+        start = max(0, low-2)
+        end = min(duration, high+2)
+        if budget['requests'] >= budget.get('request_limit', 24) or budget['audio_seconds']+end-start > 1800 or budget.get('elapsed_seconds', 0) > 900:
+            gap['budget_exhausted'] = True
+            break
+        budget['requests'] += 1
+        budget['audio_seconds'] += end-start
+        attempt = dict(start=start, end=end, generation_attempts=0, retries=[])
+        before = time.monotonic()
+        local = audio[round(start*16000):round(end*16000)]
+        try:
+            raw = generate_full_context(model, processor, local, messages, device, dtype, progress, attempt)
+            attempt['raw_text'] = raw
+            recovered = parse_window_segments(raw, end-start, chunk['chunk_id'], attempt, parse_transcript)
+            shifted = [dict(row, start=start+row['start'], end=start+row['end'],
+                speaker=f"UNCONFIRMED_T{round(chunk.get('offset', 0)*16000)}_R{len(gap['attempts'])+1}_{row['speaker']}") for row in recovered]
+            chunk['segments'], accepted = tools.merge_rows(chunk['segments'], shifted, [(low, high)])
+            attempt['accepted_segments'] = len(accepted)
+        except Exception as exc:
+            attempt.update(error=str(exc)[:300], complete=False)
+            if ops is None or not ops.is_oom(exc):
+                attempt['error_category'] = type(exc).__name__
+            elif high-low > 16:
+                middle = (low+high)/2
+                queue[0:0] = [(low, middle, middle), (middle, high, high)]
+            exc.__traceback__ = None
+        attempt['elapsed_seconds'] = round(time.monotonic()-before, 3)
+        budget['elapsed_seconds'] = budget.get('elapsed_seconds', 0) + attempt['elapsed_seconds']
+        budget['generation_attempts'] = budget.get('generation_attempts', 0) + attempt['generation_attempts']
+        budget['generated_tokens'] = budget.get('generated_tokens', 0) + attempt.get('generated_tokens', 0)
+        gap['attempts'].append(attempt)
+        gap['remaining_ranges'] = tools.subtract(targets, tools.text_ranges(chunk['segments']), tolerance=.25, minimum=1)
+        persist()
+        if attempt.get('error_category'):
+            break
+        if high < stop:
+            queue.insert(0, (high, min(stop, high+seconds), stop))
+        del local
+        gc.collect()
+        if ops is not None:
+            ops.empty_cache()
+    # Original termination facts remain in the receipt even after recovery.
+    record['recovery'] = dict(attempts=len(gap['attempts']), remaining_ranges=gap['remaining_ranges'])
+    if not gap['remaining_ranges'] and all(a.get('complete') for a in gap['attempts']):
+        record['complete'] = True
+
+
+def window_checkpoint_path(payload, receipt, start, end):
+    directory = receipt.get('window_checkpoint_dir')
+    if not directory:
+        return None
+    signature = [receipt.get('task_audio_fingerprint'), payload.get('model'), GENERATION_POLICY,
+                 'bounded-recovery-v1', start, end]
+    key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
+    return Path(directory) / f'window-{key}.json'
+
+
+def seed_window_checkpoints(path, payload, receipt):
+    """Migrate retained native output, never admit an incomplete main cache.
+
+    Pre-fix workers saved all native windows in speaker-evidence even when
+    complete=False. Exact PCM and model identity let those successful windows
+    become checkpoints without transcribing the seven-hour input again.
+    """
+    if not path or not Path(path).is_file() or not receipt.get('window_checkpoint_dir'):
+        return
+    try:
+        prior = json.loads(Path(path).read_text('utf8'))
+        source = prior.get('execution', {})
+        if (prior.get('inference_mode') != INFERENCE_MODE or prior.get('cache_version') != CACHE_VERSION
+                or os.path.normcase(str(prior.get('model'))) != os.path.normcase(str(payload.get('model')))
+                or any(source.get(key) != receipt.get(key) for key in
+                       ('task_audio_fingerprint', 'sample_count', 'sample_rate'))):
+            return
+        chunks = prior.get('chunks') or []
+        records = source.get('windows') or []
+        if not chunks or len(chunks) != len(records):
+            return
+        bounds = [(float(c['offset']), float(c['offset'])+float(c['duration'])) for c in chunks]
+        duration = receipt['sample_count']/receipt['sample_rate']
+        if abs(bounds[0][0]) > 1e-6 or abs(bounds[-1][1]-duration) > .05:
+            return
+        if any(not 0 <= a < b <= duration+.01 for a,b in bounds):
+            return
+        if any(abs(a[1]-b[0]-WINDOW_POLICY['overlap_seconds']) > .01 for a,b in zip(bounds, bounds[1:])):
+            return
+        seeded = 0
+        for chunk, record, (start, end) in zip(chunks, records, bounds):
+            if not isinstance(chunk.get('raw_text'), str) or not isinstance(chunk.get('segments'), list):
+                return
+            checkpoint = window_checkpoint_path(payload, receipt, round(start*16000), round(end*16000))
+            if checkpoint.exists():
+                continue
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            kept = copy.deepcopy(chunk)
+            saved = copy.deepcopy(record)
+            kept['segments'] = [r for r in kept['segments'] if str(r.get('text') or '').strip()
+                and math.isfinite(float(r['start'])+float(r['end']))
+                and 0 <= float(r['start']) < float(r['end']) <= float(chunk['duration'])+.001]
+            if len(kept['segments']) != len(chunk['segments']):
+                saved['complete'] = False
+                saved.setdefault('truncation_reasons', []).append('invalid_timestamp')
+            saved.setdefault('retries', [])
+            saved['seeded_from_retained_output'] = True
+            atomic_write_json(checkpoint, dict(chunk=kept, record=saved))
+            seeded += 1
+        schedule = window_checkpoint_path(payload, receipt, 0, receipt['sample_count'])
+        schedule = schedule.with_name(schedule.name.replace('window-', 'schedule-'))
+        if not schedule.exists():
+            atomic_write_json(schedule, dict(bounds=bounds, clock='task_pcm_zero'))
+        receipt['seeded_window_checkpoints'] = seeded
+    except (OSError, ValueError, TypeError, KeyError):
+        # Corrupt/foreign artifacts remain untouched. Fresh generation retains
+        # the same checks and successful checkpoints already written.
+        return
 
 
 def run_windows(model, processor, audio, messages, device, dtype, progress, receipt, payload,
@@ -830,22 +995,61 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
                        f"还需要约 {need:.1f} GiB。请关闭其他占用内存的程序后重试，或改用云端识别等其他主力转写方式。")
         raise WindowCapacityError(message)
     queue = window_bounds(audio, duration, plan["count"], rate)
+    schedule_path = window_checkpoint_path(payload, receipt, 0, len(audio))
+    if schedule_path is not None:
+        schedule_path = schedule_path.with_name(schedule_path.name.replace('window-', 'schedule-'))
+        if schedule_path.is_file():
+            try:
+                stored = json.loads(schedule_path.read_text('utf8'))['bounds']
+                bounds = [(float(a), float(b)) for a,b in stored]
+                valid = bool(bounds) and abs(bounds[0][0]) < 1e-6 and abs(bounds[-1][1]-duration) < .05
+                valid = valid and all(0 <= a < b <= duration+.01 for a,b in bounds)
+                valid = valid and all(abs(left[1]-right[0]-policy['overlap_seconds']) < .01
+                                      for left,right in zip(bounds, bounds[1:]))
+                if valid:
+                    queue = bounds
+                    plan.update(count=len(bounds), checkpoint_schedule_reused=True)
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+        schedule_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(schedule_path, dict(bounds=queue, clock='task_pcm_zero'))
     first_inputs = None
     chunks, windows, attempts, splits = [], [], 0, 0
+    recovery_budget = dict(requests=0, audio_seconds=0.0, started=time.monotonic(),
+                           request_limit=receipt.get('recovery_request_budget', 24))
     while queue:
         start, end = queue.pop(0)
         low, high = int(round(start * rate)), min(len(audio), int(round(end * rate)))
         single = low == 0 and high == len(audio)
         window_audio = audio if single else np.ascontiguousarray(audio[low:high])
         record = {"generation_attempts": 0, "retries": []}
+        checkpoint_path = window_checkpoint_path(payload, receipt, low, high)
+        saved = None
+        if checkpoint_path is not None and checkpoint_path.is_file():
+            try:
+                saved = json.loads(checkpoint_path.read_text('utf8'))
+                if not (isinstance(saved.get('record'), dict) and isinstance(saved.get('chunk'), dict)
+                        and isinstance(saved['chunk'].get('raw_text'), str)
+                        and isinstance(saved['chunk'].get('segments'), list)
+                        and abs(float(saved['chunk']['offset'])-low/rate) < 1e-6
+                        and abs(float(saved['chunk']['duration'])-(high-low)/rate) < 1e-6):
+                    saved = None
+            except (OSError, ValueError, KeyError, TypeError):
+                saved = None
         progress.window = {"window_index": len(chunks) + 1, "window_count": len(chunks) + 1 + len(queue),
                            "window_start": round(low / rate, 3), "window_end": round(high / rate, 3)}
         progress.emit()
         ops.reset_peak()
         failure = None
         try:
-            raw_text = generate_full_context(model, processor, window_audio, messages, device, dtype,
-                                             progress, record, inputs=first_inputs)
+            if saved is not None:
+                record = saved['record']
+                raw_text = saved['chunk']['raw_text']
+                record['generation_attempts'] = 0
+                record['checkpoint_hit'] = True
+            else:
+                raw_text = generate_full_context(model, processor, window_audio, messages, device, dtype,
+                                                 progress, record, inputs=first_inputs)
         except Exception as exc:
             if not ops.is_oom(exc):
                 raise
@@ -867,6 +1071,9 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
                             lower=low / rate + 2 * policy["overlap_seconds"],
                             upper=high / rate - 2 * policy["overlap_seconds"], sample_rate=rate)
             queue[0:0] = [(low / rate, round(cut + half, 3)), (round(cut - half, 3), high / rate)]
+            if schedule_path is not None:
+                resolved = [(c['offset'], c['offset']+c['duration']) for c in chunks]
+                atomic_write_json(schedule_path, dict(bounds=[*resolved, *queue], clock='task_pcm_zero'))
             splits += 1
             receipt["retries"].append({"reason": "cuda_oom_window_split", "phase": phase,
                                        "window": [round(low / rate, 3), round(high / rate, 3)], "cut": cut,
@@ -888,9 +1095,19 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
         # Preserve native raw output even if parsing fails.
         atomic_write_json(output_path, payload)
         progress.set_phase("parsing")
-        chunk["segments"] = parse_window_segments(raw_text, (high - low) / rate, index, record, parse_transcript)
-        if single and not chunk["segments"]:
-            raise RuntimeError("MOSS 整段输出无法解析为说话人时间段；原始输出已保留。")
+        chunk["segments"] = (copy.deepcopy(saved['chunk']['segments']) if saved is not None else
+                             parse_window_segments(raw_text, (high - low) / rate, index, record, parse_transcript))
+        if saved is not None:
+            chunk.update(saved['chunk'], chunk_id=index)
+        def persist_window():
+            if checkpoint_path is not None:
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(checkpoint_path, dict(chunk=chunk, record=record))
+            atomic_write_json(output_path, payload)
+        persist_window()
+        recover_moss_window(chunk, record, model, processor, window_audio, messages, device, dtype,
+                            progress, parse_transcript, recovery_budget, persist_window)
+        persist_window()
         chunk.update(prompt_tokens=record.get("input_tokens"), max_new_tokens=record.get("max_new_tokens"),
                      generated_tokens=record.get("generated_tokens"), end_reason=record.get("end_reason"),
                      complete=bool(record.get("complete")))
@@ -898,6 +1115,9 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
                         **{key: record.get(key) for key in WINDOW_RECORD_KEYS if key in record},
                         "retries": record["retries"], "peak_allocated_gb": record["peak_allocated_gb"],
                         "segments": len(chunk["segments"])})
+        windows[-1]['checkpoint_hit'] = bool(record.get('checkpoint_hit'))
+        if chunk.get('recovery'):
+            windows[-1]['recovery'] = chunk['recovery']
         atomic_write_json(output_path, payload)
         del window_audio
         gc.collect()
@@ -919,6 +1139,14 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
                        complete=all(row.get("complete") for row in windows), truncation_reasons=reasons)
     receipt.update(generation_attempts=attempts, application_chunk_count=len(chunks), windows=windows,
                    window_mode="single_context" if len(chunks) == 1 else "context_windows")
+    receipt['recovery_cost'] = dict(request_count=recovery_budget['requests'],
+        audio_seconds=round(recovery_budget['audio_seconds'], 3),
+        elapsed_seconds=round(recovery_budget.get('elapsed_seconds', 0), 3),
+        generated_tokens=recovery_budget.get('generated_tokens', 0))
+    receipt['generation_attempts'] += recovery_budget.get('generation_attempts', 0)
+    receipt['window_cache_hits'] = sum(bool(w.get('checkpoint_hit')) for w in windows)
+    receipt['generated_tokens'] = (sum(w.get('generated_tokens', 0) for w in windows if not w.get('checkpoint_hit'))
+                                   + recovery_budget.get('generated_tokens', 0))
     segments = [row for chunk in chunks for row in chunk["segments"]]
     receipt.update(raw_segment_count=len(segments),
                    raw_speaker_distribution=dict(Counter(f"W{chunk['chunk_id']}:{row['speaker']}" if len(chunks) > 1
@@ -942,6 +1170,8 @@ def parse_args():
     parser.add_argument("--model", required=True)
     parser.add_argument("--title", default="")
     parser.add_argument("--checkpoint-dir", default="")
+    parser.add_argument("--recovery-request-budget", type=int, choices=range(25), default=24)
+    parser.add_argument("--resume-output", default="")
     parser.add_argument("--run-signature", default="")
     parser.add_argument("--task-audio-fingerprint", default="")
     # 2026-10-14: auto keeps "CUDA required" off macOS; on macOS auto = MPS, else CPU.
@@ -1155,14 +1385,25 @@ def resolve_model(requested, install_root):
 def atomic_write_json(path, payload):
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary = output.with_name(f'.{output.name}.{os.getpid()}.{threading.get_ident()}.tmp')
     try:
         with temporary.open("w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
-        os.replace(temporary, output)
+            file.flush()
+            os.fsync(file.fileno())
+        for attempt in range(20):
+            try:
+                os.replace(temporary, output)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(.05)
     finally:
-        if temporary.exists():
+        try:
             temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_chunk_checkpoint(checkpoint_dir, run_signature, job, job_index):
@@ -1229,6 +1470,8 @@ def main():
                "generation_attempts": 0, "retries": [], "cache_hit": False,
                "input_tokens": None, "max_new_tokens": None, "generated_tokens": None,
                "attention_backend": None, "dtype": None, "complete": False}
+    receipt['window_checkpoint_dir'] = args.checkpoint_dir
+    receipt['recovery_request_budget'] = args.recovery_request_budget
     payload = {"inference_mode": INFERENCE_MODE, "cache_version": CACHE_VERSION,
                "title": args.title, "execution": receipt, "chunks": []}
     heartbeat = threading.Thread(target=progress.heartbeat, daemon=True)
@@ -1258,6 +1501,11 @@ def main():
                        device_name=device_name, device_capability=capability)
         model_source = resolve_model(args.model, install_root)
         payload["model"] = model_source
+        receipt['model'] = model_source
+        receipt['worker_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        build_path = install_root / '2byteasr_build.json'
+        if build_path.is_file():
+            receipt['build_identity'] = json.loads(build_path.read_text('utf8'))
         _vendored_verify_model_files("moss", model_source, install_root=install_root)
         if Path(args.audio).suffix.lower() == ".npy":
             audio = np.load(args.audio, mmap_mode="r", allow_pickle=False)
@@ -1273,6 +1521,7 @@ def main():
                        application_chunk_count=len(jobs), clock="task_pcm_zero")
         if args.task_audio_fingerprint and fingerprint != args.task_audio_fingerprint:
             raise ValueError("worker完整任务音频指纹与调度器不一致。")
+        seed_window_checkpoints(args.resume_output, payload, receipt)
         progress.emit(**receipt)
         progress.set_phase("model_loading")
         ops.empty_cache()

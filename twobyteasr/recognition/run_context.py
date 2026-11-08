@@ -49,6 +49,7 @@ class RuntimeContext:
     asr_provisional_cues: list[dict[str, Any]] = field(default_factory=list)
     asr_manifest_key: str = ""
     speaker_recovery: dict[str, Any] = field(default_factory=dict)
+    speech_coverage: dict[str, Any] = field(default_factory=dict)
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     media_path: str = ""
     media_index: int = 1
@@ -80,6 +81,7 @@ class RuntimeContext:
     subtitle_output: str = "original"
     translation_script: str = "zh-Hans"
     translation_terminology: dict = field(default_factory=dict)
+    vad_execution: dict = field(default_factory=dict)
     selected_source_glossary_ids: list[str] = field(default_factory=list)
     # Script of Chinese subtitles: zh-Hans, or zh-Hant (converted before the
     # project is written, subtitle_rules.chinese_script; 2026-10-19).
@@ -118,6 +120,7 @@ class RuntimeContext:
         self.asr_provisional_cues.clear()
         self.asr_manifest_key = ""
         self.speaker_recovery.clear()
+        self.speech_coverage.clear()
         self.terminology_status.clear()
         self.polishing_summary.clear()
         self.committed_result_ref.clear()

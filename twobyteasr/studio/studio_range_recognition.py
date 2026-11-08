@@ -102,6 +102,9 @@ def apply_range_result(page, result_path, snapshot) -> bool:
         return False
     info = (result.generation_metadata.get("timeline_recognition") or {}).get("range") or {}
     if not result.cues:
+        from ..recognition.speech_recovery_project import failed_range_attempt
+        if failed_range_attempt(project, snapshot.get('range_ms'), 'no_usable_captions'):
+            page._changed()
         _note(page, tr('这一段没有生成可用字幕，已保留原字幕和人工修改'))
         return False
     from ..recognition.transcript_acceptance import pending_ranges

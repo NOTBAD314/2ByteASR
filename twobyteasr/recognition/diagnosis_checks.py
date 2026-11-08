@@ -362,24 +362,36 @@ def _gap_ranges(row: dict) -> str:
     return "、".join(f"{_clock(start)}–{_clock(end)}" for start, end in row.get("ranges") or ())
 
 
+def _gap_outcomes(facts):
+    latest = {}
+    for row in facts.events_named('cloud_asr_gap_fill'):
+        key = row.get('gap_id') or repr(row.get('ranges'))
+        latest[key] = row
+    return [row for row in latest.values() if row.get('status') != 'non_speech']
+
+
 @check("cloud_asr_gap_filled")
 def _cloud_gap_filled(facts: RunFacts):
-    row = facts.last_event("cloud_asr_gap_fill")
-    if facts.failed or not row or not row.get("filled"):
+    rows = _gap_outcomes(facts)
+    if facts.failed or not rows or any(not row.get('filled') for row in rows):
         return None
-    return found("cloud_asr_gap_filled", "certain", [_event_line(row, "ranges", "backend", "rows")],
-                 specific="被拦下的时间：{ranges}；补识别用的是本地 {model}。",
-                 ranges=_gap_ranges(row), model=str(row.get("model") or row.get("backend") or "?"))
+    ranges = [r for row in rows for r in row.get('ranges', [])]
+    models = list(dict.fromkeys(str(row.get('model') or row.get('backend') or '?') for row in rows))
+    return found('cloud_asr_gap_filled', 'certain', [_event_line(row, 'ranges', 'backend', 'rows') for row in rows],
+                 specific='被拦下的时间：{ranges}；补识别用的是本地 {model}。',
+                 ranges=_gap_ranges(dict(ranges=ranges)), model=' / '.join(models))
 
 
 @check("cloud_asr_gap_unfilled")
 def _cloud_gap_unfilled(facts: RunFacts):
-    row = facts.last_event("cloud_asr_gap_fill")
-    if facts.failed or not row or row.get("filled"):
+    rows = [row for row in _gap_outcomes(facts) if not row.get('filled')]
+    if facts.failed or not rows:
         return None
-    return found("cloud_asr_gap_unfilled", "certain", [_event_line(row, "ranges", "reason", "error")],
-                 specific="被拦下的时间：{ranges}。{why}", translate=("why",),
-                 ranges=_gap_ranges(row), why=GAP_FILL_REASONS.get(str(row.get("reason") or ""), ""))
+    ranges = [r for row in rows for r in row.get('remaining_ranges', row.get('ranges', []))]
+    row = rows[-1]
+    return found('cloud_asr_gap_unfilled', 'certain', [_event_line(r, 'ranges', 'reason', 'error') for r in rows],
+                 specific='被拦下的时间：{ranges}。{why}', translate=('why',),
+                 ranges=_gap_ranges(dict(ranges=ranges)), why=GAP_FILL_REASONS.get(str(row.get('reason') or ''), ''))
 
 
 @check("cloud_asr_failed")
@@ -813,8 +825,8 @@ def _primary_incomplete(facts: RunFacts):
     items = [row for row in facts.review_items if row.get("category") in {"主力转写提前结束", "主力转写不完整"}]
     # A transcript that stops where a range the cloud's content review stopped
     # begins is that gap (cloud_asr_gap_unfilled), not a cut-off (2026-10-24).
-    gap = facts.last_event("cloud_asr_gap_fill")
-    unfilled = [] if not gap or gap.get("filled") else gap.get("ranges") or []
+    unfilled = [r for gap in _gap_outcomes(facts) if not gap.get('filled')
+                for r in gap.get('remaining_ranges', gap.get('ranges', []))]
     items = [row for row in items if row.get("category") != "主力转写提前结束" or not any(
         float(start) - 1.0 <= float(row.get("timestamp") or 0) <= float(end) for start, end in unfilled)]
     coverage = facts.events_named("moss_full_context_coverage")

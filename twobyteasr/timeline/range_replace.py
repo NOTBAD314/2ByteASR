@@ -32,6 +32,8 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
             self._translations.after_view[cue_id] = record['text']
         self._translations.active = self._translations.active or bool(plan.translation_records)
         self._acceptance_before = copy.deepcopy(project.generation_metadata.get('transcript_acceptance'))
+        self._coverage_before = copy.deepcopy(project.generation_metadata.get('speech_coverage'))
+        self._coverage_after = None
         self._speaker_names_before = copy.deepcopy(project.generation_metadata.get('speaker_names'))
         self._recovery_metadata_before = {key:copy.deepcopy(project.generation_metadata.get(key))
             for key in ('speaker_recovery','asr_cue_states','superseded_asr_evidence','language')}
@@ -57,6 +59,20 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
     def _mutate(self, cues) -> None:
         super()._mutate(cues)
         forward = cues is self.after
+        if forward:
+            if self._coverage_after is None:
+                from ..recognition.speech_recovery_project import merge_project_range
+                if self._coverage_before is None and getattr(self.plan, 'coverage', None):
+                    self.project.generation_metadata['speech_coverage'] = copy.deepcopy(self.plan.coverage)
+                else:
+                    merge_project_range(self.project, self.plan)
+                self._coverage_after = copy.deepcopy(self.project.generation_metadata.get('speech_coverage'))
+            elif self._coverage_after:
+                self.project.generation_metadata['speech_coverage'] = copy.deepcopy(self._coverage_after)
+        elif self._coverage_before is None:
+            self.project.generation_metadata.pop('speech_coverage', None)
+        else:
+            self.project.generation_metadata['speech_coverage'] = copy.deepcopy(self._coverage_before)
         extra_ids = {s.id for s in self.plan.extra_speakers}
         if forward:
             known = {s.id for s in self.project.speakers}

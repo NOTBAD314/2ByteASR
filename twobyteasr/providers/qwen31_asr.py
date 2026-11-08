@@ -196,7 +196,7 @@ class SentenceRevisions:
             if not start <= end <= duration + .1:
                 raise ASRProtocolError('Flash句时间越出本请求范围')
             segment = dict(start=start, end=min(end, duration), text=str(row.get('text', '')),
-                           sentence_id=row['sentence_id'], timestamp_source='qwen31_native_sentence')
+                           sentence_id=row['sentence_id'], channel_id=row.get('channel_id',0), timestamp_source='qwen31_native_sentence')
             if row.get('speaker_id') is not None:
                 segment['speaker'] = row['speaker_id']
             segments.append(segment)
@@ -211,7 +211,8 @@ class SentenceRevisions:
                 if not start <= ws < we <= end + .01:
                     continue
                 entry = dict(start=ws, end=we, word=str(word.get('text', ''))+str(word.get('punctuation') or ''),
-                             timestamp_source='qwen31_native_word')
+                             timestamp_source='qwen31_native_word', sentence_id=row['sentence_id'],
+                             channel_id=row.get('channel_id',0))
                 if word.get('speaker_id', row.get('speaker_id')) is not None:
                     entry['speaker'] = word.get('speaker_id', row.get('speaker_id'))
                 words.append(entry)

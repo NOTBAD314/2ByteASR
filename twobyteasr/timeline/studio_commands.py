@@ -67,6 +67,9 @@ def _commit_mutation(
     if project.render_settings.get('_cue_domain') == 'timeline' and dirty & DirtyDomain.CUE_TIMING:
         dirty |= DirtyDomain.PROJECT_METADATA
     state = state_for(project)
+    if getattr(project, '_caption_preview_active', False):
+        dirty &= ~DirtyDomain.AUTOSAVE
+        action_id = 'caption_editor_preview'
     from ..subtitle_rules.current_issues import legacy_review_inputs, LEGACY_INPUTS
     legacy_inputs=legacy_review_inputs(project)
     target_ids = tuple(str(item) for item in cue_ids if str(item))
@@ -197,6 +200,7 @@ class SetCueFieldsCommand(QUndoCommand):
         self.learning_observer = learning_observer
         self.learning_meta = dict(learning_meta) if learning_meta else None
         self._manual_before = project.studio_state.get('manual_caption_text', {}).get(self.source_cue_id)
+        self._manual_container_present = 'manual_caption_text' in project.studio_state
 
     def _apply(self, values: Mapping[str, object]) -> None:
         text_applied = False
@@ -212,6 +216,8 @@ class SetCueFieldsCommand(QUndoCommand):
                     if values is self.before:
                         if self._manual_before is None: manual.pop(self.source_cue_id, None)
                         else: manual[self.source_cue_id] = self._manual_before
+                        if not manual and not self._manual_container_present:
+                            self.project.studio_state.pop('manual_caption_text', None)
                     else: manual[self.source_cue_id] = str(values['text'])
                 text_applied = True
             appearance_changed = bool(

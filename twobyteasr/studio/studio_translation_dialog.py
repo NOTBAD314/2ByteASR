@@ -321,13 +321,14 @@ class SubtitleTranslationDialog(QDialog):
         self.start_button.setEnabled(ready or missing)
         return ready or missing
 
-    def _scope_ids(self):
+    def _scope_ids(self, project=None):
         from ..subtitle_rules.subtitle_translation import ids_with_status
+        project = self.project if project is None else project
         if self.scope_buttons["selected"].isChecked():
             return list(self._selected)
         if self.scope_buttons["all"].isChecked():
             return None
-        return ids_with_status(self.project, {"untranslated", "failed", "needs_update"}, target=self._target())
+        return ids_with_status(project, {"untranslated", "failed", "needs_update"}, target=self._target())
 
     # -- run ---------------------------------------------------------------
     def _owns_project(self) -> bool:
@@ -353,7 +354,12 @@ class SubtitleTranslationDialog(QDialog):
         from ..caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
         from ..providers.ai_providers import provider_for_stage
         from ..subtitle_rules.subtitle_translation import translation_source
-        ids = self._scope_ids()
+        from copy import copy
+        pairs = parse_glossary(self.glossary.toPlainText())
+        scope_project = copy(self.project)
+        scope_project.generation_metadata = dict(self.project.generation_metadata,
+            translation_glossary=[list(pair) for pair in pairs])
+        ids = self._scope_ids(scope_project)
         source = translation_source(self.project)
         eligible = {cue.id for cue in source.cues}
         if ids is not None:
@@ -377,7 +383,6 @@ class SubtitleTranslationDialog(QDialog):
         self._log = TranslationLog()
         self.copy_log_button.setEnabled(True)
         self.request_log.appendPlainText(tr("日志文件：{path}", path=str(self._log.path)))
-        pairs = parse_glossary(self.glossary.toPlainText())
         self.project.generation_metadata["translation_glossary"] = [list(pair) for pair in pairs]
         self.project.generation_metadata["translation_context"] = self.context.text().strip()
         from dataclasses import replace
@@ -394,7 +399,7 @@ class SubtitleTranslationDialog(QDialog):
         workers = (max(1, min(4, int(performance.get('cloud_batch_workers', 4))))
                    if performance.get('parallel_cloud_batches', True) else 1)
         from ..subtitle_rules.subtitle_translation import RECOMMENDED_BATCH_ITEMS
-        options = dict(target=self._target(), game_context=self.context.text().strip(), glossary_pairs=pairs,
+        options = dict(entrypoint="studio", target=self._target(), game_context=self.context.text().strip(), glossary_pairs=pairs,
                        workers=workers, max_items=RECOMMENDED_BATCH_ITEMS)
         self._request_target = options['target']
         import uuid

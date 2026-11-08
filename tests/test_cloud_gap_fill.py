@@ -77,7 +77,7 @@ def fill(legacy, data, *, chosen, requested="auto", regions=((0.5, 1.5), (2.5, 3
         return chosen
     monkeypatch.setattr(cloud_gap_fill, "choose_backend", choose)
     cloud_gap_fill.fill_cloud_gaps(legacy, data, media_path="a.mp4", shared_audio=np.zeros(8 * 16000, np.float32),
-                                   speech_regions=[dict(start=a, end=b) for a, b in regions], audio_seconds=8.0,
+                                   speech_regions=[dict(start=a, end=b, speech_verified=True) for a, b in regions], audio_seconds=8.0,
                                    cache_context={}, requested_language=requested, stage_total=11,
                                    moss_runner=moss)
 
@@ -89,7 +89,7 @@ def test_a_gap_is_recognized_in_its_speech_regions_and_merged_in_order(monkeypat
     assert legacy.calls == [("sensevoice", [(2.5, 3.5)])]
     assert [row["text"] for row in data["segments"]] == ["so we went into the vent and the animatronic jumped at me", "filled in", "the cops were called because I screamed so loud"]
     filled = data["references"][1]
-    assert filled["source"] == "sensevoice-gapfill" and filled["speaker"] == "LOCAL_0"
+    assert filled["source"] == "sensevoice-gapfill" and filled["speaker"].startswith("LOCAL_") and filled["speaker"].endswith("_0")
     event = legacy.events[-1]
     assert event["event"] == "cloud_asr_gap_fill" and event["filled"] and event["rows"] == 1
     assert event["model"] == "SenseVoice Small" and event["ranges"] == [[2.0, 4.0]] and event["resplittable"]
@@ -107,7 +107,8 @@ def test_local_moss_recognizes_the_gap_audio_itself(monkeypatch):
     fill(legacy, data, chosen=("moss", "MOSS-Transcribe-Diarize"), moss=moss, monkeypatch=monkeypatch)
     assert got == [2 * 16000] and not legacy.calls
     row = data["segments"][1]
-    assert (row["start"], row["end"], row["speaker"]) == (2.1, 2.9, "LOCAL_S01")
+    assert (row["start"], row["end"]) == (2.1, 2.9)
+    assert row["speaker"].startswith("LOCAL_") and row["speaker"].endswith("_S01")
 
 
 def test_without_a_local_model_the_task_finishes_with_the_gap(monkeypatch):
@@ -132,3 +133,26 @@ def test_a_task_with_no_text_at_all_stops_and_says_why(monkeypatch):
     text = str(failure.value)
     assert "内容安全审查" in text and "第 2 / 3 段" in text and "没有能补识别这段语言" in text
     assert legacy.events[-1]["event"] == "cloud_asr_gap_fill"     # recorded before stopping
+
+
+def test_multiple_gap_results_are_independent_and_partial_stays_open(monkeypatch):
+    legacy = Legacy(rows=[dict(start=2.6, end=3.4, text='first only', speaker='S01')])
+    data = payload('The opening transcript is valid', 'The middle transcript is valid')
+    data['cloud_gaps'].append(dict(start=6, end=8, reason='content_blocked', provider_reason='policy'))
+    fill(legacy, data, chosen=('sensevoice', 'SenseVoice'), monkeypatch=monkeypatch,
+         regions=((2.5, 3.5), (6, 8)))
+    first, second = data['speech_gap_results']
+    assert first['status'] == 'recovered'
+    assert second['status'] == 'pending' and second['remaining_ranges'] == [[6.0, 8.0]]
+    assert [event['filled'] for event in legacy.events] == [True, False]
+
+
+def test_uncertain_energy_or_low_probability_does_not_generate_gap_text(monkeypatch):
+    legacy = Legacy(rows=[dict(start=2.6, end=3.4, text='must not be generated')])
+    data = payload('existing opening subtitles', 'existing later subtitles')
+    monkeypatch.setattr(cloud_gap_fill, 'choose_backend', lambda language: ('sensevoice', 'SenseVoice'))
+    cloud_gap_fill.fill_cloud_gaps(legacy, data, media_path='a.mp4', shared_audio=np.zeros(8*16000),
+        speech_regions=[dict(start=2, end=4, detector='energy_vad', confidence=.4)], audio_seconds=8,
+        cache_context={}, requested_language='en', stage_total=11, moss_runner=None)
+    assert not legacy.calls and len(data['segments']) == 2
+    assert data['speech_gap_results'][0]['status'] == 'needs_confirmation'

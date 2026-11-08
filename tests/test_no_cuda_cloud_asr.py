@@ -660,9 +660,8 @@ def test_mosi_content_review_block_leaves_a_gap_and_the_task_goes_on(tmp_path, m
         assert len(client.posts) == 3 and again == rows
 
 
-def test_mosi_blocked_request_goes_again_only_in_pieces(tmp_path, monkeypatch):
-    """切成小段再交 MOSI: the stopped request goes again as pieces; a piece
-    stopped again stays a (smaller) gap and is never cut further."""
+def test_mosi_legacy_resplit_does_not_resubmit_safety_refusal(tmp_path, monkeypatch):
+    """A deprecated resplit flag keeps the original refusal and successful pieces."""
     from twobyteasr.providers import mosi_asr
     monkeypatch.setattr(mosi_asr, 'PIECE_SINGLE_SECONDS', 1)
     monkeypatch.setattr(mosi_asr, 'PIECE_SECONDS', .5)
@@ -672,21 +671,22 @@ def test_mosi_blocked_request_goes_again_only_in_pieces(tmp_path, monkeypatch):
                         [(0, 32000), (32000, 64000), (64000, 96000)])
     client, audio = BlockingMosi(blocked=(2, 5)), np.zeros(96000, dtype=np.float32)
     first = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None)
-    assert [row.get('cloud_gap', {}).get('resplittable') for row in first] == [None, True, None]
+    assert [row.get('cloud_gap', {}).get('resplittable') for row in first] == [None, False, None]
     rows = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
                                resplit_blocked=True)
-    # 2 s cut into four pieces of 0.5 s: uploads 4-7, upload 5 (the second piece) is stopped again.
-    assert len(client.posts) == 7
+    # A legacy resplit request reuses both successful responses and the
+    # refusal marker. It produces no new remote upload or task.
+    assert len(client.posts) == 3
+    assert rows == first
     gaps = [row for row in rows if row.get('cloud_gap')]
-    assert [(row['start'], row['end']) for row in gaps] == [(2.5, 3.0)] and not gaps[0]['cloud_gap']['resplittable']
-    assert sum(1 for row in rows if row['text']) == 5
+    assert [(row['start'], row['end']) for row in gaps] == [(2.0, 4.0)]
+    assert not gaps[0]['cloud_gap']['resplittable']
     plan = json.loads(next(tmp_path.rglob('plan.json')).read_text('utf8'))['requests']
-    assert len(plan) == 6
-    # The next normal run and another 切成小段 keep the pieces; nothing is sent.
+    assert len(plan) == 3
     for resplit in (False, True):
         assert mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
                                    resplit_blocked=resplit) == rows
-    assert len(client.posts) == 7
+    assert len(client.posts) == 3
 
 
 def test_mosi_upload_refused_by_the_review_is_a_gap_and_not_sent_again(tmp_path, monkeypatch):
