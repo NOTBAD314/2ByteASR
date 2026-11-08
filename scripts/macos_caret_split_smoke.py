@@ -25,7 +25,8 @@ def prepare_fixture(output, ffmpeg):
     media = output/'caret-fixture.mp4'
     with (output/'sample-media.log').open('wb') as stream:
         subprocess.run([str(ffmpeg), '-v', 'error', '-f', 'lavfi', '-i',
-            'color=c=0x283d4e:s=960x540:r=25:d=16', '-c:v', 'libx264', '-preset', 'ultrafast',
+            'color=c=0x283d4e:s=960x540:r=25:d=16', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+            '-t', '16', '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'ultrafast',
             '-threads', '2', str(media)], check=True, timeout=90, stdout=stream, stderr=stream)
     texts = ['今日はここまで。また明日ね。', 'Hello world.  See you tomorrow.',
              '你好，世界。明天见。', '😀Cafe\u0301 家庭👨‍👩‍👧‍👦 继续']

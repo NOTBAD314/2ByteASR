@@ -51,7 +51,7 @@ def test_text_reads_never_compute_status_even_with_terms(monkeypatch):
     assert len(entry_lookup(p,targets=[entries[0].target]))==1
 
 
-def test_status_cache_exact_dependencies_and_context(monkeypatch):
+def test_status_cache_exact_dependencies_and_current_cue(monkeypatch):
     from twobyteasr.glossary import translation_terms as terms
     p=make_project(50,2,0)
     p.cues[10].text='用語00000'
@@ -64,7 +64,8 @@ def test_status_cache_exact_dependencies_and_context(monkeypatch):
     p.generation_metadata['translation_terminology']['libraries'][0]['terms'][0]['target']='新名字'
     st.statuses(p);assert len(calls)>cold
     calls.clear();p.cues[12].text+=' changed'
-    st.statuses(p);assert 0<len(calls)<=7
+    changed=st.statuses(p)
+    assert changed['12']==st.NEEDS_UPDATE and len(calls)<=7
     # Changing only a record version must still update status despite cached rules.
     p.generation_metadata['translation_terminology']['enabled']=False
     r.pop('terminology_version',None)
@@ -173,8 +174,8 @@ def test_regex_process_and_cancel_have_no_qt_or_project_input():
     finally:d.reject();page.deleteLater();APP.processEvents()
 
 
-def test_statuses_match_original_term_semantics_across_edits():
-    from twobyteasr.glossary.translation_terms import freeze,rule_version,relevant,matched_pairs
+def test_statuses_match_current_term_semantics_across_edits():
+    from twobyteasr.glossary.translation_terms import freeze,effective_policy,relevant,validation_issues
     p=make_project(40,3,0,term_shape='shared-alias')
     def reference():
         records=st.records_of(p)
@@ -182,12 +183,10 @@ def test_statuses_match_original_term_semantics_across_edits():
         source=st.translation_source(p);policy=freeze(source.terminology)
         for cue in source.cues:
             r=records.get(cue.id,{})
-            if result[cue.id] not in {st.DONE,st.MANUAL}:continue
+            if result[cue.id]!=st.DONE:continue
             direction=r.get('target') or st.container_target(p)
-            text=cue.text+'\n'+'\n'.join(st.context_texts(source,cue.id))
-            expected=rule_version(policy,source.inline_pairs,source.language,direction,text)
-            rules=relevant(policy,source.language,direction,text) or matched_pairs(source.inline_pairs,text,source.language)
-            if expected!=r.get('terminology_version') and (r.get('terminology_version') or rules):result[cue.id]=st.NEEDS_UPDATE
+            rules=relevant(effective_policy(policy,source.inline_pairs,source.language,direction),source.language,direction,cue.text)
+            if validation_issues(cue.text,str(r.get('text') or ''),rules):result[cue.id]=st.NEEDS_UPDATE
         return result
     for index in range(6):
         assert st.statuses(p)==reference()
