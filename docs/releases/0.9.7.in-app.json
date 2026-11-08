@@ -1,0 +1,4 @@
+{
+  "zh": "· 新增编辑浮窗按文字光标切割、显式C切割模式、连续分段和统一撤销。\n· 有效字词时间优先，缺少对齐时明确标估算，并可主动播放头校准。\n· 合入Qwen Audio 3.1断句、完整译名校验、长音频分块VAD和术语搜索稳定性修订。\n· Windows与Apple Silicon Mac同步提供。实际验收、原译关联及输入法/长片等边界详见发布说明。",
+  "en": "Adds cursor-based caption splitting with an explicit C mode, continuous segment editing and one project undo transaction. Uses valid word alignment when available, otherwise a labelled estimate with opt-in playhead calibration. Includes Qwen Audio 3.1 grouping, complete translated-name validation, chunked VAD and stable glossary search. Windows and Apple Silicon Mac are provided. See release notes for actual validation and translation/IME/long-project limits."
+}
