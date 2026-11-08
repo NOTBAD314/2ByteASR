@@ -12713,7 +12713,12 @@ class MainWindow(QWidget):
                 if answer != QMessageBox.StandardButton.Yes:
                     return False
             guard = getattr(getattr(studio, 'project_controller', None), 'dirty_guard', None)
-            return guard is None or guard.confirm('退出应用', on_saved=self.close)
+            prepared = getattr(self, '_pending_update', None)
+            def resume_close():
+                if prepared is not None:
+                    self._pending_update = prepared
+                self.close()
+            return guard is None or guard.confirm('退出应用', on_saved=resume_close)
 
     def closeEvent(self, event):
         if self.__dict__.get('_studio_entry_discarding', False):
