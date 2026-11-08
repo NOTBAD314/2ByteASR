@@ -30,7 +30,7 @@ WORKER_IMPORTED = ("model_integrity", "read_only_weights", "forced_alignment",
 PACKAGES = {
     "app", "recognition", "providers", "glossary", "subtitle_rules", "projects", "timeline",
     "studio", "playback", "media", "exports", "caption_style", "caption_design", "rendering",
-    "cover", "design", "local_models", "system", "storage", "diagnostics", "local_mcp", "acceptance", "container",
+    "cover", "design", "local_models", "system", "storage", "diagnostics", "local_mcp", "acceptance", "container", "container",
 }
 # Packages whose modules must not load Qt at import time, with the named
 # screen modules that are allowed to.

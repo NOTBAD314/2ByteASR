@@ -201,6 +201,7 @@ jobs:
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part saves --output "$MAC_QA_ROOT/cold-save"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform --output "$MAC_QA_ROOT/waveform-stability"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform-full --output "$MAC_QA_ROOT/full-waveform"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caret_split_smoke.py --app "$app" --output "$MAC_QA_ROOT/caret-split"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
