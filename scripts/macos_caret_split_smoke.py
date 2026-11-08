@@ -81,8 +81,14 @@ def main():
         from scripts.macos_desktop_smoke import preserve_diagnostics
         preserve_diagnostics(output)
         if process is not None and process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=15)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=15)
+            except ProcessLookupError:
+                pass
         (output/'caret-split-summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2)+'\n', 'utf8')
     print(json.dumps(dict(passed=summary['passed'], checks=summary.get('checks'))))
     return 0 if summary['passed'] else 1
