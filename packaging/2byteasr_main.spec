@@ -263,7 +263,11 @@ if _pin_root:
         for _resource in sorted((_pin_root / _resource_folder).rglob('*')):
             if not _resource.is_file():
                 continue
-            _destination = _resource.relative_to(_pin_root).as_posix()
+            _relative = _resource.relative_to(_pin_root)
+            if _resource.suffix.lower() in {'.pyc', '.pyo'} or any(
+                    part in {'.git', '__pycache__', '.pytest_cache', '.cache'} for part in _relative.parts):
+                continue
+            _destination = _relative.as_posix()
             if _destination not in _known:
                 if _resource.suffix.lower() in {'.dll', '.pyd'}:
                     a.binaries.append((_destination, str(_resource), 'BINARY'))
