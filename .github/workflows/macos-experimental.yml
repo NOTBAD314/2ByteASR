@@ -350,7 +350,7 @@ jobs:
   same-candidate-newer-macos:
     needs: native-arm64
     if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
-    runs-on: macos-26
+    runs-on: ${{ inputs.app_runner == 'macos-26' && 'macos-15' || 'macos-26' }}
     timeout-minutes: 45
     defaults:
       run:
