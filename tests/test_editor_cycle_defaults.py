@@ -103,12 +103,21 @@ def test_two_candidate_rows_fit_their_viewport(page,monkeypatch):
         hint=view._layout.sizeHint().toTuple(),body=view._body.size().toTuple(),
         rows=[dict(rect=f.geometry().getRect(),hint=f.sizeHint().toTuple(),
             buttons=[dict(rect=b.geometry().getRect(),hint=b.sizeHint().toTuple()) for b in f.findChildren(__import__('PySide6.QtWidgets',fromlist=['QPushButton']).QPushButton)]) for f in view._frames])
-    for frame in view._frames:
+    # 2026-11-10 字卡: one row at a time, as a bubble above the suspect word.
+    shown=[frame for frame in view._frames if not frame.isHidden()]
+    assert len(shown)==1,details
+    for frame in shown:
         for button in frame.findChildren(__import__('PySide6.QtWidgets',fromlist=['QPushButton']).QPushButton):
+            if button.isHidden():continue
             rect=QRect(button.mapTo(view.viewport(),QPoint()),button.size())
             assert view.viewport().rect().contains(rect),details
-    assert view.geometry().bottom()<page.subtitle_edit_input.geometry().top(),dict(
-        suggestions=view.geometry().getRect(),editor=page.subtitle_edit_input.geometry().getRect())
+    # The bubble sits on the side of the draft away from the action strip.
+    editor=page.subtitle_edit_input
+    top,bottom=view.mapToGlobal(QPoint()).y(),view.mapToGlobal(QPoint(0,view.height())).y()
+    editor_top,editor_bottom=editor.mapToGlobal(QPoint()).y(),editor.mapToGlobal(QPoint(0,editor.height())).y()
+    placed=top>=editor_bottom if page.subtitle_edit_card.strip_above() else bottom<=editor_top
+    assert placed,dict(suggestions=(top,bottom),editor=(editor_top,editor_bottom),
+                       strip_above=page.subtitle_edit_card.strip_above())
 
 
 def test_shortcut_groups_are_atomic_and_newline_precedes_commit(page):

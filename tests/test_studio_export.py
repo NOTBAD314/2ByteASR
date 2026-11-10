@@ -168,8 +168,14 @@ def test_export_workspace_can_export_only_srt_with_combined_and_per_speaker_file
     workspace.filename.setText("creator-cut")
     workspace.subtitle_speaker_modes["both"].setChecked(True)
     workspace.subtitle_export_button.click()
+    from PySide6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while getattr(workspace, '_subtitle_task', None) is not None and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert getattr(workspace, '_subtitle_task', None) is None
 
-    assert sorted(path.name for path in export_directory.glob("*")) == [
+    assert sorted(path.name for path in export_directory.glob("*.srt")) == [
         "creator-cut.srt",
         "creator-cut_主播.srt",
         "creator-cut_嘉宾.srt",

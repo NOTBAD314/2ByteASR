@@ -142,3 +142,39 @@ def test_reopen_project_does_not_recount(tmp_path, monkeypatch):
     candidate = _only_candidate(page)
     assert candidate["occurrence_count"] == 1
     _finish(page)
+
+
+def test_structural_and_nonhuman_changes_do_not_learn(tmp_path, monkeypatch):
+    page = _page(tmp_path, monkeypatch)
+    try:
+        _seed_text(page, 'a', '那维来特登场')
+        for origin in (MutationOrigin.ASR, MutationOrigin.MODEL_ADOPTION, MutationOrigin.IMPORT, MutationOrigin.SYSTEM):
+            page.cue_controller.set_text('a', '那维莱特登场', origin=origin)
+            page.cue_controller.commit_manual_term_learning('a')
+            page.cue_controller.set_text('a', '那维来特登场', origin=origin)
+        page.cue_controller.set_timing('a', 1100, 1900)
+        page.cue_controller.commit_manual_term_learning('a')
+        page.cue_controller.merge_pair('a', 'b')
+        page.cue_controller.commit_manual_term_learning('a')
+        page.undo_stack.undo()
+        page.cue_controller.commit_manual_term_learning('a')
+        assert page._learning_store.pending() == []
+    finally:
+        _finish(page)
+
+
+def test_candidate_io_failure_does_not_escape_caption_or_undo_transaction(tmp_path, monkeypatch):
+    page = _page(tmp_path, monkeypatch)
+    try:
+        _seed_text(page, 'a', '那维来特登场')
+        def fail(*_args, **_kwargs):
+            raise OSError('candidate disk failure')
+        monkeypatch.setattr(page._learning_store, 'record_manual_edit', fail)
+        page.cue_controller.set_text('a', '那维莱特登场')
+        page.cue_controller.commit_manual_term_learning('a')
+        assert page._cue_lookup['a'].text == '那维莱特登场'
+        monkeypatch.setattr(page._learning_store, 'revert_evidence_tokens', fail)
+        page.undo_stack.undo()
+        assert page._cue_lookup['a'].text == '那维来特登场'
+    finally:
+        _finish(page)

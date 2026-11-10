@@ -67,13 +67,15 @@ def test_remote_acceptance_then_receipt_failure_never_posts_twice(tmp_path,monke
 
 
 def test_firered_checkpoint_identity_and_admission(tmp_path):
-    from twobyteasr.recognition.firered_checkpoints import batch_budget,save_row,read_row
+    from twobyteasr.recognition.firered_checkpoints import batch_budget,save_row,read_row,VERSION
     gib=1024**3
     assert batch_budget(10*gib,10*gib)==4
     assert batch_budget(gib,10*gib)==1
     assert batch_budget(10*gib,gib)==1
     job=dict(audio_sha256='pcm-a',segment_id=12,duration=38.)
-    row=dict(segment_id=12,text='测试',timestamp=[dict(text='测试',start=.2,end=.5)])
+    row=dict(segment_id=12,text='测试',timestamp=[dict(text='测试',start=.2,end=.5)],
+        evidence_version=VERSION,transcription_status='success',alignment_status='aligned',
+        timestamp_source='ctc_forced_alignment',timestamp_reliability='measured')
     save_row(tmp_path,job,{'model':'one'},row)
     assert read_row(tmp_path,job,{'model':'one'})==row
     assert read_row(tmp_path,dict(job,audio_sha256='pcm-b'),{'model':'one'}) is None

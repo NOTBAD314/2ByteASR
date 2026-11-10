@@ -323,9 +323,10 @@ def start(window, output):
             more_texts = [a.text() for a in more.actions() if not a.isSeparator()] if more else []
             self.result["values"]["adjust_menu"] = [texts, more_texts]
             self.shot(menu, "04-adjust-menu")
-            self.check("12 调整: four everyday entries then 更多",
-                       len(texts) == 5 and texts[-1] == "更多" and not any("预览" in t for t in texts), texts)
-            self.check("12 更多 keeps the previews and the measurement", len(more_texts) == 6, more_texts)
+            # 2026-11-10 (user): display switches only; layout moved to the cue
+            # ••• menu, the previews and the measurement left the menus.
+            self.check("12 调整: display switches only, no 更多 / previews / layout",
+                       more is None and not any("预览" in t or "排版" in t for t in texts), texts)
             if more is not None:
                 more.popup(menu.mapToGlobal(QPoint(menu.width() - 8, menu.height() - 30)))
                 yield .5

@@ -35,6 +35,8 @@ def language_snapshot(snapshot, language):
     for library in snapshot.libraries:
         terms = []
         for term in library.terms:
+            if not term.confirmed or not term.correction_enabled:
+                continue
             script = _script(term.canonical)
             if script not in permitted:
                 continue

@@ -1150,6 +1150,9 @@ class MainWindow(QWidget):
         if sys.platform == 'win32':
             self.pages.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
             self.pages.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        from .home_widgets import HomeTooltipMute
+        self._home_tooltip_mute = HomeTooltipMute(self)
+        QApplication.instance().installEventFilter(self._home_tooltip_mute)
         self.settings_scroll = self._scrollable(
             QWidget() if self._recognition_page_deferred else self._settings_page())
         self.pages.addWidget(self.settings_scroll)
@@ -4055,16 +4058,16 @@ class MainWindow(QWidget):
         content_profile.setObjectName("homeContentProfile")
         self.content_profile_card = content_profile
         profile_layout = QVBoxLayout(content_profile)
-        profile_layout.setContentsMargins(22, 16, 22, 18)
+        profile_layout.setContentsMargins(22, 12, 22, 12)
         self._home_content_layout = profile_layout
-        profile_layout.setSpacing(12)
+        profile_layout.setSpacing(8)
         # 2026-10-08: the content name lives once, in the combo; the term
         # switch and its state line live once, in the term column.
         content_head = QHBoxLayout()
         content_head.setSpacing(12)
         self.content_icon = QLabel()
         self.content_icon.setObjectName("homeCardIcon")
-        self.content_icon.setFixedSize(36, 36)
+        self.content_icon.setFixedSize(30, 30)
         self.content_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_head.addWidget(self.content_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         current_eyebrow = QLabel("内容与术语")
@@ -4088,7 +4091,7 @@ class MainWindow(QWidget):
         content_choice.setSpacing(10)
         content_body.addWidget(choice_panel, 16)
         # Label + 46 px box: its size hint is taken before the QSS fonts apply.
-        ui_zoom.set_size(choice_panel, min_h=80)
+        ui_zoom.set_size(choice_panel, min_h=68)
         profile_layout.addWidget(self.content_terms_body)
         self.current_content_title = QLabel("通用内容")
         self.current_content_title.setObjectName("contentHeroTitle")
@@ -4112,7 +4115,7 @@ class MainWindow(QWidget):
         bind_text(self.game_box, '选择历史记录或内置游戏，也可以直接输入；留空为通用模式', property='placeholderText')
         bind_text(self.game_box, '点击右侧箭头选择历史记录或内置游戏；输入新名称也会自动保存', property='toolTip')
         self.game_box.setObjectName("homeContentCombo")
-        ui_zoom.set_size(self.game_box, min_h=46)  # its QSS height; the row must reserve it
+        ui_zoom.set_size(self.game_box, min_h=40)  # its QSS height; the row must reserve it
         content_choice.addWidget(self.game_box)
         # Recent content names as one-click chips (same history as the combo).
         from .home_widgets import QuickPickRow
@@ -4262,6 +4265,8 @@ class MainWindow(QWidget):
         recognition_header.setSpacing(10)
         recognition_heading = QLabel("识别方案")
         recognition_heading.setObjectName("homeSectionTitle")
+        # 2026-11-09 home B: on the 本批字幕 row it is a label, one size down.
+        recognition_heading.setProperty("headingRow", True)
         recognition_header.addWidget(recognition_heading)
         self.home_task_settings_button = AnimatedButton("高级设置")
         self.home_task_settings_button.setObjectName("homeHeaderAction")
@@ -4977,12 +4982,13 @@ class MainWindow(QWidget):
             return
         self._home_room = (room, middle)
         self._home_mid_space.changeSize(0, ui_zoom.px(2 + middle), QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        step, self._home_drop_extra, self._home_plan_extra = room // 4, room, room
+        # 2026-11-10: 内容与术语 keeps its compact height; the model cards take its share.
+        step, self._home_drop_extra, self._home_plan_extra = room // 4, room, room + (room // 4) * 3
         # Everything added outside the drop zone (its own extra is in drop_now).
-        self._home_room_px = ui_zoom.px(round(step * 4.5) + self._home_plan_extra + middle)
+        self._home_room_px = ui_zoom.px(step + self._home_plan_extra + middle)
         ui_zoom.set_layout(self._home_studio_layout, (20, 18 + step, 20, 18 + step), 12)
         ui_zoom.set_layout(self._home_ai_layout, (0, step // 2, 0, step // 2), 0)
-        ui_zoom.set_layout(self._home_content_layout, (22, 16 + step, 22, 18 + step), 12 + step // 2)
+        ui_zoom.set_layout(self._home_content_layout, (22, 12, 22, 12), 8)
         self._sync_home_plan(getattr(self, "_home_tier", (1,))[0])
         if not getattr(self, "media_paths", None):
             self._apply_media_mode(False)
@@ -6944,11 +6950,14 @@ class MainWindow(QWidget):
                 return
         dialog = CompletionExportDialog(project, Path(item.media_path).stem, self,
                                         getattr(self, "_ui_language", "zh"))
-        if dialog.exec() and dialog.artifacts:
-            self._last_srt_dir = str(dialog.artifacts[0].path.parent)
-            self.open_subtitle_result_button.setEnabled(True)
-            self.result_files.append("\n".join(str(a.path) for a in dialog.artifacts))
-            self._completion_output_paths.extend(str(a.path) for a in dialog.artifacts)
+        try:
+            if dialog.exec() and dialog.artifacts:
+                self._last_srt_dir = str(dialog.artifacts[0].path.parent)
+                self.open_subtitle_result_button.setEnabled(True)
+                self.result_files.append("\n".join(str(a.path) for a in dialog.artifacts))
+                self._completion_output_paths.extend(str(a.path) for a in dialog.artifacts)
+        finally:
+            dialog.deleteLater()
 
     def _completion_action(self, name, callback):
         """One activation across reentrant dialogs and rapid double-clicks."""
@@ -8765,7 +8774,7 @@ class MainWindow(QWidget):
         from ..subtitle_rules.punctuation_style import MODE_ADD, MODE_NONE, MODE_ORIGINAL, default_mode_for_new_tasks
         self.subtitle_punctuation = FramelessPopupCombo()
         self.subtitle_punctuation.setObjectName("homeLanguageCombo")
-        for text, value in (("保留原文", MODE_ORIGINAL), ("添加标点", MODE_ADD), ("不加标点", MODE_NONE)):
+        for text, value in (("不添加标点（去问叹号）", MODE_ORIGINAL), ("添加标点", MODE_ADD), ("不加标点", MODE_NONE)):
             self.subtitle_punctuation.addItem(tr(text), value)
         self.subtitle_punctuation.setCurrentIndex(max(0, self.subtitle_punctuation.findData(
             default_mode_for_new_tasks(self.legacy.RUNTIME_SETTINGS))))
@@ -8781,13 +8790,18 @@ class MainWindow(QWidget):
             combo.setMinimumContentsLength(6)
         layout.addLayout(row)
         from .home_widgets import MarkedPill
+        # 2026-11-10 (user: the lines under the row are only hints, remove them
+        # for a cleaner home): the "字幕会显示" pill and the hint line are no
+        # longer shown. Their texts are still kept up to date (tests, audits).
         self.subtitle_language_summary = MarkedPill(mark="fa5s.eye")
         self.subtitle_language_summary.setObjectName("homeLanguageSummary")
         layout.addWidget(self.subtitle_language_summary, 0, Qt.AlignmentFlag.AlignLeft)
+        self.subtitle_language_summary.hide()
         self.subtitle_language_hint = QLabel("")
         self.subtitle_language_hint.setObjectName("homeTermState")
         self.subtitle_language_hint.setWordWrap(True)
         layout.addWidget(self.subtitle_language_hint)
+        self.subtitle_language_hint.hide()
         from ..glossary.translation_terms_ui import TranslationTermsWidget
         def store_translation_terms(value):
             self.legacy.RUNTIME_SETTINGS.setdefault('glossary', {})['translation_terminology'] = value
@@ -8795,7 +8809,12 @@ class MainWindow(QWidget):
         self.translation_term_libraries = TranslationTermsWidget(
             lambda: self.legacy.RUNTIME_SETTINGS.get('glossary', {}).get('translation_terminology', {}),
             store_translation_terms, self)
-        layout.addWidget(self.translation_term_libraries)
+        # 2026-11-10: no "翻译／译文术语库：已关闭／未选择" line; the library
+        # button sits beside 翻译成 and shows only while translating.
+        self.translation_term_libraries.summary.hide()
+        self.translation_term_libraries.manage.setObjectName("homeHeaderAction")
+        self.translation_term_libraries.manage.setProperty("homeZone", "content")
+        output_row.addWidget(self.translation_term_libraries, 0, Qt.AlignmentFlag.AlignVCenter)
         self.aligner_download_button = AnimatedButton("去模型工坊下载 Qwen3-ForcedAligner（约 1.8 GB）")
         self.aligner_download_button.setObjectName("homeHeaderAction")
         self.aligner_download_button.clicked.connect(self._open_aligner_in_workshop)
@@ -8852,6 +8871,9 @@ class MainWindow(QWidget):
         field = self.__dict__.get("translation_field")
         if field is not None:
             field.setVisible(translating)
+            terms = self.__dict__.get("translation_term_libraries")
+            if terms is not None:
+                terms.setVisible(translating)
             self._subtitle_language_row.setStretchFactor(self.subtitle_output_fields, 2 if translating else 1)
         summary = self.__dict__.get("subtitle_language_summary")
         if summary is not None:
@@ -8931,7 +8953,7 @@ class MainWindow(QWidget):
             sample = preview_rows(None, punctuation, limit=1)[0][1]
             hints.append(tr("标点效果：{value0}", value0=sample))
         bind_text(self.subtitle_language_hint, " ".join(str(hint) for hint in hints))
-        self.subtitle_language_hint.setVisible(bool(hints))
+        self.subtitle_language_hint.hide()   # 2026-11-10: text kept, not shown on home
         if save:
             try:
                 section = self.legacy.RUNTIME_SETTINGS.setdefault("subtitle_language", {})
@@ -11960,6 +11982,17 @@ class MainWindow(QWidget):
         active_job = getattr(self, '_active_job_id', '')
         if active_job and str(getattr(event, 'job_id', '') or '') != active_job:
             return
+        event_job = str(getattr(event, 'job_id', '') or '')
+        if event_job and (event_job in getattr(self, '_committed_job_ids', set())
+                or event_job in getattr(self, '_cancelled_job_ids', set())):
+            return
+        context = getattr(self, '_studio_recognition_context', None)
+        guard = context.get('handoff_guard') if context else None
+        if callable(guard) and not guard():
+            return
+        if getattr(self, '_studio_recognition_context', None):
+            self.studio_page._record_recognition_task_event(event.kind,
+                {**event.payload, 'label': str(event.label or '')})
         degraded = self.__dict__.setdefault('_phase_degraded', {})
         payload=event.payload or {}
         shard=str(payload.get('shard_id') or '')
@@ -12146,7 +12179,7 @@ class MainWindow(QWidget):
                     stage = "写回工程"
                 else:
                     stage = "准备模型"
-                self.studio_page.set_recognition_runtime_stage(stage, label)
+                self.studio_page.set_recognition_runtime_stage(label or stage, label)
         elif event.kind in {"stage_completed", "stage_skipped"}:
             self._active_stages.pop(event.stage_index, None)
             self._completed_stages.add(event.stage_index)
@@ -12416,6 +12449,10 @@ class MainWindow(QWidget):
         active = getattr(self, '_active_job_id', '')
         if active and job_id != active:
             return
+        context = getattr(self, '_studio_recognition_context', None)
+        guard = context.get('handoff_guard') if context else None
+        if callable(guard) and not guard():
+            self._studio_recognition_context = None
         committed = getattr(self, '_committed_job_ids', set())
         if job_id and job_id in committed:
             return

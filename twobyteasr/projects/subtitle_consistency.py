@@ -192,9 +192,13 @@ def _validate(project: Any, cues: Iterable[Any], *, stage: str, export_view: boo
                                       or not _sequence(archive)):
         errors.append(ValidationIssue("caption_timeline_structure_invalid",
                                       "字幕来源收据的结构无效；原工程未修改。", stage=stage))
-    evidence_problems = {}
+    from ..diagnostics.subtitle_export_work import CURRENT
+    work = CURRENT.get() if export_view else None
+    evidence_problems = work.evidence_cache if work is not None else {}
     seen: set[str] = set()
     for index, cue in enumerate(cues):
+        if work is not None and index % 128 == 0:
+            work.checkpoint()
         raw_id = _get(cue, "id", "")
         cue_id = raw_id if isinstance(raw_id, str) else ""
         def issue(code: str, reason: str, source_ref: str = "", *, warning: bool = False) -> None:
@@ -283,7 +287,18 @@ def _validate(project: Any, cues: Iterable[Any], *, stage: str, export_view: boo
         elif parents:
             issue("source_archive_unavailable", "旧工程未保存来源快照；无法核对原始字幕归属。",
                   warning=True)
-        problem = word_receipt_problem(receipt, _get(owner, "text", ""))
+        from ..diagnostics.subtitle_export_work import stage as measured_stage
+        text = _get(owner, "text", "")
+        key = (id(receipt), text)
+        cache = work.receipt_cache if work is not None else {}
+        if key not in cache:
+            if work is not None:
+                work.receipt_checks += 1
+            with measured_stage("word_receipt_problem"):
+                cache[key] = word_receipt_problem(receipt, text)
+        elif work is not None:
+            work.receipt_hits += 1
+        problem = cache[key]
         if problem:
             issue(*problem, warning=True)
         else:
@@ -308,5 +323,7 @@ def validate_export_view(project: Any, cues: Iterable[Any], *, stage: str = "exp
     This does not compute the scope or compare it to the original ASR cue set.
     Word warnings do not make ok false for sentence-level SRT.
     """
-    return _validate(project, cues, stage=stage, export_view=True)
+    from ..diagnostics.subtitle_export_work import stage as measured_stage
+    with measured_stage("validate_export_view"):
+        return _validate(project, cues, stage=stage, export_view=True)
 

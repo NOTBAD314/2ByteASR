@@ -187,9 +187,9 @@ def start(window, output):
             yield .5
 
             # Real proofreading entry, local original correction, one user action.
-            yield from self.wait(lambda:page.cue_proofread_button.isEnabled() and page.cue_proofread_button.isVisible(),
+            yield from self.wait(lambda:page.cue_proofread_action.isEnabled() and page.cue_ai_button.isVisible(),
                                  'original_proofread_button_ready')
-            self.click(page.cue_proofread_button)
+            page.cue_proofread_action.trigger()
             yield from self.wait(lambda:getattr(window,'glossary_proofread_page',None) is not None,'original_proofread_open')
             review=window.glossary_proofread_page
             yield from self.wait(lambda:review._worker is None and any(row['issues'] for row in review._rows),'original_alias_suggestion')
@@ -252,7 +252,7 @@ def start(window, output):
             from ..studio.studio_bilingual import set_manual_translation
             set_manual_translation(page,'source-1','阿莉丝来了',page._changed)
             source_before=[(cue.id,cue.text) for cue in page.project.cues]
-            self.click(page.cue_proofread_button)
+            page.cue_proofread_action.trigger()
             yield .4
             review=window.glossary_proofread_page
             review.text_targets.mode.setCurrentIndex(review.text_targets.mode.findData('translation'))

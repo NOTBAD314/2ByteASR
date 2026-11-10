@@ -228,7 +228,8 @@ def test_home_menu_splits_chinese_and_remembers_traditional(home):
     assert (options["recognition_language"], options["chinese_script"]) == ("zh", "zh-Hant")
     saved = subtitle_core.RUNTIME_SETTINGS["subtitle_language"]
     assert (saved["recognition_language"], saved["chinese_script"]) == ("zh", "zh-Hant")
-    assert "繁体中文：" in win.subtitle_language_hint.text() and not win.subtitle_language_hint.isHidden()
+    # 2026-11-10: the hint text is kept but no longer shown on home.
+    assert "繁体中文：" in win.subtitle_language_hint.text() and win.subtitle_language_hint.isHidden()
     # Chinese source: only non-Chinese translation targets, like 简体中文.
     targets = [win.translation_script.itemData(i) for i in range(win.translation_script.count())]
     assert "zh-Hans" not in targets and "zh-Hant" not in targets and "en" in targets

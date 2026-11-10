@@ -89,12 +89,13 @@ class CaptionDraft:
 
 
 class IssueDecisionsCommand(QUndoCommand):
-    def __init__(self, project, changes, changed=None):
+    def __init__(self, project, changes, changed=None, *, prepared_issue_views=None):
         super().__init__("处理当前建议")
         self.project, self.after, self.changed = project, dict(changes), changed
         decisions = project.studio_state.get(DECISIONS, {})
         self._container_present = DECISIONS in project.studio_state
         self.before = {key: decisions.get(key) for key in changes}
+        self.prepared_issue_views = prepared_issue_views
 
     def _apply(self, values):
         from ..projects.studio_runtime_state import state_for, DirtyDomain
@@ -111,6 +112,9 @@ class IssueDecisionsCommand(QUndoCommand):
             else:
                 self.project.studio_state.pop(DECISIONS, None)
             invalidate(self.project)
+        if self.prepared_issue_views is not None:
+            from ..subtitle_rules.current_issues import adopt_acknowledged_view
+            adopt_acknowledged_view(self.project, self.prepared_issue_views, undo=values is self.before)
         if self.changed:
             self.changed()
 
@@ -684,7 +688,9 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if plain_c:
             if composing:
                 return not text_focus
-            if self.subtitle_edit_card.split_mode.isChecked():
+            # 2026-11-10 (user): Shift+C always cuts at the caret, like the
+            # other Shift letter keys of this editor; plain c cuts only in C mode.
+            if shifted or self.subtitle_edit_card.split_mode.isChecked():
                 self._caption_consumed_commit_key = key
                 if not event.isAutoRepeat():
                     self._split_caption_at_cursor()

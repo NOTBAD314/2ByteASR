@@ -220,10 +220,22 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
             f"已截断到上限（不影响文字内容）：{sample}"
         )
         durations = [cue.end - cue.start for cue in cues]
+    from .segmentation_profiles import current_profile
+    indivisible_conflicts = set()
+    if current_profile().code == 'zh':
+        from .grouping_quality import BoundaryQuality
+        for cue in cues:
+            if display_length(cue.text) > max_chars:
+                quality = BoundaryQuality(cue.text)
+                if not any(edge < quality.total for edge in quality.allowed):
+                    indivisible_conflicts.add(id(cue))
+                    add_review_item(cue.start, '不可拆字幕单元超长',
+                        '该完整词或术语超过14字，保留原文与来源时间，需人工确认局部长度冲突。',
+                        cue.text, priority=3, severity='warning', grouping_origin='indivisible_atom')
     invalid = [
         cue
         for cue in cues
-        if display_length(cue.text) > max_chars
+        if (display_length(cue.text) > max_chars and id(cue) not in indivisible_conflicts)
         or cue.end <= cue.start
     ]
     if invalid:

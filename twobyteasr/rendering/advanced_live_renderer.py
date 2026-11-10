@@ -831,6 +831,49 @@ def _draw_graph_backdrop(
             )
 
 
+def caption_ink_layout(snapshot, type_scale=1.0, *, marked_pieces=None, diagnostics=None):
+    """The glyph path/anchors shared by drawing and collision measurement."""
+    font = QFont(snapshot.font_family)
+    font.setPixelSize(max(1, round(float(snapshot.font_size) * type_scale)))
+    font.setWeight(QFont.Weight(max(1, min(1000, int(snapshot.font_weight)))))
+    face = getattr(snapshot,'resolved_caption',None)
+    if face is not None:
+        font.setStyleName(face.style.font_style_name)
+    font.setItalic(bool(snapshot.italic))
+    font.setLetterSpacing(
+        QFont.SpacingType.AbsoluteSpacing,
+        float(snapshot.letter_spacing) * type_scale,
+    )
+    metrics = QFontMetricsF(font)
+    resolved_layout = snapshot.style_recipe.get('layout', {})
+    line_height = max(1.0, float(resolved_layout.get('lineHeightPx') or metrics.height()/type_scale)*type_scale)
+    path = QPainterPath()
+    lines=str(snapshot.text).split('\n') or ['']
+    widths=[metrics.horizontalAdvance(line) for line in lines]
+    widest=max(widths,default=0.)
+    for index,line in enumerate(lines):
+        offset=(widest-widths[index])*float(snapshot.anchor_x)
+        path.addText(QPointF(offset, metrics.ascent() + index * line_height), font, line or ' ')
+    if marked_pieces is None:
+        marked_pieces = []
+    if getattr(snapshot, 'text_marks', None):
+        from .marked_glyphs import shape_marked_text
+        path, pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x), line_height)
+        marked_pieces.extend(pieces)
+    bounds = path.boundingRect()
+    if diagnostics is not None:
+        diagnostics.update(glyph_path_empty=path.isEmpty(),
+            glyph_bounds=[bounds.x(), bounds.y(), bounds.width(), bounds.height()])
+    local_x = -bounds.left() - bounds.width() * float(snapshot.anchor_x)
+    local_y = -bounds.top() - bounds.height() * float(snapshot.anchor_y)
+    path.translate(local_x, local_y)
+    for glyph, _, _ in marked_pieces:
+        glyph.translate(local_x, local_y)
+    local_bounds = path.boundingRect()
+
+    return font, metrics, lines, widths, widest, path, local_bounds, local_x, local_y
+
+
 def render_live_snapshot(
     snapshot: VisualCueSnapshot,
     *,
@@ -857,41 +900,11 @@ def render_live_snapshot(
     scale_x = logical_width / max(1.0, float(snapshot.playres_x))
     scale_y = logical_height / max(1.0, float(snapshot.playres_y))
     type_scale = scale_x
-    font = QFont(snapshot.font_family)
-    font.setPixelSize(max(1, round(float(snapshot.font_size) * type_scale)))
-    font.setWeight(QFont.Weight(max(1, min(1000, int(snapshot.font_weight)))))
-    face = getattr(snapshot,'resolved_caption',None)
-    if face is not None:
-        font.setStyleName(face.style.font_style_name)
-    font.setItalic(bool(snapshot.italic))
-    font.setLetterSpacing(
-        QFont.SpacingType.AbsoluteSpacing,
-        float(snapshot.letter_spacing) * type_scale,
-    )
-    metrics = QFontMetricsF(font)
+    marked_pieces = []
+    font, metrics, lines, widths, widest, path, local_bounds, local_x, local_y = caption_ink_layout(
+        snapshot, type_scale, marked_pieces=marked_pieces, diagnostics=diagnostics)
     resolved_layout = snapshot.style_recipe.get('layout', {})
     line_height = max(1.0, float(resolved_layout.get('lineHeightPx') or metrics.height()/type_scale)*type_scale)
-    path = QPainterPath()
-    lines=str(snapshot.text).split('\n') or ['']
-    widths=[metrics.horizontalAdvance(line) for line in lines]
-    widest=max(widths,default=0.)
-    for index,line in enumerate(lines):
-        offset=(widest-widths[index])*float(snapshot.anchor_x)
-        path.addText(QPointF(offset, metrics.ascent() + index * line_height), font, line or ' ')
-    marked_pieces = []
-    if getattr(snapshot, 'text_marks', None):
-        from .marked_glyphs import shape_marked_text
-        path, marked_pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x), line_height)
-    bounds = path.boundingRect()
-    if diagnostics is not None:
-        diagnostics.update(glyph_path_empty=path.isEmpty(),
-            glyph_bounds=[bounds.x(),bounds.y(),bounds.width(),bounds.height()])
-    local_x = -bounds.left() - bounds.width() * float(snapshot.anchor_x)
-    local_y = -bounds.top() - bounds.height() * float(snapshot.anchor_y)
-    path.translate(local_x, local_y)
-    for glyph, _, _ in marked_pieces:
-        glyph.translate(local_x, local_y)
-    local_bounds = path.boundingRect()
 
     highlight_path = QPainterPath()
     animated_pieces = []
@@ -990,11 +1003,13 @@ def render_live_snapshot(
         )
     background = snapshot.style_recipe.get("background", {}) if isinstance(snapshot.style_recipe, Mapping) else {}
     if graph is None and backdrop_layer and isinstance(background, Mapping) and bool(background.get("enabled", False)):
-        padding = _number(background, "padding", default=8.0) * type_scale
+        from ..caption_style.style_recipe import background_padding
+        top, right, bottom, left = background_padding(background)
         radius = _number(background, "radius", "borderRadius", default=6.0) * type_scale
         opacity = _number(background, "opacity", default=1.0)
         painter.setPen(Qt.PenStyle.NoPen)
-        panel_rect = local_bounds.adjusted(-padding, -padding, padding, padding)
+        panel_rect = local_bounds.adjusted(-left*type_scale, -top*type_scale,
+                                          right*type_scale, bottom*type_scale)
         painter.setBrush(resolve_effect_brush(background, panel_rect, "#99000000"))
         painter.drawRoundedRect(panel_rect, radius, radius)
 

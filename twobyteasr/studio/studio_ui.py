@@ -287,6 +287,7 @@ class SubtitleStudioPage(
     reasr_ready_signal = Signal(object)
 
     reasr_failed_signal = Signal(str)
+    subtitle_task_signal = Signal(object)
 
     ass_ready_signal = Signal(int, str)
 
@@ -323,6 +324,10 @@ class SubtitleStudioPage(
         heap = getattr(self, '_project_heap', None)
         if heap is not None and value is not self.session.project:
             heap.release()  # no deferred collection for a project that is gone
+        for task in getattr(self, '_subtitle_tasks', {}).values():
+            if task.ended is None and task.project is not value:
+                self._cancel_subtitle_task(task.task_id)
+                task.finish(cancelled=True)
         self.session.project = value
         # These QObjects are children of this page. close() alone kept one of
         # each alive per project switch, still holding the previous project.
@@ -585,6 +590,8 @@ class SubtitleStudioPage(
         self._subtitle_track_visibility: dict[str, bool] = {}
         self._manual_text_baselines: dict[str, str] = {}
         self._learning_store = GlossaryLearningStore()
+        from ..subtitle_rules.stutter_cleanup import warm_text_analysis
+        warm_text_analysis()
         # Evidence tokens recorded per cue (typing chains) so an undo can revert
         # exactly the evidence whose resulting text no longer holds.
         self._learning_evidence_tokens: dict[str, list[str]] = {}
@@ -903,6 +910,7 @@ class SubtitleStudioPage(
         self.ai_failed_signal.connect(self._ai_failed)
         self.reasr_ready_signal.connect(self._reasr_ready)
         self.reasr_failed_signal.connect(self._reasr_failed)
+        self.subtitle_task_signal.connect(self._subtitle_task_event)
         self.ass_ready_signal.connect(self._ass_ready)
         self.ass_failed_signal.connect(self._ass_failed)
         self.autosave_ready_signal.connect(self._autosave_ready)
@@ -3082,7 +3090,13 @@ class SubtitleStudioPage(
         total = sum(sizes) or max(500, self.workspace_splitter.height())
         # Show every row when that takes at most ~42% of the workspace (the
         # widget minimum no longer grows with the speaker count).
-        target = max(target, min(self.timeline.preferred_height(), round(total * 0.42)))
+        # 2026-11-09: the splitter sizes the whole timeline host, so the
+        # toolbar, range bar and overview strip above the timeline count too
+        # (without them the last subtitle row ended under the pinned V1).
+        host = self.timeline.parentWidget()
+        chrome = (host.height() - self.timeline.height()) if host is not None and host.height() > self.timeline.height() else 0
+        chrome = max(chrome, getattr(getattr(self, 'timeline_overview', None), 'HEIGHT', 0) + 44)
+        target = max(target, min(self.timeline.preferred_height() + chrome, round(total * 0.45)))
         # 2026-10-22: on short windows (1080p at 125%) the video keeps the
         # larger half; the rows scroll and the divider is free to move.
         target = min(target, max(210, total - 240), max(210, round(total * 0.45)))
@@ -3152,6 +3166,7 @@ class SubtitleStudioPage(
         self.timeline.update()
 
     def _refresh_cue_list_summary(self) -> None:
+        self._refresh_bulk_review_button()
         # 2026-09-19 P0：统计芯片口径=当前活动序列的投影视图（与列表/
         # 时间轴一致）；QC 查找按源 id 解析。
         if self.project:
@@ -3185,13 +3200,16 @@ class SubtitleStudioPage(
                 if key in self.cue_filter_buttons:
                     bind_text(self.cue_filter_buttons[key], '{label} {count}', label=tr(label), count='0' if key == 'all' else '--')
             return
-        counts = {"all": total, "priority": 0, "critical": 0, "pending": 0, "issue": 0, "done": 0}
+        scope = set(self.cue_model.scope_ids) if self.cue_model.scope_ids is not None else None
+        counted_cues = [cue for cue in view_cues if (scope is None or cue.id in scope)
+                        and self.cue_model.matches_query(cue)]
+        counts = {"all": len(counted_cues), "priority": 0, "critical": 0, "pending": 0, "issue": 0, "done": 0}
         # One risk table and QC result for the whole pass (per-cue lookups
         # rebuilt the table each time: O(n^2), ~0.5 s per edit at 3000 cues).
         from ..subtitle_rules.studio_review import cached_review_risks
         risks = cached_review_risks(self.project)
         qc_result = cached_qc_result(self.project)
-        for cue in view_cues:
+        for cue in counted_cues:
             status = _cue_status(self.project, cue, risks)
             counts[status] += 1
             if _cue_review_level(self.project, cue, risks) == "suggested":
@@ -3200,6 +3218,8 @@ class SubtitleStudioPage(
                 counts["critical"] += 1
         captions = {"all": "全部", "priority": "建议确认", "critical": "需要检查", "pending": "未审核", "issue": "有问题", "done": "已处理"}
         for key, button in self.cue_filter_buttons.items():
+            if key in {'priority', 'critical'}:
+                button.setToolTip('按当前搜索和范围去重统计字幕。建议确认与需要检查互不重叠。规则原因可有多条，语音待恢复区间另计，导出时另做结构校验。')
             if key in {"priority", "critical"} and not hasattr(self.project, "_qc_result"):
                 button.setText(f"{tr(captions[key])} --")
             else:
@@ -3526,7 +3546,16 @@ class SubtitleStudioPage(
             self.video_compositor.set_interaction_enabled(getattr(self, '_export_interaction_before', True))
             self.video_compositor.set_selected_clip(self.timeline.selected_video_clip_id)
         if hasattr(self, "workspace_splitter"):
-            self.workspace_splitter.show()
+            # 2026-11-10 (user: a black player rectangle stayed in the middle
+            # of the screen after going back): Home calls this on every
+            # return, also from the project library. workspace_layers keeps
+            # the editor and the library mutually exclusive; showing the
+            # editor while the library is the current layer put both up, and
+            # the editor's native video window covered the library. Only the
+            # current layer comes back.
+            layers = getattr(self, "workspace_layers", None)
+            if layers is None or layers.currentWidget() is self.workspace_splitter:
+                self.workspace_splitter.show()
             self.workspace_host.show()
         if return_ui is not None and return_ui['project'] is self.project:
             if self.selection_model.scope != return_ui['scope']:

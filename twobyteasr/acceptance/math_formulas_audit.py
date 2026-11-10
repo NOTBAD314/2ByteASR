@@ -74,9 +74,12 @@ def start(window, output):
         before = shown_ass()
         capture('1-off')
         action = getattr(page, 'math_formulas_action', None)
-        check('「标点」menu has the checkable math formulas entry',
+        # 2026-11-10 (user): the visible switch is「∑」beside B / I / U (style panel).
+        button = getattr(page, 'style_math_button', None)
+        check('style panel has the「∑」math formulas toggle, bound to the action',
               action is not None and action.isCheckable() and not action.isChecked()
-              and action in page.punctuation_button.menu().actions(), action.text() if action else None)
+              and button is not None and button.isCheckable() and not button.isChecked()
+              and action not in page.punctuation_button.menu().actions(), action.text() if action else None)
         undo_count = page.undo_stack.count()
         action.trigger()
         yield 1.5

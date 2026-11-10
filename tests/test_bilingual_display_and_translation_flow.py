@@ -200,6 +200,9 @@ def test_overlapping_speakers_reserve_the_whole_bilingual_group():
     extra = group_extra_for(project, project.cues[0])
     assert extra > 30
     initialize_project_layout(project)
-    ys = sorted(c.transform["initial_layout"]["position_y"] for c in project.cues)
+    from twobyteasr.caption_style.bilingual_layout import materialize_display_project
+    from twobyteasr.caption_style.collision_layout import project_layout_schedule
+    schedule = project_layout_schedule(materialize_display_project(project))
+    ys = sorted(next(o for a,b,o in schedule[c.id] if a<=1000<b) for c in project.cues)
     # The upper group sits above the lower group's translation line, not just above its original.
     assert ys[1] - ys[0] >= extra

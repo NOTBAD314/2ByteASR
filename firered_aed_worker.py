@@ -14,6 +14,28 @@ def _emit(event: str, **payload: object) -> None:
     print("[2BYTEASR_FIRERED_AED] " + json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
 
 
+def _install_timestamp_receipts(model):
+    """Observe the pre-fallback hypothesis for the exact returned timestamp list.
+
+    FireRed catches forced_align errors, then _get_and_fix_timestamp creates
+    uniform times. Inspecting the hypothesis here also avoids relying on batch
+    position: its feature extractor may sort utterances before decoding.
+    """
+    from twobyteasr.recognition.firered_checkpoints import VERSION
+    original=model._get_and_fix_timestamp
+    receipts={}
+    def observed(hyp,hyp_ids,duration):
+        measured=hyp.get('timestamp') is not None
+        result=original(hyp,hyp_ids,duration)
+        receipts[id(result)]=dict(evidence_version=VERSION,transcription_status='success',
+            alignment_status='aligned' if measured else 'failed_or_unavailable',
+            timestamp_source='ctc_forced_alignment' if measured else 'uniform_window_estimate',
+            timestamp_reliability='measured' if measured else 'estimated')
+        return result
+    model._get_and_fix_timestamp=observed
+    return receipts
+
+
 def _install_forced_align_dtype_probe(torch):
     """Record and repair the real torchaudio forced_align boundary when present."""
     try:
@@ -193,6 +215,7 @@ def main() -> None:
         measure(model.model.encoder,'forward','encoder_ms',cuda=True)
         measure(model.model.decoder,'batch_beam_search','decode_ms',cuda=True)
         measure(model.model,'get_token_timestamp_torchaudio','alignment_ms',cuda=True)
+        timestamp_receipts=_install_timestamp_receipts(model)
         if cuda:
             measure(torch.Tensor,'cuda','cpu_to_gpu_ms',cuda=True)
         extractor=model.feat_extractor
@@ -249,10 +272,15 @@ def main() -> None:
                     if str(token).strip() and end>start:timestamps.append({'text':str(token),'start':start,'end':end})
                 row={'segment_id':int(job['segment_id']),'text':str(value.get('text') or ''),
                      'confidence':float(value.get('confidence',0.) or 0.),'timestamp':timestamps}
+                row.update(timestamp_receipts.get(id(value.get('timestamp')),dict(
+                    transcription_status='success',alignment_status='unknown',
+                    timestamp_source='unknown',timestamp_reliability='unknown')))
                 results.append(row)
                 if checkpoint_root and checkpoint_identity:
                     saved=save_row(checkpoint_root,job,checkpoint_identity,row)
-                    _emit('checkpoint_saved', path=saved, segment_id=job['segment_id'])
+                    _emit('checkpoint_saved' if saved else 'checkpoint_not_reusable',
+                        path=saved, segment_id=job['segment_id'],alignment_status=row['alignment_status'],
+                        timestamp_source=row['timestamp_source'])
                 batch_rows.append(dict(row,offset=job['offset'],duration=job['duration']))
             offset+=len(batch)
             elapsed_ms=(time.perf_counter()-tick)*1000

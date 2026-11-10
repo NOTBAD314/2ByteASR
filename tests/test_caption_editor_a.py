@@ -145,13 +145,15 @@ def test_tool_panel_is_near_video_bottom_and_text_is_bold_left_aligned(page):
     card_top = card.mapToGlobal(QPoint()).y()
     host_top = host.mapToGlobal(QPoint()).y()
     assert page.subtitle_edit_dock.isWindow() and card_top >= host_top
+    # 2026-11-09 (user): the editor sits on the picture over the subtitle;
+    # it never reaches below the video, so every track stays visible.
     dock=page.subtitle_edit_dock
     row_top=page.timeline.mapToGlobal(QPoint(0,page.timeline.RULER_HEIGHT)).y()
-    assert abs(dock.y()+dock.height()-(row_top-8))<=1
+    assert dock.y()+dock.height()<=min(row_top-4, host_top+host.height())
     assert dock.y()+dock.height()//2>host_top+host.height()//2
     assert page.subtitle_edit_input.font().weight() >= QFont.Weight.DemiBold
-    assert page.subtitle_edit_input.font().pixelSize() == 18
-    assert page.subtitle_edit_input.document().defaultTextOption().alignment() & Qt.AlignmentFlag.AlignLeft
+    assert page.subtitle_edit_input.font().pixelSize() == card.TEXT_PX
+    assert page.subtitle_edit_input.document().defaultTextOption().alignment() & Qt.AlignmentFlag.AlignHCenter
     assert page.subtitle_edit_input.palette().color(QPalette.ColorRole.Base) != card.palette().color(QPalette.ColorRole.Window)
 
 

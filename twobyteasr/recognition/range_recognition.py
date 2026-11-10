@@ -63,6 +63,7 @@ class SplicePlan:
     replaced_translations: dict = field(default_factory=dict)
     extra_speakers: list = field(default_factory=list)
     coverage: dict = field(default_factory=dict)
+    result_key: str = ""
 
 
 def _overlaps(cue, start_ms: int, end_ms: int) -> bool:
@@ -278,6 +279,21 @@ def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bo
     from .audio_lane_results import _rename, _unique
     from ..timeline.studio_caption_timeline import KEY
     start, end = int(window[0]), int(window[1])
+    accepted = []
+    for cue in payload.cues:
+        clone = copy.deepcopy(cue)
+        clone.start_ms = max(start, clone.start_ms)
+        clone.end_ms = min(end, clone.end_ms)
+        if clone.end_ms > clone.start_ms and str(clone.text or '').strip():
+            accepted.append(clone)
+    if not accepted:
+        return SplicePlan((start, end), copy.deepcopy(project.cues), [], [], {}, {}, [], {}, {}, [],
+                          {}, {}, [], {})
+    import hashlib, json
+    identity = sorted((cue.id, cue.start_ms, cue.end_ms, cue.text, cue.speaker_id) for cue in accepted)
+    result_key = hashlib.sha256(json.dumps([start, end, identity], ensure_ascii=False).encode('utf-8')).hexdigest()
+    payload = copy.copy(payload)
+    payload.cues = accepted
     replaced = [cue for cue in project.cues if _overlaps(cue, start, end)]
     removed_ids = [cue.id for cue in replaced]
     archive_ids = {str(row.get("id")) for row in (project.studio_state.get(KEY) or {}).get("source_archive") or ()
@@ -324,7 +340,7 @@ def splice_range(project, window, payload: RangePayload, *, foreign_speakers: bo
                       receipts, archive, speaker_map, translated, [asdict(c) for c in replaced],
                       copy.deepcopy(payload.acceptance),
                       {cid:copy.deepcopy(row) for cid,row in (project.generation_metadata.get('translation_records') or {}).get('records',{}).items()
-                       if cid in set(removed_ids)}, extras, copy.deepcopy(payload.coverage))
+                       if cid in set(removed_ids)}, extras, copy.deepcopy(payload.coverage), result_key=result_key)
 
 
 def payload_from_result(result, info: dict) -> RangePayload:
@@ -353,7 +369,7 @@ def payload_from_result(result, info: dict) -> RangePayload:
 
 def history_entry(plan: SplicePlan, requested=None, **extra) -> dict:
     """One line of ``generation_metadata["range_recognitions"]``."""
-    return {"window_ms": list(plan.window), "requested_ms": list(requested or plan.window),
+    return {"result_key": plan.result_key, "window_ms": list(plan.window), "requested_ms": list(requested or plan.window),
             "speaker_map": dict(plan.speaker_map),
             "replaced_cue_ids": list(plan.removed_ids), "cue_ids": list(plan.inserted_ids),
             "replaced_snapshot": copy.deepcopy(plan.replaced_snapshot),
@@ -363,9 +379,22 @@ def history_entry(plan: SplicePlan, requested=None, **extra) -> dict:
 def apply_plan(project, plan: SplicePlan, entry: dict | None = None) -> None:
     """Write ``plan`` straight into ``project`` (the worker's result project; no undo)."""
     from ..timeline.studio_caption_timeline import KEY
+    if not plan.inserted_ids:
+        return False
+    present = {cue.id for cue in project.cues}
+    if set(plan.inserted_ids) <= present and not set(plan.removed_ids) & present:
+        return False
+    if entry is not None and any(row.get('result_key') == entry.get('result_key')
+            for row in project.generation_metadata.get(HISTORY_KEY, ()) if entry.get('result_key')):
+        return False
     removed = set(plan.removed_ids)
     project.cues = copy.deepcopy(plan.cues)
-    project.speakers.extend(copy.deepcopy(plan.extra_speakers))
+    from ..projects.range_speakers import register_range_speakers, clean_range_speakers
+    known = {speaker.id for speaker in project.speakers}
+    extras = [speaker for speaker in plan.extra_speakers if speaker.id not in known]
+    project.speakers.extend(copy.deepcopy(extras))
+    register_range_speakers(project, extras)
+    clean_range_speakers(project)
     project.asr_evidence.update(copy.deepcopy(plan.evidence))
     state = project.studio_state.setdefault(KEY, {"version": 1, "instances": {}})
     instances = state.setdefault("instances", {})

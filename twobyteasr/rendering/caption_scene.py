@@ -198,6 +198,7 @@ class SceneRasterizer:
         self.rasters = OrderedDict()
         self.pages = OrderedDict()
         self.web_cache = web_cache
+        self.layouts = OrderedDict()
 
     def insert_raster(self, key, value):
         """Adopt a completed worker-owned raster under the existing budget."""
@@ -209,7 +210,7 @@ class SceneRasterizer:
             self.rasters.popitem(last=False)
 
     def frame(self, prepared_cues, milliseconds, width, height, generation=0, retire_web=True,
-              measure_cue_geometry=True):
+              measure_cue_geometry=True, *, stacking_enabled=True):
         from .advanced_live_renderer import (render_live_snapshot, render_live_layers,
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
@@ -223,8 +224,8 @@ class SceneRasterizer:
                 painter = QPainter(output)
             return painter
         evidence = []
-        # Every prepared snapshot already carries its saved initial/manual
-        # anchor. Visible peers never change a cue's placement during playback.
+        # Prepared snapshots remain at authored baselines. Only this active set
+        # contributes temporary displacement; cached cue pixels stay reusable.
         from .caption_playback_cache import FailedCaption as _FailedCaption
         prepared_cues = tuple(prepared_cues)
         single = prepared_cues[0][1] if len(prepared_cues) == 1 else None
@@ -234,6 +235,20 @@ class SceneRasterizer:
             and not animated_caption(single))
         prepared_cues = tuple((key, p.fallback if isinstance(p, _FailedCaption) and p.fallback else p)
                              for key, p in prepared_cues)
+        from ..caption_style.collision_layout import solve_layout, shifted_snapshot, CollisionLayout
+        planned = [p for _, p in prepared_cues if p is not None and not isinstance(p, _FailedCaption)]
+        layout_key = (stacking_enabled, tuple((key, getattr(p, 'snapshot_hash', None),
+            getattr(p, 'layout_offset', None)) for key, p in prepared_cues))
+        layout = self.layouts.get(layout_key)
+        if layout is None:
+            if planned and all(getattr(p, 'layout_offset', None) is not None for p in planned):
+                layout = CollisionLayout({p.snapshot.cue_id: p.layout_offset for p in planned},
+                    tuple(dict.fromkeys(w for p in planned for w in p.layout_warnings)))
+            else:
+                layout = solve_layout((p.snapshot for p in planned), enabled=stacking_enabled)
+            self.layouts[layout_key] = layout
+            while len(self.layouts) > 64:
+                self.layouts.popitem(last=False)
 
         if self.web_cache is not None and retire_web:
             self.web_cache.retain((p.snapshot_hash, generation, width, height)
@@ -248,10 +263,13 @@ class SceneRasterizer:
             if isinstance(prepared,FailedCaption):
                 row.update(status='failed',error=prepared.error);continue
             snapshot = prepared.snapshot
+            offset = layout.offsets.get(snapshot.cue_id, 0.)
             relative = max(0, milliseconds - snapshot.start_ms)
             row.update(snapshot_hash=prepared.snapshot_hash,
                        route='html' if prepared.web else prepared.route.engine,
-                       position=[snapshot.position_x, snapshot.position_y], local_ms=float(relative))
+                       position=[snapshot.position_x, snapshot.position_y-offset],
+                       base_position=[snapshot.position_x, snapshot.position_y],
+                       collision_offset_y=offset, layout_warnings=list(layout.warnings), local_ms=float(relative))
             try:
                 if prepared.web:
                     web = prepared.web
@@ -265,7 +283,10 @@ class SceneRasterizer:
                     else:
                         raise RuntimeError('HTML worker required')
                 else:
-                    image = self.native_frame(prepared, relative, width, height)
+                    placed = shifted_snapshot(snapshot, offset)
+                    positioned = replace(prepared, snapshot=placed,
+                        snapshot_hash=placed.stable_hash()) if offset else prepared
+                    image = self.native_frame(positioned, relative, width, height)
                 if image.isNull():
                     raise ValueError('empty raster')
                 gesture=getattr(prepared,'interaction_transform',None)
@@ -287,6 +308,8 @@ class SceneRasterizer:
                         paint.scale(gesture['scale_x']/100/max(.0001,snapshot.scale_x),
                                       gesture['scale_y']/100/max(.0001,snapshot.scale_y))
                         paint.translate(-snapshot.position_x*px,-snapshot.position_y*py)
+                    if prepared.web:
+                        paint.translate(0, -offset*height/snapshot.playres_y)
                     paint.drawImage(output.rect(), image)
                     paint.restore()
                 row.update(status='rendered', viewport=[image.width(),image.height()])
@@ -344,6 +367,7 @@ class SceneRasterizer:
 
     def close(self):
         self.rasters.clear()
+        self.layouts.clear()
 
 
 def animated_caption(prepared):
@@ -686,7 +710,7 @@ class CaptionScene(QObject):
     @staticmethod
     def shows_other_content(previous, token):
         """The published raster would show other cues, or sit at the old geometry."""
-        return previous[4] != token[4] or tuple(previous[-4:]) != tuple(token[-4:])
+        return previous[:3] != token[:3] or previous[4:] != token[4:]
 
     def animation_key(self,token,prepared,milliseconds):
         from ..timeline.caption_frame_time import project_frame_rate
@@ -774,6 +798,14 @@ class CaptionScene(QObject):
                 if prepared is None and cache is not None:
                     prepared = cache.failure(page._revision_store.render, key, *page._advanced_preview_size())
                 items.append((key, prepared))
+        from ..caption_style.collision_layout import ProjectCollisionLayout
+        cache = getattr(self, '_instance_layout', None)
+        if cache is None:
+            cache = self._instance_layout = ProjectCollisionLayout()
+        layout = cache.for_cues(page.project, cues, page._revision_store.render)
+        items = [(key, replace(p, layout_offset=layout.offsets.get(key, 0.),
+                              layout_warnings=layout.warnings) if p is not None and hasattr(p, 'snapshot') else p)
+                 for key, p in items]
         preview=getattr(page,'_caption_transform_preview',{})
         return tuple((key,replace(prepared,interaction_transform=preview[key])
                       if key in preview and prepared is not None and hasattr(prepared,'snapshot') else prepared)
@@ -782,8 +814,9 @@ class CaptionScene(QObject):
     def scene_token(self,cues,rect,generation):
         page=self.page;revision=page._revision_store.render
         items = self.scene_items(cues)
-        dependencies = ('content-v1', tuple((key, getattr(p,'snapshot_hash',None),
-            getattr(p,'font_signature',()), repr(getattr(p,'interaction_transform',None))) for key,p in items))
+        dependencies = ('content-v1', bool(self.project.studio_state.get('auto_subtitle_stacking', True)), tuple((key, getattr(p,'snapshot_hash',None),
+            getattr(p,'font_signature',()), getattr(p,'layout_offset',None),
+            repr(getattr(p,'interaction_transform',None))) for key,p in items))
         return (id(self.project),revision.mapping_revision,revision.visual_revision,generation,tuple(c.id for c in cues),
                 dependencies,scene_raster_geometry(page,rect,items),*rect.getRect())
 
@@ -945,7 +978,8 @@ class CaptionScene(QObject):
                         image, rows = cached
                     else:
                         image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3],
-                            retire_web=current_task, measure_cue_geometry=measure_geometry)
+                            retire_web=current_task, measure_cue_geometry=measure_geometry,
+                            stacking_enabled=self.project.studio_state.get("auto_subtitle_stacking", True))
                     raster_finished=time.perf_counter()
                     if any(row['status']=='pending' for row in rows):
                         # A configured HTML page is not yet a rendered frame.
@@ -1062,6 +1096,13 @@ class CaptionScene(QObject):
             self._last_published_sample_ms=trace.get('sample_ms',0)
         page._sync_canvas_selection()
         failed = [row for row in trace['cue_pixels'] if row['status'] in ('failed', 'fallback')]
+        warnings = tuple(dict.fromkeys(w for row in trace['cue_pixels'] for w in row.get('layout_warnings', ())))
+        if warnings and not failed:
+            bind_text(page.save_state, '字幕自动避让：请检查布局提示')
+            page.save_state.setToolTip('\n'.join(warnings))
+        elif not warnings and page.save_state.text() == tr('字幕自动避让：请检查布局提示'):
+            (bind_text(page.save_state, '已保存') if page.undo_stack.isClean() else bind_text(page.save_state, '未保存'))
+            page.save_state.setToolTip('')
         if failed:
             bind_text(page.save_state, '{value0} 条字幕主题异常 · 使用基础预览', value0=len(failed))
             by_id=page.session.runtime.cue_by_id

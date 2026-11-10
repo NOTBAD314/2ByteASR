@@ -4,7 +4,22 @@ from __future__ import annotations
 import copy
 import os
 
-from .speech_coverage import KEY, pending, update_gap
+from .speech_coverage import KEY, pending, update_gap, classify_state
+
+
+def audio_version(project, state):
+    from ..subtitle_rules.current_issues import digest
+    paths = sorted({os.path.normcase(s.source_path) for s in _input_segments(project, state)}
+                   | {os.path.normcase(project.media.path)})
+    files = []
+    for path in paths:
+        try:
+            info = os.stat(path)
+            files.append((path, info.st_size, info.st_mtime_ns))
+        except OSError:
+            files.append((path, None, None))
+    return digest([state.get('identity'), files,
+                   state.get('input_sequence'), state.get('input_offset_ms', 0)])
 
 
 def _input_segments(project, state):
@@ -39,10 +54,17 @@ def project_ranges(project):
     from ..timeline.studio_edit_sequence import sequence_of
     if project is None:
         return []
-    state = project.generation_metadata.get(KEY) or {}
+    state = classify_state(project.generation_metadata.get(KEY))
     result = []
     offset = state.get('input_offset_ms', 0)
+    version = audio_version(project, state) if state.get('gaps') else ''
+    decisions = state.get('decisions') or {}
     for gap in pending(state):
+        if any(d.get('status') == 'non_speech' and d.get('audio_version') == version
+               and float(d.get('start', gap['start'])) <= gap['start']
+               and float(d.get('end', gap['end'])) >= gap['end']
+               for key, d in decisions.items() if key == gap['id'] or 'start' in d and 'end' in d):
+            continue
         for low, high in gap.get('remaining_ranges', [[gap['start'], gap['end']]]):
             for original in _input_segments(project, state):
                 a = max(round(low*1000)+offset, original.timeline_in_ms)
@@ -89,7 +111,8 @@ def failed_range_attempt(project, bounds, error):
     changed = False
     for gap in pending(state):
         if any(min(b, gap['end']) > max(a, gap['start']) for a,b in spans):
-            update_gap(gap, [], source='studio_range_recognition', error=error)
+            update_gap(gap, [], source='studio_range_recognition',
+                       error='' if error == 'no_usable_captions' else error)
             changed = True
     return changed
 

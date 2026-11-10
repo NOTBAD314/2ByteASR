@@ -64,7 +64,7 @@ class SubtitleLayoutPreview(QDialog):
         self.setWindowTitle('预览字幕重新排版')
         self.resize(1060, 520)
         layout = QVBoxLayout(self)
-        description = QLabel('预览按实际重叠范围重新分配所选字幕的基础位置；未选字幕作为固定障碍。\n'
+        description = QLabel('预览所选字幕的基础位置调整；未选字幕保留自己的基础位置，每条字幕显示期间固定避让位置。\n'
                              '默认保留手动位置和关键帧。确认应用后可一次撤销，文字、时间、说话人和关键帧保持原样。', self)
         description.setWordWrap(True)
         layout.addWidget(description)

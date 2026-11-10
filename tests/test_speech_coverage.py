@@ -41,7 +41,7 @@ def test_explicit_exclusions_and_window_anomaly_are_independent():
         windows=[dict(index=8, start=0, end=20, complete=False, truncation_reasons=['unfinished_transcript_tail'])],
         excluded=[(0, 10)])
     gap, = state['gaps']
-    assert gap['start'] == 10 and gap['window_ids'] == [8] and gap['status'] == 'pending'
+    assert gap['start'] == 10 and gap['window_ids'] == [8] and gap['status'] == 'failed'
 
 
 def test_low_confidence_vad_stays_unconfirmed_even_with_a_truncated_window():
@@ -49,7 +49,7 @@ def test_low_confidence_vad_stays_unconfirmed_even_with_a_truncated_window():
         windows=[dict(index=1, start=0, end=20, complete=False, truncation_reasons=['token_limit'])])
     calls = []
     coverage.recover(state, [], lambda *args: calls.append(args), source='api')
-    assert not calls and state['gaps'][0]['status'] == 'needs_confirmation'
+    assert not calls and state['gaps'][0]['classification'] == 'processing_failure'
 
 
 def test_multiple_gaps_and_partial_one_never_mark_all_recovered():
@@ -63,7 +63,7 @@ def test_multiple_gaps_and_partial_one_never_mark_all_recovered():
     assert len(result) == 1 and len(calls) == 2
     first, second = state['gaps']
     assert first['status'] == 'partial' and first['remaining_ranges'][0][0] == 13.25
-    assert second['status'] == 'pending' and second['remaining_ranges'] == [[40.0, 50.0]]
+    assert second['status'] == 'needs_confirmation' and second['remaining_ranges'] == [[40.0, 50.0]]
     assert state['recovery_cost']['request_count'] == 2
 
 
@@ -87,7 +87,7 @@ def test_merge_preserves_true_repetition_and_never_offsets_again():
 
 def test_recovery_budget_and_cancellation():
     state = coverage.make_state([dict(start=0, end=1000, speech_verified=True)], [], duration=1000)
-    coverage.recover(state, [], lambda a, b: [], source='moss', max_requests=2)
+    coverage.recover(state, [], lambda a, b: [row(a+2, b-2)], source='moss', max_requests=2)
     assert state['recovery_cost']['request_count'] == 2 and state['budget_exhausted']
     class CancelledError(Exception):
         pass
@@ -219,8 +219,9 @@ def test_full_pipeline_keeps_internal_gap_independent_from_language_pending(tmp_
                                                            row(360, 370, 'The ending speech remains intact')])
     project, report, context = fixture.run_fixture(tmp_path, monkeypatch, 'fixture')
     assert project.cues and report['result']['transcript_counts']['pending_range_count'] == 0
-    assert report['result']['transcript_counts']['speech_gap_count'] > 0
-    assert report['status'] == 'partial_recovery'
+    assert report['result']['transcript_counts']['speech_gap_count'] == 0
+    assert report['result']['transcript_counts']['speech_confirmation_count'] > 0
+    assert report['status'] in {'success', 'degraded_success'}
     assert coverage.pending(project.generation_metadata[coverage.KEY])
 
 

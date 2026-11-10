@@ -1473,54 +1473,14 @@ class TermLibraryDialog(QWidget):
         ai_status_layout.addWidget(self.ai_update_status)
         content_body_layout.addWidget(self.ai_status_area)
 
-        # 待学习仅提示候选数量；用户要求移除逐条确认入口，保留候选数据。
-        self.learning_panel = QFrame()
-        self.learning_panel.setObjectName("termNotice")
-        learning_layout = QVBoxLayout(self.learning_panel)
-        learning_layout.setContentsMargins(14, 7, 10, 7)
-        learning_layout.setSpacing(7)
-        learning_head = QHBoxLayout()
-        learning_head.setSpacing(10)
-        learning_dot = QLabel()
-        learning_dot.setObjectName("termDot")
-        learning_dot.setFixedSize(8, 8)
-        learning_head.addWidget(learning_dot)
-        self.learning_count = QLabel()
-        self.learning_count.setObjectName("termNoticeStrong")
-        learning_head.addWidget(self.learning_count)
-        self.learning_title = QLabel("你在字幕里手动改过的词，单独记录为学习候选")
-        self.learning_title.setObjectName("termHint")
-        learning_head.addWidget(self.learning_title, 1)
-        learning_layout.addLayout(learning_head)
-        self.learning_box = QWidget()
-        learning_box = QVBoxLayout(self.learning_box)
-        learning_box.setContentsMargins(0, 0, 0, 0)
-        learning_box.setSpacing(6)
-        self.learning_list = QListWidget()
-        self.learning_list.setObjectName("termLearningList")
-        self.learning_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        learning_box.addWidget(self.learning_list)
-        learning_actions = QHBoxLayout()
-        learning_actions.addStretch(1)
-        self.learning_accept_button = AnimatedButton("加入词库 ▾")
-        self.learning_accept_button.setObjectName("termToolButton")
-        learning_actions.addWidget(self.learning_accept_button)
-        self.learning_accept_project = AnimatedButton("加入当前工程关联的词库")
-        bind_text(self.learning_accept_project, '批量接受所选建议并加入当前项目关联词库', property='toolTip')
-        self.learning_accept_project.clicked.connect(lambda: self._accept_learning_suggestions("project"))
-        self.learning_accept_profile = AnimatedButton("加入当前 Profile 的词库")
-        bind_text(self.learning_accept_profile, '批量接受所选建议并加入当前 Profile 使用的词库', property='toolTip')
-        self.learning_accept_profile.clicked.connect(lambda: self._accept_learning_suggestions("profile"))
-        self.learning_popup = ActionPopup(self.learning_accept_button, min_width=220)
-        self.learning_popup.add_button(self.learning_accept_project)
-        self.learning_popup.add_button(self.learning_accept_profile)
-        self.learning_ignore = AnimatedButton("忽略")
-        self.learning_ignore.setObjectName("termGhostButton")
-        self.learning_ignore.clicked.connect(self._ignore_learning_suggestions)
-        learning_actions.addWidget(self.learning_ignore)
-        learning_box.addLayout(learning_actions)
-        self.learning_box.hide()
-        learning_layout.addWidget(self.learning_box)
+        from .learning_review_ui import LearningReviewPanel
+        self.learning_panel = LearningReviewPanel(self)
+        self.learning_count = self.learning_panel.count
+        self.learning_box = self.learning_panel.box
+        self.learning_list = self.learning_panel.listing
+        self.learning_toggle = self.learning_panel.toggle
+        self.learning_accept_button = self.learning_panel.accept
+        self.learning_ignore = self.learning_panel.ignore
         content_body_layout.addWidget(self.learning_panel)
 
         # 选了词条才出现：确认 / 隐藏 / 删除。
@@ -1678,7 +1638,7 @@ class TermLibraryDialog(QWidget):
         self.batch_status.setWordWrap(True)
         self.batch_status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         footer_layout.addWidget(self.batch_status, 1)
-        self.card_hint = bind_text(QLabel(), '点卡片 = 原地修改 · Ctrl / Shift + 点 = 多选')
+        self.card_hint = bind_text(QLabel(), '绿勾 = 正式已确认 · 边框高亮 = 选中 · 点卡片可编辑')
         self.card_hint.setObjectName("termHint")
         footer_layout.addWidget(self.card_hint)
         if not self.page_mode:
@@ -1862,8 +1822,7 @@ class TermLibraryDialog(QWidget):
             self._run_row_action(row)
 
     def _toggle_learning_list(self):
-        visible = self.learning_box.isHidden()
-        self.learning_box.setVisible(visible)
+        self.learning_panel._toggle()
 
     def _sync_batch_switch(self):
         in_batch = bool(self.state.get("game")) and self._current_game_in_batch()
@@ -2460,105 +2419,16 @@ class TermLibraryDialog(QWidget):
                 self._builtin_cache.get(game), self._builtin_entry_cache.get(game))
 
     def refresh_learning_suggestions(self):
-        from .glossary_learning import ORIGIN_LABELS
-
-        pending = self._learning_store.pending()
-        game_name = str(self.state.get("game", "") or "")
-        if game_name:
-            existing = {
-                (str(item.get("from", "")), str(item.get("to", "")))
-                for item in getattr(
-                    self.legacy,
-                    "user_confirmed_mappings_for_game",
-                    self.legacy.learned_mappings_for_game,
-                )(self._library_key(game_name))
-                if isinstance(item, dict)
-            }
-            pending = [
-                item for item in pending
-                if (str(item.get("original_term", "")), str(item.get("corrected_term", ""))) not in existing
-            ]
-        self.learning_list.clear()
-        for entry in pending:
-            contexts = [str(item) for item in entry.get("contexts", []) if str(item).strip()]
-            projects = [Path(str(item)).stem for item in entry.get("projects", []) if str(item).strip()]
-            source_note = f" · {projects[-1]}" if projects else ""
-            origin_label = ORIGIN_LABELS.get(
-                str(entry.get("origin") or ""), "手动修改"
-            )
-            item = QListWidgetItem(
-                f"{entry.get('corrected_term', '')}  ·  曾由「{entry.get('original_term', '')}」修正 "
-                f"{int(entry.get('occurrence_count', 0))} 次 · {origin_label}{source_note}"
-            )
-            item.setData(Qt.ItemDataRole.UserRole, str(entry.get("id", "")))
-            confidence = float(entry.get("confidence", 0.0) or 0.0)
-            tooltip = [f"置信度：{confidence:.0%}", f"修改类型：{origin_label}"]
-            if projects:
-                tooltip.append("来源工程：" + "、".join(projects[-3:]))
-            tooltip.extend(contexts[-3:])
-            bind_text(item, '\n'.join(tooltip) or f'来源：{origin_label}', property='toolTip')
-            self.learning_list.addItem(item)
-        bind_text(self.learning_count, '{value0} 条待学习', value0=len(pending))
-        self.learning_panel.setVisible(bool(pending))
-        rows = min(max(len(pending), 1), 5)
-        self.learning_list.setFixedHeight(rows * (self.learning_list.fontMetrics().lineSpacing() + 14) + 8)
-        if not pending and not self.learning_box.isHidden():
-            self._toggle_learning_list()
-        if pending:
-            self.learning_list.selectAll()
+        self.learning_panel.refresh()
 
     def _selected_learning_ids(self):
-        selected = self.learning_list.selectedItems()
-        return [str(item.data(Qt.ItemDataRole.UserRole) or "") for item in selected]
+        return self.learning_panel.checked_ids()
 
-    def _learning_destination(self, mode):
-        """Project/Profile binding only — never the game that happens to be
-        selected in the sidebar, so unbound corrections cannot silently land
-        in an unrelated library."""
-        if mode == "project":
-            project = getattr(existing_page(self.owner, "studio"), "project", None)
-            if project and project.glossary_ids:
-                return str(project.glossary_ids[0])
-        if mode == "profile":
-            profile = getattr(self.owner, "current_project_profile", None)
-            glossaries = getattr(profile, "glossary_ids", None)
-            if glossaries:
-                return str(glossaries[0])
-        return ""
-
-    @glossary_write_errors
-    def _accept_learning_suggestions(self, mode):
-        candidate_ids = self._selected_learning_ids()
-        destination = self._learning_destination(mode)
-        if not candidate_ids:
-            self._show_toast("请选择要接受的自动学习建议。")
-            return
-        if not destination:
-            self._show_toast(
-                "该来源工程 / Profile 未绑定游戏词库，无法确定入库目标。"
-                "请先在工程或 Profile 中关联词库（不会写入当前侧栏选中的游戏）。"
-            )
-            return
-        accepted = self._learning_store.accept(
-            candidate_ids,
-            destination,
-            add_mapping=self.legacy.add_learned_mapping,
-        )
-        self._notify_library_changed()
-        self._mappings_cache.pop(destination, None)
-        self.refresh_learning_suggestions()
-        if self._game_identity(destination) == self._game_identity(self.state.get("game", "")):
-            self.refresh_current_game()
-        self._show_toast(tr('已将 {value0} 条建议加入《{value1}》词库。', value0=accepted, value1=destination))
+    def _accept_learning_suggestions(self, mode=None):
+        self.learning_panel.commit(self._selected_learning_ids())
 
     def _ignore_learning_suggestions(self):
-        candidate_ids = self._selected_learning_ids()
-        if not candidate_ids:
-            self._show_toast("请选择要忽略的自动学习建议。")
-            return
-        ignored = self._learning_store.ignore(candidate_ids)
-        self.refresh_learning_suggestions()
-        self._show_toast(tr('已忽略 {value0} 条建议。', value0=ignored))
+        self.learning_panel.ignore_selected()
 
     # ------------------------- unified table bulk actions -------------------------
 
@@ -3990,7 +3860,7 @@ class TermLibraryDialog(QWidget):
     def _export_library_to(self, path):
         library_id = self._library_key()
         data = {"library_id": library_id, "name": self.state.get('game', ''),
-                "mappings": self.legacy.learned_mappings_for_game(library_id)}
+                "mappings": self.legacy.user_confirmed_mappings_for_game(library_id)}
         Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
         self._show_toast("已导出规范写法与已确认映射。")
 

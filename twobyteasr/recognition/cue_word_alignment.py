@@ -177,7 +177,7 @@ def _monotonic(words):
     return result
 
 
-def _exact(target, positions, records, interval):
+def _exact_inputs(records):
     source = ''.join(r[2] for r in records)
     offsets = []
     cursor = 0
@@ -185,6 +185,26 @@ def _exact(target, positions, records, interval):
         offsets.append((cursor, cursor + len(text), start, end, text, ref))
         cursor += len(text)
     starts = [row[0] for row in offsets]
+    return source, offsets, starts
+
+
+class TokenAlignmentIndex:
+    """One immutable batch's token stream and interval/exact-match indices."""
+    def __init__(self, records):
+        from ..timeline.interval_end_index import IntervalEndIndex
+        self.stream = _stream(records)
+        self.exact = _exact_inputs(self.stream) if self.stream else None
+        self.starts = [record[0] for record in self.stream] if self.stream else []
+        self.ends = IntervalEndIndex(record[1] for record in self.stream or ())
+
+    def window(self, interval):
+        stop = bisect_left(self.starts, interval[1]+ALIGN_WINDOW_MS)
+        return [self.stream[index] for index in self.ends.before_with_end_after(
+            stop, interval[0]-ALIGN_WINDOW_MS)]
+
+
+def _exact(target, positions, records, interval, index=None):
+    source, offsets, starts = index.exact if index is not None else _exact_inputs(records)
     best = None
     ambiguous = False
     at = source.find(target)
@@ -208,10 +228,11 @@ def _exact(target, positions, records, interval):
             for a, b, start, end, text, ref in offsets[lo:hi]], 'exact_token_text'
 
 
-def _aligned(target, positions, records, interval):
+def _aligned(target, positions, records, interval, index=None):
     """Units of the current text over heard tokens; see the module docstring."""
-    window = [r for r in records
-              if r[1] > interval[0] - ALIGN_WINDOW_MS and r[0] < interval[1] + ALIGN_WINDOW_MS]
+    window = (index.window(interval) if index is not None else
+              [r for r in records if r[1] > interval[0] - ALIGN_WINDOW_MS
+               and r[0] < interval[1] + ALIGN_WINDOW_MS])
     if not window:
         return None, 'text_changed_or_inside_multi_character_token'
     source = ''.join(r[2] for r in window)
@@ -285,7 +306,7 @@ def _aligned(target, positions, records, interval):
     return words, 'exact_token_text' if all_exact else 'derived_term_source_span'
 
 
-def align_text_to_tokens(text, records, interval, *, derived=False, allow_realign=True):
+def align_text_to_tokens(text, records, interval, *, derived=False, allow_realign=True, index=None):
     """Words of ``text`` over measured ``records`` near ``interval``.
 
     The single matcher behind recognition evidence, edited captions and
@@ -296,12 +317,12 @@ def align_text_to_tokens(text, records, interval, *, derived=False, allow_realig
     target = ''.join(c for _, c in positions)
     if not target or not records:
         return (), 'missing_word_timestamps'
-    stream = _stream(records)
+    stream = index.stream if index is not None else _stream(records)
     if stream is None:
         return (), 'overlapping_token_streams'
-    words, reason = _exact(target, positions, stream, interval)
+    words, reason = _exact(target, positions, stream, interval, index)
     if allow_realign and words is None and reason != 'ambiguous_repeated_text':
-        words, reason = _aligned(target, positions, stream, interval)
+        words, reason = _aligned(target, positions, stream, interval, index)
     if words is None:
         return (), reason
     words = _monotonic(words)
@@ -430,7 +451,7 @@ def _independent_words(project, cue, *, allow_realign=True):
     return (), pending or receipt.get('word_alignment', 'independent_caption_requires_acoustic_alignment')
 
 
-def cue_words(project, cue, *, allow_realign=True):
+def cue_words(project, cue, *, allow_realign=True, fallback_evidence=None, source_cue=None):
     appearance = getattr(cue, 'appearance_override', {})
     if not isinstance(appearance, Mapping):
         from ..projects.studio_revisions import thaw_json
@@ -444,8 +465,10 @@ def cue_words(project, cue, *, allow_realign=True):
         return _independent_words(project, cue, allow_realign=allow_realign)
     from ..timeline.studio_edit_sequence import source_cue_id_of, projected_cues
     canonical_id = source_cue_id_of(cue.id)
-    canonical = next((c for c in project.cues if c.id == canonical_id), cue)
-    refs = canonical.evidence_refs or list(project.asr_evidence)
+    canonical = source_cue if source_cue is not None else next((c for c in project.cues if c.id == canonical_id), cue)
+    refs = canonical.evidence_refs
+    if not refs and fallback_evidence is None:
+        refs = list(project.asr_evidence)
     override = project.studio_state.get('term_word_overrides', {}).get(canonical_id, {})
     rows = None
     pending = False
@@ -455,12 +478,16 @@ def cue_words(project, cue, *, allow_realign=True):
         else:
             # The override's own words are a remap; realign the evidence.
             pending = True
-    records, term_pending, derived = evidence_tokens(project, refs, rows)
+    index = None
+    if fallback_evidence is not None and not canonical.evidence_refs and rows is None:
+        records, term_pending, derived, index = fallback_evidence
+    else:
+        records, term_pending, derived = evidence_tokens(project, refs, rows)
     pending = pending or term_pending
     if not records:
         return (), TERM_PENDING if pending else 'missing_word_timestamps'
     words, reason = align_text_to_tokens(cue.text, records, (canonical.start_ms, canonical.end_ms),
-                                         derived=derived, allow_realign=allow_realign)
+                                         derived=derived, allow_realign=allow_realign, index=index)
     if not words:
         return (), TERM_PENDING if pending and reason == 'text_changed_or_inside_multi_character_token' else reason
     if cue.id == canonical.id:

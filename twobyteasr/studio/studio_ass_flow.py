@@ -580,7 +580,10 @@ class StudioAssFlowMixin:
         try:
             dialog = SubtitleExportDialog(self.project, self.project_path, self, export_on_accept=True)
             self._studio_trace("EXPORT_ENTRY_OPENED", entry="studio_subtitles")
-            dialog.exec()
+            try:
+                dialog.exec()
+            finally:
+                dialog.deleteLater()
         except Exception as exc:
             import traceback
             self._studio_trace("EXPORT_ENTRY_FAILED", entry="studio_subtitles", reason="dialog_setup",

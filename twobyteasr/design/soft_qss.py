@@ -338,13 +338,13 @@ QFrame#softSegmented[collapsed="true"], {card} QFrame#softSegmented[collapsed="t
 {panel} QWidget#motionStageBar {{ background: {k.fill}; border-radius: 12px; }}
 {panel} QPushButton#motionStage {{
     background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
-    min-height: 44px; max-height: 44px; padding: 0;
+    min-height: 38px; max-height: 38px; padding: 0;
 }}
 {panel} QPushButton#motionStage:hover {{ background: {k.fill_hover}; }}
 {panel} QPushButton#motionStage:checked {{ background: {k.raised}; color: {t.accent_text}; }}
 {panel} QPushButton#motionChip {{
     background: {k.fill}; color: {t.text_secondary}; border: 0; border-radius: 13px;
-    min-height: 28px; max-height: 28px; padding: 0 12px; font-size: 12px; font-weight: 600;
+    min-height: 24px; max-height: 24px; padding: 0 9px; font-size: 11px; font-weight: 600;
 }}
 {panel} QPushButton#motionChip:hover {{ background: {k.fill_hover}; color: {t.text}; }}
 {panel} QPushButton#motionChip:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
@@ -355,12 +355,12 @@ QFrame#softSegmented[collapsed="true"], {card} QFrame#softSegmented[collapsed="t
 {panel} QPushButton#motionDirection:hover {{ background: {k.card_fill_hover}; color: {t.text}; }}
 {panel} QPushButton#motionDirection:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
 {panel} QPushButton#motionEffectTile {{
-    background: {k.fill}; border: 2px solid transparent; border-radius: 12px; padding: 0;
-    min-height: 84px; max-height: 84px;
+    background: {k.fill}; border: 2px solid transparent; border-radius: 9px; padding: 0;
+    min-height: 64px; max-height: 64px;
 }}
 {panel} QPushButton#motionEffectTile:hover {{ background: {k.fill_hover}; }}
 {panel} QPushButton#motionEffectTile:checked {{ background: {k.chip}; border-color: {t.accent}; }}
-{panel} QLabel#motionTileLabel {{ background: transparent; color: {t.text}; font-size: 12px; font-weight: 600; }}
+{panel} QLabel#motionTileLabel {{ background: transparent; color: {t.text}; font-size: 11px; font-weight: 600; }}
 {panel} QLabel#motionTileLabel[selected="true"] {{ color: {t.accent_text}; font-weight: 700; }}
 {panel} QLabel#motionTileCheck {{ background: {t.accent}; border-radius: 8px; }}
 {panel} QLabel#motionBadge {{

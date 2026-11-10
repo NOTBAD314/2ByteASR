@@ -39,13 +39,22 @@ def anchors(p):
                    resolve_cue_visual(p,c).style.position_y) for c in p.cues}
 
 
+def display_anchors(p, at=1000):
+    from twobyteasr.caption_style.collision_layout import solve_layout
+    snapshots = [build_visual_cue_snapshot(p,c.id) for c in p.cues if c.start_ms <= at < c.end_ms]
+    offsets = solve_layout(snapshots).offsets
+    return {s.cue_id: (s.position_x, s.position_y-offsets.get(s.cue_id,0)) for s in snapshots}
+
+
 def test_initial_layout_follows_time_keeps_bottom_compact_and_saves(tmp_path):
     p = project()
     before = [(c.text,c.start_ms,c.end_ms,c.speaker_id) for c in p.cues]
     layout = initialize_project_layout(p)
     assert not layout.warnings
     assert anchors(p)['earlier'][1] == 1037
-    assert 70 < anchors(p)['earlier'][1] - anchors(p)['later'][1] < 140
+    shown = display_anchors(p)
+    assert 70 < shown['earlier'][1] - shown['later'][1] < 160
+    assert anchors(p)['earlier'][1] == anchors(p)['later'][1]
     assert [(c.text,c.start_ms,c.end_ms,c.speaker_id) for c in p.cues] == before
     expected = anchors(p)
     save_project(p,tmp_path/'layout.2byteproj')
@@ -119,7 +128,8 @@ def test_new_third_cue_uses_actual_overlap_without_moving_existing_cues():
     initialize_project_layout(p)
     value = anchors(p)
     assert all(value[key] == point for key,point in old.items())
-    assert value['third'][1] < value['later'][1]
+    shown = display_anchors(p)
+    assert shown['third'][1] < shown['later'][1]
     assert value['sequential'][1] == value['earlier'][1]
 
 
@@ -137,7 +147,7 @@ def test_explicit_relayout_is_scoped_and_one_undo_step():
     assert p.cues[0] == before[0]
     after = deepcopy(p.cues)
     assert 'position_y' not in p.cues[1].transform
-    assert anchors(p)['later'][1] < 1000
+    assert display_anchors(p)['later'][1] < 1000
     undo.undo()
     assert [c.transform for c in p.cues] == [c.transform for c in before]
     assert [(c.text,c.start_ms,c.end_ms,c.speaker_id) for c in p.cues] == [
@@ -163,7 +173,7 @@ def test_real_generation_initializes_and_plain_runtime_metadata_is_preserved():
             SimpleNamespace(cue_id='b',start=.5,end=2.6,text='第二条',speaker='S00')]
     p = project_from_runtime_cues('missing.mp4',rows, media_identity={'duration_ms':3000})
     assert all('initial_layout' in c.transform for c in p.cues)
-    assert anchors(p)['a'][1] > anchors(p)['b'][1]
+    assert display_anchors(p)['a'][1] > display_anchors(p)['b'][1]
     assert all(c.original_text == c.text for c in p.cues)
 
 
@@ -173,8 +183,11 @@ def test_visible_ink_bounds_produce_compact_real_live_raster_gap():
     p = project()
     initialize_project_layout(p)
     bounds = {}
+    from twobyteasr.caption_style.collision_layout import solve_layout, shifted_snapshot
+    snapshots = [build_visual_cue_snapshot(p,c.id) for c in p.cues]
+    offsets = solve_layout(snapshots).offsets
     for c in p.cues:
-        snapshot = build_visual_cue_snapshot(p,c.id)
+        snapshot = shifted_snapshot(build_visual_cue_snapshot(p,c.id), offsets[c.id])
         image = render_live_snapshot(snapshot,width=1920,height=1080)
         bounds[c.id] = image_bounds(image)
     top = bounds['later']; bottom = bounds['earlier']

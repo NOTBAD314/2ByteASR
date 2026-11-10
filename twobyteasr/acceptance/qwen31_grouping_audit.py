@@ -15,6 +15,64 @@ def require(value, message):
         raise AssertionError(message)
 
 
+def verify_overview(window, output, check, wait):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    page = window.studio_page
+    timeline = page.timeline
+    overview = page.timeline_overview
+    saved = timeline.visible_start_ms, timeline.visible_duration_ms
+
+    def verify(name):
+        def refreshed():
+            project, cues = overview._cues()
+            return overview._marker_key == overview._key(project, cues)
+        check(name+'_repainted', wait(refreshed))
+        project, cues = overview._cues()
+        left = timeline.visible_start_ms
+        right = left + timeline.visible_duration_ms
+        check(name+'_only_visible_cues', all(cue.end_ms > left and cue.start_ms < right for cue in cues))
+        center = overview._track().center().x()
+        check(name+'_ruler_alignment', abs(overview._ms(center)-timeline._x_to_time(center)) <= 1)
+        check(name+'_screenshot', overview.grab().save(str(output/(name+'.png'))))
+
+    for name, start, duration in [('overview-begin', 0, 60_000),
+                                   ('overview-middle', 1_110_000, 60_000),
+                                   ('overview-end', 2_640_000, 60_000)]:
+        timeline.set_visible_window(start, duration)
+        verify(name)
+    duration = timeline.visible_duration_ms
+    point = QPointF(timeline._time_to_x(timeline.visible_start_ms+duration//2), timeline.RULER_HEIGHT+20)
+    event = QWheelEvent(point, QPointF(timeline.mapToGlobal(point.toPoint())), QPoint(), QPoint(0,120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(timeline, event)
+    check('overview_control_wheel_zoom', timeline.visible_duration_ms < duration)
+    verify('overview-zoomed')
+    start = timeline.visible_start_ms
+    event = QWheelEvent(point, QPointF(timeline.mapToGlobal(point.toPoint())), QPoint(), QPoint(-120,0),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.AltModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(timeline, event)
+    check('overview_horizontal_wheel_moves_view', timeline.visible_start_ms > start)
+    verify('overview-scrolled')
+    left, duration = timeline.visible_start_ms, timeline.visible_duration_ms
+    track = overview._track()
+    point = QPoint(round(track.left()+track.width()*.75), round(track.center().y()))
+    clicked_ms = overview._ms(point.x())
+    QTest.mousePress(overview, Qt.MouseButton.LeftButton, pos=point)
+    check('overview_press_anchors_visible_range', overview._drag_window == (left,duration))
+    after_press = timeline.visible_start_ms
+    QTest.mouseMove(overview, point)
+    check('overview_drag_does_not_accumulate_pan', timeline.visible_start_ms == after_press)
+    QTest.mouseRelease(overview, Qt.MouseButton.LeftButton, pos=point)
+    check('overview_local_click_target', abs(timeline.visible_start_ms-(clicked_ms-duration//2)) <= 1)
+    check('overview_local_click_stays_near_view', abs(timeline.visible_start_ms-left) <= duration//2)
+    verify('overview-clicked')
+    check('overview_window_screenshot', window.grab().save(str(output/'overview-window.png')))
+    timeline.set_visible_window(*saved)
+
+
 def main(output_directory):
     output = Path(output_directory).resolve()
     invoker = Path(os.environ.get("TWOBYTEASR_INVOKER_CWD") or Path.cwd()).resolve()
@@ -22,6 +80,9 @@ def main(output_directory):
         raise ValueError("Audit output must be under cwd/tmp")
     fixture_path = output/"fixture.json"
     fixture = json.loads(fixture_path.read_text("utf-8"))
+    if fixture.get("audit_kind") == "recorded-grouping-task":
+        from .recorded_grouping_audit import main as recorded_audit
+        return recorded_audit(output, fixture)
     os.environ["TWOBYTEASR_TEST_ROOT"] = str(output/"profile")
     from ..test_isolation import install, install_pytest_network_guard
     install()
@@ -205,9 +266,22 @@ def start(window, output):
                     session.state=="ready" and not session.view.isVisible()))
             check("loading_cover_released_and_workbench_visible",wait(visibly_ready,80))
             page.video.set_paused(True)
+            if page.video.controller is not None:
+                page.video.controller.post_set_volume(0)
             check("all_Studio_text_matches_saved_project",[c.text for c in page.project.cues]==[c.text for c in expected.cues])
             page.timeline.set_subtitle_layer("original")
-            examples=[c for c in expected.cues if any(w in c.text for w in ("虽然","结果","上一次","六代团","总体来说"))]
+            terms=json.loads(os.environ.get('TWOBYTEASR_GROUPING_PREVIEW_TERMS',
+                '["虽然","结果","上一次","六代团","总体来说"]'))
+            examples=[c for c in expected.cues if any(w in c.text for w in terms)]
+            check('requested_preview_examples_exist',bool(examples))
+            if os.environ.get('TWOBYTEASR_GROUPING_FIRST_PER_TERM') == '1':
+                examples=[]
+                for term in terms:
+                    matches=[cue for cue in expected.cues if term in cue.text]
+                    check('preview_term_exists_'+term,bool(matches))
+                    if matches[0] not in examples:
+                        examples.append(matches[0])
+            result['preview_examples']=[dict(id=cue.id,text=cue.text,start_ms=cue.start_ms) for cue in examples]
             for index,cue in enumerate(examples):
                 page.select_cue(cue.id)
                 page._seek((cue.start_ms+50)/1000.)
@@ -220,6 +294,27 @@ def start(window, output):
                     pump()
                 _capture(window,output/f"preview-{index}.png")
             check("all_cue_ids_stable",[c.id for c in page.project.cues]==[c.id for c in expected.cues])
+            if os.environ.get('TWOBYTEASR_GROUPING_VIEWPORT_AUDIT') == '1':
+                verify_overview(window, output, check, wait)
+            if os.environ.get('TWOBYTEASR_GROUPING_TASK_PHASE_AUDIT')=='1':
+                page._recognition_running=True
+                page._recognition_subtitle_task=None
+                page.set_recognition_runtime_stage('断句：模型处理','离线固定响应')
+                task=page._recognition_subtitle_task
+                for label in ('断句：本地断点检查','断句：局部重试未变化','断句：最终字幕验证'):
+                    page._record_recognition_task_event('pipeline_work_progress',dict(label=label,state='completed'))
+                    check('task_phase_'+label,task.phase==label)
+                page._record_recognition_task_event('grouping_quality_retry',dict(outcome='unchanged',improved=False))
+                check('unchanged_retry_is_not_improvement',task.rows['source']['activity']['grouping_quality_retry']['improved'] is False)
+                page._record_recognition_task_event('FIRERED_ALIGNMENT_STATUS',dict(status='degraded',counts={'aligned':9,'failed_or_unavailable':1},
+                    reason='部分 FireRed 窗口没有真实字级对齐；已隔离估计时间，保留转写文本。'))
+                page._finish_recognition_subtitle_task('suggestion','结果已交付，时间证据需检查')
+                page._recognition_running=False
+                check('alignment_degradation_remains_reviewable',task.counts()['review']==1)
+                page.subtitle_tasks_button.click()
+                check('task_panel_visible',wait(lambda:page._subtitle_task_panel().isVisible()))
+                _capture(page._subtitle_task_panel(),output/'task-progress.png')
+                page._subtitle_task_panel().hide()
             result["passed"]=True
         except Exception as exc:
             import traceback
@@ -230,5 +325,4 @@ def start(window, output):
                 page.project_dirty=False
             (output/"result.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
             window.close()
-            QTimer.singleShot(300,QApplication.instance().quit)
     QTimer.singleShot(1500,run)

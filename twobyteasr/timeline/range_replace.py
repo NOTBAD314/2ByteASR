@@ -16,7 +16,15 @@ from .studio_commands import MutationOrigin, ReplaceCuesCommand
 
 class ReplaceRangeCuesCommand(ReplaceCuesCommand):
     def __init__(self, project, plan, entry=None, changed=None, text="只重新识别这一段字幕") -> None:
-        selection = plan.inserted_ids[0] if plan.inserted_ids else ""
+        if not plan.inserted_ids:
+            raise ValueError('这一段没有有效新字幕，保留原字幕')
+        from ..projects.range_speakers import capture_roster
+        from ..projects.studio_runtime_state import DirtyDomain
+        self.additional_dirty = DirtyDomain.PROJECT_METADATA
+        self._roster_before = capture_roster(project)
+        self._roster_after = None
+        self.outcome = {"applied": False, "error": "", "ui_error": ""}
+        selection = plan.inserted_ids[0]
         super().__init__(project, plan.cues, text, changed, MutationOrigin.ASR, selection_after=selection)
         removed = [cue for cue in self.before if cue.id in set(plan.removed_ids)]
         # A re-recognized line gets no estimated piece of the old translation.
@@ -46,8 +54,8 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
         self._archive_ids = {str(row.get("id")) for row in plan.archive}
         self._archive_present = "source_archive" in (project.studio_state.get(KEY) or {})
         if independent_captions(project):
-            state = project.studio_state.setdefault(KEY, {"version": 1, "instances": {}})
-            instances = state.setdefault("instances", {})
+            state = project.studio_state.get(KEY) or {}
+            instances = state.get("instances") or {}
             keys = [*plan.removed_ids, *plan.inserted_ids]
             before = {key: copy.deepcopy(instances.get(key)) for key in keys}
             after = {key: None for key in plan.removed_ids}
@@ -56,7 +64,31 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
         self._entry = copy.deepcopy(entry) if entry is not None else None
         self.plan = plan
 
+    def _apply(self, cues, selection_override=None):
+        from ..projects.range_speakers import capture_roster, restore_roster
+        from ..projects.studio_runtime_state import state_for
+        revision = state_for(self.project).revision
+        roster = capture_roster(self.project)
+        evidence = {key: copy.deepcopy(self.project.asr_evidence.get(key)) for key in self.plan.evidence}
+        try:
+            super()._apply(cues, selection_override)
+            self.outcome.update(applied=True, error="", ui_error="")
+        except Exception as exc:
+            if state_for(self.project).revision != revision:
+                self.outcome.update(applied=True, ui_error=str(exc))
+                return
+            restore_roster(self.project, roster)
+            for key, value in evidence.items():
+                if value is None:
+                    self.project.asr_evidence.pop(key, None)
+                else:
+                    self.project.asr_evidence[key] = value
+            self.outcome.update(applied=False, error=str(exc))
+            self.setObsolete(True)
+
     def _mutate(self, cues) -> None:
+        if getattr(self, "_merge_caption_states", None) is not None:
+            self.project.studio_state.setdefault(self._caption_key, {"version": 1, "instances": {}})
         super()._mutate(cues)
         forward = cues is self.after
         if forward:
@@ -73,18 +105,20 @@ class ReplaceRangeCuesCommand(ReplaceCuesCommand):
             self.project.generation_metadata.pop('speech_coverage', None)
         else:
             self.project.generation_metadata['speech_coverage'] = copy.deepcopy(self._coverage_before)
-        extra_ids = {s.id for s in self.plan.extra_speakers}
+        from ..projects.range_speakers import (capture_roster, restore_roster,
+                                               register_range_speakers, clean_range_speakers)
         if forward:
-            known = {s.id for s in self.project.speakers}
-            self.project.speakers.extend(copy.deepcopy([s for s in self.plan.extra_speakers if s.id not in known]))
-        elif extra_ids:
-            self.project.speakers[:] = [s for s in self.project.speakers if s.id not in extra_ids]
-            # validate/save materializes the roster's display names. Undo
-            # removes those entries with the identities that introduced them.
-            if self._speaker_names_before is None:
-                self.project.generation_metadata.pop('speaker_names', None)
+            if self._roster_after is None:
+                known = {speaker.id for speaker in self.project.speakers}
+                extras = [speaker for speaker in self.plan.extra_speakers if speaker.id not in known]
+                self.project.speakers.extend(copy.deepcopy(extras))
+                register_range_speakers(self.project, extras)
+                clean_range_speakers(self.project)
+                self._roster_after = capture_roster(self.project)
             else:
-                self.project.generation_metadata['speaker_names'] = copy.deepcopy(self._speaker_names_before)
+                restore_roster(self.project, self._roster_after)
+        else:
+            restore_roster(self.project, self._roster_before)
         if forward and self.plan.acceptance:
             from ..recognition.language_recovery_project import merge_acceptance
             merge_acceptance(self.project, self.plan)

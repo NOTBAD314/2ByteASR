@@ -475,6 +475,7 @@ class ReplaceCuesCommand(QUndoCommand):
                 | DirtyDomain.NATIVE_SUBTITLE
                 | DirtyDomain.QC
                 | DirtyDomain.AUTOSAVE
+                | getattr(self, "additional_dirty", DirtyDomain.NONE)
             ),
             cue_ids=affected,
             mutate=lambda: self._mutate(cues),
@@ -739,6 +740,9 @@ def _splice_split(
     # 2026-10-24 caption-marks port: the records stay the daily's; Codex's TranslationSplice
     # only carries the translation marks, moved onto the texts the records hold.
     command._translations.follow(command._after_cues, command._translation_states[1])
+    if command._caption_after:
+        command._caption_after[left.id]['protected_end'] = True
+        command._caption_after[right.id]['protected_start'] = True
     return command
 
 

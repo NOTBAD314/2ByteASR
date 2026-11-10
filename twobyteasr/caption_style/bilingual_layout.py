@@ -445,7 +445,7 @@ def display_cues(cues, *, translations, settings, styles, speakers, style_recipe
 def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
     # The project's punctuation style (保留原文 / 添加标点 / 不加标点) applies to
     # everything drawn: live preview, ASS export and burn-in share this path.
-    from ..subtitle_rules.punctuation_style import style_cues, style_translations
+    from ..subtitle_rules.punctuation_style import style_cues, style_translations, protected_terms_of
     from .speaker_names import enabled
     _check_preparation_cancelled(cancel_check)
     styled = style_cues(project, cues if cues is not None else project.cues)
@@ -456,7 +456,7 @@ def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
     styled = visual_cues(styled, snapshot)
     return display_cues(styled,
                         translations=style_translations(project.studio_state,
-                                                        translations_of(project.generation_metadata)),
+                                                        translations_of(project.generation_metadata), protected_terms=protected_terms_of(project)),
                         settings=settings_from_state(project.studio_state), styles=project.styles,
                         show_speaker_names=enabled(project.studio_state),
                         speakers=project.speakers, style_recipes=project.style_recipes,effects=project.effects,

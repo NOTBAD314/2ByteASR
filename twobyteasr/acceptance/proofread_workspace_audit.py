@@ -121,7 +121,7 @@ def start(window, out):
             cues = sorted(page.project.cues, key=lambda cue: (cue.start_ms, cue.end_ms, cue.id))
             _capture(window, out / "01-studio.png")
             clicked_at = time.perf_counter()
-            QTest.mouseClick(page.cue_proofread_button, Qt.LeftButton)
+            page.cue_proofread_action.trigger()
             check("AI 校对 opens the workspace", wait(lambda: getattr(window, "glossary_proofread_page", None)
                                                      is window.pages.currentWidget(), 15))
             review = window.glossary_proofread_page

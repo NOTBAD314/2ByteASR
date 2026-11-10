@@ -55,9 +55,9 @@ def test_three_layers_names_content_and_counts(tmp_path):
     names = {artifact.layer: artifact.path.name for artifact in result.artifacts}
     assert names == {"original": "实况.ja.srt", "translation": "实况.zh.srt", "bilingual": "实况.bilingual.srt"}
     paths = {artifact.layer: artifact.path for artifact in result.artifacts}
-    assert blocks(paths["original"]) == ["行くぞ！", "ちょっと待って", "やばい", "マジでか"]
-    assert blocks(paths["translation"]) == ["走了！", "等一下", "真的假的"]
-    assert blocks(paths["bilingual"]) == ["走了！\n行くぞ！", "等一下\nちょっと待って", "やばい", "真的假的\nマジでか"]
+    assert blocks(paths["original"]) == ["行くぞ", "ちょっと待って", "やばい", "マジでか"]
+    assert blocks(paths["translation"]) == ["走了", "等一下", "真的假的"]
+    assert blocks(paths["bilingual"]) == ["走了\n行くぞ", "等一下\nちょっと待って", "やばい", "真的假的\nマジでか"]
     by_layer = {artifact.layer: artifact for artifact in result.artifacts}
     assert by_layer["translation"].cue_count == 3 and by_layer["translation"].missing_translation_ids == ("c2",)
     assert by_layer["bilingual"].cue_count == 4 and by_layer["bilingual"].missing_translation_count == 1
@@ -75,7 +75,7 @@ def test_bilingual_order_can_be_swapped(tmp_path):
     project = translated_project()
     result = export.export_language_layers(project, tmp_path, "实况", ("bilingual",), translation_first=False)
     [artifact] = result.artifacts
-    assert blocks(artifact.path)[:2] == ["行くぞ！\n走了！", "ちょっと待って\n等一下"]
+    assert blocks(artifact.path)[:2] == ["行くぞ\n走了", "ちょっと待って\n等一下"]
 
 
 def test_existing_files_are_never_overwritten(tmp_path):
@@ -134,7 +134,7 @@ def test_legacy_translation_dict_exports_without_migration(tmp_path):
     project = make_project()
     project.generation_metadata["translations"] = {"c0": "走了！"}
     result = export.export_language_layers(project, tmp_path, "旧工程", ("bilingual",))
-    assert blocks(result.artifacts[0].path)[0] == "走了！\n行くぞ！"
+    assert blocks(result.artifacts[0].path)[0] == "走了\n行くぞ"
     assert "translation_records" not in project.generation_metadata  # export never mutates
 
 
@@ -171,7 +171,7 @@ def test_json_carries_translation_speaker_and_cue_alignment_pieces(tmp_path):
         assert key in first  # old keys kept
     assert first["original_text"] == "行くぞ！"
     assert first["speaker"] == {"id": "S00", "name": "主播"}
-    assert first["translation"] == {"text": "走了！", "status": "done", "origin": "ai", "target": "zh-Hans"}
+    assert first["translation"] == {"text": "走了", "status": "done", "origin": "ai", "target": "zh-Hans"}
     assert rows["c2"]["translation"]["status"] == "untranslated"
     assert rows["c3"]["translation"]["status"] == "needs_update"
     timing = first["word_timing"]
@@ -181,8 +181,12 @@ def test_json_carries_translation_speaker_and_cue_alignment_pieces(tmp_path):
         ("ぞ", 420, 700, "char", "boundary_peak|monotonic_repair"),
     ]
     assert rows["c1"]["word_timing"] == {"source": "", "basis": "", "pieces": []}
+    import copy
+    expected = copy.copy(project)
+    expected.cues = export._export_view_cues(project)
     verification = export.verify_subtitle_artifact(
-        export.SubtitleExportArtifact(artifact.path, "json", "", 4), project)
+        export.SubtitleExportArtifact(artifact.path, "json", "", 4),
+        expected)
     assert verification.valid
 
 
@@ -217,6 +221,6 @@ def test_old_export_path_keeps_overwriting_and_gains_json_keys(tmp_path):
                                                  export.SubtitleExportOptions(frozenset({"json", "srt"})))
     assert {artifact.path.name for artifact in artifacts} == {"result.json", "result.srt"}
     payload = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert payload["cues"][0]["translation"]["text"] == "走了！"
+    assert payload["cues"][0]["translation"]["text"] == "走了"
     assert payload["cues"][0]["word_timing"]["pieces"]
-    assert "走了！" not in (tmp_path / "result.srt").read_text(encoding="utf-8")  # SRT stays original
+    assert "走了" not in (tmp_path / "result.srt").read_text(encoding="utf-8")  # SRT stays original

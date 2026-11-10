@@ -8,7 +8,7 @@ overlay moved here from ``app/ui.py`` on 2026-10-15 (``ui`` still exports them).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
@@ -19,6 +19,37 @@ from ..design.ui_widgets import AnimatedButton
 from ..i18n import bind_text
 from ..i18n_widgets import user_text
 from .main_ui_helpers import _active_theme_definition, _icon
+
+
+class HomeTooltipMute(QObject):
+    """No hover tooltips on home (2026-11-10, user: the path popups over the
+    recent projects and the other hover hints "有點劣質感", remove them).
+
+    Installed on the application; it swallows ``ToolTip`` events for widgets
+    inside the home page, its Studio card and its bottom bar, whatever tooltip
+    text they carry. Other pages, dialogs and popup lists keep theirs.
+    """
+
+    _ROOTS = ("settings_page_widget", "studio_entry_card", "action_bar")
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+
+    def _on_home(self, widget) -> bool:
+        roots = [self._window.__dict__.get(name) for name in self._ROOTS]
+        roots = [root for root in roots if root is not None]
+        while widget is not None:
+            if any(widget is root for root in roots):
+                return True
+            widget = widget.parentWidget()
+        return False
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.ToolTip and isinstance(watched, QWidget) and self._on_home(watched):
+            event.ignore()
+            return True
+        return False
 
 
 class QuickPickRow(QWidget):

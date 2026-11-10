@@ -598,7 +598,7 @@ class SubtitleExportDialog(QDialog):
         missing_layer = bool(self.language_row.isVisibleTo(self) and "srt" in formats and not layers)
         if missing_layer:
             bind_text(self.file_list.header, "SRT 至少选一种语言")
-        self.export_button.setEnabled(bool(planned) and not missing_layer)
+        self.export_button.setEnabled(getattr(self, "_subtitle_task", None) is None and bool(planned) and not missing_layer)
         (bind_text(self.export_button, "导出 {count} 个文件", count=len(planned)) if planned
          else bind_text(self.export_button, "导出字幕"))
         from ..projects.speaker_names import display_speaker_name
@@ -645,6 +645,8 @@ class SubtitleExportDialog(QDialog):
         self._run_export()
 
     def _run_export(self) -> None:
+        if getattr(self, '_subtitle_task', None) is not None:
+            return
         from .studio_subtitle_export import export_language_layers
         directory, reason = self.selected_destination()
         formats = set(self._selected_formats())
@@ -652,42 +654,48 @@ class SubtitleExportDialog(QDialog):
         mode = self.selected_speaker_mode()
         self.export_button.setEnabled(False)
         bind_text(self.export_button, "正在写入并回读验证…")
-        QApplication.processEvents()
-        layered = None
         self._error_details = ""
         self.error_details_button.hide()
         self.warning.hide()
+        from .subtitle_snapshot import SubtitleSnapshot
+        from .subtitle_export_task import SubtitleExportTask
+        started = time.perf_counter()
         try:
-            # All formats/layers see one committed edit, including after a
-            # later asynchronous replacement of the live project's cues.
-            export_project = copy.deepcopy(self.project)
-            if layers and "srt" in formats:
-                layered = export_language_layers(
-                    export_project, directory, self.base_name,
-                    tuple(layers) + (("json",) if "json" in formats else ()),
-                    translation_first=self.translation_first.isChecked(), speaker_mode=mode)
-                formats -= {"srt", "json"}
-            artifacts = list(layered.artifacts) if layered is not None else []
-            if formats:
-                artifacts += list(export_subtitle_artifacts(
-                    export_project, directory, self.base_name, SubtitleExportOptions(frozenset(formats), mode)))
+            snapshot = SubtitleSnapshot.capture(self.project)
         except Exception as exc:
-            from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
-            GLOBAL_STUDIO_TRACE.emit("SUBTITLE_EXPORT_FAILED", dict(
-                entry="studio_subtitles", project_id=self.project.project_id,
-                exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc()))
-            published = list(layered.artifacts) if layered is not None else []
-            published.extend(getattr(exc, "published", ()))
-            self.artifacts = tuple(published)
-            partial = ("已写入：" + "、".join(a.path.name for a in published) + "。其余文件未全部完成。\n") if published else ""
-            summary = partial + str(exc)
-            self._error_details = partial + (exc.details() if callable(getattr(exc, "details", None)) else traceback.format_exc())
-            self.warning.setTextFormat(Qt.TextFormat.PlainText)
-            bind_text(self.warning, '导出字幕失败：{error}', error=summary)
-            self.warning.show()
-            self.error_details_button.show()
-            self._refresh_preview()
+            self._export_failure(exc, traceback.format_exc(), ())
             return
+        self._subtitle_task = SubtitleExportTask(snapshot, directory, self.base_name,
+            formats, layers, mode, self.translation_first.isChecked(),
+            export_subtitle_artifacts, export_language_layers, time.perf_counter() - started)
+        self._subtitle_result_reason = reason
+        self._subtitle_result_directory = directory
+        self._subtitle_poll = QTimer(self)
+        self._subtitle_poll.setInterval(30)
+        self._subtitle_poll.timeout.connect(self._poll_subtitle_export)
+        self.destroyed.connect(self._subtitle_task.cancel.set)
+        self._subtitle_task.start()
+        self._subtitle_poll.start()
+
+    def _poll_subtitle_export(self):
+        task = self._subtitle_task
+        if task is None:
+            return
+        owner = self.parent()
+        if owner is not None and hasattr(owner, 'project') and owner.project is not self.project:
+            self.reject()
+            return
+        if not task.done.is_set():
+            return
+        self._subtitle_poll.stop()
+        self._subtitle_task = None
+        if task.error is not None:
+            self._export_failure(task.error, task.details, task.artifacts)
+            return
+        layered = task.layered
+        artifacts = task.artifacts
+        reason = self._subtitle_result_reason
+        directory = self._subtitle_result_directory
         self.artifacts = tuple(artifacts)
         from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
         GLOBAL_STUDIO_TRACE.emit("SUBTITLE_EXPORT_FINISHED", dict(
@@ -710,9 +718,27 @@ class SubtitleExportDialog(QDialog):
         # would otherwise keep the old height).
         self.pages.setCurrentWidget(self.done_page)
         self.pages.removeWidget(self.setup_page)
-        QTimer.singleShot(0, lambda: self.resize(self.width(), self.sizeHint().height()))
+        self.resize(self.width(), self.sizeHint().height())
         self.open_folder_button.setDefault(True)
         self.open_folder_button.setFocus()
+
+    def _export_failure(self, exc, details, published):
+        self.artifacts = tuple(published)
+        partial = ('已写入：' + '、'.join(a.path.name for a in published) + '。其余文件未全部完成。\n') if published else ''
+        self._error_details = partial + details
+        self.warning.setTextFormat(Qt.TextFormat.PlainText)
+        bind_text(self.warning, '导出字幕失败：{error}', error=partial + str(exc))
+        self.warning.show()
+        self.error_details_button.show()
+        self._refresh_preview()
+
+    def done(self, result):
+        task = getattr(self, '_subtitle_task', None)
+        if task is not None:
+            task.cancel.set()
+            self._subtitle_task = None
+            self._subtitle_poll.stop()
+        super().done(result)
 
     def _show_error_details(self) -> None:
         dialog = QDialog(self)
@@ -1510,6 +1536,8 @@ class StudioExportWorkspace(QWidget):
         self._subtitle_destination_changed("custom")
 
     def _export_subtitles(self) -> None:
+        if getattr(self, '_subtitle_task', None) is not None:
+            return
         # The header button works while the card is folded: open it so the
         # result or the problem (and 打开所在文件夹 / 复制路径) is in view.
         self.subtitle_card.set_expanded(True)
@@ -1541,32 +1569,54 @@ class StudioExportWorkspace(QWidget):
         self.subtitle_open_folder.hide()
         self.subtitle_copy_path.hide()
         bind_text(self.subtitle_export_status, '正在写入并回读验证…')
-        layered = None
+        from .subtitle_snapshot import SubtitleSnapshot
+        from .subtitle_export_task import SubtitleExportTask
+        from .studio_subtitle_export import export_language_layers
+        layers = [layer for layer, control in getattr(self, "subtitle_language_checks", {}).items()
+                  if control.isChecked()] if not self.subtitle_language_row.isHidden() else []
+        began = time.perf_counter()
         try:
-            layers = [layer for layer, control in getattr(self, "subtitle_language_checks", {}).items()
-                      if control.isChecked()] if not self.subtitle_language_row.isHidden() else []
-            if layers and "srt" in formats:
-                from .studio_subtitle_export import export_language_layers
-                # Japanese / Chinese / bilingual SRT (+ JSON with both texts and word timing);
-                # never overwrites an existing file.
-                layered = export_language_layers(
-                    self.project, directory, base_name,
-                    tuple(layers) + (("json",) if "json" in formats else ()),
-                    translation_first=self.subtitle_translation_first.isChecked(), speaker_mode=mode)
-                formats = frozenset(formats - {"srt", "json"})
-            artifacts = list(layered.artifacts) if layered is not None else []
-            if formats:
-                artifacts += list(export_subtitle_artifacts(
-                    self.project,
-                    directory,
-                    base_name,
-                    SubtitleExportOptions(formats, mode),
-                ))
+            snapshot = SubtitleSnapshot.capture(self.project)
         except Exception as exc:
-            bind_text(self.subtitle_export_status, '字幕导出失败：{value0}', value0=' '.join(str(exc).split())[:180])
-            return
-        finally:
+            self.subtitle_export_status.setText(str(exc))
             self.subtitle_export_button.setEnabled(True)
+            return
+        self._subtitle_task = SubtitleExportTask(snapshot, directory, base_name, formats, layers,
+            mode, self.subtitle_translation_first.isChecked(), export_subtitle_artifacts,
+            export_language_layers, time.perf_counter() - began)
+        self._subtitle_task_project = self.project
+        self._subtitle_destination_reason = destination_reason
+        self._subtitle_poll = QTimer(self)
+        self._subtitle_poll.setInterval(30)
+        self._subtitle_poll.timeout.connect(self._poll_workspace_subtitle)
+        self.destroyed.connect(self._subtitle_task.cancel.set)
+        self._subtitle_task.start()
+        self._subtitle_poll.start()
+
+    def _poll_workspace_subtitle(self):
+        task = self._subtitle_task
+        if task is None:
+            return
+        if self.project is not self._subtitle_task_project:
+            task.cancel.set()
+            self._subtitle_poll.stop()
+            self._subtitle_task = None
+            self._subtitle_task_project = None
+            self.subtitle_export_button.setEnabled(True)
+            return
+        if not task.done.is_set():
+            return
+        self._subtitle_poll.stop()
+        self._subtitle_task = None
+        self._subtitle_task_project = None
+        self.subtitle_export_button.setEnabled(True)
+        if task.error is not None:
+            self._last_subtitle_artifacts = list(task.artifacts)
+            bind_text(self.subtitle_export_status, '字幕导出失败：{value0}', value0=str(task.error))
+            return
+        artifacts = list(task.artifacts)
+        layered = task.layered
+        destination_reason = self._subtitle_destination_reason
         self._last_subtitle_artifacts = artifacts
         self._settings.setValue(
             "subtitle/export_destination", self._selected_subtitle_destination_mode()
@@ -2630,6 +2680,11 @@ class StudioExportWorkspace(QWidget):
         self.filename_suffix.confirm()
 
     def closeEvent(self, event):
+        task = getattr(self, '_subtitle_task', None)
+        if task is not None:
+            task.cancel.set()
+            self._subtitle_poll.stop()
+            self._subtitle_task = None
         self.release_preview()
         super().closeEvent(event)
 
@@ -3337,6 +3392,12 @@ class StudioExportWorkspace(QWidget):
         self._preview_volume_before_export = None
 
     def release_preview(self) -> None:
+        task = getattr(self, '_subtitle_task', None)
+        if task is not None:
+            task.cancel.set()
+            self._subtitle_poll.stop()
+            self._subtitle_task = None
+        self._subtitle_task_project = None
         if self._released:
             return
         self._released = True

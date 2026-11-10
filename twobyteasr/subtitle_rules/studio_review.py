@@ -343,7 +343,7 @@ class ReviewEvidenceAggregator:
             raise ValueError("cue is required")
         rows = [dict(item) for item in hypotheses if _hypothesis_text(item)]
         current = {"text": str(getattr(cue, "text", "")), "model": "Current", "speaker_id": getattr(cue, "speaker_id", "")}
-        rows_with_current = rows + [current]
+        rows_with_current = [r for r in rows if not r.get('context_only')] + [current]
         streams = _stream_stats(rows_with_current)
         current_norm = normalize_spoken_text(current["text"])
         # A single ASR segment may span multiple subtitle cues. When its text

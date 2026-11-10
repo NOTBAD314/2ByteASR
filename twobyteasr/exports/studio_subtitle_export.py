@@ -12,6 +12,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .subtitle_snapshot import owned_export_project
+from ..diagnostics.subtitle_export_work import checkpoint, temporary_prefix, stage as export_stage
+
 from ..rendering.ass_compiler import compile_ass, compile_txt, escape_ass_text
 from ..projects.studio_project import StudioCue, SubtitleProject
 from .srt_codec import _SRT_BLOCK, normalize_srt_text, parse_srt, parse_srt_time as _parse_srt_time
@@ -133,8 +136,8 @@ def _speaker_filename(value: str) -> str:
 
 
 def _project_for_cues(project: SubtitleProject, cues: Iterable[StudioCue]) -> SubtitleProject:
-    subset = copy.deepcopy(project)
-    subset.cues = copy.deepcopy(list(cues))
+    subset = copy.copy(project)
+    subset.cues = list(cues)
     # Studio's legacy validate() coerces scalar fields and filters references.
     # Check the original snapshot first so it cannot hide invalid input. Only
     # intrinsic cue errors must be checked before projection (bad intervals
@@ -148,7 +151,6 @@ def _project_for_cues(project: SubtitleProject, cues: Iterable[StudioCue]) -> Su
         raise SubtitleDataError(ValidationResult(errors=errors))
     view = _export_view_cues(subset, styled=False)
     require_consistent_view(subset, view)
-    subset.validate()
     return subset
 
 
@@ -162,7 +164,8 @@ def _export_view_cues(project: SubtitleProject, *, styled: bool = True):
     """
     from ..timeline.studio_edit_sequence import projected_cues
 
-    view = projected_cues(project, domain="timeline")
+    with export_stage("projection"):
+        view = projected_cues(project, domain="timeline")
     if not styled:
         return view
     from ..subtitle_rules.punctuation_style import style_cues
@@ -307,7 +310,7 @@ def _compile_json(project: SubtitleProject) -> str:
                     if mapped:
                         piece["text_char_start"], piece["text_char_end"] = mapped[0], mapped[-1] + 1
         translation = {key: info.get(key, "") for key in ("text", "status", "origin", "target")}
-        translation["text"] = style_translation(translation["text"], mode, math=math)
+        translation["text"] = style_translation(translation["text"], mode, math=math, protected_terms=terms)
         rows.append({
             "id": cue.id,
             "start_ms": cue.start_ms,
@@ -346,14 +349,14 @@ def _display_text_cues(project: SubtitleProject):
     """Plain exports follow the visible language mode, retaining untranslated cues."""
     from ..caption_style.bilingual_layout import settings_from_state
     from ..subtitle_rules.subtitle_translation import translation_view
-    from ..subtitle_rules.punctuation_style import math_enabled, project_mode, style_translation
+    from ..subtitle_rules.punctuation_style import math_enabled, project_mode, style_translation, protected_terms_of
     view = _export_view_cues(project)
     from ..caption_style.speaker_names import display_text_cues
     settings = settings_from_state(project.studio_state)
     if settings.mode == "original":
         return display_text_cues(project, view)
     translations = {key: dict(info, text=style_translation(info.get("text", ""),
-                    project_mode(project), math=math_enabled(project)))
+                    project_mode(project), math=math_enabled(project), protected_terms=protected_terms_of(project)))
                     for key, info in translation_view(project).items()}
     result, missing, _ = layer_cues(view, translations, settings.mode,
                                    translation_first=settings.order == "translation_first")
@@ -368,9 +371,9 @@ def _compile_format(project: SubtitleProject, format_name: str) -> str:
     if format_name == "srt":
         return compile_srt(_display_text_cues(project))
     if format_name == "ass":
-        return compile_ass(project, cues=view)
+        return compile_ass(project, cues=view, validated=True)
     if format_name == "txt":
-        return compile_txt(project, cues=_display_text_cues(project))
+        return compile_txt(project, cues=_display_text_cues(project), validated=True)
     if format_name == "json":
         return _compile_json(project)
     raise ValueError(f"unsupported subtitle format: {format_name}")
@@ -402,7 +405,7 @@ def export_subtitle_artifacts(
     base_name: str,
     options: SubtitleExportOptions,
 ) -> tuple[SubtitleExportArtifact, ...]:
-    project = copy.deepcopy(project)
+    project = owned_export_project(project)
     options.validate()
     target_dir = Path(directory).resolve()
     # The base is shared with video naming. Speaker-label normalization would
@@ -433,7 +436,7 @@ def export_subtitle_artifacts(
     # All candidates use the destination filesystem and pass read-back before
     # any existing user file is replaced. Multi-file rename is not atomic:
     # a later locked target produces an explicit partial-publication receipt.
-    with tempfile.TemporaryDirectory(prefix=".subtitle-export-", dir=target_dir, ignore_cleanup_errors=True) as stage:
+    with tempfile.TemporaryDirectory(prefix=temporary_prefix("export"), dir=target_dir, ignore_cleanup_errors=True) as stage:
         pending = []
         for speaker_id, scoped_project, scoped_stem in scopes:
             for format_name in sorted(options.formats):
@@ -447,9 +450,13 @@ def export_subtitle_artifacts(
                     from ..caption_style.bilingual_layout import project_display_cues
                     expected.cues = project_display_cues(scoped_project, expected.cues)
                 require_consistent_view(scoped_project, expected.cues, speaker_id=speaker_id)
-                _atomic_text_write(candidate, _compile_format(scoped_project, format_name))
+                with export_stage("formatting"):
+                    content = _compile_format(scoped_project, format_name)
+                with export_stage("write"):
+                    _atomic_text_write(candidate, content)
                 artifact = SubtitleExportArtifact(candidate, format_name, speaker_id, len(expected.cues))
-                verification = verify_subtitle_artifact(artifact, expected)
+                with export_stage("readback"):
+                    verification = verify_subtitle_artifact(artifact, expected)
                 count_invalid = (
                     verification.cue_count < artifact.cue_count
                     if format_name == "ass"
@@ -461,6 +468,7 @@ def export_subtitle_artifacts(
                     export_id=export_id, layer="display") if format_name == "srt" else None
                 pending.append((candidate, SubtitleExportArtifact(target, format_name, speaker_id, len(expected.cues)), companion))
         for candidate, artifact, companion in pending:
+            checkpoint(artifacts)
             try:
                 os.replace(candidate, artifact.path)
             except OSError as exc:
@@ -753,7 +761,7 @@ def export_language_layers(
     from ..subtitle_rules.language_rules import project_language
     from ..subtitle_rules.subtitle_translation import container_target, normalize_target, translation_view
 
-    project = copy.deepcopy(project)
+    project = owned_export_project(project)
     layers = tuple(dict.fromkeys(str(layer) for layer in layers))
     if not layers or not set(layers) <= SUPPORTED_LANGUAGE_LAYERS:
         raise ValueError("select at least one supported language layer")
@@ -764,12 +772,12 @@ def export_language_layers(
     # A previous language's text is not a translation into the selected target.
     translations = {key: info for key, info in translations.items()
                     if str(info.get("target") or "").split("-", 1)[0] == resolved_target.split("-", 1)[0]}
-    from ..subtitle_rules.punctuation_style import MODE_NONE, math_enabled, project_mode, style_translation
+    from ..subtitle_rules.punctuation_style import MODE_ADD, math_enabled, project_mode, style_translation, protected_terms_of
     math = math_enabled(project)
-    if (project_mode(project) == MODE_NONE or math) and translations:
+    if (project_mode(project) != MODE_ADD or math) and translations:
         # 不加标点 and math formulas apply to every layer; translations are copied, never rewritten.
         mode = project_mode(project)
-        translations = {key: (dict(value, text=style_translation(value.get("text", ""), mode, math=math))
+        translations = {key: (dict(value, text=style_translation(value.get("text", ""), mode, math=math, protected_terms=protected_terms_of(project)))
                               if isinstance(value, dict) else value)
                         for key, value in translations.items()}
     original_suffix = original_suffix or project_language(project) or "und"
@@ -804,7 +812,7 @@ def export_language_layers(
     published: list[LanguageLayerArtifact] = []
     all_missing: dict[str, None] = {}
     all_stale: dict[str, None] = {}
-    with tempfile.TemporaryDirectory(prefix=".subtitle-layers-", dir=target_dir, ignore_cleanup_errors=True) as stage:
+    with tempfile.TemporaryDirectory(prefix=temporary_prefix("layers"), dir=target_dir, ignore_cleanup_errors=True) as stage:
         pending: list[tuple[Path, LanguageLayerArtifact]] = []
         for speaker_id, scoped_project, scope_stem in scopes:
             view = _export_view_cues(scoped_project)
@@ -828,9 +836,13 @@ def export_language_layers(
                         raise ValueError(f"{scope}没有可导出的译文（目标语言 {resolved_target}，缺译 {len(missing)} 条）。"
                                          "请先补译，或选择原文／双语导出；未发布本批文件。")
                 require_consistent_view(scoped_project, expected.cues, speaker_id=speaker_id)
-                _atomic_text_write(candidate, _compile_json(scoped_project) if layer == "json" else compile_srt(expected.cues))
+                with export_stage("formatting"):
+                    content = _compile_json(scoped_project) if layer == "json" else compile_srt(expected.cues)
+                with export_stage("write"):
+                    _atomic_text_write(candidate, content)
                 check = SubtitleExportArtifact(candidate, format_name, speaker_id, len(expected.cues))
-                verification = verify_subtitle_artifact(check, expected)
+                with export_stage("readback"):
+                    verification = verify_subtitle_artifact(check, expected)
                 if not verification.valid or verification.cue_count != len(expected.cues):
                     raise SubtitleVerificationError(target_dir / name, speaker_id, verification)
                 all_missing.update(dict.fromkeys(missing))
@@ -840,6 +852,7 @@ def export_language_layers(
                 pending.append((candidate, LanguageLayerArtifact(
                     target_dir / name, layer, format_name, speaker_id, len(expected.cues), missing, stale), companion))
         for candidate, artifact, companion in pending:
+            checkpoint(published)
             final = artifact
             for _attempt in range(100):
                 try:

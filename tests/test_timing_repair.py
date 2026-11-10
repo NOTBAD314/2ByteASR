@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import pytest
 from subtitle_core import (
     MAX_SUBTITLE_CHARS,
     SpeechSegment,
@@ -116,7 +117,7 @@ def test_global_text_equality_cannot_hide_a_speaker_track_swap():
     assert {item["speaker"] for item in differences} == {"S01", "S02"}
 
 
-def test_same_speaker_overlapping_chunks_keep_source_text_order():
+def test_uncertain_overlapping_chunks_keep_source_text_and_onsets():
     cues = [
         SubtitleCue(1, 350.78, 354.37, "前一段正文", speaker="S02"),
         # A later source phrase can receive an earlier acoustic anchor when MOSS
@@ -128,10 +129,10 @@ def test_same_speaker_overlapping_chunks_keep_source_text_order():
     normalized = normalize_cue_times(cues, 60.0)
 
     assert [cue.text for cue in normalized] == ["前一段正文", "后一段正文", "最后正文"]
-    assert all(
-        previous.end <= current.start
-        for previous, current in zip(normalized, normalized[1:])
-    )
+    # Source chunk overlap alone cannot authorize moving the next utterance.
+    # Measured word evidence resolves editorial overlap in the final pass.
+    assert normalized[1].start == pytest.approx(352.65, abs=1/60)
+    assert normalized[0].end == pytest.approx(354.37, abs=1/60)
 
 
 def test_unit_longer_than_a_cue_never_dead_ends_local_repair():

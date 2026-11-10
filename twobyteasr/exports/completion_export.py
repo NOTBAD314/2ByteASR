@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 from collections import Counter
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QFileDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from ..design.presentation import button_role
@@ -23,8 +23,9 @@ from ..i18n import bind_text, tr
 
 
 def selected_result(project, speaker_ids):
-    result = copy.deepcopy(project)
+    result = copy.copy(project)
     result.cues = [c for c in result.cues if c.speaker_id in speaker_ids]
+    result.speakers = [copy.copy(speaker) for speaker in project.speakers]
     for speaker in result.speakers:
         speaker.hidden = False
     return result
@@ -34,7 +35,8 @@ class CompletionExportDialog(QDialog):
     def __init__(self, project, name, parent=None, language="zh"):
         # ``language`` is kept for callers; texts follow the app's UI language.
         super().__init__(parent)
-        self.project = copy.deepcopy(project)
+        from .subtitle_snapshot import SubtitleSnapshot
+        self.project = SubtitleSnapshot.capture(project).materialize()
         self.artifacts = ()
         bind_text(self, "导出字幕", property="windowTitle")
         self.setObjectName("subtitleExportDialog")
@@ -165,9 +167,11 @@ class CompletionExportDialog(QDialog):
         self.file_list.set_files(planned)
         if not ready:
             bind_text(self.file_list.header, "请选择说话人、格式并填写文件名。")
-        self.export_button.setEnabled(ready)
+        self.export_button.setEnabled(ready and getattr(self, "_subtitle_task", None) is None)
 
     def _export(self):
+        if getattr(self, '_subtitle_task', None) is not None:
+            return
         selected = self._selected_speakers()
         options = self._options()
         if not selected or not options.formats or not self.name.text().strip():
@@ -176,13 +180,46 @@ class CompletionExportDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, self.windowTitle())
         if not folder:
             return
-        try:
-            self.artifacts = export_subtitle_artifacts(selected_result(self.project, selected), folder,
-                                                       self.name.text(), options)
-        except Exception as exc:
-            self.status.setText(str(exc))
+        from .subtitle_snapshot import SubtitleSnapshot
+        from .subtitle_export_task import SubtitleExportTask
+        from .studio_subtitle_export import export_language_layers
+        import time
+        began = time.perf_counter()
+        snapshot = SubtitleSnapshot.capture(selected_result(self.project, selected))
+        self._subtitle_task = SubtitleExportTask(snapshot, folder, self.name.text(), options.formats,
+            (), options.speaker_mode, True, export_subtitle_artifacts, export_language_layers,
+            time.perf_counter() - began)
+        self.export_button.setEnabled(False)
+        self._subtitle_poll = QTimer(self)
+        self._subtitle_poll.setInterval(30)
+        self._subtitle_poll.timeout.connect(self._poll_export)
+        self.destroyed.connect(self._subtitle_task.cancel.set)
+        self._subtitle_task.start()
+        self._subtitle_poll.start()
+
+    def _poll_export(self):
+        task = self._subtitle_task
+        if task is None:
+            return
+        if not task.done.is_set():
+            return
+        self._subtitle_poll.stop()
+        self._subtitle_task = None
+        self.artifacts = task.artifacts
+        if task.error is not None:
+            self.status.setText(str(task.error))
+            self._refresh_preview()
             return
         self.accept()
+
+    def done(self, result):
+        task = getattr(self, '_subtitle_task', None)
+        if task is not None:
+            task.cancel.set()
+            self._subtitle_poll.stop()
+            self._subtitle_task = None
+        super().done(result)
+
 
 
 class _ChipList:

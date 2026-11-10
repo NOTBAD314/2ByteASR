@@ -113,9 +113,14 @@ def save_project_frame(project, graph, milliseconds, directory, name, *, subtitl
                 from ..caption_style.visual_snapshot import build_visual_cue_snapshot
                 from ..rendering.advanced_live_renderer import render_live_snapshot
                 if all(shared_static_cue(project,c) for c in active):
+                    from ..caption_style.collision_layout import project_layout_schedule, shifted_snapshot
+                    schedule=project_layout_schedule(project)
                     painter=QPainter(image)
                     try:
-                        for cue in active:painter.drawImage(0,0,render_live_snapshot(build_visual_cue_snapshot(project,cue.id,width=width,height=height),width=width,height=height))
+                        for cue in active:
+                            offset=next((o for a,b,o in schedule[cue.id] if a<=ms<b),0.)
+                            snapshot=shifted_snapshot(build_visual_cue_snapshot(project,cue.id,width=width,height=height),offset)
+                            painter.drawImage(0,0,render_live_snapshot(snapshot,width=width,height=height))
                     finally:painter.end()
                 else:
                     from ..rendering.renderer_service import GLOBAL_RENDERER_SERVICE,RendererJob

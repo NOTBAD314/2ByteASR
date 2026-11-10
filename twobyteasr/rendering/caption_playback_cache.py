@@ -21,6 +21,8 @@ class PreparedCaption:
     preview_error: str = ''
     interaction_transform: object = None
     font_signature: tuple = ()
+    layout_offset: float | None = None
+    layout_warnings: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -353,6 +355,7 @@ def _caption_display_project(source, display):
         style_recipes=source.style_recipes, generation_metadata=source.generation_metadata,
         studio_state=dict(source.studio_state), render_settings=source.render_settings)
     mark_cues_styled(project)  # visual snapshots of these cues must not style them again
+    project._caption_display_materialized = True
     return project
 
 

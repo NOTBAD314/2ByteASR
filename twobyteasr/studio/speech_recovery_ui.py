@@ -4,7 +4,8 @@ from __future__ import annotations
 from ..i18n import tr
 from ..recognition.speech_recovery_project import project_ranges
 
-STATUS_LABELS = dict(pending='待恢复', partial='部分恢复', needs_confirmation='需试听确认')
+STATUS_LABELS = dict(pending='疑似漏识，待恢复', partial='部分恢复',
+                     needs_confirmation='疑似语音，待试听确认', failed='处理失败，待重试')
 STAGE_LABELS = dict(parsed_response='原始响应解析', response_generation='模型生成', window_merge='跨窗合并',
                     language_acceptance='语言接纳', speaker_filter_alignment='说话人筛选与对齐',
                     segmentation='断句', final_cues='最终字幕', deduplication='去重',
@@ -21,8 +22,20 @@ def _clock(milliseconds):
     return f'{hours:02d}:{minutes:02d}:{rest/1000:06.3f}'
 
 
+def summary(ranges):
+    rows = {row['id']: row for row in ranges}.values()
+    from collections import Counter
+    counts = Counter(row.get('classification') for row in rows)
+    parts = []
+    for kind, text in (('processing_failure', '处理失败'), ('supported_speech_gap', '疑似漏识'),
+                       ('uncertain_speech', '待试听确认')):
+        if counts[kind]:
+            parts.append(f'{text} {counts[kind]} 处')
+    return '识别已结束 · ' + ' · '.join(parts) if parts else '语音范围已处理'
+
+
 def open_recovery(page):
-    from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QCheckBox
     from ..design.studio_theme import apply_secondary_surface_theme
     project = page.project
     ranges = project_ranges(project)
@@ -31,20 +44,54 @@ def open_recovery(page):
     dialog.setWindowTitle(tr('语音缺口待恢复'))
     dialog.resize(720, 420)
     layout = QVBoxLayout(dialog)
-    count = len({row['id'] for row in ranges})
-    layout.addWidget(QLabel(tr('部分完成，仍有{count}处待恢复', count=count)))
+    layout.addWidget(QLabel(summary(ranges)))
+    toolbar = QHBoxLayout()
+    select_all = QCheckBox(tr('全选'), dialog)
+    toolbar.addWidget(select_all)
+    confirm = QPushButton(tr('确认选中范围无语音／无需恢复'), dialog)
+    confirm.setObjectName('speechGapConfirmNoSpeech')
+    toolbar.addWidget(confirm)
+    undo = QPushButton(tr('撤销'), dialog)
+    toolbar.addWidget(undo)
+    layout.addLayout(toolbar)
+    selected = []
+    def refresh():
+        dialog.close()
+        if page.project is project:
+            page._sync_recognition_zero_state()
+            open_recovery(page)
+    def apply_decision():
+        ids = {key for key, box in selected if box.isChecked()}
+        if page.project is project and ids:
+            from ..timeline.speech_gap_commands import ConfirmNoSpeechCommand
+            page.undo_stack.push(ConfirmNoSpeechCommand(project, ids, changed=page._changed))
+            refresh()
+    confirm.clicked.connect(apply_decision)
+    select_all.toggled.connect(lambda checked: [box.setChecked(checked) for _, box in selected])
+    def undo_decision():
+        if page.project is project and page.undo_stack.canUndo():
+            page.undo_stack.undo()
+            refresh()
+    undo.clicked.connect(undo_decision)
+    undo.setEnabled(page.undo_stack.canUndo())
     scroll = QScrollArea(dialog)
     scroll.setWidgetResizable(True)
     content = QWidget(scroll)
     listing = QVBoxLayout(content)
     for row in ranges:
         line = QHBoxLayout()
+        checkbox = QCheckBox(content)
+        checkbox.setObjectName('speechGapSelect')
+        selected.append((row['id'], checkbox))
+        line.addWidget(checkbox)
         start, end = row['timeline_start_ms'], row['timeline_end_ms']
         reason = '、'.join(REASON_LABELS.get(r, r) for r in row['reason'].split(','))
         label = QLabel(f"{_clock(start)}–{_clock(end)} · {STATUS_LABELS.get(row['status'], row['status'])}\n"
                        f"{STAGE_LABELS.get(row['first_missing_stage'], row['first_missing_stage'])} · {reason}\n"
                        f"{tr('已尝试')} {len(row.get('attempts', []))}", content)
-        label.setToolTip(f"{row['id']} · {row.get('recovery_source') or ''}\n{row['first_missing_stage']} · {row['reason']}")
+        label.setToolTip(f"{row['id']} · {row.get('recovery_source') or ''}\n"
+                        f"{row.get('evidence', {})}\n{row.get('processing_errors', [])}\n"
+                        f"{[a.get('error') for a in row.get('attempts', ()) if a.get('error')]}")
         label.setWordWrap(True)
         line.addWidget(label, 1)
         jump = QPushButton(tr('跳转试听'), content)
@@ -84,6 +131,10 @@ def sync_action(page):
     frame, label = parts
     button = getattr(page, '_speech_recovery_button', None)
     running = getattr(page, '_recognition_running', False)
+    for name in ('recognition_cancel_button', 'recognition_zero_cancel'):
+        cancel = getattr(page, name, None)
+        if cancel is not None:
+            cancel.setVisible(bool(running) and not getattr(page, '_recognition_cancelling', False))
     if ranges and button is None:
         button = QPushButton(tr('查看语音缺口…'), frame)
         button.setObjectName('speechRecoveryButton')
@@ -93,5 +144,10 @@ def sync_action(page):
     if button is not None:
         button.setVisible(bool(ranges) and not running)
     if ranges and not running:
-        label.setText(tr('部分完成，仍有{count}处待恢复', count=len({r['id'] for r in ranges})))
+        terminal = str(getattr(page, '_recognition_status_sticky', '') or '')
+        failure = terminal.startswith(('识别未完成', '识别已取消'))
+        label.setText(terminal+'\n'+summary(ranges) if failure else summary(ranges))
         frame.show()
+    elif not running and getattr(page, '_speech_recovery_had_ranges', False):
+        label.setText(tr('语音范围已处理'))
+    page._speech_recovery_had_ranges = bool(ranges)

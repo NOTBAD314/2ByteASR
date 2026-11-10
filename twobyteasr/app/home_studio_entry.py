@@ -128,7 +128,7 @@ class RecentProjectHero(_HoverButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("homeRecentHero")
-        self.setProperty("uiZoomOwnSize", True)  # cover keeps its own 16:10 cap
+        self.setProperty("uiZoomOwnSize", True)  # cover sizes itself from the card
         self.entry = {}
         self._cover = (None, QImage())
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -142,8 +142,9 @@ class RecentProjectHero(_HoverButton):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # The cover follows the window, but never taller than 16:10.
-        cap = max(150, int(self.width() * 0.625))
+        # The cover follows the window; 2026-11-09 (home B) it may grow to
+        # nearly square when the card has no recent rows to show below it.
+        cap = max(150, int(self.width() * 0.95))
         cap = min(cap, getattr(self, '_budget_height', cap))
         if self.maximumHeight() != cap:
             self.setMaximumHeight(cap)
@@ -151,7 +152,6 @@ class RecentProjectHero(_HoverButton):
     def set_entry(self, entry):
         self.entry = dict(entry or {})
         self.setAccessibleName(self.entry.get("name", ""))
-        self.setToolTip(self.entry.get("path", ""))
         self._cover = _load_cover(self.entry.get("cover") or "", self._cover)
         self.update()
 
@@ -163,7 +163,7 @@ class RecentProjectHero(_HoverButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         shape = QPainterPath()
-        shape.addRoundedRect(rect, 14, 14)
+        shape.addRoundedRect(rect, 18, 18)
         p.save()
         p.setClipPath(shape)
         image = self._cover[1]
@@ -249,7 +249,6 @@ class RecentProjectRow(_HoverButton):
     def set_entry(self, entry):
         self.entry = dict(entry)
         self.setAccessibleName(self.entry.get("name", ""))
-        self.setToolTip(self.entry.get("path", ""))
         self.update()
 
     def set_current(self, current):
@@ -462,12 +461,18 @@ class StudioEntryCard(QFrame):
                   - caption.sizeHint().height() - spacing * (4 if internal_footer else 3))
         cover_height = min(max(hero.minimumSizeHint().height(), round(width * .625)),
                            max(hero.minimumSizeHint().height(), round(budget * .58)))
+        available = budget - cover_height
+        rows = max(0, int(available // recent.row_height()))
+        shown = min(len(getattr(recent, '_all_entries', [])), rows)
+        if shown < rows:
+            # 2026-11-09 (home B): fewer recent projects than room — the cover
+            # takes the unused rows instead of leaving an empty strip.
+            spare = budget - shown * recent.row_height()
+            cover_height = max(cover_height, min(round(width * .95), spare))
         hero._budget_height = cover_height
         if hero.maximumHeight() != cover_height:
             hero.setMaximumHeight(cover_height)
-        available = budget - cover_height
-        rows = max(0, int(available // recent.row_height()))
-        recent.set_limit(min(len(getattr(recent, '_all_entries', [])), rows))
+        recent.set_limit(shown)
         caption.setVisible(bool(recent.entries))
 
     def resizeEvent(self, event):

@@ -1,7 +1,7 @@
-"""One-time initial overlap layout, persisted alongside each cue's transform.
+"""Legacy allocation diagnostics and explicit baseline reset commands.
 
-Allocation is a generation/explicit edit operation. Playback and exports read
-the saved anchors through style_resolution, and never redo collision layout.
+Current rendering uses collision_layout; initial_layout stores a baseline only.
+Older automatic offsets are recovered read-only by style_resolution.
 """
 from __future__ import annotations
 
@@ -130,7 +130,9 @@ def compute_stack_layout(cues, *, resolve_one, play_res_y, enabled=True, play_re
                 height+=extra
                 background=getattr(recipe,'background',{}) or {}
                 if isinstance(background,dict) and background.get('enabled'):
-                    height+=float(background.get('paddingY',background.get('padding',0)) or 0)*2
+                    from .style_recipe import background_padding
+                    top, _, bottom, _ = background_padding(background, default_x=0, default_y=0)
+                    height += top + bottom
                 width=min(float(play_res_x),ink_width or float(play_res_x)*.8)
                 # Reserve the entire supported entry/exit motion envelope;
                 # layout never changes while an animation is playing.
@@ -226,15 +228,14 @@ def project_stack_layout(project):
 
 
 def initialize_project_layout(project, *, cue_ids=None, replace=False):
-    """Persist layout only for newly generated cues or an explicit edit scope.
+    """Initialize baselines for generated cues or an explicit edit scope.
 
     A normal open/render never calls this. ``replace`` is reserved for the
     user's explicit re-layout command; it may reset selected manual positions.
-    Unselected and already arranged captions become immovable obstacles.
+    Unselected baselines are preserved. Display displacement remains transient.
     """
     from .resolved_caption_style import resolve_caption_style
     from .visual_snapshot import _anchor
-    from ..caption_design.theme_visual_bounds import measured_bounds
     from ..timeline.studio_edit_sequence import projected_cues, source_cue_id_of
     selected = set(cue_ids) if cue_ids is not None else {c.id for c in project.cues}
     targets = {c.id for c in project.cues if c.id in selected and
@@ -252,20 +253,16 @@ def initialize_project_layout(project, *, cue_ids=None, replace=False):
                 for key in ('position_x', 'position_y', 'position_locked', 'web_placement'):
                     transform.pop(key, None)
             c.transform = transform
-        else:
-            transform['position_locked'] = True
-            c.transform = transform
     rendered = list(projected_cues(local))
     resolved = {}
     for c in rendered:
         item = resolve_caption_style(local.styles, local.speakers, c, local.style_recipes, width, height)
         resolved[c.id] = item
-    layout = compute_stack_layout(rendered, resolve_one=lambda c: resolved[c.id],
-        play_res_y=height, play_res_x=width,
-        enabled=project.studio_state.get('auto_subtitle_stacking', True),
-        effect_for=lambda c: project.effects.get(c.effect_id, {}),
-        bounds_for=lambda c,r: measured_bounds(local,c,r,width,height),
-        extra_height=lambda c: _bilingual_extra(local, c, width))
+    from .collision_layout import project_layout_schedule
+    from .bilingual_layout import project_display_cues
+    schedule = project_layout_schedule(local, project_display_cues(local, rendered))
+    layout = StackLayout({key: max((o for _, _, o in spans), default=0.)
+                          for key, spans in schedule.items()})
     positions = {}
     for c in rendered:
         source_id = c.id if c.id in targets else source_cue_id_of(c.id)
@@ -273,10 +270,9 @@ def initialize_project_layout(project, *, cue_ids=None, replace=False):
             continue
         x, y, _, _ = _anchor(resolved[c.id].style, width, height)
         value = dict(version=1, source='temporal_overlap',
-            position_x=round(x, 3), position_y=round(y-layout.offset_for(c.id), 3),
-            offset_y=layout.offset_for(c.id), play_res_x=width, play_res_y=height)
-        # Repeated source instances retain one stable anchor, choosing the
-        # upper allocation needed by the most constrained visible instance.
+            position_x=round(x, 3), position_y=round(y, 3),
+            offset_y=0., play_res_x=width, play_res_y=height)
+        # Repeated source instances share their authored baseline only.
         if source_id not in positions or value['position_y'] < positions[source_id]['position_y']:
             positions[source_id] = value
     for c in project.cues:

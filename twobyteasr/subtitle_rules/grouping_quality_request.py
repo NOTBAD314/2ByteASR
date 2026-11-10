@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 import threading
 import time
+from collections import Counter
 
 from .grouping_quality import SourceIndex
 
@@ -27,6 +28,15 @@ class QualityRetryBudget:
         self.clock = clock
         self.started = None
         self.lock = threading.Lock()
+        self.outcomes = Counter()
+
+    def record_outcome(self,outcome):
+        with self.lock:
+            self.outcomes[outcome]+=1
+
+    def summary(self):
+        with self.lock:
+            return dict(self.outcomes)
 
     def take(self, max_tokens):
         with self.lock:
@@ -50,7 +60,7 @@ def retry_quality_windows(quality, original, local, *, provider, snapshot, schem
     from ..providers.asr_provider_snapshot import classify_request_error
     from ..recognition.service import CancelledError
     result = list(local)
-    issues = quality.inspect(original)
+    issues = [issue for issue in quality.inspect(original) if issue['kind'] != 'unnecessary_boundary']
     edges = [0, *original]
     covered = []
     correction_number = 0
@@ -103,10 +113,13 @@ def retry_quality_windows(quality, original, local, *, provider, snapshot, schem
         messages = [dict(role="system", content=(
             "只纠正本次正文范围的字幕断点。source_text不可改写，邻文只读。只返回JSON对象"
             '{"boundaries":[整数]}。断点仅从allowed_boundaries选择，严格递增并以total_length结束，'
-            "保留required_boundaries。不能采用illegal_positions或违反长度、词语和关联词归属。")),
+            "保留required_boundaries。不能采用illegal_positions或违反长度、词语和关联词归属。"
+            "连续完整表达14个可计数字符以内优先一条，可移除多余自动断点。"
+            "逗号、连接词和180–350ms气口不单独触发切分，超长才按完整语义和可靠气口选点。")),
             dict(role="user",content=json.dumps(body,ensure_ascii=False,separators=(",",":")))]
         started = time.perf_counter()
         category, accepted, response = "semantic_quality", False, ""
+        outcome, improved = 'rejected', False
         candidate = []
         diagnostics = {}
         dispatched = False
@@ -116,6 +129,8 @@ def retry_quality_windows(quality, original, local, *, provider, snapshot, schem
                 read_idle=min(timeout,snapshot.timeout_policy.read_idle), total=timeout,
                 queue=min(timeout,snapshot.timeout_policy.queue))
             dispatched = True
+            record('pipeline_work_progress',work_id=f'grouped:{retry_batch_id}',label='断句：局部重试',
+                phase='grouping_quality_retry',state='running',done=0,total=1,batch_index=batch_index)
             response = provider.complete(messages, stage="grouped", operation_kind="group",
                 batch_index=retry_batch_id, max_tokens=max_tokens, temperature=0.,
                 timeout=timeout, _timeout_policy=policy, request_diagnostics=diagnostics,
@@ -129,11 +144,24 @@ def retry_quality_windows(quality, original, local, *, provider, snapshot, schem
             if local_issues:
                 accepted, category = False, "semantic_or_length_quality"
             if accepted:
-                result = candidate
+                if candidate == result:
+                    outcome, category = 'unchanged', 'revalidated_unchanged'
+                elif quality.improves(result,candidate):
+                    result = candidate
+                    outcome, improved, category = 'improved', True, 'quality_improved'
+                else:
+                    accepted, category = False, 'no_quality_improvement_retained'
         except Exception as exc:
             category = "input_budget_conflict" if isinstance(exc,InputBudgetError) else classify_request_error(exc)
             if category == "cancelled" or isinstance(exc,CancelledError):
+                record('pipeline_work_progress',work_id=f'grouped:{retry_batch_id}',label='断句：局部重试已取消',
+                    phase='grouping_quality_retry',state='cancelled',done=0,total=1,batch_index=batch_index)
                 raise
+        labels={'improved':'断句：局部重试有改善','unchanged':'断句：局部重试未变化','rejected':'断句：重试候选未采用'}
+        record('pipeline_work_progress',work_id=f'grouped:{retry_batch_id}',label=labels[outcome],
+            phase='grouping_quality_retry',state='completed',done=1,total=1,batch_index=batch_index,
+            outcome=outcome,review_required=bool(quality.inspect(result)),request_dispatched=dispatched)
+        budget.record_outcome(outcome)
         record("grouping_quality_retry", batch_index=batch_index,rule="bounded_ai_quality_correction",
             retry_batch_id=retry_batch_id,parent_batch_id=batch_index,request_dispatched=dispatched,
             content_start=left, content_end=right, original_boundaries=body["current_boundaries"],
@@ -143,7 +171,8 @@ def retry_quality_windows(quality, original, local, *, provider, snapshot, schem
             before=SourceIndex.build(body["source_text"]).pieces(body["current_boundaries"]),
             after=[quality.index.slice(a,b) for a,b in zip([left,*[x for x in candidate if left < x <= right]],
                 [x for x in candidate if left < x <= right])],
-            accepted=accepted, reason=category, output_token_reserve=max_tokens,
+            accepted=accepted, improved=improved,outcome=outcome,
+            review_required=bool(quality.inspect(result)),reason=category, output_token_reserve=max_tokens,
             elapsed_ms=round((time.perf_counter()-started)*1000,3),
             response_length=len(response), finish_reason=diagnostics.get("finish_reason"),
             completion_tokens=diagnostics.get("completion_tokens"))

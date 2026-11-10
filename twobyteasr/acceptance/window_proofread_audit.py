@@ -102,9 +102,9 @@ def start(window, out):
             page.project.glossary_ids=[identity]
             cue=page.project.cues[0];original_text=cue.text
             page.undo_stack.push(SetCueFieldsCommand(page.project,cue.id,{'text':original_text+' 校对甲'},'audit unsaved text'))
-            check('AI entry visible',page.cue_proofread_button.isVisible())
+            check('AI entry visible',page.cue_ai_button.isVisible())
             _capture(window,out/'01-studio-entry.png')
-            QTest.mouseClick(page.cue_proofread_button,Qt.LeftButton)
+            page.cue_proofread_action.trigger()
             check('opens existing proofreading workspace',wait(lambda:
                 getattr(window,'glossary_proofread_page',None) is window.pages.currentWidget(),10))
             review=window.glossary_proofread_page

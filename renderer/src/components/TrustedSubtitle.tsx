@@ -171,8 +171,8 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
   return <div style={base}>
     {panel.enabled && <div style={{
       position:'absolute',
-      left:`-${panel.paddingX}px`, right:`-${panel.paddingX}px`,
-      top:`-${panel.paddingY}px`, bottom:`-${panel.paddingY}px`,
+      left:`-${panel.paddingLeft ?? panel.paddingX}px`, right:`-${panel.paddingRight ?? panel.paddingX}px`,
+      top:`-${panel.paddingTop ?? panel.paddingY}px`, bottom:`-${panel.paddingBottom ?? panel.paddingY}px`,
       background:panel.paint ? paintCss(panel.paint) : panelGradient, borderRadius:panel.type === 'pixel_panel' ? 0 : panel.radius,
       opacity:panel.opacity,
       border:`${panel.border.width}px solid ${panel.border.color}`,

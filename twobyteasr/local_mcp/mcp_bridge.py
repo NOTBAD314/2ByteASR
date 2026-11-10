@@ -354,8 +354,6 @@ class McpBridge(QObject):
         from ..subtitle_rules.punctuation_style import (MODE_ORIGINAL, math_enabled, project_mode, protected_terms_of,
                                                          style_text)
         mode, math = project_mode(project), math_enabled(project)
-        if mode == MODE_ORIGINAL and not math:
-            return lambda text: None
         hint, terms = project_language(project) or "", protected_terms_of(project)
         return lambda text: style_text(text, mode, language=hint, protected_terms=terms, math=math).text
 

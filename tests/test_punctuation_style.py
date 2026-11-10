@@ -84,16 +84,19 @@ def test_glossary_terms_with_symbols_are_protected():
     assert "Mr.Beast." in styled
 
 
-def test_old_project_without_choice_exports_exactly_as_before(tmp_path):
+def test_old_project_without_choice_uses_reversible_question_exclamation_policy(tmp_path):
     from twobyteasr.exports import studio_subtitle_export as export
     project = make_project()
     assert project_mode(project) == MODE_ORIGINAL
     options = export.SubtitleExportOptions(formats=frozenset({"srt", "txt", "json", "ass"}))
     artifacts = export.export_subtitle_artifacts(project, tmp_path, "old", options)
     srt = next(a.path for a in artifacts if a.format == "srt").read_text(encoding="utf-8")
-    assert all(text in srt for text in TEXTS)
+    expected = [style_text(text, MODE_ORIGINAL).text for text in TEXTS]
+    assert all(text in srt for text in expected)
     payload = json.loads(next(a.path for a in artifacts if a.format == "json").read_text(encoding="utf-8"))
-    assert [row["text"] for row in payload["cues"]] == TEXTS and payload["punctuation"] == MODE_ORIGINAL
+    assert [row["text"] for row in payload["cues"]] == expected and payload["punctuation"] == MODE_ORIGINAL
+    assert [cue.text for cue in project.cues] == TEXTS
+    assert [row["original_text"] for row in payload["cues"]] == TEXTS
 
 
 @pytest.mark.parametrize("mode", [MODE_ADD, MODE_NONE])

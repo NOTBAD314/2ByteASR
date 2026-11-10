@@ -39,13 +39,13 @@ def test_api_tab_shows_all_online_models():
     assert not {"qwen_api", "mai_transcribe_2_word", "qwen_audio_asr_flash", "qwen31_flash", "qwen_filetrans"} & api_tab
 
 
-def test_role_tabs_exclude_online_cards():
+def test_role_tabs_only_include_recommended_primary_online_card():
     by_key = {model.key: model for model in MODELS}
     for role in ("primary", "timeline", "review"):
         members = {key for key in by_key if role in _browser_groups(by_key[key])}
-        assert not (members & {m.key for m in MODELS if model_is_online(m)}), (
-            f"{role} tab 混入在线 API 卡：{members & {m.key for m in MODELS if model_is_online(m)}}"
-        )
+        online_members = members & {m.key for m in MODELS if model_is_online(m)}
+        expected = {"mosi_moss_pro"} if role == "primary" else set()
+        assert online_members == expected, f"{role} tab 在线模型集不一致：{online_members ^ expected}"
 
 
 def test_role_picker_still_offers_api_models():

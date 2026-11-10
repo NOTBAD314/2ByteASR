@@ -7,7 +7,7 @@ a loud fill. Section titles 19px, field labels 13px, taller primary controls,
 a centred hero drop zone while no media is loaded, and a bottom bar that names
 what is missing. Appended after the surface sheet so it owns these selectors.
 """
-from .typography import UI_FONT_STACK
+from .typography import TITLE_FONT_STACK, UI_FONT_STACK
 
 # 2026-10-22 (user): while no AI is connected the AI card and 内容与术语 are
 # blue-grey (the first draft's sand "跟紫色背景不搭"): a steel blue mixed into
@@ -26,8 +26,9 @@ def ai_lock_palette(t) -> dict[str, str]:
         "edge": blend_hex(t.surface, AI_LOCK_HUE, 0.48 if light else 0.40),
         "edge_strong": blend_hex(t.surface, AI_LOCK_HUE, 0.72 if light else 0.62),
         "chip": blend_hex(t.surface, AI_LOCK_HUE, 0.28 if light else 0.25),
-        "title": blend_hex(t.text, AI_LOCK_HUE, 0.42 if light else 0.38),
-        "text": blend_hex(t.text_secondary, AI_LOCK_HUE, 0.30),
+        # 2026-11-10 (user: too light to read): more ink, less hue.
+        "title": blend_hex(t.text, AI_LOCK_HUE, 0.30 if light else 0.26),
+        "text": blend_hex(t.text_secondary, AI_LOCK_HUE, 0.18),
         "frost": blend_hex(t.surface, AI_LOCK_HUE, 0.20 if light else 0.14),
     }
 
@@ -176,13 +177,77 @@ QLabel#homeLanguageCaption[aiLock="true"] {{ color: {lock['title']}; }}
 """
 
 
+def _home_b_rules(t, tint, edge, chip, band, band_edge, band_chip) -> str:
+    """2026-11-09 home B (user chose "圆润可爱"): same layout, rounder cards,
+    pill buttons, one control height and calmer type weights. Appended last,
+    with the same selectors as the rules it overrides."""
+    return f"""
+QFrame#studioEntryCard {{ border-radius: 22px; }}
+QFrame#studioEntryCard QLabel#homeCardIcon {{ border-radius: 14px; }}
+QFrame#homeSettingsCard {{ border-radius: 22px; }}
+QFrame#homeContentProfile {{ border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }}
+QFrame#homeContentProfile[aiLock="true"] {{ border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }}
+QFrame#homeContentProfile QLabel#homeCardIcon {{ border-radius: 13px; }}
+QLabel#homeSectionTitle {{ font-family: {TITLE_FONT_STACK}; font-size: 18px; font-weight: 800; }}
+QLabel#homeSectionTitle[headingRow="true"] {{ font-size: 15px; }}
+QLabel#homeLanguageTitle {{ font-family: {TITLE_FONT_STACK}; font-weight: 800; }}
+QLabel#homeAiTitle {{ font-family: {TITLE_FONT_STACK}; font-size: 18px; font-weight: 800; }}
+QLabel#recognitionModelSub {{ color: {t.text_muted}; font-size: 12px; font-weight: 500; background: transparent; border: 0; }}
+QPushButton#softAction[homeNavigation="true"] {{ border-radius: 18px; }}
+QPushButton#homeHeaderAction, QPushButton#softAction[homeTool="true"] {{ border-radius: 18px; }}
+QComboBox#recognitionPlanCombo, QComboBox#recognitionPlanCombo:hover, QComboBox#recognitionPlanCombo:focus,
+QComboBox#recognitionPlanCombo:on, QComboBox#projectProfileCombo, QComboBox#projectProfileCombo:hover,
+QComboBox#projectProfileCombo:focus, QComboBox#projectProfileCombo:on {{ border-radius: 18px; padding: 0 6px 0 16px; }}
+QFrame#homeSettingsCard QPushButton#recognitionRecovery {{ border-radius: 13px; }}
+QFrame#recognitionStatusPill {{ border-radius: 13px; }}
+QFrame#homeLanguageField {{ border-radius: 18px; }}
+QFrame#homeContentProfile QComboBox#homeContentCombo, QFrame#homeContentProfile QComboBox#homeContentCombo:hover,
+QFrame#homeContentProfile QComboBox#homeContentCombo:focus {{ font-size: 14px; border-radius: 16px; }}
+QPushButton#homeAiSettings {{ border-radius: 20px; }}
+QPushButton#homeAiPrimary {{ border-radius: 20px; padding: 0 22px; }}
+QFrame#studioEntryCard QPushButton#studioEntryPrimary {{ border-radius: 22px; min-height: 44px; max-height: 44px; font-size: 15px; }}
+QFrame#mediaRow[empty="true"] {{ border-radius: 22px; }}
+QFrame#mediaRow[empty="true"] QLabel#mediaIcon {{ border-radius: 16px; }}
+QFrame#mediaRow[empty="false"] {{ border-radius: 18px; }}
+QFrame#mediaRow QPushButton#softAction {{ min-height: 44px; max-height: 44px; border-radius: 22px; padding: 0 20px; font-size: 14px; }}
+QFrame#mediaRow QPushButton#softAction[heroAction="true"] {{ border-radius: 22px; padding: 0 26px; font-size: 15px; }}
+QPushButton#homeScriptMatch {{ border-radius: 24px; padding: 0 22px; }}
+QPushButton#primary[homeGenerate="true"][buttonRole="primary"] {{ border-radius: 26px; }}
+{_home_type_balance(t)}
+"""
+
+
+def _home_type_balance(t) -> str:
+    """2026-11-10 (user: some home text is too light to read, some so strong it
+    drowns the rest). One ladder: the model names lead (800); section titles
+    step down to 700 and a size smaller; every caption and helper line uses
+    the secondary ink instead of the muted one. Appended after home B."""
+    return f"""
+QLabel#homeSectionTitle {{ font-size: 17px; font-weight: 700; }}
+QFrame#homeContentProfile QLabel#homeSectionTitle {{ font-size: 16px; }}
+QLabel#homeAiTitle {{ font-size: 17px; font-weight: 700; }}
+QLabel#homeLanguageTitle {{ font-size: 15px; font-weight: 700; }}
+QFrame#homeContentProfile QComboBox#homeContentCombo, QFrame#homeContentProfile QComboBox#homeContentCombo:hover,
+QFrame#homeContentProfile QComboBox#homeContentCombo:focus {{ min-height: 38px; }}
+QLabel#homeFieldLabel, QWidget#homePlanBlock QLabel#fieldLabel {{ color: {t.text_secondary}; font-weight: 600; }}
+QLabel#homeLanguageCaption {{ color: {t.text_secondary}; }}
+QLabel#homeQuickCaption {{ color: {t.text_secondary}; }}
+QLabel#homeTermState[tone="off"] {{ color: {t.text_secondary}; }}
+QWidget#homePlanBlock QLabel#homeSectionHint {{ color: {t.text_secondary}; }}
+QLabel#recognitionModelSub {{ color: {t.text_secondary}; }}
+QFrame#homeSettingsCard QLabel#recognitionModelDescription {{ color: {t.text_secondary}; font-weight: 500; }}
+QLabel#mediaFormats {{ color: {t.text_secondary}; }}
+QLabel#homeAiSummary {{ color: {t.text_secondary}; }}
+"""
+
+
 def build_home_qss(t):
     from .ui_theme import blend_hex
     light = t.is_light
     # 2026-10-17 (user: on dark themes the colour "有點醜和搶目光", light is
     # fine): dark themes keep the zone and identity hues to a faint hint on the
     # surfaces; colour lives in the icon chips, role names and status tags.
-    rest, edge_amount, chip_amount = (0.07, 0.36, 0.2) if light else (0.045, 0.2, 0.17)
+    rest, edge_amount, chip_amount = (0.1, 0.4, 0.26) if light else (0.045, 0.2, 0.17)
     zones = t.zone_colors
     tint = {name: blend_hex(t.surface, color, rest) for name, color in zones.items()}
     edge = {name: blend_hex(t.surface, color, edge_amount) for name, color in zones.items()}
@@ -197,17 +262,17 @@ def build_home_qss(t):
     # 2026-10-17 home C′ (user: "右邊那些也多做些顏色…可以更和諧耐看一些"):
     # one settings card; the model cards carry their identity hue a little
     # stronger, the AI and content sections are whole bands in their zone hue.
-    band = {"ai": blend_hex(t.surface, zones["ai"], 0.1 if light else 0.045),
-            "content": blend_hex(t.surface, zones["content"], 0.09 if light else 0.04)}
+    band = {"ai": blend_hex(t.surface, zones["ai"], 0.13 if light else 0.045),
+            "content": blend_hex(t.surface, zones["content"], 0.12 if light else 0.04)}
     band_edge = {"ai": blend_hex(t.surface, zones["ai"], 0.32 if light else 0.16),
                  "content": blend_hex(t.surface, zones["content"], 0.32 if light else 0.15)}
-    band_chip = {name: blend_hex(t.surface, zones[name], 0.24 if light else 0.17) for name in ("ai", "content")}
-    wash, wash_hover = (0.15, 0.21) if light else (0.05, 0.09)
+    band_chip = {name: blend_hex(t.surface, zones[name], 0.3 if light else 0.17) for name in ("ai", "content")}
+    wash, wash_hover = (0.2, 0.26) if light else (0.05, 0.09)
     a = design_a_tones(t)
     # The model cards are the settings card's first band: three columns edge to
     # edge, hairlines between them, the outer top corners follow the card.
     column_edge = blend_hex(t.surface, t.text, 0.14 if light else 0.12)
-    corners = {"primary": " border-top-left-radius: 13px;", "review": " border-top-right-radius: 13px;"}
+    corners = {"primary": " border-top-left-radius: 21px;", "review": " border-top-right-radius: 21px;"}
     role_rules = "\n".join(
         f'QFrame#homeSettingsCard QFrame#recognitionRoleCard[role="{role}"] {{ background: {blend_hex(t.surface, color, wash)};'
         f' border: 0; border-radius: 0;{corners.get(role, "")}'
@@ -357,4 +422,5 @@ QPushButton#startHint[tone="warn"] {{ color: {t.warning}; }}
 QPushButton#startHint[tone="warn"]:hover {{ background: {t.warning_soft}; border-color: {blend_hex(t.surface, t.warning, 0.4)}; }}
 QPushButton#primary[homeGenerate="true"][buttonRole="primary"]:disabled {{ background: {disabled_fill};
     color: {t.text_secondary}; border: 1px dashed {disabled_edge}; }}
+{_home_b_rules(t, tint, edge, chip, band, band_edge, band_chip)}
 """

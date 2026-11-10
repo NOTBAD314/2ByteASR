@@ -34,6 +34,51 @@ from ..i18n import tr
 
 
 class StudioReviewMixin:
+    def _confirm_all_reviews(self):
+        if not self.project:
+            return
+        from ..subtitle_rules.current_issues import pending_review_changes, acknowledged_issue_views
+        from .caption_editor import IssueDecisionsCommand
+        button = getattr(self, 'confirm_all_reviews_button', None)
+        if button is not None and len(self.project.cues) >= 1000:
+            button.setEnabled(False)
+            bind_text(button, '正在标记已检查…')
+            button.repaint()
+        try:
+            changes, cue_ids, count = pending_review_changes(self.project)
+        except Exception:
+            self._refresh_bulk_review_button()
+            raise
+        if not changes:
+            self._refresh_bulk_review_button()
+            return
+        command = IssueDecisionsCommand(self.project, changes, self._all_reviews_changed,
+            prepared_issue_views=acknowledged_issue_views(self.project, changes))
+        command.setText(tr('全部标记已检查（{count}）', count=count))
+        self.undo_stack.push(command)
+
+    def _all_reviews_changed(self):
+        # A save-only transaction. No recognition, glyph/layout invalidation,
+        # learning observer or per-caption UI/save loop participates.
+        self.cue_model.refresh()
+        self._refresh_cue_list_summary()
+        self._refresh_review_summary_strip()
+        overview = getattr(self, 'timeline_overview', None)
+        if overview is not None:
+            overview._markers = None
+            overview.update()
+
+    def _refresh_bulk_review_button(self):
+        button = getattr(self, 'confirm_all_reviews_button', None)
+        if button is None:
+            return
+        from ..subtitle_rules.current_issues import current_issue_view
+        view = current_issue_view(self.project) if self.project else None
+        count = sum(row.disposition == 'actionable' and row.level in {'high','suggested'}
+                    for row in view.records) if view else 0
+        bind_text(button, '全部标记已检查（{count}）', count=count)
+        button.setEnabled(count > 0)
+
     def _show_current_issue_details(self):
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QToolButton
         from ..subtitle_rules.current_issues import current_issue_view
@@ -660,12 +705,19 @@ class StudioReviewMixin:
                 worker.ready.connect(self._background_qc_ready)
                 worker.failed.connect(self._background_qc_failed)
             capture_started = perf_counter()
+            from ..subtitle_rules.current_issues import issue_policy_version
             snapshot = store.qc_snapshot()
             identity = (id(project), self.session.generation,
-                        state_for(project).qc_revision, token)
+                        state_for(project).qc_revision, token, engine.config,
+                        issue_policy_version(project))
             self._qc_worker_snapshot_ms = (perf_counter()-capture_started)*1000
             worker.submit(snapshot,engine.config,terminology,identity)
             return
+        from ..projects.studio_runtime_state import state_for
+        from ..subtitle_rules.current_issues import issue_policy_version
+        input_revision = state_for(project).qc_revision
+        input_policy = issue_policy_version(project)
+        input_config = engine.config
         context = engine.build_context(project, terminology=terminology)
         ordered = list(context.ordered)
         collected: dict[str, tuple] = {}
@@ -682,6 +734,10 @@ class StudioReviewMixin:
         def step() -> None:
             nonlocal cursor
             if token != getattr(self, "_qc_scan_token", 0) or self.project is not project:
+                return
+            if (state_for(project).qc_revision != input_revision
+                    or issue_policy_version(project) != input_policy or engine.config != input_config):
+                self._start_chunked_qc_scan(sync=sync, _fallback=_fallback)
                 return
             # A time budget, not a cue count: model-evidence rules cost very
             # different amounts per cue (one 400-cue slice measured 0.3 s).
@@ -725,7 +781,10 @@ class StudioReviewMixin:
         # Selection/overlay transforms also advance the playback plan token,
         # but do not change QC input. Do not discard a full long-project scan
         # merely because the user picked another caption while it ran.
-        if identity[2] != state_for(self.project).qc_revision:
+        from ..subtitle_rules.current_issues import issue_policy_version
+        if (identity[2] != state_for(self.project).qc_revision
+                or len(identity) > 4 and (identity[4] != self._qc_engine.config
+                    or identity[5] != issue_policy_version(self.project))):
             self._start_chunked_qc_scan()
             return
         began = perf_counter()
@@ -950,7 +1009,8 @@ class StudioReviewMixin:
         if cue is None:
             return
         view = current_issue_view(self.project)
-        changes = {r.issue_id: {'input_version': r.input_version, 'status': 'resolved'}
+        changes = {r.issue_id: {'input_version': r.input_version, 'status': 'resolved',
+                               'evidence_version': r.evidence_version}
                    for r in view.for_cue(cue_id)}
         changes['reviewed:'+cue_id] = {'input_version': reviewed_version(self.project, cue), 'status': 'resolved'}
         session = getattr(self, '_review_session', None)
@@ -961,6 +1021,15 @@ class StudioReviewMixin:
             self._select_review_cue_immediately(next_id, play=play_next)
         else:
             self._refresh_review_summary_strip()
+
+    def _confirm_review_cue(self, cue_id: str) -> None:
+        """The ✓ in a list row (2026-11-09): confirm that cue like Enter in review."""
+        if not self.project or cue_id not in self._cue_lookup:
+            return
+        if self.selected_cue_id != cue_id:
+            self.select_cue(cue_id, hydrate=False)
+        if self.selected_cue_id == cue_id:
+            self._confirm_current_review()
 
     def _select_review_cue_immediately(self,cue_id,*,play=False):
         """Commit selection now. Latest selection alone may seek/hydrate later."""
@@ -1048,7 +1117,7 @@ class StudioReviewMixin:
             self.undo_stack.push(AdoptReviewCandidateCommand(self.project, cue.id, value, '',
                 lambda: self._cue_changed(cue.id, columns=(3,4)), resolve_review=False,
                 text_applied=lambda text: self._manual_text_baselines.__setitem__(cue.id, text)))
-            changes={r.issue_id:dict(status='resolved',input_version=r.input_version)
+            changes={r.issue_id:dict(status='resolved',input_version=r.input_version,evidence_version=r.evidence_version)
                      for r in current_issue_view(self.project).records if r.cue_id==cue.id and r.issue_id in before}
             if changes:self.undo_stack.push(IssueDecisionsCommand(self.project,changes,
                 lambda:self._caption_issue_decisions_changed(cue.id)))

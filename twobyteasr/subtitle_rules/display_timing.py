@@ -168,6 +168,8 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
             right = ordered[later]
             if right["start_ms"] >= left["end_ms"]:
                 break
+            if left.get('timing_locked'):
+                continue
             a, b = acoustic.get(left["id"], []), acoustic.get(right["id"], [])
             kind = classify_overlap(a, b)
             left_word_end = (word_boundaries or {}).get(left['id'], (None, None))[1]
@@ -278,14 +280,16 @@ def protect_runtime_display_tails(cues, segments):
     # Key by position: content recovery may append cues whose ids repeat an
     # existing cue's id until the final renumbering (2026-10-11 688 s run).
     keys = [str(index) for index in range(len(cues))]
-    rows = [dict(id=key, start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker=cue.speaker)
+    rows = [dict(id=key, start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker=cue.speaker,
+                 timing_locked=bool(getattr(cue, 'timing_locked', False)))
             for key, cue in zip(keys, cues)]
     acoustic = {}
     from types import SimpleNamespace
     evidence = {}
     for index, segment in enumerate(segments):
         row = {key: getattr(segment, key, None) for key in
-               ('primary_source', 'final_timing_owner', 'caption_arbitration')}
+               ('primary_source', 'final_timing_owner', 'caption_arbitration',
+                'speaker_independent', 'independent_speech_intervals')}
         row['speaker_id'] = segment.speaker
         row['words'] = [dict(word) if isinstance(word, dict) else dict(
             text=getattr(word, 'text', getattr(word, 'word', '')),
@@ -313,11 +317,18 @@ def protect_runtime_display_tails(cues, segments):
             if b > a:
                 spans.append((round(a*1000), round(b*1000)))
         acoustic[key] = spans
-    changes, audit = protect_intervals(rows, acoustic, word_boundaries=boundaries)
+    verified = _verified_overlap_pairs(view)
+    changes, audit = protect_intervals(rows, acoustic, word_boundaries=boundaries, verified_pairs=verified)
     for pair in audit:
+        pair.update(cue_before=[
+            [rows[int(pair['left'])]['start_ms'], rows[int(pair['left'])]['end_ms']],
+            [rows[int(pair['right'])]['start_ms'], rows[int(pair['right'])]['end_ms']]],
+            adjusted_end_ms=changes.get(pair['left'], rows[int(pair['left'])]['end_ms']))
+        independently_verified = ((pair['left'], pair['right']) in verified or
+                                  (pair['right'], pair['left']) in verified)
         pair.update(left=str(cues[int(pair['left'])].cue_id), right=str(cues[int(pair['right'])].cue_id))
         # Mono source boundaries alone do not prove simultaneous speakers.
-        if pair['classification'] == 'acoustic':
+        if pair['classification'] == 'acoustic' and not independently_verified:
             pair.update(classification='source_overlap_unverified', review_required=True)
         if pair['evidence_kind'] != 'measured_cue_words':
             pair['evidence_kind'] = 'source_intervals_without_editorial_or_search_padding'
@@ -366,7 +377,10 @@ def short_gap_bridges(rows, threshold, *, full_track=True, same_speaker=True, ma
                 end = ends[key]
                 if not (end < next_start <= end + threshold) or not fits(start, next_start):
                     continue
-                if any(end < other < next_start and who != speaker for other, who in starts):
+                # Intervals are half-open: a new speaker exactly at the old
+                # end is a handoff too. Extending past it would manufacture
+                # overlap and undo the preceding display-tail protection.
+                if any(end <= other < next_start and who != speaker for other, who in starts):
                     continue
                 ends[key] = next_start
     return {key: end for key, end in ends.items() if end != original[key]}

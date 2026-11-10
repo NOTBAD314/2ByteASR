@@ -267,6 +267,10 @@ def normalize_firered_worker_result(
         owned_end = (own[1] + following[0]) / 2 if own and following and own[1] > following[0] else float("inf")
         dropped = 0
         timestamps = row.get("timestamp") or []
+        estimated = (row.get('timestamp_reliability') in {'estimated','unknown'}
+                     or row.get('alignment_status') in {'failed_or_unavailable','failed','unknown'})
+        if estimated:
+            timestamps = []  # Keep the transcript and its window, not fake word anchors.
         starts: list[float] = []
         ends: list[float] = []
         token_rows: list[dict[str, Any]] = []
@@ -318,6 +322,10 @@ def normalize_firered_worker_result(
             "text": text,
             "confidence": float(row.get("confidence", 0.0) or 0.0),
         }
+        for field in ('evidence_version','transcription_status','alignment_status',
+                      'timestamp_source','timestamp_reliability'):
+            if field in row:
+                segment[field]=row[field]
         if token_rows:
             segment["tokens"] = token_rows
         segments.append(_validate_segment(segment, producer=producer, consumer=consumer))
@@ -351,6 +359,8 @@ def flatten_segment_tokens(
     )
     tokens: list[dict[str, Any]] = []
     for segment in canonical["segments"]:
+        if segment.get('timestamp_reliability') in {'estimated','unknown'}:
+            continue
         nested = segment.get("tokens")
         rows = nested if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)) else [segment]
         for row in rows:

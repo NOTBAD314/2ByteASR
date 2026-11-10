@@ -280,7 +280,7 @@ def start(window, out):
         return len(_submits) - before
 
     def run_menu(page, text, label, answer='cancel'):
-        """Open the cue ⋯ menu like a user, pick ``text``."""
+        """Open the「AI 工具」menu like a user, pick ``text`` (2026-11-10: AI 断句 moved there)."""
         plan.update(note=answer, label=label)
         picked = {}
 
@@ -300,7 +300,7 @@ def start(window, out):
                 QTimer.singleShot(0, action.trigger)
 
         QTimer.singleShot(250, pick)
-        QTest.mouseClick(page.cue_more_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(page.cue_ai_button, Qt.MouseButton.LeftButton)
         wait(lambda: 'found' in picked, 10)
         pump(.3)
         return picked
@@ -436,8 +436,8 @@ def start(window, out):
             pump(.3)
             check('a caption is selected for 「选中范围试跑」', page.selected_cue_id == page.project.cues[0].id)
             state_before = json.dumps(page.project.studio_state.get('ai_sentence_refine'), sort_keys=True)
-            entries = (('AI 断句 · 选中范围试跑', 'refine-selection'), ('AI 断句 · 全工程执行', 'refine-project'),
-                       ('AI 断句 · 仅重试失败范围', 'refine-retry'))
+            entries = (('AI 断句（选中范围）', 'refine-selection'), ('AI 断句', 'refine-project'),
+                       ('重试断句失败的范围', 'refine-retry'))
             for text, label in entries:
                 before = len(_submits)
                 picked = run_menu(page, text, label)
@@ -484,7 +484,7 @@ def start(window, out):
                 found['worker'] = dialog._glossary_review_worker is not None
 
             # 2026-10-21: AI 清理 opens from the cue list; 应用术语库 is its own window.
-            outcome = with_dialog(AiCleanupDialog, cleanup, lambda: press(page.cue_cleanup_button))
+            outcome = with_dialog(AiCleanupDialog, cleanup, lambda: page.cue_cleanup_action.trigger())
             terms_outcome = with_dialog(GlossaryReviewDialog, terms, lambda: GlossaryReviewDialog(page, page).exec())
             outcome = outcome if outcome.get('error') else terms_outcome
             check('查找替换「生成 AI 预览」 without a key: the note, nothing sent',
@@ -533,11 +533,11 @@ def start(window, out):
             check('with a saved key the rule no longer applies',
                   not text_ai_key_missing(saved, 'group') and not text_ai_key_missing(legacy.RUNTIME_SETTINGS, 'polish'))
             label = 'refine-with-key'
-            picked = run_menu(page, 'AI 断句 · 全工程执行', label)
+            picked = run_menu(page, 'AI 断句', label)
             done = wait(lambda: getattr(page, '_refine_worker', None) is None
                         and page.save_state.text().startswith('AI 断句完成'), 60)
             refine_requests = [row for row in requests if row['kind'] == 'refine']
-            check('with a key 「AI 断句 · 全工程执行」 runs as before (no note, request sent, result applied)',
+            check('with a key 「AI 断句」 runs as before (no note, request sent, result applied)',
                   picked.get('enabled') and done and not notes_at(label) and refine_requests
                   and all(row['authorization'] for row in refine_requests) and not _blocked,
                   dict(save_state=page.save_state.text(), requests=requests))
@@ -566,7 +566,7 @@ def start(window, out):
                 pump(.3)
                 seen.update(cleanup=dialog.status_label.text())
 
-            outcome = with_dialog(AiCleanupDialog, cleanup_with_key, lambda: press(page.cue_cleanup_button))
+            outcome = with_dialog(AiCleanupDialog, cleanup_with_key, lambda: page.cue_cleanup_action.trigger())
             check('with a key AI 清理 runs as before (no note, request sent)',
                   not notes_at('cleanup-with-key') and any(row['kind'] == 'cleanup' for row in requests) and not _blocked,
                   dict(status=seen.get('cleanup'), error=outcome.get('error')))

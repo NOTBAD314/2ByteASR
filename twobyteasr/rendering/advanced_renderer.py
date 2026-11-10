@@ -34,6 +34,7 @@ from ..caption_style.style_recipe import (
     normalize_shadow_contract,
     recipe_payload_for_style,
     route_recipe,
+    background_padding,
 )
 from ..caption_style.visual_snapshot import VisualCueSnapshot, build_visual_cue_snapshot
 from ..system.processes import popen_hidden_subprocess, renderer_node_command, renderer_child_environment
@@ -190,6 +191,13 @@ def _native_segment_project(project: SubtitleProject, start_ms: int, end_ms: int
     segment = deepcopy(project)
     segment.cues = []
     segment._word_animation_plans = {}
+    from ..caption_style.bilingual_layout import project_display_cues
+    from ..caption_style.collision_layout import project_layout_schedule
+    schedule = project_layout_schedule(project, project_display_cues(project))
+    segment._subtitle_layout_schedule = {
+        key: [(max(0, a-start_ms), min(end_ms-start_ms, b-start_ms), offset)
+              for a, b, offset in spans if a < end_ms and b > start_ms]
+        for key, spans in schedule.items()}
     # 三十八轮：隐藏的说话人轨不进高保真预览（与导出/压制一致）。
     hidden = getattr(project, "hidden_speaker_ids", None)
     hidden_ids = hidden() if callable(hidden) else frozenset()
@@ -431,6 +439,7 @@ def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
     decorations = decorations[:16]
     glow = normalize_glow(effects.get("glow", {}))
     background = recipe.background if isinstance(recipe.background, Mapping) else {}
+    padding_top, padding_right, padding_bottom, padding_left = background_padding(background)
     background_type = str(background.get("type", background.get("style", "solid" if background.get("enabled") else "none")))
     if background_type not in TRUSTED_BACKGROUND_TYPES:
         background_type = "solid" if background.get("enabled") else "none"
@@ -483,8 +492,12 @@ def _normalized_recipe(payload: Mapping[str, object]) -> dict[str, object]:
                 "angle": float(background_gradient.get("angle", 0) or 0),
             },
             "opacity": min(1.0, max(0.0, float(background.get("opacity", 1) or 0))),
-            "paddingX": min(120.0, max(0.0, float(background.get("padding_x", background.get("paddingX", background.get("padding", 22))) or 0))),
-            "paddingY": min(80.0, max(0.0, float(background.get("padding_y", background.get("paddingY", background.get("padding", 10))) or 0))),
+            "paddingX": padding_right,
+            "paddingY": padding_top,
+            "paddingTop": padding_top,
+            "paddingRight": padding_right,
+            "paddingBottom": padding_bottom,
+            "paddingLeft": padding_left,
             "radius": min(40.0, max(0.0, float(background.get("radius", 8) or 0))),
             "border": {
                 "color": _css_color(border.get("color"), "#00000000"),
@@ -575,7 +588,7 @@ def scale_visual_for_composition(visual: dict[str, object], composition_width: i
         if field in scaled.get('layout', {}):
             scaled['layout'][field] *= scale
     panel = scaled.get('background', {})
-    for field in ('paddingX', 'paddingY', 'radius'):
+    for field in ('paddingX', 'paddingY', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'radius'):
         if field in panel:
             panel[field] *= scale
     for section, fields in (('border', ('width',)), ('shadow', ('offsetX', 'offsetY', 'blur')),
@@ -723,6 +736,11 @@ def compile_composition_data(
     end_ms = start_ms + round(duration_seconds * 1000)
     from ..caption_style.bilingual_layout import materialize_display_project
     project = materialize_display_project(project)
+    from ..caption_style.collision_layout import project_layout_schedule, shifted_snapshot, visible_subtitle_cues
+    from copy import copy
+    project = copy(project)
+    project.cues = visible_subtitle_cues(project)
+    schedule = project_layout_schedule(project)
     recipes: dict[str, object] = {}
     cues = []
     font_faces={}
@@ -752,7 +770,7 @@ def compile_composition_data(
         if cue.style_id not in recipes:
             recipes[cue.style_id] = visual
         from ..caption_style.speaker_labels import template_speaker
-        cues.append({
+        row = {
             "id": cue.id,
             "text": snapshot.text,
             "speaker": template_speaker(project, cue),
@@ -765,10 +783,21 @@ def compile_composition_data(
             "visual": visual,
             "snapshotHash": snapshot.stable_hash(),
             "resolvedStyleHash": snapshot.resolved_caption.style_hash if snapshot.resolved_caption else "",
-            "fontIdentity":font_identities.get(face_key),
-            "lineCount": snapshot.resolved_caption.line_count if snapshot.resolved_caption else len(snapshot.text.split('\n')),
+            "fontIdentity": font_identities.get(face_key),
+            "lineCount": snapshot.resolved_caption.line_count if snapshot.resolved_caption else len(snapshot.text.split("\n")),
             "layout": snapshot.resolved_caption.layout if snapshot.resolved_caption else {},
-        })
+        }
+        for index, (a, b, offset) in enumerate(schedule.get(cue.id, [(cue.start_ms, cue.end_ms, 0.)])):
+            a, b = max(a, start_ms), min(b, end_ms)
+            if b <= a:
+                continue
+            placed = shifted_snapshot(snapshot, offset)
+            spans = schedule.get(cue.id, ())
+            cues.append({**row, 'id': cue.id if len(spans) == 1 else f'{cue.id}@layout{index}', 'sourceId': cue.id,
+                'layoutOffsetY': offset, 'startMs': a-start_ms, 'endMs': b-start_ms,
+                'localOffsetMs': a-cue.start_ms,
+                'visual': scale_visual_for_composition(normalized_visual_snapshot(placed), width),
+                'snapshotHash': placed.stable_hash()})
     if not cues:
         used = [cue.style_id for cue in project.cues]
         available = list(project.style_recipes)

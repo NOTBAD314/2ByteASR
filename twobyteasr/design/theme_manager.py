@@ -382,6 +382,8 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
         raise RuntimeError("QApplication is required before applying a theme")
     normalized = save_theme_key(key or theme_key())
     theme = theme_definition(normalized)
+    from .popup_corners import install_rounded_popups
+    install_rounded_popups(app, theme.border_strong)
     if getattr(app, "_applied_theme_key", None) == normalized and app.styleSheet():
         # Same theme already live: stylesheet churn would only re-polish
         # every widget for no visual change.

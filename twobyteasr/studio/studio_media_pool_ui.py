@@ -470,13 +470,15 @@ class StudioMediaPoolPanel(QWidget):
         if not asset_id:
             self.add_asset_button.setEnabled(True)
             def add(working):
+                from ..timeline.studio_media_pool import MediaAssetLookup
+                lookup = MediaAssetLookup(working.media_pool)
                 for path, identity, error in results:
                     if error:
                         continue
                     video, audio = self._metadata_dicts(identity)
                     add_media_asset(working, path, fingerprint=str(identity.get('fingerprint') or ''),
                         duration_ms=int(identity.get('duration_ms') or 0), video_metadata=video,
-                        audio_metadata=audio, materialize_audio=False)
+                        audio_metadata=audio, materialize_audio=False, lookup=lookup)
             if any(not error for _, _, error in results):
                 command=media_pool_import_command(project, add)
                 if command is not None:self.page.undo_stack.push(command)

@@ -909,6 +909,13 @@ class StudioCueController:
                 page.timeline._highlight_key_moment=mapped[0] if mapped else None
         if dirty & DirtyDomain.AUTOSAVE:
             page._schedule_autosave()
+        if visual_dirty:
+            # Paused edits have no following playback tick. Re-evaluate the
+            # active set now, retire the old scene token, and prepare only the
+            # current captions. The ready callback publishes the replacement.
+            present = getattr(page, '_present_caption_scene', None)
+            if callable(present):
+                present()
         if os.environ.get("TWOBYTEASR_DEBUG_SUBTITLES") == "1":
             page._dump_selection_render_truth_probe()
 
@@ -1058,8 +1065,8 @@ class StudioCueController:
             if not token or len(pair) != 2:
                 return
             if undone:
-                from .studio_glossary_autosave import forget_tokens
-                forget_tokens(self.page, self.page._learning_store.revert_evidence_tokens([token]))
+                from .studio_glossary_autosave import revert_learning
+                revert_learning(self.page, [token])
                 return
             context = ""
             if isinstance(command, BatchReplaceTextCommand):
@@ -1072,7 +1079,8 @@ class StudioCueController:
                 cue = self.session._cue_lookup.get(str(command.cue_id))
                 if cue is not None:
                     context = cue.text[:240]
-            entries = self.page._learning_store.record_manual_edit(
+            from .studio_glossary_autosave import collect_manual_edit
+            collect_manual_edit(self.page, project,
                 str(pair[0]),
                 str(pair[1]),
                 project=str(self.session.project_path or (project.project_id if project else "")),
@@ -1081,8 +1089,6 @@ class StudioCueController:
                 source="studio_search_replace",
                 token=token,
             )
-            from .studio_glossary_autosave import remember_learned_edit
-            remember_learned_edit(self.page, project, entries, str(pair[0]), str(pair[1]), token, explicit=True)
             return
         if undone:
             # Typing chain undone: revert evidence whose resulting text no
@@ -1094,10 +1100,10 @@ class StudioCueController:
                 return
             tokens = list(self.page._learning_evidence_tokens.get(cue_id, ()))
             if tokens:
-                from .studio_glossary_autosave import forget_tokens
-                forget_tokens(self.page, self.page._learning_store.revert_evidence_tokens(
+                from .studio_glossary_autosave import revert_learning
+                revert_learning(self.page,
                     tokens, cue_after_text=restored
-                ))
+                )
             self.page._manual_text_baselines[cue_id] = restored
             return
         before = command.before if isinstance(command.before, dict) else {}
@@ -1209,7 +1215,8 @@ class StudioCueController:
                 if item.text
             ]
         token = new_evidence_token()
-        entries = page._learning_store.record_manual_edit(
+        from .studio_glossary_autosave import collect_manual_edit
+        collect_manual_edit(page, project,
             before,
             after,
             project=str(self.session.project_path or project.project_id),
@@ -1219,8 +1226,6 @@ class StudioCueController:
             source="studio_manual_edit",
             token=token,
         )
-        from .studio_glossary_autosave import remember_learned_edit
-        remember_learned_edit(page, project, entries, before, after, token)
         recorded = page._learning_evidence_tokens.setdefault(cue_id, [])
         if token not in recorded:
             recorded.append(token)

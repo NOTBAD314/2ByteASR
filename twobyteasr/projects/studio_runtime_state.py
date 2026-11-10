@@ -697,7 +697,8 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
                          | SEQUENCE_DOMAINS):
             self.state.language_source_revision += 1
-        if self.dirty & (CUE_DOMAINS | SEQUENCE_DOMAINS | MEDIA_DOMAINS | DirtyDomain.PROJECT_METADATA):
+        if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING | DirtyDomain.CUE_MODEL
+                         | SEQUENCE_DOMAINS | MEDIA_DOMAINS | DirtyDomain.PROJECT_METADATA):
             self.state.qc_revision += 1
         # A committed edit is the invalidation boundary, including undo/redo.
         # Selection, paint, QC and autosave alone do not rebuild media indexes.

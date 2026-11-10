@@ -199,6 +199,11 @@ class CaptionSplitEditorMixin:
         panel.split_undo.setEnabled(bool(session and any(s.split for s in session.steps)))
         panel.split_redo.setEnabled(bool(session and session.future))
         panel.split_part.setText(f'第 {index + 1}/{len(parts)} 段' if parts else '')
+        host = getattr(panel, 'parts_host', None)
+        if host is not None and host.isHidden() == bool(parts or session):
+            host.setVisible(bool(parts or session))  # 2026-11-09: only while splitting
+            if hasattr(panel.window(), 'schedule_fit'):
+                panel.window().schedule_fit()
 
     def _navigate_split_part(self, direction):
         session = getattr(self, '_caption_split_session', None)

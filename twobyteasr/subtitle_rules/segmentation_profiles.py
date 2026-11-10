@@ -58,8 +58,8 @@ _SPECIFIC = {
     'ru': ('Russian', 'Cyrillic', "Use actual whitespace word boundaries in Cyrillic; preserve abbreviations, punctuation, names, quantities and units. Avoid isolated short prepositions/particles and keep не with its verb when feasible. Prefer complete clauses and measured pauses."),
 }
 PROFILES = {
-    'zh': LanguageProfile('zh','Chinese','Han','cjk','content_graphemes',10,12,16,5.,1,16,8,9,12,
-        '中文按完整口语成分和真实气口断句，保护词语、姓名、数字、单位和混合语言完整单词；保留原文重复。常见5–10个可计数字符，软上限12，必要时保留完整成分，最多16。'),
+    'zh': LanguageProfile('zh','Chinese','Han','cjk','content_exact_characters',14,14,14,5.,1,14,8,9,12,
+        '同一说话人连续完整表达在14个可计数字符以内、时长可读且没有必须保留的边界时优先一条。14是上限，不是目标或中位数。普通ASR分块、模型断点、逗号、连接词、第二个动作和180–350ms短气口均不单独触发切分。可安全重组的自动碎片应恢复完整表达。超过14字后才在完整语义成分之间选切点，优先可靠气口。独立短回应、换人、真实长静音、来源不连续和受保护手动切点保留。词语、姓名、术语、英文完整单词、数字单位与Unicode字形不可拆，所有文字及重复保持。'),
     'ja': LanguageProfile('ja','Japanese','Japanese','cjk','content_graphemes',18,22,26,7.,2,13,8,10,13,
         '日本語は文節・節と実際の間を優先し、漢字と送り仮名、助詞、助動詞、連体詞と名詞を不自然に切り離さない。固有名詞・数字・単位・混在する単語を保護し、本文は一字も変えない。'),
     'ko': LanguageProfile('ko','Korean','Hangul','eojeol','hangul_display_units',24,28,32,7.,2,16,12,14,18,
@@ -166,6 +166,9 @@ def graphemes(text):
 
 def measure(text, language):
     profile=profile_for(language)
+    if profile.unit == 'content_exact_characters':
+        from .text_rules import content_exact
+        return len(content_exact(text))
     clusters=[g for _,_,g in graphemes(str(text).strip())]
     if profile.unit=='content_graphemes':
         return sum(any(ch.isalnum() or ch in '々ー' for ch in g) for g in clusters)
@@ -203,8 +206,12 @@ def slice_word_pieces(text, pieces):
 
 def fixed_constraints(language,*,index_unit=None):
     p=profile_for(language)
+    length_policy = (f'Complete continuous expressions up to {p.hard_max:g} counting characters stay together; '
+        'this maximum is not a target length. Reassemble compatible automatic fragments before splitting overlong expressions. '
+        'Commas, connectives and short breaths alone do not require timed cuts. '
+        if p.code == 'zh' else f'Length unit: {p.unit}; preferred {p.preferred:g}, soft {p.soft_max:g}, ')
     return (f'Effective language: {language_tag(language)}; policy {VERSION}/{p.fingerprint}. '
-        f'Length unit: {p.unit}; preferred {p.preferred:g}, soft {p.soft_max:g}, '
+        + length_policy +
         f'cue maximum {p.hard_max:g}, at most {p.lines} display lines of {p.line_max:g} units; '
         f'duration maximum {p.max_seconds:g}s, reading comfort/warning/critical {p.comfortable_cps:g}/{p.warning_cps:g}/{p.critical_cps:g} units/s. '
         f'Index unit: {index_unit or p.index_unit}; source spans use Python Unicode code points, never UTF-16 positions. '
@@ -253,7 +260,13 @@ def legal_raw_boundaries(text,language):
 
 
 def project_language_tag(project):
-    value=(getattr(project,'generation_metadata',{}) or {}).get('language') or {}
+    metadata = getattr(project, 'generation_metadata', {}) or {}
+    if 'language' not in metadata:
+        from .language_rules import detect_language
+        detected, _ = detect_language([cue.text for cue in getattr(project, 'cues', ())])
+        if detected == 'zh':
+            return 'zh'
+    value=metadata.get('language') or {}
     if isinstance(value,dict):
         evidence=value.get('evidence') or {}
         requested=value.get('requested')
@@ -267,6 +280,7 @@ def project_language_tag(project):
 
 def unit_label(language):
     unit=profile_for(language).unit
-    return {'content_graphemes':'可计数字符（组合字符算一个）',
+    return {'content_exact_characters':'可计数字符（content_exact源位置，字形不可拆）',
+        'content_graphemes':'可计数字符（组合字符算一个）',
         'graphemes_with_spaces':'可见字符（含内部空格，组合字符算一个）',
         'hangul_display_units':'韩语显示单位（韩字1、空格/拉丁字母/数字0.5）'}[unit]

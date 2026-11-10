@@ -68,7 +68,7 @@ def _catalog_index(snapshot):
         from ..recognition.content_scene import library_domain
         domain_id, domain_name = library_domain(library)
         for term in library.terms:
-            if not term.canonical or not term.correction_enabled:
+            if not term.confirmed or not term.canonical or not term.correction_enabled:
                 continue
             canonical = spellings.get(term.canonical.casefold(), term.canonical)
             row = catalog.setdefault(canonical, {'canonical': canonical,

@@ -118,8 +118,14 @@ def test_continuous_cuts_navigation_local_undo_redo_and_final_edit(page):
 def test_normal_c_copy_shift_enter_ime_and_repeat(page):
     editor = page.subtitle_edit_input
     cursor_at(page, '甲乙丙丁', 2)
-    QTest.keyClicks(editor, 'cC')
-    assert editor.toPlainText() == '甲乙cC丙丁'
+    QTest.keyClicks(editor, 'c')
+    assert editor.toPlainText() == '甲乙c丙丁'
+    # 2026-11-10 (user): Shift+C cuts at the caret even with C mode off.
+    cursor_at(page, '甲乙丙丁', 2)
+    QTest.keyClick(editor, Qt.Key.Key_C, Qt.KeyboardModifier.ShiftModifier)
+    assert len(page.project.cues) == 3 and editor.toPlainText() == '丙丁'
+    page._undo_caption_split()
+    assert len(page.project.cues) == 2
     page.subtitle_edit_card.split_mode.setChecked(True)
     cursor_at(page, '甲乙丙丁', 2)
     QTest.keyClick(editor, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
@@ -309,3 +315,18 @@ def test_cut_undo_redo_retains_later_draft_edits(page):
     assert page.subtitle_edit_input.toPlainText() == '甲乙丙丁'
     assert page._undo_caption_split(redo=True)
     assert page.subtitle_edit_input.toPlainText() == '后段新文字'
+
+
+def test_split_strip_keeps_complete_part_label_in_narrow_video(page):
+    page.resize(1320, 880)
+    cursor_at(page, '甲乙丙丁', 2)
+    assert page._split_caption_at_cursor()
+    QTest.qWait(100)
+    page.subtitle_edit_dock.fit_to_workspace()
+    panel = page.subtitle_edit_card
+    assert panel._controls.hasHeightForWidth()
+    assert panel._controls.heightForWidth(380) > panel.split_button.height()
+    assert panel.split_part.width() >= panel.split_part.sizeHint().width()
+    for widget in (panel.parts_host, panel.split_button, panel.pronoun_button,
+                   panel.more_button, panel.cancel_button, panel.confirm_button):
+        assert panel.strip_row.rect().contains(widget.geometry())

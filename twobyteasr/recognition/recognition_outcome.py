@@ -260,6 +260,10 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_errors.append(str(result["error"]))
     from .transcript_delivery import report_counts, RECOVERY_MESSAGE
     transcript_counts = report_counts(payload)
+    speech_state = result.get('speech_coverage')
+    if isinstance(speech_state, dict):
+        from .speech_coverage import counts as speech_counts
+        transcript_counts = dict(transcript_counts, **speech_counts(speech_state))
     pending = transcript_counts.get('pending_range_count', 0)
     usable_evidence = final_cues > 0
     usable = usable_evidence and not core_errors
@@ -275,14 +279,15 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_status, label, title = "failed", "失败", "识别未完成"
         if final_cues > 0 and save_error:
             label, title = '工程保存失败，可恢复', '字幕已生成 · 工程保存失败，可恢复'
-    elif _int((result.get('transcript_counts') or {}).get('speech_gap_count')):
-        speech_count = _int(result['transcript_counts']['speech_gap_count'])
+    elif _int(transcript_counts.get('speech_gap_count')) or _int(transcript_counts.get('speech_failure_count')):
+        speech_count = _int(transcript_counts.get('speech_gap_count'))
+        failure_count = _int(transcript_counts.get('speech_failure_count'))
         usable = final_cues > 0
         core_status = 'partial' if usable else 'needs_recovery'
         label = '部分完成'
-        title = f'部分完成，仍有{speech_count}处待恢复'
+        title = f'部分完成 · 疑似漏识 {speech_count} 处 · 处理失败 {failure_count} 处'
         problems.append('语音覆盖仍有缺口，可在工作台逐处跳转和仅重试该范围。')
-    elif pending or raw_status in {'needs_recovery', 'partial_recovery'}:
+    elif pending or (raw_status in {'needs_recovery', 'partial_recovery'} and not isinstance(speech_state, dict)):
         usable = final_cues > 0
         core_status = 'partial' if usable else 'needs_recovery'
         label, title = ('部分字幕可用 · 语言待恢复', '部分字幕已生成 · 异常范围待恢复') if usable else ('语言待恢复', '转写已取得 · 尚未生成可用字幕')
@@ -293,7 +298,7 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     elif raw_status == 'empty_result' or raw_status in _SUCCESS and 'cue_count' in result and not final_cues:
         usable = False
         core_status, label, title = 'empty_result', '没有可用字幕', '未生成可用字幕 · 请核对输入与识别结果'
-    elif raw_status in _SUCCESS:
+    elif raw_status in _SUCCESS or (isinstance(speech_state, dict) and raw_status == 'partial_recovery'):
         if not usable:
             core_status, label, title = "unknown", "状态待确认", "任务状态待确认"
         elif polish_status == "partial":

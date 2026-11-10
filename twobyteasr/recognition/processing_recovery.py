@@ -200,6 +200,16 @@ def failure_summary(project,report):
 def effective_report(project,report, *, summary=None):
     """Reconcile current completion UI without editing historical diagnostics."""
     result=dict(report);summary=summary if summary is not None else failure_summary(project,report)
+    from .speech_recovery_project import project_ranges
+    from .speech_coverage import KEY, counts as speech_counts
+    if KEY in project.generation_metadata:
+        state = copy.deepcopy(project.generation_metadata[KEY])
+        active_ids = {r['id'] for r in project_ranges(project)}
+        state['gaps'] = [g for g in state.get('gaps', ()) if g['id'] in active_ids]
+        result['result'] = copy.deepcopy(report.get('result') or {})
+        result['result']['speech_coverage'] = state
+        result['result']['transcript_counts'] = dict(result['result'].get('transcript_counts') or {},
+                                                     **speech_counts(state))
     result['polishing_summary']=dict(report.get('polishing_summary') or project.generation_metadata.get('polishing_summary') or {})
     units=summary['units'];polish=[u for u in units if u['stage']=='polish']
     pending=[u for u in polish if u.get('status') not in TERMINAL]

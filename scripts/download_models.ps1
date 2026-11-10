@@ -407,9 +407,22 @@ if ($VerifyOnly) {
     exit 0
 }
 
-$driveName = ([System.IO.Path]::GetPathRoot($ModelsRoot)).TrimEnd('\').TrimEnd(':')
-$drive = Get-PSDrive -Name $driveName
-$freeGb = [math]::Round($drive.Free / 1GB, 1)
+# 剩余空间：Get-PSDrive 只认盘符，模型位置在网络共享（\\server\share\...）时会直接报错退出，
+# 所以盘符走 DriveInfo，UNC 走 FileSystemObject；都读不到就跳过空间检查而不是中止下载。
+function Get-FreeSpaceBytes {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    try {
+        $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path))
+        if ($root -match '^[A-Za-z]:\\?$') {
+            return [double]([System.IO.DriveInfo]::new($root).AvailableFreeSpace)
+        }
+        return [double]((New-Object -ComObject Scripting.FileSystemObject).GetDrive($root.TrimEnd('\')).FreeSpace)
+    } catch {
+        return $null
+    }
+}
+$freeBytes = Get-FreeSpaceBytes $ModelsRoot
+$freeGb = if ($null -ne $freeBytes) { [math]::Round($freeBytes / 1GB, 1) } else { $null }
 $missingModels = @($modelSpecs | Where-Object { -not (Test-ModelFiles $_.Spec -VerifyHashes) })
 function Confirm-PreparedModels {
     foreach ($entry in $modelSpecs) {
@@ -441,10 +454,14 @@ if ($missingModels.Count -eq 0) {
     Write-Host "- 预计下载约 $([math]::Round($expectedBytes / 1GB, 2)) GiB；建议至少保留 $requiredFreeGb GiB 可用空间。"
     Write-Host "- 缺失或损坏文件会重新获取；有效缓存会保留。" -ForegroundColor Yellow
 }
-Write-Host "- 当前项目盘剩余约 $freeGb GB。"
+if ($null -ne $freeGb) {
+    Write-Host "- 当前模型位置剩余约 $freeGb GB。"
+} else {
+    Write-Host "- 无法读取模型位置的剩余空间（$ModelsRoot），跳过空间检查。" -ForegroundColor Yellow
+}
 Write-Host "- 下载可中断；重新运行会复用 Hugging Face 已完成的文件。"
 $hasMissingFiles = $missingModels.Count -gt 0
-if ($hasMissingFiles -and $drive.Free -lt $requiredFreeBytes) {
+if ($hasMissingFiles -and $null -ne $freeBytes -and $freeBytes -lt $requiredFreeBytes) {
     throw "磁盘空间不足 $requiredFreeGb GiB，请清理空间后重试。"
 }
 

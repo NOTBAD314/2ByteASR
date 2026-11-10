@@ -185,7 +185,8 @@ def run(a,window,out):
             a.check('uniform icon size '+str(size)+str(requested),not any(b.icon().isNull() for b in selector.buttons))
             for i,button in enumerate(selector.buttons):
                 rect=button.rect()
-                required=QFontMetrics(button.font()).horizontalAdvance(button.text())+button.iconSize().width()+20
+                # 2026-11-09 redesign: icon above the label, so the label alone sets the width.
+                required=max(QFontMetrics(button.font()).horizontalAdvance(button.text()),button.iconSize().width())+8
                 a.check('full tab width '+str(size)+str(requested)+str(i),button.width()>=required and selector.rect().contains(button.geometry()))
                 for x in (12,rect.center().x(),rect.right()-5):
                     p.context_drawer.setCurrentIndex((i+1)%6)
