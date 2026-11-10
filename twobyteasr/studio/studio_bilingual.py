@@ -129,22 +129,30 @@ def apply_display(page, **changes) -> bool:
 
 
 def build_menu(page, menu) -> None:
-    """Toolbar "双语" menu: display mode, order, fonts, translation actions."""
+    """Toolbar "双语 / 翻译" menu.
+
+    2026-11-10 (user): one 翻译 entry on top (all AI translation commands are
+    also in the「AI 工具」menu), then how the subtitles are shown, with the
+    rarer bilingual layout settings and 简繁转换 in submenus. The disabled
+    explanation rows left the menu; 合并并更新翻译 keeps its shortcut and the
+    subtitle list ••• menu.
+    """
     from PySide6.QtGui import QAction, QActionGroup
-    from .translation_actions import add_actions
-    add_actions(page, menu)
-    translate_all = menu.addAction(tr('翻译整个工程…'))
-    translate_all.triggered.connect(lambda: page._open_translation_dialog(scope='all'))
-    # 2026-10-22 (user): 字幕简繁转换 lives here instead of its own toolbar button.
+    from ..design.rich_menu import add_header, add_rich
     from ..design.studio_theme import create_studio_menu
-    from .studio_chinese_script import build_menu as build_chinese_script_menu
-    script_menu = create_studio_menu(menu, theme_on_show=True)
-    script_menu.setObjectName('studioChineseScriptMenu')
-    bind_text(script_menu, '字幕简繁转换', property='title')
-    menu.addMenu(script_menu)
-    page.chinese_script_menu = script_menu
-    build_chinese_script_menu(page, script_menu)
+    from ..design.themed_icons import themed_icon
+    from .translation_actions import translate_selected
+
+    def translate():
+        if page.project and page.selected_cue_ids():
+            translate_selected(page)
+        else:
+            page._open_translation_dialog(scope='all')
+    translate_action = add_rich(menu, themed_icon('fa5s.language', 'accent'), tr('翻译字幕…'),
+                                tr('有选取时翻译所选字幕，否则翻译整个工程'), translate)
+    page.bilingual_translate_action = translate_action
     menu.addSeparator()
+    add_header(menu, tr('显示'))
     group = QActionGroup(menu)
     group.setExclusive(True)
     page.bilingual_mode_actions = {}
@@ -156,27 +164,35 @@ def build_menu(page, menu) -> None:
         menu.addAction(action)
         page.bilingual_mode_actions[mode] = action
     menu.addSeparator()
-    order = QAction(tr("双语时原文在上（默认译文在上）"), menu)
+    layout_menu = create_studio_menu(menu, theme_on_show=True)
+    layout_menu.setObjectName('studioBilingualLayoutMenu')
+    bind_text(layout_menu, '双语排版', property='title')
+    menu.addMenu(layout_menu)
+    order = QAction(tr("双语时原文在上（默认译文在上）"), layout_menu)
     order.setCheckable(True)
     order.triggered.connect(lambda checked: apply_display(
         page, order="original_first" if checked else "translation_first"))
-    menu.addAction(order)
+    layout_menu.addAction(order)
     page.bilingual_order_action = order
-    fonts = QAction(tr("双语字体与字号…"), menu)
+    fonts = QAction(tr("双语字体与字号…"), layout_menu)
     fonts.triggered.connect(lambda: open_style_dialog(page))
-    menu.addAction(fonts)
-    compact = QAction(tr("套用紧凑双语排版（可撤销）"), menu)
+    layout_menu.addAction(fonts)
+    compact = QAction(tr("套用紧凑双语排版（可撤销）"), layout_menu)
     compact.triggered.connect(lambda: apply_compact_layout(page))
-    menu.addAction(compact)
-    menu.addSeparator()
-    note = menu.addAction(tr('普通合并会在本机保留并合并已有译文，不发送请求。'))
-    note.setEnabled(False)
-    menu.aboutToShow.connect(lambda: (sync_controls(page), translate_all.setEnabled(bool(page.project))))
+    layout_menu.addAction(compact)
+    # 2026-10-22 (user): 字幕简繁转换 lives here instead of its own toolbar button.
+    from .studio_chinese_script import build_menu as build_chinese_script_menu
+    script_menu = create_studio_menu(menu, theme_on_show=True)
+    script_menu.setObjectName('studioChineseScriptMenu')
+    bind_text(script_menu, '字幕简繁转换', property='title')
+    menu.addMenu(script_menu)
+    page.chinese_script_menu = script_menu
+    build_chinese_script_menu(page, script_menu)
+    menu.aboutToShow.connect(lambda: (sync_controls(page), translate_action.setEnabled(bool(page.project))))
     if not getattr(page, "_bilingual_history_connected", False):
         page.undo_stack.indexChanged.connect(lambda _index: sync_controls(page))
         page._bilingual_history_connected = True
     sync_controls(page)
-
 
 def apply_compact_layout(page) -> bool:
     """Explicit command: compact bilingual group layout for this project, one undo step.

@@ -216,8 +216,9 @@ def _dialogue_line(
     )
 
 
-def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any] | None = None) -> str:
-    project.validate()
+def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any] | None = None, validated: bool = False) -> str:
+    if not validated:
+        project.validate()
     play_res_x = max(1, int(project.render_settings.get("play_res_x", 1920)))
     play_res_y = max(1, int(project.render_settings.get("play_res_y", 1080)))
     from ..caption_style.bilingual_layout import project_display_cues
@@ -228,9 +229,16 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
     word_plans = {c.id: build_word_animation(project, c) for c in shown
                   if needs_word_plan(project.effects.get(c.effect_id, {}))}
     word_plans.update(getattr(project, '_word_animation_plans', {}))
+    from ..caption_style.collision_layout import project_layout_schedule, visible_subtitle_cues
+    display = visible_subtitle_cues(project, project_display_cues(project, cues if cues is not None else project.cues))
+    # Use the entire displayed project as obstacles even for a native-only
+    # subset in a mixed native/advanced export.
+    schedule = getattr(project, '_subtitle_layout_schedule', None)
+    if schedule is None:
+        schedule = project_layout_schedule(project, project_display_cues(project))
     return _compile_ass_records(
         # Original / translation / bilingual: the same layout the live preview draws.
-        cues=shown,
+        cues=display,
         frame_rate=frame_rate,
         styles=project.styles,
         speakers=project.speakers,
@@ -241,6 +249,7 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
         translations=None,
         stacking_enabled=project.studio_state.get('auto_subtitle_stacking',True),
         word_animations=word_plans,
+        stack_offsets=schedule,
     )
 
 
@@ -254,7 +263,7 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
     state = thaw_json(revision.studio_state) if getattr(revision, "studio_state", "") else {}
     metadata = thaw_json(revision.generation_metadata) if getattr(revision, "generation_metadata", "") else {}
     from ..caption_style.bilingual_layout import display_cues, settings_from_state, translations_of
-    from ..subtitle_rules.punctuation_style import style_cues_for_state, style_translations, styling_active
+    from ..subtitle_rules.punctuation_style import style_cues_for_state, style_translations, styling_active, protected_terms_of
     settings = settings_from_state(state)
     cues = revision.cues
     if styling_active(state):
@@ -274,12 +283,19 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
             or any((effects.get(c.effect_id) or {}).get('loop',{}).get('type')=='loop_breathe' for c in cues)
             or any('language_layers' in (thaw_json(c.transform) or {}) for c in cues)):
         from ..projects.studio_project import StudioCue
+        from types import SimpleNamespace
         cues = display_cues([StudioCue(**cue.to_dict()) if hasattr(cue, "to_dict") else cue for cue in cues],
-                            translations=style_translations(state, translations_of(metadata)),
+                            translations=style_translations(state, translations_of(metadata),
+                                protected_terms=protected_terms_of(SimpleNamespace(generation_metadata=metadata))),
                             settings=settings, styles=revision.styles, speakers=revision.speakers,
                             show_speaker_names=enabled(state),
                             style_recipes=recipes if isinstance(recipes, Mapping) else {},effects=effects,
                             play_res_x=revision.play_res_x, play_res_y=revision.play_res_y)
+    from .caption_playback_cache import materialize_caption_project
+    from ..caption_style.collision_layout import project_layout_schedule, visible_subtitle_cues
+    visibility_project = materialize_caption_project(revision)
+    schedule = project_layout_schedule(visibility_project)
+    cues = visible_subtitle_cues(visibility_project, cues)
     return _compile_ass_records(
         cues=cues,
         frame_rate=getattr(revision,'frame_rate',None),
@@ -292,6 +308,7 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         translations=None,
         stacking_enabled=state.get('auto_subtitle_stacking',True),
         word_animations=thaw_json(getattr(revision, 'word_animations', None)) or {},
+        stack_offsets=schedule,
     )
 
 
@@ -363,6 +380,7 @@ def _compile_ass_records(
         ]
     )
     for cue in sorted(cues, key=lambda item: (item.start_ms, item.end_ms, item.id)):
+        lines.append(f'; CollisionCue={cue.id}')
         if cue.style_id in known_styles:
             style_id = cue.style_id
         else:
@@ -507,11 +525,13 @@ def _compile_ass_records(
                         frame_rate=frame_rate,
                     )
                 )
-    return "\n".join(lines) + "\n"
+    from .ass_collision_layout import apply_layout_events
+    return "\n".join(apply_layout_events(lines, stack_offsets or {}, play_res_x, play_res_y)) + "\n"
 
 
-def compile_txt(project: SubtitleProject, *, cues=None) -> str:
-    project.validate()
+def compile_txt(project: SubtitleProject, *, cues=None, validated: bool = False) -> str:
+    if not validated:
+        project.validate()
     ordered: Iterable[StudioCue] = sorted(
         cues if cues is not None else project.cues, key=lambda item: (item.start_ms, item.end_ms, item.id)
     )

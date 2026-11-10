@@ -111,11 +111,15 @@ def test_studio_bar_moves_tracks_media_and_transitions_into_more_and_adds_plus(a
         more = page.cue_more_button.menu()
         more.aboutToShow.emit()
         texts = [action.text() for action in more.actions()]
-        assert texts[:4] == ["打开媒体池", "新建字幕轨", "新建视频轨", page.transition_button.toolTip()]
-        assert more.actions()[3].menu() is page.transition_button.menu()
+        # 2026-11-10 (user): 编辑当前字幕 / 排版 / 素材与转场; new tracks only from "+",
+        # AI commands only from「AI 工具」.
+        assert texts[-2:] == ["打开媒体池", page.transition_button.toolTip()]
+        assert "新建字幕轨" not in texts and not any("AI 断句" in text or "所有字幕操作" in text for text in texts)
+        assert "排版" in texts and any("重新排版全部字幕" in text for text in texts)
+        assert more.actions()[-1].menu() is page.transition_button.menu()
         # A second opening keeps the shared transition submenu alive.
         more.aboutToShow.emit()
-        assert more.actions()[3].menu() is page.transition_button.menu()
+        assert more.actions()[-1].menu() is page.transition_button.menu()
         plus = page.timeline_add_track_button
         assert plus.parentWidget() is page.timeline
         plus.menu().aboutToShow.emit()
@@ -127,7 +131,8 @@ def test_studio_bar_moves_tracks_media_and_transitions_into_more_and_adds_plus(a
         options.aboutToShow.emit()
         names = [action.text() for action in options.actions()]
         assert names[:4] == ["波形", "缩略图", "跟随播放头", "自动吸附"]
-        assert any("缩小时间轴" in name for name in names) and any("适应窗口" in name for name in names)
+        # Zoom commands appear only while folded off the bar; layout moved out.
+        assert not any("缩小时间轴" in name or "排版" in name or "避让" in name for name in names)
         # Unchecking in the menu unchecks the switch.
         options.actions()[3].setChecked(False)
         assert not page.snap_toggle.isChecked()

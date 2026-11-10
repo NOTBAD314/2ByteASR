@@ -167,6 +167,9 @@ def complete(messages, *, model, api_key, url, max_tokens, temperature=0,
             if isinstance(packet, dict) and isinstance(packet.get('usage'), dict):
                 diag['raw_usage'] = packet['usage']
             error = packet.get('error', {})
+            if isinstance(error, dict):
+                from .provider_diagnostics import redact_diagnostics
+                diag['provider_error'] = redact_diagnostics({key: error.get(key) for key in ('code', 'type', 'param', 'message')})
             code = str(error.get('code') or error.get('type') or '').casefold() if isinstance(error, dict) else ''
         except (ValueError, UnicodeError, AttributeError):
             error = {}

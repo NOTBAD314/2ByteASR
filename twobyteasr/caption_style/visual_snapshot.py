@@ -66,6 +66,8 @@ class VisualCueSnapshot:
     word_animation: object = None
     text_marks: object = None
     speaker_label: str = ""
+    collision_bounds: tuple[float, float, float, float] | None = None
+    position_locked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         # dataclasses.asdict already recursively copies every mutable field.
@@ -479,6 +481,8 @@ def build_visual_cue_snapshot(
     typography = recipe.typography if isinstance(recipe.typography, Mapping) else {}
     from .text_marks import remap_caption_marks, layer_marks
     from .speaker_labels import template_speaker
+    from ..caption_design.theme_visual_bounds import measured_bounds
+    theme_bounds = measured_bounds(project, cue, caption, playres_x, playres_y) if recipe.web_theme else None
     return VisualCueSnapshot(
         cue_id=cue.id, text=caption.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
         font_family=style.font_family or str(typography.get("fontFamily") or "Microsoft YaHei UI"),
@@ -501,4 +505,6 @@ def build_visual_cue_snapshot(
         resolved_caption=caption,
         word_animation=word_animation,
         text_marks=(remap_caption_marks(cue.text, caption, layer_marks(cue)) if not recipe.web_theme else []),
+        collision_bounds=tuple(theme_bounds) if theme_bounds is not None else None,
+        position_locked=bool(cue.transform.get('position_locked', False)),
     )

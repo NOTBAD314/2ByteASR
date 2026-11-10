@@ -60,6 +60,9 @@ def main(argv=None):
             raise RuntimeError('Normal installed startup failed')
         run([sys.executable,ROOT/'scripts/verify_blank_project_macos.py','--app',app,'--output',out/'blank-project'],timeout=240)
         run([sys.executable,ROOT/'scripts/macos_caret_split_smoke.py','--app',app,'--output',out/'caret-split'],timeout=660)
+        for scenario in ('stable-captions', 'chinese-complete-expression'):
+            run([sys.executable,ROOT/'scripts/macos_caption_policy_smoke.py','--app',app,
+                 '--scenario',scenario,'--output',out/scenario],timeout=720)
         run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--output',out/'edit-save'],timeout=840)
         run([sys.executable,ROOT/'scripts/macos_edit_save_smoke.py','--app',app,'--part','saves',
              '--output',out/'cold-save'],timeout=840)

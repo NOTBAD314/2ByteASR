@@ -31,7 +31,7 @@ def test_long_cue_short_gap_closes_in_all_languages(language, monkeypatch):
 
 
 @pytest.mark.parametrize("language", ("en", "ko", "es", "fr", "de", "pt", "it", "ru"))
-def test_word_language_finalizer_closes_gaps_after_duration_and_tail_caps(language, monkeypatch):
+def test_word_language_finalizer_keeps_evidence_protected_pauses(language, monkeypatch):
     from twobyteasr.recognition.pipeline_runtime import finalize_english_cues
     from twobyteasr.subtitle_rules import display_timing
     events = []
@@ -51,11 +51,11 @@ def test_word_language_finalizer_closes_gaps_after_duration_and_tail_caps(langua
     texts = [c.text for c in rows]
     with language_scope(language):
         result = finalize_english_cues(rows, [], [], 10, 24, legacy)
-    assert result[0].end == result[1].start == 6.25
+    assert result[0].end == 5.875 and result[1].start == 6.25
     assert result[2].start-result[1].end == 1
     assert [c.text for c in result] == texts
     assert events[-1][1]["stage"] == "word_final_display"
-    assert events[-1][1]["short_gaps_after"] == 0
+    assert events[-1][1]["short_gaps_after"] == 1
 
 
 def test_closing_late_tail_keeps_real_overlap_and_media_end(monkeypatch):
@@ -67,11 +67,11 @@ def test_closing_late_tail_keeps_real_overlap_and_media_end(monkeypatch):
 
 
 @pytest.mark.parametrize("fps", [24, 25, 30, 60, 24000/1001])
-def test_handoff_has_no_empty_frame_at_any_supported_grid(fps, monkeypatch):
+def test_natural_pause_survives_every_supported_grid(fps, monkeypatch):
     monkeypatch.setattr(timing, "record_run_event", lambda *args, **kwargs: None)
     rows = [cue(1, 0, 5), cue(2, 5.125, 6.5)]
     timing.relock_display_timing(rows, 10, fps)
     boundary = round(rows[1].start*fps)
-    assert rows[0].end == rows[1].start
-    assert all(sum(c.start <= frame/fps < c.end for c in rows) == 1
+    assert rows[0].end < rows[1].start
+    assert all(sum(c.start <= frame/fps < c.end for c in rows) <= 1
                for frame in range(boundary-2, boundary+3))

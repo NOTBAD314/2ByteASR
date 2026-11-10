@@ -1,8 +1,8 @@
-"""2026-10-15: manual Studio fixes saved into the project's glossary.
+"""2026-11-10: automatic Studio glossary writes are retired.
 
-Only name-like fixes are written (an alias of an applied glossary term, or a
-clean new name); pronoun flips and ordinary words stay out; undo removes the
-rows a save added. The learned-terms file is redirected to tmp."""
+Name-span helpers still extract suggestions. Automatic writer compatibility
+entry points refuse writes, and caption undo preserves explicit confirmations.
+The learned-terms file is redirected to tmp."""
 from __future__ import annotations
 
 import os
@@ -72,10 +72,10 @@ def test_save_goes_to_the_library_owning_the_term_and_undo_removes_only_new_rows
     snapshot, terms = autosave.applied_terms([other, genshin])
     assert "芙宁娜" in terms
     result = autosave.remember(snapshot, "福宁娜", "芙宁娜")
-    assert (result.status, result.library_id) == (autosave.SAVED, genshin)
-    assert result.added == [("福宁娜", "芙宁娜")]           # the canonical row already existed
-    assert ("福宁娜", "芙宁娜") in _rows(genshin) and ("福宁娜", "芙宁娜") not in _rows(other)
-    assert autosave.forget(result) == 1
+    assert result.status == autosave.FAILED
+    assert result.added == []           # the canonical row already existed
+    assert ("福宁娜", "芙宁娜") not in _rows(genshin) and ("福宁娜", "芙宁娜") not in _rows(other)
+    assert autosave.forget(result) == 0
     assert ("福宁娜", "芙宁娜") not in _rows(genshin) and ("芙宁娜", "芙宁娜") in _rows(genshin)
 
 
@@ -83,8 +83,8 @@ def test_new_name_with_one_library_adds_canonical_and_alias(learned):
     only = _library("星穹铁道")
     snapshot, _terms = autosave.applied_terms([only])
     result = autosave.remember(snapshot, "星见鸦", "星见雅")
-    assert result.status == autosave.SAVED
-    assert sorted(result.added) == [("星见雅", "星见雅"), ("星见鸦", "星见雅")]
+    assert result.status == autosave.FAILED
+    assert result.added == []
     autosave.forget(result)
     assert _rows(only) == set()
 
@@ -93,7 +93,7 @@ def test_several_libraries_without_an_owner_are_not_guessed(learned):
     first, second = _library("游戏甲"), _library("游戏乙")
     snapshot, _terms = autosave.applied_terms([first, second])
     result = autosave.remember(snapshot, "星见鸦", "星见雅")
-    assert result.status == autosave.AMBIGUOUS and not result.added
+    assert result.status == autosave.FAILED and not result.added
     assert _rows(first) == set() and _rows(second) == set()
 
 
@@ -102,14 +102,14 @@ def test_existing_alias_conflict_keeps_the_users_mapping(learned):
     legacy.add_learned_mapping(library, "福宁娜", "芙宁娜", origin="手动")
     snapshot, _terms = autosave.applied_terms([library])
     result = autosave.remember(snapshot, "福宁娜", "芙宁娜")
-    assert result.status == autosave.EXISTS and result.added == []
+    assert result.status == autosave.FAILED and result.added == []
 
 
 def test_auto_saved_learning_entry_disappears_with_its_evidence(tmp_path):
     store = GlossaryLearningStore(tmp_path / "learning.json")
     store.record_manual_edit("星见鸦很强", "星见雅很强", origin="user_edit", token="ev-1")
-    assert store.mark_auto_saved("星见鸦", "星见雅", "lib")
-    assert store.pending() == []
+    assert store.mark_auto_saved("星见鸦", "星见雅", "lib") is False
+    assert len(store.pending()) == 1
     assert store.revert_evidence_tokens(["ev-1"]) == ["ev-1"]
     assert store.load()["candidates"] == []
 
@@ -126,11 +126,13 @@ def test_studio_manual_fix_is_saved_and_undo_removes_it(tmp_path, monkeypatch, l
         page.undo_stack.clear()
         page.cue_controller.set_text("a", "这把用芙宁娜")
         page.cue_controller.commit_manual_term_learning("a")
-        assert ("福宁娜", "芙宁娜") in _rows(library)
-        assert "原神" in page.save_state.text() and "福宁娜" in page.save_state.text()
-        assert page._learning_store.pending() == []          # saved, not waiting
-        page.undo_stack.undo()
         assert ("福宁娜", "芙宁娜") not in _rows(library)
+        pending = page._learning_store.pending()
+        assert len(pending) == 1
+        assert page._learning_store.accept([pending[0]['id']], library) == 1
+        assert ("福宁娜", "芙宁娜") in _rows(library)
+        page.undo_stack.undo()
+        assert ("福宁娜", "芙宁娜") in _rows(library)  # explicit term decision survives caption undo
         assert ("芙宁娜", "芙宁娜") in _rows(library)
     finally:
         _finish(page)

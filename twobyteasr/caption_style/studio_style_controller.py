@@ -675,6 +675,16 @@ class StudioStyleController:
         emphasis_row.addWidget(page.style_bold)
         emphasis_row.addWidget(page.style_italic)
         emphasis_row.addWidget(page.style_underline)
+        # 2026-11-10 (user): the $…$ formula switch moved here from 「标点」.
+        math_button = QToolButton()
+        math_button.setObjectName("styleEmphasis")
+        math_button.setText("∑")
+        math_button.setCheckable(True)
+        math_button.setToolTip(tr('数学公式：字幕里用 $…$ 写的公式（LaTeX）在画面和所有导出里显示成 x²、∫₀¹ 这样的符号；文稿不变'))
+        math_button.setStyleSheet('QToolButton { min-width:32px; max-width:32px; min-height:30px; max-height:30px; padding:0; }')
+        emphasis_row.addWidget(math_button)
+        from ..studio.studio_punctuation import bind_math_button
+        bind_math_button(page, math_button)
         emphasis_host.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
         # A full row of numeric fields plus three toggles cannot fit the
         # narrow inspector. Keep all click targets intact on a second row.

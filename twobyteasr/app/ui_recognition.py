@@ -76,8 +76,11 @@ class _LineLabel(QLabel):
 
 def home_plan_height(tier: int) -> int:
     """Height (100% px) of the three compact model cards on home (C′,
-    2026-10-17) per window-height tier: < 900, 900–1149, ≥ 1150."""
-    return {0: 152, 1: 170, 2: 200}.get(tier, 170)
+    2026-10-17) per window-height tier: < 900, 900–1149, ≥ 1150.
+
+    2026-11-10 (user: the three main cards have room to be bigger and stand
+    out more; 内容与术语 took too much): one profile step taller each."""
+    return {0: 172, 1: 196, 2: 232}.get(tier, 196)
 
 
 # The cards' density profiles, smallest first.
@@ -216,7 +219,19 @@ class RecognitionRoleCard(QFrame):
         self.model_label.setWordWrap(True)
         self.model_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.model_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        identity.addWidget(self.model_label, 1)
+        # 2026-11-09 home B: "服务 · 型号" shows the service as the name and
+        # the model id on a small line under it, so every name stays one line.
+        # The plan shows the line on all three cards when any card has one.
+        self.model_sub_label = QLabel(" ")
+        self.model_sub_label.setObjectName("recognitionModelSub")
+        self.model_sub_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.model_sub_label.hide()
+        name_column = QVBoxLayout()
+        name_column.setContentsMargins(0, 0, 0, 0)
+        name_column.setSpacing(1)
+        name_column.addWidget(self.model_label)
+        name_column.addWidget(self.model_sub_label)
+        identity.addLayout(name_column, 1)
         self.change_hint = QLabel()
         self.change_hint.setObjectName("recognitionChangeHint")
         self.change_hint.setFixedSize(26, 26)  # a round chip in the role's hue (home design A)
@@ -253,6 +268,7 @@ class RecognitionRoleCard(QFrame):
             self.kind_badge,
             self.status_badge,
             self.change_hint,
+            self.model_sub_label,
             chips,
         ):
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -322,7 +338,17 @@ class RecognitionRoleCard(QFrame):
     def set_state(self, model_name: str, kind: str, status: str, tone: str, recovery: str = ""):
         """model_name 主值；kind=本地/在线；status=已就绪/需要下载/未配置/已关闭；
         tone=good/warn/muted；recovery=唯一恢复动作文案（空=无）。"""
-        self.model_label.setText(model_name)
+        name, _sep, model_id = model_name.partition(" · ")
+        self.model_label.setText(name.strip() or model_name)
+        self.model_id = model_id.strip()
+        self.model_sub_label.setText(self.model_id or " ")
+        self.model_sub_label.setToolTip(model_name if self.model_id else "")
+        parent = self.parentWidget()
+        sync = getattr(parent, "_sync_model_ids", None)
+        if callable(sync):
+            sync()
+        else:
+            self.model_sub_label.setVisible(bool(self.model_id))
         if kind:
             self.kind_badge.setText(kind)
         else:
@@ -461,10 +487,10 @@ class RecognitionRoleCard(QFrame):
             # 2026-10-17 (home C′): compact tiles — the icon sits beside the
             # name; home gives them a fixed height per window tier
             # (home_plan_height), each profile's minimum fits its band.
-            "compact": {"margins": (16, 9, 16, 8), "spacing": 4, "icon": 40, "glyph": 19, "gap": 0, "minimum": 130},
-            "normal": {"margins": (16, 13, 16, 12), "spacing": 6, "icon": 44, "glyph": 21, "gap": 0, "minimum": 150},
-            "large": {"margins": (20, 15, 20, 13), "spacing": 7, "icon": 50, "glyph": 24, "gap": 0, "minimum": 176},
-            "extra_large": {"margins": (22, 18, 22, 15), "spacing": 8, "icon": 54, "glyph": 26, "gap": 2, "minimum": 220},
+            "compact": {"margins": (16, 9, 16, 8), "spacing": 4, "icon": 42, "glyph": 20, "gap": 0, "minimum": 130},
+            "normal": {"margins": (16, 13, 16, 12), "spacing": 6, "icon": 48, "glyph": 22, "gap": 0, "minimum": 150},
+            "large": {"margins": (20, 15, 20, 13), "spacing": 7, "icon": 56, "glyph": 26, "gap": 0, "minimum": 176},
+            "extra_large": {"margins": (22, 18, 22, 15), "spacing": 8, "icon": 60, "glyph": 28, "gap": 2, "minimum": 220},
         }[profile]
         self._responsive_profile = profile
         self._responsive_apply_count += 1
@@ -678,6 +704,7 @@ class RecognitionPlanWidget(QWidget):
             return
         self._syncing_identity_height = True
         try:
+            self._sync_model_ids()
             self._fit_names()
             height = max(card._required_model_slot_height() for card in self.cards.values())
             for card in self.cards.values():
@@ -697,6 +724,12 @@ class RecognitionPlanWidget(QWidget):
             return None
         margins = self.layout().contentsMargins()
         return limit - margins.top() - margins.bottom()
+
+    def _sync_model_ids(self) -> None:
+        """Model-id lines on all three cards or none, so the names stay level."""
+        shown = any(getattr(card, "model_id", "") for card in self.cards.values())
+        for card in self.cards.values():
+            card.model_sub_label.setVisible(shown)
 
     def _fit_names(self) -> None:
         """A name needing a third line (e.g. the Japanese stage name in a

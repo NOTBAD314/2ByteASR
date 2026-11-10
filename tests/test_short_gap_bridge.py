@@ -33,7 +33,7 @@ def test_pipeline_bridge_also_closes_same_speaker_blinks():
     assert cues[1].end == 3.0 and cues[2].end == 2.0
 
 
-def test_relock_after_late_steps_closes_off_grid_blank_frames(monkeypatch):
+def test_relock_preserves_pause_and_shared_off_grid_boundaries(monkeypatch):
     """2026-10-18 (日常 19): content recovery and CTC starts wrote raw times after the
     bridge; a start 12-40 ms after the previous end showed one blank frame."""
     from twobyteasr.subtitle_rules import timing
@@ -47,9 +47,10 @@ def test_relock_after_late_steps_closes_off_grid_blank_frames(monkeypatch):
     timing.relock_display_timing(cues, 10.0, fps, stage="test")
     frames = [(round(c.start * fps, 6), round(c.end * fps, 6)) for c in cues]
     assert all(value == int(value) for pair in frames for value in pair)
-    assert cues[0].end == cues[1].start and cues[1].end == cues[2].start
-    assert cues[3].start - cues[2].end > 0.5 and cues[1].start == round(1.03 * fps) / fps
-    assert events[-1][0] == "display_frame_relock" and events[-1][1]["short_gaps_after"] == 0
+    from math import ceil
+    assert cues[0].end < cues[1].start and cues[1].end == cues[2].start
+    assert cues[3].start - cues[2].end > 0.5 and cues[1].start == ceil(1.03 * fps) / fps
+    assert events[-1][0] == "display_frame_relock" and events[-1][1]["short_gaps_after"] == 1
     assert events[-1][1]["short_gaps_before"] == 1 and events[-1][1]["stage"] == "test"
 
 

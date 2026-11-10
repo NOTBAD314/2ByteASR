@@ -171,7 +171,7 @@ class CueTableModel(QAbstractTableModel):
                     continue
             elif self.filter_status != "all" and status != self.filter_status:
                 continue
-            if needle and needle not in f"{self.display_text(cue)} {cue.speaker_id} {speaker}".casefold():
+            if not self.matches_query(cue, needle):
                 continue
             self._rows.append(row)
         # Filters change visibility only. Every visible list, including
@@ -205,10 +205,23 @@ class CueTableModel(QAbstractTableModel):
         # including currently empty records that can be edited manually.
         return cue.speaker_id not in meta.get('subtitle_imports', {}).get('tracks', {})
 
-    def display_text(self, cue):
-        if self.editing_translation(cue):
-            return str(self.project.generation_metadata.get('translations', {}).get(_source_key(cue), '') or '')
-        return cue.text
+    def matches_query(self, cue, needle=None):
+        needle = self.query.casefold().strip() if needle is None else needle
+        return not needle or needle in f'{self.display_text(cue)} {cue.speaker_id} {_speaker_name(self.project, cue.speaker_id)}'.casefold()
+
+    def display_text(self, cue, *, styled=True):
+        translated = self.editing_translation(cue)
+        text = (str(self.project.generation_metadata.get('translations', {}).get(_source_key(cue), '') or '')
+                if translated else cue.text)
+        if not styled or self.project is None:
+            return text
+        from ..subtitle_rules.punctuation_style import (style_text, style_translation, project_mode,
+                                                        math_enabled, protected_terms_of)
+        options = dict(math=math_enabled(self.project), protected_terms=protected_terms_of(self.project))
+        if translated:
+            return style_translation(text, project_mode(self.project), **options)
+        from ..subtitle_rules.language_rules import project_language
+        return style_text(text, project_mode(self.project), language=project_language(self.project) or '', **options).text
 
     def set_text_layer(self, layer):
         layer = 'translation' if layer == 'translation' else 'original'
@@ -301,7 +314,7 @@ class CueTableModel(QAbstractTableModel):
                         continue
                 elif self.filter_status != 'all' and _cue_status(self.project, cue, risks) != self.filter_status:
                     continue
-                if needle and needle not in f'{self.display_text(cue)} {cue.speaker_id} {_speaker_name(self.project, cue.speaker_id)}'.casefold():
+                if not self.matches_query(cue, needle):
                     continue
             key = (cue.start_ms, source[cue.id], cue.id)
             row = next((i for i, old in enumerate(self._rows) if
@@ -363,7 +376,7 @@ class CueTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.UserRole:
             return cue.id
         if role == Qt.ItemDataRole.EditRole and index.column() == 3:
-            return self.display_text(cue)
+            return self.display_text(cue, styled=False)
         if role == Qt.ItemDataRole.DisplayRole:
             column = index.column()
             if column == 0:
@@ -415,7 +428,7 @@ class CueTableModel(QAbstractTableModel):
             return False
         cue = self.cue_at(index.row())
         text = str(value)
-        if text != self.display_text(cue):
+        if text != self.display_text(cue, styled=False):
             if self.editing_translation(cue):
                 self.translation_edit_requested.emit(_source_key(cue), text)
             else:
@@ -519,10 +532,43 @@ class CueReadingDelegate(QStyledItemDelegate):
     LINES = 2
     PAD_X = 12
     PAD_Y = 5
+    # 2026-11-09 (user, redesign): review reasons show in the row itself and
+    # a ✓ on the right confirms the cue without entering review mode.
+    review_confirm_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._layout_cache: dict[tuple, list[str]] = {}
+
+    def _meta_line_height(self, option) -> int:
+        return max(22, QFontMetrics(self.meta_font(option.font)).height() + 6)
+
+    def _confirm_rect(self, option, model, row) -> QRectF:
+        """The ✓ left of the cue number on line one (risky cues only)."""
+        meta_metrics = QFontMetrics(self.meta_font(option.font))
+        line_h = self._meta_line_height(option)
+        number_w = meta_metrics.horizontalAdvance(str(model.source_row(row) + 1)) + 2
+        size = line_h - 4
+        right = option.rect.right() - self.PAD_X - number_w - 16
+        return QRectF(right - size, option.rect.top() + self.PAD_Y + 2, size, size)
+
+    @staticmethod
+    def _review_reason(project, cue) -> str:
+        risks = cached_review_risks(project)
+        row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
+        reasons = row.get("reasons", []) if isinstance(row, dict) else []
+        return str(reasons[0]) if reasons else ""
+
+    def editorEvent(self, event, model, option, index) -> bool:
+        from PySide6.QtCore import QEvent
+        if (event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
+                and model.project is not None and 0 <= index.row() < model.rowCount()):
+            cue = model.cue_at(index.row())
+            if (_cue_review_level(model.project, cue) != "confident"
+                    and self._confirm_rect(option, model, index.row()).contains(event.position())):
+                self.review_confirm_requested.emit(cue.id)
+                return True
+        return super().editorEvent(event, model, option, index)
 
     @staticmethod
     def meta_font(base: QFont) -> QFont:
@@ -649,6 +695,24 @@ class CueReadingDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(badge, 5, 5)
         painter.setPen(QColor(status_color))
         painter.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), label)
+        x += status_w + 8
+        if _cue_review_level(project, cue) != "confident":
+            confirm = self._confirm_rect(option, model, index.row())
+            reason = self._review_reason(project, cue)
+            room = int(confirm.left() - 8 - x)
+            if reason and room > 24:
+                painter.setPen(QColor(status_color))
+                painter.drawText(QRectF(x, top, room, line_h), int(Qt.AlignmentFlag.AlignVCenter),
+                                 meta_metrics.elidedText(reason, Qt.TextElideMode.ElideRight, room))
+            ring = QColor(status_color)
+            ring.setAlpha(150)
+            painter.setPen(QPen(ring, 1.2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(confirm, confirm.height() / 2, confirm.height() / 2)
+            painter.setPen(QPen(QColor(status_color), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            c = confirm.center()
+            s = confirm.height() * 0.22
+            painter.drawPolyline([c + type(c)(-s, 0), c + type(c)(-s * 0.3, s * 0.7), c + type(c)(s * 1.1, -s * 0.8)])
         # cue number and playback marker on the right of line one
         number = str(model.source_row(index.row()) + 1)
         right = rect.right() - self.PAD_X

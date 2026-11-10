@@ -26,14 +26,18 @@ def ensure_independent_captions(project):
     if project is None or independent_captions(project):
         return False
     from .studio_edit_sequence import projected_cues, source_cue_id_of
-    from ..recognition.cue_word_alignment import cue_words
+    from ..recognition.cue_word_alignment import cue_words, evidence_tokens, TokenAlignmentIndex
     original = copy.deepcopy(project.cues)
     visible = copy.deepcopy(projected_cues(project))
     sources = {c.id: c for c in original}
     instances = {}
+    fallback_evidence = None
+    if any(not cue.evidence_refs for cue in original):
+        records, pending, derived = evidence_tokens(project, list(project.asr_evidence))
+        fallback_evidence = records, pending, derived, TokenAlignmentIndex(records)
     for cue in visible:
         source = sources.get(source_cue_id_of(cue.id), cue)
-        words, reason = cue_words(project, cue)
+        words, reason = cue_words(project, cue, fallback_evidence=fallback_evidence, source_cue=source)
         instances[cue.id] = {
             'source_cue_id': source.id,
             'source_start_ms': source.start_ms, 'source_end_ms': source.end_ms,

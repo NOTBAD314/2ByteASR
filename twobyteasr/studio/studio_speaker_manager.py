@@ -357,6 +357,12 @@ class SpeakerManagerDialog(QDialog):
         self.single_identity_button.clicked.connect(self._confirm_single_identity)
         row.addWidget(self.single_identity_button)
         row.addStretch(1)
+        self.cleanup_range_button = QPushButton('整理局部识别空人物（可撤销）')
+        self.cleanup_range_button.setObjectName('cleanupRangeSpeakers')
+        self.cleanup_range_button.setToolTip('只移除无有效字幕引用且未被手动配置的局部识别人物和自动空轨道')
+        button_role(self.cleanup_range_button, 'secondary', size='compact')
+        self.cleanup_range_button.clicked.connect(self._clean_range_speakers)
+        tools.addWidget(self.cleanup_range_button)
         tools.addLayout(row)
         policy = QHBoxLayout()
         policy.setSpacing(8)
@@ -519,8 +525,17 @@ class SpeakerManagerDialog(QDialog):
         from ..caption_style.bilingual_layout import settings_from_state, translation_for_cue
         settings = settings_from_state(project.studio_state)
         translated = translation_for_cue(project.generation_metadata.get('translations', {}), cue.id)
-        body = translated if translated and (settings.mode == 'translation' or
-            settings.mode == 'bilingual' and settings.order == 'translation_first') else cue.text
+        use_translation = bool(translated and (settings.mode == 'translation' or
+            settings.mode == 'bilingual' and settings.order == 'translation_first'))
+        body = translated if use_translation else cue.text
+        from ..subtitle_rules.punctuation_style import (style_text, style_translation,
+            project_mode, math_enabled, protected_terms_of)
+        options = dict(math=math_enabled(project), protected_terms=protected_terms_of(project))
+        from ..subtitle_rules.language_rules import project_language
+        if use_translation:
+            body = style_translation(body, project_mode(project), **options)
+        else:
+            body = style_text(body, project_mode(project), language=project_language(project) or "", **options).text
         self.name_preview.setText(tr('效果预览：') + (prefix(cue.speaker_id, project.speakers) if shown else '') + body)
 
     # ----------------------------------------------------------------- refresh
@@ -646,8 +661,12 @@ class SpeakerManagerDialog(QDialog):
             length = min(4000, max(2000, longest.end_ms - longest.start_ms))
             excerpt = (longest.start_ms, longest.start_ms + length, longest.text)
         if excerpt is not None:
+            from ..subtitle_rules.punctuation_style import style_text, project_mode, math_enabled, protected_terms_of
+            from ..subtitle_rules.language_rules import project_language
+            excerpt_text = style_text(str(excerpt[2]), project_mode(project), language=project_language(project) or "", math=math_enabled(project),
+                                      protected_terms=protected_terms_of(project)).text
             data.update(excerpt_range=(excerpt[0], excerpt[1]), excerpt_time=_clock(excerpt[0] + 150 if stats else excerpt[0]),
-                        excerpt=" ".join(str(excerpt[2]).split()))
+                        excerpt=" ".join(excerpt_text.split()))
         if stats is not None:
             data["role"] = role if role in {"main", "game", "ignore"} else ""
             reason = tr((self._snapshot or {}).get("reasons", {}).get(key, ""))
@@ -939,6 +958,22 @@ class SpeakerManagerDialog(QDialog):
             self._set_status(tr('未应用声纹候选：{error}', error=str(exc)))
 
     # ------------------------------------------------------- card actions
+    def _clean_range_speakers(self):
+        from ..projects.range_speakers import orphan_range_speakers
+        from ..timeline.speaker_cleanup import CleanRangeSpeakersCommand
+        count = len(orphan_range_speakers(self.page.project))
+        if not count:
+            self._set_status('没有可整理的局部识别空人物')
+            return
+        command = CleanRangeSpeakersCommand(self.page.project, self.page._speaker_structure_changed)
+        outcome = command.outcome
+        self._push(command)
+        if not outcome['applied']:
+            self._set_status('整理失败，已保留当前工程：' + outcome['error'])
+            return
+        self.refresh()
+        self._set_status(f'已整理 {count} 位局部识别空人物，可撤销恢复')
+
     def _push(self, command) -> None:
         self.page.undo_stack.push(command)
         error = getattr(command, "error", "")

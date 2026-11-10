@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from twobyteasr.local_models.model_workshop import (
     CANONICAL_MODEL_ORDER,
+    _browser_groups,
     MODELS,
     ModelCard,
     ModelWorkshopPage,
@@ -158,14 +159,15 @@ def test_run_summary_explains_local_vs_cloud_and_next_action():
     win.close()
 
 
-def test_workshop_canonical_order_puts_local_before_api():
-    local = [key for key in CANONICAL_MODEL_ORDER if not next(m for m in MODELS if m.key == key).api_preset]
-    api = [key for key in CANONICAL_MODEL_ORDER if next(m for m in MODELS if m.key == key).api_preset]
-    assert local
-    assert api
-    assert CANONICAL_MODEL_ORDER.index(local[0]) < CANONICAL_MODEL_ORDER.index(api[0])
-    assert CANONICAL_MODEL_ORDER.index("moss") < CANONICAL_MODEL_ORDER.index("qwen_api")
-    assert CANONICAL_MODEL_ORDER.index("qwen_local") < CANONICAL_MODEL_ORDER.index("qwen_api")
+def test_workshop_canonical_order_leads_with_moss_pro_cloud():
+    # 2026-11-10 (user): MOSS Pro 云端 is the first, recommended 主力转写 card.
+    assert CANONICAL_MODEL_ORDER[0] == "mosi_moss_pro"
+    assert CANONICAL_MODEL_ORDER.index("moss") < CANONICAL_MODEL_ORDER.index("firered")
+    assert CANONICAL_MODEL_ORDER.index("firered") < CANONICAL_MODEL_ORDER.index("qwen_local")
+    moss_pro = next(m for m in MODELS if m.key == "mosi_moss_pro")
+    assert _browser_groups(moss_pro) == ("primary", "api")
+    other_api = [m for m in MODELS if m.api_preset and m.key != "mosi_moss_pro"]
+    assert other_api and all(_browser_groups(m) == ("api",) for m in other_api)
 
 
 def test_workshop_sort_filter_is_popover_not_control_wall():
@@ -211,6 +213,7 @@ def test_model_card_has_badges_and_traceable_metrics_without_fake_scores():
 
 def test_only_workflow_recommended_models_get_recommendation_badge():
     assert {model.key for model in MODELS if model.recommended} == {
+        "mosi_moss_pro",
         "moss",
         "firered",
         "qwen_local",

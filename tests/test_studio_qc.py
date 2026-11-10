@@ -65,6 +65,7 @@ def test_qc_covers_timing_readability_text_model_and_terminology_without_normal_
             }
         },
     )
+    project.studio_state['punctuation'] = {'mode': 'add'}
     result = SubtitleQCEngine().analyze(
         project,
         terminology=[TerminologyEntry("星见雅", ("星见鸦",), "绝区零")],

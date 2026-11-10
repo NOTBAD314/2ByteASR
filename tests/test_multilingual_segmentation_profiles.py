@@ -124,7 +124,7 @@ def test_source_and_translation_profiles_keep_stable_cue_ids_separate():
     assert body['language_policies']['source']['language']=='it-IT'
     assert body['language_policies']['source']['unit']=='graphemes_with_spaces'
     assert body['language_policies']['target']['language']=='zh-Hans'
-    assert body['language_policies']['target']['unit']=='content_graphemes'
+    assert body['language_policies']['target']['unit']=='content_exact_characters'
     assert body['language_policies']['target']['display_only'] is True
     assert tr.source_language_of('it-IT')=='it'
     assert tr.normalize_target('pt_br')=='pt-BR' and tr.normalize_target('pt-PT')=='pt-PT'

@@ -459,7 +459,8 @@ MODELS = (
         '云端多人转写 · 本地文件直传','在线 · 只需 MOSI API Key','不占本地空间',
         '不需要显卡与本地模型；句段级时间',
         'MOSI 平台的 moss-transcribe-diarize-pro：上传本次音频，返回文字、句段起止时间与说话人。单次最长 60 分钟，更长自动分段且各段说话人不合并。只有句段时间；需要按字剪辑时可再配本地对齐模型。按音频时长计费（官方价格页 ¥2.00/小时，2026-10-13 核对）。',(),
-        logo_asset='openmoss.png',api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),)),
+        logo_asset='openmoss.png',api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),),
+        recommended=True),  # 2026-11-10: 主力转写首选推荐（免安装、不占显卡）
     WorkshopModel(
         "moss",
         "primary",
@@ -1042,8 +1043,11 @@ def _model_roles(model: WorkshopModel) -> tuple[str, ...]:
     )
 
 
+_PRIMARY_TAB_API_MODELS = frozenset({"mosi_moss_pro"})
+
+
 def _browser_groups(model: WorkshopModel) -> tuple[str, ...]:
-    """Browse-tab membership: online API cards live only in 「在线 API」.
+    """Browse tabs include recommended MOSS Pro in primary and all APIs in API.
 
     _model_roles keeps capability semantics (the role picker still offers
     API models for primary/review). The browser tabs are a deployment-mode
@@ -1053,6 +1057,10 @@ def _browser_groups(model: WorkshopModel) -> tuple[str, ...]:
     """
 
     if model.api_preset:
+        # 2026-11-10 (user): MOSS Pro 云端 is the recommended 主力转写 and also
+        # leads that tab; other API cards stay in 「在线 API」 only.
+        if model.key in _PRIMARY_TAB_API_MODELS:
+            return ("primary", "api")
         return ("api",)
     return _model_roles(model)
 
@@ -1090,7 +1098,8 @@ def _stars(score: int) -> str:
 
 
 CANONICAL_MODEL_ORDER = (
-    'qwen_cloud_filetrans','spark_asr_v2','qwen31_filetrans','mosi_moss_pro',
+    'mosi_moss_pro',  # 2026-11-10: first card in 主力转写 and 在线 API
+    'qwen_cloud_filetrans','spark_asr_v2','qwen31_filetrans',
     "moss",
     "firered",
     "qwen_local",
@@ -6911,6 +6920,7 @@ class ModelWorkshopPage(QWidget):
         self.detail_rec_reason.setVisible(is_rec)
         if is_rec:
             rationale = {
+                "mosi_moss_pro": "免安装、不占显卡，云端完成多人转写与说话人区分，适合作为主力转写首选。",
                 "moss": "中文长音频与说话人区分，适合作为第一阶段主力转写。",
                 "firered": "字级时间轴精度适合作为第二阶段字幕时间轴。",
                 "qwen_local": "多语言与专名复核适合作为第三阶段文字复核。",

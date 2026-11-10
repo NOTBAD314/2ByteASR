@@ -20,6 +20,32 @@ from ..projects.studio_project import SubtitleStyle
 from ..rendering.visual_runtime import VisualRenderer, renderer_capability_gaps
 
 
+def background_padding(background, *, default_x=22, default_y=10):
+    """Resolve legacy scalar or CSS-order padding to top/right/bottom/left.
+
+    Explicit per-axis fields keep their existing precedence. The stored recipe
+    stays intact. Renderers and bilingual stacking share this projection.
+    """
+    value = background.get('padding')
+    if isinstance(value, (list, tuple)):
+        if not 1 <= len(value) <= 4:
+            raise ValueError('字幕背景 padding 需要 1 到 4 个数值')
+        sides = [float(item or 0) for item in value]
+        top = sides[0]
+        right = sides[1] if len(sides) > 1 else top
+        bottom = sides[2] if len(sides) > 2 else top
+        left = sides[3] if len(sides) > 3 else right
+    else:
+        top = bottom = float(value or 0) if value is not None else float(default_y)
+        right = left = float(value or 0) if value is not None else float(default_x)
+    if 'padding_x' in background or 'paddingX' in background:
+        right = left = float(background.get('padding_x', background.get('paddingX')) or 0)
+    if 'padding_y' in background or 'paddingY' in background:
+        top = bottom = float(background.get('padding_y', background.get('paddingY')) or 0)
+    return (min(80., max(0., top)), min(120., max(0., right)),
+            min(80., max(0., bottom)), min(120., max(0., left)))
+
+
 # Recipe validation is a pure function of the recipe's content. Studio
 # re-validates the same few recipes many times per click or drag (snapshots,
 # inspectors), and each pass deep-copied and re-checked the whole visual

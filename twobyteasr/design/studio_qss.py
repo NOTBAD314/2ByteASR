@@ -173,6 +173,29 @@ QPushButton#reviewEntryButton {{
 QPushButton#reviewEntryButton:hover {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
 QPushButton#reviewEntryButton:pressed {{ background: {theme.accent_pressed}; color: {theme.text_on_accent}; }}
 QPushButton#reviewEntryButton:focus {{ border-color: {theme.focus}; }}
+/* 2026-11-10 (user): 「AI 工具」 and 「任务进度」 were unstyled square tool
+   buttons. Both are soft pills in the theme accent family. */
+QToolButton#cueAiButton {{
+    background: {theme.accent_tint}; color: {theme.accent_text}; border: 1px solid transparent;
+    border-radius: 15px; min-height: 30px; max-height: 30px; padding: 0 26px 0 12px;
+    font-family: {UI_FONT_STACK}; font-size: {t.label_size}px; font-weight: 600;
+}}
+QToolButton#cueAiButton:hover {{ border-color: {theme.accent_text}; }}
+QToolButton#cueAiButton:pressed, QToolButton#cueAiButton:open {{ background: {theme.accent_soft}; border-color: {theme.accent_text}; }}
+QToolButton#cueAiButton:focus {{ border-color: {theme.focus}; }}
+QToolButton#cueAiButton::menu-indicator {{
+    subcontrol-origin: padding; subcontrol-position: right center; right: 10px; width: 8px; height: 8px; }}
+QFrame#studioToolbar QToolButton#studioSubtitleTasks {{
+    background: transparent; color: {theme.text_secondary}; border: 1px solid {theme.border};
+    border-radius: 16px; min-height: 30px; max-height: 30px; min-width: 30px; padding: 0 6px;
+    font-family: {UI_FONT_STACK}; font-size: {t.caption_size}px; font-weight: 600;
+}}
+QFrame#studioToolbar QToolButton#studioSubtitleTasks:hover {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border_strong}; }}
+QFrame#studioToolbar QToolButton#studioSubtitleTasks[taskState="active"] {{
+    color: {theme.accent_text}; border-color: transparent; padding: 0 12px 0 10px; }}
+QFrame#studioToolbar QToolButton#studioSubtitleTasks[taskState="done"] {{
+    color: {theme.accent_text}; border-color: {theme.accent_text}; }}
+QFrame#studioToolbar QFrame#studioTaskDot {{ background: {theme.accent}; border-radius: 4px; }}
 /* 2026-10-08 timeline command bar: centred transport pill with an accent
    play button, view tools as one icon family, display switches as chips,
    range row as outlined segments with icon actions. */

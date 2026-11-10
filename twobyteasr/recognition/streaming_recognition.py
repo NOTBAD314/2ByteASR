@@ -21,6 +21,11 @@ VERSION = 'ready-native-shards-v6-scored-vad-translation-names'
 STRIDE = 1_000_000
 
 
+def grouping_rule_identity(legacy):
+    from ..subtitle_rules.grouping_quality import QUALITY_VERSION
+    return {'logic': getattr(legacy, 'GROUP_LOGIC_VERSION', None), 'quality': QUALITY_VERSION}
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,default=str).encode('utf-8')).hexdigest()
 
@@ -296,6 +301,8 @@ class LongMediaPipeline:
                 return None
             data=saved['data']
             if data.get('incomplete_roles'):return None
+            if data.get('grouping_rules') != grouping_rule_identity(self.legacy):
+                return None
             from .vad import ALGORITHM
             execution=data.get('vad_execution') or {}
             if (execution.get('algorithm_version') != ALGORITHM or not execution.get('actual_backend')
@@ -326,6 +333,7 @@ class LongMediaPipeline:
             return
         data=dict(vad_execution=execution,index=result.index,primary=result.primary,segments=self.legacy.serialize_segments(result.segments),
                   cues=cues,translation=result.translation,reviews=result.reviews,
+                  grouping_rules=grouping_rule_identity(self.legacy),
                   incomplete_roles=bool(getattr(result,'incomplete_roles',False)),polishing_summary=result.polishing_summary)
         write_text_atomic(path,json.dumps(dict(version=result.version,checksum=_digest(data),data=data),ensure_ascii=False))
 

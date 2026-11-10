@@ -85,12 +85,29 @@ print("[stand-in] wrote", destination)
 '''
 
 
+# download_models.ps1 starts the downloader through run_deployment_step.py; the
+# real wrapper imports the twobyteasr package, which the sandbox does not have.
+STAND_IN_STEP_RUNNER = '''\
+"""Stand-in for scripts/run_deployment_step.py: runs the named step, keeps its exit code."""
+import argparse, subprocess, sys
+from pathlib import Path
+parser = argparse.ArgumentParser()
+for name in ("--phase", "--component", "--timeout"):
+    parser.add_argument(name)
+parser.add_argument("script")
+args, remaining = parser.parse_known_args()
+step = Path(__file__).parent / args.script
+raise SystemExit(subprocess.call([sys.executable, "-I", "-X", "utf8", "-B", str(step), *remaining]))
+'''
+
+
 def _sandbox(tmp_path: Path) -> Path:
     """A program folder with the real script, a one-model lock and a stand-in source."""
     program = tmp_path / "program"
     (program / "scripts").mkdir(parents=True)
     shutil.copyfile(SCRIPT, program / "scripts" / "download_models.ps1")
     (program / "scripts" / "run_repository_download.py").write_text(STAND_IN_DOWNLOADER, "utf-8")
+    (program / "scripts" / "run_deployment_step.py").write_text(STAND_IN_STEP_RUNNER, "utf-8")
     files = {"embedding_model.ckpt": "stand-in weights\n", "hyperparams.yaml": "stand-in: true\n"}
     lock = {
         "models": {"speaker_embedding": {
@@ -134,6 +151,38 @@ def test_custom_location_with_spaces_chinese_and_brackets_downloads(tmp_path, fo
     assert code == 0, output
     assert "模型已全部就绪" in output, output
     assert len((program / "stand-in-calls.jsonl").read_text("utf-8").splitlines()) == 1
+
+
+def _as_unc(path: Path) -> Path | None:
+    """The same folder through the local admin share (\\\\localhost\\C$\\...), if reachable."""
+    drive, rest = os.path.splitdrive(str(path))
+    if len(drive) != 2 or drive[1] != ":":
+        return None
+    unc = Path(rf"\\localhost\{drive[0]}$" + rest)
+    try:
+        return unc if unc.exists() else None
+    except OSError:
+        return None
+
+
+def test_network_share_location_downloads(tmp_path):
+    """Model location on a network share (user report 2026-11-10).
+
+    ``Get-PSDrive -Name '\\\\192.168.253.1\\VM2Workspace'`` threw at the free-space
+    check, so every CTC aligner download stopped right after 运行环境已就绪.
+    """
+    unc_root = _as_unc(tmp_path)
+    if unc_root is None:
+        pytest.skip("admin share \\\\localhost\\<drive>$ not reachable")
+    program = _sandbox(tmp_path)
+    location = unc_root / "共享 模型"
+    env = _environment(str(location), test_root=unc_root)
+    code, output = _run(program / "scripts" / "download_models.ps1", env,
+                        "-Yes", "-Only", "speaker_embedding", "-Source", "AUTO")
+    assert "Get-PSDrive" not in output, output
+    assert code == 0, output
+    assert "当前模型位置剩余约" in output, output
+    assert (tmp_path / "共享 模型" / "spkrec-ecapa-voxceleb" / "embedding_model.ckpt").is_file()
 
 
 def test_unusable_location_is_reported_as_a_storage_problem(tmp_path):

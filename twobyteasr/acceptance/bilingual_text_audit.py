@@ -112,7 +112,7 @@ def start(window, output):
             page.timeline.select_translation('source-0000')
             original = {c.id: c.text for c in page.project.cues}
             japanese = original['independent-japanese']
-            QTest.mouseClick(page.cue_proofread_button, Qt.LeftButton)
+            page.cue_proofread_action.trigger()
             check('normal AI proofreading entry', wait(lambda: getattr(window, 'glossary_proofread_page', None) is not None))
             review = window.glossary_proofread_page
             check('translation entry default', review.text_targets.mode_value() == 'translation')

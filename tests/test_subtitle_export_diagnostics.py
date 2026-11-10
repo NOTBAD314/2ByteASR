@@ -1,3 +1,4 @@
+import pytest
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,22 @@ from twobyteasr.exports import studio_subtitle_export as export
 from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 APP = QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def local_fault_injection_backend(monkeypatch):
+    from twobyteasr.exports.subtitle_export_task import SubtitleExportTask
+    monkeypatch.setattr(SubtitleExportTask, '_run_process', SubtitleExportTask._run)
+
+
+def wait_export(dialog):
+    from PySide6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while getattr(dialog, '_subtitle_task', None) is not None and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert getattr(dialog, '_subtitle_task', None) is None
+
 
 
 def dialog_for(tmp_path, monkeypatch):
@@ -30,6 +47,7 @@ def test_specific_error_details_and_copy_without_automatic_clipboard_change(tmp_
     write=export._atomic_text_write
     monkeypatch.setattr(export,"_atomic_text_write",lambda path,text:write(path,text.replace("第二句话","损坏")))
     d.export_button.click()
+    wait_export(d)
     assert "S02 第 2 条字幕" in d.warning.text() and d.error_details_button.isVisible()
     data=json.loads(d._error_details)
     assert data["first_mismatch"]["cue_id"]=="cue-b"
@@ -58,6 +76,7 @@ def test_layer_success_followed_by_format_failure_is_explicit(tmp_path,monkeypat
     def fail(*args,**kwargs):raise OSError("TXT 磁盘失败")
     monkeypatch.setattr(ui,"export_subtitle_artifacts",fail)
     d._run_export()
+    wait_export(d)
     assert d.pages.currentWidget() is d.setup_page and len(d.artifacts)==1
     assert d.artifacts[0].path.exists()
     assert d.artifacts[0].path.name in d.warning.text() and "未全部完成" in d.warning.text()

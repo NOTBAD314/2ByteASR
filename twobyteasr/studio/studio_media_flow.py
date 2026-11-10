@@ -1538,6 +1538,10 @@ class StudioMediaFlowMixin:
                 self._recognition_replace_baseline_ids = None
             # A range run's live rows are window-local; the result is spliced at the end.
             self._recognition_range = list(stretch) if stretch else None
+            from ..recognition.speech_recovery_project import project_ranges
+            self._recognition_speech_recovery = bool(stretch and any(
+                r['timeline_start_ms'] < stretch[1] and r['timeline_end_ms'] > stretch[0]
+                for r in project_ranges(self.project)))
             self._recognition_autosave_generation = int(getattr(self, "_autosave_generation", 0) or 0)
             # 2026-09-17：真实编辑判定基准——undo 栈只在真实编辑时增长；
             # autosave 代次会被无编辑的周期保存顶掉。
@@ -1547,6 +1551,7 @@ class StudioMediaFlowMixin:
             if modal is not None:
                 modal.hide_content()
             self._recognition_running = True
+            self._recognition_subtitle_task = None
             self._recognition_cancelling = False
             self._recognition_lane_note = None
             self._recognition_status_sticky = ""
@@ -1800,7 +1805,8 @@ class StudioMediaFlowMixin:
         lane = getattr(self, "_recognition_lane_note", None) if running else None
         if running and started:
             elapsed = max(0, int(perf_counter() - started))
-            text = tr('识别中 · {stage} · {minutes:02d}:{seconds:02d}', stage=stage if hasattr(stage, "source") else tr(stage), minutes=elapsed//60, seconds=elapsed%60)
+            title = '正在恢复语音缺口' if getattr(self, '_recognition_speech_recovery', False) else '识别中'
+            text = f'{title} · {stage} · {elapsed//60:02d}:{elapsed%60:02d}'
             return tr('{lane} · {status}', lane=lane, status=text) if lane else text
         return stage if hasattr(stage, "source") else tr(stage)
 
@@ -1830,6 +1836,23 @@ class StudioMediaFlowMixin:
         sync_speech_recovery(self)
 
     def _recognition_show_status(self, stage: str, detail: str = "") -> None:
+        task = getattr(self, '_recognition_subtitle_task', None)
+        if task is not None and task.project is not self.project:
+            return
+        if getattr(self, '_recognition_running', False) and self.project:
+            if task is None:
+                from types import SimpleNamespace
+                from ..timeline.studio_edit_sequence import timeline_duration_ms
+                inputs = [SimpleNamespace(id='source-' + self.project.project_id)]
+                task = self._new_subtitle_task('工程重新识别', inputs)
+                task.unit_label = '个输入范围'
+                task.cancel_action = self.recognition_cancel_requested.emit
+                self._recognition_subtitle_task = task
+                task.update(dict(range_id='source', cue_ids=list(task.cue_ids), start_ms=0,
+                    end_ms=timeline_duration_ms(self.project), status='running', attempts=1,
+                    range_label=f'全工程 · {len(self.project.cues)} 条原字幕', original_cue_count=len(self.project.cues)))
+            if task.ended is None:
+                task.update(dict(range_id='source', phase=stage, detail=detail, status='running'))
         self._recognition_stage_message = stage
         parts = self._recognition_chip_parts()
         if parts is not None:
@@ -1848,6 +1871,8 @@ class StudioMediaFlowMixin:
             button = getattr(self, name, None)
             if button is not None:
                 button.setVisible(cancel_visible)
+                if name == 'recognition_cancel_button':
+                    bind_text(button, '停止本次恢复' if getattr(self, '_recognition_speech_recovery', False) else '取消识别')
         if cancel_visible:
             detail_button = getattr(self, "recognition_zero_detail", None)
             if detail_button is not None:
@@ -1869,6 +1894,9 @@ class StudioMediaFlowMixin:
     def set_recognition_cancelling(self) -> None:
         """四十三轮：取消请求已发出——Studio 内立即可见（防"点了没反应"）。"""
         self._recognition_cancelling = True
+        task = getattr(self, '_recognition_subtitle_task', None)
+        if task is not None and task.project is self.project:
+            task.cancelled = True
         self._recognition_show_status(
             "正在安全取消", "将在当前可安全停止的阶段边界退出"
         )
@@ -1994,6 +2022,7 @@ class StudioMediaFlowMixin:
             self.select_cue(project.cues[0].id)
 
     def finish_recognition_runtime(self, elapsed_seconds: float = 0.0) -> None:
+        self._finish_recognition_subtitle_task('suggestion', '识别结果已保存，等待载入')
         self._recognition_running = False
         self._recognition_cancelling = False
         timer = getattr(self, "_recognition_runtime_timer", None)
@@ -2041,8 +2070,10 @@ class StudioMediaFlowMixin:
         self._sync_recognition_zero_state()
 
     def fail_recognition_runtime(self, message: str) -> None:
+        cancelled = bool(getattr(self, '_recognition_cancelling', False))
         from .recognition_preview import discard
         discard(self)
+        self._finish_recognition_subtitle_task('failed', str(message))
         self._recognition_running = False
         self._recognition_cancelling = False
         self._recognition_replace_baseline_ids = None
@@ -2055,7 +2086,8 @@ class StudioMediaFlowMixin:
             return
         frame, label = parts
         label.setProperty("recognitionStage", "")
-        text = f"识别未完成 · {str(message or '请查看运行日志')}"
+        title = '识别已取消' if cancelled else '识别未完成'
+        text = f"{title} · {str(message or '请查看运行日志')}"
         label.setText(text)
         self._recognition_status_sticky = text
         frame.show()
@@ -2065,6 +2097,42 @@ class StudioMediaFlowMixin:
             button = getattr(self, name, None)
             if button is not None:
                 button.hide()
+
+    def _finish_recognition_subtitle_task(self, status, message):
+        task = getattr(self, '_recognition_subtitle_task', None)
+        if task is not None and task.ended is None:
+            if status == 'suggestion' and task.rows.get('source', {}).get('issues'):
+                status = 'review'
+            task.update(dict(range_id='source', status='cancelled' if task.cancelled else status,
+                phase=message, error=message if status == 'failed' else
+                    task.rows.get('source', {}).get('error', '') if status == 'review' else ''))
+            task.finish(cancelled=task.cancelled)
+
+    def _record_recognition_task_event(self, kind, payload):
+        task = getattr(self, '_recognition_subtitle_task', None)
+        if not self._subtitle_task_current(task):
+            return
+        if (kind in {'text_ai_terminal_failure', 'grouping_api_fallback', 'cloud_batch_failed', 'stage_failed',
+                     'grouping_quality_review'} or kind=='FIRERED_ALIGNMENT_STATUS' and payload.get('status')=='degraded'):
+            row = task.rows['source']
+            issue = dict(event=kind, **payload)
+            task.update(dict(range_id='source', issues=[*row.get('issues', ()), issue],
+                local_fallback=kind == 'grouping_api_fallback' or row.get('local_fallback', False),
+                error=str(payload.get('error') or payload.get('reason') or payload.get('message')
+                          or '部分阶段未通过，结果需要检查。完整原因见处理记录。')))
+        if kind == 'stage_started':
+            self._recognition_show_status(str(payload.get('label') or '处理当前阶段'))
+        if kind == 'pipeline_work_progress':
+            self._recognition_show_status(str(payload.get('label') or '检查处理结果'))
+        if kind in {'asr_progress', 'asr_worker_progress', 'asr_wait', 'speaker_progress',
+                    'cloud_batch_started', 'cloud_batch_completed', 'cloud_batch_retry',
+                    'pipeline_work_progress','grouping_quality_retry','cloud_batches_completed',
+                    'studio_project_saving', 'studio_project_saved'}:
+            row = task.rows['source']
+            activity = dict(row.get('activity', {}))
+            key = str(payload.get('backend') or payload.get('stage') or kind)
+            activity[key] = dict(event=kind, **payload)
+            task.update(dict(range_id='source', activity=activity))
 
     def _import_subtitle_file(self, path: Path) -> None:
         return self._import_subtitle_files([path])
@@ -2317,39 +2385,108 @@ class StudioMediaFlowMixin:
             self._studio_mark_startup_milestone("WAVEFORM_REQUESTED", media_path=source)
         self._start_next_project_waveform()
 
-    def _reasr_current(self) -> None:
-        if not self.project or not self.selected_cue_id:
+    def _reasr_current(self, _checked=False, *, cue_id=None) -> None:
+        if not self.project or not (cue_id or self.selected_cue_id):
             return
-        cue_id = self.selected_cue_id
-        self._toggle_drawer(0)
-        self.ai_preview.setPlainText("正在提取当前字幕附近音频并重新识别...")
-        ffmpeg = Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+        active = getattr(self, '_reasr_task', None)
+        if active is not None and active.ended is None:
+            self.show_subtitle_tasks()
+            return
+        if getattr(self, '_recognition_running', False):
+            self.save_state.setText('当前工程识别仍在运行，请从任务进度查看')
+            self.show_subtitle_tasks()
+            return
+        from dataclasses import replace
+        from ..timeline.studio_commands import cue_by_id
+        from ..subtitle_rules.sentence_refine_ranges import input_version
+        cue_id = cue_id or self.selected_cue_id
+        try:
+            cue = cue_by_id(self.project, cue_id)
+        except KeyError:
+            self.save_state.setText('原字幕已变化，请重新选择范围')
+            return
+        snapshot = copy.deepcopy(self.project)
+        settings = copy.deepcopy(self.runtime_settings)
+        task = self._new_subtitle_task('单条重新识别', [cue])
+        self._reasr_task = task
+        task.input_version = input_version([cue], self.project)
+        task.cue_id = cue.id
+        task.update(dict(range_id=cue.id, cue_ids=[cue.id], start_ms=cue.start_ms,
+                         source_rows=[index+1 for index, current in enumerate(self.project.cues) if current.id == cue.id],
+                         end_ms=cue.end_ms, input_text=cue.text, status='running',
+                         phase='准备读取素材', attempts=1))
+        if cue.id == self.selected_cue_id:
+            self._toggle_drawer(0)
+            self.ai_preview.setPlainText('正在重新识别，可从任务进度查看完整状态')
+        ffmpeg = Path(__file__).resolve().parents[2] / 'tools' / 'ffmpeg' / 'bin' / 'ffmpeg.exe'
+
+        def progress(stage):
+            self.subtitle_task_signal.emit(dict(task_id=task.task_id,
+                event=dict(range_id=cue.id, cue_ids=[cue.id], status='running', phase=stage)))
 
         def work():
             try:
-                result = run_local_reasr(
-                    self.project, cue_id, self.runtime_settings, ffmpeg
-                )
-                self.reasr_ready_signal.emit(result)
+                result = run_local_reasr(snapshot, cue.id, settings, ffmpeg,
+                    on_progress=progress, cancel_check=lambda: task.cancelled)
+                self.reasr_ready_signal.emit(replace(result, task_id=task.task_id))
             except Exception as exc:
-                self.reasr_failed_signal.emit(str(exc))
+                import json
+                from ..providers.provider_diagnostics import redact_diagnostics
+                self.reasr_failed_signal.emit(json.dumps(dict(task_id=task.task_id,
+                    error=str(redact_diagnostics(str(exc))), category=getattr(exc, 'category', 'recognition_error')),
+                    ensure_ascii=False))
 
-        threading.Thread(target=work, daemon=True, name="studio-local-reasr").start()
+        threading.Thread(target=work, daemon=True, name='studio-local-reasr').start()
+        self.save_state.setText('单条重新识别运行中 · 点击任务进度查看详情')
 
     def _reasr_ready(self, result: LocalReASRResult) -> None:
-        if not self.project or result.cue_id != self.selected_cue_id:
+        task = getattr(self, '_subtitle_tasks', {}).get(result.task_id)
+        if task is None:
             return
-        glossary = "、".join(result.glossary_evidence) or "无"
-        review = result.review_text or f"未获得结果（后端: {result.backend}）"
-        bind_text(self.ai_preview, tr('当前文本:\n{value0}\n\nPrimary result:\n{value1}\n\nReview result:\n{value2}\n\nGlossary evidence:\n{value3}\n\n建议:\n{value4}', value0=result.current_text, value1=result.primary_text, value2=review, value3=glossary, value4=result.recommendation), property='plainText')
-        self._pending_suggestion = StudioSuggestion(
-            cue_id=result.cue_id,
-            before_text=result.current_text,
-            after_text=result.recommendation,
-            effect=None,
-            rationale=f"局部重识别: {result.backend}",
-        )
+        if not self._subtitle_task_current(task):
+            task.finish(cancelled=True)
+            return
+        from ..timeline.studio_commands import cue_by_id
+        from ..subtitle_rules.sentence_refine_ranges import input_version
+        try:
+            cue = cue_by_id(self.project, result.cue_id)
+            if input_version([cue], self.project) != task.input_version:
+                raise ValueError('识别期间原字幕、时间、样式或来源已变化，旧建议已丢弃')
+        except (KeyError, ValueError) as exc:
+            task.update(dict(range_id=result.cue_id, status='failed', phase='原字幕已变化',
+                             category='stale_input', error=str(exc)))
+            task.finish()
+            return
+        task.result = result
+        task.update(dict(range_id=result.cue_id, status='suggestion', phase='识别校验完成，建议待采用',
+                         primary_text=result.primary_text, review_text=result.review_text,
+                         recommendation=result.recommendation, backend=result.backend))
+        task.finish()
+        if result.cue_id == self.selected_cue_id:
+            self._show_reasr_result(result)
+        self.save_state.setText(task.summary())
+
+    def _show_reasr_result(self, result):
+        glossary = '、'.join(result.glossary_evidence) or '无'
+        bind_text(self.ai_preview, tr('当前文本:\n{value0}\n\nPrimary result:\n{value1}\n\nReview result:\n{value2}\n\nGlossary evidence:\n{value3}\n\n建议:\n{value4}', value0=result.current_text, value1=result.primary_text, value2=result.review_text, value3=glossary, value4=result.recommendation), property='plainText')
+        self._pending_suggestion = StudioSuggestion(cue_id=result.cue_id, before_text=result.current_text,
+            after_text=result.recommendation, effect=None, rationale=f'局部重识别 {result.backend}')
 
     def _reasr_failed(self, message: str) -> None:
-        self._pending_suggestion = None
-        self.ai_preview.setPlainText(message)
+        import json
+        try:
+            payload = json.loads(message)
+        except ValueError:
+            return
+        task = getattr(self, '_subtitle_tasks', {}).get(payload.get('task_id'))
+        if task is None or task.ended:
+            return
+        task.update(dict(range_id=task.cue_id, status='cancelled' if task.cancelled else 'failed',
+                         phase='已取消' if task.cancelled else '识别失败', error=payload['error'],
+                         category=payload.get('category', 'recognition_error')))
+        task.finish(cancelled=task.cancelled or task.project is not self.project)
+        if task.project is self.project:
+            self.save_state.setText(task.summary())
+            if self.selected_cue_id == task.cue_id:
+                self._pending_suggestion = None
+                self.ai_preview.setPlainText(payload['error'])

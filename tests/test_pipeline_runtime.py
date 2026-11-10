@@ -65,7 +65,7 @@ class _FinalizeLegacy:
     def validate_final_cues(self, cues, *_args, **_kwargs):
         return self._same("validate", cues)
 
-    def apply_isolated_single_character_rules_safely(self, cues):
+    def apply_isolated_single_character_rules_safely(self, cues, **_kwargs):
         return self._same("single_character", cues)
 
     def merge_consecutive_short_repeated_cues(self, cues):
@@ -88,9 +88,11 @@ class _FinalizeLegacy:
 
 
 def test_finalize_cues_preserves_the_established_stage_order():
+    from twobyteasr.subtitle_rules.language_rules import language_scope
     legacy = _FinalizeLegacy()
     cues = [SimpleNamespace(cue_id=1, speaker='S01', text='原文字', start=0., end=1.)]
-    assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
+    with language_scope('zh'):
+        assert finalize_cues(cues, [], [], [], 10.0, 60.0, legacy) is cues
     assert legacy.calls == [
         "repair",
         "normalize",
@@ -102,12 +104,11 @@ def test_finalize_cues_preserves_the_established_stage_order():
         "normalize",
         "vad_onset",
         "speaker_tail",
-        "display_gap",
         "validate",
-        "reviews",
         "relock",
+        "reviews",
     ]
     assert [p['phase'] for name,p in legacy.events if name=='display_boundary_phase'] == [
         'grouped_before_display', 'normalized_and_vad_onsets', 'speaker_reading_tail',
-        'short_gap_bridge', 'validated_and_content_recovered', 'final_half_open_display']
+        'natural_pauses_retained', 'validated_and_content_recovered', 'final_half_open_display']
     assert all(p['half_open'] for name,p in legacy.events if name=='display_boundary_phase')

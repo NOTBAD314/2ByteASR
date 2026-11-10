@@ -457,14 +457,21 @@ class TaskCard(QFrame):
         self.title = user_text(ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=80))
         self.title.setObjectName("linkTaskTitle")
         head.addWidget(self.title, 1)
+        # 2026-11-10 (user: opening 链接下载 flashed a tiny window): these
+        # labels have no parent yet (the layouts reach the card only at
+        # row.addLayout below), and showing a parentless widget opens it as
+        # its own top-level window. Only ever hide here; children of the card
+        # show with it.
         self.state = pill()
-        self.state.setVisible(not compact)
+        if compact:
+            self.state.hide()
         head.addWidget(self.state, 0)
         body.addLayout(head)
         self.stepper = QLabel()
         self.stepper.setObjectName("linkStepper")
         self.stepper.setTextFormat(Qt.TextFormat.RichText)
-        self.stepper.setVisible(not compact)
+        if compact:
+            self.stepper.hide()
         body.addWidget(self.stepper)
         self.progress = QProgressBar()
         self.progress.setObjectName("linkProgress")
@@ -475,7 +482,8 @@ class TaskCard(QFrame):
         line.setSpacing(6)
         self.state_text = QLabel()
         self.state_text.setObjectName("linkStateText")
-        self.state_text.setVisible(compact)
+        if not compact:
+            self.state_text.hide()
         line.addWidget(self.state_text, 0)
         self.meta = user_text(ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=60))
         self.meta.setObjectName("linkHint")

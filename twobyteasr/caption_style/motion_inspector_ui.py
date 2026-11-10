@@ -39,7 +39,10 @@ HINTS = {**{(m.stage, m.key): m.hint for items in _SPECS.values() for m in items
          **{('words', key): hint for key, _, _, hint in WORDS}}
 STRENGTHS = [('low', '轻'), ('medium', '标准'), ('high', '强')]
 ARROWS = [('left', '←'), ('right', '→'), ('up', '↑'), ('down', '↓')]
-TILE_HEIGHT, PREVIEW_HEIGHT = 84, 52
+# 2026-11-09 (user, redesign A): smaller tiles, four per row in the normal
+# 300px+ panel, so a whole category is visible without scrolling.
+TILE_HEIGHT, PREVIEW_HEIGHT = 64, 40
+TILE_MIN_WIDTH = 62
 # 2026-10-23 (user's design A): the stage track, chips, segments and tiles are
 # styled with the other soft controls in design/soft_qss.py (theme colours).
 
@@ -150,7 +153,7 @@ class StageButton(QPushButton):
         self.setObjectName('motionStage')
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(44)
+        self.setFixedHeight(38)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.title_text, self.value_text, self.active = tr(title), '', False
         self.setAccessibleName(self.title_text)
@@ -220,17 +223,17 @@ class MotionEffectTile(QPushButton):
         self.setObjectName('motionEffectTile')
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumWidth(86)
+        self.setMinimumWidth(TILE_MIN_WIDTH)
         self.setFixedHeight(TILE_HEIGHT)
         self.setAccessibleName(tr(label))
-        self.setToolTip(tr(HINTS.get((stage, key), '')))
-        box = QVBoxLayout(self); box.setContentsMargins(4, 4, 4, 4); box.setSpacing(3)
+        self.setToolTip(tr(label) + ('：' + tr(HINTS[(stage, key)]) if HINTS.get((stage, key)) else ''))
+        box = QVBoxLayout(self); box.setContentsMargins(3, 3, 3, 3); box.setSpacing(2)
         from .motion_controls_ui import MotionSample
         self.preview = MotionSample(self, shared=True)
         self.preview.setFixedHeight(PREVIEW_HEIGHT)
-        self.preview.set_corner_radius(9)
+        self.preview.set_corner_radius(7)
         self.preview.auto_play = False
-        self.preview.font_pixel_size = 19
+        self.preview.font_pixel_size = 15
         self.preview.setAttribute(Qt.WA_TransparentForMouseEvents)
         box.addWidget(self.preview)
         self.caption = caption = QLabel(tr(label)); caption.setObjectName('motionTileLabel'); caption.setAlignment(Qt.AlignCenter)
@@ -239,10 +242,10 @@ class MotionEffectTile(QPushButton):
         # The chosen tile: a tinted fill, an accent ring and a check (design A).
         self.check = QLabel(self.preview)
         self.check.setObjectName('motionTileCheck')
-        self.check.setFixedSize(18, 18)
+        self.check.setFixedSize(14, 14)
         self.check.setAlignment(Qt.AlignCenter)
         self.check.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.check.move(5, 5)
+        self.check.move(3, 3)
         self.check.hide()
         item = spec(stage, key) if stage != 'words' else None
         badge = '逐字' if item and item.per_char else '方向' if item and item.directional else (
@@ -388,7 +391,8 @@ class MotionInspector(QWidget):
         params.addWidget(self.color_row)
         self.explanation = QLabel(); self.explanation.setObjectName('softMeta'); self.explanation.setWordWrap(True)
         params.addWidget(self.explanation)
-        layout.addWidget(self.params_card)
+        # 2026-11-09 (redesign A): the parameter card sits below the tiles so
+        # the effect choices come first; added after the scroll area below.
         # Category chips and the card grid share one scroll area per stage.
         self.stack = QStackedWidget()
         self.cards_scroll = QScrollArea(); self.cards_scroll.setWidgetResizable(True)
@@ -396,7 +400,16 @@ class MotionInspector(QWidget):
         self.cards_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cards_scroll.setMinimumHeight(TILE_HEIGHT+40)
         self.cards_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.cards_scroll.setWidget(self.stack)
+        # The parameters scroll with the tiles (below them): outside the
+        # scroll area a short window squeezed both and clipped the fields.
+        scroll_content = QWidget()
+        scroll_column = QVBoxLayout(scroll_content)
+        scroll_column.setContentsMargins(0, 0, 0, 0)
+        scroll_column.setSpacing(10)
+        scroll_column.addWidget(self.stack)
+        scroll_column.addWidget(self.params_card)
+        scroll_column.addStretch(1)
+        self.cards_scroll.setWidget(scroll_content)
         layout.addWidget(self.cards_scroll, 1)
         for stage in STAGES:
             host = QWidget(); column = QVBoxLayout(host); column.setContentsMargins(0, 0, 4, 0); column.setSpacing(8)
@@ -506,7 +519,7 @@ class MotionInspector(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.reflow(3 if self.width() >= 290 else 2)
+        self.reflow(4 if self.width() >= 290 else 3 if self.width() >= 214 else 2)
         QTimer.singleShot(0, self.fit_stack)
 
     def filter(self, stage, category):

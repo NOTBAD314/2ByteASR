@@ -231,6 +231,7 @@ class MotionWorkflow:
         page.motion_status = QLabel()
         page.motion_status.setObjectName('softMeta')
         page.motion_status.setWordWrap(True)
+        page.motion_status.hide()  # shown by update_status; empty it left a blank band
         page.motion_apply = QPushButton(tr('应用动效'))
         page.motion_apply.setObjectName('studioPrimaryButton')
         page.motion_apply.setProperty('softSize', 'lg')

@@ -166,6 +166,36 @@ def sync_primary_video_track_from_sequence(project: SubtitleProject, sequence) -
     sync_linked_av_contract(project)
 
 
+class MediaAssetLookup:
+    """Import-local lookup preserving the first path or fingerprint match."""
+    def __init__(self, pool):
+        self.pool = pool
+        self.sources = {}
+        self.fingerprints = {}
+        self.next_index = 0
+        for asset in pool:
+            self.add(asset)
+
+    def add(self, asset):
+        entry = self.next_index, asset
+        self.next_index += 1
+        try:
+            key = 'resolved', Path(asset.canonical_source).resolve()
+        except (OSError, ValueError):
+            key = 'raw', asset.canonical_source
+        self.sources.setdefault(key, entry)
+        if asset.fingerprint:
+            self.fingerprints.setdefault(asset.fingerprint, entry)
+
+    def find(self, canonical, fingerprint):
+        matches = [self.sources.get(('resolved', Path(canonical))),
+                   self.sources.get(('raw', canonical))]
+        if fingerprint:
+            matches.append(self.fingerprints.get(fingerprint))
+        matches = [entry for entry in matches if entry is not None]
+        return min(matches, key=lambda entry:entry[0])[1] if matches else None
+
+
 def add_media_asset(
     project: SubtitleProject,
     source: str | Path,
@@ -176,17 +206,25 @@ def add_media_asset(
     audio_metadata: Mapping[str, Any] | None = None,
     proxy_identity: str = "",
     materialize_audio: bool = True,
+    lookup: MediaAssetLookup | None = None,
 ) -> MediaAsset:
     canonical = str(Path(source).resolve())
-    for existing in project.media_pool:
-        if fingerprint and existing.fingerprint == fingerprint:
+    if lookup is not None:
+        if lookup.pool is not project.media_pool:
+            raise ValueError('素材查找索引不属于当前导入')
+        existing = lookup.find(canonical, fingerprint)
+        if existing is not None:
             return existing
-        try:
-            same_source = Path(existing.canonical_source).resolve() == Path(canonical)
-        except (OSError, ValueError):
-            same_source = existing.canonical_source == canonical
-        if same_source:
-            return existing
+    else:
+        for existing in project.media_pool:
+            if fingerprint and existing.fingerprint == fingerprint:
+                return existing
+            try:
+                same_source = Path(existing.canonical_source).resolve() == Path(canonical)
+            except (OSError, ValueError):
+                same_source = existing.canonical_source == canonical
+            if same_source:
+                return existing
     asset = MediaAsset(
         asset_id=_asset_id(canonical, fingerprint),
         canonical_source=canonical,
@@ -200,6 +238,8 @@ def add_media_asset(
     )
     asset.validate()
     project.media_pool.append(asset)
+    if lookup is not None:
+        lookup.add(asset)
     sync_linked_av_contract(project, materialize_unreferenced_audio={asset.asset_id} if materialize_audio else False)
     return asset
 

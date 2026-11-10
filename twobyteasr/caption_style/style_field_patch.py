@@ -33,7 +33,7 @@ def style_fields_command(project, cue_ids, patch, *, shadow_patch=None, glow_pat
         visual_transform = {k:v for k,v in transform.items() if k in TRANSFORM_FIELDS}
         initial = transform.get('initial_layout', {})
         if isinstance(initial, dict) and initial.get('version') == 1:
-            visual_transform['initial_layout'] = {k:initial[k] for k in ('version','position_x','position_y') if k in initial}
+            visual_transform['initial_layout'] = {k:initial[k] for k in ('version','source','position_x','position_y','offset_y') if k in initial}
         cache_key = (cue.style_id, cue.base_preset_id, cue.speaker_id,
                json.dumps(cue.appearance_override or {}, sort_keys=True, ensure_ascii=False),
                json.dumps(visual_transform, sort_keys=True, ensure_ascii=False))

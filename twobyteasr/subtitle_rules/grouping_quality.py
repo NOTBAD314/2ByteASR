@@ -11,9 +11,13 @@ import copy
 import math
 import re
 
+from .grouping_syntax import (
+    INDEPENDENT_RESPONSES, PERSONAL_PRONOUNS, repeated_units, syntax_boundary_evidence,
+)
 from .text_rules import content_exact, display_length
 
-QUALITY_VERSION = "grouping-quality-v1"
+QUALITY_VERSION = "grouping-quality-v4-complete-expression-14"
+STANDALONE_RESPONSES = frozenset({'对撞', '不急', '等一下', '没错', '明白', '知道了', '好的', '对的', '是的', '好吧', '可以的'})
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,8 @@ class BoundaryQuality:
         self.max_chars = int(max_chars if max_chars is not None else defaults[0])
         self.max_seconds = max_seconds if max_seconds is not None else defaults[1]
         self.min_seconds = min_seconds if min_seconds is not None else defaults[2]
+        from subtitle_core import MIN_SUBTITLE_SECONDS
+        self.display_floor = min(self.min_seconds, MIN_SUBTITLE_SECONDS)
         self.units = list(units)
         if self.units and len(self.units) != self.total:
             raise ValueError("时间单元和正文索引不一致。")
@@ -91,6 +97,22 @@ class BoundaryQuality:
         self.stable_boundaries = set()
         self.soft_dependencies = set()
         self.semantic_required = set()
+        self.independent_edges = set()
+        self.source_ranges = set()
+        self.source_edges = set()
+        self.boundary_reasons = {edge: 'explicit_protected_boundary' for edge in self.required}
+        self.estimated_ranges = []
+        self.estimated_split_offsets = set()
+        self.candidate_edges = set(self.required) | {self.total}
+        self.syntax_reasons = {}
+        self.clause_edges = set()
+        self.known_word_interiors = set()
+        self.named_entity_interiors = set()
+        self.named_component_interiors = set()
+        self.inferred_word_interiors = set()
+        self.explicit_word_interiors = set()
+        self.pos_dependency_edges = set()
+        completed_conditions = set()
         # Tokenize each protected turn separately. Concatenating overlapping
         # speakers must not manufacture a cross-speaker name or lexical word.
         start = 0
@@ -98,15 +120,29 @@ class BoundaryQuality:
             piece = self.index.slice(start, end)
             content = content_exact(piece)
             spans = boundary_word_spans(content)
+            repeat_edges = set()
+            self.candidate_edges.update(start+x for a,b,_ in spans for x in (a,b))
             local = set(lexical_forbidden_boundary_offsets(piece))
+            self.explicit_word_interiors.update(start+x for x in local)
             has_numbers = bool(re.search(r"[0-9零〇一二两三四五六七八九十百千万亿]",piece))
             numeric_unsafe = numeric_unsafe_cut_offsets(piece) if has_numbers else set()
             local.update(numeric_unsafe)
-            for left, right, _ in spans:
+            self.explicit_word_interiors.update(start+x for x in numeric_unsafe)
+            import jieba
+            for left, right, word in spans:
                 local.update(range(left + 1, right))
-            for match in re.finditer(r"(.{1,4})\1+", content):
-                if match.end()-match.start() <= self.max_chars:
-                    local.update(range(match.start()+1,match.end()))
+                if jieba.dt.FREQ.get(word, 0):
+                    self.known_word_interiors.update(start+x for x in range(left+1, right))
+                else:
+                    self.inferred_word_interiors.update(start+x for x in range(left+1, right))
+            for repeat_start, repeat_end, unit in repeated_units(content):
+                repeat_edges.update(range(repeat_start+len(unit), repeat_end, len(unit)))
+                for unit_start in range(repeat_start, repeat_end, len(unit)):
+                    local.update(range(unit_start+1, unit_start+len(unit)))
+            removable_repeat_edges = {edge for edge in repeat_edges
+                if start+edge not in self.known_word_interiors | self.explicit_word_interiors}
+            local.difference_update(removable_repeat_edges)
+            self.candidate_edges.update(start+edge for edge in repeat_edges)
             # Generic grammar units absent from a general-purpose word lexicon.
             patterns = (
                 r"[这那哪每本此该](?:一|两|几|\d+)?[场个种次位条件项份台名届]",
@@ -116,6 +152,7 @@ class BoundaryQuality:
                 r"[男女][团队]",
                 r"[\u3400-\u9fff]得(?=[\u3400-\u9fff])",
                 r"等于是",
+                r"(?:足够|充分|非常|更加)(?:信任|相信|了解|理解|支持|尊重)",
                 r"[A-Za-z][A-Za-z0-9]*(?:[-'’.][A-Za-z0-9]+)*",
                 r"\d+(?:[.,]\d+)*(?:毫米|厘米|公里|千米|毫秒|分钟|小时|公斤|千克|千瓦|兆瓦|MB|GB|MHz|GHz|km|kg|ms|%|℃)",
             )
@@ -183,12 +220,35 @@ class BoundaryQuality:
                 word_start, word_end = position, position+len(token.word)
                 position = word_end
                 if token.flag.startswith("nr"):
-                    self.forbidden.update(range(start+word_start+1,start+word_end))
+                    name_interiors = set(range(start+word_start+1,start+word_end))
+                    name_interiors.difference_update(start+edge for edge in removable_repeat_edges)
+                    self.forbidden.update(name_interiors)
+                    self.named_entity_interiors.update(name_interiors)
                 if i+1 >= len(tagged):
                     continue
                 following = tagged[i+1]
                 terminal = bool(re.search(r"[。！？!?]",local_index.slice(word_start,word_end)))
+                if (following.word in PERSONAL_PRONOUNS and token.flag.startswith('a')
+                        and i+2 < len(tagged) and tagged[i+2].flag[0] in 'vdap'):
+                    self.independent_edges.add(start+word_end)
+                if (token.flag.startswith('a') and following.flag.startswith('n')
+                        and i and tagged[i-1].flag == 'd'
+                        and any(t.word in PERSONAL_PRONOUNS for t in tagged[max(0, i-4):i])):
+                    self.independent_edges.add(start+word_end)
+                if (token.flag.startswith('nr') and following.flag.startswith('nr')
+                        and word_end not in removable_repeat_edges
+                        and not re.search(r'[\s，,、。！？!?]',local_index.slice(word_start,word_end))):
+                    self.forbidden.add(start+word_end)
+                    self.named_entity_interiors.add(start+word_end)
+                    self.named_component_interiors.update(range(start+word_start+1,
+                        start+word_end+len(following.word)))
                 dependent = (token.flag in {"d","p","c"} and following.flag[0] in "vanrdmp")
+                # Modal predicates and verb objects are not complete clauses.
+                dependent = dependent or (token.word in {"可以","能够","必须","应该","需要"}
+                    and following.flag.startswith("v"))
+                dependent = dependent or (token.flag.startswith('v') and following.flag=='m'
+                    and (i+2 < len(tagged) and tagged[i+2].flag=='q'
+                         or len(following.word)>1 and following.word[-1] in '把个次位张块枚'))
                 previous = i-1
                 adjective = False
                 while previous >= 0 and tagged[previous].flag in {"d","a","ad","an"}:
@@ -199,20 +259,62 @@ class BoundaryQuality:
                             and not complete_judgement and start+word_end not in self.restarts)
                 if not terminal and (dependent or modifier):
                     self.forbidden.add(start+word_end)
+                    self.pos_dependency_edges.add(start+word_end)
                     if token.flag=="c":
                         self.restarts.add(start+word_start)
                 if (not terminal and (token.flag.startswith("n") or token.flag=="r")
                         and (following.flag[0] in "dvtr" or following.word in {"还是","就是","也是","应该","可能","需要","能够"})
                         and self.pauses.get(start+word_end,0.) < .18):
                     self.soft_dependencies.add(start+word_end)
+            phrase_spans, clauses, conditions = syntax_boundary_evidence(local_index, self.max_chars)
+            for left, right, reason in phrase_spans:
+                for cut in range(start+left+1, start+right):
+                    self.forbidden.add(cut)
+                    self.syntax_reasons[cut] = reason
+            self.clause_edges.update(start+edge for edge in clauses)
+            completed_conditions.update(start+edge for edge in conditions)
             start = end
+        self.forbidden.difference_update(completed_conditions-self.known_word_interiors-self.explicit_word_interiors)
+        self.soft_dependencies.difference_update(self.clause_edges)
         self.forbidden.difference_update(self.required)
+        from .segmentation_profiles import legal_raw_boundaries
+        raw_allowed = legal_raw_boundaries(text, 'zh') | {len(text)}
+        self.forbidden.update(edge for edge in range(1, self.total)
+                              if self.index.raw_edges[edge] not in raw_allowed)
+        self.candidate_edges.update(self.restarts | self.semantic_required | set(self.pauses))
+        self.candidate_edges.update(self.clause_edges)
         self.allowed = sorted(set(range(1, self.total+1)) - self.forbidden)
 
     def duration(self, start, end):
         if not self.units:
             return 0.
         return max(0., self.units[end-1].end-self.units[start].start)
+
+    def independent_expression(self, start, end):
+        text = self.index.content[start:end]
+        return (text in STANDALONE_RESPONSES
+                or bool(re.fullmatch(r'[对嗯哎诶哦啊呀唉好是行]+', text or ' ')))
+
+    def can_join(self, start, cut, end):
+        """Only optional cuts in one readable continuous expression can go."""
+        if cut in self.required | self.semantic_required | self.independent_edges or end-start > self.max_chars:
+            return False
+        if self.units and self.duration(start, end) > self.max_seconds+.05:
+            return False
+        if (self.independent_expression(start, cut) or self.independent_expression(cut, end)
+                or re.search(r'[。！？!?]', self.index.slice(start, cut))):
+            return False
+        # A new explicit subject in an already complete clause is evidence of
+        # an independent sentence. A connective alone is not such evidence.
+        following = self.index.content[cut:end]
+        import jieba.posseg as posseg
+        tagged = list(posseg.cut(following))
+        if (tagged and tagged[0].flag.startswith('n')
+                and any(token.flag[0] in 'va' for token in tagged[1:4])
+                and cut not in self.forbidden | self.awkward):
+            return False
+        return not (re.match(r'(?:我|你|他|她|我们|你们|他们)', following)
+                    and cut not in self.forbidden | self.awkward)
 
     def inspect(self, boundaries):
         from .grouping_contract import validate_boundary_offsets
@@ -224,10 +326,18 @@ class BoundaryQuality:
             issues.append(dict(kind="connective_ownership",start=cut,end=cut))
         for cut in sorted(self.protected_conflicts):
             issues.append(dict(kind="pause_or_source_word_conflict",start=cut,end=cut))
+        edges = [0, *boundaries]
+        for start, cut, end in zip(edges, edges[1:], edges[2:]):
+            if self.can_join(start, cut, end):
+                issues.append(dict(kind='unnecessary_boundary', start=cut, end=cut,
+                                   reason='complete_expression_within_limit'))
         start = 0
         for end in boundaries:
             if end in self.forbidden:
-                issues.append(dict(kind="semantic_boundary", start=end, end=end))
+                issue = dict(kind="semantic_boundary", start=end, end=end)
+                if end in self.syntax_reasons:
+                    issue['reason'] = self.syntax_reasons[end]
+                issues.append(issue)
             elif end in self.awkward and end not in self.required:
                 issues.append(dict(kind="semantic_cohesion", start=end, end=end))
             if end-start > self.max_chars:
@@ -235,12 +345,43 @@ class BoundaryQuality:
             duration = self.duration(start, end)
             if self.units and duration > self.max_seconds+.05:
                 issues.append(dict(kind="duration", start=start, end=end, seconds=duration))
-            if (self.units and duration < self.min_seconds-1e-6
-                    and start not in self.required
-                    and end not in self.required and len(boundaries) > 1):
+            if (self.units and duration < self.display_floor-1e-6
+                    and not self.independent_short(start, end)
+                    and (start not in self.required or end not in self.required)
+                    and len(boundaries) > 1):
                 issues.append(dict(kind="short_tail", start=start, end=end))
+            if (end-start == 1 and not self.independent_short(start,end)
+                    and (start not in self.required or end not in self.required)):
+                issues.append(dict(kind='dependent_fragment',start=start,end=end))
+            if self.dependent_quantity(start,end):
+                issues.append(dict(kind='dependent_fragment',start=start,end=end))
+            if end in self.estimated_split_offsets:
+                issues.append(dict(kind="estimated_source_split", start=end, end=end))
             start = end
         return issues
+
+    def independent_short(self, start, end):
+        """A complete short source or reaction is evidence, not a length target."""
+        if (start,end) in self.source_ranges:
+            return True
+        text = self.index.content[start:end]
+        if text in INDEPENDENT_RESPONSES:
+            return True
+        if re.fullmatch(r"[对嗯哎诶哦啊呀唉好是行]+", text or " "):
+            return True
+        return bool(re.search(r"[。！？!?]",self.index.slice(start,end)))
+
+    def dependent_quantity(self,start,end):
+        return bool(start and start not in self.required and not self.independent_short(start,end)
+            and self.pauses.get(start,0.) < .35 and re.fullmatch(
+                r'[零〇一二两三四五六七八九十百千万亿\d]+(?:个|把|次|位|张|块|枚)',self.index.content[start:end]))
+
+    def new_single_character_has_evidence(self, start, end, original):
+        if end-start != 1 or (start, end) in self.source_ranges:
+            return True
+        if start in original | {0} and end in original:
+            return True
+        return self.pauses.get(start, 0.) >= .18 or self.pauses.get(end, 0.) >= .18
 
     def windows(self, boundaries, issues=None):
         """A bad boundary sees both neighbours and a third cue for short tails."""
@@ -263,9 +404,16 @@ class BoundaryQuality:
 
     def _solve(self, left, right, original, *, fixed=(), relax_time=False, relax_length=False):
         from bisect import bisect_right
-        points = [left, *(x for x in self.allowed if left < x < right), right]
+        internal = sorted(x for x in original if left < x < right)
+        if (right-left <= self.max_chars and self.duration(left, right) <= self.max_seconds+.05
+                and not any(left < x < right for x in self.required | self.semantic_required | self.independent_edges | set(fixed))
+                and all(self.can_join(left, cut, right) for cut in internal)):
+            return [right]
+        points = [left, *(x for x in self.allowed if left < x < right
+                         and (x in original or x in self.candidate_edges)), right]
         scores, previous = {left: 0.}, {}
         required = sorted(x for x in self.required | self.semantic_required | set(fixed) if left < x < right)
+        required = sorted(set(required) | {x for x in self.independent_edges if left < x < right})
         for end_index, end in enumerate(points[1:], 1):
             for start in reversed(points[:end_index]):
                 length = end-start
@@ -275,22 +423,36 @@ class BoundaryQuality:
                     continue
                 if end < right and end in self.awkward and end not in original and end not in self.required:
                     continue
+                if end < right and end in self.soft_dependencies and end not in original and end not in self.required:
+                    continue
                 if bisect_right(required, start) < bisect_right(required, end-1):
                     continue
                 duration = self.duration(start, end)
+                if self.dependent_quantity(start,end):
+                    continue
+                if not self.new_single_character_has_evidence(start, end, original):
+                    continue
                 if self.units and duration > self.max_seconds+.05 and not relax_time:
                     continue
-                cost = 3. + .055*(length-min(10, self.max_chars))**2
-                if self.units and duration < self.min_seconds:
-                    cost += 8. + 20.*(self.min_seconds-duration)**2
+                if (self.units and duration < self.display_floor-1e-6
+                        and not self.independent_short(start, end)
+                        and (start not in original | {left} or end not in original)
+                        and not relax_time):
+                    continue
+                cost = 20.  # Optional breaths never pay for extra short cues.
+                if (self.units and duration < self.display_floor
+                        and not self.independent_short(start,end)):
+                    cost += 30. + 20.*(self.min_seconds-duration)**2
                 cost += 500.*max(0, length-self.max_chars)**2
                 cost += 25.*max(0., duration-self.max_seconds)**2
                 if end < right:
                     cost += 25. if end in self.awkward else 0.
                     cost += 14. if end in self.soft_dependencies else 0.
-                    cost -= 4. if end in original else 0.
-                    cost -= min(7., self.pauses.get(end, 0.)*20.)
-                    cost -= 3. if end in self.restarts else 0.
+                    cost += -2. if end in original else 2.
+                    cost -= 1. if end in self.source_edges else 0.
+                    cost -= min(3.5, self.pauses.get(end, 0.)*10.)
+                    cost -= 2. if end in self.restarts else 0.
+                    cost -= 6. if end in self.clause_edges else 0.
                 total = scores[start]+cost
                 if total < scores.get(end, math.inf):
                     scores[end], previous[end] = total, start
@@ -303,11 +465,24 @@ class BoundaryQuality:
         return list(reversed(result))
 
     def repair(self, boundaries, *, record=None, rule="quality_local_window"):
+        result = list(boundaries)
+        while True:
+            final, issues = self._repair_pass(result, record=record, rule=rule)
+            if final == result:
+                return final, issues
+            # Every accepted pass strictly improves inspect's quality tuple.
+            # Reevaluate newly adjacent cues within this call for idempotency.
+            result = final
+
+    def _repair_pass(self, boundaries, *, record=None, rule="quality_local_window"):
         original = list(boundaries)
         issues = self.inspect(original)
         unstable = self.forbidden | self.awkward
-        unstable = unstable | {edge for issue in issues if issue['kind']=='short_tail'
-                               for edge in (issue['start'],issue['end'])}
+        unstable = unstable | {edge for issue in issues if issue['kind'] in {'short_tail','dependent_fragment'}
+                               for edge in (issue['start'],issue['end'])
+                               if edge not in self.source_edges}
+        unstable.update(issue['start'] for issue in issues if issue['kind']=='estimated_source_split')
+        unstable.update(issue['start'] for issue in issues if issue['kind']=='unnecessary_boundary')
         self.stable_boundaries = set(original)-unstable
         result = set(original)
         for left, right in self.windows(original, issues):
@@ -325,12 +500,18 @@ class BoundaryQuality:
                 reason = "no_safe_path_retained_review"
             accepted, rejection = self.accept_change(sorted(result),
                 sorted((result-set(before)) | set(candidate)))
-            if record:
+            proposed = sorted((result-set(before)) | set(candidate))
+            if accepted and proposed != sorted(result) and not self.improves(sorted(result),proposed):
+                accepted, rejection = False, "no_quality_improvement_retained"
+            if record and candidate != before:
                 old_edges, new_edges = set(before), set(candidate)
                 record("grouping_boundary_move", rule=rule, accepted=accepted,
                     reason=reason if accepted else rejection, content_start=left, content_end=right,
                     old_positions=before, new_positions=candidate,
                     removed_positions=sorted(old_edges-new_edges), added_positions=sorted(new_edges-old_edges),
+                    removed_reasons={str(edge): 'complete_expression_within_limit' for edge in old_edges-new_edges
+                                     if any(i['kind']=='unnecessary_boundary' and i['start']==edge for i in issues)},
+                    protected_reasons=self.boundary_reasons,
                     before=self.index.pieces([left, *before])[1:] if left else self.index.pieces(before),
                     after=[self.index.slice(a,b) for a,b in zip([left,*candidate],candidate)])
             if accepted:
@@ -338,6 +519,16 @@ class BoundaryQuality:
                 result.update(candidate)
         final = sorted(result)
         return final, self.inspect(final)
+
+    def improves(self, before, after):
+        old, new = self.inspect(before), self.inspect(after)
+        # Semantic damage is never compensated by fewer/longer subtitles.
+        severe = {"semantic_boundary","semantic_cohesion","protected_boundary_missing",
+                  "connective_ownership","estimated_source_split","dependent_fragment"}
+        def score(issues):
+            return (sum(i['kind'] in severe for i in issues),
+                    sum(i['kind'] in {'length','duration'} for i in issues), len(issues))
+        return score(new) < score(old)
 
     def accept_change(self, before, after):
         if (self.required-set(after)) - set(self.required-set(before)):
@@ -352,6 +543,12 @@ class BoundaryQuality:
             return False, "new_word_or_connective_damage"
         if (set(after) & self.awkward) - set(before):
             return False, "new_syntactic_damage"
+        if (set(after) & self.soft_dependencies) - set(before):
+            return False, "new_dependency_damage"
+        old_issues, new_issues = self.inspect(before), self.inspect(after)
+        for kind in ("length","duration","short_tail","estimated_source_split","dependent_fragment"):
+            if sum(i['kind']==kind for i in new_issues)>sum(i['kind']==kind for i in old_issues):
+                return False, "new_"+kind+"_conflict"
         # Both arrays reconstruct exactly the same immutable raw source. New
         # positions cannot silently delete punctuation or change a number.
         if "".join(self.index.pieces(after)) != self.index.text:
@@ -368,9 +565,18 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
     cursor = 0
     for left, right in zip(segments, segments[1:]):
         cursor += display_length(left.text)
-        if left.speaker != right.speaker or right.start-left.end > 2.:
+        independent_response = any(
+            content_exact(item.text) in STANDALONE_RESPONSES
+            or re.fullmatch(r'[对嗯哎诶哦啊呀唉好是行]+', content_exact(item.text) or ' ')
+            for item in (left, right))
+        if (left.speaker != right.speaker or right.start-left.end > 2.
+                or right.start < left.end-.001
+                or left.caption_arbitration.get('protected_end')
+                or right.caption_arbitration.get('protected_start') or independent_response):
             required.add(cursor)
-    units = []
+    units, cursor = [], 0
+    pauses = firered_pause_character_gaps(segments, tokens)
+    native_long_pauses = set()
     for segment in segments:
         private = copy.copy(segment)
         private.caption_arbitration = copy.deepcopy(segment.caption_arbitration)
@@ -378,11 +584,58 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
             math.isfinite(w.start) and math.isfinite(w.end)
             and segment.start <= w.start < w.end <= segment.end+.001]
         units.extend(segment_content_timeline(private,tokens))
+        evidence = segment.caption_arbitration.get('word_timing', {})
+        if (evidence.get('basis') in {'aligner_words', 'provider_words'}
+                or segment.caption_arbitration.get('timing_evidence', {}).get('independent_acoustic')):
+            measured = private.words
+            if ''.join(content_exact(w.text) for w in measured) == content_exact(segment.text):
+                offset = cursor
+                for left_word, right_word in zip(measured, measured[1:]):
+                    offset += display_length(left_word.text)
+                    gap = right_word.start-left_word.end
+                    if gap >= .18:
+                        pauses[offset] = max(pauses.get(offset, 0.), gap)
+                        if gap >= 3.:
+                            required.add(offset)
+                            native_long_pauses.add(offset)
+        cursor += display_length(segment.text)
     quality = BoundaryQuality("".join(s.text for s in segments), units=units,
-                              required=required, pauses=firered_pause_character_gaps(segments, tokens))
+                              required=required, pauses=pauses)
+    quality.boundary_reasons.update({edge: 'measured_long_silence' for edge in native_long_pauses})
+    cursor = 0
+    for left, right in zip(segments, segments[1:]):
+        cursor += display_length(left.text)
+        if cursor in quality.required:
+            quality.boundary_reasons[cursor] = (
+                'speaker_change' if left.speaker != right.speaker else
+                'overlapping_source' if right.start < left.end-.001 else
+                'manual_protected_cut' if left.caption_arbitration.get('protected_end') or right.caption_arbitration.get('protected_start') else
+                'source_gap_or_independent_turn')
+        else:
+            quality.boundary_reasons[cursor] = 'optional_source_chunk'
     cursor = 0
     for segment in segments:
+        end = cursor+len(content_exact(segment.text))
+        quality.source_ranges.add((cursor,end))
+        quality.source_edges.update((cursor,end))
+        # Inspect verb/object attachment within the actual source utterance.
+        # Concatenating two utterances can otherwise mistake 信任 | 我跟你说
+        # for a verb followed by its object.
+        import jieba.posseg as posseg
+        tagged=list(posseg.cut(content_exact(segment.text)))
+        position=cursor
+        for token,following in zip(tagged,tagged[1:]):
+            position+=len(token.word)
+            if (token.flag.startswith('v') and token.word not in {'说','讲','问','可以','能够','必须','应该','需要','能','会','要'}
+                    and following.word in PERSONAL_PRONOUNS
+                    and position not in quality.clause_edges
+                    and quality.pauses.get(position,0.)<.35):
+                quality.forbidden.add(position)
         evidence = segment.caption_arbitration.get("word_timing", {})
+        if evidence.get("basis") == "uniform_display_estimate":
+            quality.estimated_ranges.append((cursor,end))
+            if end-cursor<=quality.max_chars and quality.duration(cursor,end)<2*quality.display_floor:
+                quality.estimated_split_offsets.update(range(cursor+1,end))
         words = evidence.get("measured_words", ())
         if evidence.get("basis") != "uniform_display_estimate":
             content = content_exact(segment.text)
@@ -394,6 +647,18 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
                     quality.forbidden.update(range(cursor+found+1,cursor+found+len(value)))
                     position = found+len(value)
         cursor += display_length(segment.text)
+    # A pronoun at the end of a real utterance may be an object (相信他),
+    # and 把 in 一把 is a measure word. The generic suffix heuristic cannot
+    # overrule an intact source edge; actual lexical violations still apply.
+    quality.awkward.difference_update(quality.source_edges-quality.forbidden)
+    quality.candidate_edges.update(quality.source_edges)
+    # Dictionary words and explicit grammatical dependencies remain stronger
+    # than source edges. An unknown HMM word alone cannot overrule them.
+    reliable_interiors = (quality.known_word_interiors | quality.named_component_interiors
+                          | quality.explicit_word_interiors | quality.pos_dependency_edges
+                          | set(quality.syntax_reasons))
+    quality.forbidden.difference_update((quality.source_edges & quality.inferred_word_interiors)-reliable_interiors)
+    quality.awkward.difference_update(quality.source_edges-quality.forbidden)
     quality.forbidden.difference_update(quality.required)
     # True turn changes have independent lexical context. A measured pause
     # inside an otherwise indivisible name/number in the same turn is an

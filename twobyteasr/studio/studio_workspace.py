@@ -191,6 +191,24 @@ class StudioWorkspaceBuilder:
         page.save_state.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         bar.addWidget(page.save_state)
         page.save_state.installEventFilter(page)
+        page.subtitle_tasks_button = page._tool_button("fa5s.tasks", "查看字幕任务进度与结果", page.show_subtitle_tasks)
+        page.subtitle_tasks_button.setText("任务进度")
+        # 2026-11-10 (user): a quiet round icon while idle; a progress pill
+        # while AI work runs; a dot when finished results wait to be seen
+        # (_refresh_subtitle_task_entry).
+        page.subtitle_tasks_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        page.subtitle_tasks_button.setObjectName("studioSubtitleTasks")
+        page.subtitle_tasks_button.setProperty("taskState", "idle")
+        page.subtitle_tasks_button.setIconSize(QSize(15, 15))
+        page.subtitle_tasks_button.setFixedWidth(32)
+        page.subtitle_tasks_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        install_themed_icon(page.subtitle_tasks_button, "fa5s.tasks", "accent")
+        page.subtitle_tasks_dot = QFrame(page.subtitle_tasks_button)
+        page.subtitle_tasks_dot.setObjectName("studioTaskDot")
+        page.subtitle_tasks_dot.setFixedSize(8, 8)
+        page.subtitle_tasks_dot.move(22, 1)
+        page.subtitle_tasks_dot.hide()
+        bar.addWidget(page.subtitle_tasks_button)
         bar.addStretch(1)
         # 2026-10-23 (user's design B): the commands sit in tonal tracks by
         # kind (navigation / view / tools / export) instead of between
@@ -396,8 +414,15 @@ class StudioWorkspaceBuilder:
         tool_track.insert_after(page.bilingual_toggle_button, page.report_problem_button)
         # Less frequent commands share one menu; their existing buttons retain
         # signal/shortcut ownership and are used by the menu actions.
-        page._studio_toolbar_overflow_widgets = (open_button,
-            page.review_mode_button, clip_assistant, page.studio_usage_button)
+        # 2026-11-10 (user): 打开已有工程 (folder button on the left) and
+        # 进入审核模式 (「▶ 开始审核」in the subtitle list) left this menu.
+        page._studio_toolbar_overflow_widgets = (clip_assistant, page.studio_usage_button)
+        # Menu groups, in this order; anything not listed goes under 视图.
+        page._studio_overflow_groups = (
+            ('工具', (find_replace, script_match, page.speaker_manager_button, clip_assistant,
+                      page.report_problem_button)),
+            ('设置', (page.punctuation_button, shortcut_entry, page.studio_usage_button)),
+        )
         page._studio_compact_commands = (page.speaker_manager_button, shortcut_entry, find_replace, script_match)
         # Leave the bar first to last when it is too narrow (_fit_studio_toolbar).
         page._studio_toolbar_collapse_order = (script_match, shortcut_entry, find_replace,
@@ -414,7 +439,25 @@ class StudioWorkspaceBuilder:
             overflow_menu.clear()
             sources = page._studio_toolbar_overflow_widgets
             sources += tuple(getattr(page, '_studio_toolbar_collapsed', ()))
-            for source in sources:
+            from ..design.rich_menu import add_header
+            grouped = []
+            listed = set()
+            for title, members in page._studio_overflow_groups:
+                chosen = [source for source in members if source in sources]
+                listed.update(chosen)
+                grouped.append((title, chosen))
+            grouped.append(('视图', [source for source in sources if source not in listed]))
+            ordered = []
+            for title, chosen in grouped:
+                if chosen:
+                    ordered.append(title)
+                    ordered.extend(chosen)
+            for source in ordered:
+                if isinstance(source, str):
+                    if overflow_menu.actions():
+                        overflow_menu.addSeparator()
+                    add_header(overflow_menu, tr(source))
+                    continue
                 if source.menu() is not None:
                     submenu = source.menu()
                     submenu.setTitle(source.text())
@@ -976,10 +1019,10 @@ class StudioWorkspaceBuilder:
         # cleared from the timeline context menu, auto-avoid lives in the
         # timeline options menu, frame/cover become icon buttons.
         page.project_range_bar.hide()
-        page.auto_stacking_toggle=QCheckBox('新字幕自动避让')
+        page.auto_stacking_toggle=QCheckBox('字幕自动避让')
         page.auto_stacking_toggle.setObjectName('timelineToggleChip')
         page.auto_stacking_toggle.setChecked(True)
-        bind_text(page.auto_stacking_toggle, '仅为新生成字幕保存初始避让位置；人工排版后保持位置。右键可按明确范围重新排版，一次撤销。', property='toolTip')
+        bind_text(page.auto_stacking_toggle, '每条字幕显示期间保持避让位置，结束后释放空位；新字幕按可见边缘紧凑排列。右键可预览基础位置重排。', property='toolTip')
         def toggle_stacking(checked):
             if page.project:
                 page.project.studio_state['auto_subtitle_stacking']=bool(checked)
@@ -987,10 +1030,8 @@ class StudioWorkspaceBuilder:
         page.auto_stacking_toggle.toggled.connect(toggle_stacking)
         page.auto_stacking_toggle.setContextMenuPolicy(Qt.CustomContextMenu)
         def fill_stacking_menu(menu):
-            from PySide6.QtWidgets import QMenu
-            from ..caption_design.theme_visual_bounds import start_studio_calibration
-            from .display_handoff_ui import bridge_short_gaps, open_handoff_preview
-            from .subtitle_layout_ui import open_layout_preview, rearrange_now
+            from .display_handoff_ui import bridge_short_gaps
+            from .subtitle_layout_ui import rearrange_now
             def scope_ids(scope):
                 if not page.project:return []
                 from ..timeline.studio_edit_sequence import source_cue_id_of
@@ -1003,9 +1044,9 @@ class StudioWorkspaceBuilder:
                     return [str(page.cue_model.data(page.cue_model.index(row.row(),0),Qt.UserRole)) for row in rows]
                 return [page.selected_cue_id] if page.selected_cue_id else []
             # 2026-10-18 (user): the four 预览… re-layouts and the other reviews
-            # were used about never. The everyday actions are one click (one
-            # undo step each); the previews and the decoration measurement wait
-            # under 更多.
+            # were used about never; 2026-11-10 (user) they left the menu
+            # (open_layout_preview / open_handoff_preview stay for acceptance).
+            # The everyday actions are one click, one undo step each.
             selected = menu.addAction('重新排版选中字幕的位置',
                                       lambda: rearrange_now(page, scope_ids('selected') or scope_ids('current')))
             selected.setToolTip(tr('没有多选时排当前这条；手动摆放或带关键帧的不动，可撤销'))
@@ -1015,20 +1056,6 @@ class StudioWorkspaceBuilder:
             bridge.setToolTip(tr('上一条字幕的结束接到下一条的开始；下一条的开始时间不变，可撤销'))
             for action in (selected, every, bridge):
                 action.setEnabled(page.project is not None)
-            for old in menu.findChildren(QMenu, 'stackingMoreMenu'):
-                old.deleteLater()  # clear() keeps the previous submenu object
-            more = create_studio_menu(menu)
-            more.setObjectName('stackingMoreMenu')
-            more.setToolTipsVisible(True)
-            bind_text(more, '更多', property='title')
-            for label,scope in [('当前字幕','current'),('已选字幕','selected'),('当前说话人字幕','speaker'),('全部字幕','all')]:
-                more.addAction(f'先预览再重新排版{label}…',lambda _checked=False,s=scope:open_layout_preview(page, scope_ids(s)))
-            more.addSeparator()
-            more.addAction('预览说话人交接边界…', lambda: open_handoff_preview(page))
-            more.addAction('测量重叠 HTML 主题装饰…', lambda: start_studio_calibration(page))
-            more.setEnabled(page.project is not None)
-            menu.addSeparator()
-            menu.addMenu(more)
 
         def stacking_menu(point):
             from PySide6.QtWidgets import QMenu
@@ -1044,8 +1071,8 @@ class StudioWorkspaceBuilder:
             control.setChecked(page.project.studio_state.get('auto_subtitle_stacking',True))
             control.blockSignals(False)
             warnings=project_stack_layout(page.project).warnings
-            bind_text(control, '新字幕自动避让 ⚠' if warnings else '新字幕自动避让')
-            bind_text(control, '\n'.join(warnings[:8]) if warnings else '仅影响新生成字幕的初始布局；保存的人工位置保持不变。右键可按范围重新排版，一次撤销。', property='toolTip')
+            bind_text(control, '字幕自动避让 ⚠' if warnings else '字幕自动避让')
+            bind_text(control, '\n'.join(warnings[:8]) if warnings else '每条字幕显示期间保持避让位置，结束后释放空位；保留人工基础位置。右键可按范围重新排版，一次撤销。', property='toolTip')
         page.project_range_bar._timer.timeout.connect(refresh_stacking)
         page.auto_stacking_toggle.setParent(page)
         page.auto_stacking_toggle.hide()
@@ -1115,7 +1142,7 @@ class StudioWorkspaceBuilder:
         timeline_toolbar.addWidget(page._toolbar_divider())
         page.ai_optimize_button = page._tool_button("fa5s.magic", "AI 优化当前字幕", lambda: page._toggle_drawer(0))
         page.reasr_button = page._tool_button("fa5s.microphone", "重新识别当前字幕", page._reasr_current)
-        page.cue_more_button = page._tool_button("fa5s.ellipsis-h", "更多操作 · 字幕、媒体池、新建轨道与转场", page._show_cue_more_menu)
+        page.cue_more_button = page._tool_button("fa5s.ellipsis-h", "更多操作 · 编辑当前字幕、排版、媒体池与转场", page._show_cue_more_menu)
         for button in (page.ai_optimize_button, page.reasr_button, page.cue_more_button):
             timeline_toolbar.addWidget(button)
         timeline_toolbar.addWidget(page._toolbar_divider())
@@ -1254,33 +1281,27 @@ class StudioWorkspaceBuilder:
             button.setIconSize(QSize(18, 18))
         bind_text(page.make_cover_button, '制作封面：当前截图、新建封面或选择模板', property='toolTip')
         yield '时间轴工具栏'
-        page.timeline_options_button = page._tool_button('fa5s.sliders-h', '时间轴选项 · 显示、缩放与新字幕自动避让', lambda: None)
+        page.timeline_options_button = page._tool_button('fa5s.sliders-h', '时间轴显示选项', lambda: None)
         page.timeline_options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         options_menu = create_studio_menu(page.timeline_options_button)
 
         def update_options_menu():
             options_menu.clear()
-            # 2026-10-21: the icon-only display switches and the zoom buttons
-            # by name; on a narrow bar they are folded away and live only here.
+            # 2026-11-10 (user): this menu only says how the timeline looks.
+            # Subtitle layout (自动避让 / 重新排版 / 衔接间隙) moved to the cue
+            # ••• menu; the zoom commands appear only while their buttons are
+            # folded off a narrow bar (Ctrl+wheel zooms as well).
             for toggle in (page.waveform_toggle, page.filmstrip_toggle, page.follow_playhead_toggle, page.snap_toggle):
                 shown = options_menu.addAction(toggle.accessibleName())  # no icon: the check mark shows
                 shown.setCheckable(True)
                 shown.setChecked(toggle.isChecked())
                 shown.setToolTip(toggle.toolTip())
                 shown.toggled.connect(toggle.setChecked)
-            options_menu.addSeparator()
-            for button in zoom_buttons:
-                options_menu.addAction(button.icon(), button.toolTip(), button.click)
-            options_menu.addSeparator()
-            control = page.auto_stacking_toggle
-            action = options_menu.addAction(control.text())
-            action.setCheckable(True)
-            action.setChecked(control.isChecked())
-            action.setEnabled(page.project is not None)
-            action.setToolTip(control.toolTip())
-            action.toggled.connect(control.setChecked)
-            options_menu.addSeparator()
-            fill_stacking_menu(options_menu)
+            folded = [button for button in zoom_buttons if button.isHidden()]
+            if folded:
+                options_menu.addSeparator()
+                for button in folded:
+                    options_menu.addAction(button.icon(), button.toolTip(), button.click)
 
         options_menu.aboutToShow.connect(update_options_menu)
         options_menu.setToolTipsVisible(True)
@@ -1300,34 +1321,40 @@ class StudioWorkspaceBuilder:
         for widget in hidden_timeline:
             timeline_toolbar.removeWidget(widget);widget.setParent(page);widget.hide()
         page._timeline_overflow_widgets=hidden_timeline
+        # The AI ones (修轴 / 优化 / 重识别) are reached from the「AI 工具」menu.
+        ai_cue_buttons = {page.smart_align_button, page.ai_optimize_button, page.reasr_button}
         cue_menu=create_studio_menu(page.cue_more_button)
         def update_cue_menu():
             cue_menu.clear()
-            # 2026-10-21 (user): the media pool, new tracks and transitions left
-            # the bar for this menu (the "+" above the track names adds tracks too).
+            # 2026-11-10 (user): three groups — editing the current subtitle,
+            # subtitle layout, media and transitions. AI commands live in the
+            # 「AI 工具」menu; new tracks come from the "+" above the track names.
+            from ..design.rich_menu import add_header
             from .studio_widgets import _icon
-            cue_menu.addAction(_icon('fa5s.photo-video'), tr('打开媒体池'), page.media_pool_button.click)
-            cue_menu.addAction(_icon('fa5s.closed-captioning'), tr('新建字幕轨'), page.add_subtitle_track_button.click)
-            cue_menu.addAction(_icon('fa5s.layer-group'), tr('新建视频轨'), page.add_video_track_button.click)
-            transitions = page.transition_button.menu()
-            transitions.setTitle(page.transition_button.toolTip())
-            transitions.setIcon(_icon('fa5s.adjust'))
-            cue_menu.addMenu(transitions)
-            cue_menu.addSeparator()
+            add_header(cue_menu, tr('编辑当前字幕'))
             for source in hidden_timeline:
+                if source in ai_cue_buttons:
+                    continue
                 action=cue_menu.addAction(source.icon(),source.toolTip())
                 action.setEnabled(source.isEnabled())
                 action.triggered.connect(lambda _checked=False, button=source:button.click())
             cue_menu.addSeparator()
-            # AI 断句 moved here from its own bar button (2026-10-08).
-            cue_menu.addAction('AI 断句 · 选中范围试跑', lambda: page.run_sentence_refine(whole_project=False))
-            cue_menu.addAction('AI 断句 · 全工程执行', lambda: page.run_sentence_refine(whole_project=True))
-            retry = cue_menu.addAction('AI 断句 · 仅重试失败范围', lambda: page.run_sentence_refine(whole_project=False, retry_failed=True))
-            retry.setEnabled(bool(page.project and (page.project.studio_state.get('ai_sentence_refine') or {}).get('failed_cue_ids')))
-            cancel = cue_menu.addAction('取消本次 AI 断句', page.cancel_sentence_refine)
-            worker = getattr(page, '_refine_worker', None)
-            cancel.setEnabled(bool(worker is not None and worker.isRunning()))
-            cue_menu.addSeparator();cue_menu.addAction('所有字幕操作…',page._show_cue_more_menu)
+            add_header(cue_menu, tr('排版'))
+            control = page.auto_stacking_toggle
+            action = cue_menu.addAction(control.text())
+            action.setCheckable(True)
+            action.setChecked(control.isChecked())
+            action.setEnabled(page.project is not None)
+            action.setToolTip(control.toolTip())
+            action.toggled.connect(control.setChecked)
+            fill_stacking_menu(cue_menu)
+            cue_menu.addSeparator()
+            add_header(cue_menu, tr('素材与转场'))
+            cue_menu.addAction(_icon('fa5s.photo-video'), tr('打开媒体池'), page.media_pool_button.click)
+            transitions = page.transition_button.menu()
+            transitions.setTitle(page.transition_button.toolTip())
+            transitions.setIcon(_icon('fa5s.adjust'))
+            cue_menu.addMenu(transitions)
         cue_menu.aboutToShow.connect(update_cue_menu)
         page.cue_more_button.clicked.disconnect()
         page.cue_more_button.setMenu(cue_menu)
@@ -1444,14 +1471,21 @@ class StudioWorkspaceBuilder:
         page.timeline.text_split_requested.connect(
             lambda cue_id, position, point: page.cue_controller.split_at_text(cue_id, position, point))
         page.waveform_toggle.toggled.connect(page.timeline.set_waveform_visible)
+        # 2026-11-09 (user, redesign): whole-project overview strip.
+        from .timeline_overview import TimelineOverview
+        page.timeline_overview = TimelineOverview(page, page.timeline)
+        timeline_layout.addWidget(page.timeline_overview)
         timeline_layout.addWidget(page.timeline, 1)
         from .timeline_add_track import install_add_track_button
         install_add_track_button(page)
         # The toolbar layout (SetMinimumSize) derives the host minimum from
         # the toolbar and the timeline; no fixed floor (2026-10-22).
         page.workspace_splitter.addWidget(timeline_host)
-        page.workspace_splitter.setStretchFactor(0, 3)
-        page.workspace_splitter.setStretchFactor(1, 2)
+        # 2026-11-09 (user: tracks squeezed): height changes above the
+        # timeline (window resize, notice bars) go to the video area; the
+        # timeline keeps the height it was given or the user dragged.
+        page.workspace_splitter.setStretchFactor(0, 1)
+        page.workspace_splitter.setStretchFactor(1, 0)
         page.workspace_splitter.setSizes([560, 380])
         yield '时间轴'
         workspace_layers = QStackedLayout(page.workspace_host)
@@ -1823,20 +1857,31 @@ class StudioWorkspaceBuilder:
         title.setObjectName("sectionTitle")
         title_row = QHBoxLayout()
         title_row.addWidget(title, 1)
-        page.cue_proofread_button = QPushButton("AI 校对")
-        page.cue_proofread_button.setObjectName("studioButton")
-        install_themed_icon(page.cue_proofread_button, "fa5s.spell-check", "secondary")
-        bind_text(page.cue_proofread_button, 'AI 校对')
-        bind_text(page.cue_proofread_button, '打开当前工程的 AI 词库校对，勾选建议后应用', property='toolTip')
-        page.cue_proofread_button.clicked.connect(page.glossary_proofread_requested.emit)
-        title_row.addWidget(page.cue_proofread_button)
-        # 2026-10-21 (user): AI 清理 left the 批量替换 tabs and sits beside AI 校对.
-        page.cue_cleanup_button = QPushButton("AI 清理")
-        page.cue_cleanup_button.setObjectName("studioButton")
-        install_themed_icon(page.cue_cleanup_button, "fa5s.broom", "secondary")
-        bind_text(page.cue_cleanup_button, '用 AI 清理口癖、重复和标点；逐条确认后应用', property='toolTip')
-        page.cue_cleanup_button.clicked.connect(page._open_ai_cleanup)
-        title_row.addWidget(page.cue_cleanup_button)
+        # 2026-11-09 (user, redesign review): AI 校对 and AI 清理 were two
+        # loud buttons in the title row; they now live in one「AI」menu.
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QToolButton
+        from ..design.studio_theme import create_studio_menu
+        from .studio_widgets import _icon
+        # 2026-11-10 (user): every AI command lives in this one menu — 校对 /
+        # 清理 / 断句 / 翻译 for the project, 优化 / 修轴 / 重识别 / 翻译 for
+        # the current or selected subtitles — instead of four places.
+        page.cue_ai_button = QToolButton()
+        page.cue_ai_button.setObjectName("cueAiButton")
+        page.cue_ai_button.setText("AI 工具")
+        bind_text(page.cue_ai_button, 'AI 工具')
+        bind_text(page.cue_ai_button, '所有 AI 功能：校对、清理、断句、翻译、优化、修轴、重新识别', property='toolTip')
+        install_themed_icon(page.cue_ai_button, "fa5s.magic", "accent")
+        page.cue_ai_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        page.cue_ai_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        page.cue_ai_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        page.cue_ai_button.setIconSize(QSize(15, 15))
+        ai_menu = create_studio_menu(page.cue_ai_button)
+        ai_menu.setObjectName("cueAiMenu")
+        from .studio_ai_menu import build_ai_menu
+        build_ai_menu(page, ai_menu)
+        page.cue_ai_button.setMenu(ai_menu)
+        title_row.addWidget(page.cue_ai_button)
         layout.addLayout(title_row)
         # 四十二轮：后台识别状态芯片——识别启动后弹窗关闭，运行/完成/失败
         # 状态与取消按钮都落在这里，用户可以继续看视频编辑工程。
@@ -1857,9 +1902,10 @@ class StudioWorkspaceBuilder:
         chip_layout.addWidget(page.recognition_cancel_button)
         page.recognition_chip.hide()
         layout.addWidget(page.recognition_chip)
-        filters = QGridLayout()
-        filters.setHorizontalSpacing(4)
-        filters.setVerticalSpacing(4)
+        # 2026-11-09 (redesign): the three filters share one row; review
+        # controls (连续审核 / 开始审核) take the row below.
+        filters = QHBoxLayout()
+        filters.setSpacing(4)
         page.cue_filter_group = QButtonGroup(page)
         page.cue_filter_group.setExclusive(True)
         page.cue_filter_buttons: dict[str, QPushButton] = {}
@@ -1872,18 +1918,34 @@ class StudioWorkspaceBuilder:
             button.clicked.connect(lambda _checked=False, value=key: page._set_cue_filter(value))
             page.cue_filter_group.addButton(button)
             page.cue_filter_buttons[key] = button
-            filters.addWidget(button, index // 2, index % 2)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            filters.addWidget(button, 1)
         page.cue_filter_buttons["all"].setChecked(True)
+        layout.addLayout(filters)
+        review_row = QHBoxLayout()
+        review_row.setSpacing(6)
+        page.continuous_review_toggle = QCheckBox("连续审核")
+        bind_text(page.continuous_review_toggle, '播放当前审核字幕前后语境，并在片段结束后暂停', property='toolTip')
+        page.continuous_review_toggle.toggled.connect(page._set_continuous_review)
+        review_row.addWidget(page.continuous_review_toggle)
+        review_row.addStretch(1)
         page.review_entry_button = QPushButton("▶ 开始审核")
         page.review_entry_button.setObjectName("reviewEntryButton")
         bind_text(page.review_entry_button, '进入优先审核；快捷键 R', property='toolTip')
         page.review_entry_button.clicked.connect(lambda: page._set_review_mode(not page._review_mode))
-        filters.addWidget(page.review_entry_button, 1, 1)
-        layout.addLayout(filters)
-        page.continuous_review_toggle = QCheckBox("连续审核")
-        bind_text(page.continuous_review_toggle, '播放当前审核字幕前后语境，并在片段结束后暂停', property='toolTip')
-        page.continuous_review_toggle.toggled.connect(page._set_continuous_review)
-        layout.addWidget(page.continuous_review_toggle)
+        review_row.addWidget(page.review_entry_button)
+        layout.addLayout(review_row)
+        page.confirm_all_reviews_button = QPushButton('全部标记已检查（0）')
+        page.confirm_all_reviews_button.setObjectName('studioButton')
+        page.confirm_all_reviews_button.setEnabled(False)
+        bind_text(page.confirm_all_reviews_button, '保留当前字幕内容，确认本工程全部待检查项。', property='toolTip')
+        page.confirm_all_reviews_button.clicked.connect(page._confirm_all_reviews)
+        layout.addWidget(page.confirm_all_reviews_button)
+        bulk_review_hint = QLabel('保留当前字幕内容，确认本工程全部待检查项。')
+        bulk_review_hint.setWordWrap(True)
+        bulk_review_hint.setObjectName('mutedText')
+        layout.addWidget(bulk_review_hint)
         search_row = QHBoxLayout()
         page.cue_search = QLineEdit()
         page.cue_search.setObjectName("cueSearch")
@@ -1944,6 +2006,7 @@ class StudioWorkspaceBuilder:
         from PySide6.QtCore import QSettings
         from PySide6.QtWidgets import QStyledItemDelegate
         page.cue_reading_delegate = CueReadingDelegate(page.cue_table)
+        page.cue_reading_delegate.review_confirm_requested.connect(page._confirm_review_cue)
         page._cue_text_delegate = QStyledItemDelegate(page.cue_table)
 
         def set_cue_list_view(mode: str, *, remember: bool = True) -> None:

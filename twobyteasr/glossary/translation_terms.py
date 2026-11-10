@@ -72,7 +72,10 @@ def normalize(value):
             if isinstance(aliases, str):
                 aliases = aliases.split('|')
             if not isinstance(aliases, (list, tuple)): aliases = ()
+            from .terminology import mapping_is_confirmed
             terms.append(dict(source=source, target=target,
+                confirmed=mapping_is_confirmed(row, inferred_manual=True),
+                enabled=bool(row.get('enabled', row.get('correction_enabled', True))),
                 aliases=list(dict.fromkeys(str(a).strip() for a in aliases if str(a).strip())),
                 target_aliases=[str(a).strip() for a in row.get('target_aliases', ()) if str(a).strip()]
                     if isinstance(row.get('target_aliases'), (list, tuple)) else [],
@@ -93,6 +96,56 @@ def language(code):
     return str(code or '').split('-')[0].lower()
 
 
+def _literal_pattern(surfaces, boundary):
+    """Factor shared literal prefixes while keeping longest, bounded matches.
+
+    A flat alternation makes the regex parser repeat every shared prefix.
+    Ten thousand numbered names blocked the first edit for over a second.
+    The trie is temporary. Only the compiled pattern enters the bounded index
+    cache. Very long terms and Unicode case-equivalent branches retain the
+    original expression, including its exact ordering.
+    """
+    ordered = sorted(surfaces, key=lambda surface: (-len(surface), surface))
+    if any(len(surface) > 128 or '\u0131' in surface for surface in ordered):
+        patterns = []
+        for surface in ordered:
+            escaped = re.escape(surface)
+            if surface[0].isascii() and surface[0].isalnum():
+                escaped = '(?<!' + boundary + ')' + escaped
+            if surface[-1].isascii() and surface[-1].isalnum():
+                escaped += '(?!' + boundary + ')'
+            patterns.append(escaped)
+        return re.compile('|'.join(patterns), re.IGNORECASE)
+
+    trie = {}
+    for surface in ordered:
+        node = trie
+        for character in surface:
+            node = node.setdefault(character, {})
+        node[None] = '(?!' + boundary + ')' if surface[-1].isascii() and surface[-1].isalnum() else ''
+
+    def expression(node):
+        suffixes = {}
+        for character, child in node.items():
+            if character is not None:
+                suffixes.setdefault(expression(child), []).append(character)
+        branches = []
+        for suffix, characters in suffixes.items():
+            prefix = ''.join(re.escape(character) for character in characters)
+            if len(characters) > 1:
+                prefix = '[' + prefix + ']'
+            branches.append(prefix + suffix)
+        if None in node:
+            branches.append(node[None])  # Longer matching terms precede this terminal.
+        return branches[0] if len(branches) == 1 else '(?:' + '|'.join(branches) + ')'
+
+    branches = []
+    for character, node in trie.items():
+        prefix = '(?<!' + boundary + ')' if character.isascii() and character.isalnum() else ''
+        branches.append(prefix + re.escape(character) + expression(node))
+    return re.compile('|'.join(branches), re.IGNORECASE)
+
+
 @lru_cache(maxsize=24)
 def _index(serialized, source_language, target_language):
     policy = json.loads(serialized)
@@ -104,21 +157,15 @@ def _index(serialized, source_language, target_language):
                     or lib['target_language'] != target_language):
                 continue
             for term in lib['terms']:
+                if not term.get('confirmed', True) or not term.get('enabled', True):
+                    continue
                 row = dict(term, library_id=lib['id'], library_name=lib['name'],
                            source_language=lib['source_language'], target_language=lib['target_language'])
                 rows.append(row)
                 for surface in (term['source'], *term['aliases']):
                     surfaces.setdefault(match_text(surface), []).append(len(rows)-1)
-    patterns = []
     boundary = r'[A-Za-z0-9_]' if language(source_language) in {'ja', 'zh', 'ko'} else r'[\w]'
-    for surface in sorted(surfaces, key=lambda s: (-len(s), s)):
-        escaped = re.escape(surface)
-        if surface[0].isascii() and surface[0].isalnum():
-            escaped = '(?<!' + boundary + ')' + escaped
-        if surface[-1].isascii() and surface[-1].isalnum():
-            escaped += '(?!' + boundary + ')'
-        patterns.append(escaped)
-    return rows, surfaces, re.compile('|'.join(patterns), re.IGNORECASE) if patterns else None
+    return rows, surfaces, _literal_pattern(surfaces, boundary) if surfaces else None
 
 
 @measured('relevant')
@@ -157,7 +204,11 @@ def _effective_policy(serialized, pairs, source_language, target_language):
 
 def effective_policy(policy, pairs, source_language, target_language):
     """Freeze explicit directional libraries and user-entered translation pairs."""
-    return _effective_policy(freeze(policy).serialized, tuple(pairs), source_language, target_language)
+    frozen = freeze(policy)
+    pairs = tuple(pairs)
+    if not pairs:
+        return frozen
+    return _effective_policy(frozen.serialized, pairs, source_language, target_language)
 
 
 @measured('rule_version')

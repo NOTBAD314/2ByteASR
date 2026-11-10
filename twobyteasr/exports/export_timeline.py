@@ -66,7 +66,8 @@ def export_project_snapshot(project, *, start_ms=None, end_ms=None, width=None, 
         raise RuntimeError('不能在编辑事务提交前创建导出快照')
     hidden = project.hidden_speaker_ids()
     visibility = project.studio_state.get('subtitle_track_visibility', {})
-    visible = [c for c in projected_cues(project, domain="timeline")
+    from ..caption_style.collision_layout import visible_subtitle_cues
+    visible = [c for c in visible_subtitle_cues(project, projected_cues(project, domain="timeline"))
                              if c.speaker_id not in hidden and visibility.get(c.speaker_id, True)
                              and (start_ms is None or c.end_ms > start_ms)
                              and (end_ms is None or c.start_ms < end_ms)]

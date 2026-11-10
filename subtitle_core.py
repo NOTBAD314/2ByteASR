@@ -936,6 +936,16 @@ def enabled_game_lexicon_signature():
     }
 
 
+def _glossary_write_locked(callback):
+    from functools import wraps
+    @wraps(callback)
+    def write(*args, **kwargs):
+        from twobyteasr.glossary.learning_review import storage_lock
+        with storage_lock(LEARNED_TERMS_PATH):
+            return callback(*args, **kwargs)
+    return write
+
+
 def load_learned_term_payload(*, strict=False):
     try:
         with open(LEARNED_TERMS_PATH, "r", encoding="utf-8-sig") as file:
@@ -1055,6 +1065,7 @@ def _touch_glossary_entry(entry, key):
     entry["revision"] = int(entry.get("revision", 0) or 0) + 1
 
 
+@_glossary_write_locked
 def create_learned_content(game_name, content_type="game", *, create_new=False):
     name = canonicalize_runtime_game_name(game_name)
     if not name:
@@ -1081,6 +1092,7 @@ def create_learned_content(game_name, content_type="game", *, create_new=False):
     return entry["library_id"]
 
 
+@_glossary_write_locked
 def rename_learned_content(library_id, new_name):
     name = canonicalize_runtime_game_name(new_name)
     payload = load_learned_term_payload(strict=True)
@@ -1101,6 +1113,7 @@ def learned_content_note(library_id):
     return str((games.get(identity) or {}).get("ai_note") or "") if identity else ""
 
 
+@_glossary_write_locked
 def set_learned_content_note(game_name, library_id, note):
     """Save (or clear) the note sent to AI with this library; a built-in library
     without a personal entry gets one holding only its name and the note."""
@@ -1145,6 +1158,9 @@ _TERM_PROVENANCES = {
 
 
 def learned_mapping_provenance(mapping):
+    from twobyteasr.glossary.learning_review import requires_review
+    if requires_review(mapping):
+        return TERM_PROVENANCE_CANDIDATE
     explicit = str(mapping.get("provenance") or "").strip().lower()
     if explicit in _TERM_PROVENANCES:
         return explicit
@@ -1165,6 +1181,9 @@ def learned_mapping_provenance(mapping):
 def _normalized_learned_mapping(mapping):
     result = dict(mapping)
     result["provenance"] = learned_mapping_provenance(result)
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
+    result["confirmed"] = mapping_is_confirmed(result,
+        inferred_manual=result["provenance"] == TERM_PROVENANCE_USER_CONFIRMED)
     return result
 
 
@@ -1217,6 +1236,7 @@ def hidden_reference_terms_for_game(game_name):
     }
 
 
+@_glossary_write_locked
 def set_reference_terms_hidden(game_name, names, hidden: bool) -> int:
     """Hide (or restore) builtin reference words for one game."""
     identity = runtime_game_identity(canonicalize_runtime_game_name(game_name))
@@ -1258,6 +1278,7 @@ def is_runtime_game_profile_hidden(game_name):
     return runtime_game_identity(canonicalize_runtime_game_name(game_name)) in hidden_runtime_game_profile_ids()
 
 
+@_glossary_write_locked
 def unhide_runtime_game_profile(game_name):
     """Show a deleted built-in library again (2026-10-25); its built-in content was never touched."""
     identity = runtime_game_identity(canonicalize_runtime_game_name(game_name))
@@ -1281,6 +1302,7 @@ def hidden_runtime_game_profile_names():
             if runtime_game_identity(profile.get("identity", name)) in hidden]
 
 
+@_glossary_write_locked
 def hide_runtime_game_profile(game_name):
     identity = runtime_game_identity(canonicalize_runtime_game_name(game_name))
     if not identity:
@@ -1298,6 +1320,7 @@ def hide_runtime_game_profile(game_name):
     return True
 
 
+@_glossary_write_locked
 def migrate_user_verified_profile_terms():
     """Migrate only profile rows whose source explicitly proves user ownership."""
     payload = load_learned_term_payload()
@@ -1443,9 +1466,11 @@ def learned_canonical_terms(game_name=None):
         return list(snapshot.canonical_terms)
     result = []
     seen = set()
-    for item in learned_mappings_for_game(game_name):
-        target = content_only(item.get("to", ""))
-        if 2 <= len(target) <= 18 and target not in seen:
+    for item in user_confirmed_mappings_for_game(game_name):
+        if not item.get("correction_enabled", True):
+            continue
+        target = clean_glossary_term(item.get("to", ""))
+        if 1 <= len(target) <= 18 and target not in seen:
             result.append(target)
             seen.add(target)
     return result
@@ -1456,6 +1481,7 @@ def enabled_glossary_adjudication_evidence():
     snapshot = getattr(get_runtime_context(), "glossary_snapshot", None)
     if snapshot is not None:
         return snapshot.evidence()
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
     enabled_ids = runtime_enabled_glossary_ids()
     enabled_set = set(enabled_ids)
     games = []
@@ -1468,7 +1494,7 @@ def enabled_glossary_adjudication_evidence():
             continue
         games.append(str(name))
         for item in profile.get("terms", []):
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or not item.get("correction_enabled", True):
                 continue
             canonical = clean_subtitle_text(item.get("canonical", ""))
             if not canonical:
@@ -1487,7 +1513,9 @@ def enabled_glossary_adjudication_evidence():
         if game_name:
             games.append(game_name)
         for item in entry.get("mappings", []):
-            if not isinstance(item, dict):
+            if (not isinstance(item, dict) or not item.get("correction_enabled", True)
+                    or learned_mapping_provenance(item) != TERM_PROVENANCE_USER_CONFIRMED
+                    or not mapping_is_confirmed(item, inferred_manual=True)):
                 continue
             source = content_only(item.get("from", ""))
             target = content_only(item.get("to", ""))
@@ -1512,6 +1540,7 @@ def enabled_glossary_adjudication_evidence():
     }
 
 
+@_glossary_write_locked
 def add_learned_mapping(game_name, source, target, *, category="其他", origin="手动", evidence_metadata=None):
     """Add a confirmed mapping; manual canonical reentry may revise its case.
 
@@ -1519,6 +1548,9 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     existing user spelling; direct manual canonical input is explicit intent.
     """
     from twobyteasr.glossary.terminology import mapping_is_confirmed
+    from twobyteasr.glossary.learning_review import AUTO_ORIGIN
+    if origin == AUTO_ORIGIN:
+        raise ValueError("字幕修改只能生成候选，请在待确认区域明确加入术语库")
     def confirmed(item):
         return mapping_is_confirmed(item,
             inferred_manual=learned_mapping_provenance(item) == TERM_PROVENANCE_USER_CONFIRMED)
@@ -1574,7 +1606,7 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     if not manual_canonical and len(spellings) == 1:
         target = next(iter(spellings))
     for item in mappings:
-        if item.get("from") == source and item.get("to") == target:
+        if item.get("from") == source and item.get("to") == target and confirmed(item):
             return False
         if (str(item.get("from", "")).casefold() == source.casefold()
                 and confirmed(item)):
@@ -1593,6 +1625,7 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
             "provenance": TERM_PROVENANCE_USER_CONFIRMED,
             "category": clean_subtitle_text(category) or "其他",
             "origin": clean_subtitle_text(origin) or "手动",
+            "confirmation_action": "add",
             "updated": time.strftime("%Y-%m-%d"),
         }
     if evidence_metadata is not None:
@@ -1607,6 +1640,70 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     return True
 
 
+@_glossary_write_locked
+def confirm_learning_candidate(game_name, source, target, *, category="其他", origin="用户确认"):
+    """Commit one reviewed alias atomically, verify duplicates, reject conflicts."""
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
+    source, target = clean_glossary_term(source), clean_glossary_term(target)
+    if not source or not target:
+        raise ValueError("规范词和误识别写法不能为空")
+    payload = load_learned_term_payload(strict=True)
+    games = payload.setdefault("games", {})
+    identity = _glossary_entry_key(game_name, games)
+    if not identity:
+        raise ValueError("目标词库不存在，请重新选择")
+    entry = games[identity]
+    records = entry.setdefault("mappings", [])
+    confirmed = [row for row in records if mapping_is_confirmed(row,
+        inferred_manual=learned_mapping_provenance(row) == TERM_PROVENANCE_USER_CONFIRMED)]
+    same_alias = [row for row in confirmed if str(row.get("from", "")).casefold() == source.casefold()]
+    conflict = next((row for row in same_alias if str(row.get("to", "")).casefold() != target.casefold()), None)
+    if conflict:
+        raise ValueError(f"别名冲突：{source} 已指向 {conflict['to']}，请先编辑原规则")
+    if same_alias:
+        return "exists"
+    owners = [row for row in confirmed if str(row.get("to", "")).casefold() == target.casefold()]
+    spellings = {row['to'] for row in owners}
+    if len(spellings) > 1:
+        raise ValueError("规范词已有不同大小写，请先处理词库冲突")
+    if spellings:
+        target = next(iter(spellings))
+    record = next((row for row in records if row.get("from") == source and row.get("to") == target), None)
+    if record is None:
+        record = {"from": source, "to": target}
+        records.append(record)
+    record.update(confirmed=True, provenance=TERM_PROVENANCE_USER_CONFIRMED,
+        confirmation_action="learning_review", review_status="accepted", origin=origin,
+        category=category, updated=time.strftime("%Y-%m-%d"), verification="user_review")
+    if owners:
+        for key, default in (("correction_enabled", True), ("emphasis_enabled", False)):
+            record[key] = all(bool(row.get(key, default)) for row in owners)
+    _touch_glossary_entry(entry, identity)
+    atomic_write_json(LEARNED_TERMS_PATH, payload)
+    return "saved"
+
+
+@_glossary_write_locked
+def review_legacy_mappings(game_name, keys, *, ignore=False):
+    """Explicitly quarantine selected historical rows with an embedded backup."""
+    payload = load_learned_term_payload(strict=True)
+    games = payload.get("games", {})
+    identity = _glossary_entry_key(game_name, games)
+    entry = games.get(identity, {})
+    wanted = {tuple(key) for key in keys}
+    count = 0
+    for row in entry.get("mappings", ()):
+        if (row.get("from"), row.get("to")) in wanted:
+            row.setdefault("learning_review_original", copy.deepcopy(row))
+            row["review_status"] = "ignored" if ignore else "pending"
+            count += 1
+    if count:
+        _touch_glossary_entry(entry, identity)
+        atomic_write_json(LEARNED_TERMS_PATH, payload)
+    return count
+
+
+@_glossary_write_locked
 def confirm_reference_terms(game_name, references):
     """Confirm canonical reference terms and their aliases in one atomic write.
 
@@ -1668,6 +1765,7 @@ def confirm_reference_terms(game_name, references):
                 by_source.setdefault(alias.casefold(), []).append(record)
             dirty = True
             record.update(confirmed=True, provenance=TERM_PROVENANCE_USER_CONFIRMED,
+                          confirmation_action="reference_review", review_status="accepted",
                           origin='用户确认', updated=time.strftime('%Y-%m-%d'))
         if not already:
             added += 1
@@ -1680,6 +1778,7 @@ def confirm_reference_terms(game_name, references):
     return added
 
 
+@_glossary_write_locked
 def edit_learned_mapping(game_name, old_key, source, target, *, category="其他", origin=None, correction_enabled=None, emphasis_enabled=None):
     """One atomic edit, including case-only edits and existing aliases."""
     source, target = clean_glossary_term(source), clean_glossary_term(target)
@@ -1699,6 +1798,7 @@ def edit_learned_mapping(game_name, old_key, source, target, *, category="其他
     previous_target = str(old.get("to", ""))
     old.update({"from": source, "to": target, "category": clean_subtitle_text(category) or "其他",
                 "confirmed": True, "provenance": TERM_PROVENANCE_USER_CONFIRMED,
+                "confirmation_action": "edit", "review_status": "accepted",
                 "updated": time.strftime("%Y-%m-%d")})
     if correction_enabled is not None:
         old['correction_enabled'] = bool(correction_enabled)
@@ -1716,6 +1816,7 @@ def edit_learned_mapping(game_name, old_key, source, target, *, category="其他
     return True
 
 
+@_glossary_write_locked
 def persist_learned_mappings(game_name, mappings):
     from twobyteasr.glossary.terminology import mapping_is_confirmed
     if not game_name or not mappings:
@@ -1798,6 +1899,7 @@ def persist_learned_mappings(game_name, mappings):
     return report
 
 
+@_glossary_write_locked
 def delete_learned_mappings(game_name, mapping_keys):
     """删除用户在管理窗口中明确选中的学习映射。"""
     payload = load_learned_term_payload(strict=True)
@@ -1828,6 +1930,7 @@ def delete_learned_mappings(game_name, mapping_keys):
     return removed
 
 
+@_glossary_write_locked
 def delete_learned_game(game_name):
     """Remove one user-created content entry and all of its learned mappings."""
     payload = load_learned_term_payload(strict=True)
@@ -1854,7 +1957,9 @@ def prepared_learned_mappings(segments, game_name=None):
         return []
     result = []
     blocked = active_blocked_mapping_pairs()
-    for item in learned_mappings_for_game(game_name):
+    for item in user_confirmed_mappings_for_game(game_name):
+        if not item.get("correction_enabled", True):
+            continue
         source = content_only(item.get("from", ""))
         target = content_only(item.get("to", ""))
         if not source or not target or source == target or (source, target) in blocked:
@@ -2171,9 +2276,9 @@ CACHE_STAGE_VERSIONS = {
 # API 阶段只依赖各自逻辑版本，不再散列整个 6800 行模块。以后修改时间轴、
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
-GROUP_LOGIC_VERSION = "group-v62-quality-source-windows"
+GROUP_LOGIC_VERSION = "group-v65-zh-complete-expression-14"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
-TIMING_LOGIC_VERSION = "timing-v14-positive-acoustic-cut-edges"
+TIMING_LOGIC_VERSION = "timing-v17-evidence-preserving-handoffs"
 
 
 # 复核清单只打印在运行窗口，不增加第三个输出文件。

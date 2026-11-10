@@ -9,7 +9,7 @@ import traceback
 
 
 def start(window, output):
-    from PySide6.QtCore import QTimer, Qt, QEvent
+    from PySide6.QtCore import QTimer, Qt, QEvent, QPoint
     from PySide6.QtGui import QInputMethodEvent, QKeyEvent, QTextCursor
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -62,6 +62,51 @@ def start(window, output):
             page.video.set_paused(True)
             check('7000 caption project visibly opened', len(page.project.cues)==7000 and page.timeline.isVisible())
             result['dpr'] = page.devicePixelRatioF()
+            page.select_cue('cue-0')
+            page._open_caption_editor('cue-0', 'original')
+            page._lock_caption_editor()
+            card = page.subtitle_edit_card
+            from ..subtitle_rules.review_suggestions import ReviewSuggestion, SuggestionOption
+            text = page.subtitle_edit_input.toPlainText()
+            start = text.index('ここ')
+            page._caption_draft.suggestions = (
+                ReviewSuggestion(start, start + 2, 'ここ',
+                                 (SuggestionOption('此処'), SuggestionOption('ここ')), 'model'),
+                ReviewSuggestion(text.index('明日'), text.index('明日') + 2, '明日',
+                                 (SuggestionOption('あす'),), 'model'),
+            )
+            page._caption_draft.suggestion_text = text
+            page._refresh_editor_suggestions()
+            QTest.qWait(150)
+            check('cream card and action strip visible', card.face.isVisible() and card.strip.isVisible())
+            check('one candidate bubble row visible', card.bubble.isVisible() and
+                  sum(not frame.isHidden() for frame in card.suggestions._frames) == 1)
+            check('suspect words highlighted', len(card.editor.extraSelections()) == 2)
+            for above in (False, True):
+                card.set_strip_above(above)
+                card.layout().activate()
+                card.place_bubble()
+                card.layout().activate()
+                card.place_bubble()
+                editor_top = card.editor.mapToGlobal(QPoint()).y()
+                editor_bottom = card.editor.mapToGlobal(QPoint(0, card.editor.height())).y()
+                bubble_top = card.suggestions.mapToGlobal(QPoint()).y()
+                bubble_bottom = card.suggestions.mapToGlobal(QPoint(0, card.suggestions.height())).y()
+                check(f'candidate bubble clears draft strip_above={above}',
+                      bubble_top >= editor_bottom if above else bubble_bottom <= editor_top)
+            page.subtitle_edit_dock.fit_to_workspace()
+            QTest.qWait(100)
+            page.subtitle_edit_dock.grab().save(str(output/'candidate-card.png'))
+            QTest.keyClick(card.editor, Qt.Key_W, Qt.ShiftModifier)
+            QTest.keyClick(QApplication.focusWidget(), Qt.Key_D, Qt.ShiftModifier)
+            check('candidate keyboard advances options', card.suggestions.selected == (0, 1))
+            QTest.keyClick(QApplication.focusWidget(), Qt.Key_D, Qt.ShiftModifier)
+            check('candidate keyboard advances bubble row', card.suggestions.selected == (1, 0))
+            QTest.keyClick(QApplication.focusWidget(), Qt.Key_Space)
+            check('candidate applies to draft only', 'あす' in card.editor.toPlainText() and
+                  page.project.cues[0].text == text)
+            page._cancel_canvas_inline_edit()
+            check('candidate cancellation preserves cue', page.project.cues[0].text == text)
             original = copy.deepcopy(page.project.cues[:4])
             index = page.undo_stack.index()
             resets, track_rebuilds, manual_saves = [], [], []
@@ -89,6 +134,14 @@ def start(window, output):
                 text = cue.text
                 place(page, text, at)
                 click_split(page)
+                QTest.qWait(100)
+                page.subtitle_edit_dock.fit_to_workspace()
+                panel = page.subtitle_edit_card
+                result.setdefault('part_labels', []).append(dict(
+                    text=panel.split_part.text(), width=panel.split_part.width(),
+                    required=panel.split_part.sizeHint().width()))
+                check(f'language {number} complete split part label',
+                      panel.split_part.width() >= panel.split_part.sizeHint().width())
                 parts = [c for c in page.project.cues if c.id==cue.id or c.id.startswith(cue.id+'-split-')]
                 check(f'language {number} exact text', len(parts)==2 and ''.join(c.text for c in parts)==text)
                 check(f'language {number} edit second part', page.subtitle_edit_input.toPlainText()==text[at:] and page.selected_cue_id==parts[1].id)
@@ -131,10 +184,22 @@ def start(window, output):
             page._lock_caption_editor()
             editor = page.subtitle_edit_input
             place(page, '甲乙丙丁戊己', 2)
-            QTest.keyClicks(editor, 'cC')
-            check('normal c/C typed', editor.toPlainText()=='甲乙cC丙丁戊己')
+            QTest.keyClicks(editor, 'c')
+            check('normal c typed', editor.toPlainText()=='甲乙c丙丁戊己')
             place(page, '甲乙丙丁戊己', 2)
-            QTest.mouseClick(page.subtitle_edit_card.split_mode, Qt.MouseButton.LeftButton)
+            QTest.keyClick(editor, Qt.Key_C, Qt.ShiftModifier)
+            check('Shift+C cuts with C mode off', len(page.project.cues)==7001 and
+                  editor.toPlainText()=='丙丁戊己')
+            page._undo_caption_split()
+            check('Shift+C cut can be undone locally', len(page.project.cues)==7000)
+            place(page, '甲乙丙丁戊己', 2)
+            card = page.subtitle_edit_card
+            QTest.mouseClick(card.more_button, Qt.MouseButton.LeftButton)
+            wait(card.more_menu.isVisible, 5)
+            action = next(action for action in card.more_menu.actions() if action.text() == 'C 键直接切割')
+            QTest.mouseClick(card.more_menu, Qt.MouseButton.LeftButton,
+                             pos=card.more_menu.actionGeometry(action).center())
+            check('More menu enables C mode', card.split_mode.isChecked())
             check('mode toggle retains draft', page._caption_draft is not None and editor.textCursor().position()==2)
             QTest.keyClick(editor, Qt.Key_C, Qt.ControlModifier)
             check('Ctrl+C preserves structure', len(page.project.cues)==7000)

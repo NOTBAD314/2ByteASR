@@ -211,11 +211,12 @@ def run(output, *, window):
         result['passed'] = True
         receipt()
         return 0
-    header = page.cue_proofread_button.parentWidget()
-    proof, clean = rect_in(page.cue_proofread_button, header), rect_in(page.cue_cleanup_button, header)
-    check('AI 清理 sits right of AI 校对 on one line', page.cue_cleanup_button.isVisible() and proof[1] == clean[1]
-          and clean[0] >= proof[0] + proof[2], dict(proofread=proof, cleanup=clean))
-    page.cue_proofread_button.parentWidget().grab(page.cue_proofread_button.parentWidget().rect()).save(
+    # 2026-11-09 (user, redesign): AI 校对 / AI 清理 share one「AI」menu in the list title row.
+    ai_actions = page.cue_ai_button.menu().actions()
+    check('AI 清理 follows AI 校对 in the AI menu', page.cue_ai_button.isVisible()
+          and ai_actions.index(page.cue_cleanup_action) == ai_actions.index(page.cue_proofread_action) + 1,
+          [a.text() for a in ai_actions])
+    page.cue_ai_button.parentWidget().grab(page.cue_ai_button.parentWidget().rect()).save(
         str(output / 'cue-list-panel.png'))
     overflow = next(b for b in bar.findChildren(QToolButton) if b.property('commandSource') == '更多工作区操作')
     menu = overflow.menu()
@@ -360,7 +361,7 @@ def run(output, *, window):
         cleanup['local'] = {key: box.isChecked() for key, box in dialog.local_boxes.items()}
         _capture(dialog, output / 'ai-cleanup.png')
 
-    with_dialog(AiCleanupDialog, look, lambda: QTest.mouseClick(page.cue_cleanup_button, Qt.MouseButton.LeftButton))
+    with_dialog(AiCleanupDialog, look, lambda: page.cue_cleanup_action.trigger())
     result['ai_cleanup'] = cleanup
     # 2026-10-26 design A: four AI steps, two local ones (re-break needs a word-timed language).
     check('AI 清理 opens from the cue list with its options', len(cleanup.get('options', ())) == 4

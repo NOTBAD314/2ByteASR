@@ -28,6 +28,7 @@ export type Recipe = {
     enabled: boolean; type: string; color: string; paint?: Paint; opacity: number;
     gradient: {colors: string[]; angle: number};
     paddingX: number; paddingY: number; radius: number;
+    paddingTop?: number; paddingRight?: number; paddingBottom?: number; paddingLeft?: number;
     border: {color: string; width: number};
     shadow: {color: string; offsetX: number; offsetY: number; blur: number};
     texture: {type: string; opacity: number; scale: number; seed: number};

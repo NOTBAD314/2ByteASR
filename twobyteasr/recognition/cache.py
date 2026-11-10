@@ -545,6 +545,8 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         if policy.get('explicit_local_range'):
             base['local_range_contract'] = 'local-language-range-v3-measured-window-timing'
     if stage in {'grouped','grouped_local','final_timing'}:
+        from ..subtitle_rules.grouping_quality import QUALITY_VERSION
+        base['grouping_quality_version'] = QUALITY_VERSION
         from ..subtitle_rules.segmentation_profiles import task_language_tag, profile_for, VERSION, SPAN_VERSION
         tag=task_language_tag();profile=profile_for(tag)
         base['segmentation_language_policy']={'language':tag,'version':VERSION,'rules':profile.fingerprint,
@@ -586,8 +588,10 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
             }
         )
     elif stage == "firered":
+        from .firered_checkpoints import VERSION as FIRERED_EVIDENCE_VERSION
         base.update(
             {
+                **({'evidence_contract':FIRERED_EVIDENCE_VERSION} if FIRERED_ASR_BACKEND=='local' else {}),
                 "chunk": FIRERED_CHUNK_SECONDS,
                 "step": FIRERED_CHUNK_STEP_SECONDS,
                 "model_mtime": (
@@ -777,6 +781,10 @@ def run_cached_stage(
             reasons.append("upstream_hash_mismatch" if payload.get("dependency_hash") else "missing_dependency")
         if api_stage_force_refresh(stage):
             reasons.append("force_refresh")
+        if stage == 'firered' and FIRERED_ASR_BACKEND=='local':
+            from .firered_checkpoints import reusable_result
+            if not reusable_result(payload.get('data')):
+                reasons.append('untrusted_alignment_evidence')
         if stage == "grouped" and (payload.get("producer") not in _VALIDATED_GROUP_PRODUCERS or payload.get("validation") != "source_contract_v1"):
             reasons.append("legacy_or_unvalidated_grouped")
         if stage in {"grouped", "grouped_local"} and not reasons and not _grouped_stage_text_valid(decoder(payload.get("data")), extra_signature):
@@ -829,7 +837,13 @@ def run_cached_stage(
     verified_group = stage != "grouped" or (
         getattr(value, "origin", None) in _VALIDATED_GROUP_PRODUCERS and getattr(value, "validated", False)
         and _grouped_stage_text_valid(value, extra_signature))
-    if should_cache(value) and not used_fallback and verified_group:
+    verified_alignment = True
+    if stage == 'firered' and FIRERED_ASR_BACKEND=='local':
+        from .firered_checkpoints import reusable_result
+        verified_alignment = reusable_result(value)
+        if not verified_alignment:
+            record_run_event('cache_not_written',stage=stage,reason='untrusted_alignment_evidence')
+    if should_cache(value) and not used_fallback and verified_group and verified_alignment:
         atomic_write_json(
             cache_path,
             {

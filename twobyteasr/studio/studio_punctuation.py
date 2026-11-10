@@ -38,7 +38,8 @@ class SetPunctuationStyleCommand(QUndoCommand):
 
         _commit_mutation(self.project, action_id=self.text(),
                          dirty=(DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW
-                                | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.AUTOSAVE),
+                                | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.AUTOSAVE
+                                | DirtyDomain.PROJECT_METADATA | DirtyDomain.QC),
                          cue_ids=(), mutate=mutate, changed=self.changed)
 
     def redo(self):
@@ -118,7 +119,7 @@ def build_menu(page, menu) -> None:
     group.setExclusive(True)
     page.punctuation_mode_actions = {}
     for mode in (MODE_ADD, MODE_NONE, MODE_ORIGINAL):
-        label = tr(MODE_LABELS[mode]) + ('（' + tr('进阶') + '）' if mode == MODE_ORIGINAL else '')
+        label = tr(MODE_LABELS[mode])
         action = QAction(label, menu)
         action.setCheckable(True)
         action.setToolTip(tr(MODE_HINTS[mode]))
@@ -134,19 +135,34 @@ def build_menu(page, menu) -> None:
     permanent.triggered.connect(lambda: open_permanent_dialog(page))
     menu.addAction(permanent)
     page.punctuation_permanent_action = permanent
-    menu.addSeparator()
+    # 2026-11-10 (user): the formula switch is not about punctuation; its
+    # visible control is the「∑」toggle beside B / I / U in the style panel's
+    # 文字 section (bind_math_button). The action keeps state and undo.
     math = QAction(tr('数学公式：$…$ 显示为数学符号'), menu)
     math.setObjectName('studioMathFormulasAction')
     math.setCheckable(True)
     math.setToolTip(tr('字幕里用 $…$ 写的公式（LaTeX），在画面和所有导出里显示成 x²、∫₀¹ 这样的符号；文稿不变'))
     math.triggered.connect(lambda checked=False: apply_math_formulas(page, checked))
-    menu.addAction(math)
     page.math_formulas_action = math
+    if getattr(page, 'style_math_button', None) is not None:
+        bind_math_button(page, page.style_math_button)
     stack = getattr(page, 'undo_stack', None)
     if stack is not None:
         # Undo/redo of a style switch (and project reloads) keep the checks right.
         stack.indexChanged.connect(lambda _index: sync_controls(page))
     sync_controls(page)
+
+
+def bind_math_button(page, button) -> None:
+    """Tie the style panel's「∑」toggle to the math formulas action (either may be built first)."""
+    page.style_math_button = button
+    action = getattr(page, 'math_formulas_action', None)
+    if action is None or button.property('mathBound'):
+        return
+    button.setProperty('mathBound', True)
+    button.setChecked(action.isChecked())
+    action.toggled.connect(button.setChecked)
+    button.clicked.connect(lambda checked=False: apply_math_formulas(page, checked))
 
 
 def sync_controls(page) -> None:
@@ -159,7 +175,7 @@ def sync_controls(page) -> None:
         button.setToolTip(tr('{value0}：{value1}（文稿不变）', value0=tr(MODE_LABELS[mode]), value1=tr(MODE_HINTS[mode])))
     permanent = getattr(page, 'punctuation_permanent_action', None)
     if permanent is not None:
-        permanent.setEnabled(mode != MODE_ORIGINAL)
+        permanent.setEnabled(True)
     math = getattr(page, 'math_formulas_action', None)
     if math is not None:
         math.setChecked(bool(getattr(page, 'project', None)) and math_enabled(page.project))
@@ -228,8 +244,6 @@ def permanent_changes(project, mode: str | None = None) -> list[tuple[str, str, 
     """(cue_id, manuscript, styled) for every cue the current style would change."""
     from ..subtitle_rules.language_rules import project_language
     mode = project_mode(project) if mode is None else mode
-    if mode == MODE_ORIGINAL:
-        return []
     hint = project_language(project) or ''
     terms = protected_terms_of(project)
     # Formulas keep their LaTeX in the manuscript: protected, never converted here.

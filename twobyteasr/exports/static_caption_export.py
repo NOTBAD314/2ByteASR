@@ -102,11 +102,15 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         _, advanced = split_renderer_cues(project)
         hidden = project.hidden_speaker_ids()
         origin_ms, end_ms = round(start*1000), round((start+duration)*1000)
-        props = dict(cues=[dict(id=c.id, startMs=max(0, c.start_ms-origin_ms),
-                               endMs=min(round(duration*1000), c.end_ms-origin_ms))
+        from ..caption_style.collision_layout import project_layout_schedule
+        schedule = project_layout_schedule(project)
+        props = dict(cues=[dict(id=c.id, layoutOffsetY=offset,
+                               startMs=max(0, a-origin_ms), endMs=min(round(duration*1000), b-origin_ms))
                            for c in advanced if c.speaker_id not in hidden
-                           and c.end_ms>origin_ms and c.start_ms<end_ms])
+                           for a, b, offset in schedule.get(c.id, [(c.start_ms, c.end_ms, 0.)])
+                           if b>origin_ms and a<end_ms])
         from ..caption_style.visual_snapshot import build_visual_cue_snapshot
+        from ..caption_style.collision_layout import shifted_snapshot
         from ..rendering.advanced_live_renderer import render_live_snapshot
         layers=[]; raster_cache={}
         by_id={cue.id:cue for cue in project.cues}
@@ -135,6 +139,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
                             media_size=[project.media.width,project.media.height])
                 try:
                     snapshot=build_visual_cue_snapshot(project,cue['id'],width=width,height=height,fps=fps,resolved_cue=by_id[cue['id']])
+                    snapshot=shifted_snapshot(snapshot, cue.get('layoutOffsetY', 0.))
                     from ..rendering.static_export_cache import cache_key,restore,store
                     persistent_key=cache_key(snapshot,width,height)
                     key=persistent_key or snapshot.pixel_hash(renderer_version='qt-static-v1',resolution=(width,height),device_pixel_ratio=1.)

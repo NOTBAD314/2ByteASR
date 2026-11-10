@@ -13,7 +13,7 @@ import time
 from difflib import SequenceMatcher
 
 KEY = 'speech_coverage'
-POLICY = 'speech-coverage-v1'
+POLICY = 'speech-coverage-v2'
 TOLERANCE = .25
 MIN_GAP = 1.0
 AUTO_CONFIDENCE = .85
@@ -30,10 +30,9 @@ def automatic_speech(region, *, anomalous=False):
         return False
     if region.get('speech_verified'):
         return True
-    confidence = region.get('confidence')
-    if confidence is not None:
-        return float(confidence) >= AUTO_CONFIDENCE
-    return region.get('detector') == 'firered_vad' and anomalous
+    # A single VAD posterior measures its own detector, not independent proof
+    # that a missing transcript contains target speech (music can score high).
+    return bool(region.get('speech_corroborated'))
 
 
 def union(ranges, *, tolerance=0.0):
@@ -91,6 +90,37 @@ def pending(state):
             if gap.get('status') not in {'recovered', 'excluded', 'non_speech'}]
 
 
+def classify_state(state):
+    """Reclassify legacy derived status without changing original receipts."""
+    state = copy.deepcopy(state or {})
+    for gap in pending(state):
+        evidence = gap.get('evidence') or {}
+        failed = gap.get('error_category') or any(a.get('error') not in (None, '', 'no_usable_captions')
+                                                 for a in gap.get('attempts', ()))
+        reliable = evidence.get('speech_verified') or evidence.get('speech_corroborated')
+        classification = gap.get('classification')
+        if failed or classification == 'processing_failure':
+            classification = 'processing_failure'
+        elif reliable:
+            classification = 'supported_speech_gap'
+        else:
+            classification = 'uncertain_speech'
+        gap['classification'] = classification
+        if classification == 'uncertain_speech':
+            gap['status'] = 'needs_confirmation'
+        elif classification == 'processing_failure':
+            gap['status'] = 'failed'
+    state['classification_policy'] = POLICY
+    return state
+
+
+def counts(state):
+    rows = pending(classify_state(state))
+    return dict(speech_gap_count=sum(g['classification'] == 'supported_speech_gap' for g in rows),
+                speech_failure_count=sum(g['classification'] == 'processing_failure' for g in rows),
+                speech_confirmation_count=sum(g['classification'] == 'uncertain_speech' for g in rows))
+
+
 def _overlaps(a, b):
     return min(a[1], b[1]) > max(a[0], b[0])
 
@@ -104,7 +134,10 @@ def make_state(speech, rows, *, duration, windows=(), excluded=(), source='vad',
     regions = [dict(r) for r in [*speech, *detections] if not r.get('processing_only')
                and r.get('kind', 'speech') not in {'silence', 'music', 'effect', 'non_speech'}]
     spans = [(max(0.0, float(r['start'])), min(duration, float(r['end']))) for r in regions]
-    missing = subtract(subtract(spans, excluded), text_ranges(rows), tolerance=TOLERANCE, minimum=MIN_GAP)
+    failures = [w for w in windows if w.get('error') or w.get('error_category')
+                or (not w.get('complete', True) and w.get('truncation_reasons'))]
+    targets = spans + [(float(w['start']), float(w['end'])) for w in failures]
+    missing = subtract(subtract(targets, excluded), text_ranges(rows), tolerance=TOLERANCE, minimum=MIN_GAP)
     gaps = []
     for start, end in missing:
         evidence = [r for r in regions if _overlaps((start, end), (float(r['start']), float(r['end'])))]
@@ -114,11 +147,19 @@ def make_state(speech, rows, *, duration, windows=(), excluded=(), source='vad',
         trained = any(r.get('detector') == 'firered_vad' for r in evidence)
         recoverable = bool(evidence) and all(automatic_speech(r, anomalous=bool(anomalies)) for r in evidence)
         reason = ','.join(sorted({reason for w in anomalies for reason in w.get('truncation_reasons', [])}))
+        failed = [w for w in failures if w in affected]
+        classification = ('processing_failure' if failed else
+                          'supported_speech_gap' if recoverable else 'uncertain_speech')
         gap_id = hashlib.sha256(json.dumps([identity, round(start*16000), round(end*16000)]).encode()).hexdigest()[:24]
         gaps.append(dict(id=gap_id, start=start, end=end, reason=reason or 'speech_without_transcript',
-            first_missing_stage='parsed_response', status='pending' if recoverable else 'needs_confirmation',
+            first_missing_stage='parsed_response', classification=classification,
+            status='failed' if failed else 'pending' if recoverable else 'needs_confirmation',
             evidence=dict(source=source, confidence=confidence or None, trained_vad=trained,
-                          anomalous_window=bool(anomalies)),
+                          anomalous_window=bool(anomalies), regions=copy.deepcopy(evidence),
+                          speech_verified=any(r.get('speech_verified') for r in evidence),
+                          speech_corroborated=any(r.get('speech_corroborated') for r in evidence)),
+            processing_errors=[{k: w[k] for k in ('index', 'error', 'error_category', 'truncation_reasons') if k in w}
+                               for w in failed],
             window_ids=[w.get('index', w.get('request_id')) for w in affected],
             attempts=[], recovery_source=None, recovered_ranges=[], remaining_ranges=[[start, end]]))
     return dict(policy=POLICY, clock='task_pcm_zero', duration=duration, identity=identity,
@@ -159,7 +200,13 @@ def update_gap(gap, rows, *, source, elapsed=0.0, error='', request_count=1):
     gap['recovered_ranges'] = [list(r) for r in union([*gap.get('recovered_ranges', []), *recovered])]
     gap['remaining_ranges'] = remaining
     gap['recovery_source'] = source
-    gap['status'] = 'recovered' if not remaining else 'partial' if gap['recovered_ranges'] else 'pending'
+    gap['status'] = ('recovered' if not remaining else 'failed' if error else
+                     'partial' if gap['recovered_ranges'] else 'needs_confirmation')
+    if error:
+        gap['classification'] = 'processing_failure'
+    elif not rows and remaining:
+        gap['classification'] = 'uncertain_speech'
+        gap['automatic_retry_stopped'] = 'empty_success'
 
 
 def merge_rows(existing, candidates, ranges):
@@ -201,9 +248,17 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
     recognition transaction instead of editing a project here.
     """
     started, requests, audio_used = time.monotonic(), 0, 0.0
+    cancel()
     result = list(rows)
     for gap in state['gaps']:
-        if gap['status'] != 'pending' or gap.get('first_missing_stage') not in {'parsed_response', 'response_generation'}:
+        if any(d.get('status') == 'non_speech' and d.get('source_identity') == state.get('identity')
+               and float(d.get('start', gap['start'])) <= gap['start']
+               and float(d.get('end', gap['end'])) >= gap['end']
+               for key, d in (state.get('decisions') or {}).items()
+               if key == gap['id'] or 'start' in d and 'end' in d):
+            continue
+        if (gap['status'] != 'pending' or gap.get('automatic_retry_stopped')
+                or gap.get('first_missing_stage') not in {'parsed_response', 'response_generation'}):
             continue
         target = list(gap['remaining_ranges'])
         for low, high in target:
@@ -232,7 +287,7 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
                     gap['error_category'] = getattr(exc, 'category', type(exc).__name__)
                 result, accepted = merge_rows(result, candidates, [(cursor, end)])
                 update_gap(gap, accepted, source=source, elapsed=time.monotonic()-before, error=error)
-                if error:
+                if error or not accepted:
                     break
                 cursor = end
             if state.get('budget_exhausted') or gap.get('error_category'):
@@ -286,6 +341,9 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
     state['execution_identity'] = dict(backend=source, model=payload.get('model') or endpoint.get('model'),
                                      provider=endpoint.get('provider'), protocol=endpoint.get('protocol'))
     snapshot = getattr(context, 'recognition_snapshot', {}) or {}
+    previous = ((snapshot.get('project') or {}).get('generation_metadata') or {}).get(KEY) or {}
+    if previous.get('identity') == state.get('identity'):
+        state['decisions'] = copy.deepcopy(previous.get('decisions') or {})
     state['input_sequence'] = copy.deepcopy(snapshot.get('sequence'))
     state['input_offset_ms'] = (snapshot.get('range_ms') or [0])[0]
     raw_rows = [dict(row, start=float(chunk['offset'])+float(row['start']),
@@ -328,8 +386,10 @@ def finalize(context, cues, legacy):
     if not state:
         return
     checkpoint(state, 'final_cues', cues, excluded=state.get('excluded_ranges', []))
-    for gap in pending(state):
-        legacy.add_review_item(gap['start'], '语音缺口待恢复',
+    for gap in pending(classify_state(state)):
+        label = ('语音处理失败' if gap['classification'] == 'processing_failure' else
+                 '语音缺口待恢复' if gap['classification'] == 'supported_speech_gap' else '疑似语音待试听确认')
+        legacy.add_review_item(gap['start'], label,
             f"{gap['start']:.3f}–{gap['end']:.3f}s · {gap['first_missing_stage']} · {gap['reason']}",
             priority=3, severity='warning')
     legacy.record_run_event('speech_coverage_final', **state, pending_gap_count=len(pending(state)))

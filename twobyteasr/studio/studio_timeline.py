@@ -1437,7 +1437,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.horizontal_scrollbar.setValue(min(maximum, self.visible_start_ms))
         self.horizontal_scrollbar.setVisible(maximum > 0)
         self.horizontal_scrollbar.blockSignals(False)
-        view = (duration, self.visible_duration_ms)
+        view = (duration, self.visible_start_ms, self.visible_duration_ms,
+                self.width(), self.vertical_scrollbar.width())
         if view != getattr(self, '_announced_view', None):
             self._announced_view = view
             self.view_changed.emit()
@@ -1467,6 +1468,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     def _horizontal_scrolled(self, value: int) -> None:
         self.hold_manual_view()
         self.visible_start_ms = int(value)
+        self._sync_scrollbars()
         self._refresh_pointer_feedback()
         self.update()
 
@@ -2511,7 +2513,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     if asset and not asset.offline:
                         collect(asset.canonical_source,clip.timeline_in_ms,clip.timeline_out_ms,clip.source_in_ms,clip.source_out_ms,item.id,clip.id)
             thumbnails.set_view(views)
-        paint_video_track(
+        # 2026-11-09 (user screenshot): a project without video tracks has no
+        # lane rect; painting the primary header into QRectF() put a clipped
+        # "V1" over the ruler corner.
+        if primary is not None and primary_id in video_rects: paint_video_track(
             painter,
             sequence,
             palette,

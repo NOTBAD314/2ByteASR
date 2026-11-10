@@ -114,6 +114,11 @@ class StudioProjectFlowMixin:
         if callable(release_review):
             release_review()
         self._qc_scan_token = getattr(self, '_qc_scan_token', 0) + 1
+        self._recognition_running = False
+        self._recognition_cancelling = False
+        self._recognition_speech_recovery = False
+        self._recognition_subtitle_task = None
+        self._recognition_status_sticky = ''
         worker = getattr(self, '_qc_worker', None)
         if worker is not None:
             worker.close()

@@ -16,6 +16,22 @@ from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpe
 APP = QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def local_fault_injection_backend(monkeypatch):
+    from twobyteasr.exports.subtitle_export_task import SubtitleExportTask
+    monkeypatch.setattr(SubtitleExportTask, '_run_process', SubtitleExportTask._run)
+
+
+def _wait_export(dialog):
+    from PySide6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while getattr(dialog, '_subtitle_task', None) is not None and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert getattr(dialog, '_subtitle_task', None) is None
+
+
+
 def _project(tmp_path, *, hidden=False):
     media = tmp_path / "艾尔登法环 DLC 直播.mp4"
     media.write_bytes(b"fixture")
@@ -99,6 +115,7 @@ def test_export_runs_in_dialog_and_done_page_opens_folder_and_copies(tmp_path, m
     dialog._refresh_preview()
     assert dialog.file_list.rows[0].text().endswith("已存在，会替换")
     dialog.export_button.click()
+    _wait_export(dialog)
     assert dialog.pages.currentWidget() is dialog.done_page
     assert sorted(item.path.name for item in dialog.artifacts) == ["艾尔登法环 DLC 直播.srt", "艾尔登法环 DLC 直播.txt"]
     assert "大家好" in (tmp_path / "艾尔登法环 DLC 直播.srt").read_text(encoding="utf-8")
@@ -120,6 +137,7 @@ def test_export_failure_stays_on_choices(tmp_path, monkeypatch):
         raise OSError("磁盘已满")
     monkeypatch.setattr(studio_export_ui, "export_subtitle_artifacts", fail)
     dialog.export_button.click()
+    _wait_export(dialog)
     assert dialog.pages.currentWidget() is dialog.setup_page and "磁盘已满" in dialog.warning.text()
     assert dialog.export_button.isEnabled()
     dialog.close()
@@ -159,7 +177,8 @@ def test_completion_dialog_chips_preview_and_export(tmp_path, monkeypatch):
     out.mkdir()
     monkeypatch.setattr(completion_export.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(out)))
     dialog.export_button.click()
-    assert dialog.result() == 1
+    _wait_export(dialog)
+    assert dialog.result() == 1, dialog.status.text()
     assert sorted(item.path.name for item in dialog.artifacts) == [
         "直播.42250669220.456-467_主播_小乔.srt", "直播.42250669220.456-467_阿凯.srt"]
     dialog.all_speakers.setChecked(True)

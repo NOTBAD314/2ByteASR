@@ -280,12 +280,13 @@ def test_ai_cleanup_dialog_previews_and_applies(app, page, monkeypatch):
 
 
 def test_cleanup_beside_proofread_script_in_overflow_report_has_words(app, page):
-    assert page.cue_cleanup_button.parentWidget() is page.cue_proofread_button.parentWidget()
-    row = page.cue_proofread_button.parentWidget().layout()
-    title_row = next(row.itemAt(i).layout() for i in range(row.count())
-                     if row.itemAt(i).layout() is not None
-                     and row.itemAt(i).layout().indexOf(page.cue_proofread_button) >= 0)
-    assert title_row.indexOf(page.cue_cleanup_button) == title_row.indexOf(page.cue_proofread_button) + 1
+    # 2026-11-09 (user, redesign): AI 校对 and AI 清理 share one「AI」menu in the list title row.
+    actions = page.cue_ai_button.menu().actions()
+    assert actions.index(page.cue_cleanup_action) == actions.index(page.cue_proofread_action) + 1
+    # 2026-11-10 (user): the menu holds every AI command, grouped by scope.
+    texts = [a.text() for a in actions if not a.isSeparator()]
+    assert texts[:5] == ["整个工程", "AI 校对", "AI 清理", "AI 断句", "翻译整个工程…"]
+    assert texts[5] == "当前 / 选中的字幕" and "智能修轴" in texts and "翻译所选字幕…" in texts
     bar = page.studio_toolbar
     # 2026-10-22 (user, later than this round): 简繁 is a submenu of 双语 / 翻译, no button.
     assert not hasattr(page, "chinese_script_button")
@@ -309,5 +310,5 @@ def test_cleanup_beside_proofread_script_in_overflow_report_has_words(app, page)
 def test_open_ai_cleanup_from_the_cue_list(app, page, monkeypatch):
     opened = []
     monkeypatch.setattr(AiCleanupDialog, "exec", lambda self: opened.append(type(self)) or 0)
-    page.cue_cleanup_button.click()
+    page.cue_cleanup_action.trigger()
     assert opened == [AiCleanupDialog]

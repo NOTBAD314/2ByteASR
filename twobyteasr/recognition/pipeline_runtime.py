@@ -242,12 +242,7 @@ def finalize_cues(    cues,
         timeline_fps,
     )
     boundary_phase('speaker_reading_tail', finalized)
-    finalized = legacy.bridge_short_display_gaps(
-        finalized,
-        audio_seconds,
-        timeline_fps,
-    )
-    boundary_phase('short_gap_bridge', finalized)
+    boundary_phase('natural_pauses_retained', finalized)
     if not quality_managed:
         finalized = legacy.validate_final_cues(
             finalized,
@@ -255,12 +250,6 @@ def finalize_cues(    cues,
             audio_seconds,
             validate_text=False,
         )
-    legacy.collect_review_items(
-        segments,
-        finalized,
-        speech_regions,
-        firered_tokens,
-    )
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.subtitle_fidelity import recover_final_content
     if not quality_managed:
@@ -276,6 +265,7 @@ def finalize_cues(    cues,
         finalized.sort(key=lambda c:(c.start,c.end,c.speaker))
         for index,cue in enumerate(finalized,1):cue.cue_id=index
     boundary_phase('final_half_open_display', finalized)
+    legacy.collect_review_items(segments, finalized, speech_regions, firered_tokens)
     return finalized
 
 
@@ -312,43 +302,42 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     if not finalized:
         raise RuntimeError("断句后没有可用字幕。")
     retained={}
+    from bisect import bisect_right
+    from math import ceil
+    turn_starts = sorted({max(0., float(c.start)) for c in finalized})
+    source_ends = {id(c): float(c.end) for c in finalized}
     for cue in finalized:
         if cue.end-cue.start>profile.max_seconds and indivisible(cue.text,profile.code):
             retained[(cue.cue_id,cue.speaker,cue.text)]=(cue.start,cue.end)
     for cue in finalized:
         start = max(0.0, float(cue.start))
         floor = max(RULES.min_seconds, display_length(cue.text) / RULES.warning_cps)
-        end = max(float(cue.end),start+floor) if (cue.cue_id,cue.speaker,cue.text) in retained else min(max(float(cue.end), start + floor), start + RULES.max_seconds)
+        end = (float(cue.end) if getattr(cue, 'timing_locked', False)
+               else max(float(cue.end), start + min(floor, RULES.max_seconds)))
+        next_index = bisect_right(turn_starts, start)
+        if next_index < len(turn_starts):
+            end = max(float(cue.end), min(end, turn_starts[next_index]))
         if audio_seconds:
             end = min(end, float(audio_seconds))
-        cue.start = round(start * fps) / fps
-        cue.end = max(round(end * fps) / fps, cue.start + frame)
-    last_by_speaker = {}
-    for cue in finalized:
-        previous = last_by_speaker.get(cue.speaker)
-        if previous is not None and previous.end > cue.start:
-            previous.end = max(previous.start + frame, cue.start)
-        last_by_speaker[cue.speaker] = cue
+        cue.start = ceil(start * fps-1e-7) / fps
+        cue.end = max(ceil(end * fps-1e-7) / fps, cue.start + frame)
     finalized = legacy.snap_cue_starts_to_vad_onsets(finalized, speech_regions, timeline_fps)
     finalized = legacy.extend_cue_tails_by_speaker(finalized, audio_seconds, timeline_fps)
-    finalized = legacy.bridge_short_display_gaps(finalized, audio_seconds, timeline_fps)
     for cue in finalized:
         if cue.end - cue.start > RULES.max_seconds and (cue.cue_id,cue.speaker,cue.text) not in retained:
-            cue.end = cue.start + RULES.max_seconds
+            cue.end = max(source_ends[id(cue)], cue.start + RULES.max_seconds)
         if cue.end <= cue.start:
             cue.end = cue.start + frame
     overlap_audit = protect_runtime_display_tails(finalized, segments)
     legacy.record_run_event('display_overlap_protection', policy_version=4, pairs=overlap_audit)
-    # Length caps and evidence-based tail protection above can reopen a short
-    # blank interval. Finish with the same end-only display rule as Chinese,
-    # including Korean and every European language routed through this path.
+    # One endpoint mapping across every language. Acoustic pauses remain.
     legacy.relock_display_timing(finalized, audio_seconds, timeline_fps, stage='word_final_display')
     for cue in finalized:
         key=(cue.cue_id,cue.speaker,cue.text)
         if key in retained:
             a,b=retained[key]
-            cue.start=round(a*fps)/fps
-            cue.end=round((min(b,audio_seconds) if audio_seconds else b)*fps)/fps
+            cue.start=ceil(a*fps-1e-7)/fps
+            cue.end=ceil((min(b,audio_seconds) if audio_seconds else b)*fps-1e-7)/fps
     if retained:
         legacy.record_run_event('indivisible_language_duration_retained',language=profile.code,count=len(retained),
             reason='source_word_or_conservative_utterance_exceeds_duration; original_interval_retained')
@@ -404,16 +393,20 @@ def complete_media_run(
         stage_total=stage_total, include_srt=include_srt, model_statuses=model_statuses,
         review_classification=review_classification, real_three_source_cues=real_three_source_cues,
         cache_owners=cache_owners)
-    save_delivery_checkpoint(runtime_context, legacy, delivery_arguments)
     from .language_diagnostics import merge_language_notices
     runtime_context.review_items[:]=merge_language_notices(runtime_context.review_items)
-    review_items = legacy.print_review_summary()
     # Before the project and its delivery digest exist: never a later rewrite.
     normalize_delivered_cue_text(cues, legacy)
     # 繁体中文 (2026-10-19): converted here once, so the project, its translation
     # source and every export hold the same Traditional text.
     from ..subtitle_rules.chinese_script import convert_delivered_cues, task_script
     convert_delivered_cues(cues, runtime_context, legacy)
+    # Cached timing, optional aligners and delivered-script conversion can all
+    # run after the initial finalizer. Refresh against the exact saved cues.
+    from ..subtitle_rules.timing import refresh_final_cue_reviews
+    refresh_final_cue_reviews(cues, segments, legacy=legacy, audio_seconds=audio_seconds)
+    review_items = legacy.print_review_summary()
+    save_delivery_checkpoint(runtime_context, legacy, delivery_arguments)
     output_details = {}
     # Recognition persists its project and report. File export is an explicit
     # user operation; even legacy saved output switches must not write siblings
@@ -606,8 +599,8 @@ def complete_media_run(
     from .transcript_delivery import terminal_status
     counts = dict((getattr(runtime_context, 'transcript_acceptance', {}) or {}).get('counts') or {})
     counts['final_cue_count'] = len(cues)
-    from .speech_coverage import pending as pending_speech_gaps
-    counts['speech_gap_count'] = len(pending_speech_gaps(runtime_context.speech_coverage))
+    from .speech_coverage import counts as speech_counts
+    counts.update(speech_counts(runtime_context.speech_coverage))
     status = 'needs_recovery' if output_details.get('project_error') else terminal_status(counts, len(cues), degraded=degraded or bool(
         getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
     legacy.record_run_event('subtitle_delivery', status=status, **counts)

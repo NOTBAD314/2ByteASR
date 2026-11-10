@@ -344,6 +344,8 @@ def _mark_neighbor_context(observations, cue):
 
 
 def cue_source_hypotheses(project, cue, *, index=None):
+    from .source_candidate_mapping import associations, project_candidate, local_match, source_text
+    assigned, suppressed = associations(project)
     refs = list(dict.fromkeys(getattr(cue, 'evidence_refs', ()) or ()))
     from ..projects.subtitle_import import imported_track
     if not refs and imported_track(project, getattr(cue, 'speaker_id', '')):
@@ -370,6 +372,8 @@ def cue_source_hypotheses(project, cue, *, index=None):
     else:
         candidates = list(evidence.items())
     result, seen = [], set()
+    overlapping_sources = {str(row.get('speaker_id') or '') for _, row in candidates
+                           if isinstance(row, Mapping) and not row.get('cue_alignment')}
     for ref, row in candidates:
         if not isinstance(row, Mapping):
             continue
@@ -380,10 +384,25 @@ def cue_source_hypotheses(project, cue, *, index=None):
             if (getattr(project, 'render_settings', {}) or {}).get('_cue_domain') == 'timeline'
             else project_row_observations(ref, row, cue, role_models=role_models))
         for observation in observations:
+            if ref in suppressed and observation.get('source') == 'firered':
+                continue
+            if (len(overlapping_sources) > 1 and not row.get('cue_alignment')
+                    and not local_match(source_text(row), cue.text)
+                    and not local_match(cue.text, source_text(row))):
+                observation.update(context_only=True, coverage_unknown=True,
+                                   ownership='other_source_context')
             key = tuple(observation.get(name) for name in ('model', 'reference', 'start_ms', 'end_ms', 'text'))
             if key not in seen:
                 seen.add(key)
                 result.append(observation)
+        for candidate in assigned.get(ref, ()):
+            projected = project_candidate(candidate, cue)
+            if projected is None:
+                continue
+            key = ('candidate', projected['candidate_id'], projected['text'])
+            if key not in seen:
+                seen.add(key)
+                result.append(projected)
     result.sort(key=lambda item: (item['start_ms'], item['reference']))
     return tuple(_mark_neighbor_context(result, cue))
 

@@ -3,8 +3,8 @@
 The manuscript (``cue.text``) is never rewritten by this module. A project
 stores one choice in ``studio_state['punctuation']``:
 
-* ``original`` — 保留原文: the text exactly as recognized and edited (also
-  what an older project without the key gets, so nothing changes on upgrade);
+* ``original`` — 不添加标点: retain the manuscript except sentence question
+  and exclamation marks. Older original settings receive this reversible output policy;
 * ``add``      — 添加标点: pause spaces between Chinese/Japanese characters
   become ，/、 and each subtitle ends with 。 (or ``.`` for Latin-only text).
   This is a free local inference from the pauses already in the text, not a
@@ -40,16 +40,17 @@ MODE_ADD = 'add'
 MODE_NONE = 'none'
 MODES = (MODE_ORIGINAL, MODE_ADD, MODE_NONE)
 STATE_KEY = 'punctuation'
-MODE_LABELS = {MODE_ORIGINAL: '保留原文', MODE_ADD: '添加标点', MODE_NONE: '不加标点'}
+MODE_LABELS = {MODE_ORIGINAL: '不添加标点（去问叹号）', MODE_ADD: '添加标点', MODE_NONE: '不加标点'}
 MODE_HINTS = {
-    MODE_ORIGINAL: '照原文输出',
+    MODE_ORIGINAL: '去掉语句问号和感叹号，其他标点与文稿保留',
     MODE_ADD: '停顿处加逗号，句末加句号',
     MODE_NONE: '去掉语句标点，用空格分开',
 }
 
 # General sentence marks (句读). Quotes, brackets, 《》, ·, ～ and dashes are
 # not removed: they carry names, titles or tone.
-SENTENCE_MARKS = frozenset('，。、；：！？,.;:!?｡､…')
+EXPRESSIVE_MARKS = frozenset('?!？！‼⁇⁈⁉')
+SENTENCE_MARKS = frozenset('，。、；：！？,.;:!?｡､…') | EXPRESSIVE_MARKS
 TERMINAL_MARKS = frozenset('。！？.!?…｡')
 CLOSERS = frozenset('”’」』）)】]》〉"\'')
 SPACES = frozenset(' 　')
@@ -130,7 +131,8 @@ def _identity(text: str) -> StyledText:
     return StyledText(text, list(range(len(text))), False)
 
 
-def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = False) -> StyledText:
+def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = False,
+                               marks=SENTENCE_MARKS, preserve_spacing: bool = False) -> StyledText:
     """不加标点: remove sentence marks outside protected spans."""
     text = str(text or '')
     mask = _protected_mask(text, protected_terms, math)
@@ -139,9 +141,9 @@ def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = Fa
     index = 0
     while index < len(text):
         char = text[index]
-        if char in SENTENCE_MARKS and not mask[index]:
+        if char in marks and not mask[index]:
             end = index
-            while end < len(text) and text[end] in SENTENCE_MARKS and not mask[end]:
+            while end < len(text) and (text[end] in marks or text[end] in "\ufe0e\ufe0f") and not mask[end]:
                 end += 1
             # Never let removal glue two words together: keep (at most) one space.
             before = out[-1] if out else ''
@@ -150,7 +152,7 @@ def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = Fa
                 out.append(' ')
             index = end
             continue
-        if char in SPACES and out and out[-1] in SPACES:
+        if not preserve_spacing and char in SPACES and out and out[-1] in SPACES:
             index += 1  # one space is enough
             continue
         mapping[index] = len(out)
@@ -159,7 +161,7 @@ def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = Fa
     styled = ''.join(out)
     # Spaces at line edges carry no pause.
     lines = styled.split('\n')
-    trimmed = '\n'.join(line.strip(' 　') for line in lines)
+    trimmed = styled if preserve_spacing else '\n'.join(line.strip(' 　') for line in lines)
     if trimmed != styled:
         mapping = _remap_after_trim(styled, trimmed, mapping)
         styled = trimmed
@@ -225,12 +227,15 @@ def style_text(text: str, mode: str, *, language: str = '', protected_terms=(), 
     """``math`` protects ``$…$`` formulas from punctuation changes and, unless
     ``convert_math`` is false (writing into the manuscript), shows them as Unicode."""
     mode = mode if mode in MODES else MODE_ORIGINAL
-    if mode == MODE_NONE:
+    if mode == MODE_ORIGINAL and EXPRESSIVE_MARKS.isdisjoint(str(text or "")):
+        styled = _identity(str(text or ""))
+    elif mode == MODE_NONE:
         styled = strip_sentence_punctuation(text, protected_terms=protected_terms, math=math)
     elif mode == MODE_ADD:
         styled = add_pause_punctuation(text, language=language, protected_terms=protected_terms, math=math)
     else:
-        styled = _identity(str(text or ''))
+        styled = strip_sentence_punctuation(text, protected_terms=protected_terms, math=math,
+                                            marks=EXPRESSIVE_MARKS, preserve_spacing=True)
     return _with_math(styled) if math and convert_math else styled
 
 
@@ -316,7 +321,7 @@ def math_enabled_from_state(state) -> bool:
 
 def styling_active(state) -> bool:
     """Whether display text can differ from the manuscript for this state."""
-    return mode_from_state(state) != MODE_ORIGINAL or math_enabled_from_state(state)
+    return True
 
 
 def style_cues(project, cues, *, mode: str | None = None, math: bool | None = None) -> list:
@@ -324,12 +329,15 @@ def style_cues(project, cues, *, mode: str | None = None, math: bool | None = No
     mode = project_mode(project) if mode is None else mode
     math = math_enabled(project) if math is None else math
     cues = list(cues)
-    if (mode == MODE_ORIGINAL and not math) or _cues_already_styled(getattr(project, 'studio_state', None)):
+    if _cues_already_styled(getattr(project, 'studio_state', None)):
         return cues
     hint = _language_hint(project)
     terms = protected_terms_of(project)
     out = []
     for cue in cues:
+        if mode == MODE_ORIGINAL and not math and EXPRESSIVE_MARKS.isdisjoint(str(cue.text or "")):
+            out.append(cue)
+            continue
         styled = style_text(cue.text, mode, language=hint, protected_terms=terms, math=math)
         if styled.changed:
             cue = _with_text(cue, styled.text)
@@ -342,7 +350,7 @@ def style_cues_for_state(state, cues, *, language: str = '', metadata=None) -> l
     mode = mode_from_state(state)
     math = math_enabled_from_state(state)
     cues = list(cues)
-    if (mode == MODE_ORIGINAL and not math) or _cues_already_styled(state):
+    if _cues_already_styled(state):
         return cues
     holder = type('_Holder', (), {})()
     holder.studio_state = state
@@ -350,6 +358,9 @@ def style_cues_for_state(state, cues, *, language: str = '', metadata=None) -> l
     terms = protected_terms_of(holder)
     out = []
     for cue in cues:
+        if mode == MODE_ORIGINAL and not math and EXPRESSIVE_MARKS.isdisjoint(str(cue.text or "")):
+            out.append(cue)
+            continue
         styled = style_text(cue.text, mode, language=language, protected_terms=terms, math=math)
         if styled.changed:
             cue = _with_text(cue, styled.text)
@@ -357,22 +368,25 @@ def style_cues_for_state(state, cues, *, language: str = '', metadata=None) -> l
     return out
 
 
-def style_translation(text: str, mode: str, *, math: bool = False) -> str:
+def style_translation(text: str, mode: str, *, math: bool = False, protected_terms=()) -> str:
     """Translations already come punctuated; only 不加标点 changes them (formulas
     are converted when the math switch is on)."""
-    if mode != MODE_NONE:
+    if mode == MODE_ADD or (mode == MODE_ORIGINAL and EXPRESSIVE_MARKS.isdisjoint(str(text or ""))):
         styled = _identity(str(text or ''))
     else:
-        styled = strip_sentence_punctuation(text, math=math)
+        styled = strip_sentence_punctuation(text, math=math, protected_terms=protected_terms,
+            marks=SENTENCE_MARKS if mode == MODE_NONE else EXPRESSIVE_MARKS,
+            preserve_spacing=mode != MODE_NONE)
     return _with_math(styled).text if math else styled.text
 
 
-def style_translations(state, translations):
+def style_translations(state, translations, *, protected_terms=()):
     mode = mode_from_state(state)
     math = math_enabled_from_state(state)
-    if (mode != MODE_NONE and not math) or not translations:
+    if (mode == MODE_ADD and not math) or not translations:
         return translations
-    return {key: style_translation(value, mode, math=math) for key, value in dict(translations).items()}
+    return {key: style_translation(value, mode, math=math, protected_terms=protected_terms)
+            for key, value in dict(translations).items()}
 
 
 def preview_rows(project=None, mode: str = MODE_ADD, limit: int = 3) -> list[tuple[str, str]]:

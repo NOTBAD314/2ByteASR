@@ -59,7 +59,7 @@ def test_actual_bad_response_has_19_overlength_and_semantic_failures():
     issues = quality.inspect(f["model_boundaries"])
     assert len(f["model_boundaries"]) == 42
     assert len(f["source_text"]) == 625
-    assert sum(x["kind"] == "length" for x in issues) == 19
+    assert sum(x["kind"] == "length" for x in issues) == 24
     for word in ("这场","虽然","但是","李妹"):
         starts = [i for i in range(len(f["source_text"])) if f["source_text"].startswith(word,i)]
         assert any(x["kind"] == "semantic_boundary" and
@@ -125,7 +125,7 @@ def test_numbers_units_english_and_indivisible_names_are_not_hard_cut(word,monke
     q = BoundaryQuality(word)
     cuts, issues = q.repair([len(q.index.content)])
     assert cuts == [len(q.index.content)]
-    assert bool(issues) == (len(q.index.content)>16)
+    assert bool(issues) == (len(q.index.content)>14)
 
 
 def test_connector_ownership_is_contextual_and_nominal_result_stays_intact():
@@ -186,7 +186,7 @@ def test_bad_sample_only_retries_small_local_windows_and_keeps_safe_fallback(mon
     assert all(len(c.text)<=16 for c in result)
 
 
-def test_valid_local_AI_correction_can_move_only_an_allowed_failed_window(monkeypatch):
+def test_equal_quality_AI_correction_retains_the_local_baseline(monkeypatch):
     f,rows=sample()
     quality=quality_for_segments(rows,f["acoustic_tokens"])
     local,_=quality.repair(f["model_boundaries"])
@@ -208,9 +208,13 @@ def test_valid_local_AI_correction_can_move_only_an_allowed_failed_window(monkey
     events=[]
     monkeypatch.setattr(grouping,"record_run_event",lambda name,**data:events.append(dict(event=name,**data)))
     result=grouping.call_grouping_api(rows,provider_snapshot=snapshot,firered_tokens=f["acoustic_tokens"])
-    assert result.validated and changed
+    assert result.validated
+    assert [core.display_length(c.text) for c in result] == [b-a for a,b in zip([0,*local],local)]
     assert "".join(c.text for c in result)==f["source_text"]
-    assert any(e["event"]=="grouping_quality_retry" and e["accepted"] and e["before"] and e["after"] for e in events)
+    retries=[e for e in events if e['event']=='grouping_quality_retry']
+    assert retries and all(not e['improved'] for e in retries)
+    assert all(e['outcome'] in {'unchanged','rejected'} for e in retries)
+    assert all(not e['accepted'] or e['outcome']=='unchanged' for e in retries)
 
 
 def test_local_correction_input_budget_is_distinct_and_never_dispatched(monkeypatch):

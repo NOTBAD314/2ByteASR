@@ -1,30 +1,7 @@
-"""Remember manual Studio corrections in the project's glossary (2026-10-15).
+"""Name-span extraction shared by review-only subtitle learning.
 
-User request: when a project uses a glossary, a caption the user fixed by
-hand should be saved to that glossary automatically, so later recognition
-remembers it. Until now every manual fix waited in "learned words" for an
-explicit confirmation on the term library page.
-
-A saved row becomes a confirmed alias that later recognition replaces
-everywhere, so only fixes with a clear name span are written; everything else
-keeps the old review flow (the learned list):
-
-1. Glossary-backed: the fixed text covers a term of an applied glossary
-   (芙宁娜) → the misheard form there (福宁娜) becomes its alias, in the
-   library that owns the term.
-2. New name: the span must be clean — on word boundaries, no particle /
-   pronoun / preposition at either edge, at least three Chinese characters
-   (two-character aliases hide inside ordinary words: 来特 in 来特别), or the
-   user's own find-and-replace pair.
-
-Never: a 他 / 她 / 它 flip; a wrong form that is ordinary language (老是 →
-老师 would rewrite every later 老是; 所以他, 我们在); a fixed form containing
-an ordinary non-noun word (的是安排).
-
-Which glossary: the one owning the term; else the only applied library; with
-several and no owner the pair stays in the learned list and the user is told.
-A result remembers exactly which rows it added, so undoing the edit removes
-them again.
+The former automatic writers are retained as compatibility guards. They cannot
+write or remove formal mappings. Explicit review uses confirm_learning_candidate.
 """
 from __future__ import annotations
 
@@ -285,45 +262,13 @@ def _mapping_keys(legacy, library_id):
 
 
 def remember(snapshot, source: str, target: str, *, legacy=None) -> AutoSaveResult:
-    """Write ``source → target`` (and the canonical itself) into the chosen library."""
-    if legacy is None:
-        import subtitle_core as legacy
-    library_id, name, category = choose_library(snapshot, target)
-    if library_id is None:
-        return AutoSaveResult(source, target, name if name == AMBIGUOUS else FAILED, reason=name)
-    result = AutoSaveResult(source, target, EXISTS, library_id, name)
-    try:
-        before = _mapping_keys(legacy, library_id)
-        for row in ((target, target), (source, target)):
-            if legacy.add_learned_mapping(library_id, row[0], row[1], category=category, origin=AUTO_ORIGIN):
-                result.status = SAVED
-        after = _mapping_keys(legacy, library_id)
-        result.added = sorted(after - before)
-    except ValueError as exc:  # 别名冲突: the user's own mapping wins
-        result.status, result.reason = CONFLICT, str(exc)
-    except (OSError, TypeError) as exc:
-        result.status, result.reason = FAILED, str(exc)
-    return result
+    """Compatibility guard. Caption changes require explicit terminology review."""
+    return AutoSaveResult(source, target, FAILED, reason="请在待确认区域明确加入术语库")
 
 
 def forget(result: AutoSaveResult, *, legacy=None) -> int:
-    """Undo one save: remove the rows it added (the canonical row only while no
-    other alias still points to it)."""
-    if not result.added or not result.library_id:
-        return 0
-    if legacy is None:
-        import subtitle_core as legacy
-    rows = [tuple(row) for row in result.added if tuple(row)[0] != tuple(row)[1]]
-    removed = legacy.delete_learned_mappings(result.library_id, rows) if rows else 0
-    canonical = [tuple(row) for row in result.added if tuple(row)[0] == tuple(row)[1]]
-    if canonical:
-        remaining = _mapping_keys(legacy, result.library_id)
-        orphan = [row for row in canonical
-                  if not any(to == row[1] and source != to for source, to in remaining)]
-        if orphan:
-            removed += legacy.delete_learned_mappings(result.library_id, orphan)
-    result.added = []
-    return removed
+    """Caption undo has no authority to remove formal terminology."""
+    return 0
 
 
 __all__ = ["AMBIGUOUS", "AUTO_ORIGIN", "AutoSaveResult", "CONFLICT", "EXISTS", "FAILED", "SAVED",

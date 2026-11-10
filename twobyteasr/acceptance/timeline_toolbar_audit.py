@@ -240,8 +240,9 @@ def run(output, *, window):
         entries = [action.text() for action in more.actions()]
         submenus = [action.text() for action in more.actions() if action.menu() is not None]
         result['more_menu'] = dict(entries=entries, submenus=submenus)
-        for label in ('打开媒体池', '新建字幕轨', '新建视频轨'):
-            check(f'「…」 has {label}', any(label in entry for entry in entries), entries)
+        # 2026-11-10 (user): new tracks come from the "+" only; AI commands from「AI 工具」.
+        check('「…」 has 打开媒体池', any('打开媒体池' in entry for entry in entries), entries)
+        check('「…」 has no AI 断句 / 所有字幕操作', not any('AI 断句' in e or '所有字幕操作' in e for e in entries), entries)
         check('「…」 has 转场', any('转场' in entry for entry in submenus), submenus)
         plus = getattr(page, 'timeline_add_track_button', None)
         check('"+" above track names', plus is not None and plus.isVisible(), None if plus is None else rect_in(plus, page.timeline))

@@ -32,7 +32,8 @@ def mapping_is_confirmed(mapping: dict[str, Any], *, inferred_manual: bool = Fal
     Callers retain their existing provenance rules. Only records known to have
     manual authority may infer confirmation when the old field is absent.
     """
-    return bool(mapping.get("confirmed", inferred_manual))
+    from .learning_review import requires_review
+    return not requires_review(mapping) and bool(mapping.get("confirmed", inferred_manual))
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,12 @@ class TermEntry:
     priority: int = 20
     correction_enabled: bool = True
     emphasis_enabled: bool = False
+
+    def __post_init__(self):
+        # Old frozen task/project snapshots can still carry the automatic marker.
+        from .learning_review import AUTO_ORIGIN
+        if self.origin == AUTO_ORIGIN:
+            object.__setattr__(self, "confirmed", False)
 
 
 # Hotword value (2026-10-17). Names are what recognizers miss; a recorded
@@ -219,6 +226,9 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
         for row in entry.get("mappings", ()):
             if not isinstance(row, dict) or not _text(row.get("to")):
                 continue
+            from .learning_review import requires_review
+            if requires_review(row):
+                continue
             provenance = _text(row.get("provenance"))
             # Legacy manual records predate provenance; confirmed=False always
             # wins and candidates/AI records do not acquire manual authority.
@@ -228,6 +238,8 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
                  _text(row.get("origin")) in {"手动", "批量导入", "用户确认"} or
                  (bool(row.get("confirmed")) and _text(row.get("verification")).startswith("user_"))))
             confirmed = mapping_is_confirmed(row, inferred_manual=user) and user
+            if not confirmed:
+                continue
             source = _text(row.get("from"))
             aliases = tuple(dict.fromkeys([source, *[_text(x) for x in row.get("aliases", ())]]))
             aliases = tuple(x for x in aliases if x)

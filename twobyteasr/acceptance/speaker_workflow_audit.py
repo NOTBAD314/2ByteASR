@@ -216,7 +216,7 @@ def start(window, out):
                 return
             check('replacement entry visible', page.studio_find_replace_button.isVisible())
             check('shortcut entry visible', page.studio_shortcut_entry_button.isVisible())
-            check('review and assistant retained in overflow', page.review_mode_button in page._studio_toolbar_overflow_widgets and page.studio_clip_assistant_button in page._studio_toolbar_overflow_widgets)
+            check('assistant retained in overflow; review is 「开始审核」 in the list', page.review_mode_button not in page._studio_toolbar_overflow_widgets and page.studio_clip_assistant_button in page._studio_toolbar_overflow_widgets)
             check('new entries use library icons', not page.studio_find_replace_button.icon().isNull() and not page.studio_shortcut_entry_button.icon().isNull())
             result['toolbar_geometry'] = {button.text(): {'width': button.width(), 'size_hint': button.sizeHint().width(),
                 'height': button.height(), 'font': button.font().toString(), 'focus_policy': int(button.focusPolicy())}

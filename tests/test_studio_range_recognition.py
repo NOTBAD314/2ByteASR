@@ -380,12 +380,26 @@ def test_finished_range_replaces_the_stretch_as_one_undo_step(tmp_path, monkeypa
     assert page.cue_model.rowCount() == 5
     names = {s.id:s.name for s in page.project.speakers}
     page.save()
+    from twobyteasr.projects.persistence_queue import queue_for
+    from PySide6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while queue_for(page).busy and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert not queue_for(page).busy
     reopened = load_project(page.project_path)
     assert {s.id:s.name for s in reopened.speakers} == names
     assert [c.speaker_id for c in reopened.cues] == [c.speaker_id for c in page.project.cues]
     page.undo_stack.undo()
     assert [cue.text for cue in page.project.cues] == before
     page.save()
+    from twobyteasr.projects.persistence_queue import queue_for
+    from PySide6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while queue_for(page).busy and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert not queue_for(page).busy
     assert {s.id for s in load_project(page.project_path).speakers} == {'HOST','GUEST'}
     page.close_page()
 

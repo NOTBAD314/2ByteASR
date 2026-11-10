@@ -132,6 +132,16 @@ class QCResult:
         counts = Counter(issue.severity.value for issue in self.issues)
         return {level.value: counts[level.value] for level in QCSeverity}
 
+    def rule_statistics(self):
+        groups = defaultdict(list)
+        for issue in self.issues:
+            groups[(issue.issue_type, issue.severity.value)].append(issue)
+        return [dict(rule_id=rule, severity=severity, hits=len(rows),
+                     unique_cues=len({row.cue_id for row in rows}),
+                     cue_ids=sorted({row.cue_id for row in rows})[:5],
+                     reasons=list(dict.fromkeys(row.label for row in rows))[:3])
+                for (rule, severity), rows in sorted(groups.items())]
+
     def safe_fix_counts(self) -> dict[str, int]:
         counts = Counter(issue.category.value for issue in self.issues if issue.safe_fixable)
         return dict(counts)
@@ -485,6 +495,12 @@ def model_evidence(
         grouped[row['model']].append(row)
     result = []
     for model, rows in grouped.items():
+        patches = [r for r in rows if r.get('candidate_partial') and not r.get('context_only')]
+        if patches:
+            for text in dict.fromkeys(r['text'] for r in patches):
+                result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=text,
+                                         source=model, confidence=None, context_only=False))
+            rows = [r for r in rows if r.get('context_only')]
         # Context remains a separate, read-only observation. Concatenating it
         # with an exact current reading manufactured conflicts for short cues.
         for contextual in (False, True):
@@ -596,6 +612,21 @@ class ASREvidenceRule:
             context.evidence_by_cue[cue.id] = evidence
         from ..recognition.asr_source_evidence import cue_source_hypotheses, coverage_summary
         coverage = coverage_summary(cue_source_hypotheses(context.project, cue, index=context.evidence_index))
+        associated = [r for r in cue_source_hypotheses(context.project, cue, index=context.evidence_index)
+                      if r.get('candidate_id')]
+        uncertain = [r for r in associated if r.get('ownership') == 'needs_confirmation']
+        if uncertain:
+            yield QCIssue('candidate_ownership', QCSeverity.WARNING, QCCategory.ASR,
+                cue.id, '候选归属待确认',
+                '混合音频候选无法可靠归属。请试听并手动选择修改位置。' + ' '.join(
+                    f"候选「{r['observed_text']}」涉及来源 {', '.join(r['related_references'])}，"
+                    f"原范围 {r['original_start_ms']/1000:.3f}–{r['original_end_ms']/1000:.3f}s。"
+                    for r in uncertain), evidence, source='asr_candidate_ownership')
+        patches = [r for r in associated if r.get('candidate_partial') and r['text'] != cue.text]
+        if patches:
+            yield QCIssue('local_model_correction', QCSeverity.WARNING, QCCategory.ASR,
+                cue.id, '局部模型纠错候选', '独立候选对应本句中的局部文字，采用时保留其余全文。',
+                tuple(e for e in evidence if not e.context_only), source='asr_local_candidate')
         projection_difference = coverage.get('current_text_supported') is False and not coverage['conflict']
         if projection_difference:
             yield QCIssue(
@@ -959,6 +990,12 @@ class TimelineRule:
 
 class ReadabilityRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
+        from .punctuation_style import style_text, project_mode, math_enabled, protected_terms_of
+        styled = style_text(cue.text, project_mode(context.project),
+            math=math_enabled(context.project), protected_terms=protected_terms_of(context.project))
+        if styled.changed:
+            cue = copy.copy(cue)
+            cue.text = styled.text
         duration = max(1, cue.end_ms - cue.start_ms)
         from .language_rules import project_language
         from ..projects.subtitle_import import imported_track
@@ -1118,6 +1155,8 @@ class SubtitleQCEngine:
         cue_ids: Iterable[str] | None = None,
         terminology: Iterable[TerminologyEntry] = (),
     ) -> QCResult:
+        from ..recognition.source_candidate_mapping import associations
+        associations(project, refresh=True)
         context = self._context(project, terminology)
         selected = None if cue_ids is None else {str(item) for item in cue_ids}
         cues = [
@@ -1415,7 +1454,7 @@ def terminology_from_project(project: SubtitleProject) -> tuple[TerminologyEntry
         if identity not in wanted and str(name) not in wanted:
             continue
         for item in profile.get("terms", []):
-            if not isinstance(item, Mapping):
+            if not isinstance(item, Mapping) or not item.get("correction_enabled", True):
                 continue
             canonical = str(item.get("canonical") or "").strip()
             aliases = tuple(str(alias).strip() for alias in item.get("aliases", []) if str(alias).strip())
@@ -1423,11 +1462,11 @@ def terminology_from_project(project: SubtitleProject) -> tuple[TerminologyEntry
                 result[canonical] = TerminologyEntry(canonical, aliases, str(name))
     for identity in wanted:
         try:
-            mappings = subtitle_core.learned_mappings_for_game(identity)
+            mappings = subtitle_core.user_confirmed_mappings_for_game(identity)
         except Exception:
             mappings = ()
         for mapping in mappings:
-            if not isinstance(mapping, Mapping):
+            if not isinstance(mapping, Mapping) or not mapping.get("correction_enabled", True):
                 continue
             source = str(mapping.get("from") or "").strip()
             target = str(mapping.get("to") or "").strip()

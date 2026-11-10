@@ -3143,10 +3143,20 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             alignment_samples=alignment_samples,
             stderr_tail=(stderr or "")[-4000:],
         )
-        raise RuntimeError(
-            "FireRed forced alignment failed; refusing text-only output: "
-            + (stderr or "")[-1000:]
-        )
+        from .firered_checkpoints import VERSION
+        rows=payload.get('results',[])
+        if not rows or any(row.get('evidence_version')!=VERSION for row in rows):
+            raise RuntimeError(
+                "FireRed forced alignment failed; refusing unlabelled timing: "
+                + (stderr or "")[-1000:])
+    if model_id == 'FIRERED' and isinstance(payload,dict) and payload.get('results'):
+        from collections import Counter
+        counts=Counter(row.get('alignment_status','unknown') for row in payload['results'])
+        record_run_event('FIRERED_ALIGNMENT_STATUS',counts=dict(counts),
+            status='aligned' if set(counts)=={'aligned'} else 'degraded',
+            reason='' if set(counts)=={'aligned'} else '部分 FireRed 窗口没有真实字级对齐；已隔离估计时间，保留转写文本。',
+            untrusted_window_ids=[r.get('segment_id') for r in payload['results'] if r.get('alignment_status')!='aligned'],
+            estimated_windows=sum(n for key,n in counts.items() if key!='aligned'))
     return payload
 
 

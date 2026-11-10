@@ -2,7 +2,7 @@
 
 import copy
 from functools import wraps
-from .grouping_quality import enabled as _quality_enabled, quality_for_segments, cues_from_quality, SourceIndex
+from .grouping_quality import enabled as _quality_enabled, quality_for_segments, cues_from_quality, SourceIndex, QUALITY_VERSION
 from .grouping_quality_request import QualityRetryBudget, retry_quality_windows, split_request_source, context_text
 import hashlib
 import json
@@ -539,7 +539,7 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
     for cue, segment in zip(source_cues, segment_batch):
         cue.text = segment.text
         cue.start, cue.end = segment.start, segment.end
-    if all(
+    if not _quality_enabled() and all(
         display_length(cue.text) <= _current_language_profile().hard_max
         and cue.end - cue.start <= _current_language_profile().max_seconds + 0.05
         and cue.end > cue.start
@@ -759,7 +759,7 @@ def call_grouping_api(
         "read_only_context": _read_only_context or segment_batch[0].caption_arbitration.get("grouping_read_only_context", {}),
         "body_range": [0, total_length],
         "index_unit": "content_exact_unicode_codepoints",
-        "quality_version": "grouping-quality-v1",
+        "quality_version": QUALITY_VERSION,
         "time_domain": "source_seconds",
     }
     if _quality_enabled():
@@ -771,6 +771,17 @@ def call_grouping_api(
                 protected=set(hard_break_offsets) | set(protected_source_offsets))
             request_body["allowed_boundaries"] = request_quality.allowed
             request_body["semantic_required_boundaries"] = sorted(request_quality.semantic_required)
+            from .segmentation import lexical_boundary_terms
+            request_body['protected_terms'] = [term for term in lexical_boundary_terms()
+                if content_exact(term) in request_quality.index.content]
+        request_body['length_policy'] = dict(language=prompt_language,
+            hard_max=_current_language_profile().hard_max,max_seconds=_current_language_profile().max_seconds,
+            unit=_current_language_profile().unit,origin='built_in_language_profile',hard_max_is_target=False)
+        request_body['source_timing'] = [dict(source_id=s.segment_id,
+            basis=s.caption_arbitration.get('word_timing',{}).get('basis','source_segment'),
+            reliable_internal_timing=s.caption_arbitration.get('word_timing',{}).get('basis')
+                in {'provider_words','aligner_words'},
+            words=s.caption_arbitration.get('word_timing',{}).get('measured_words',[])) for s in segment_batch]
     messages = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": json.dumps(request_body, ensure_ascii=False, separators=(',', ':'))},
@@ -962,6 +973,9 @@ def call_grouping_api(
                 result, boundary_offsets, quality_issues = cues_from_quality(segment_batch,
                     boundary_offsets, firered_tokens,
                     protected=set(hard_break_offsets) | set(protected_source_offsets), record=record_run_event)
+                record_run_event('pipeline_work_progress',work_id=f'grouped:{batch_index}:local',
+                    label='断句：本地断点检查',phase='grouping_local_validation',state='completed',
+                    done=1,total=1,batch_index=batch_index,review_required=bool(quality_issues))
                 proposed_texts = quality.index.pieces(boundary_offsets)
             else:
                 boundary_offsets = repair_lexical_boundary_offsets(
@@ -1641,7 +1655,7 @@ def group_subtitles(
         provider_capacity=capacity, batch_policy=batch_policy, prompt_version=prompt_key,
         batch_count=len(jobs), remote_batch_count=sum(not job[-1] for job in jobs) if use_ai else 0,
         local_fast_batch_count=sum(bool(job[-1]) for job in jobs), protected_turn_count=len(turns),
-        result_origin=origin)
+        quality_retry_outcomes=quality_budget.summary(),result_origin=origin)
     from .grouping_contract import capture_grouping_source
     return GroupedBatchResult(cues, origin=origin, validated=all_validated,data_validated=True,
         source_fingerprint=capture_grouping_source(ordered_segments).fingerprint,

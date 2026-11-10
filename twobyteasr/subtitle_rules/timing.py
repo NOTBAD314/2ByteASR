@@ -238,54 +238,20 @@ def normalize_cue_times(cues, timeline_fps=TIMELINE_FPS):
             min(max_duration_frames, reading_frames),
         )
 
+    # Reading-time compensation may use silence, never another turn's onset.
+    # Keep the input speech endpoints and do not push a following cue later.
+    from bisect import bisect_right
+    from math import ceil
+    starts = sorted({max(0, ceil(c.start * timeline_fps-1e-7)) for c in cues})
     for cue in cues:
-        start_frame = max(0, int(round(max(0.0, cue.start) * timeline_fps)))
-        end_frame = int(round(max(cue.end, cue.start) * timeline_fps))
-        end_frame = max(end_frame, start_frame + budgeted_minimum_frames(cue))
+        start_frame = max(0, ceil(max(0., cue.start) * timeline_fps-1e-7))
+        speech_end = max(start_frame + 1, ceil(cue.end * timeline_fps-1e-7))
+        target = speech_end if getattr(cue, 'timing_locked', False) else max(speech_end, start_frame + budgeted_minimum_frames(cue))
+        next_index = bisect_right(starts, start_frame)
+        if next_index < len(starts):
+            target = max(speech_end, min(target, starts[next_index]))
         cue.start = start_frame / timeline_fps
-        cue.end = end_frame / timeline_fps
-
-    # 只在同一说话人内部消除字幕碰撞。不同主播同时说话是有效重叠，
-    # 分轨后必须同时保留，不能用 S02 的起点截断 S01 的尾句。
-    minimum_seconds = minimum_frames / timeline_fps
-    speaker_rows = {}
-    for cue in cues:
-        speaker_rows.setdefault(cue.speaker or "S00", []).append(cue)
-    for rows in speaker_rows.values():
-        # cue_id follows the conserved source-text order.  Overlapping MOSS chunks
-        # can give a later phrase an earlier acoustic start; sorting by raw time
-        # would silently move that phrase in front of its predecessor.  Repair the
-        # timestamps in source order instead, then chronological export remains safe.
-        rows.sort(key=lambda cue: (cue.cue_id, cue.start, cue.end))
-        for previous, current in zip(rows, rows[1:]):
-            if previous.end > current.start:
-                if (
-                    current.timing_locked
-                    and current.start - previous.start >= minimum_seconds
-                ):
-                    previous.end = current.start
-                elif previous.timing_locked:
-                    current.start = previous.end
-                    current.end = max(
-                        current.end,
-                        previous.end + budgeted_minimum_frames(current) / timeline_fps,
-                    )
-                elif current.start - previous.start >= minimum_seconds:
-                    previous.end = current.start
-                else:
-                    current.start = previous.end
-                    current.end = max(
-                        current.end,
-                        previous.end + budgeted_minimum_frames(current) / timeline_fps,
-                    )
-
-            gap = current.start - previous.end
-            if (
-                0.0 < gap <= MAX_CUE_HOLD_GAP_SECONDS
-                and current.start - previous.start <= MAX_HELD_SUBTITLE_SECONDS
-                and not previous.timing_locked
-            ):
-                previous.end = current.start
+        cue.end = target / timeline_fps
     return cues
 
 
@@ -377,10 +343,13 @@ def extend_cue_tails_by_speaker(
     # Freeze pre-extension intervals: another speaker's added reading tail is
     # not speech evidence, and iteration order must not change the result.
     from bisect import bisect_right
+    bases = {id(c): (getattr(c, '_display_tail_input', c.end)
+                    if abs(c.end-getattr(c, '_display_tail_output', c.end+1)) < 1e-7 else c.end)
+             for c in cues}
     speech_index = {}
     for speaker, rows in speaker_rows.items():
         intervals = sorted((int(round(c.start * timeline_fps)),
-                            int(round(c.end * timeline_fps))) for c in rows)
+                            int(round(bases[id(c)] * timeline_fps))) for c in rows)
         starts, prefix_ends, farthest = [], [], -1
         for start, end in intervals:
             starts.append(start); farthest = max(farthest, end); prefix_ends.append(farthest)
@@ -390,8 +359,10 @@ def extend_cue_tails_by_speaker(
     for rows in speaker_rows.values():
         rows.sort(key=lambda cue: (cue.start, cue.end, cue.cue_id))
         for index, current in enumerate(rows):
+            if getattr(current, 'timing_locked', False):
+                continue
             start_frame = int(round(current.start * timeline_fps))
-            end_frame = int(round(current.end * timeline_fps))
+            end_frame = int(round(bases[id(current)] * timeline_fps))
             next_start_frame = (
                 int(round(rows[index + 1].start * timeline_fps))
                 if index + 1 < len(rows)
@@ -412,12 +383,14 @@ def extend_cue_tails_by_speaker(
                     break
                 if index_at_end < len(starts):
                     target_end_frame = min(target_end_frame, starts[index_at_end])
-            if target_end_frame <= end_frame:
+            if target_end_frame <= int(round(current.end * timeline_fps)):
                 continue
             added_frames = target_end_frame - end_frame
             if added_frames > tail_frames:
                 raise RuntimeError("字幕尾帧延长超过 200ms 护栏，已停止写入。")
+            current._display_tail_input = bases[id(current)]
             current.end = target_end_frame / timeline_fps
+            current._display_tail_output = current.end
             largest_added_frames = max(largest_added_frames, added_frames)
             changed += 1
     if changed:
@@ -488,10 +461,11 @@ def lock_cue_endpoints_to_frames(cues, timeline_fps=TIMELINE_FPS):
     Returns how many cues moved. A cue never ends before its start frame + 1.
     """
     fps = float(timeline_fps or TIMELINE_FPS)
+    from math import ceil
     moved = 0
     for cue in cues:
-        start_frame = max(0, int(round(float(cue.start) * fps)))
-        end_frame = max(start_frame + 1, int(round(float(cue.end) * fps)))
+        start_frame = max(0, ceil(float(cue.start) * fps-1e-7))
+        end_frame = max(start_frame + 1, ceil(float(cue.end) * fps-1e-7))
         start, end = start_frame / fps, end_frame / fps
         if abs(start - float(cue.start)) > 5e-7 or abs(end - float(cue.end)) > 5e-7:
             moved += 1
@@ -512,21 +486,15 @@ def _display_flicker_gaps(cues, timeline_fps):
 
 
 def relock_display_timing(cues, audio_seconds, timeline_fps=TIMELINE_FPS, *, stage=""):
-    """Frame grid and short-gap closing again after a step that moved endpoints.
+    """Frame quantization after an endpoint change, retaining natural pauses.
 
-    2026-10-18 (日常 19): content recovery and the post-final refinements (CTC
-    line starts, pause-snapped cuts) wrote raw millisecond times after the
-    frame quantizing and short-gap bridging had run. A start 12 ms after the
-    previous line's end then showed one blank frame between two lines that
-    should touch. Same rules as the first pass: endpoints on the frame grid,
-    gaps of 500 ms or less closed by running the earlier line on; the next
-    start never moves.
+    Equal endpoints use one frame mapping. Short acoustic pauses stay intact.
+    Explicit gap-closing remains available as a separate undoable UI action.
     """
     if not cues:
         return cues
     moved = lock_cue_endpoints_to_frames(cues, timeline_fps)
     gaps_before = _display_flicker_gaps(cues, timeline_fps)
-    bridge_short_display_gaps(cues, audio_seconds, timeline_fps)
     gaps_after = _display_flicker_gaps(cues, timeline_fps)
     if moved or gaps_before:
         record_run_event(
@@ -581,6 +549,79 @@ def firered_anchor_coverage(segment, firered_tokens=()):
         "missing_prefix": first.b if first else len(target),
         "missing_suffix": len(target) - (last.b + last.size) if last else len(target),
     }
+
+
+def refresh_final_cue_reviews(cues, segments=(), *, legacy=None, audio_seconds=None):
+    """Replace cue-dependent notices after every final mutation, including cache replay."""
+    import math
+    import bisect
+    if legacy is None:
+        import subtitle_core as legacy
+    categories={'显示过短','阅读较快','字幕语义碎片','字幕时间异常'}
+    items=get_runtime_context().review_items
+    items[:]=[item for item in items if item.get('category') not in categories]
+    source_starts={}
+    for segment in segments:
+        source_starts.setdefault((segment.speaker,segment.text.strip()),[]).append(segment.start)
+    for starts in source_starts.values():
+        starts.sort()
+    short=0
+    for cue in cues:
+        duration=cue.end-cue.start
+        if not math.isfinite(cue.start+cue.end) or cue.start<0 or duration<=0:
+            raise ValueError('最终字幕时间非法，不能保存。')
+        metadata=dict(cue_id=cue.cue_id, speaker=cue.speaker,
+            start_ms=round(cue.start*1000),end_ms=round(cue.end*1000),
+            actual_duration_ms=round(duration*1000),review_basis='final_saved_cues')
+        if audio_seconds and (cue.start>audio_seconds or cue.end>audio_seconds+.05):
+            legacy.add_review_item(cue.start,'字幕时间异常','字幕超出媒体范围，需核对。',cue.text,
+                                   priority=3,**metadata)
+        if duration < .45-1e-6:
+            short+=1
+            starts=source_starts.get((cue.speaker,cue.text.strip()),[])
+            at=bisect.bisect_left(starts,cue.start-.05)
+            independent=at<len(starts) and abs(starts[at]-cue.start)<.05
+            legacy.add_review_item(cue.start,'显示过短',f'只显示 {duration:.2f} 秒',cue.text,
+                priority=2,short_reason='independent_source_utterance' if independent else 'limited_final_time',**metadata)
+        length=display_length(cue.text)
+        if length>=8 and length/max(.001,duration)>REVIEW_FAST_CHARS_PER_SECOND:
+            legacy.add_review_item(cue.start,'阅读较快',f'约 {length/duration:.1f} 字/秒',cue.text,
+                                   priority=1,**metadata)
+    from .text_rules import content_exact
+    speakers={s.speaker for s in segments}|{c.speaker for c in cues}
+    coverage={speaker:(''.join(content_exact(s.text) for s in segments if s.speaker==speaker)
+                       ==''.join(content_exact(c.text) for c in cues if c.speaker==speaker))
+              for speaker in sorted(speakers)}
+    # Classification observes source intervals only; it never manufactures
+    # independent simultaneous-speech evidence or changes the final cues.
+    from .display_timing import classify_overlap
+    from ..recognition.evidence_windows import EvidenceWindows
+    windows=EvidenceWindows([dict(start=s.start,end=s.end,speaker=s.speaker) for s in segments])
+    acoustics={}
+    def source_spans(cue):
+        key=id(cue)
+        if key not in acoustics:
+            acoustics[key]=[(s['start'],s['end']) for s in windows.between(cue.start,cue.end)
+                if s['speaker']==cue.speaker and max(s['start'],cue.start)<min(s['end'],cue.end)]
+        return acoustics[key]
+    overlap_counts={}
+    ordered=sorted(cues,key=lambda c:(c.start,c.end))
+    for i,left in enumerate(ordered):
+        for j in range(i+1,len(ordered)):
+            right=ordered[j]
+            if right.start>=left.end:
+                break
+            kind=classify_overlap(source_spans(left),source_spans(right))
+            if kind=='acoustic':
+                kind='source_overlap_unverified'
+            overlap_counts[kind]=overlap_counts.get(kind,0)+1
+    legacy.record_run_event('final_subtitle_validation',basis='final_saved_cues',cues=len(cues),
+        short_cues=short,finite_positive_times=True,content_coverage_by_speaker=coverage,
+        overlap_classification_counts=overlap_counts,
+        semantic_reviews=sum(i.get('category')=='断句约束待复核' for i in items))
+    legacy.record_run_event('pipeline_work_progress',work_id='grouped:final-validation',
+        label='断句：最终字幕验证',phase='grouping_final_validation',state='completed',
+        done=len(cues),total=len(cues),short_cues=short)
 
 
 def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
@@ -722,25 +763,7 @@ def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
         previous_occurrences.append(cue)
         recent_repetitions[text] = previous_occurrences
 
-    for cue in cues:
-        duration = max(0.001, cue.end - cue.start)
-        length = display_length(cue.text)
-        if duration < 0.45:
-            add_review_item(
-                cue.start,
-                "显示过短",
-                f"只显示 {duration:.2f} 秒",
-                cue.text,
-                priority=2,
-            )
-        if length >= 8 and length / duration > REVIEW_FAST_CHARS_PER_SECOND:
-            add_review_item(
-                cue.start,
-                "阅读较快",
-                f"约 {length / duration:.1f} 字/秒",
-                cue.text,
-                priority=1,
-            )
+    refresh_final_cue_reviews(cues,segments)
 
     transitions = []
     for left, right in zip(speech_regions, speech_regions[1:]):
