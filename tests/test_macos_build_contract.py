@@ -106,3 +106,47 @@ def test_final_gate_rejects_failed_native_pixels_or_requested_studio_perf_even_w
     assert main(['--qa-root', str(root), '--enforce']) == 0
     record[failed] = 'failed'; status.write_text(json.dumps(record))
     assert main(['--qa-root', str(root), '--enforce']) == 1
+
+
+def test_windowed_subtitle_worker_restores_private_pipes_before_gui_defaults(tmp_path, monkeypatch):
+    import io
+    import multiprocessing
+    import sys
+    from types import SimpleNamespace
+    from scripts import macos_launch
+    from twobyteasr import runtime_paths
+    from twobyteasr.storage import settings
+    from twobyteasr.system import macos_compatibility, platform_macos
+
+    existing_settings = tmp_path / 'existing.json'
+    existing_settings.write_text('{}', encoding='utf8')
+    monkeypatch.setattr(multiprocessing, 'freeze_support', lambda: None)
+    monkeypatch.setattr(platform_macos, 'configure_macos_paths', lambda root: None)
+    monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path / 'profile')
+    monkeypatch.setattr(settings, 'project_settings_path', lambda: existing_settings)
+    monkeypatch.setattr(macos_compatibility, 'require_compatible', lambda role: None)
+    monkeypatch.setattr(macos_compatibility, 'write_startup_diagnostics', lambda *args, **kwargs: None)
+
+    calls = []
+
+    def subtitle_worker():
+        assert all(hasattr(getattr(sys, name), 'buffer') for name in ('stdin', 'stdout', 'stderr'))
+        calls.append('subtitle worker')
+        return 41
+
+    def normal_entry():
+        pytest.fail('data-only subtitle worker reached normal GUI entry')
+
+    monkeypatch.setitem(sys.modules, 'twobyteasr.exports.subtitle_export_process', SimpleNamespace(main=subtitle_worker))
+    monkeypatch.setitem(sys.modules, 'quick_start', SimpleNamespace(main=normal_entry))
+    streams = {fd: io.TextIOWrapper(io.BytesIO(), encoding='utf8') for fd in (0, 1, 2)}
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'platform', 'darwin')
+        patch.setattr(sys, 'argv', ['owned.app/Contents/MacOS/2ByteASR', '--subtitle-export-worker'])
+        patch.setattr(sys, 'stdin', None)
+        patch.setattr(sys, 'stdout', None)
+        patch.setattr(sys, 'stderr', None)
+        patch.setattr(macos_launch.os, 'dup', lambda fd: fd)
+        patch.setattr(macos_launch.os, 'fdopen', lambda fd, *args, **kwargs: streams[fd])
+        result = macos_launch.main()
+    assert result == 41 and calls == ['subtitle worker']
