@@ -12,7 +12,6 @@ import traceback
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.verify_blank_project_macos import audit_boundary, blank_environment
-from scripts.macos_caret_split_smoke import prepare_fixture
 
 
 def main():
@@ -28,13 +27,14 @@ def main():
     if not executable.is_file():
         raise ValueError('An installed 2ByteASR.app is required')
     output.mkdir(parents=True)
-    ffmpeg = args.app.resolve() / 'Contents/Resources/tools/ffmpeg/bin/ffmpeg'
-    if not ffmpeg.is_file():
-        ffmpeg = args.app.resolve() / 'Contents/Frameworks/tools/ffmpeg/bin/ffmpeg'
     result = dict(passed=False, scenario=args.scenario, expected_executable=str(executable))
     process = None
     try:
-        target = prepare_fixture(output, ffmpeg)
+        os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
+        from twobyteasr.test_isolation import install
+        install()
+        from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
+        target = save_project(SubtitleProject(StudioMedia('')), output / 'startup.2byteproj')
         env = blank_environment(output, invoker, target)
         env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = args.scenario
         with (output / 'caption-policy.log').open('wb') as stream:

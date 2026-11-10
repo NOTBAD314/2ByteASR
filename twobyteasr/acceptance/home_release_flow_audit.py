@@ -394,7 +394,9 @@ def start(window, out):
             if config.get('bilingual'):
                 for control in ui.subtitle_language_checks.values(): control.setChecked(False)
             ui.subtitle_speaker_modes['combined'].setChecked(True)
-            QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center());pump(.3)
+            QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center())
+            wait(lambda: getattr(ui, '_subtitle_task', None) is None,
+                 60, 'four-format subtitle task completes')
             artifacts=ui._last_subtitle_artifacts
             result['subtitle_artifacts']=[str(a.path) for a in artifacts]
             check('actual GUI subtitle button exports four formats',len(artifacts)==4 and {a.path.suffix.lower() for a in artifacts}=={'.srt','.ass','.txt','.json'} and all(a.path.is_file() for a in artifacts))
@@ -409,7 +411,9 @@ def start(window, out):
             if config.get('bilingual'):
                 for name,control in ui.subtitle_format_checks.items(): control.setChecked(name=='srt')
                 for name,control in ui.subtitle_language_checks.items(): control.setChecked(name=='bilingual')
-                QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center());pump(.3)
+                QTest.mouseClick(ui.subtitle_export_button, Qt.LeftButton, pos=ui.subtitle_export_button.rect().center())
+                wait(lambda: getattr(ui, '_subtitle_task', None) is None,
+                     60, 'bilingual subtitle task completes')
                 bilingual_artifacts=ui._last_subtitle_artifacts
                 check('bilingual SRT includes both manually edited texts',
                       len(bilingual_artifacts)==1 and translation in bilingual_artifacts[0].path.read_text('utf-8-sig')

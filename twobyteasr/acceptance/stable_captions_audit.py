@@ -91,7 +91,8 @@ def run(output, window=None):
     try:
         media = output/'fixture.mp4'
         run_hidden_subprocess([str(ffmpeg),'-v','error','-y','-f','lavfi','-i',
-            'color=c=0x334155:s=960x540:r=30:d=7','-c:v','libx264','-preset','ultrafast',str(media)],
+            'color=c=0x334155:s=960x540:r=30:d=7','-f','lavfi','-i','anullsrc=r=48000:cl=stereo',
+            '-t','7','-c:v','libx264','-c:a','aac','-preset','ultrafast',str(media)],
             check=True,capture_output=True,timeout=30,purpose='stable caption fixture')
         p = SubtitleProject(media=StudioMedia(str(media),duration_ms=7000,width=960,height=540),
             styles=[SubtitleStyle('default','Default',font_family='Source Han Sans SC Heavy',

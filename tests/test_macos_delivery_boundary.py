@@ -265,7 +265,7 @@ def test_setup_gate_requires_native_blank_checks_and_downloadable_installer(tmp_
     root=tmp_path/'tmp/qa'; root.mkdir(parents=True)
     record=dict(runtime_identity='passed', media='passed', app='passed', relocation='passed',
                 startup='passed', dmg='passed', blank_project='failed', edit_save='passed', caret_split='passed', cold_save='passed', waveform_stability='passed', full_waveform='passed', embedded_preview='passed', model_requested=False,
-                test_step='success')
+                stable_captions='passed', chinese_complete_expression='passed', test_step='success')
     saved=root/'ci-status.json'
     saved.write_text(json.dumps(record))
     assert status_main(['--qa-root', str(root), '--enforce']) == 1
