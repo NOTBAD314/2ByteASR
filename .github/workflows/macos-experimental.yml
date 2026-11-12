@@ -8,12 +8,17 @@ on:
       maximum_artifact_bytes:
         required: true
         type: string
+      app_runner:
+        required: false
+        default: macos-26
+        type: choice
+        options: [macos-15, macos-26]
 permissions:
   contents: read
   actions: read
 jobs:
   probe-existing-dmg:
-    runs-on: macos-15
+    runs-on: ${{ inputs.app_runner || 'macos-26' }}
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
