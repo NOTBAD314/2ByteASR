@@ -1,47 +1,77 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: native-source-workshop-diagnosis-only
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Published release tag, for example v0.6.5"
+      checker_sha:
         required: true
-
-permissions: {}
-
+        type: string
+permissions:
+  contents: read
+  actions: read
 jobs:
-  anonymous-download-check:
-    runs-on: ubuntu-latest
+  source-ui:
+    runs-on: macos-26
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.checker_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-setup-c4351735617b5a60d06d2e00de9494dee0b30ae5
+          run-id: 43286795130
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/tmp/input
+      - name: Prepare only GUI dependencies and fixed native tools
         shell: bash
         run: |
           set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
-          python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          mkdir -p "$RUNNER_TEMP/tmp/mount"
+          dmg=$(find "$RUNNER_TEMP/tmp/input" -name '*.dmg' -type f)
+          echo '8b1b84582df358576a773a37f43493b8be4be758db253191aa034162b51e9deb  '"$dmg" | shasum -a 256 -c -
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$RUNNER_TEMP/tmp/mount" "$dmg"
+          test ! -e /Applications/2ByteASR.app
+          ditto "$RUNNER_TEMP/tmp/mount/2ByteASR.app" /Applications/2ByteASR.app
+          python -m venv "$RUNNER_TEMP/tmp/gui"
+          "$RUNNER_TEMP/tmp/gui/bin/python" -m pip install -r packaging/macos/requirements-gui.txt
+          git worktree add --detach "$RUNNER_TEMP/tmp/baseline" c4351735617b5a60d06d2e00de9494dee0b30ae5
+      - name: Native source negative and positive probes with actual display ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools=/Applications/2ByteASR.app/Contents/Resources/tools
+          test -d "$tools" || tools=/Applications/2ByteASR.app/Contents/Frameworks/tools
+          python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/display-negative" "$RUNNER_TEMP/tmp/gui/bin/python" .github/scripts/macos_workshop_source_probe.py --source "$RUNNER_TEMP/tmp/baseline" --out "$RUNNER_TEMP/tmp/probe-old" --tools "$tools"
+          python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/display-positive" "$RUNNER_TEMP/tmp/gui/bin/python" .github/scripts/macos_workshop_source_probe.py --source "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/tmp/probe-new" --tools "$tools"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          base=Path(os.environ['RUNNER_TEMP'])/'tmp'
+          old=json.loads((base/'probe-old/source-probe-summary.json').read_text('utf8'))
+          new=json.loads((base/'probe-new/source-probe-summary.json').read_text('utf8'))
+          result=dict(source_only=True,negative_reproduced=not old['passed'] and old['failed_count']>0,positive_passed=new['passed'],old=old,new=new)
+          (base/'source-comparison.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),'utf8')
+          print(json.dumps(result,ensure_ascii=False))
+          assert result['positive_passed']
           PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-source-workshop-probe
+          retention-days: 1
+          path: |
+            ${{ runner.temp }}/tmp/probe-old/*.json
+            ${{ runner.temp }}/tmp/probe-old/*.log
+            ${{ runner.temp }}/tmp/probe-old/*.png
+            ${{ runner.temp }}/tmp/probe-new/*.json
+            ${{ runner.temp }}/tmp/probe-new/*.log
+            ${{ runner.temp }}/tmp/probe-new/*.png
+            ${{ runner.temp }}/tmp/source-comparison.json
