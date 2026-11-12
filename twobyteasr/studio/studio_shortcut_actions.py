@@ -88,6 +88,7 @@ def extra_command_callbacks(page) -> dict:
         'seek_back': lambda: _seek_by(page, -SEEK_STEP_MS),
         'seek_forward': lambda: _seek_by(page, SEEK_STEP_MS),
         'loop_cue': page._toggle_loop_current,
+        'jump_cue_boundary': page._jump_current_subtitle_boundary,
         'speed_down': lambda: _step_speed(page, -1),
         'speed_up': lambda: _step_speed(page, 1),
         'speed_reset': lambda: _step_speed(page, 0),

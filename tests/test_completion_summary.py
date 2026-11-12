@@ -40,8 +40,8 @@ def test_summary_preserves_distinct_execution_quality_and_name_counters():
     assert '场景未记录' in summary.task_lines[2] and 'r9' in summary.task_lines[2]
     assert not any('疑似术语未召回' in row for row in summary.log_lines)
     assert 'name → NAME' in summary.log_lines[0]
-    assert any('MOSS 13.200s' in row for row in summary.log_lines)
-    assert any('AI校对 4.700s' in row for row in summary.log_lines)
+    assert any('MOSS 13.2s' in row for row in summary.log_lines)
+    assert any('AI校对 4.7s' in row for row in summary.log_lines)
     assert (summary.local_replacements, summary.ai_proposed, summary.ai_accepted, summary.ai_rejected) == (2, 1, 0, 1)
     assert '联网核验未启用' in summary.log_lines[-1]
     assert '识别错误' not in '\n'.join(summary.log_lines)
@@ -117,7 +117,7 @@ def test_default_real_rows_use_viewport_height_and_manual_collapse_survives_resi
 def test_short_window_reduces_real_rows_then_scrolls_accessible_actions():
     shell, page = shell_page()
     page.resize(580, 440); page.show(); settle()
-    assert shell.result_action_grid.columns == 1
+    assert shell.result_action_grid.columns == 2
     assert len(shell.result_files_panel.visible_summary_rows()) == 2
     assert len(shell.result_log_panel.visible_summary_rows()) == 4
     assert page.verticalScrollBar().maximum() > 0 and page.horizontalScrollBar().maximum() == 0

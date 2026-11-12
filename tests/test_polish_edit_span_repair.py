@@ -43,7 +43,7 @@ def test_misplaced_offsets_keep_the_cue(monkeypatch):
 
 
 def test_unlocatable_or_overlapping_edits_still_fall_back():
-    for edits in ([{'from': '崩铁', 'to': '奔铁', 'start': 0, 'end': 2}],
+    for edits in ([{'from': '崩铁', 'to': '那边', 'start': 0, 'end': 2}],
                   [{'from': '这', 'to': '', 'start': 7, 'end': 8}],
                   [{'from': '奔铁这', 'to': '崩铁这', 'start': 0, 'end': 3},
                    {'from': '铁这边', 'to': '铁那边', 'start': 5, 'end': 8}]):

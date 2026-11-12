@@ -90,7 +90,7 @@ KIND_LABELS = {
     "consistency": "统一写法",
     "evidence": "两路识别",
     "merge": "疑似重复",       # repeat no recognizer heard; data issue
-    "suspect": "疑似专名",      # no candidate: shown, never auto-changed
+    "suspect": "待确认疑点",    # no replacement: listening/human judgement only
 }
 KIND_TIPS = {
     "term": "按所选词库里已确认的写法匹配；没有核对原音，可试听后决定",
@@ -102,7 +102,7 @@ KIND_TIPS = {
     "evidence": "FireRed 和 Qwen 两个识别模型在这里听到的和字幕不一样；两者一致时默认采用，不一致时列出两种，先听原声再选",
     "consistency": "同一个读音在全片写成了不同的字；统一成一种写法，方便以后查找和批量替换（不代表这种写法正确）",
     "merge": "各路识别原文都没有这段重复或字级时间重叠，可能是数据合并问题；默认不改",
-    "suspect": "可能是专有名词，词库里没有对应写法；可以直接改这句字幕",
+    "suspect": "有具体疑点但没有可靠替换文本；请结合上下文试听确认",
 }
 PRIORITY = {"term": 0, "association": 1, "evidence": 1, "ai": 2, "consistency": 2, "stutter": 3, "ai_review": 4, "near": 5, "merge": 6, "suspect": 9}
 
@@ -3376,6 +3376,11 @@ class GlossaryProofreadPage(QWidget):
                   property='toolTip')
         self.ai_button.clicked.connect(self._run_ai)
         checks_layout.addWidget(self.ai_button)
+        self.retry_ai_button = QPushButton(tr('重试未完成项'))
+        self.retry_ai_button.setObjectName('proofreadGhost')
+        self.retry_ai_button.clicked.connect(self._retry_failed_review)
+        self.retry_ai_button.hide()
+        checks_layout.addWidget(self.retry_ai_button)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.setObjectName("proofreadGhost")
         self.cancel_button.setFixedHeight(38)
@@ -3813,6 +3818,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._standalone = None
         self._receipt = None
         self._ai_status = ""
+        self._failed_review_targets = set()
+        self.retry_ai_button.hide()
         live, studio_page = self._live_project()
         self._text_row_cache = {}
         self._by_id = {}
@@ -3850,8 +3857,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if self._selected_ids():
             self._set_status(tr("已载入 {count} 条字幕 · 正在按词库匹配（本地）…", count=len(self._rows)))
         else:
-            self._set_status(tr("已载入 {count} 条字幕 · 未选择词库：可以直接阅读、试听和修改；"
-                                "勾选左侧词库后会匹配专有名词", count=len(self._rows)))
+            self._set_status(tr("未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。"))
 
     def checks_running(self):
         """True while local checks are scheduled or running (tests, audits)."""
@@ -4025,6 +4031,24 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._text_row_cache = cache
         self._rows = rows
         self._by_id = {row["cue_id"]: row for row in rows}
+        if project is not None:
+            from .recognition_review_import import existing_review
+            imported = existing_review(project, entries)
+            self._recognition_review_receipt = imported.receipt
+            for hit in imported.hits:
+                row = self._by_id.get(hit.target_key)
+                if row is not None and not any(i['span']==hit.span and i['replacement']==hit.replacement for i in row['issues']):
+                    issue = _issue('ai_review', hit.span, hit.original, hit.replacement, checked=False,
+                                   reason=hit.reason, hit=hit, evidence=hit.evidence)
+                    issue['recognition_import'] = True
+                    row['issues'].append(issue)
+            for pending in imported.receipt['pending_rows']:
+                row = self._by_id.get(pending['cue_id'])
+                if row is not None and not any(i['kind']=='suspect' and tuple(i['span'])==tuple(pending['span']) for i in row['issues']):
+                    issue = _issue('suspect', tuple(pending['span']), pending['surface'], '', checked=False,
+                                   reason=pending['reason'])
+                    issue['recognition_import'] = True
+                    row['issues'].append(issue)
         from .proofread_retention import restore_row, review_state
         self._review_round_id = review_state(project)['round_id']
         for row in rows:
@@ -4248,7 +4272,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         current = any(group['state'] != 'adopted' and not group['reviewed'] for group in groups)
         if current and not row.get('review_dismissed'):
             row['review_retained'] = True
-        suggested = bool(row.get('review_retained')) and not row.get('review_dismissed')
+        suggested = bool(current) and not row.get('review_dismissed')
         pending = any(group["state"] != "adopted" and not group["reviewed"] for group in groups) or any(
             issue["kind"] == "suspect" and not issue["stale"] and not issue["reviewed"] for issue in row["issues"])
         changed = row["base"] != row["origin"]
@@ -4361,7 +4385,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         for filter_key, label in FILTERS:
             self.filter_buttons[filter_key].setText(tr("{label} {count} 条", label=tr(label), count=counts[filter_key]))
         empty = {"all": tr("这个工程没有字幕"),
-                 "suggested": tr("目前没有修改建议") + ("" if self._selected_ids() else tr("（尚未选择词库）")),
+                 "suggested": tr("目前没有修改建议；可点击AI校对"),
                  "pending": tr("没有需要你确认的地方"), "changed": tr("本页还没有修改")}
         if gaps and not visible:
             self.list.empty_text = tr("这里的字幕都属于已隐藏的说话人；点上面的「显示」或左侧说话人旁的眼睛重新显示")
@@ -4401,7 +4425,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         text = tr('共 {total} 条字幕 · 建议 {proposals} 处（未处理 {remaining} · 已采用 {adopted}）',
                   total=counts['captions'], proposals=counts['proposals'], remaining=counts.get('remaining',0),adopted=counts['adopted'])
         if counts["suspects"]:
-            text += tr(' · 疑似专名 {count} 处', count=counts["suspects"])
+            text += tr(' · 无候选疑点 {count} 处', count=counts["suspects"])
         text += tr(' · 本页已改 {changed} 条', changed=counts["changed"])
         if counts["ignored"]:
             text += tr(' · 已忽略 {count} 条', count=counts["ignored"])
@@ -5933,9 +5957,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         actual_count = len(library_terms(self._snapshot))
         if not self._selected_ids():
             bind_text(self.library_summary, '未选择词库')
-            bind_text(self.library_summary, '未选择词库：字幕照常可读、可听、可改；勾选后才会匹配专有名词',
+            bind_text(self.library_summary, '未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。',
                       property='toolTip')
-            self._set_library_note(tr('未选择词库：字幕照常可读、可听、可改；勾选后才会匹配专有名词'))
+            self._set_library_note(tr('未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。'))
             return
         live, _studio = self._live_project()
         recorded = recorded_revisions(live) if live is not None else {}
@@ -6023,7 +6047,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             text = tr("这个工程没有词库。要用首页的词库（{names}）检查吗？免费",
                       names="、".join(self._catalog.get(identity, identity) for identity in home))
         else:
-            text = tr("这个工程没有词库，可以直接阅读和修改；要检查写法，在左侧勾选词库")
+            text = tr("未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。")
         self.scope_text.setText(text)
         self.scope_banner.setVisible(True)
 
@@ -6328,6 +6352,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         self._restart_review(True, shown)
 
+    def _retry_failed_review(self):
+        wanted = set(getattr(self, '_failed_review_targets', ())) & set(self._by_id)
+        if wanted:
+            self._run(True, wanted)  # retain all successful rows and decisions
+
     def _restart_review(self, use_ai, cue_ids=None):
         """Only an explicit user request starts a new review round."""
         self.list.commit_pending_edit()
@@ -6346,7 +6375,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._writing = False
         for row in self._rows:
             row['origin'] = row['base']
-            row['issues'] = []
+            # Keep anchored proposals while the explicit replacement job is
+            # running or cancelled. Successful rows replace their own results.
+            for issue in row['issues']:
+                if not issue.get('checked'):
+                    issue['reviewed'] = False
             row['review_retained'] = row['review_dismissed'] = False
         from .proofread_retention import review_state
         self._review_round_id = review_state(project)['round_id']
@@ -6378,7 +6411,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         import subtitle_core as legacy
         prepare = getattr(self._window, "_prepare_glossary_for_task", None)
-        if callable(prepare) and not prepare():
+        if callable(prepare) and self._selected_ids() and not prepare():
             self._set_status(tr("术语库里有尚未提交的编辑，请先保存或放弃后再生成建议"))
             return
         if cue_ids is None or self._snapshot is None or self._library_ids != self._selected_ids():
@@ -6388,20 +6421,22 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         from .translation_terms import policy_of
         has_translation_terms = policy_of(live)['enabled'] and any(e.target.layer == 'translation' for e in self._text_entries(live))
-        if self._snapshot is None or (not self._selected_ids() and not has_translation_terms):
+        if not use_ai and (self._snapshot is None or (not self._selected_ids() and not has_translation_terms)):
             self._clear_term_issues(cue_ids)
-            self._set_status(tr("未选择词库：字幕照常可读、可听、可改；勾选左侧词库后会匹配专有名词"))
+            self._set_status(tr("未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。"))
             self._apply_filter()
             return
-        if use_ai and not self._snapshot.canonical_terms and not has_translation_terms:
-            self._set_status(tr("所选词库还没有已确认的规范词"))
-            return
+        if self._snapshot is None:
+            from .terminology import GlossarySnapshot
+            self._snapshot = GlossarySnapshot()
         self._generation += 1
         generation = self._generation
         self._library_ids = self._selected_ids()
         self._snapshot_digest = self._snapshot.digest
         entries = self._text_entries(live)
         texts_at_run = {entry.key: entry.text for entry in entries}
+        from .translation_review import review_context_versions
+        context_versions_at_run = review_context_versions(live, entries)
         versions_at_run = dict(self._cue_versions)
         project_identity = (id(live), str(live.project_id))
         term_policy_at_run = copy.deepcopy(policy_of(live))
@@ -6437,7 +6472,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if policy_of(current) != term_policy_at_run and any(entry.target.layer == 'translation' for entry in entries):
                 self._set_status(tr('术语库已修改，旧校对结果未应用；请重新检查'))
                 return
-            self._show_result(result, current, use_ai, texts_at_run, scope, versions_at_run, revisions_at_run)
+            self._show_result(result, current, use_ai, texts_at_run, scope, versions_at_run, revisions_at_run,
+                              context_versions_at_run)
 
         def failed(message):
             if generation != self._generation:
@@ -6467,7 +6503,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         worker.start()
 
     def _set_busy(self, busy):
-        for button in (self.local_button, self.ai_button):
+        for button in (self.local_button, self.ai_button, self.retry_ai_button):
             button.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
 
@@ -6477,9 +6513,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if wanted is not None and row['cue_id'] not in wanted:
                 continue
             row["issues"] = [issue for issue in row["issues"] if issue["kind"] in LOCAL_KINDS
+                             or issue.get('recognition_import') or issue.get('ai_generated')
                              or issue["checked"] or issue.get('application_parts')]
 
-    def _show_result(self, result, project, use_ai, texts_at_run, scope=None, versions_at_run=None, revisions_at_run=None):
+    def _show_result(self, result, project, use_ai, texts_at_run, scope=None, versions_at_run=None, revisions_at_run=None,
+                     context_versions_at_run=None):
         """Merge term/AI proposals; keep answers, written proposals and local rows.
 
         Late results never touch a caption that changed after the run began
@@ -6488,13 +6526,20 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         from ..subtitle_rules.stutter_cleanup import plausible_name_span
         self._receipt = result.receipt
         receipt = result.receipt or {}
+        failed_targets = {row.get('cue_id') for row in receipt.get('failed_cues', ())}
+        if receipt.get('request_errors') and not receipt.get('successful_cues'):
+            failed_targets.update(texts_at_run if scope is None else scope)
         decisions = self._decisions()
         targets = self._text_lookup(project)
         current = {key: entry.text for key, entry in targets.items()}
+        from .translation_review import review_context_versions
+        current_context = review_context_versions(project, targets.values()) if context_versions_at_run is not None else {}
         fresh = {}
         dropped = 0
 
         def still_valid(cue_id):
+            if context_versions_at_run is not None and current_context.get(cue_id) != context_versions_at_run.get(cue_id):
+                return False
             target = targets.get(cue_id)
             if target is not None and target.target.storage == 'translation' and revisions_at_run is not None:
                 from ..subtitle_rules.subtitle_translation import translation_revisions
@@ -6556,9 +6601,21 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 "rule": {"local_confirmed": "已确认别名", "local_review": "近音或近形检索，未核验原音",
                          "ai_accepted": "AI 上下文建议", "ai_review": "AI 待确认"}.get(hit.source, hit.source)}
             issue["default"] = bool(hit.default_selected)
+            issue['ai_generated'] = hit.source in {'ai_accepted','ai_review','translation_ai'}
             fresh.setdefault(hit.cue_id, []).append(issue)
         from ..studio.studio_text_tools import TextOccurrence
         for pending in receipt.get("pending_rows", ()):
+            if pending.get('state') == 'speech_review':
+                cue_id = pending.get('cue_id')
+                if still_valid(cue_id) and cue_id in self._by_id:
+                    a,b = pending.get('span', (0,0))
+                    text = current[cue_id]
+                    if type(a) is int and type(b) is int and 0 <= a < b <= len(text) and text[a:b] == pending.get('surface'):
+                        issue = _issue('suspect', (a,b), text[a:b], '',
+                            checked=False, reason=str(pending.get('reason') or '需要试听确认'))
+                        issue['ai_generated'] = True
+                        fresh.setdefault(cue_id, []).append(issue)
+                continue
             if pending.get("state") != "missing_alias_or_candidate":
                 continue
             cue_id = pending.get("cue_id")
@@ -6601,7 +6658,10 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         for row in self._rows:
             if scope is not None and row["cue_id"] not in scope:
                 continue
+            if row['cue_id'] in failed_targets:
+                continue  # a failed request never clears valid prior proposals
             keep = [issue for issue in row["issues"] if issue["kind"] in LOCAL_KINDS
+                    or issue.get('recognition_import') or (not use_ai and issue.get('ai_generated'))
                     or issue["checked"] or issue.get('application_parts')]
             if not still_valid(row["cue_id"]):
                 # Changed after the run started: keep what still anchors, add nothing.
@@ -6630,9 +6690,17 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if use_ai:
             errors = receipt.get("request_errors") or ()
             ok, fallback = receipt.get("successful_cues", 0), receipt.get("fallback_cues", 0)
+            failed = {row.get('cue_id') for row in receipt.get('failed_cues', ())} & set(self._by_id)
+            if errors and not failed:
+                failed = set(texts_at_run) if scope is None else set(scope)
+            previous_failures = set(getattr(self, '_failed_review_targets', ()))
+            self._failed_review_targets = ((previous_failures-set(scope)) if scope is not None else set()) | failed
+            self.retry_ai_button.setVisible(bool(self._failed_review_targets))
             if errors and not ok:
                 status = tr("AI 校对没有成功（{reason}）；下面只有本地匹配和口吃整理的结果",
                             reason="；".join(errors)[:160])
+            elif fallback:
+                status = tr('AI 校对部分完成：{ok} 条已核对 · {fallback} 条可局部重试', ok=ok, fallback=fallback)
             else:
                 status = tr("AI 校对完成：{ok} 条已核对 · {fallback} 条未完成（保留当前文本）", ok=ok, fallback=fallback)
             if scope is not None and self._hidden_speakers:

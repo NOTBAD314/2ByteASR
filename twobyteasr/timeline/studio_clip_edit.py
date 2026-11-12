@@ -46,21 +46,23 @@ def lane_gap(project, track_id, time_ms):
     return None
 
 
-def _editable(project, track_id):
+def _editable(project, track_id, *, clip_ids=None):
     track = track_by_id(project, track_id)
-    if track.locked or (track.id == primary_video_track_id(project) and sequence_of(project).video_track_locked):
-        raise ValueError(f'{track.name or track.id} 轨道已锁定，请先解锁')
+    if video_track_locked(project, track):
+        raise ValueError(f'视频轨 {track.id}（{track.name or track.id}）已锁定，请先解锁')
     for group in project.av_track_groups:
         if group.linked and group.video_track_id == track_id:
             sound = next((a for a in project.audio_tracks if a.id == group.audio_track_id), None)
-            if sound and sound.locked:
-                raise ValueError(f'关联音轨 {sound.name or sound.id} 已锁定，请先解锁')
+            involved = set(clip_ids) if clip_ids is not None else {c.id for c in track.clips}
+            touches_audio = sound is not None and any(c.linked_video_clip_id in involved for c in sound.clips)
+            if sound and sound.locked and touches_audio:
+                raise ValueError(f'关联音轨 {sound.id}（{sound.name or sound.id}）已锁定，请先解锁')
     return track
 
 
 def video_track_locked(project, track):
-    return bool(track.locked or (track.id == primary_video_track_id(project)
-                                and sequence_of(project).video_track_locked))
+    from ..projects.field_flags import flag
+    return flag(track.locked)
 
 
 def _working_copy(project, *, independent=True):
@@ -121,7 +123,9 @@ def _finalize_edit(project, working, label, *, page=None, playhead_after=None,
     for original in project.video_tracks:
         after = track_by_id(working, original.id)
         if original != after:
-            _editable(project, original.id)
+            after_clips = {c.id:c for c in after.clips}
+            affected = {c.id for c in original.clips if c != after_clips.get(c.id)}
+            _editable(project, original.id, clip_ids=affected)
             _check_collisions(original, after)
     sounds = {t.id: t for t in working.audio_tracks}
     for original in project.audio_tracks:
@@ -150,7 +154,7 @@ def playhead_edit_command(project, action, time_ms, *, page=None, locked_speaker
             raise ValueError('播放头没有可切开的未锁定视频片段，或已在剪辑边界')
         working = _working_copy(project, independent=False)
         for track_id, clip_id in targets:
-            _editable(project, track_id)
+            _editable(project, track_id, clip_ids=(clip_id,))
             track = track_by_id(working, track_id)
             _split(working, track, next(c for c in track.clips if c.id == clip_id), point)
             track.clips.sort(key=lambda c: (c.timeline_in_ms, c.id))
@@ -554,7 +558,7 @@ class ClipEditCommand(QUndoCommand):
 def clip_edit_command(project, track_id, action, *, clip_id='', start=None, end=None,
                       time_ms=None, page=None, locked_speakers=(), changed=None, clip_ids=()):
     """Preflight all linked locks and collisions before publishing one change."""
-    original_track = _editable(project, track_id)
+    original_track = _editable(project, track_id, clip_ids=(clip_id,) if clip_id else clip_ids or None)
     if action in {'ripple_start', 'ripple_end', 'gap'}:
         if action == 'gap':
             gap = lane_gap(project, track_id, int(start))

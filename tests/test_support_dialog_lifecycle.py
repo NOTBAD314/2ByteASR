@@ -15,8 +15,11 @@ from twobyteasr.diagnostics.support_dialog import open_support_dialog
 def pump_until(predicate, seconds=4):
     deadline=time.monotonic()+seconds
     while time.monotonic()<deadline:
-        QTest.qWait(10)
+        # Like QApplication.exec(), let Python diagnostic workers acquire the
+        # GIL while pumping Qt. A tight native qWait loop can starve them.
+        QCoreApplication.processEvents()
         QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+        time.sleep(.003)
         if predicate():
             return
     assert predicate(), "report lifecycle did not settle"

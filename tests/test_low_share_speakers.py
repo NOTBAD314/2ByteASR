@@ -12,15 +12,29 @@ def project(count=2000):
     return p
 
 
-def test_joint_thresholds_and_recovery_respect_manual_choice():
+def test_low_share_is_presentation_only_and_keeps_every_caption():
     p = project()
     q = apply_low_share_policy(p)
-    assert len(p.cues) == 2000 and len(q.cues) == 1997
-    assert q.generation_metadata['speaker_recovery']['roles']['minor'] == 'ignore'
-    restored = apply_candidate_role(q, q.generation_metadata['speaker_recovery'], 'minor', 'unconfirmed')
-    assert len(restored.cues) == 2000
-    assert apply_low_share_policy(restored) is None
-    assert restored.generation_metadata['speaker_recovery']['role_decisions']['minor'] == 'manual'
+    assert [(c.id, c.text, c.speaker_id) for c in q.cues] == [(c.id, c.text, c.speaker_id) for c in p.cues]
+    assert q.generation_metadata['speaker_recovery']['roles']['minor'] == 'unconfirmed'
+    assert q.generation_metadata['speaker_organization']['low_share_policy']['retained']['minor']['cues'] == 3
+    assert apply_low_share_policy(q) is None
+
+
+def test_old_system_ignore_restores_exact_cached_identity_and_preserves_manual_ignore():
+    from twobyteasr.projects.low_share_speakers import restore_automatic_low_share
+    p = project()
+    ignored = apply_candidate_role(p, p.generation_metadata['speaker_recovery'], 'minor', 'ignore', decision_source='low_share')
+    ignored.generation_metadata.setdefault('speaker_organization', {})['low_share_policy'] = {
+        'version':'low-share-speakers-v1', 'ignored':{'minor':{'cues':3}}}
+    restored = restore_automatic_low_share(ignored)
+    assert {c.id for c in restored.cues} == {c.id for c in p.cues}
+    assert restored.generation_metadata['speaker_recovery']['confirmed_by']=='system_low_share_restore'
+    assert restored.generation_metadata['speaker_recovery']['roles']['minor']=='unconfirmed'
+    assert {c.speaker_id for c in restored.cues[:3]} == {'minor'}
+    assert restore_automatic_low_share(restored) is restored
+    ignored.generation_metadata['speaker_recovery']['role_decisions']['minor'] = 'manual'
+    assert len(restore_automatic_low_share(ignored).cues) == 1997
 
 
 def test_short_video_or_confirmed_speaker_or_duration_does_not_auto_ignore():

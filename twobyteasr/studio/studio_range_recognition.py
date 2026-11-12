@@ -32,6 +32,8 @@ def add_range_action(page, menu, icon=None):
     """The menu entry; disabled with its reason when the range cannot be recognized."""
     from .language_recovery_ui import add_actions
     add_actions(page, menu)
+    from .speech_recovery_ui import add_actions as add_speech_actions
+    add_speech_actions(page, menu)
     problem, _points = range_state(page)
     if problem:
         action = menu.addAction(tr("只重新识别这一段字幕（{reason}）", reason=tr(problem)))

@@ -34,6 +34,10 @@ def split_mixed_captions(project):
             return None
         last_end[group] = max(last_end[group], end)
     still_project, moving_project = copy(project), copy(project)
+    from ..caption_style.collision_layout import project_layout_schedule
+    schedule=project_layout_schedule(project)
+    still_project._subtitle_layout_schedule=schedule
+    moving_project._subtitle_layout_schedule=schedule
     still_project.cues = static
     wanted = {c.id for c in [*native, *moving]}
     moving_project.cues = [c for c in project.cues if c.id in wanted]

@@ -11,22 +11,21 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from collections.abc import Mapping
 import os
 import queue
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox,
     QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,12 +33,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..design.presentation import button_role
 from ..design.studio_theme import (
     _active_theme,
     apply_secondary_surface_theme,
@@ -60,6 +59,8 @@ from ..timeline.studio_commands import (
 )
 from .studio_cue_table import _speaker_color
 from .studio_helpers import _format_ms
+from ..design.themed_icons import themed_icon
+from .studio_speaker_board import MergePanel, SpeakerBox, SpeakerTile, build_speaker_board_qss
 from .studio_speaker_cards import SpeakerCard, build_speaker_manager_qss, swatch_menu
 
 if TYPE_CHECKING:
@@ -101,15 +102,62 @@ def _source_name(processing: dict) -> str:
     return tr("完整 MOSS") if processing.get("moss_called") else tr("原始说话人标签")
 
 
+class _LazyCards(Mapping):
+    """Detail cards by key (the right-hand column), created when first looked at.
+
+    2026-11-12 (speaker board): with many speakers only the cards a person
+    opens are built; ``created()`` lists the ones that exist."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.order: list[str] = []
+        self.made: dict[str, SpeakerCard] = {}
+
+    def __getitem__(self, key):
+        if key not in self.order:
+            raise KeyError(key)
+        card = self.made.get(key)
+        return card if card is not None else self.owner._make_card(key)
+
+    def __contains__(self, key):
+        return key in self.order
+
+    def __iter__(self):
+        return iter(list(self.order))
+
+    def __len__(self):
+        return len(self.order)
+
+    def created(self) -> list[SpeakerCard]:
+        return [self.made[key] for key in self.order if key in self.made]
+
+
+_HINTS = {
+    "main": "拖到这里：各自有一条字幕轨",
+    "secondary": "拖到这里：说话不多的人收进同一条轨",
+    "game": "拖到这里归入游戏声",
+    "ignore": "拖到这里就不输出",
+}
+
+
 class SpeakerManagerDialog(QDialog):
+    WIDTH, HEIGHT = 1100, 780
+
     def __init__(self, page: "SubtitleStudioPage"):
         super().__init__(page)
         self.page = page
-        self.cards: dict[str, SpeakerCard] = {}
+        self.cards = _LazyCards(self)
+        self.tiles: dict[str, SpeakerTile] = {}
+        self._data: dict[str, dict] = {}
+        self._box_index: dict[str, str] = {}
+        self._group: set[str] = set()
+        self._selection: set[str] = set()
+        self._anchor = ""
+        self._focus = ""
+        self._sort = "size"
         self._committing_name = False
         self._refreshing = False
         self._banner_dismissed = False
-        self._multi = False
         self._snapshot: dict | None = None
         self._snapshot_in_project = False
         self._snapshot_error = ""
@@ -122,7 +170,8 @@ class SpeakerManagerDialog(QDialog):
         self._role_timer = QTimer(self)
         self._role_timer.setSingleShot(True)
         self._role_timer.timeout.connect(self._drain_roles)
-        self._preview_card: SpeakerCard | None = None
+        self._preview_card = None
+        self._preview_key = ""
         self._preview_video = None
         self._preview_return_rate = 1.0
         self._voiceprint_mailbox = queue.Queue()
@@ -132,17 +181,24 @@ class SpeakerManagerDialog(QDialog):
         self._voiceprint_timer.setInterval(150)
         self._voiceprint_timer.timeout.connect(self._voiceprint_poll)
         bind_text(self, "说话人管理", property="windowTitle")
-        self.setObjectName("toolDialog")
-        self.setMinimumSize(760, 520)
-        self.resize(1000, 740)
+        # 2026-11-12 (user): no Windows title bar; a round window like 翻译字幕.
+        self.setObjectName("speakerManager")
         apply_secondary_surface_theme(self)
         theme = _active_theme(None)
-        self.setStyleSheet(build_secondary_surface_qss(theme) + build_speaker_manager_qss(theme))
+        self.setStyleSheet(build_secondary_surface_qss(theme) + build_speaker_manager_qss(theme)
+                           + build_speaker_board_qss(theme))
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._stop_preview)
         self.finished.connect(self._stop_preview)
         self._build_ui()
+        from ..app.rounded_window import RoundedWindow
+        self.chrome = RoundedWindow(self, self.root, title_areas=[self.header], radius=26)
+        self.setMinimumSize(980, 600)
+        screen = (page.screen() if hasattr(page, "screen") else None) or QApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else None
+        self.resize(min(self.WIDTH, area.width() - 40) if area else self.WIDTH,
+                    min(self.HEIGHT, area.height() - 40) if area else self.HEIGHT)
         from ..projects.low_share_speakers import apply_low_share_policy
         grouped = apply_low_share_policy(page.project)
         if grouped is not None and grouped.generation_metadata['speaker_organization']['low_share_policy']['ignored']:
@@ -173,237 +229,334 @@ class SpeakerManagerDialog(QDialog):
             QShortcut(sequence, self, slot)
         self._select_all_shortcut = QShortcut(QKeySequence.StandardKey.SelectAll, self,
                                               lambda: self._select_visible("all"))
-        self._delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self, lambda: self._batch("delete"))
-        self._sync_multi_shortcuts()
+        self._delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self,
+                                          lambda: self._selected_ids() and self._batch("delete"))
 
     # ------------------------------------------------------------------ layout
+    @staticmethod
+    def _button(text: str, name: str, slot=None, *, icon: str = "", role: str = "secondary", tip: str = ""):
+        button = QPushButton()
+        button.setObjectName(name)
+        bind_text(button, text)
+        if tip:
+            bind_text(button, tip, property="toolTip")
+        if icon:
+            button.setIcon(themed_icon(icon, role))
+            button.setIconSize(QSize(13, 13))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setAutoDefault(False)
+        if slot is not None:
+            button.clicked.connect(lambda _checked=False: slot())
+        return button
+
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.root = QWidget()
+        self.root.setObjectName("speakerManagerRoot")
+        self.root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        outer.addWidget(self.root)
+        column = QVBoxLayout(self.root)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+
+        # -- header: badge, title, counts, tools, close -------------------
+        self.header = QFrame()
+        self.header.setObjectName("speakerHeader")
+        self.header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        head = QHBoxLayout(self.header)
+        head.setContentsMargins(20, 16, 14, 10)
+        head.setSpacing(12)
+        badge = QLabel()
+        badge.setObjectName("speakerBadge")
+        badge.setFixedSize(38, 38)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setPixmap(themed_icon("fa5s.users", "on_accent").pixmap(19, 19))
+        head.addWidget(badge)
+        titles = QVBoxLayout()
+        titles.setSpacing(1)
+        title = QLabel()
+        title.setObjectName("speakerTitle")
+        bind_text(title, "说话人管理")
+        titles.addWidget(title)
+        meta = QHBoxLayout()
+        meta.setSpacing(10)
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("speakerMeta")
+        meta.addWidget(self.summary_label)
+        self.source_label = QLabel()
+        self.source_label.setObjectName("speakerMetaWarn")
+        meta.addWidget(self.source_label)
+        meta.addStretch(1)
+        titles.addLayout(meta)
+        head.addLayout(titles, 1)
+        self.more_toggle = QToolButton()
+        self.more_toggle.setObjectName("speakerGhostButton")
+        self.more_toggle.setCheckable(True)
+        self.more_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.more_toggle.setIcon(themed_icon("fa5s.sliders-h", "secondary"))
+        self.more_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.more_toggle, "更多工具")
+        bind_text(self.more_toggle, "MOSS 缓存、重新识别、整理", property="toolTip")
+        self.more_toggle.toggled.connect(self._toggle_more)
+        head.addWidget(self.more_toggle)
+        self.close_button = QPushButton("×")
+        self.close_button.setObjectName("speakerWindowClose")
+        self.close_button.setFixedSize(34, 34)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.close_button, "关闭", property="toolTip")
+        self.close_button.clicked.connect(self.reject)
+        head.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
+        column.addWidget(self.header)
+
+        # -- body: boxes on the left, details on the right --------------------
         body = QWidget()
         body.setObjectName("speakerManagerBody")
-        column = QVBoxLayout(body)
-        column.setContentsMargins(18, 14, 18, 12)
-        column.setSpacing(10)
-        root.addWidget(body, 1)
-
-        self.show_names = QCheckBox(tr('在字幕前显示说话人名称'))
-        self.show_names.setObjectName('speakerNameVisibility')
-        self.show_names.toggled.connect(self._set_name_visibility)
-        column.addWidget(self.show_names)
-        self.name_scope = QLabel(tr('作用于目前工程的预览、字幕导出与压制成片；双语只在上面一行显示名称。'))
-        self.name_scope.setWordWrap(True)
-        self.name_scope.setObjectName('speakerMeta')
-        column.addWidget(self.name_scope)
-        self.name_preview = QLabel()
-        self.name_preview.setObjectName('speakerNamePreview')
-        self.name_preview.setTextFormat(Qt.TextFormat.PlainText)
-        self.name_preview.setWordWrap(True)
-        column.addWidget(self.name_preview)
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        left = QWidget()
+        lcol = QVBoxLayout(left)
+        lcol.setContentsMargins(20, 2, 10, 0)
+        lcol.setSpacing(8)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        self.speaker_filter = QLineEdit()
+        self.speaker_filter.setObjectName("speakerSearch")
+        self.speaker_filter.setFixedWidth(230)
+        self.speaker_filter.setClearButtonEnabled(True)
+        bind_text(self.speaker_filter, "搜索名字或标签", property="placeholderText")
+        self.speaker_filter.textChanged.connect(self._filter_rows)
+        toolbar.addWidget(self.speaker_filter)
+        self.pending_button = self._button("只看待确认", "speakerPillButton", icon="fa5s.filter", role="secondary")
+        self.pending_button.setCheckable(True)
+        self.pending_button.toggled.connect(lambda _on: self._filter_rows())
+        toolbar.addWidget(self.pending_button)
+        toolbar.addStretch(1)
+        self.sort_button = QToolButton()
+        self.sort_button.setObjectName("speakerGhostButton")
+        self.sort_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.sort_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.sort_button.setIcon(themed_icon("fa5s.sort-amount-down", "secondary"))
+        self.sort_menu = create_studio_menu(self.sort_button)
+        for key, label in (("size", "按说话量"), ("time", "按出现先后"), ("id", "按编号")):
+            action = self.sort_menu.addAction(tr(label))
+            action.setData(key)
+            action.triggered.connect(lambda _=False, value=key: self._set_sort(value))
+        self.sort_button.setMenu(self.sort_menu)
+        toolbar.addWidget(self.sort_button)
+        self.voiceprint_button = QPushButton()
+        self.voiceprint_button.setObjectName("speakerPillButton")
+        self.voiceprint_button.setIcon(themed_icon("fa5s.fingerprint", "secondary"))
+        bind_text(self.voiceprint_button, '声纹比对')
+        bind_text(self.voiceprint_button, '比较多个独立语音样本，试听候选后再决定是否合并；字幕可撤销。', property='toolTip')
+        self.voiceprint_button.clicked.connect(self._voiceprint_clicked)
+        toolbar.addWidget(self.voiceprint_button)
+        lcol.addLayout(toolbar)
 
         self.banner = QFrame()
         self.banner.setObjectName("speakerBanner")
         banner_row = QHBoxLayout(self.banner)
-        banner_row.setContentsMargins(12, 8, 8, 8)
+        banner_row.setContentsMargins(12, 6, 6, 6)
         banner_row.setSpacing(10)
         self.banner_text = QLabel()
         self.banner_text.setWordWrap(True)
         self.banner_text.setTextFormat(Qt.TextFormat.PlainText)
         banner_row.addWidget(self.banner_text, 1)
-        self.rebuild_button = QPushButton()
-        bind_text(self.rebuild_button, "从缓存重建轨道")
-        button_role(self.rebuild_button, "primary", size="compact")
-        self.rebuild_button.clicked.connect(self._apply_candidates)
+        self.rebuild_button = self._button("从缓存重建轨道", "speakerPrimarySmall", self._apply_candidates)
         banner_row.addWidget(self.rebuild_button)
-        self.banner_close = QPushButton()
-        bind_text(self.banner_close, "知道了")
-        button_role(self.banner_close, "ghost", size="compact")
-        self.banner_close.clicked.connect(self._dismiss_banner)
+        self.banner_close = self._button("知道了", "speakerGhostButton", self._dismiss_banner)
         banner_row.addWidget(self.banner_close)
-        column.addWidget(self.banner)
-
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
-        self.summary_label = QLabel()
-        self.summary_label.setObjectName("speakerMeta")
-        toolbar.addWidget(self.summary_label, 1)
-        self.role_filter = QComboBox()
-        for label, value in (('活跃说话人', 'active'), ('已忽略', 'ignored'), ('全部标签', 'all')):
-            self.role_filter.addItem(tr(label), value)
-        self.role_filter.currentIndexChanged.connect(lambda: self._filter_rows(self.speaker_filter.text()))
-        toolbar.addWidget(self.role_filter)
-        self.speaker_filter = QLineEdit()
-        self.speaker_filter.setProperty("fieldWidth", "speakerFilter")
-        self.speaker_filter.setMinimumWidth(200)
-        self.speaker_filter.setClearButtonEnabled(True)
-        bind_text(self.speaker_filter, "搜索名称或标签", property="placeholderText")
-        self.speaker_filter.textChanged.connect(self._filter_rows)
-        toolbar.addWidget(self.speaker_filter)
-        self.voiceprint_button = QPushButton()
-        bind_text(self.voiceprint_button, '声纹比对')
-        bind_text(self.voiceprint_button, '比较多个独立语音样本，试听候选后再决定是否合并；字幕可撤销。', property='toolTip')
-        button_role(self.voiceprint_button, 'secondary', size='compact')
-        self.voiceprint_button.clicked.connect(self._voiceprint_clicked)
-        toolbar.addWidget(self.voiceprint_button)
-        self.multi_button = QPushButton()
-        bind_text(self.multi_button, "多选")
-        bind_text(self.multi_button, "勾选几位后批量归入游戏声、合并或删除", property="toolTip")
-        button_role(self.multi_button, "secondary", size="compact")
-        self.multi_button.setCheckable(True)
-        self.multi_button.toggled.connect(self._set_multi)
-        toolbar.addWidget(self.multi_button)
-        column.addLayout(toolbar)
-
-        self.batch_bar = QFrame()
-        self.batch_bar.setObjectName("speakerBatchBar")
-        batch = QVBoxLayout(self.batch_bar)
-        batch.setContentsMargins(10, 8, 10, 8)
-        batch.setSpacing(6)
-        first = QHBoxLayout()
-        first.setSpacing(6)
-        self.selection_summary = QLabel()
-        first.addWidget(self.selection_summary, 1)
-        for title, mode in (("全选", "all"), ("取消选择", "none"), ("反选", "invert")):
-            button = QPushButton()
-            bind_text(button, title)
-            button_role(button, "ghost", size="compact")
-            button.clicked.connect(lambda _=False, m=mode: self._select_visible(m))
-            first.addWidget(button)
-        batch.addLayout(first)
-        second = QHBoxLayout()
-        second.setSpacing(6)
-        self.batch_buttons: dict[str, QPushButton] = {}
-        for title, action in (("归入游戏背景声", "background"), ("设为主要说话人", "main"), ("恢复原归属", "restore")):
-            button = QPushButton()
-            bind_text(button, title)
-            button_role(button, "secondary", size="compact")
-            button.clicked.connect(lambda _=False, a=action: self._batch(a))
-            self.batch_buttons[action] = button
-            second.addWidget(button)
-        self.batch_merge_button = QToolButton()
-        self.batch_merge_button.setObjectName("speakerMerge")
-        bind_text(self.batch_merge_button, "合并到 ▾")
-        self.batch_merge_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.batch_merge_menu = create_studio_menu(self.batch_merge_button)
-        self.batch_merge_menu.aboutToShow.connect(self._fill_batch_merge_menu)
-        self.batch_merge_button.setMenu(self.batch_merge_menu)
-        second.addWidget(self.batch_merge_button)
-        second.addStretch(1)
-        self.delete_identity_button = QPushButton()
-        bind_text(self.delete_identity_button, "删除身份，字幕移到统一轨")
-        button_role(self.delete_identity_button, "secondary", size="compact")
-        self.delete_identity_button.clicked.connect(lambda: self._batch("identity_delete"))
-        second.addWidget(self.delete_identity_button)
-        self.delete_captions_button = QPushButton()
-        bind_text(self.delete_captions_button, "删除所选人物及字幕")
-        button_role(self.delete_captions_button, "danger", size="compact")
-        self.delete_captions_button.clicked.connect(lambda: self._batch("delete"))
-        second.addWidget(self.delete_captions_button)
-        batch.addLayout(second)
-        self.batch_bar.hide()
-        column.addWidget(self.batch_bar)
+        lcol.addWidget(self.banner)
 
         self.scroll = QScrollArea()
-        self.scroll.setObjectName("speakerCardScroll")
+        self.scroll.setObjectName("speakerBoardScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.card_host = QWidget()
-        self.card_host.setObjectName("speakerCardHost")
-        self.card_grid = QGridLayout(self.card_host)
-        self.card_grid.setContentsMargins(0, 0, 4, 0)
-        self.card_grid.setHorizontalSpacing(12)
-        self.card_grid.setVerticalSpacing(12)
-        self.card_grid.setColumnStretch(0, 1)
-        self.card_grid.setColumnStretch(1, 1)
-        self.scroll.setWidget(self.card_host)
-        column.addWidget(self.scroll, 1)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.board = QWidget()
+        self.board.setObjectName("speakerBoardHost")
+        board = QVBoxLayout(self.board)
+        board.setContentsMargins(0, 2, 8, 16)
+        board.setSpacing(12)
+        self.boxes = {kind: SpeakerBox(kind, self, self.board) for kind in ("main", "secondary", "game", "ignore")}
+        board.addWidget(self.boxes["main"])
+        board.addWidget(self.boxes["secondary"])
+        pair = QHBoxLayout()
+        pair.setSpacing(12)
+        pair.addWidget(self.boxes["game"], 1)
+        pair.addWidget(self.boxes["ignore"], 1)
+        board.addLayout(pair)
+        board.addStretch(1)
+        self.scroll.setWidget(self.board)
+        lcol.addWidget(self.scroll, 1)
+        row.addWidget(left, 1)
 
-        self.more_toggle = QToolButton()
-        self.more_toggle.setObjectName("speakerMoreToggle")
-        self.more_toggle.setCheckable(True)
-        self.more_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.more_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        bind_text(self.more_toggle, "更多工具：MOSS 缓存、重新识别、整理")
-        self.more_toggle.toggled.connect(self._toggle_more)
-        column.addWidget(self.more_toggle)
-        self.more_tools = QFrame()
+        main_box, secondary_box = self.boxes["main"], self.boxes["secondary"]
+        self.cap_button = QToolButton()
+        self.cap_button.setObjectName("speakerGhostButton")
+        self.cap_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.cap_menu = create_studio_menu(self.cap_button)
+        self.cap_menu.aboutToShow.connect(self._fill_cap_menu)
+        self.cap_button.setMenu(self.cap_menu)
+        main_box.add_action(self.cap_button)
+        self.organize_button = secondary_box.add_action(self._button(
+            "按说话量整理", "speakerPillButton", lambda: self._organize(None),
+            tip="字幕最多的几位各占一条轨，其余收进次要角色（可撤销）"))
+        self.group_merge_button = secondary_box.add_action(self._button(
+            "合并成一位", "speakerPrimarySmall", self._group_merge, icon="fa5s.compress-arrows-alt", role="on_accent",
+            tip="选中这一组，在右侧确认后合成一位；原文和时间都保留"))
+        self.group_game_button = secondary_box.add_action(self._button(
+            "全部归入游戏声", "speakerPillButton", lambda: self._apply_move(self._box_keys("secondary"), "game"),
+            icon="fa5s.gamepad"))
+        self.group_select_button = secondary_box.add_action(self._button(
+            "全选", "speakerGhostButton", lambda: self._select_box("secondary")))
+        self.group_more_button = QToolButton()
+        self.group_more_button.setObjectName("speakerGhostButton")
+        self.group_more_button.setIcon(themed_icon("fa5s.ellipsis-h", "secondary"))
+        self.group_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.group_more_menu = create_studio_menu(self.group_more_button)
+        self.group_more_menu.aboutToShow.connect(self._fill_group_menu)
+        self.group_more_button.setMenu(self.group_more_menu)
+        secondary_box.add_action(self.group_more_button)
+
+        self.inspector_frame = QFrame()
+        self.inspector_frame.setObjectName("speakerInspector")
+        self.inspector_frame.setFixedWidth(318)
+        icol = QVBoxLayout(self.inspector_frame)
+        icol.setContentsMargins(0, 0, 0, 0)
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setObjectName("speakerBoardScroll")
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.inspector = QStackedWidget()
+        self.inspector.setObjectName("speakerBoardHost")
+        self.inspector.setContentsMargins(16, 4, 16, 12)
+        inspector_scroll.setWidget(self.inspector)
+        icol.addWidget(inspector_scroll)
+        self.empty_page = QWidget()
+        empty = QVBoxLayout(self.empty_page)
+        empty.setContentsMargins(12, 0, 12, 0)
+        empty.setSpacing(10)
+        empty.addStretch(1)
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(themed_icon("fa5s.mouse-pointer", "muted").pixmap(34, 34))
+        empty.addWidget(icon)
+        empty_title = QLabel()
+        empty_title.setObjectName("speakerEmptyTitle")
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bind_text(empty_title, "点一位看详情")
+        empty.addWidget(empty_title)
+        empty_text = QLabel()
+        empty_text.setObjectName("speakerEmptyText")
+        empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_text.setWordWrap(True)
+        bind_text(empty_text, "拖到别的框换分组；拖到另一位身上，就把它并进去。按住 Ctrl 或 Shift 可多选，一起拖或合并。"
+                              "次要角色的「合并成一位」会先选中整组，在这里确认。")
+        empty.addWidget(empty_text)
+        empty.addStretch(2)
+        self.inspector.addWidget(self.empty_page)
+        self.merge_panel = MergePanel(self)
+        self.inspector.addWidget(self.merge_panel)
+        self.selection_summary = self.merge_panel.summary
+        self.batch_buttons: dict[str, QPushButton] = {}
+        for key, text, slot in (
+                ("background", "归入游戏声", lambda: self._apply_move(self._ordered_selection(), "game")),
+                ("ignore", "忽略", lambda: self._apply_move(self._ordered_selection(), "ignore")),
+                ("main", "移到主要角色", lambda: self._apply_move(self._ordered_selection(), "main")),
+                ("secondary", "移到次要角色", lambda: self._apply_move(self._ordered_selection(), "secondary")),
+                ("restore", "恢复原归属", lambda: self._batch("restore"))):
+            self.batch_buttons[key] = self._button(text, "speakerPillButton", slot)
+            self.merge_panel.add_batch_button(self.batch_buttons[key])
+        self.delete_identity_button = self._button("删除身份，字幕移到统一轨", "speakerPillButton",
+                                                   lambda: self._batch("identity_delete"))
+        self.merge_panel.add_batch_button(self.delete_identity_button)
+        self.delete_captions_button = self._button("删除所选人物及字幕", "speakerGhostButton", lambda: self._batch("delete"))
+        self.merge_panel.add_batch_button(self.delete_captions_button)
+        row.addWidget(self.inspector_frame)
+        column.addWidget(body, 1)
+
+        # -- rare tools: one popup under 「更多工具」 ------------------------------
+        self.more_tools = QFrame(self, Qt.WindowType.Popup)
         self.more_tools.setObjectName("speakerMoreTools")
+        self.more_tools.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         tools = QVBoxLayout(self.more_tools)
-        tools.setContentsMargins(0, 8, 0, 0)
-        tools.setSpacing(7)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.load_cache_button = QPushButton()
-        bind_text(self.load_cache_button, "选择本素材 MOSS 缓存…")
-        button_role(self.load_cache_button, "secondary", size="compact")
-        self.load_cache_button.clicked.connect(self._choose_cache)
-        row.addWidget(self.load_cache_button)
-        self.reanalyze_button = QPushButton()
-        bind_text(self.reanalyze_button, "用当前方案重新识别…")
-        bind_text(self.reanalyze_button, "打开当前工程识别设置，选择当前识别方案。会重新生成字幕，不是只补标签；请先保存人工编辑的工程副本。", property="toolTip")
-        button_role(self.reanalyze_button, "secondary", size="compact")
-        self.reanalyze_button.clicked.connect(self._open_recognition)
-        row.addWidget(self.reanalyze_button)
-        self.single_button = QPushButton()
-        bind_text(self.single_button, "全部合并为单轨")
-        button_role(self.single_button, "secondary", size="compact")
-        self.single_button.clicked.connect(lambda: self._batch("single", all_rows=True))
-        row.addWidget(self.single_button)
-        self.single_identity_button = QPushButton()
-        bind_text(self.single_identity_button, '确认全片只有一人')
-        bind_text(self.single_identity_button, '将当前标签统一到第一位说话人，保留每条字幕的文字、译文、时间和样式；可撤销。', property='toolTip')
-        button_role(self.single_identity_button, 'secondary', size='compact')
-        self.single_identity_button.clicked.connect(self._confirm_single_identity)
-        row.addWidget(self.single_identity_button)
-        row.addStretch(1)
-        self.cleanup_range_button = QPushButton('整理局部识别空人物（可撤销）')
+        tools.setContentsMargins(14, 12, 14, 12)
+        tools.setSpacing(8)
+        self.load_cache_button = self._button("选择本素材 MOSS 缓存…", "speakerPillButton", self._choose_cache,
+                                              icon="fa5s.folder-open")
+        self.reanalyze_button = self._button("用当前方案重新识别…", "speakerPillButton", self._open_recognition,
+                                             icon="fa5s.redo",
+                                             tip="打开当前工程识别设置，选择当前识别方案。会重新生成字幕，不是只补标签；请先保存人工编辑的工程副本。")
+        self.single_button = self._button("全部合并为单轨", "speakerPillButton",
+                                          lambda: self._batch("single", all_rows=True), icon="fa5s.layer-group")
+        self.single_identity_button = self._button(
+            '确认全片只有一人', 'speakerPillButton', self._confirm_single_identity, icon="fa5s.user",
+            tip='将当前标签统一到第一位说话人，保留每条字幕的文字、译文、时间和样式；可撤销。')
+        self.cleanup_range_button = self._button('整理局部识别空人物（可撤销）', 'speakerPillButton', self._clean_range_speakers,
+                                                 icon="fa5s.broom",
+                                                 tip='只移除无有效字幕引用且未被手动配置的局部识别人物和自动空轨道')
         self.cleanup_range_button.setObjectName('cleanupRangeSpeakers')
-        self.cleanup_range_button.setToolTip('只移除无有效字幕引用且未被手动配置的局部识别人物和自动空轨道')
-        button_role(self.cleanup_range_button, 'secondary', size='compact')
-        self.cleanup_range_button.clicked.connect(self._clean_range_speakers)
-        tools.addWidget(self.cleanup_range_button)
-        tools.addLayout(row)
+        self.cleanup_range_button.setProperty("class", "speakerPillButton")
+        for button in (self.load_cache_button, self.reanalyze_button, self.single_button, self.single_identity_button,
+                       self.cleanup_range_button):
+            tools.addWidget(button)
         policy = QHBoxLayout()
-        policy.setSpacing(8)
+        policy.setSpacing(6)
         policy.addWidget(self._plain_label("原始发言超过"))
         self.utterance_threshold = QSpinBox()
         self.utterance_threshold.setRange(1, 1000)
         self.utterance_threshold.setProperty("fieldWidth", "speakerThreshold")
-        self.utterance_threshold.setMinimumWidth(80)
+        self.utterance_threshold.setMinimumWidth(70)
         self.utterance_threshold.setValue(int(self.page.project.generation_metadata.get(
             "speaker_organization", {}).get("threshold", 10)))
         policy.addWidget(self.utterance_threshold)
         policy.addWidget(self._plain_label("句才算主要说话人，其余归入游戏背景声"))
-        self.count_policy_button = QPushButton()
-        bind_text(self.count_policy_button, "按原始发言数整理")
-        button_role(self.count_policy_button, "secondary", size="compact")
-        self.count_policy_button.clicked.connect(self._apply_count_policy)
+        self.count_policy_button = self._button("按原始发言数整理", "speakerPillButton", self._apply_count_policy)
         policy.addWidget(self.count_policy_button)
-        policy.addStretch(1)
         tools.addLayout(policy)
         self.candidate_note = QLabel()
         self.candidate_note.setObjectName("speakerMeta")
         self.candidate_note.setWordWrap(True)
         tools.addWidget(self.candidate_note)
         self.more_tools.hide()
-        column.addWidget(self.more_tools)
+        self.more_tools.installEventFilter(self)
 
+        # -- footer: name display, status, undo, done --------------------------
         footer = QFrame()
-        footer.setObjectName("dialogFooter")
+        footer.setObjectName("speakerFooter")
         foot = QHBoxLayout(footer)
-        foot.setContentsMargins(18, 10, 18, 12)
-        foot.setSpacing(8)
+        foot.setContentsMargins(20, 10, 16, 12)
+        foot.setSpacing(12)
+        self.show_names = QCheckBox(tr('字幕前显示名字'))
+        self.show_names.setObjectName('speakerNameVisibility')
+        self.show_names.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_names.setToolTip(tr('作用于目前工程的预览、字幕导出与压制成片；双语只在上面一行显示名称。'))
+        self.show_names.toggled.connect(self._set_name_visibility)
+        foot.addWidget(self.show_names)
+        self.name_preview = QLabel()
+        self.name_preview.setObjectName('speakerNamePreview')
+        self.name_preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.name_preview.setMaximumWidth(320)
+        foot.addWidget(self.name_preview)
         self.status = QLabel()
         self.status.setObjectName("speakerFooterStatus")
         self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         foot.addWidget(self.status, 1)
+        self.undo_button = self._button("撤销", "speakerGhostButton", self.page.undo_stack.undo, icon="fa5s.undo")
+        bind_text(self.undo_button, "撤销上一步（Ctrl+Z）", property="toolTip")
+        foot.addWidget(self.undo_button)
         self.done_button = QPushButton()
+        self.done_button.setObjectName("speakerDone")
         bind_text(self.done_button, "完成")
-        button_role(self.done_button, "primary")
+        self.done_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.done_button.clicked.connect(self.accept)
         foot.addWidget(self.done_button)
-        root.addWidget(footer)
+        column.addWidget(footer)
 
     @staticmethod
     def _plain_label(text: str) -> QLabel:
@@ -412,26 +565,13 @@ class SpeakerManagerDialog(QDialog):
         return label
 
     def _toggle_more(self, shown: bool) -> None:
-        self.more_tools.setVisible(shown)
-        self.more_toggle.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
-
-    def _set_multi(self, enabled: bool) -> None:
-        self._multi = bool(enabled)
-        if not enabled:
-            for card in self.cards.values():
-                card.select_check.blockSignals(True)
-                card.select_check.setChecked(False)
-                card.select_check.blockSignals(False)
-        for card in self.cards.values():
-            card.select_check.setVisible(self._multi and card.data.get("present", False))
-        self.batch_bar.setVisible(self._multi)
-        self._sync_multi_shortcuts()
-        self._update_selection_summary()
-
-    def _sync_multi_shortcuts(self) -> None:
-        for shortcut in (getattr(self, "_select_all_shortcut", None), getattr(self, "_delete_shortcut", None)):
-            if shortcut is not None:
-                shortcut.setEnabled(self._multi)
+        if not shown:
+            self.more_tools.hide()
+            return
+        self.more_tools.adjustSize()
+        anchor = self.more_toggle.mapToGlobal(QPoint(self.more_toggle.width(), self.more_toggle.height() + 6))
+        self.more_tools.move(anchor.x() - self.more_tools.width(), anchor.y())
+        self.more_tools.show()
 
     def _dismiss_banner(self) -> None:
         self._banner_dismissed = True
@@ -561,46 +701,554 @@ class SpeakerManagerDialog(QDialog):
         self._refreshing = True
         try:
             keys = self._card_keys()
-            if keys != list(self.cards):
-                self._rebuild_cards(keys)
-            for key, card in self.cards.items():
-                card.update_data(self._card_data(key))
-                card.select_check.setVisible(self._multi and card.data.get("present", False))
+            self._group = self._group_members()
+            self._data = {key: self._card_data(key) for key in keys}
+            self._box_index = {key: box for key in keys if (box := self._box_of(key))}
+            self._sync_views(keys)
+            self._layout_boxes()
             self._filter_rows(self.speaker_filter.text())
-            self.speaker_filter.setVisible(len(self.cards) > _FILTER_THRESHOLD or bool(self.speaker_filter.text()))
             self._refresh_banner()
             self._refresh_summary()
-            ignored = sum(role == 'ignore' for role in self._roles().values())
-            self.role_filter.setItemText(1, tr('已忽略 · {count}', count=ignored))
-            self.role_filter.setToolTip(tr('已忽略字幕保留在工程缓存中，不参与预览、字幕导出和压制；恢复后重新参与。'))
-            self._update_selection_summary()
+            self._refresh_box_actions()
             self.candidate_note.setText(self._snapshot_error)
             self.candidate_note.setVisible(bool(self._snapshot_error))
-            if selected_id in self.cards:
-                self.scroll.ensureWidgetVisible(self.cards[selected_id])
+            self._selection &= set(keys)
+            if self._focus not in self.cards:
+                self._focus = ""
+            for key, tile in self.tiles.items():
+                tile.set_selected(key in self._selection)
+            self._show_inspector()
+            self.undo_button.setVisible(self.page.undo_stack.canUndo())
+            if selected_id in self.tiles and not self.tiles[selected_id].isHidden():
+                self.scroll.ensureWidgetVisible(self.tiles[selected_id], 20, 20)
         finally:
             self._refreshing = False
 
-    def _rebuild_cards(self, keys: list[str]) -> None:
-        self._stop_preview()
-        checked = self._selected_ids()
-        for card in self.cards.values():
-            self.card_grid.removeWidget(card)
-            card.hide()
-            card.deleteLater()
-        if self._preview_card is not None and self._preview_card.key not in keys:
-            self._preview_card = None
-        self.cards = {}
-        while self.card_grid.count():
-            self.card_grid.takeAt(0)
-        for index, key in enumerate(keys):
-            card = SpeakerCard(key, self, self.card_host)
-            card.select_check.setChecked(key in checked)
-            self.cards[key] = card
-            self.card_grid.addWidget(card, index // 2, index % 2, Qt.AlignmentFlag.AlignTop)
-        self.card_grid.setRowStretch(len(keys) // 2 + 1, 1)
-        for button in self.card_host.findChildren(QPushButton):
+    # ------------------------------------------------------------- the board
+    def _group_members(self) -> set[str]:
+        """Speakers in the timeline's secondary group (role state, not identity)."""
+        from ..recognition.speaker_roles import effective_roles, state_of
+        project = self.page.project
+        if not state_of(project).get("grouped"):
+            return set()
+        return {key for key, role in effective_roles(project).items() if role == "secondary"}
+
+    def _box_of(self, key: str) -> str | None:
+        """Which box shows ``key``; None for labels merged into someone else."""
+        from ..recognition.speaker_recovery import candidate_destination
+        data = self._data.get(key) or {}
+        if key == BACKGROUND:
+            return "game"
+        if data.get("present"):
+            return "secondary" if key in self._group and key != UNIFIED else "main"
+        if key not in self._stats:
+            return None
+        destination = candidate_destination(self._roles(), key, self._anonymous())
+        if destination is None:
+            return "ignore"
+        if destination == BACKGROUND:
+            return "game"
+        return "main" if destination == key else None
+
+    def _make_card(self, key: str) -> SpeakerCard:
+        card = SpeakerCard(key, self, self.inspector)
+        self.cards.made[key] = card
+        self.inspector.addWidget(card)
+        card.update_data(self._data.get(key) or self._card_data(key))
+        for button in card.findChildren(QPushButton):
             button.setAutoDefault(False)
+        return card
+
+    def _views(self, key: str) -> list:
+        return [view for view in (self.tiles.get(key), self.cards.made.get(key)) if view is not None]
+
+    def _sync_views(self, keys: list[str]) -> None:
+        removed = [key for key in self.cards.order if key not in keys]
+        self.cards.order = list(keys)
+        for key in removed:
+            card = self.cards.made.pop(key, None)
+            if card is not None:
+                if self._preview_card is card:
+                    self._stop_preview()
+                self.inspector.removeWidget(card)
+                card.deleteLater()
+        for card in self.cards.created():
+            card.update_data(self._data[card.key])
+        for key in list(self.tiles):
+            box = self._box_index.get(key)
+            tile = self.tiles[key]
+            if key not in keys or box is None or tile.main != (box == "main"):
+                if self._preview_card is tile:
+                    self._stop_preview()
+                self.tiles.pop(key)
+                for owner in self.boxes.values():
+                    if tile in owner.tiles:
+                        owner.tiles.remove(tile)
+                        owner.flow.removeWidget(tile)
+                tile.hide()
+                tile.deleteLater()
+        for key in keys:
+            box = self._box_index.get(key)
+            if box is None:
+                continue
+            tile = self.tiles.get(key)
+            if tile is None:
+                tile = SpeakerTile(key, self, main=box == "main", parent=self.boxes[box].body)
+                self.tiles[key] = tile
+            tile.update_data(self._data[key])
+            if self._preview_key == key and self._preview_timer.isActive():
+                tile.set_playing(True)
+
+    def _sort_key(self, key: str):
+        data = self._data.get(key) or {}
+        if self._sort == "time":
+            first = min((start for start, _end in data.get("intervals") or ()), default=10 ** 12)
+            return (first, key)
+        if self._sort == "id":
+            return (key,)
+        return (-int(data.get("ms") or 0), -int(data.get("count") or 0), key)
+
+    def _layout_boxes(self) -> None:
+        order = {kind: [] for kind in self.boxes}
+        for key in self.cards.order:
+            box = self._box_index.get(key)
+            if box:
+                order[box].append(key)
+        for kind, box in self.boxes.items():
+            keys = sorted(order[kind], key=self._sort_key)
+            if kind == "game" and BACKGROUND in keys:
+                keys.remove(BACKGROUND)
+                keys.insert(0, BACKGROUND)
+            hint = _HINTS[kind]
+            if kind == "secondary" and not self._grouped():
+                hint = "还没分组：点「按说话量整理」，或把说话少的人拖到这里"
+            if kind == "ignore" and not self._stats:
+                hint = "只有识别出的说话人标签可以忽略"
+            box.set_tiles([self.tiles[key] for key in keys], hint)
+            cues = sum(int(self._data[key].get("count") or 0) for key in keys)
+            desc = {"main": tr("{cues} 条字幕，各自一条字幕轨", cues=cues),
+                    "secondary": tr("{cues} 条字幕，时间轴上合成一条轨", cues=cues),
+                    "game": "", "ignore": ""}[kind]
+            box.set_summary(len(keys), desc, [self._data[key].get("color") or "#888" for key in keys])
+
+    def _grouped(self) -> bool:
+        from ..recognition.speaker_roles import state_of
+        return bool(state_of(self.page.project).get("grouped"))
+
+    def _refresh_box_actions(self) -> None:
+        from ..recognition.speaker_roles import MAIN_CAP, state_of
+        state = state_of(self.page.project)
+        bind_text(self.cap_button, "独立轨最多 {count} 条 ▾", count=int(state.get("cap") or MAIN_CAP))
+        members = self._box_keys("secondary")
+        grouped = self._grouped()
+        self.organize_button.setVisible(not grouped)
+        for button in (self.group_merge_button, self.group_game_button, self.group_select_button):
+            button.setVisible(bool(members))
+        self.group_merge_button.setEnabled(len(members) >= 2)
+        self.group_more_button.setVisible(grouped)
+        all_selected = bool(members) and all(key in self._selection for key in members)
+        bind_text(self.group_select_button, "取消全选" if all_selected else "全选")
+        pending = sum(bool(data.get("pending")) for data in self._data.values())
+        bind_text(self.pending_button, "只看待确认 {count}", count=pending)
+        self.pending_button.setVisible(bool(pending) or self.pending_button.isChecked())
+        labels = {"size": "按说话量", "time": "按出现先后", "id": "按编号"}
+        bind_text(self.sort_button, labels[self._sort])
+
+    def _box_keys(self, kind: str) -> list[str]:
+        return [tile.key for tile in self.boxes[kind].tiles if not tile.isHidden()]
+
+    def _set_sort(self, value: str) -> None:
+        self._sort = value
+        self.refresh()
+
+    def _fill_cap_menu(self) -> None:
+        from ..recognition.speaker_roles import CAP_CHOICES, MAIN_CAP, state_of
+        menu = self.cap_menu
+        menu.clear()
+        note = menu.addAction(tr("字幕最多的几位各占一条轨，其余收进次要角色"))
+        note.setEnabled(False)
+        current = int(state_of(self.page.project).get("cap") or MAIN_CAP)
+        for value in CAP_CHOICES:
+            action = menu.addAction(tr("最多 {count} 条（可撤销）", count=value))
+            action.setCheckable(True)
+            action.setChecked(value == current and self._grouped())
+            action.triggered.connect(lambda _=False, cap=value: self._organize(cap))
+
+    def _fill_group_menu(self) -> None:
+        menu = self.group_more_menu
+        menu.clear()
+        menu.addAction(tr("全部忽略（可恢复）"), lambda: self._apply_move(self._box_keys("secondary"), "ignore"))
+        menu.addAction(tr("全部移到主要角色"), lambda: self._apply_move(self._box_keys("secondary"), "main"))
+        menu.addSeparator()
+        menu.addAction(tr("重新判断主要和次要（可撤销）"), lambda: self._organize(None))
+        menu.addAction(tr("取消分组，全部显示为独立轨（可撤销）"), self._ungroup)
+
+    # -------------------------------------------------------------- selection
+    def _visible_order(self) -> list[str]:
+        return [key for kind in ("main", "secondary", "game", "ignore") for key in self._box_keys(kind)]
+
+    def _ordered_selection(self) -> list[str]:
+        order = self._visible_order()
+        rank = {key: index for index, key in enumerate(order)}
+        return sorted(self._selection, key=lambda key: (rank.get(key, len(order)), key))
+
+    def _tile_clicked(self, key: str, modifiers) -> None:
+        additive = bool(modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
+        if modifiers & Qt.KeyboardModifier.ShiftModifier and self._anchor:
+            order = self._visible_order()
+            if self._anchor in order and key in order:
+                first, last = sorted((order.index(self._anchor), order.index(key)))
+                self._selection |= set(order[first:last + 1])
+        elif additive:
+            self._selection ^= {key}
+        else:
+            self._selection = {key}
+        self._anchor = key
+        self._set_focus(key if key in self._selection else (next(iter(self._selection)) if len(self._selection) == 1 else ""))
+        self._apply_selection()
+
+    def _set_focus(self, key: str) -> None:
+        previous = self.cards.made.get(self._focus)
+        if previous is not None and key != self._focus and previous.name_edit.text() != previous.committed_name:
+            self._finish_name_edit(previous)
+        self._focus = key
+        if key:
+            self._name_preview_speaker = key
+            self._sync_name_preview()
+
+    def _apply_selection(self) -> None:
+        for key, tile in self.tiles.items():
+            tile.set_selected(key in self._selection)
+        self._refresh_box_actions()
+        self._show_inspector()
+
+    def _clear_selection(self) -> None:
+        self._selection = set()
+        self._set_focus("")
+        self._apply_selection()
+
+    def _select_box(self, kind: str) -> None:
+        keys = set(self._box_keys(kind))
+        self._selection = set() if keys and keys <= self._selection else keys
+        self._set_focus("")
+        self._apply_selection()
+
+    def _select_visible(self, mode: str) -> None:
+        visible = set(self._visible_order())
+        if mode == "all":
+            self._selection = visible
+        elif mode == "none":
+            self._selection = set()
+        else:
+            self._selection = visible - self._selection
+        self._apply_selection()
+
+    def _selected_ids(self) -> set[str]:
+        return {key for key in self._selection if self._data.get(key, {}).get("present")}
+
+    def _show_inspector(self) -> None:
+        if len(self._selection) >= 2:
+            self._populate_merge_panel()
+            self.inspector.setCurrentWidget(self.merge_panel)
+        elif self._focus and self._focus in self.cards:
+            self.inspector.setCurrentWidget(self.cards[self._focus])
+        else:
+            self.inspector.setCurrentWidget(self.empty_page)
+
+    def _mergeable(self, keys: list[str]) -> tuple[list[str], list[str]]:
+        """(speakers that can be merged, targets every other one can merge into)."""
+        mergeable = [key for key in keys if self._data.get(key, {}).get("present")]
+        targets = [target for target in mergeable
+                   if all(target in self._merge_targets(other) for other in mergeable if other != target)]
+        targets.sort(key=lambda key: (-int(self._data[key].get("ms") or 0), -int(self._data[key].get("count") or 0)))
+        return mergeable, targets
+
+    def _populate_merge_panel(self) -> None:
+        keys = self._ordered_selection()
+        mergeable, targets = self._mergeable(keys)
+        cues = sum(int(self._data[key].get("count") or 0) for key in keys)
+        ms = sum(int(self._data[key].get("ms") or 0) for key in keys)
+        self.merge_panel.populate(keys, data=self._data, targets=targets, cues=cues,
+                                  seconds_text=_duration_text(ms), mergeable=mergeable)
+        present = bool(self._selected_ids())
+        for key in ("restore",):
+            self.batch_buttons[key].setEnabled(present)
+        self.delete_identity_button.setEnabled(present)
+        self.delete_captions_button.setEnabled(present)
+        for key, kind in (("background", "game"), ("ignore", "ignore"), ("main", "main"), ("secondary", "secondary")):
+            self.batch_buttons[key].setEnabled(self._can_move(keys, kind))
+
+    def _tile_rename(self, key: str) -> None:
+        if not self._data.get(key, {}).get("present"):
+            return
+        self._selection = {key}
+        self._set_focus(key)
+        self._apply_selection()
+        card = self.cards[key]
+        card.name_edit.setFocus()
+        card.name_edit.selectAll()
+
+    def _tile_menu(self, tile, position) -> None:
+        menu = create_studio_menu(self)
+        if tile.data.get("present"):
+            self._card_fill_more_menu(tile, menu)
+            merge = menu.addMenu(tr("合并到"))
+            self._card_fill_merge_menu(tile, merge)
+        elif tile.key in self._stats:
+            restore = 'unconfirmed' if self._anonymous() else 'main'
+            menu.addAction(tr("恢复"), lambda: self._set_role(tile.key, restore))
+        if not menu.isEmpty():
+            menu.exec(position)
+
+    def _card_fill_split_menu(self, card, menu) -> None:
+        menu.clear()
+        restore = 'unconfirmed' if self._anonymous() else 'main'
+        for label, name in card.data.get("merged") or ():
+            menu.addAction(tr("拆开 {name}", name=name), lambda value=label: self._set_role(value, restore))
+
+    def _card_toggle_group(self, card) -> None:
+        group = card.data.get("timeline_group")
+        self._apply_move([card.key], "secondary" if group == "main" else "main")
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt override
+        if event.key() == Qt.Key.Key_Escape and (self._selection or self._focus):
+            self._clear_selection()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------ drag & drop
+    def _start_drag(self, tile) -> None:
+        from .studio_speaker_board import speaker_drag
+        keys = self._ordered_selection() if tile.key in self._selection else [tile.key]
+        label = tr("{count} 位一起", count=len(keys)) if len(keys) > 1 else str(tile.data.get("name") or tile.key)
+        views = [self.tiles[key] for key in keys if key in self.tiles]
+        for view in views:
+            view.set_dragging(True)
+        try:
+            speaker_drag(tile, keys, label).exec(Qt.DropAction.MoveAction)
+        finally:
+            for view in views:
+                try:
+                    view.set_dragging(False)
+                except RuntimeError:
+                    pass
+
+    def _autoscroll(self, global_pos) -> None:
+        viewport = self.scroll.viewport()
+        local = viewport.mapFromGlobal(global_pos)
+        bar = self.scroll.verticalScrollBar()
+        if local.y() < 36:
+            bar.setValue(bar.value() - 16)
+        elif local.y() > viewport.height() - 36:
+            bar.setValue(bar.value() + 16)
+
+    def _can_merge(self, keys: list[str], target: str) -> bool:
+        sources = [key for key in keys if key != target]
+        return bool(sources) and all(target in self._merge_targets(key) for key in sources)
+
+    def _move_effect(self, key: str, kind: str):
+        """What dropping ``key`` into box ``kind`` does, or None."""
+        data = self._data.get(key)
+        if not data or key in _GROUPS or self._box_index.get(key) == kind:
+            return None
+        candidate = key in self._stats and self._snapshot is not None
+        present = bool(data.get("present"))
+        if kind in {"main", "secondary"}:
+            if present:
+                return ("timeline", kind)
+            return ("restore", kind) if candidate else None
+        if kind == "game":
+            if candidate:
+                return ("role", "game")
+            return ("background", None) if present else None
+        if kind == "ignore" and candidate:
+            return ("role", "ignore")
+        return None
+
+    def _can_move(self, keys, kind: str) -> bool:
+        return any(self._move_effect(key, kind) for key in keys)
+
+    def _drop(self, keys: list[str], kind: str, target: str = "") -> None:
+        """Leave the drag's event loop first, then change the project (one undo)."""
+        keys = [key for key in keys if key in self._data]
+        if target:
+            QTimer.singleShot(0, lambda: self._merge_many([key for key in keys if key != target], target))
+        else:
+            QTimer.singleShot(0, lambda: self._apply_move(keys, kind))
+
+    def _apply_move(self, keys, kind: str) -> None:
+        from .studio_speaker_board import BOX_TITLES
+        roles, background, timeline = [], set(), {}
+        restore = 'unconfirmed' if self._anonymous() else 'main'
+        for key in keys:
+            effect = self._move_effect(key, kind)
+            if effect is None:
+                continue
+            action, value = effect
+            if action == "role":
+                roles.append((key, value))
+            elif action == "background":
+                background.add(key)
+            elif action == "timeline":
+                timeline[key] = value
+            elif action == "restore":
+                roles.append((key, restore))
+                timeline[key] = value
+        moved = len(roles) + len(background) + len([key for key in timeline if key not in dict(roles)])
+        if not moved:
+            return
+        names = [self._display_name(key) for key in keys if self._move_effect(key, kind)]
+        who = names[0] if len(names) == 1 else tr("{count} 位", count=len(names))
+        label = tr("{who}移到「{box}」", who=who, box=tr(BOX_TITLES[kind]))
+        self._execute(label, roles=roles, batch=("background", background, None) if background else None,
+                      timeline=timeline)
+
+    def _merge_many(self, keys: list[str], target: str, name: str = "") -> None:
+        from ..recognition.speaker_recovery import candidate_destination
+        if not keys or target not in self._data:
+            return
+        roles, batch = [], set()
+        current = self._roles()
+        for key in keys:
+            if key == target or target not in self._merge_targets(key):
+                continue
+            if key in self._stats and self._snapshot is not None:
+                if target in self._stats and (not self._snapshot_in_project
+                                              or candidate_destination(current, target, self._anonymous()) == target):
+                    roles.append((key, "merge:" + target))
+                    continue
+                if target == BACKGROUND:
+                    roles.append((key, "game"))
+                    continue
+            if self._speaker(key) is not None:
+                batch.add(key)
+        count = len(roles) + len(batch)
+        if not count:
+            self._set_status(tr("这些说话人不能并入 {name}。", name=self._display_name(target)))
+            return
+        speaker = self._speaker(target)
+        rename = name.strip() if speaker is not None and name.strip() and name.strip() != (speaker.name or speaker.id) else ""
+        label = (tr("把 {name} 并入 {target}", name=self._display_name(keys[0]), target=rename or self._display_name(target))
+                 if count == 1 else tr("把 {count} 位合成「{target}」", count=count + 1, target=rename or self._display_name(target)))
+        self._selection = set()
+        self._focus = target
+        self._execute(label, roles=roles, batch=("merge", batch, target) if batch else None,
+                      rename=(target, rename) if rename else None)
+
+    def _merge_selection(self, target: str, name: str) -> None:
+        mergeable, _targets = self._mergeable(self._ordered_selection())
+        self._merge_many([key for key in mergeable if key != target], target, name)
+
+    def _group_merge(self) -> None:
+        self._selection = set(self._box_keys("secondary"))
+        self._set_focus("")
+        self._apply_selection()
+
+    def _roles_state(self, changes: dict) -> dict:
+        from ..projects.studio_project import speaker_track_preference
+        from ..recognition.speaker_roles import decide, state_of
+        project = self.page.project
+        state = copy.deepcopy(state_of(project)) or decide(project, manual={}, default_cap=speaker_track_preference())
+        manual = dict(state.get("manual") or {})
+        manual.update(changes)
+        state.update(manual=manual, grouped=True)
+        return state
+
+    def _push_roles(self, state, label: str) -> None:
+        from .studio_speaker_roles import SetSpeakerRolesCommand
+        self.page.undo_stack.push(SetSpeakerRolesCommand(self.page.project, state, label,
+                                                         getattr(self.page, "_speaker_structure_changed", None)))
+        timeline = getattr(self.page, "timeline", None)
+        if timeline is not None and hasattr(timeline, "reindex_project"):
+            timeline.reindex_project()
+
+    def _organize(self, cap) -> None:
+        from ..projects.studio_project import speaker_track_preference
+        from ..recognition.speaker_roles import decide, group_members
+        project = self.page.project
+        state = decide(project, expanded=False, cap=cap, default_cap=speaker_track_preference())
+        self._applying = True
+        try:
+            self._push_roles(state, tr("按主要/次要角色整理轨道") if cap is None else tr("调整主要角色上限"))
+        finally:
+            self._applying = False
+        self.refresh()
+        self._set_status(tr("已整理：{main} 条独立轨，{secondary} 位次要角色收进一条轨道（可撤销）",
+                            main=len(self._box_keys("main")), secondary=len(group_members(project))))
+
+    def _ungroup(self) -> None:
+        from ..recognition.speaker_roles import state_of
+        state = copy.deepcopy(state_of(self.page.project))
+        if not state.get("grouped"):
+            return
+        state["grouped"] = False
+        self._applying = True
+        try:
+            self._push_roles(state, tr("取消次要角色分组"))
+        finally:
+            self._applying = False
+        self.refresh()
+
+    def _execute(self, label: str, *, roles=(), batch=None, timeline=None, rename=None) -> None:
+        """One user action as one undo step: label roles, then batch organisation,
+        then timeline grouping, then the new name."""
+        from ..projects.speaker_organization import organization_command
+        from ..recognition.speaker_recovery import apply_candidate_roles
+        from ..timeline.studio_commands import SetCandidateRoleCommand
+        project, stack = self.page.project, self.page.undo_stack
+        roles = list(roles)
+        self._stop_preview()
+        if roles and not self._snapshot_in_project:
+            for key, role in roles:
+                self._staged_roles[key] = role
+            self.page._speaker_roles_pending = self._staged_roles != {
+                key: self._snapshot["roles"].get(key, "unconfirmed") for key in self._stats}
+            self.page._populate_speakers()
+            roles = []
+            timeline = {key: value for key, value in (timeline or {}).items() if self._speaker(key) is not None}
+        steps = []
+        if roles:
+            def apply_roles():
+                result = apply_candidate_roles(project, self._snapshot, roles)
+                if result is not None:
+                    command = SetCandidateRoleCommand(project, result, self.page._speaker_structure_changed)
+                    command.setText(label)
+                    self._push(command)
+                    if command.error:
+                        raise RuntimeError(command.error)
+                    self._load_snapshot()
+            steps.append(apply_roles)
+        if batch and batch[1]:
+            action, ids, target = batch
+            steps.append(lambda: self._push(organization_command(project, set(ids), action, target,
+                                                                 self.page._speaker_structure_changed)))
+        if timeline:
+            steps.append(lambda: self._push_roles(self._roles_state(
+                {key: value for key, value in timeline.items() if self._speaker(key) is not None}), label))
+        if rename:
+            target, name = rename
+            steps.append(lambda: self._push(SetSpeakerCommand(project, target, {"name": name}, text=tr("修改说话人名称"),
+                                                              changed=self.page._speaker_structure_changed)))
+        macro = len(steps) > 1
+        self._applying = True
+        try:
+            if macro:
+                stack.beginMacro(label)
+            for step in steps:
+                step()
+        except (ValueError, KeyError, TypeError, RuntimeError) as exc:
+            self._set_status(tr("操作失败，当前工程已保留原状态：{error}", error=str(exc)))
+        else:
+            if steps or not self._snapshot_in_project:
+                self._set_status(tr("{label}。可按 Ctrl+Z 撤销。", label=label))
+        finally:
+            if macro:
+                stack.endMacro()
+            self._applying = False
+        if self._snapshot_in_project:
+            self._load_snapshot()
+        self.refresh()
 
     def _speaker(self, key: str) -> StudioSpeaker | None:
         return next((item for item in self.page.project.speakers if item.id == key), None)
@@ -694,6 +1342,13 @@ class SpeakerManagerDialog(QDialog):
         if key == BACKGROUND and present:
             data["status"] = tr("标成「游戏声」的人都并在这里，可以整组隐藏不输出。")
         data["can_merge"] = bool(self._merge_targets(key))
+        data["count"] = len(cues) if present else int((stats or {}).get("segments") or 0)
+        data["ms"] = (sum(max(0, cue.end_ms - cue.start_ms) for cue in cues) if present
+                      else int(float((stats or {}).get("seconds") or 0) * 1000))
+        data["merged"] = [(label, self._display_name(label)) for label, value in roles.items()
+                          if value == "merge:" + key and label != key]
+        group = getattr(self, "_group", set())
+        data["timeline_group"] = ("secondary" if key in group else "main") if present and key not in _GROUPS else None
         return data
 
     def _refresh_banner(self) -> None:
@@ -738,6 +1393,10 @@ class SpeakerManagerDialog(QDialog):
 
     # --------------------------------------------------------------- names
     def eventFilter(self, watched, event):
+        if watched is getattr(self, "more_tools", None) and event.type() == QEvent.Type.Hide:
+            self.more_toggle.blockSignals(True)
+            self.more_toggle.setChecked(False)
+            self.more_toggle.blockSignals(False)
         if isinstance(watched, QLineEdit) and watched.objectName() == "speakerName":
             card = watched.parent()
             if isinstance(card, SpeakerCard):
@@ -792,8 +1451,11 @@ class SpeakerManagerDialog(QDialog):
         self._role_timer.stop()
         self._drain_roles()
         self._stop_preview()
-        for card in self.cards.values():
+        for card in self.cards.created():
             if card.name_edit.isEnabled() and not self._finish_name_edit(card):
+                self._selection = {card.key}
+                self._set_focus(card.key)
+                self._apply_selection()
                 card.name_edit.setFocus()
                 return
         try:
@@ -1195,7 +1857,7 @@ class SpeakerManagerDialog(QDialog):
 
     # -------------------------------------------------------------- preview
     def _card_preview(self, card: SpeakerCard) -> None:
-        if self._preview_card is card and self._preview_timer.isActive():
+        if self._preview_key == card.key and self._preview_timer.isActive():
             self._stop_preview()
             return
         span = card.data.get("excerpt_range")
@@ -1225,16 +1887,19 @@ class SpeakerManagerDialog(QDialog):
         video.set_paused(False)
         self._preview_timer.start(max(1, int(end - start)))
         self._preview_card = card
+        self._preview_key = card.key if card is not None else ""
         if card is not None:
-            card.set_playing(True)
+            for view in self._views(card.key) or [card]:
+                view.set_playing(True)
 
     def _stop_preview(self, *_args) -> None:
         self._preview_timer.stop()
         card, self._preview_card = self._preview_card, None
-        if card is not None:
-            from shiboken6 import isValid
-            if isValid(card):
-                card.set_playing(False)
+        key, self._preview_key = self._preview_key, ""
+        from shiboken6 import isValid
+        for view in ([card] if card is not None else []) + (self._views(key) if key else []):
+            if isValid(view):
+                view.set_playing(False)
         video = self._preview_video
         self._preview_video = None
         if video is not None and video.controller:
@@ -1243,52 +1908,15 @@ class SpeakerManagerDialog(QDialog):
                 self.page._set_speed(self._preview_return_rate)
 
     # ----------------------------------------------------- selection / batch
-    def _card_selection_changed(self) -> None:
-        self._update_selection_summary()
-
-    def _selected_ids(self) -> set[str]:
-        return {key for key, card in self.cards.items()
-                if card.select_check.isChecked() and card.data.get("present", False)}
-
-    def _select_visible(self, mode: str) -> None:
-        for card in self.cards.values():
-            if card.isHidden() or not card.data.get("present", False):
-                continue
-            checked = mode == "all" or (mode == "invert" and not card.select_check.isChecked())
-            card.select_check.blockSignals(True)
-            card.select_check.setChecked(checked)
-            card.select_check.blockSignals(False)
-        self._update_selection_summary()
-
-    def _update_selection_summary(self) -> None:
-        ids = self._selected_ids()
-        count = sum(cue.speaker_id in ids for cue in self.page.project.cues)
-        bind_text(self.selection_summary, "已选 {value0} 人 / {count} 条字幕", value0=len(ids), count=count)
-        for button in (*self.batch_buttons.values(), self.batch_merge_button,
-                       self.delete_identity_button, self.delete_captions_button):
-            button.setEnabled(bool(ids))
-
-    def _filter_rows(self, text: str) -> None:
-        needle = str(text or "").casefold()
-        roles = self._roles()
-        mode = self.role_filter.currentData()
-        for key, card in self.cards.items():
-            matches = not needle or needle in key.casefold() or needle in str(card.data.get('name', '')).casefold()
-            included = mode == 'all' or ((roles.get(key) == 'ignore') if mode == 'ignored'
-                                        else roles.get(key) != 'ignore' and (card.data.get('present') or roles.get(key) == 'unconfirmed'))
-            card.setHidden(not (matches and included))
-
-    def _fill_batch_merge_menu(self) -> None:
-        menu = self.batch_merge_menu
-        menu.clear()
-        selected = self._selected_ids()
-        for speaker in self.page.project.speakers:
-            if speaker.id in selected:
-                continue
-            action = menu.addAction(tr("并入 {name}", name=self._display_name(speaker.id)))
-            action.triggered.connect(lambda _=False, target=speaker.id: self._batch("merge", target=target))
-        if menu.isEmpty():
-            menu.addAction(tr("没有可并入的说话人")).setEnabled(False)
+    def _filter_rows(self, text=None) -> None:
+        needle = str(self.speaker_filter.text() if text is None else text or "").casefold()
+        pending_only = self.pending_button.isChecked()
+        for key, tile in self.tiles.items():
+            data = self._data.get(key) or {}
+            matches = not needle or needle in key.casefold() or needle in str(data.get("name", "")).casefold()
+            tile.setHidden(not (matches and (not pending_only or data.get("pending"))))
+        for box in self.boxes.values():
+            box.refresh_hint()
 
     def _confirm_single_identity(self):
         from ..projects.single_speaker import confirm_single_speaker_command

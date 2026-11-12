@@ -38,10 +38,10 @@ def test_component_offer_lists_only_changed_parts(app):
     dialog = UpdateOfferDialog(_check(plan))
     text = _texts(dialog)
     assert "0.6.6" in text and "0.6.5" in text
-    assert "23.0 MB" in text and "主程序" in text
-    assert "高级字幕渲染器" in text and "媒体工具" in text  # listed as kept
-    assert "运行环境：沿用" in text and "模型：沿用" in text
-    assert "修复：校对后能打开工作台" in text
+    assert "23.0 MB" in text
+    # 2026-11-12 (user): the kept parts and "nothing to download" lines are gone.
+    assert "沿用" not in text and "高级字幕渲染器" not in text
+    assert "修复" in text and "校对后能打开工作台" in text  # 2026-11-11: title and line of one card
     labels = [b.text() for b in dialog.findChildren(QPushButton)]
     assert "下载并准备更新" in labels
     dialog.deleteLater()
@@ -83,4 +83,42 @@ def test_setup_fallback_states_size_and_reason(app):
     assert "完整安装包" in text and "1.12 GB" in text and "当前安装没有元件清单" in text
     assert "moss 的需求有变化" in text and "只有用到该模型时才需要下载" in text
     assert "下载安装包" in [b.text() for b in dialog.findChildren(QPushButton)]
+    dialog.deleteLater()
+
+
+def test_notes_become_cards_only_when_the_lines_fit():
+    # 2026-11-11: the notes are free text; the layout must hold for any count.
+    from twobyteasr.app.update_dialog import card_cells, highlight_plan, note_items, split_highlight
+
+    items = note_items("· 字幕固定避让，结束释放空位。\n\n- 14 字内优先一条\n  • 第三条：说明\n第四条\n第五条")
+    assert items == ["字幕固定避让，结束释放空位。", "14 字内优先一条", "第三条：说明", "第四条", "第五条"]
+    assert split_highlight(items[0]) == ("字幕固定避让", "结束释放空位。")
+    assert split_highlight("没有逗号的一整句。") == ("没有逗号的一整句", "")
+    cards, rest, as_cards = highlight_plan(items)
+    assert as_cards and len(cards) == 4 and rest == ["第五条"]
+    assert highlight_plan(["短", "长" * 61]) == ([], ["短", "长" * 61], False)
+    assert highlight_plan([]) == ([], [], False)
+    assert card_cells(1) == [(0, 0, 2)]
+    assert card_cells(3) == [(0, 0, 2), (1, 0, 1), (1, 1, 1)]
+    assert [cell[:2] for cell in card_cells(4)] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+
+@pytest.mark.parametrize("count, cards, more", [(1, 1, False), (3, 3, False), (4, 4, False), (6, 4, True)])
+def test_offer_layout_follows_the_number_of_notes(app, count, cards, more):
+    from twobyteasr.app.update_dialog import UpdateOfferDialog
+
+    notes = "\n".join(f"· 第{index}项，说明文字" for index in range(count))
+    plan = UpdatePlan("components", (ComponentAction("app", "changed", 1, 1, 1),), 1, 10, "", (), ())
+    check = SimpleNamespace(manifest=SimpleNamespace(note_for=lambda language: notes), plan=plan,
+                            latest_version="0.9.8", current_version="0.9.7")
+    dialog = UpdateOfferDialog(check)
+    assert len(dialog.highlight_cards) == cards
+    line = getattr(dialog, "more_line", None)
+    assert (line is not None) == more
+    if more:
+        # One line ending with 查看完整说明, which opens the release page.
+        assert "第4项" in line.text() and "第5项" in line.text() and "查看完整说明" in line.text()
+        line.linkActivated.emit("page")
+        assert dialog.choice == "page"
+    assert "第0项" in _texts(dialog)
     dialog.deleteLater()

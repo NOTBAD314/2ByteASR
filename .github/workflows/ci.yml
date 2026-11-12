@@ -1,4 +1,4 @@
-﻿name: 2byteasr-ci
+name: 2byteasr-ci
 on:
   push:
   pull_request:
@@ -24,6 +24,14 @@ jobs:
         run: |
           python -m py_compile auto_asr.py moss_firered_pipeline.py subtitle_core.py moss_worker.py firered_llm_worker.py register_host_voiceprint.py twobyteasr/recognition/service.py
           python -m compileall -q twobyteasr
+      - name: Recognition and bilingual integrity (isolated Qt files)
+        run: |
+          $env:PYTHONUTF8 = "1"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          foreach ($test in @("test_low_share_speakers", "test_bilingual_integrity", "test_independent_subtitle_visibility", "test_source_span_repair", "test_recognition_provenance", "test_japanese_cleanup_provenance", "test_translation_context_identity", "test_caption_pixel_cache")) {
+            python scripts/isolated_pytest.py "tests/$test.py"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Unit tests (no GPU)
         run: |
           $env:PYTHONUTF8 = "1"

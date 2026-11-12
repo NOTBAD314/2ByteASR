@@ -2047,7 +2047,14 @@ class StudioAdvancedFlowMixin:
         # Geometry is not a visual revision. Rebinding the cached initial
         # composite here alternated it with the animated layer composite,
         # restarting the layer pipeline and reviving an old shadow/position.
-        self.ensure_active_subtitle_renderer(reason="overlay_sync")
+        if not getattr(self,'_geometry_renderer_pending',False):
+            self._geometry_renderer_pending=True
+            owner=(id(self.project),self.session.generation)
+            def publish_latest():
+                self._geometry_renderer_pending=False
+                if not self._close_requested and owner==(id(self.project),self.session.generation):
+                    self.ensure_active_subtitle_renderer(reason='overlay_sync')
+            QTimer.singleShot(0,self,publish_latest)
 
     def _selected_cue_is_at_playhead(self, cue: StudioCue | None) -> bool:
         if cue is None or not hasattr(self, "timeline"):
@@ -2092,11 +2099,18 @@ class StudioAdvancedFlowMixin:
         )
 
     def _subtitle_visibility_changed(self, speaker_id: str, visible: bool) -> None:
+        if self.project is None:
+            return
+        from .subtitle_visibility import VisibilityCommand
+        self.undo_stack.push(VisibilityCommand(self,str(speaker_id),visible))
+
+    def _apply_subtitle_visibility(self, speaker_id: str, visible: bool) -> None:
         """Make the timeline eye action the source for rendered subtitle visibility."""
         speaker_id = str(speaker_id or "")
         clear=getattr(self.video,'clear_caption_boundaries',None)
         if callable(clear):clear()
         self._subtitle_track_visibility[speaker_id] = bool(visible)
+        (self.timeline.hidden_speakers.discard if visible else self.timeline.hidden_speakers.add)(speaker_id)
         if self.project is not None:
             # Visibility is persisted presentation, not a private preview flag.
             # Advance the revision so snapshots, autosave and cached scenes agree.
@@ -2110,8 +2124,6 @@ class StudioAdvancedFlowMixin:
                 changed=self._changed)
         self._advanced_preview_state.generation += 1
         if not visible:
-            self._revoke_advanced_preview(reason="subtitle_track_hidden")
-            self.video.set_native_subtitle_visible(False)
             if hasattr(self, "position_overlay"):
                 self.position_overlay.hide()
         # Recompile the Native ASS view with the track's cues removed (or

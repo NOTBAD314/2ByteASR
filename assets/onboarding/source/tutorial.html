@@ -194,7 +194,7 @@ const SCENES = {
     show(hl, 1300, 1700, 'none');
     add(`<div class="t muted" style="left:206px; top:38px; font-size:12px">⏱</div>`);
     const chip = add(`<div class="pill" style="left:228px; top:30px; width:136px; height:36px; background:var(--el2)"></div>`);
-    swapText(246, 41, 'FireRedASR2', 'CTC', 1900, ['accent', 'accent'], 14);
+    swapText(246, 41, 'FireRedASR2', 'Qwen3 对齐', 1900, ['accent', 'accent'], 14);
     add(`<div class="t" style="left:206px; top:96px; font-size:15px">わたしたち</div>`);
     const ticks = add(`<div class="abs" style="left:206px; top:120px; display:flex; gap:9px"></div>`);
     for (let i = 0; i < 5; i += 1) {
@@ -219,7 +219,7 @@ const SCENES = {
     show(la, 1500, 3200, 'translateX(-10px)'); show(lb, 1900, 3200, 'translateX(-10px)');
   },
   firered() { timingScene('FireRedASR2', '我们一起去须弥'); },
-  ctc() { timingScene('CTC', 'きょうはロドスへ'); },
+  ctc() { timingScene('Qwen3', 'きょうはロドスへ'); },
   qwen() {
     TOTAL = 4000; stage();
     const rows = [['M', 'var(--green)', '我们一起去须迷'], ['F', 'var(--blue)', '我们一起去须弥'], ['Q', 'var(--lilac)', '我们一起去须弥']];
@@ -477,7 +477,7 @@ const SCENES = {
       track(lab.querySelector('span'), frames, 'linear');
     });
     add(`<div class="box" style="left:40px; top:78px; width:320px; height:56px"></div>`);
-    const lines = ['大家好 今天我们来看看', '大家好<b class="accent">，</b>今天我们来看看<b class="accent">。</b>', '大家好今天我们来看看'];
+    const lines = ['大家好 今天我们来看看', '大家好<b class="accent">，</b>今天我们来看看<b class="accent">。</b>', '大家好 今天我们来看看'];
     const spans = [[0, 1150, 4050], [1150, 2750], [2750, 4050]];
     lines.forEach((text, i) => {
       const line = add(`<div class="t" style="left:62px; top:96px; font-size:18px">${text}</div>`);

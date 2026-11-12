@@ -20,7 +20,7 @@ def _window():
 
 
 def _plain(value):
-    return re.sub(r'\*\*', '', str(value() if callable(value) else value))
+    return re.sub(r'\*\*|==', '', str(value() if callable(value) else value))
 
 
 def test_one_tutorial_in_the_users_order():
@@ -36,7 +36,7 @@ def test_one_tutorial_in_the_users_order():
     assert plan == 0 and media == 1 and '主要语言' in _plain(steps[plan].text)
     assert steps[plan].enter is not None              # the demo video is prepared meanwhile
     primary = first(lambda s: s.anim in ('moss_signup', 'plan_ok'))
-    timeline = first(lambda s: s.anim == 'timeline_mg')
+    timeline = first(lambda s: (s.anim() if callable(s.anim) else s.anim) in ('firered','ctc','timeline_mg'))
     ai = first(lambda s: s.anim == 'ai_lock' and s.host is None)
     inside = [index for index, step in enumerate(steps) if step.host is not None]
     after = first(lambda s: s.name == 'after_ai')
@@ -129,6 +129,8 @@ def test_every_new_tutorial_string_has_a_translation():
         '刚才选好了「{value0}」· {value1}；想换就点「比较两种方案」', '{value0}用 **Qwen3 对齐** 对准每个字词的时间',
         '中文用 **FireRedASR2** 对准每个字，时间最准', '用 **Qwen3 对齐** 对准每个字，不用 NVIDIA 显卡',
         '刚才选了「{value0}」；换别的视频时在这里改', '自动识别语言',
+        # 2026-11-11: the comparison opens before step ① now; a custom mix of models
+        '现在用的是你自己搭配的模型；想换就点「比较两种方案」',
         '剃刀', '合并工具', '和上一段', '和下一段', '新建字幕', '未绑定',
     }
     texts.update(FOREIGN_LOCAL_GOOD)
@@ -311,11 +313,15 @@ def test_the_bubble_fades_in_without_square_corners(app):
     tour._prepare_bubble(tour.steps[0])
     tour._placement = tour._place(QRectF())
     image = tour._bubble_picture().toImage()
-    w, h = image.width(), image.height()
-    for x, y in ((1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2)):
+    ratio = image.devicePixelRatio()
+    card = tour.bubble.card_rect()   # 2026-11-11: 兔白 stands beside the card; the card has the round corners
+    left, top = round(card.left() * ratio), round(card.top() * ratio)
+    right, bottom = round((card.right() + 1) * ratio) - 1, round((card.bottom() + 1) * ratio) - 1
+    for x, y in ((left + 1, top + 1), (right - 1, top + 1), (right - 1, bottom - 1)):
         assert image.pixelColor(x, y).alpha() == 0, (x, y)
-    assert image.pixelColor(w // 2, h // 2).alpha() == 255          # the bubble itself is opaque
-    assert image.pixelColor(1, h // 2).alpha() == 255               # ...up to its border
+    middle = (top + bottom) // 2
+    assert image.pixelColor((left + right) // 2, middle).alpha() == 255   # the card itself is opaque
+    assert image.pixelColor(right - 1, middle).alpha() == 255              # ...up to its border
     tour.close_tour(False)
     window.close()
 

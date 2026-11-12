@@ -68,6 +68,9 @@ class VisualCueSnapshot:
     speaker_label: str = ""
     collision_bounds: tuple[float, float, float, float] | None = None
     position_locked: bool = False
+    continuity_track: str = ""
+    caption_role: str = "original"
+    continuity_break: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         # dataclasses.asdict already recursively copies every mutable field.
@@ -507,4 +510,9 @@ def build_visual_cue_snapshot(
         text_marks=(remap_caption_marks(cue.text, caption, layer_marks(cue)) if not recipe.web_theme else []),
         collision_bounds=tuple(theme_bounds) if theme_bounds is not None else None,
         position_locked=bool(cue.transform.get('position_locked', False)),
+        continuity_track=str(cue.transform.get('track_id',cue.speaker_id)),
+        caption_role=str(cue.transform.get('subtitle_role','original')),
+        continuity_break=bool(getattr(cue,'continuity_break',False) or cue.transform.get('display_break') or cue.transform.get('protected_start')
+            or cue.transform.get('protected_end') or project.studio_state.get('caption_timeline',{}).get(
+                'instances',{}).get(cue.id,{}).get('protected_end')),
     )

@@ -641,7 +641,8 @@ def test_completion_task_line_names_a_changed_project_count():
     outcome = SimpleNamespace(final_cues=49, polish_status="completed", polish_label="", core_errors=(),
                               review_issue_count=0, search_label="")
     same = completion_summary({}, outcome, project_loaded=True, project_cues=49)
-    assert "49 条字幕 · 字幕工程已保存并载入" in same.task_lines
+    # 2026-11-11: a project that saved and loaded normally is not written out.
+    assert "49 条字幕" in same.task_lines
     changed = completion_summary({}, outcome, project_loaded=True, project_cues=9)
     assert "识别产出 49 条字幕 · 工程当前 9 条 · 字幕工程已保存并载入" in changed.task_lines
 

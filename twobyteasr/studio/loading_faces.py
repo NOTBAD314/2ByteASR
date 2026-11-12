@@ -33,21 +33,34 @@ STAGE_DETAILS = {
     '搭工作台框架': '工具栏、字幕列表、视频区', '装工具面板': 'AI、样式、动效、剪辑、素材',
     '铺时间轴': '时间轴工具栏与轨道', '摆工程库': '工程库布局与导航', '读取工程列表': '名称、封面、字幕条数',
 }
-# The bunny's line for each stage (decoration; the stage names stay plain).
+# Loading status is tied to the real stage; no rotating decorative phrases.
 STAGE_LINES = {
-    '创建工作台界面': '先把桌子摆好～', '读取工程': '先把工程翻开看看～', '建立时间轴': '字幕排排站好',
-    '准备播放器': '播放器热身中…', '准备音频': '喂喂？试一下声音', '准备字幕': '字幕样式穿戴整齐',
-    '首屏绘制': '马上就好！',
-    '搭工作台框架': '先把桌子摆好～', '装工具面板': '工具一件件挂上墙', '铺时间轴': '轨道铺平啦',
-    '摆工程库': '书架擦一擦', '读取工程列表': '工程马上就到！',
+    '创建工作台界面': '正在准备工作台', '读取工程': '正在读取工程', '建立时间轴': '正在加载时间轴',
+    '准备播放器': '正在准备播放器', '准备音频': '正在加载音频', '准备字幕': '正在加载字幕',
+    '首屏绘制': '正在准备预览',
+    '搭工作台框架': '正在准备工作台', '装工具面板': '正在准备工具面板', '铺时间轴': '正在加载时间轴',
+    '摆工程库': '正在准备工程库', '读取工程列表': '正在读取工程列表',
 }
-FAILED_LINE = '呜…出了点问题'
-READY_LINE = '好啦，开工！'
+FAILED_LINE = '无法打开工程'
+READY_LINE = '准备好了'
+DEFAULT_LINE = '正在处理工程'
+MISSING_MEDIA_LINE = '素材缺失，可继续编辑字幕'
+
+
+def failure_line(stage, error):
+    """Keep the reason readable over the poster; the status pane keeps full details."""
+    reason = str(error or '').strip().splitlines()[0] if str(error or '').strip() else ''
+    if reason.startswith(('工程文件不存在', 'Project file not found')):
+        return _tr('工程文件不存在')
+    if reason and len(reason) <= 36 and not any(mark in reason for mark in ('\\', '/')):
+        return reason
+    return _tr('{stage}失败').replace('{stage}', _tr(stage)) if stage else _tr(FAILED_LINE)
 
 
 def active_theme():
     from ..design.theme_manager import theme_definition, theme_key
-    return theme_definition(theme_key())
+    from PySide6.QtWidgets import QApplication
+    return theme_definition(getattr(QApplication.instance(), '_applied_theme_key', None) or theme_key())
 
 
 def _tr(text: str) -> str:
@@ -74,6 +87,8 @@ def stage_icon(name: str, color: str, size: int, ratio: float) -> QPixmap:
             pixmap = qta.icon(name, color=color).pixmap(QSize(size, size), ratio)
         except Exception:
             pixmap = QPixmap()
+        if len(_ICON_CACHE) >= 192:
+            _ICON_CACHE.pop(next(iter(_ICON_CACHE)))
         _ICON_CACHE[key] = pixmap
     return pixmap
 
@@ -207,7 +222,7 @@ class ReadinessSteps(QWidget):
         first_final_paint = final and self._finish_started is None
         if first_final_paint:
             self._finish_started = now
-        finish_progress = min(1., (now-self._finish_started)/self.FINISH_SECONDS) if final else 0.
+        finish_progress = 1. if final else 0.
         base = QFont(self.font())
         mono = QFont('Cascadia Mono')
         mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -342,12 +357,13 @@ def _outlined_text(painter, rect: QRectF, text: str, pixel_size: int, *, scale=1
     image=_outlined_rasters.get(key)
     if image is None:
         from PySide6.QtGui import QImage
-        font=QFont(painter.font());font.setPixelSize(pixel_size);font.setWeight(QFont.Weight.Black)
+        from ..design.loading_font import loading_font
+        font=loading_font();font.setPixelSize(pixel_size);font.setWeight(QFont.Weight.Normal)
         metrics=QFontMetricsF(font)
         while metrics.horizontalAdvance(text)>rect.width() and font.pixelSize()>14:
             font.setPixelSize(font.pixelSize()-2);metrics=QFontMetricsF(font)
         path=QPainterPath();path.addText(0,0,font,text)
-        stroke=max(4.0,font.pixelSize()/5.5)
+        stroke=max(2.5,font.pixelSize()/10)
         box=path.boundingRect().adjusted(-stroke,-stroke,stroke,stroke)
         image=QImage(max(1,round(box.width()*ratio)),max(1,round(box.height()*ratio)),QImage.Format.Format_ARGB32_Premultiplied)
         image.setDevicePixelRatio(ratio);image.fill(Qt.GlobalColor.transparent)
@@ -525,7 +541,11 @@ class CoverPane(QWidget):
     def _tick(self):
         if time.perf_counter() - self._line_at > .45:
             self._timer.stop()
-        self.update()
+        inner = self.inner_rect()
+        # Only the status line moves. The poster, chips and ambient image
+        # keep their backing-store pixels throughout the short text reveal.
+        self.update(QRect(round(inner.left()+12), round(inner.bottom()-144),
+                          max(1, round(inner.width()-24)), 84))
 
     def inner_rect(self) -> QRectF:
         return QRectF(self.rect()).adjusted(self.INSET, self.INSET, -self.INSET, -self.INSET)

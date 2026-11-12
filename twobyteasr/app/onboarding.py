@@ -308,7 +308,8 @@ def build_card(parent=None):
             self.close_button.setObjectName('nextStepClose')
             self.close_button.setText('×')
             self.close_button.setAutoRaise(True)
-            bind_text(self.close_button, '不再显示（可在“说明”里重新打开）', property='toolTip')
+            # 2026-11-11: 说明 no longer lists 显示新手引导; the feature search still brings the card back.
+            bind_text(self.close_button, '不再显示（在功能搜索里搜“新手引导”可重新打开）', property='toolTip')
             self.close_button.clicked.connect(lambda: self.action_requested.emit('dismiss'))
             top.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
             outer.addLayout(top)

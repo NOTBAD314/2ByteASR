@@ -815,6 +815,100 @@ _HISTORY_TOKEN_OVERRIDES = {
 }
 
 
+def _ai_tone(t) -> str:
+    """The AI entries' colour: the theme's info role, else the accent."""
+    return getattr(t, "info", "") or t.accent
+
+
+def history_redesign_qss(t) -> str:
+    """2026-11-11 records design C and details design A, from theme tokens only."""
+    ai = _ai_tone(t)
+    on_accent = getattr(t, "text_on_accent", "") or "#ffffff"
+    return f"""
+QFrame#historyContent {{ background: transparent; border: 0; }}
+QScrollArea#historyScroll, QScrollArea#historyScroll > QWidget > QWidget#historyListHost {{ background: transparent; border: 0; }}
+QFrame#historyEmpty {{ background: transparent; border: 1px dashed {t.border_strong}; border-radius: 14px; }}
+QFrame#historyViewSwitch {{ background: {t.timeline}; border: 0; border-radius: 10px; }}
+QPushButton#historyViewButton {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 8px;
+    padding: 5px 13px; font-weight: 600; }}
+QPushButton#historyViewButton:hover {{ color: {t.text}; }}
+QPushButton#historyViewButton:checked {{ background: {t.text}; color: {t.app_background}; }}
+QPushButton#historyToolButton {{ background: {t.timeline}; color: {t.text}; border: 0; border-radius: 9px;
+    padding: 7px 11px; font-weight: 600; }}
+QPushButton#historyToolButton:hover {{ background: {t.selected}; }}
+QFrame#historyGroup {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px; }}
+QFrame#historyGroup[flat="true"] {{ background: transparent; border: 0; }}
+QFrame#historyGroupHeader {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
+QWidget#historyGroupBody {{ background: transparent; }}
+QLabel#historyGroupTitle {{ color: {t.text}; font-size: 16px; font-weight: 700; }}
+QLabel#historyMediaBadge {{ background: {getattr(t, "log_background", "") or t.media}; color: {getattr(t, "log_text", "") or t.app_background}; border-radius: 8px;
+    font-size: 11px; font-weight: 700; }}
+QFrame#historyAttempt {{ background: transparent; border: 0; border-radius: 10px; }}
+QFrame#historyAttempt:hover {{ background: {t.panel}; }}
+QFrame#historyGroup[flat="true"] QFrame#historyAttempt {{ background: {t.surface}; border: 1px solid {t.border}; }}
+QFrame#historyGroup[flat="true"] QFrame#historyAttempt:hover {{ background: {t.surface_elevated}; border-color: {t.border_strong}; }}
+QLabel#historyAttemptNumber {{ border-radius: 13px; font-size: 12px; font-weight: 700;
+    background: {t.success_soft}; color: {t.success}; }}
+QLabel#historyAttemptNumber[tone="error"] {{ background: {t.danger_soft}; color: {t.danger}; }}
+QLabel#historyAttemptNumber[tone="warn"] {{ background: {t.warning_soft}; color: {t.warning}; }}
+QLabel#historyAttemptTime {{ color: {t.text}; font-weight: 600; }}
+QLabel#historyAttemptDuration {{ color: {t.text}; font-weight: 700; }}
+QLabel#historyAttemptMedia {{ color: {t.text}; font-weight: 700; }}
+QPushButton#historyRowButton, QFrame#historyAttempt QPushButton#historyDetails {{ background: {t.timeline};
+    color: {t.text}; border: 0; border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 600; }}
+QPushButton#historyRowButton:hover, QFrame#historyAttempt QPushButton#historyDetails:hover {{ background: {t.selected}; }}
+QFrame#historyOverview {{ background: {t.panel}; border: 0; border-left: 1px solid {t.border}; }}
+QLabel#historyCaption {{ color: {t.text_muted}; font-size: 12px; font-weight: 700; }}
+QFrame#historyTile, QFrame#historyTileDanger, QFrame#historyProblemCard {{ background: {t.surface};
+    border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyTileDanger {{ background: {t.danger_soft}; border-color: {t.danger_soft}; }}
+QLabel#historyTileLabel {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; }}
+QFrame#historyTileDanger QLabel#historyTileLabel, QFrame#historyTileDanger QLabel#historyTileValue {{ color: {t.danger}; }}
+QLabel#historyTileValue {{ color: {t.text}; font-size: 22px; font-weight: 700; }}
+QLabel#historyProblemName {{ color: {t.text}; font-weight: 700; }}
+QFrame#historyProblemBar {{ background: {t.danger}; border: 0; border-radius: 3px; }}
+QFrame#historyAiCard {{ background: {t.surface}; border: 1px solid {ai}; border-radius: 14px; }}
+QLabel#historyAiTitle {{ color: {ai}; font-size: 15px; font-weight: 700; }}
+QPushButton#historyAiButton {{ background: {ai}; color: {on_accent}; border: 1px solid {ai}; border-radius: 10px;
+    padding: 9px 14px; font-weight: 700; }}
+QPushButton#historyAiButton:hover {{ background: {t.accent_hover}; border-color: {t.accent_hover}; }}
+QPushButton#historyAiButton:disabled {{ background: {t.disabled}; border-color: {t.disabled}; }}
+QFrame#historyDetailSide {{ background: {t.panel}; border: 0; border-radius: 14px; }}
+QPushButton#historyCloseButton {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
+    font-size: 20px; padding: 2px 10px; }}
+QPushButton#historyCloseButton:hover {{ background: {t.selected}; color: {t.text}; }}
+QFrame#historyErrorCard {{ background: {t.danger_soft}; border: 0; border-radius: 12px; }}
+QLabel#historyErrorCaption {{ color: {t.danger}; font-size: 12px; font-weight: 700; }}
+QLabel#historyErrorText {{ color: {t.danger}; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }}
+QLabel#historyErrorChip {{ background: {t.surface}; color: {t.danger}; border-radius: 6px; padding: 2px 7px;
+    font-size: 11px; font-weight: 600; }}
+QPushButton#historyErrorCopy {{ background: {t.surface}; color: {t.danger}; border: 0; border-radius: 7px;
+    padding: 3px 10px; font-size: 12px; font-weight: 600; }}
+QLabel#historyDiagTitle {{ color: {ai}; font-size: 16px; font-weight: 700; }}
+QLabel#historyDiagSource {{ background: {t.timeline}; color: {t.text_secondary}; border-radius: 6px; padding: 2px 8px;
+    font-size: 12px; font-weight: 600; }}
+QLabel#historyDiagSource[source="ai"] {{ background: {ai}; color: {on_accent}; }}
+QFrame#historyDiagConclusion {{ background: {ai}; border: 0; border-radius: 16px; }}
+QLabel#historyDiagConclusionCaption {{ color: {on_accent}; font-size: 12px; font-weight: 700; }}
+QLabel#historyDiagConclusionText {{ color: {on_accent}; font-size: 19px; font-weight: 700; }}
+QLabel#historyDiagConfidence {{ color: {on_accent}; font-size: 12px; font-weight: 700; }}
+QFrame#historyDiagMeterTrack {{ background: rgba(255, 255, 255, 64); border: 0; border-radius: 3px; }}
+QFrame#historyDiagMeterFill {{ background: {on_accent}; border: 0; border-radius: 3px; }}
+QFrame#historyDiagCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyDiagLogCard {{ background: transparent; border: 0; }}
+QLabel#historyDiagLog {{ background: {getattr(t, "log_background", "") or t.media}; color: {getattr(t, "log_text", "") or t.app_background}; border-radius: 10px; padding: 10px 12px;
+    font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }}
+QLabel#historyDiagBody {{ color: {t.text}; }}
+QLabel#historyDiagStrong {{ color: {t.text}; font-weight: 700; }}
+QFrame#historyDiagStep {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyDiagStep[first="true"] {{ border: 1px solid {ai}; }}
+QLabel#historyDiagStepNumber {{ background: {t.timeline}; color: {ai}; border-radius: 14px; font-weight: 700; }}
+QLabel#historyDiagStepNumber[first="true"] {{ background: {ai}; color: {on_accent}; }}
+QFrame#historyDiagFallback {{ background: transparent; border: 1px dashed {t.border_strong}; border-radius: 12px; }}
+QFrame#historyDiagCta {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 12px; }}
+"""
+
+
 def build_history_page_qss(theme=None) -> str:
     from twobyteasr.design.qss_retheme import retheme_qss
     from twobyteasr.design.theme_manager import theme_key
@@ -826,7 +920,7 @@ def build_history_page_qss(theme=None) -> str:
     for literal, token in _HISTORY_TOKEN_OVERRIDES.items():
         qss = qss.replace(literal, getattr(active, token, literal))
     from twobyteasr.design.semantic_qss import build_semantic_qss
-    return retheme_qss(qss, active) + build_semantic_qss(active)
+    return retheme_qss(qss, active) + build_semantic_qss(active) + history_redesign_qss(active)
 
 
 def _duration_label(seconds: float) -> str:
@@ -862,95 +956,405 @@ class HistoryMetric(QFrame):
         layout.addWidget(number)
 
 
+_RETRYABLE = {"failed", "interrupted", "partial", "cancelled", "needs_recovery"}
+_FAILED_LIKE = {"failed", "cancelled", "interrupted", "needs_recovery", "empty_result", "unknown"}
+
+
+def _status_object(status: str) -> str:
+    if status == "failed":
+        return "historyStatusError"
+    if status in {"partial", "unknown", "cancelled", "interrupted", "needs_recovery", "empty_result"}:
+        return "historyStatusWarn"
+    return "historyStatusGood"
+
+
+def _chain_text(record) -> str:
+    """One line: the three model roles, the AI and the term libraries."""
+    language = current_language()
+    parts = [f"{record.primary_model} → {record.timeline_model} → {record.review_model}"]
+    if record.ai_model:
+        parts.append(f"AI {record.ai_model}")
+    parts.append(f"{record.glossary_count} " + ("term libraries" if language == "en" else ui_literal("个词库", language)))
+    cues = int(getattr(record, "cue_count", 0) or 0)
+    if cues:
+        parts.append(f"{cues} " + ui_literal("条字幕", language))
+    return " · ".join(parts)
+
+
+def _media_badge_text(name: str) -> str:
+    suffix = Path(str(name or "")).suffix.lstrip(".").upper()
+    return suffix[:4] or "MEDIA"
+
+
+def _group_key(record) -> str:
+    """Attempts at the same media file share a group, whatever folder they ran from."""
+    return os.path.normcase(str(record.media_name or "").strip())
+
+
+class _ElideLabel(QLabel):
+    """A one-line label that ends in "…" when narrow; the full text is the tooltip."""
+
+    def __init__(self, text: str = "", object_name: str = "historyMuted", parent=None):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setMinimumWidth(40)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._full = ""
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = str(text or "")
+        self.setToolTip(self._full)
+        self._fit()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._fit()
+
+    def _fit(self):
+        width = self.width() if self.isVisible() else 10000
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(20, width - 2))
+        if shown != self.text():
+            super().setText(shown)
+
+
 class HistoryCard(QFrame):
+    """One attempt (one task report) as a single row: when, how long, which
+    models, its status, and JSON / 详情 (2026-11-11 records design C). Rows sit
+    inside a media group (按素材) or straight in the list (按时间, with the
+    media name shown)."""
+
     requested = Signal(object)
+    raw_requested = Signal(object)
 
     def __init__(self, record: RecognitionRecord, parent=None):
         super().__init__(parent)
         language = current_language()
         self.record = record
-        self.setObjectName("historyCard")
+        self.setObjectName("historyAttempt")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        title = QLabel(record.media_name)
-        title.setObjectName("historyItemTitle")
-        title.setWordWrap(True)
-        top.addWidget(title, 1)
-        status = QLabel(translate(record.status_label, language))
-        status.setObjectName(
-            "historyStatusError" if record.status == "failed" else
-            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled", "interrupted"} else "historyStatusGood")
-        )
-        top.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
-        button = QPushButton(translate("查看详情", language))
-        button.setObjectName("historyDetails")
-        button.clicked.connect(lambda: self.requested.emit(record))
-        top.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addLayout(top)
-
-        metrics = QHBoxLayout()
-        metrics.setSpacing(6)
-        metrics.addWidget(HistoryMetric(translate("最近状态" if record.status in {'queued','running','interrupted','failed','cancelled'} else "完成时间", language), record.completed_at))
-        metrics.addWidget(HistoryMetric(translate("总耗时", language), _duration_label(record.elapsed_seconds)))
-        if record.media_seconds:
-            metrics.addWidget(HistoryMetric(translate("素材时长", language), _duration_label(record.media_seconds)))
-        cue_count = int(getattr(record, "cue_count", 0) or 0)
-        if cue_count:
-            metrics.addWidget(HistoryMetric(translate("字幕", language), f"{cue_count} " + ui_literal("条", language)))
-        metrics.addStretch(1)
-        layout.addLayout(metrics)
-
-        pipeline_box = QFrame()
-        pipeline_box.setObjectName("historyPipelineStrip")
-        pipeline_layout = QHBoxLayout(pipeline_box)
-        pipeline_layout.setContentsMargins(10, 6, 10, 6)
-        pipeline_layout.setSpacing(7)
-        role = QLabel(translate("模型链路", language))
-        role.setObjectName("historyMuted")
-        pipeline_layout.addWidget(role)
-        pipeline = QLabel(f"{record.primary_model}  →  {record.timeline_model}  →  {record.review_model}")
-        pipeline.setObjectName("historyPipeline")
-        pipeline_layout.addWidget(pipeline, 1)
-        layout.addWidget(pipeline_box)
-
-        metadata = QHBoxLayout()
-        metadata.setSpacing(6)
-        ai = f"AI: {record.ai_model}" if language == "en" and record.ai_model else (
-            f"AI：{record.ai_model}" if record.ai_model else translate("AI：未启用", language)
-        )
-        metadata_items = [
-            (ai, False),
-            (f"{record.glossary_count} " + ("term libraries" if language == "en" else ui_literal("个词库", language)), False),
-        ]
-        if record.review_count:
-            metadata_items.append((
-                f"{record.review_count} " + ("review items" if language == "en" else "項目" if language == "ja" else ui_literal("项待检查", language)),
-                False,
-            ))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 10, 8)
+        layout.setSpacing(14)
+        self.number = QLabel("")
+        self.number.setObjectName("historyAttemptNumber")
+        self.number.setProperty("tone", "error" if record.status in _FAILED_LIKE else
+                                ("warn" if record.status == "partial" else "good"))
+        self.number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.number.setFixedSize(26, 26)
+        self.number.hide()
+        layout.addWidget(self.number, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.media_label = _ElideLabel(record.media_name, "historyAttemptMedia")
+        self.media_label.setMinimumWidth(120)
+        self.media_label.hide()
+        layout.addWidget(self.media_label, 3)
+        when = QLabel(record.completed_at)
+        when.setObjectName("historyAttemptTime")
+        layout.addWidget(when)
+        duration = QLabel(_duration_label(record.elapsed_seconds))
+        duration.setObjectName("historyAttemptDuration")
+        duration.setMinimumWidth(duration.fontMetrics().horizontalAdvance("000.0 秒") + 8)
+        layout.addWidget(duration)
+        self.chain_label = _ElideLabel(_chain_text(record), "historyMuted")
+        layout.addWidget(self.chain_label, 6)
+        problems = []
         if record.anomaly_count:
-            metadata_items.append((
-                f"{record.anomaly_count} " + ("issues" if language == "en" else ui_literal("个问题", language)),
-                True,
-            ))
-        for text, warning in metadata_items:
-            chip = QLabel(text)
-            is_review = text.endswith(("项待检查", ui_literal("项待检查", language), "review items", "項目"))
-            chip.setObjectName(
-                "historyMetaChipWarn" if warning else
-                ("historyMetaChipReview" if is_review else "historyMetaChip")
-            )
-            metadata.addWidget(chip)
-        metadata.addStretch(1)
-        layout.addLayout(metadata)
+            problems.append(f"{record.anomaly_count} " + ("issues" if language == "en" else ui_literal("个问题", language)))
+        if record.review_count:
+            problems.append(f"{record.review_count} " + ("review items" if language == "en" else ui_literal("项待检查", language)))
+        self.status_label = QLabel(translate(record.status_label, language))
+        self.status_label.setObjectName(_status_object(record.status))
+        if problems:
+            self.status_label.setToolTip(" · ".join(problems))
+        layout.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.raw_button = QPushButton("JSON")
+        self.raw_button.setObjectName("historyRowButton")
+        self.raw_button.setIcon(qta.icon("fa5s.code", color=MUTED))
+        bind_text(self.raw_button, "查看原始 JSON", property="toolTip")
+        self.raw_button.clicked.connect(lambda: self.raw_requested.emit(record))
+        layout.addWidget(self.raw_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.details_button = QPushButton(translate("详情", language))
+        self.details_button.setObjectName("historyDetails")
+        self.details_button.clicked.connect(lambda: self.requested.emit(record))
+        layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_attempt(self, number: int | None, *, show_media: bool) -> None:
+        text = str(number) if number else ""
+        if self.number.text() != text:
+            self.number.setText(text)
+        if self.number.isHidden() == bool(number):
+            self.number.setVisible(bool(number))
+        if self.media_label.isHidden() == show_media:
+            self.media_label.setVisible(show_media)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.requested.emit(self.record)
         super().mouseReleaseEvent(event)
+
+
+class HistoryGroup(QFrame):
+    """Every attempt at one media file: a header that says how it went and
+    what to do next, then the attempts newest first."""
+
+    retry_requested = Signal(object)
+    result_requested = Signal(object)
+    details_requested = Signal(object)
+
+    def __init__(self, key: str, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.records: list = []
+        self._signature = None
+        self.setObjectName("historyGroup")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.header = QFrame()
+        self.header.setObjectName("historyGroupHeader")
+        head = QHBoxLayout(self.header)
+        head.setContentsMargins(16, 14, 14, 14)
+        head.setSpacing(14)
+        self.badge = QLabel("")
+        self.badge.setObjectName("historyMediaBadge")
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.badge.setFixedSize(58, 40)
+        head.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        text = QVBoxLayout()
+        text.setSpacing(3)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        self.title = QLabel("")
+        self.title.setObjectName("historyGroupTitle")
+        self.title.setWordWrap(True)
+        title_row.addWidget(self.title, 0)
+        self.verdict = QLabel("")
+        self.verdict.setObjectName("historyStatusError")
+        title_row.addWidget(self.verdict, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        text.addLayout(title_row)
+        self.meta = _ElideLabel("", "historyMuted")
+        text.addWidget(self.meta)
+        head.addLayout(text, 1)
+        self.secondary_button = QPushButton()
+        self.secondary_button.setObjectName("historySecondary")
+        self.secondary_button.clicked.connect(lambda: self.records and self.details_requested.emit(self.records[0]))
+        head.addWidget(self.secondary_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.primary_button = QPushButton()
+        self.primary_button.setObjectName("historyPrimary")
+        self.primary_button.clicked.connect(self._primary)
+        head.addWidget(self.primary_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addWidget(self.header)
+        self.body = QWidget()
+        self.body.setObjectName("historyGroupBody")
+        self.rows = QVBoxLayout(self.body)
+        self.rows.setContentsMargins(6, 4, 6, 6)
+        self.rows.setSpacing(2)
+        outer.addWidget(self.body)
+
+    def set_header_visible(self, visible: bool) -> None:
+        if self.header.isHidden() == visible:
+            self.header.setVisible(visible)
+        if self.property("flat") is not (not visible):
+            self.setProperty("flat", not visible)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def update_records(self, records: list) -> None:
+        self.records = list(records)
+        signature = (tuple(records), current_language())
+        if not records or signature == self._signature:
+            return
+        self._signature = signature
+        language = current_language()
+        latest = records[0]
+        self.badge.setText(_media_badge_text(latest.media_name))
+        self.title.setText(latest.media_name)
+        count = len(records)
+        failed = sum(1 for record in records if record.status in _FAILED_LIKE)
+        if latest.status == "completed":
+            verdict, tone = tr("最近一次已完成"), "historyStatusGood"
+        elif count > 1 and failed == count:
+            verdict, tone = tr("{count} 次尝试 · 全部失败", count=count), "historyStatusError"
+        elif count > 1:
+            verdict = tr("{count} 次尝试 · 最近：{status}", count=count, status=translate(latest.status_label, language))
+            tone = _status_object(latest.status)
+        else:
+            verdict, tone = translate(latest.status_label, language), _status_object(latest.status)
+        self.verdict.setText(str(verdict))
+        if self.verdict.objectName() != tone:
+            self.verdict.setObjectName(tone)
+            self.verdict.style().unpolish(self.verdict)
+            self.verdict.style().polish(self.verdict)
+        meta = [str(tr("最近 {time}", time=latest.completed_at))]
+        if latest.problems:
+            meta.append(" ".join(str(latest.problems[0]).split())[:160])
+        elif latest.media_seconds:
+            meta.append(str(tr("素材时长 {duration}", duration=_duration_label(latest.media_seconds))))
+        self.meta.set_full_text(" · ".join(meta))
+        retry = latest.status in _RETRYABLE
+        if retry:
+            bind_text(self.primary_button, "继续处理" if latest.status == "interrupted" else "重试最近一次")
+            self.primary_button.setIcon(qta.icon("fa5s.redo-alt", color="white"))
+        else:
+            bind_text(self.primary_button, "打开识别结果")
+            self.primary_button.setIcon(qta.icon("fa5s.folder-open", color="white"))
+        self.primary_button.setVisible(retry or latest.status == "completed")
+        bind_text(self.secondary_button, "查看详情")
+
+    def _primary(self) -> None:
+        if not self.records:
+            return
+        latest = self.records[0]
+        (self.retry_requested if latest.status in _RETRYABLE else self.result_requested).emit(latest)
+
+
+class HistoryOverview(QFrame):
+    """Right column: counts, the most frequent problems and the AI entry."""
+
+    analyse_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("historyOverview")
+        self.setMinimumWidth(290)
+        self.setMaximumWidth(360)
+        self._signature = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+        layout.addWidget(self._caption("概况"))
+        tiles = QHBoxLayout()
+        tiles.setSpacing(8)
+        self.total_tile = self._tile("任务", "historyTile")
+        self.failed_tile = self._tile("失败", "historyTileDanger")
+        self.done_tile = self._tile("完成", "historyTile")
+        for tile in (self.total_tile, self.failed_tile, self.done_tile):
+            tiles.addWidget(tile, 1)
+        layout.addLayout(tiles)
+        layout.addWidget(self._caption("问题排行"))
+        self.problem_host = QFrame()
+        self.problem_host.setObjectName("historyProblemCard")
+        self.problem_rows = QVBoxLayout(self.problem_host)
+        self.problem_rows.setContentsMargins(14, 12, 14, 12)
+        self.problem_rows.setSpacing(10)
+        layout.addWidget(self.problem_host)
+        self.ai_card = QFrame()
+        self.ai_card.setObjectName("historyAiCard")
+        ai = QVBoxLayout(self.ai_card)
+        ai.setContentsMargins(16, 14, 16, 14)
+        ai.setSpacing(8)
+        ai_title = QLabel()
+        bind_text(ai_title, "让 AI 找原因")
+        ai_title.setObjectName("historyAiTitle")
+        ai.addWidget(ai_title)
+        self.ai_note = QLabel()
+        self.ai_note.setObjectName("historyMuted")
+        self.ai_note.setWordWrap(True)
+        ai.addWidget(self.ai_note)
+        self.ai_button = QPushButton()
+        self.ai_button.setObjectName("historyAiButton")
+        self.ai_button.setIcon(qta.icon("fa5s.magic", color="white"))
+        self.ai_button.clicked.connect(self.analyse_requested)
+        ai.addWidget(self.ai_button)
+        layout.addWidget(self.ai_card)
+        layout.addStretch(1)
+        self.footer = QLabel()
+        self.footer.setObjectName("historyMuted")
+        self.footer.setWordWrap(True)
+        bind_text(self.footer, "任务从开始即保存；中断后可继续处理，已完成的阶段会尽量复用。")
+        layout.addWidget(self.footer)
+
+    @staticmethod
+    def _caption(text: str) -> QLabel:
+        label = QLabel()
+        bind_text(label, text)
+        label.setObjectName("historyCaption")
+        return label
+
+    @staticmethod
+    def _tile(label: str, object_name: str) -> QFrame:
+        tile = QFrame()
+        tile.setObjectName(object_name)
+        box = QVBoxLayout(tile)
+        box.setContentsMargins(12, 9, 12, 9)
+        box.setSpacing(0)
+        caption = QLabel()
+        bind_text(caption, label)
+        caption.setObjectName("historyTileLabel")
+        value = QLabel("0")
+        value.setObjectName("historyTileValue")
+        box.addWidget(caption)
+        box.addWidget(value)
+        tile.value = value
+        return tile
+
+    def update_records(self, records: list, ai_service: str) -> None:
+        signature = (tuple(records), ai_service, current_language())
+        if signature == self._signature:
+            return
+        self._signature = signature
+        failed = [record for record in records if record.status in _FAILED_LIKE]
+        self.total_tile.value.setText(str(len(records)))
+        self.failed_tile.value.setText(str(len(failed)))
+        self.done_tile.value.setText(str(sum(record.status == "completed" for record in records)))
+        while self.problem_rows.count():
+            item = self.problem_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+            elif item.layout() is not None:
+                item.layout().deleteLater()
+        counts = Counter(" ".join(str(record.problems[0]).split())[:90] for record in records
+                         if record.has_anomaly and record.problems)
+        top = counts.most_common(3)
+        if not top:
+            empty = QLabel()
+            bind_text(empty, "没有失败或异常的任务。")
+            empty.setObjectName("historyMuted")
+            empty.setWordWrap(True)
+            self.problem_rows.addWidget(empty)
+        highest = top[0][1] if top else 1
+        for text, count in top:
+            row = QWidget()
+            box = QVBoxLayout(row)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(5)
+            line = QHBoxLayout()
+            line.setSpacing(8)
+            name = QLabel(text)
+            name.setObjectName("historyProblemName")
+            name.setWordWrap(True)
+            line.addWidget(name, 1)
+            chip = QLabel(f"× {count}")
+            chip.setObjectName("historyStatusError")
+            line.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
+            box.addLayout(line)
+            track = QHBoxLayout()
+            track.setContentsMargins(0, 0, 0, 0)
+            track.setSpacing(0)
+            bar = QFrame()
+            bar.setObjectName("historyProblemBar")
+            bar.setFixedHeight(6)
+            track.addWidget(bar, count)
+            if highest > count:
+                track.addStretch(highest - count)
+            box.addLayout(track)
+            self.problem_rows.addWidget(row)
+        self.ai_card.setVisible(bool(failed))
+        if failed:
+            bind_text(self.ai_note, "把最近一次失败的日志、配置和环境交给你自己的 AI（{service}），得到原因和解决步骤。API Key 会先打码。",
+                      service=ai_service or str(tr("你设置的 AI")))
+            bind_text(self.ai_button, "分析最近一次失败")
 
 
 class _ProportionalStageTable(QTableWidget):
@@ -1172,115 +1576,183 @@ def _history_model_name(role: str, record: RecognitionRecord, models: dict[str, 
     return record.review_model
 
 
+def _label_named(text: str, object_name: str) -> QLabel:
+    label = QLabel()
+    bind_text(label, text)
+    label.setObjectName(object_name)
+    return label
+
+
 class RecognitionHistoryDetail(QWidget):
-    """Product summary with the complete report isolated in a developer view."""
+    """One task's details (2026-11-11 details design A).
+
+    A failed or troubled task leads with the diagnosis card (local check, then
+    the user's AI on request) and keeps the error text, the next actions, the
+    stages and the configuration in a side column. A finished task shows its
+    result, outputs and review items instead. The complete report stays in
+    the developer view behind 「原始 JSON」, one click from the header.
+    """
 
     result_requested = Signal(object)
     diagnose_requested = Signal(object)
     resume_requested = Signal(object)
     partial_requested = Signal(object)
+    action_requested = Signal(str)
+    close_requested = Signal()
 
-    def __init__(self, record: RecognitionRecord, parent=None):
+    def __init__(self, record: RecognitionRecord, parent=None, *, settings: dict | None = None,
+                 closable: bool = False):
         super().__init__(parent)
         self.record = record
+        self.setObjectName("historyDetail")
+        from ..app.ui_zoom import set_sheet as _set_sheet
+        # Its own sheet: inside the details dialog the application sheet would
+        # otherwise outrank the page rules for these children.
+        _set_sheet(self, build_history_page_qss())
+        language = current_language()
+        result = _dict(record.payload.get("result"))
+        task = _dict(record.payload.get('task'))
+        troubled = record.status in _RETRYABLE or record.status in _FAILED_LIKE or bool(record.problems)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(13)
+        layout.setSpacing(14)
 
+        # ── header: what, how it ended, the developer view one click away
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
         title = QLabel(record.media_name)
         title.setObjectName("historyTitle")
         title.setWordWrap(True)
-        layout.addWidget(title)
-
-        result = _dict(record.payload.get("result"))
-        summary = QHBoxLayout()
-        summary.setSpacing(6)
-        status_object = (
-            "historyStatusError" if record.status == "failed" else
-            ("historyStatusWarn" if record.status in {"partial", "unknown", "cancelled", "interrupted"} else "historyStatusGood")
-        )
-        summary.addWidget(_history_pill(record.status_label, status_object))
-        summary.addWidget(_history_pill(tr("本文件耗时 {duration}", duration=_duration_label(record.elapsed_seconds))))
+        title_row.addWidget(title, 0)
+        title_row.addWidget(_history_pill(record.status_label, _status_object(record.status)), 0, Qt.AlignmentFlag.AlignVCenter)
+        if record.outcome.review_issue_count:
+            title_row.addWidget(_history_pill(tr("{count} 项待检查问题", count=record.outcome.review_issue_count),
+                                              "historyReviewPill"), 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        title_box.addLayout(title_row)
+        facts = [str(tr("{time} · 本文件耗时 {duration}", time=record.completed_at,
+                        duration=_duration_label(record.elapsed_seconds)))]
         if record.media_seconds:
-            summary.addWidget(_history_pill(tr("素材时长 {duration}", duration=_duration_label(record.media_seconds))))
+            facts.append(str(tr("素材时长 {duration}", duration=_duration_label(record.media_seconds))))
         cue_count = int(result.get("cue_count") or 0)
         if cue_count:
-            summary.addWidget(_history_pill(tr("{count} 条字幕", count=cue_count)))
-        if record.outcome.review_issue_count:
-            summary.addWidget(_history_pill(tr("{count} 项待检查问题", count=record.outcome.review_issue_count), "historyReviewPill"))
-        summary.addStretch(1)
-        layout.addLayout(summary)
+            facts.append(str(tr("{count} 条字幕", count=cue_count)))
+        if task:
+            requests = task.get('remote_requests') or {}
+            facts.append(str(tr("{count} 个阶段产物可复用", count=len(task.get('cache_files') or {}) + len(task.get('artifacts') or {}))))
+        meta = QLabel(" · ".join(facts))
+        meta.setObjectName("historyMuted")
+        meta.setWordWrap(True)
+        title_box.addWidget(meta)
+        header.addLayout(title_box, 1)
+        self.raw_button = QPushButton()
+        bind_text(self.raw_button, "原始 JSON")
+        self.raw_button.setObjectName("historyToolButton")
+        self.raw_button.setIcon(qta.icon("fa5s.code", color=MUTED))
+        header.addWidget(self.raw_button, 0, Qt.AlignmentFlag.AlignTop)
+        self.folder_button = QPushButton()
+        bind_text(self.folder_button, "日志文件夹")
+        self.folder_button.setObjectName("historyToolButton")
+        self.folder_button.setIcon(qta.icon("fa5s.folder-open", color=MUTED))
+        self.folder_button.clicked.connect(self._open_folder)
+        header.addWidget(self.folder_button, 0, Qt.AlignmentFlag.AlignTop)
+        if closable:
+            close = QPushButton("×")
+            close.setObjectName("historyCloseButton")
+            bind_text(close, "关闭", property="accessibleName")
+            close.clicked.connect(self.close_requested)
+            header.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(header)
 
-        outcome_section, outcome_box = _history_section("处理结果")
-        outcome_box.addWidget(_history_config_row("核心处理", record.outcome.status_label, translate_value=True))
-        outcome_box.addWidget(_history_config_row("文字校对", record.outcome.polish_label, translate_value=True))
-        outcome_box.addWidget(_history_config_row("联网核验", record.outcome.search_label, translate_value=True))
-        if record.outcome.search_reason:
-            reason = QLabel()
-            bind_text(reason, record.outcome.search_reason)
-            reason.setObjectName("historyMuted")
-            reason.setWordWrap(True)
-            outcome_box.addWidget(reason)
-        if record.outcome.processed_records:
-            outcome_box.addWidget(_history_config_row("处理记录", tr("{count} 条处理记录", count=record.outcome.processed_records)))
-        if record.outcome.fallback_records:
-            fallback_batches = int(_dict(record.payload.get('polishing_summary')).get('fallback_batches') or 0)
-            remaining = (tr('{batches} 批 · {count} 条处理记录（已保留原文）',
-                            batches=fallback_batches, count=record.outcome.fallback_records)
-                         if fallback_batches else tr('{count} 条处理记录（已保留原文）',
-                                                      count=record.outcome.fallback_records))
-            outcome_box.addWidget(_history_config_row('校对待重试', remaining))
-        outcome_box.addWidget(_history_config_row("实际接受修改", tr("{count} 处文字修改", count=record.outcome.accepted_edits)))
-        if record.outcome.review_issue_count:
-            outcome_box.addWidget(_history_config_row("待检查问题", tr("{count} 项检查问题", count=record.outcome.review_issue_count)))
+        columns = QHBoxLayout()
+        columns.setSpacing(18)
+        main = QVBoxLayout()
+        main.setSpacing(14)
+        side_frame = QFrame()
+        side_frame.setObjectName("historyDetailSide")
+        side = QVBoxLayout(side_frame)
+        side.setContentsMargins(16, 16, 16, 16)
+        side.setSpacing(12)
+
+        # ── the diagnosis card (troubled tasks)
+        self.diagnosis_panel = None
+        if troubled:
+            from .history_diagnosis_panel import HistoryDiagnosisPanel
+            self.diagnosis_panel = HistoryDiagnosisPanel(
+                record.payload, item_error=str(result.get("error") or ""), task_name=record.media_name,
+                settings=settings)
+            self.diagnosis_panel.action_requested.connect(self.action_requested)
+            main.addWidget(self.diagnosis_panel)
+
+        # ── error text
+        if record.problems:
+            error = QFrame()
+            error.setObjectName("historyErrorCard")
+            error_box = QVBoxLayout(error)
+            error_box.setContentsMargins(14, 12, 14, 12)
+            error_box.setSpacing(8)
+            error_head = QHBoxLayout()
+            error_head.addWidget(_label_named("错误原文" if record.status == "failed" else "警告", "historyErrorCaption"), 1)
+            copy_error = QPushButton()
+            bind_text(copy_error, "复制")
+            copy_error.setObjectName("historyErrorCopy")
+            from PySide6.QtWidgets import QApplication
+            copy_error.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(record.problems)))
+            error_head.addWidget(copy_error)
+            error_box.addLayout(error_head)
+            message = QLabel("\n".join(f"• {item}" if len(record.problems) > 1 else str(item) for item in record.problems[:6]))
+            message.setObjectName("historyErrorText")
+            message.setWordWrap(True)
+            message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            error_box.addWidget(message)
+            if task:
+                chips = QHBoxLayout()
+                chips.setSpacing(6)
+                requests = task.get('remote_requests') or {}
+                total = max(int(task.get('remote_total') or 0), len(requests))
+                for text in (tr("阶段：{stage}", stage=str(task.get('current_stage') or '等待启动')),
+                             tr("分片 {done} / {total}", done=len(requests), total=total)):
+                    chips.addWidget(_history_pill(str(text), "historyErrorChip"))
+                chips.addStretch(1)
+                error_box.addLayout(chips)
+            side.addWidget(error)
+
+        # ── next actions
+        actions = QVBoxLayout()
+        actions.setSpacing(8)
         if record.outcome.result_usable and _dict(result.get("outputs")).get("project"):
             self.open_result_button = QPushButton()
             bind_text(self.open_result_button, "打开识别结果")
             self.open_result_button.setObjectName("historyPrimary")
             self.open_result_button.setToolTip(str(result["outputs"]["project"]))
             self.open_result_button.clicked.connect(lambda: self.result_requested.emit(record))
-        # 2026-10-23 (user): why this task failed or came out poorly — the
-        # local check of this report, plus an optional AI analysis.
-        self.diagnose_button = QPushButton()
-        bind_text(self.diagnose_button, "排查原因")
-        self.diagnose_button.setObjectName("historySecondary" if hasattr(self, "open_result_button") else "historyPrimary")
-        self.diagnose_button.clicked.connect(lambda: self.diagnose_requested.emit(record))
-        result_actions = QHBoxLayout()
-        result_actions.setSpacing(8)
+        if task and record.status in {'interrupted', 'failed', 'partial', 'cancelled'}:
+            self.resume_button = QPushButton()
+            bind_text(self.resume_button, '继续处理' if record.status == 'interrupted' else '重试未完成部分')
+            self.resume_button.setObjectName('historyPrimary')
+            self.resume_button.setIcon(qta.icon("fa5s.redo-alt", color="white"))
+            self.resume_button.clicked.connect(lambda: self.resume_requested.emit(record))
+            actions.addWidget(self.resume_button)
+            if not hasattr(self, 'open_result_button') and (task.get('artifacts') or task.get('shards')):
+                self.partial_button = QPushButton(tr('查看已保存部分'))
+                self.partial_button.setObjectName('historySecondary')
+                self.partial_button.clicked.connect(lambda: self.partial_requested.emit(record))
+                actions.addWidget(self.partial_button)
         if hasattr(self, "open_result_button"):
-            result_actions.addWidget(self.open_result_button)
-        result_actions.addWidget(self.diagnose_button)
-        task = _dict(record.payload.get('task'))
-        if task:
-            outcome_box.addWidget(_history_config_row('当前阶段', str(task.get('current_stage') or '等待启动')))
-            outcome_box.addWidget(_history_config_row('最近进展', _display_date(task.get('last_progress_at'))))
-            requests = task.get('remote_requests') or {}
-            total=max(int(task.get('remote_total') or 0),len(requests))
-            outcome_box.addWidget(_history_config_row('识别分片', tr('已保存 {done} / {total}；待完成 {pending}',
-                done=len(requests),total=total,pending=max(0,total-len(requests)))))
-            if requests:
-                ordered = sorted((r for r in requests.values() if r.get('end') is not None),
-                                 key=lambda r: float(r.get('start') or 0))
-                spans=[f"{_timeline_label(r.get('start') or 0)}–{_timeline_label(r['end'])}"
-                       for r in ordered]
-                if spans:outcome_box.addWidget(_history_config_row('已保存范围','、'.join(spans)))
-            outcome_box.addWidget(_history_config_row('已保存结果', tr('{count} 个阶段产物；{requests} 个远端分片',
-                count=len(task.get('cache_files') or {})+len(task.get('artifacts') or {}), requests=len(requests))))
-            if record.status in {'interrupted', 'failed', 'partial', 'cancelled'}:
-                self.resume_button = QPushButton()
-                bind_text(self.resume_button, '继续处理' if record.status == 'interrupted' else '重试未完成部分')
-                self.resume_button.setObjectName('historyPrimary')
-                self.resume_button.clicked.connect(lambda: self.resume_requested.emit(record))
-                result_actions.insertWidget(0, self.resume_button)
-                if not hasattr(self, 'open_result_button') and (task.get('artifacts') or task.get('shards')):
-                    self.partial_button=QPushButton(tr('查看已保存部分'))
-                    self.partial_button.setObjectName('historySecondary')
-                    self.partial_button.clicked.connect(lambda:self.partial_requested.emit(record))
-                    result_actions.insertWidget(1,self.partial_button)
-        result_actions.addStretch(1)
-        outcome_box.addLayout(result_actions)
-        layout.addWidget(outcome_section)
+            actions.insertWidget(0, self.open_result_button)
+        # 2026-10-23 (user): the full local check with every finding.
+        self.diagnose_button = QPushButton()
+        bind_text(self.diagnose_button, "排查原因（全部检查项）" if troubled else "排查原因")
+        self.diagnose_button.setObjectName("historySecondary")
+        self.diagnose_button.clicked.connect(lambda: self.diagnose_requested.emit(record))
+        actions.addWidget(self.diagnose_button)
+        side.addLayout(actions)
 
+        # ── stages
         stages = _list(record.payload.get("stages"))
         self.stage_table = _ProportionalStageTable(len(stages), 4)
         self.stage_table.setObjectName("historyStages")
@@ -1289,10 +1761,10 @@ class RecognitionHistoryDetail(QWidget):
         self.stage_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.stage_table.verticalHeader().hide()
         self.stage_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.stage_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.stage_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.stage_table.horizontalHeader().setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        # Row separators only; column grid lines made the summary read as a spreadsheet.
         self.stage_table.setShowGrid(False)
         self.stage_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         from ..app.ui_zoom import set_sheet
@@ -1312,37 +1784,86 @@ class RecognitionHistoryDetail(QWidget):
             self.stage_table.setItem(row, 0, QTableWidgetItem(label))
             raw_status = str(stage.get("status") or "unknown").lower()
             status_text, status_name = status_labels.get(raw_status, (raw_status or "未知", "historyResourcePill"))
-            self.stage_table.setCellWidget(
-                row, 1, _history_table_pill(status_text, status_name)
-            )
+            self.stage_table.setCellWidget(row, 1, _history_table_pill(status_text, status_name))
             self.stage_table.setItem(row, 2, QTableWidgetItem(_duration_label(float(stage.get("elapsed_seconds") or 0))))
             resource_text = str(stage.get("resource") or "—")
-            self.stage_table.setCellWidget(
-                row, 3, _history_table_pill(resource_text, "historyResourcePill", resource_text)
-            )
+            self.stage_table.setCellWidget(row, 3, _history_table_pill(resource_text, "historyResourcePill", resource_text))
             self.stage_table.setRowHeight(row, 34)
-        # Rows, elided resources and the table height follow the applied style
-        # and zoom (``_ProportionalStageTable._fit``).
         self.stage_table._fit()
-        layout.addWidget(self.stage_table)
+        stage_section = QVBoxLayout()
+        stage_section.setSpacing(6)
+        stage_section.addWidget(_label_named("阶段", "historyCaption"))
+        if stages:
+            stage_section.addWidget(self.stage_table)
+        else:
+            self.stage_table.hide()
+            empty = _label_named("这次任务还没有开始任何阶段。", "historyMuted")
+            empty.setWordWrap(True)
+            stage_section.addWidget(empty)
 
-        settings = _dict(record.payload.get("settings"))
-        models = _dict(settings.get("models"))
-        switches = _dict(settings.get("switches"))
-        profile = _dict(settings.get("content_profile"))
+        # ── processing result (rows that still say 待确认 add nothing to a failed task)
+        outcome_section, outcome_box = _history_section("处理结果")
+        rows = [("核心处理", record.outcome.status_label, True),
+                ("文字校对", record.outcome.polish_label, True),
+                ("联网核验", record.outcome.search_label, True)]
+        for key, value, translated in rows:
+            if str(value).endswith("待确认"):
+                continue
+            outcome_box.addWidget(_history_config_row(key, value, translate_value=translated))
+        if record.outcome.search_reason:
+            reason = QLabel()
+            bind_text(reason, record.outcome.search_reason)
+            reason.setObjectName("historyMuted")
+            reason.setWordWrap(True)
+            outcome_box.addWidget(reason)
+        if record.outcome.processed_records:
+            outcome_box.addWidget(_history_config_row("处理记录", tr("{count} 条处理记录", count=record.outcome.processed_records)))
+        if record.outcome.fallback_records:
+            fallback_batches = int(_dict(record.payload.get('polishing_summary')).get('fallback_batches') or 0)
+            remaining = (tr('{batches} 批 · {count} 条处理记录（已保留原文）',
+                            batches=fallback_batches, count=record.outcome.fallback_records)
+                         if fallback_batches else tr('{count} 条处理记录（已保留原文）',
+                                                      count=record.outcome.fallback_records))
+            outcome_box.addWidget(_history_config_row('校对待重试', remaining))
+        if record.outcome.accepted_edits or not troubled:
+            outcome_box.addWidget(_history_config_row("实际接受修改", tr("{count} 处文字修改", count=record.outcome.accepted_edits)))
+        if record.outcome.review_issue_count:
+            outcome_box.addWidget(_history_config_row("待检查问题", tr("{count} 项检查问题", count=record.outcome.review_issue_count)))
+        if task:
+            outcome_box.addWidget(_history_config_row('最近进展', _display_date(task.get('last_progress_at'))))
+            requests = task.get('remote_requests') or {}
+            total = max(int(task.get('remote_total') or 0), len(requests))
+            outcome_box.addWidget(_history_config_row('识别分片', tr('已保存 {done} / {total}；待完成 {pending}',
+                done=len(requests), total=total, pending=max(0, total - len(requests)))))
+            if requests:
+                ordered = sorted((r for r in requests.values() if r.get('end') is not None),
+                                 key=lambda r: float(r.get('start') or 0))
+                spans = [f"{_timeline_label(r.get('start') or 0)}–{_timeline_label(r['end'])}" for r in ordered]
+                if spans:
+                    outcome_box.addWidget(_history_config_row('已保存范围', '、'.join(spans)))
+            outcome_box.addWidget(_history_config_row('已保存结果', tr('{count} 个阶段产物；{requests} 个远端分片',
+                count=len(task.get('cache_files') or {}) + len(task.get('artifacts') or {}), requests=len(requests))))
+
+        # ── configuration
+        settings_payload = _dict(record.payload.get("settings"))
+        models = _dict(settings_payload.get("models"))
+        switches = _dict(settings_payload.get("switches"))
+        profile = _dict(settings_payload.get("content_profile"))
         config, config_box = _history_section("本次配置")
         config_values = [
             ("主力转写", _history_model_name("primary", record, models)),
             ("时间轴", _history_model_name("timeline", record, models)),
             ("文字复核", _history_model_name("review", record, models)),
         ]
-        if models.get('primary_asr_backend')=='api' and models.get('qwen_asr_api_model'):
-            config_values.append(('云端模型',str(models['qwen_asr_api_model'])))
-        language=_dict(settings.get('subtitle_language'))
-        requested=language.get('requested_language') or language.get('recognition_language')
-        if requested:config_values.append(('源语言',{'zh':'中文','en':'英语','ja':'日语','auto':'自动判断'}.get(str(requested),str(requested))))
-        output=language.get('subtitle_output') or language.get('output')
-        if output:config_values.append(('字幕输出',{'original':'仅原文','translation':'仅译文','bilingual':'双语'}.get(str(output),str(output))))
+        if models.get('primary_asr_backend') == 'api' and models.get('qwen_asr_api_model'):
+            config_values.append(('云端模型', str(models['qwen_asr_api_model'])))
+        language_settings = _dict(settings_payload.get('subtitle_language'))
+        requested = language_settings.get('requested_language') or language_settings.get('recognition_language')
+        if requested:
+            config_values.append(('源语言', {'zh': '中文', 'en': '英语', 'ja': '日语', 'auto': '自动判断'}.get(str(requested), str(requested))))
+        output = language_settings.get('subtitle_output') or language_settings.get('output')
+        if output:
+            config_values.append(('字幕输出', {'original': '仅原文', 'translation': '仅译文', 'bilingual': '双语'}.get(str(output), str(output))))
         if record.ai_model:
             provider = str(models.get("polish_provider") or models.get("group_provider") or "").strip()
             base_url = str(models.get("polish_base_url") or models.get("group_base_url") or "").lower()
@@ -1358,8 +1879,8 @@ class RecognitionHistoryDetail(QWidget):
         for key, value in config_values:
             if str(value).strip() and str(value) not in {"未知", "未启用"}:
                 config_box.addWidget(_history_config_row(key, str(value)))
-        layout.addWidget(config)
 
+        # ── outputs and review items
         outputs = _dict(result.get("outputs"))
         output_items = []
         if outputs.get("txt"):
@@ -1369,59 +1890,55 @@ class RecognitionHistoryDetail(QWidget):
         track_count = len(_list(outputs.get("speaker_outputs")))
         if track_count:
             output_items.append(f"分轨 SRT · {track_count}")
+        output_section = None
         if output_items:
-            output, output_box = _history_section("输出")
+            output_section, output_box = _history_section("输出")
             output_row = QHBoxLayout()
             output_row.setSpacing(6)
             for item in output_items:
                 output_row.addWidget(_history_pill(item))
             output_row.addStretch(1)
             output_box.addLayout(output_row)
-            layout.addWidget(output)
+        review_section = self._review_section(record)
 
-        if record.problems:
-            warning = QLabel("警告 / Error\n" + "\n".join(f"• {item}" for item in record.problems))
-            warning.setObjectName("historyStatusError" if record.status_label == "失败" else "historyStatusWarn")
-            warning.setWordWrap(True)
-            layout.addWidget(warning)
-
-        review_items = [
-            _dict(item) for item in _list(record.payload.get("review_items"))
-            if _review_severity(_dict(item)) == "review"
-        ]
-        if review_items:
-            review, review_box = _history_section(tr("可复核信息 {count} 项", count=len(review_items)), "historyReviewSection")
-            for category, count in Counter(str(item.get("category") or "待复核项") for item in review_items).most_common():
-                review_box.addWidget(_history_config_row(category, tr("{count} 项问题", count=count)))
-            segment_items = [item for item in review_items if any(item.get(key) not in (None, "") for key in ("cue_id", "segment_id", "timestamp", "text"))]
-            if segment_items:
-                self.review_detail_button = QPushButton("展开分段详情")
-                self.review_detail_button.setObjectName("historySecondary")
-                review_box.addWidget(self.review_detail_button, 0, Qt.AlignmentFlag.AlignLeft)
-                review_details = QLabel()
-                review_details.setObjectName("historyMuted")
-                review_details.setWordWrap(True)
-                review_details.hide()
-                review_box.addWidget(review_details)
-
-                def toggle_review_details(_checked=False, items=segment_items, label=review_details):
-                    # Long evidence lists are only formatted when asked for.
-                    if not label.text():
-                        label.setText("\n".join(
-                            f"• {item.get('category') or '待复核项'} · "
-                            f"{item.get('cue_id', item.get('segment_id', item.get('timestamp', '')))} · "
-                            f"{item.get('text') or item.get('message') or item.get('detail') or ''}"
-                            for item in items
-                        ))
-                    label.setVisible(not label.isVisible())
-                    (bind_text(self.review_detail_button, '收起分段详情') if label.isVisible()
-                     else bind_text(self.review_detail_button, '展开分段详情'))
-                self.review_detail_button.clicked.connect(toggle_review_details)
-            layout.addWidget(review)
+        if troubled:
+            side.addLayout(stage_section)
+            side.addWidget(config)
+            side.addWidget(outcome_section)
+            for section in (output_section, review_section):
+                if section is not None:
+                    side.addWidget(section)
+        else:
+            tiles = QHBoxLayout()
+            tiles.setSpacing(10)
+            for caption, value in (("字幕", str(cue_count or "—")),
+                                   ("素材时长", _duration_label(record.media_seconds) if record.media_seconds else "—"),
+                                   ("本文件耗时", _duration_label(record.elapsed_seconds)),
+                                   ("实际接受修改", str(record.outcome.accepted_edits))):
+                tile = QFrame()
+                tile.setObjectName("historyTile")
+                box = QVBoxLayout(tile)
+                box.setContentsMargins(14, 10, 14, 10)
+                box.setSpacing(0)
+                box.addWidget(_label_named(caption, "historyTileLabel"))
+                number = QLabel(value)
+                number.setObjectName("historyTileValue")
+                box.addWidget(number)
+                tiles.addWidget(tile, 1)
+            main.addLayout(tiles)
+            main.addLayout(stage_section)
+            main.addWidget(outcome_section)
+            for section in (output_section, review_section):
+                if section is not None:
+                    main.addWidget(section)
+            side.addWidget(config)
+        main.addStretch(1)
+        side.addStretch(1)
+        columns.addLayout(main, 165)
+        columns.addWidget(side_frame, 100)
+        layout.addLayout(columns)
 
         raw_actions = QHBoxLayout()
-        self.raw_button = QPushButton("</> 查看原始 JSON")
-        self.raw_button.setObjectName("historyRawToggle")
         self.copy_button = QPushButton("复制 JSON")
         self.copy_button.setObjectName("historySecondary")
         self.copy_button.hide()
@@ -1430,7 +1947,6 @@ class RecognitionHistoryDetail(QWidget):
         self.save_button = QPushButton("另存为…")
         self.save_button.setObjectName("historySecondary")
         self.save_button.hide()
-        raw_actions.addWidget(self.raw_button)
         raw_actions.addWidget(self.copy_button)
         raw_actions.addWidget(self.save_button)
         raw_actions.addStretch(1)
@@ -1442,14 +1958,61 @@ class RecognitionHistoryDetail(QWidget):
         layout.addWidget(self.raw_note)
 
         # The redacted JSON text, its editor and the highlighter are built on
-        # the first "查看原始 JSON" (a 3 MB report is ~110k lines to format,
-        # load and highlight); opening the details only shows the summary.
+        # the first 「原始 JSON」 (a 3 MB report is ~110k lines to format, load
+        # and highlight); opening the details only shows the summary.
         self._raw_text: str | None = None
         self._details_layout = layout
         self.summary_ready = True
         self.raw_button.clicked.connect(self._toggle_raw)
         self.copy_button.clicked.connect(self._copy_raw)
         self.save_button.clicked.connect(self._save_raw)
+
+    def _review_section(self, record):
+        review_items = [
+            _dict(item) for item in _list(record.payload.get("review_items"))
+            if _review_severity(_dict(item)) == "review"
+        ]
+        if not review_items:
+            return None
+        review, review_box = _history_section(tr("可复核信息 {count} 项", count=len(review_items)), "historyReviewSection")
+        for category, count in Counter(str(item.get("category") or "待复核项") for item in review_items).most_common():
+            review_box.addWidget(_history_config_row(category, tr("{count} 项问题", count=count)))
+        segment_items = [item for item in review_items if any(item.get(key) not in (None, "") for key in ("cue_id", "segment_id", "timestamp", "text"))]
+        if segment_items:
+            self.review_detail_button = QPushButton("展开分段详情")
+            self.review_detail_button.setObjectName("historySecondary")
+            review_box.addWidget(self.review_detail_button, 0, Qt.AlignmentFlag.AlignLeft)
+            review_details = QLabel()
+            review_details.setObjectName("historyMuted")
+            review_details.setWordWrap(True)
+            review_details.hide()
+            review_box.addWidget(review_details)
+
+            def toggle_review_details(_checked=False, items=segment_items, label=review_details):
+                # Long evidence lists are only formatted when asked for.
+                if not label.text():
+                    label.setText("\n".join(
+                        f"• {item.get('category') or '待复核项'} · "
+                        f"{item.get('cue_id', item.get('segment_id', item.get('timestamp', '')))} · "
+                        f"{item.get('text') or item.get('message') or item.get('detail') or ''}"
+                        for item in items
+                    ))
+                label.setVisible(not label.isVisible())
+                (bind_text(self.review_detail_button, '收起分段详情') if label.isVisible()
+                 else bind_text(self.review_detail_button, '展开分段详情'))
+            self.review_detail_button.clicked.connect(toggle_review_details)
+        return review
+
+    def _open_folder(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        folder = Path(self.record.path).parent
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def shutdown(self) -> None:
+        if self.diagnosis_panel is not None:
+            self.diagnosis_panel.shutdown()
 
     @property
     def raw_text(self) -> str:
@@ -1490,7 +2053,17 @@ class RecognitionHistoryDetail(QWidget):
             bind_text(self.raw_note, 'JSON 有 {size} MB，粘贴到聊天或 AI 窗口可能让它卡住很久；要分享时请点“另存为…”保存成文件再附上。',
                       size=f"{size / 1024 / 1024:.1f}")
         self.raw_note.setVisible(visible and size >= LARGE_RAW_JSON_BYTES)
-        (bind_text(self.raw_button, '</> 收起原始 JSON') if visible else bind_text(self.raw_button, '</> 查看原始 JSON'))
+        (bind_text(self.raw_button, '收起 JSON') if visible else bind_text(self.raw_button, '原始 JSON'))
+        if visible:
+            QTimer.singleShot(0, lambda: self._reveal(view))
+
+    def _reveal(self, view) -> None:
+        from shiboken6 import isValid
+        parent = self.parentWidget()
+        while parent is not None and not isinstance(parent, QScrollArea):
+            parent = parent.parentWidget()
+        if parent is not None and isValid(view) and view.isVisible():
+            parent.ensureWidgetVisible(view, 0, 0)
 
     def _copy_raw(self):
         from PySide6.QtWidgets import QApplication
@@ -1569,6 +2142,8 @@ class RecognitionHistoryPage(QWidget):
         self._detail_requests: dict[int, object] = {}
         self._detail_request_counter = 0
         self._detail_loaded.connect(self._on_detail_loaded)
+        self._view = "media"
+        self._groups: dict[str, HistoryGroup] = {}
         self.setObjectName("historyRoot")
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_history_page_qss())
@@ -1620,50 +2195,71 @@ class RecognitionHistoryPage(QWidget):
         side.addWidget(self.summary)
         outer.addWidget(sidebar)
 
+        # 2026-11-11 (records design C): no outer box around the list; the
+        # page sits on the window background like every other page.
         content = QFrame()
         content.setObjectName("historyContent")
         body = QVBoxLayout(content)
-        body.setContentsMargins(18, 14, 18, 16)
-        body.setSpacing(10)
+        body.setContentsMargins(8, 10, 8, 12)
+        body.setSpacing(12)
         header = QHBoxLayout()
-        title_box = QVBoxLayout()
+        header.setSpacing(10)
         title = QLabel(translate("识别记录", language))
         title.setObjectName("historyTitle")
         style_workspace_page_title(title)
-        title_box.addWidget(title)
-        note = QLabel(translate("任务从开始即保存；中断后可继续处理，已完成的阶段会尽量复用。", language))
-        note.setObjectName("historyMuted")
-        title_box.addWidget(note)
-        header.addLayout(title_box, 1)
-        self.repair_button = QPushButton(translate("重新扫描 / 修复记录索引", language))
-        self.repair_button.setObjectName("historySecondary")
-        self.repair_button.setIcon(qta.icon("fa5s.database", color=GREEN))
-        bind_text(self.repair_button, translate('从旧安装目录等已知位置找回历史识别报告（复制到稳定目录，不改动原始文件）', language), property='toolTip')
-        self.repair_button.clicked.connect(self._repair_records)
-        header.addWidget(self.repair_button)
-        refresh = QPushButton(translate("刷新记录", language))
-        refresh.setObjectName("historySecondary")
-        refresh.setIcon(qta.icon("fa5s.sync-alt", color=GREEN))
-        refresh.clicked.connect(self.refresh)
-        header.addWidget(refresh)
-        body.addLayout(header)
+        header.addWidget(title)
+        self.view_switch = QFrame()
+        self.view_switch.setObjectName("historyViewSwitch")
+        switch = QHBoxLayout(self.view_switch)
+        switch.setContentsMargins(3, 3, 3, 3)
+        switch.setSpacing(2)
+        self.view_buttons = {}
+        for key, text in (("media", "按素材"), ("time", "按时间")):
+            button = QPushButton()
+            bind_text(button, text)
+            button.setObjectName("historyViewButton")
+            button.setCheckable(True)
+            button.setChecked(key == self._view)
+            button.clicked.connect(lambda _checked=False, key=key: self._set_view(key))
+            switch.addWidget(button)
+            self.view_buttons[key] = button
+        header.addWidget(self.view_switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
         self.search = QLineEdit()
         self.search.setObjectName("historySearch")
         bind_text(self.search, translate('搜索素材、模型、AI 或状态', language), property='placeholderText')
         self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(220)
+        self.search.setMaximumWidth(340)
         self.search.textChanged.connect(self._search_changed)
-        body.addWidget(self.search)
+        header.addWidget(self.search, 1)
+        self.repair_button = QPushButton(translate("修复索引", language))
+        self.repair_button.setObjectName("historyToolButton")
+        self.repair_button.setIcon(qta.icon("fa5s.database", color=MUTED))
+        bind_text(self.repair_button, translate('从旧安装目录等已知位置找回历史识别报告（复制到稳定目录，不改动原始文件）', language), property='toolTip')
+        self.repair_button.clicked.connect(self._repair_records)
+        header.addWidget(self.repair_button)
+        refresh = QPushButton()
+        refresh.setObjectName("historyToolButton")
+        refresh.setIcon(qta.icon("fa5s.sync-alt", color=MUTED))
+        bind_text(refresh, translate("刷新记录", language), property='toolTip')
+        bind_text(refresh, translate("刷新记录", language), property='accessibleName')
+        refresh.clicked.connect(self.refresh)
+        header.addWidget(refresh)
+        body.addLayout(header)
         scroll = QScrollArea()
+        scroll.setObjectName("historyScroll")
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll = scroll
         host = QWidget()
         host.setObjectName("historyListHost")
         self.cards_layout = QVBoxLayout(host)
-        self.cards_layout.setContentsMargins(0, 0, 0, 0)
-        self.cards_layout.setSpacing(8)
+        self.cards_layout.setContentsMargins(0, 0, 4, 0)
+        self.cards_layout.setSpacing(12)
         self.empty = QFrame()
-        self.empty.setObjectName("historyInfoSection")
+        self.empty.setObjectName("historyEmpty")
         self.empty.setMinimumHeight(220)
         empty_layout = QVBoxLayout(self.empty)
         empty_layout.setContentsMargins(24, 28, 24, 28)
@@ -1686,7 +2282,7 @@ class RecognitionHistoryPage(QWidget):
         empty_layout.addWidget(self.empty_start, 0, Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch(1)
         self.cards_layout.addWidget(self.empty)
-        # Cards are built a page at a time as the list scrolls; search and the
+        # Rows are built a page at a time as the list scrolls; search and the
         # record count always cover every record (data-level filter).
         self.more_button = QPushButton()
         self.more_button.setObjectName("historySecondary")
@@ -1699,6 +2295,9 @@ class RecognitionHistoryPage(QWidget):
         scroll.verticalScrollBar().rangeChanged.connect(lambda _low, _high: self._maybe_show_more())
         body.addWidget(scroll, 1)
         outer.addWidget(content, 1)
+        self.overview = HistoryOverview()
+        self.overview.analyse_requested.connect(self._analyse_latest_failure)
+        outer.addWidget(self.overview)
 
     # ------------------------------------------------------------- loading
     def refresh(self):
@@ -1912,37 +2511,50 @@ class RecognitionHistoryPage(QWidget):
         self.summary.setToolTip("\n".join(errors[:12]) + ("\n…" if len(errors) > 12 else ""))
 
     def _detach_card(self, card: HistoryCard) -> None:
-        row = self._card_rows.pop(card, card)
+        self._card_rows.pop(card, None)
         self._cards_by_path.pop(card.record.path, None)
-        self.cards_layout.removeWidget(row)
-        row.hide()
-        row.setParent(None)
-        if row is not card:
-            card.setParent(None)
-        row.deleteLater()
+        parent = card.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().removeWidget(card)
+        card.hide()
+        card.setParent(None)
         card.deleteLater()
 
     def _make_card(self, record) -> HistoryCard:
         card = HistoryCard(record)
-        card.setMaximumWidth(16777215)
-        card.setMinimumWidth(520)
-        card.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         card.requested.connect(self._show_detail)
-        row = QWidget()
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(0)
-        row_layout.addWidget(card, 1)
-        self._card_rows[card] = row
+        card.raw_requested.connect(lambda selected: self._show_detail(selected, show_raw=True))
+        self._card_rows[card] = card
         self._cards_by_path[record.path] = card
         if self.property("_uiZoomApplied") is not None:
-            # The page was scaled before this card existed.
+            # The page was scaled before this row existed.
             from ..app.ui_zoom import apply_to
-            apply_to(row)
+            apply_to(card)
         return card
+
+    def _group(self, key: str) -> "HistoryGroup":
+        group = self._groups.get(key)
+        if group is None:
+            group = HistoryGroup(key)
+            group.details_requested.connect(self._show_detail)
+            group.retry_requested.connect(lambda record: self._emit_full(record, self.resume_requested))
+            group.result_requested.connect(lambda record: self._emit_full(record, self.result_requested))
+            self._groups[key] = group
+            if self.property("_uiZoomApplied") is not None:
+                from ..app.ui_zoom import apply_to
+                apply_to(group)
+        return group
+
+    def _set_view(self, view: str) -> None:
+        if view not in {"media", "time"}:
+            return
+        for key, button in self.view_buttons.items():
+            button.setChecked(key == view)
+        if view == self._view:
+            return
+        self._view = view
+        self._apply_filter()
 
     @staticmethod
     def _haystack(record) -> str:
@@ -1967,26 +2579,49 @@ class RecognitionHistoryPage(QWidget):
         display = [record for record in self.records if not query or query in self._haystack(record)]
         self._display = display
         wanted = display[:self._built_limit]
+        by_media = self._view == "media"
+        # 按素材: one group per media file, attempts newest first. 按时间: a
+        # single headerless group in time order.
+        ordered: dict[str, list] = {}
+        for record in wanted:
+            ordered.setdefault(_group_key(record) if by_media else "\0time", []).append(record)
         cards: list[HistoryCard] = []
-        for index, record in enumerate(wanted):
-            card = self._cards_by_path.get(record.path)
-            if card is not None and card.record != record:
-                self._detach_card(card)
-                card = None
-            if card is None:
-                card = self._make_card(record)
-            row = self._card_rows[card]
-            if self.cards_layout.indexOf(row) != index:
-                self.cards_layout.insertWidget(index, row)
-            if row.isHidden():
-                row.show()
-            cards.append(card)
+        for index, (key, records) in enumerate(ordered.items()):
+            group = self._group(key)
+            group.set_header_visible(by_media)
+            group.update_records(records)
+            if self.cards_layout.indexOf(group) != index:
+                self.cards_layout.insertWidget(index, group)
+            for position, record in enumerate(records):
+                card = self._cards_by_path.get(record.path)
+                if card is not None and card.record != record:
+                    self._detach_card(card)
+                    card = None
+                if card is None:
+                    card = self._make_card(record)
+                if group.rows.indexOf(card) != position:
+                    group.rows.insertWidget(position, card)
+                card.set_attempt(len(records) - position if by_media and len(records) > 1 else None,
+                                 show_media=not by_media)
+                if card.isHidden():
+                    card.show()
+                cards.append(card)
+            if group.isHidden():
+                group.show()
+        for key, group in list(self._groups.items()):
+            if key not in ordered:
+                if group.rows.count() == 0 or len(self._groups) > 64:
+                    self.cards_layout.removeWidget(group)
+                    group.hide()
+                    group.setParent(None)
+                    group.deleteLater()
+                    self._groups.pop(key, None)
+                elif not group.isHidden():
+                    group.hide()
         wanted_paths = {record.path for record in wanted}
-        for path, card in self._cards_by_path.items():
-            if path not in wanted_paths:
-                row = self._card_rows.get(card, card)
-                if not row.isHidden():
-                    row.hide()
+        for path, card in list(self._cards_by_path.items()):
+            if path not in wanted_paths and not card.isHidden():
+                card.hide()
         self._cards = cards
         remaining = len(display) - len(wanted)
         if remaining > 0:
@@ -2003,6 +2638,44 @@ class RecognitionHistoryPage(QWidget):
             bind_text(self.empty_note, translate('完成第一条字幕任务后，任务状态、模型组合和审核结果会出现在这里。', current_language()))
             self.empty_start.show()
         self.empty.setVisible(not display)
+        self.overview.update_records(self.records, self._ai_service())
+
+    def _settings(self) -> dict | None:
+        window = self.window()
+        legacy = getattr(window, "legacy", None)
+        settings = getattr(legacy, "RUNTIME_SETTINGS", None)
+        return settings if isinstance(settings, dict) else None
+
+    def _ai_service(self) -> str:
+        settings = self._settings()
+        if settings is None:
+            return ""
+        try:
+            from ..providers.llm_config import effective_ai_identity, text_ai_key_missing
+            if text_ai_key_missing(settings, "polish"):
+                return ""
+            identity = effective_ai_identity(settings, "polish")
+            return str(identity.get("model") or identity.get("label") or "")
+        except Exception:
+            return ""
+
+    def _full_record(self, record):
+        if isinstance(record, RecognitionRecord):
+            return record
+        try:
+            return parse_recognition_report(Path(record.path))
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            return None
+
+    def _emit_full(self, record, signal) -> None:
+        full = self._full_record(record)
+        if full is not None:
+            signal.emit(full)
+
+    def _analyse_latest_failure(self) -> None:
+        latest = next((record for record in self.records if record.status in _FAILED_LIKE), None)
+        if latest is not None:
+            self._show_detail(latest, analyse=True)
 
     def _show_more(self) -> None:
         self._more_scheduled = False
@@ -2077,27 +2750,27 @@ class RecognitionHistoryPage(QWidget):
         self._reload(force=True)
 
     # ------------------------------------------------------------- details
-    def _show_detail(self, record):
+    def _show_detail(self, record, *, show_raw: bool = False, analyse: bool = False):
         from twobyteasr.app.ui import SpringDialog
 
         dialog = SpringDialog(self)
         language = current_language()
         bind_text(dialog, f"{translate('识别记录', language)}｜{record.media_name}", property='windowTitle')
-        dialog.resize(880, 700)
+        dialog.resize(1160, 820)
         layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(22, 18, 18, 16)
         scroll = QScrollArea()
+        scroll.setObjectName("historyDetailScroll")
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         placeholder = QLabel(tr("正在读取报告…"))
         placeholder.setObjectName("historyMuted")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         placeholder.setWordWrap(True)
         scroll.setWidget(placeholder)
         layout.addWidget(scroll, 1)
-        close = QPushButton(translate("关闭", language))
-        close.setObjectName("historyPrimary")
-        close.clicked.connect(dialog.accept)
-        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        installed = []
 
         def install(full, error):
             from shiboken6 import isValid
@@ -2107,7 +2780,11 @@ class RecognitionHistoryPage(QWidget):
                 if isValid(placeholder):
                     placeholder.setText(tr("无法读取这份报告：{error}", error=error or ""))
                 return
-            detail = RecognitionHistoryDetail(full)
+            detail = RecognitionHistoryDetail(full, settings=self._settings_copy(), closable=True)
+            installed.append(detail)
+            detail.close_requested.connect(dialog.accept)
+            detail.action_requested.connect(lambda action, selected=full: (dialog.accept(), QTimer.singleShot(
+                0, lambda: self._run_detail_action(action, selected))))
             detail.resume_requested.connect(lambda selected: (dialog.accept(), self.resume_requested.emit(selected)))
             detail.partial_requested.connect(lambda selected: (dialog.accept(), self.partial_requested.emit(selected)))
             detail.result_requested.connect(lambda selected: (dialog.accept(), self.result_requested.emit(selected)))
@@ -2118,6 +2795,10 @@ class RecognitionHistoryPage(QWidget):
             if dialog.property("_uiZoomApplied") is not None:
                 from ..app.ui_zoom import apply_to
                 apply_to(detail)
+            if show_raw:
+                detail.raw_button.click()
+            if analyse and detail.diagnosis_panel is not None:
+                QTimer.singleShot(0, detail.diagnosis_panel.start)
 
         request = None
         if isinstance(record, RecognitionRecord):
@@ -2159,12 +2840,29 @@ class RecognitionHistoryPage(QWidget):
 
                 threading.Thread(target=work, daemon=True, name="history-detail-reader").start()
         dialog.exec()
+        for detail in installed:
+            from shiboken6 import isValid
+            if isValid(detail):
+                detail.shutdown()
         if request is not None:
             # Closed before the report arrived: a late result is dropped.
             self._detail_requests.pop(request, None)
         # Each opened report used to stay alive as a hidden child dialog of the
         # page (~150 widgets and the whole report text per opening).
         dialog.deleteLater()
+
+    def _settings_copy(self) -> dict | None:
+        import copy
+        settings = self._settings()
+        return copy.deepcopy(settings) if settings is not None else None
+
+    def _run_detail_action(self, action: str, record) -> None:
+        from .history_diagnosis import RESUME_ACTION
+        if action == RESUME_ACTION:
+            self.resume_requested.emit(record)
+            return
+        from ..app.run_diagnosis_dialog import run_diagnosis_action
+        run_diagnosis_action(self.window(), action)
 
     def _on_detail_loaded(self, request: int, full, error) -> None:
         """Queued on the GUI thread; installs only into a dialog still open."""

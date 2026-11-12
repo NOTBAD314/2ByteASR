@@ -39,7 +39,7 @@ class FontPreviewEdit(QLineEdit):
         visible=QRectF(self.contentsRect()).intersected(QRectF(combo.rect()).translated(-self.x(),-self.y()))
         combo._last_font_preview=draw_font_preview(painter,visible.adjusted(2,3,-2,-3),
             self.text(),combo.preview_request_for(self.text(),current=True),self.font(),
-            option.palette.color(QPalette.ColorRole.Text))
+            option.palette.color(QPalette.ColorRole.Text),name_first=True)
         painter.end()
 
     def event(self,event):

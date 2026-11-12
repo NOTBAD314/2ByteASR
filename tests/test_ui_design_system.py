@@ -86,6 +86,8 @@ def test_model_scroll_surfaces_do_not_override_card_and_pill_qss():
     assert picker.current_badge.text()
     assert all(card.state_badge.text() for card in picker.cards.values())
     assert all(card.action.text() for card in picker.cards.values())
-    assert all(card.minimumHeight() >= 140 for card in picker.cards.values())
+    # 2026-11-11: one table row per model under the column header.
+    assert picker.list_header.objectName() == "workshopListHeader"
+    assert all(card.minimumHeight() >= 84 for card in picker.cards.values())
     picker.deleteLater()
     page.deleteLater()

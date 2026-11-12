@@ -38,7 +38,8 @@ class CaptionEditTarget:
     def resolve(self, project):
         if project is None or project.project_id != self.project_id:
             return None
-        return next((c for c in project.cues if c.id == self.cue_id), None)
+        from ..projects.studio_runtime_state import state_for
+        return state_for(project).cue_by_id.get(self.cue_id)
 
     def read(self, project):
         cue = self.resolve(project)
@@ -77,6 +78,8 @@ class CaptionDraft:
     opened_revision: int = 0
     entity_epoch: int = 0
     state: str = 'editing'
+    revision: int = 0
+    text: str = ''
 
     def owns(self, project, generation):
         return (self.state in {'editing', 'rejected'}
@@ -136,6 +139,8 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         target=self._resolve_caption_edit_target(cue_id,layer)
         if target is not None:
             # Text targeting does not narrow the transform/clip multi-selection.
+            if self.timeline.active_subtitle_layer != layer:
+                self.timeline.set_subtitle_layer(layer)
             self._caption_canvas_edit_target=(id(self.project),self.session.generation,target)
 
     def _edit_caption_from_canvas(self):
@@ -188,6 +193,8 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         remembered=getattr(self,'_caption_canvas_edit_target',None)
         if (cue_id is None and layer is None and remembered is not None
                 and remembered[:2]==(id(self.project),self.session.generation)
+                and remembered[2].cue_id == (self.timeline.explicit_subtitle_id or self.timeline.selected_id or self.selected_cue_id)
+                and remembered[2].layer == self.timeline.active_subtitle_layer
                 and remembered[2].read(self.project) is not None):
             return remembered[2]
         timeline = self.timeline
@@ -204,11 +211,25 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                                  _language(self.project, cue, layer), role)
 
     def _open_caption_editor(self, cue_id=None, layer=None):
-        if getattr(self, '_caption_following', False):
+        if getattr(self, '_caption_submitting', False) or getattr(self, '_caption_ending', False):
+            return False
+        if getattr(self, '_caption_following', False) and cue_id is None and layer is None:
             return
         target = self._resolve_caption_edit_target(cue_id, layer)
         if target is None:
             return
+        previous = getattr(self, '_caption_draft', None)
+        if self._caption_owns_draft(previous):
+            if previous.target == target: return
+            if (target.track_id in self.timeline.locked_speakers or
+                    target.layer == 'translation' and 'translation' in self.timeline.locked_speakers):
+                self.save_state.setText('轨道已锁定，请先解锁')
+                return
+            if getattr(self.subtitle_edit_input, '_preediting', False):
+                self.caption_editor_hint.setText('请先完成输入法选字，再切换字幕')
+                return
+            if (self.subtitle_edit_input.toPlainText() != previous.before or previous.actions):
+                if not self._submit_caption_draft(): return
         self._caption_following = True
         self.subtitle_edit_card.split_mode.setChecked(False)
         self.subtitle_edit_card.split_playhead.setChecked(False)
@@ -225,6 +246,17 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _bind_caption_editor(self, target, *, edit_session_id=None):
+        # Keep the reused native tool atomic while its target, marks and final
+        # geometry are prepared. No hide/show, focus grab or event pumping.
+        dock = self.subtitle_edit_dock
+        dock.setUpdatesEnabled(False)
+        try:
+            return self._bind_caption_editor_content(target, edit_session_id=edit_session_id)
+        finally:
+            dock.setUpdatesEnabled(True)
+            dock.update()
+
+    def _bind_caption_editor_content(self, target, *, edit_session_id=None):
         started = perf_counter()
         if target is None:
             self.save_state.setText("当前没有可编辑字幕")
@@ -240,7 +272,16 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if text is None:
             return False
         self._install_caption_editor_tools()
-        draft = CaptionDraft(self.project, target, text)
+        previous = getattr(self, '_caption_draft', None)
+        if previous is not None:
+            previous.state = 'retired'
+        timer = getattr(self, '_caption_suggestion_timer', None)
+        if timer is not None:
+            timer.stop()
+        self._edit_preview_timer.stop()
+        if previous is not None:
+            self._live_edit_text_overrides.pop(previous.target.render_id, None)
+        draft = CaptionDraft(self.project, target, text, text=text)
         from ..projects.studio_runtime_state import state_for
         runtime = state_for(self.project)
         draft.session_generation = self.session.generation
@@ -249,6 +290,8 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if edit_session_id:
             draft.edit_session_id = edit_session_id
         self._caption_draft = draft
+        self._caption_follow_bind_ms = int(self.timeline.playhead_ms)
+        self._caption_follow_clock_generation = getattr(getattr(self.video, '_playback_clock', None), 'generation', None)
         self._review_edit_lock = None
         self._canvas_editor = self.subtitle_edit_input
         editor = self._canvas_editor
@@ -285,7 +328,7 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self._caption_editor_opening = False
         self._update_split_controls()
         self._set_subtitle_editor_visible(True)
-        QTimer.singleShot(10, lambda: self._refresh_editor_suggestions() if getattr(self, '_caption_draft', None) is draft and self._caption_owns_draft(draft) else None)
+        self._schedule_caption_suggestions(delay=0)
         self._studio_trace('EDIT_CARD_OPEN', cue_id=target.cue_id, layer=target.layer,
                            editor_show_ms=(perf_counter()-started)*1000)
         from ..diagnostics.event_log import emit
@@ -348,12 +391,30 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             self._review_edit_lock = dict(cue_id=draft.target.cue_id, project=self.project, layer=draft.target.layer)
             self.subtitle_edit_card.title.setText('编辑译文' if draft.target.role == 'translation' else '编辑原文')
 
-    def _follow_caption_editor(self, milliseconds, *, force=False):
+    def _follow_caption_editor(self, milliseconds, *, force=False, clock_sample=False):
+        if self._subtitle_navigation_holds_editor():
+            return
         if (not getattr(self, '_caption_following', False) or not self.project
                 or getattr(self, '_caption_edit_locked', False) or getattr(self, '_caption_submitting', False)):
             return
+        draft = getattr(self, '_caption_draft', None)
+        if (not force and self._caption_owns_draft(draft)
+                and int(milliseconds) == getattr(self, '_caption_follow_bind_ms', None)):
+            return  # an unchanged clock sample cannot erase a just-bound target
         from ..projects.studio_runtime_state import state_for
         hidden, locked = self.timeline.hidden_speakers, self.timeline.locked_speakers
+        draft = getattr(self, '_caption_draft', None)
+        if clock_sample and not force and self._caption_owns_draft(draft):
+            cue = draft.target.resolve(self.project)
+            generation = getattr(getattr(self.video, '_playback_clock', None), 'generation', None)
+            if (cue is not None and getattr(self.video, '_paused', True)
+                    and generation == getattr(self, '_caption_follow_clock_generation', None)
+                    and not cue.start_ms <= int(milliseconds) < cue.end_ms
+                    and cue.speaker_id not in hidden and cue.speaker_id not in locked):
+                # A passive sample from before the just-bound paused target
+                # cannot clear/rebind it. A real seek has a new generation;
+                # direct navigation and normal running playback still follow.
+                return
         layer = getattr(self, '_caption_follow_layer', 'original')
         candidates = [c for c in state_for(self.project).cues_at(int(milliseconds))
                       if c.speaker_id not in hidden and c.speaker_id not in locked
@@ -458,9 +519,14 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if draft is not None:
             draft.state = terminal_state
         self._edit_preview_timer.stop()
+        timer = getattr(self, '_caption_suggestion_timer', None)
+        if timer is not None: timer.stop()
         self._draft_recovery.discard()
         if draft is not None:
+            had_preview = draft.target.render_id in self._live_edit_text_overrides
             self._live_edit_text_overrides.pop(draft.target.render_id, None)
+            if had_preview:
+                self._caption_transform_preview_serial = getattr(self, '_caption_transform_preview_serial', 0) + 1
         self._caption_draft = None
         self._canvas_editor = None
         self._review_edit_lock = None
@@ -487,7 +553,7 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self._clear_caption_binding(terminal_state='cancelled')
         self.position_overlay._inline_editing = False
         self._set_subtitle_editor_visible(False)
-        self._refresh_ass_preview()
+        if not self._present_caption_scene():self._refresh_ass_preview()
         self.timeline.setFocus(Qt.FocusReason.OtherFocusReason)
         from ..diagnostics.event_log import emit
         context['trigger'] = trigger
@@ -526,8 +592,26 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         finally:
             self._caption_ending = False
 
-    def _refresh_editor_suggestions(self):
+    def _schedule_caption_suggestions(self, *, delay=80):
+        draft = getattr(self, '_caption_draft', None)
+        if not self._caption_owns_draft(draft): return
+        timer = getattr(self, '_caption_suggestion_timer', None)
+        if timer is None:
+            timer = self._caption_suggestion_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._deliver_caption_suggestions)
+        self._caption_suggestion_request = (draft, draft.revision)
+        timer.start(delay)
+
+    def _deliver_caption_suggestions(self):
+        draft, revision = self._caption_suggestion_request
+        self._refresh_editor_suggestions(expected_draft=draft, expected_revision=revision)
+
+    def _refresh_editor_suggestions(self, *, expected_draft=None, expected_revision=None):
         draft = getattr(self, "_caption_draft", None)
+        if (expected_draft is not None and draft is not expected_draft
+                or expected_revision is not None and (draft is None or draft.revision != expected_revision)):
+            return
         if not self._caption_owns_draft(draft):
             return
         text = self.subtitle_edit_input.toPlainText()
@@ -552,7 +636,13 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         decisions = self.project.studio_state.get(DECISIONS, {})
         combined_decisions=ChainMap(draft.ignored,decisions)
         unique = {}
+        from ..subtitle_rules.review_suggestions import validated_suggestion
+        from ..subtitle_rules.current_issues import unhandled_suggestion
         for row in rows:
+            row = validated_suggestion(text, row)
+            if row is not None and text == draft.target.read(self.project):
+                row=unhandled_suggestion(self.project,draft.target.cue_id,draft.target.layer,row)
+            if row is None: continue
             key = draft.suggestion_key(row)
             if suggestion_handled(draft.target.__dict__,row,text,combined_decisions):
                 continue
@@ -571,13 +661,15 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             return False
         text = self.subtitle_edit_input.toPlainText()
         if text != draft.suggestion_text:
-            self._refresh_editor_suggestions()
+            self._schedule_caption_suggestions(delay=0)
             return False
         if mark is None:
             mark, option = self.caption_suggestion_text.selected
         if not 0 <= int(mark) < len(draft.suggestions):
             return False
         row = draft.suggestions[int(mark)]
+        from ..recognition.asr_source_evidence import current_suggestion_option
+        if not current_suggestion_option(self.project,draft.target.resolve(self.project),row,int(option or 0)):return False
         value = row.apply(text, int(option or 0))
         if value == text:
             return False
@@ -590,9 +682,16 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if not self._caption_owns_draft(draft):
             return False
         editor=self.subtitle_edit_input;text=editor.toPlainText()
-        if text!=draft.suggestion_text:self._refresh_editor_suggestions()
+        if text != draft.suggestion_text:
+            # A cold first click must not synchronously build the project QC
+            # view. Retire stale offsets; the command edits this draft now.
+            draft.actions.clear(); draft.ignored.clear(); draft.suggestions = ()
+            draft.suggestion_text = text
+            self.caption_suggestion_text.update_rows(text, ())
         value=text[:start]+replacement+text[end:]
         if value==text:return False
+        from ..subtitle_rules.machine_text_policy import machine_text_allowed
+        if kind != 'pronoun' and not machine_text_allowed(text,value):return False
         self.caption_suggestion_text.stage_patch(start, end, replacement, value)
         delta=len(replacement)-(end-start)
         def shifted(a,b):
@@ -618,7 +717,6 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         cursor=editor.textCursor();cursor.setPosition(qt_position(text,start))
         cursor.setPosition(qt_position(text,end),QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(replacement);editor.setTextCursor(cursor)
-        self._flush_caption_editor_preview()
         return True
 
     @staticmethod
@@ -646,27 +744,42 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             draft.ignored=self._draft_patch_decisions(draft,draft.suggestion_text,only_ignored=True)
             self._refresh_editor_suggestions()
 
-    def _flip_editor_pronoun(self):
-        self._lock_caption_editor()
-        draft = getattr(self, "_caption_draft", None)
+    def _flip_editor_pronoun(self, checked=False, *, event=None):
+        draft = getattr(self, '_caption_draft', None)
         editor = self.subtitle_edit_input
-        if draft is None or getattr(editor, '_preediting', False):
+        if not self._caption_owns_draft(draft) or getattr(editor, '_preediting', False):
             return False
         text, cursor = editor.toPlainText(), editor.textCursor()
         positions = pronoun_positions(text)
         if not positions:
             self.caption_editor_hint.setText('当前这一层没有可切换的 他 / 她 / 他们 / 她们')
             return False
+        self._lock_caption_editor()
+        item = editor._begin_input('pronoun', event)
         anchor, position = cursor.anchor(), cursor.position()
-        changed = False
-        for at in reversed(positions):
-            changed = self._stage_caption_patch(at, at+1, toggle_pronoun(text[at]),
-                kind='pronoun', options=('他','她','它')) or changed
-        cursor = editor.textCursor()
-        cursor.setPosition(anchor)
-        cursor.setPosition(position, QTextCursor.MoveMode.KeepAnchor)
-        editor.setTextCursor(cursor)
-        return changed
+        vertical, horizontal = editor.verticalScrollBar().value(), editor.horizontalScrollBar().value()
+        blocker = QSignalBlocker(editor)
+        cursor.beginEditBlock()
+        try:
+            # One existing whole-draft toggle, one document undo block and one
+            # notification. Do not rebuild candidates or serialize per word.
+            for at in reversed(positions):
+                self._stage_caption_patch(at, at+1, toggle_pronoun(text[at]),
+                    kind='pronoun', options=('他','她','它'))
+        finally:
+            cursor.endEditBlock()
+            cursor = editor.textCursor()
+            cursor.setPosition(anchor)
+            cursor.setPosition(position, QTextCursor.MoveMode.KeepAnchor)
+            editor.setTextCursor(cursor)
+            editor.verticalScrollBar().setValue(vertical)
+            editor.horizontalScrollBar().setValue(horizontal)
+            del blocker
+            editor._input_active = None
+        editor.textChanged.emit()
+        item['expected_text'] = editor.toPlainText()
+        editor.viewport().update()
+        return True
 
     def _caption_editor_key(self, event, *, text_focus=False):
         editor = self.subtitle_edit_input
@@ -700,6 +813,8 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                 editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
                 editor.insertPlainText(event.text() or ('C' if shifted else 'c'))
                 return True
+        if shifted and key == Qt.Key.Key_P and (composing or event.isAutoRepeat()):
+            return True  # reserve this command without inserting P or ending IME
         if getattr(editor, '_preediting', False):
             return False
         if (getattr(self, '_caption_split_session', None) is not None
@@ -748,7 +863,7 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                 suggestions.select_first()
             return True
         if shifted and key == Qt.Key.Key_P:
-            self._flip_editor_pronoun()
+            self._flip_editor_pronoun(event=event)
             return True
         if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape}:
             if text_focus and key != Qt.Key.Key_Escape and mods & Qt.KeyboardModifier.ShiftModifier:
@@ -766,6 +881,11 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if not self._caption_owns_draft(draft):
             return
         self._live_edit_text_overrides[draft.target.render_id] = self.subtitle_edit_input.toPlainText()
+        self._caption_transform_preview_serial = getattr(self, '_caption_transform_preview_serial', 0) + 1
+        # The current scene already knows the bounded visible cue set, fonts
+        # and immutable revision. Its prepare() applies draft text locally.
+        if self._present_caption_scene():
+            return
         self._refresh_ass_preview()
 
     def _finish_caption_draft(self):

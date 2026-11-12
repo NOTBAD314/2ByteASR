@@ -66,36 +66,3 @@ def add_actions(page, menu):
                                 lambda _checked=False, r=region:open_recovery(page,r))
         action.setObjectName('languageRecoveryAction')
         action.setEnabled(not getattr(page, '_recognition_running', False))
-
-
-def sync_action(page):
-    from PySide6.QtWidgets import QPushButton
-    if getattr(page,'_recognition_running',False):
-        button = getattr(page,'_language_recovery_button',None)
-        if button is not None:
-            button.hide()
-        return
-    pending = _pending(page)
-    parts = page._recognition_chip_parts()
-    if parts is None:
-        return
-    frame, label = parts
-    button = getattr(page, '_language_recovery_button', None)
-    if pending and button is None:
-        button = QPushButton(tr('核对语言候选…'), frame)
-        button.setObjectName('languageRecoveryButton')
-        button.clicked.connect(lambda _checked=False:open_recovery(page))
-        frame.layout().addWidget(button)
-        page._language_recovery_button = button
-    if button is not None:
-        button.setVisible(bool(pending) and not getattr(page, '_recognition_running', False))
-    if pending and not getattr(page, '_recognition_running', False):
-        cancel=getattr(page,'recognition_cancel_button',None)
-        if cancel is not None:cancel.hide()
-        label.setText(tr('语言待核对 {count} 段 · {start}–{end}',count=len(pending),
-                         start=_clock(pending[0]['start']),end=_clock(pending[0]['end'])))
-        frame.show()
-        page._language_recovery_notice = True
-    elif getattr(page, '_language_recovery_notice', False) and not getattr(page, '_recognition_running', False):
-        page._language_recovery_notice = False
-        frame.hide()

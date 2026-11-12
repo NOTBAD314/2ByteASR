@@ -129,7 +129,7 @@ def _caption_ink_bounds(text, filename, face_index, size, spacing, line_height, 
 
 @lru_cache(maxsize=MEASURE_CACHE_SIZE)
 def visible_glyph_size(text, family, bold, size, spacing, weight=0,
-                       style_name='', filename='', face_index=0):
+                       style_name='', filename='', face_index=0, line_height=0):
     """Ink bounds of the actual face, excluding ascent/descent line-box slack.
 
     Newlines retain the face's baseline advance.  This is the same anchoring
@@ -140,7 +140,7 @@ def visible_glyph_size(text, family, bold, size, spacing, weight=0,
     from .font_metadata import resolve_local_face
     face, _ = resolve_local_face(family, weight, style_name, bold, filename, face_index)
     font = _measurement_font(face.file, 1000, index=face.index)
-    advance = sum(font.getmetrics())
+    advance = line_height*1000/max(1,size) if line_height else sum(font.getmetrics())
     boxes = []
     for index, line in enumerate(str(text).split('\n')):
         if not line.strip():

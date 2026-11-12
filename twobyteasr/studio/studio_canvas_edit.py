@@ -255,14 +255,20 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         preferences = self._studio_preferences()
         if preferences.get('caption_pause_on_edit', True) is not False:
             self.video.set_paused(True)
+        if len(self.timeline.selected_ids) > 1:
+            self.save_state.setText('请先选择一个明确的原文或译文对象')
+            return
         position = self.timeline.playhead_ms
         selected_target = self._resolve_caption_edit_target()
+        if selected_target is not None:
+            # E owns the explicit selection, including its language layer.
+            self._open_caption_editor(selected_target.cue_id, selected_target.layer)
+            return
         cue = self.cue_controller.sync_playhead_target(position, force=True)
         self._caption_follow_track = (selected_target.track_id if selected_target is not None else
                                       cue.speaker_id if cue else self.session.preferred_subtitle_speaker)
-        layer = str(preferences.get('caption_default_layer', 'translation'))
-        self._caption_follow_layer = layer if layer in {'original', 'translation'} else 'translation'
-        self._caption_follow_fallback_original = self._caption_follow_layer == 'translation'
+        self._caption_follow_layer = self.timeline.active_subtitle_layer
+        self._caption_follow_fallback_original = False
         self._caption_following = True
         self._caption_edit_locked = False
         self._follow_caption_editor(position, force=True)
@@ -279,10 +285,20 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         if split_session is not None and not getattr(self, '_caption_split_restoring', False):
             split_session.future.clear()
             self._update_split_controls()
-        if getattr(self, '_caption_draft', None) is not None:
+        draft = getattr(self, '_caption_draft', None)
+        if self._caption_owns_draft(draft):
             self._lock_caption_editor()
-        if getattr(self, "_caption_draft", None) is not None:
-            self._refresh_editor_suggestions()
+            draft.revision += 1
+            self.subtitle_edit_input._diagnostic_context['draft_revision'] = draft.revision
+            draft.text = self.subtitle_edit_input.toPlainText()
+            self._live_edit_text_overrides[draft.target.render_id] = draft.text
+            # Invalid offsets disappear immediately. Dictionary/QC work runs
+            # after paint against this exact session and draft revision.
+            if draft.text != draft.suggestion_text:
+                draft.actions.clear(); draft.ignored.clear(); draft.suggestions = ()
+                draft.suggestion_text = draft.text
+                self.caption_suggestion_text.update_rows(draft.text, ())
+            self._schedule_caption_suggestions()
         draft = getattr(self, '_caption_draft', None)
         cue_id = draft.target.cue_id if draft else self.selected_cue_id
         if getattr(self, "_canvas_editor", None) is getattr(self, "subtitle_edit_input", None) and cue_id:
@@ -291,9 +307,8 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
                 recovery.changed()
             # Bounded throttle: long key repeat must not starve preview.
             if not self._edit_preview_timer.isActive():
-                # Native preview is derived work; five updates/second leaves
-                # space for long-project compile/IPC and continuous typing.
-                self._edit_preview_timer.start(200)
+                # Publish the newest local draft on the next GUI dispatch.
+                self._edit_preview_timer.start(0)
                 self._edit_preview_queued_at = perf_counter()
                 self._studio_trace('EDIT_PREVIEW_QUEUED', cue_id=cue_id, queue_length=1)
 

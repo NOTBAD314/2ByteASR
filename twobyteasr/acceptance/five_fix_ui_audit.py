@@ -138,8 +138,9 @@ def start(window, output):
                 and all(21 <= card.title_font().pixelSize() <= 24 and 14 <= card.description_font().pixelSize() <= 16 for card in cards)
                 and all(13 <= button.font().pixelSize() <= 17 for button in supporting), geometry)
             self.check(phase+': no horizontal overflow', scroll.horizontalScrollBar().maximum() == 0, geometry)
-            self.check(phase+': follow-ups sit between summary and main actions',
-                window.result_summary_card.geometry().bottom() < window.result_todo.geometry().top() < window.result_action_grid.geometry().top())
+            self.check(phase+': follow-ups sit below the four main actions',
+                window.result_summary_card.geometry().bottom() < window.result_action_grid.geometry().top()
+                and window.result_action_grid.geometry().bottom() < window.result_todo.geometry().top())
             self.check(phase+': all follow-up labels fit', all(button.fontMetrics().horizontalAdvance(button.text())+24 <= button.width() for button in supporting))
             self.check(phase+': main and follow-up heights match within their rows', len({card.height() for card in cards}) == 1 and len({button.height() for button in supporting}) == 1)
             title, arrow = window.result_more_button.content_rects()
@@ -147,12 +148,12 @@ def start(window, output):
             for header in (window.result_files_toggle, window.result_log_toggle):
                 self.check(phase+': disclosure fills its fold column '+header.text(), header.width() >= window.result_content.width()//2 - 20
                     if window.result_folds.columns == 2 else header.width() >= window.result_content.width() - 4)
-            if columns == 3:
-                self.check(phase+': three equal columns', max(card.width() for card in cards)-min(card.width() for card in cards) <= 1)
+            if columns == 4:
+                self.check(phase+': four equal columns', len(cards) == 4 and max(card.width() for card in cards)-min(card.width() for card in cards) <= 1)
             else:
                 controls = cards
-                self.check(phase+': narrow operations stack and scroll', all(left.geometry().bottom() < right.geometry().top() for left, right in zip(controls, controls[1:]))
-                    and scroll.verticalScrollBar().maximum() > 0)
+                self.check(phase+': narrow operations wrap without overlapping', all(not left.geometry().intersects(right.geometry())
+                    for i,left in enumerate(controls) for right in controls[i+1:]) and columns in {1,2})
 
         def run(self):
             p = self.page
@@ -270,10 +271,12 @@ def start(window, output):
             self.shot('06-completion-top')
             summary_y = window.result_summary_card.mapTo(window.pages.widget(2).viewport(), QPoint()).y()
             cards_y = window.result_action_grid.mapTo(window.result_content, QPoint()).y()
+            preview_y = window.result_preview.mapTo(window.result_content, QPoint()).y()
             self.click(window.result_files_toggle)
             yield .2
             self.check('expanding task details only pushes lower content', window.result_files.isVisible()
-                and window.result_action_grid.mapTo(window.result_content, QPoint()).y() > cards_y
+                and window.result_action_grid.mapTo(window.result_content, QPoint()).y() == cards_y
+                and window.result_preview.mapTo(window.result_content, QPoint()).y() > preview_y
                 and window.result_summary_card.mapTo(window.pages.widget(2).viewport(), QPoint()).y() == summary_y)
             self.shot('07-completion-expanded')
             self.click(window.result_files_toggle)

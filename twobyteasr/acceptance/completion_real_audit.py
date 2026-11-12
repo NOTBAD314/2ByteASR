@@ -249,8 +249,8 @@ def start(window, output):
             scroll = window.pages.widget(2)
             viewport = scroll.viewport()
             cards = window.result_action_grid.cards
-            self.check(phase + ': exactly three visible primary cards', len(cards) == 3 and all(c.isVisible() for c in cards))
-            self.check(phase + ': return is third full primary card', cards[2] is window.result_return_button)
+            self.check(phase + ': exactly four visible primary cards', len(cards) == 4 and all(c.isVisible() for c in cards))
+            self.check(phase + ': AI and return occupy first and fourth cards', cards[0] is window.result_ai_card and cards[3] is window.result_return_button)
             self.check(phase + ': equal readable card heights with font-aware minimum', len({c.height() for c in cards}) == 1
                 and all(c.height() >= max(180, c.desired_height(c.width())) for c in cards))
             self.check(phase + ': common cards stay within target height unless measured copy requires more',
@@ -297,7 +297,7 @@ def start(window, output):
             # then the two folds side by side (stacked when narrow).
             side_by_side = window.result_folds.columns == 2
             self.check(phase + ': follow-ups under the summary, folds under the main actions',
-                summary.y() < todo.y() and todo.bottom() < bounds.y() and files.y() > bounds.bottom()
+                summary.y() < bounds.y() and bounds.bottom() < todo.y() and files.y() > todo.bottom()
                 and (abs(files.y()-log.y()) <= 1 and files.right() < log.x() if side_by_side else files.bottom() < log.y()),
                 dict(summary=self.rect(summary), todo=self.rect(todo), files=self.rect(files), log=self.rect(log)))
             self.surface_checks(phase, geometry, bounds)
@@ -532,7 +532,7 @@ def start(window, output):
                 # contract is equal main/support columns within each language;
                 # never shrink fonts to keep an identical scrollbar-free box.
                 self.check(phase + ': translated operations keep the same equal-column structure',
-                    window.result_action_grid.columns == 3 and (before['viewport_width'] != viewport.width()
+                    window.result_action_grid.columns == 4 and (before['viewport_width'] != viewport.width()
                         or outline == before['outline']), dict(before=before,after=outline,viewport_width=viewport.width()))
 
         def layout_snapshot(self):

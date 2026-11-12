@@ -149,9 +149,11 @@ def test_failed_write_does_not_block_producer_and_manifest_reports(tmp_path,monk
     store.snapshot()
     assert store.write_error=='PermissionError'
     assert store.losses['write_failed']>0
-    with pytest.raises(ValueError,match='沒有可用事件'):
-        export_report(tmp_path/'empty.zip',root=store.root,instance=store)
-    assert not (tmp_path/'empty.zip').exists()
+    result=export_report(tmp_path/'empty.zip',root=store.root,instance=store)
+    assert result['status']=='partial'
+    with zipfile.ZipFile(tmp_path/'empty.zip') as archive:
+        assert json.loads(archive.read('manifest.json'))['missing']
+        assert json.loads(archive.read('environment.json'))['application']['build']['app_version']
     store.close_store(clean=False)
 
 

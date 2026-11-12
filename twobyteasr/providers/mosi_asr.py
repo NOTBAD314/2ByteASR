@@ -474,7 +474,8 @@ def result_rows(payload, *, offset: float, duration: float) -> list:
         text = str(row.get('text') or '')
         if not text.strip():
             continue
-        segment = {'start': float(row['start']), 'end': float(row['end']), 'text': text, 'confidence': 0.78}
+        segment = {'start': float(row['start']), 'end': float(row['end']), 'text': text, 'confidence': 0.78,
+                   'confidence_available': False, 'confidence_source': 'adapter_compatibility_default'}
         if row.get('speaker') not in (None, ''):
             segment['speaker'] = str(row['speaker'])
         segments.append(segment)

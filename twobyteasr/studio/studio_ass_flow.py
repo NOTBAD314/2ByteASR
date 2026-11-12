@@ -106,7 +106,8 @@ class StudioAssFlowMixin:
             for speaker_id in getattr(self.timeline, "hidden_speakers", set())
         )
         for cue in snapshot.cues:
-            if cue.speaker_id in hidden_speakers:
+            from ..caption_style.subtitle_visibility import any_layer_visible
+            if not any_layer_visible(project,cue):
                 continue
             if cue.id in overrides:
                 cue.text = overrides[cue.id]
@@ -177,24 +178,8 @@ class StudioAssFlowMixin:
         # every edit (thawing all recipes and routing 2090 cues each time).
         authored = _authored_style_ids(self, revision)
         hidden: set[str] = {cue.id for cue in revision.cues if cue.style_id in authored}
-        # A subtitle-track eye action is a render-state change, not merely a
-        # timeline decoration. Remove cues from the generated ASS revision so
-        # native libass cannot keep painting a hidden speaker while the global
-        # mpv sub-visibility flag is restored for another visible track.
-        hidden_speakers = {
-            speaker_id
-            for speaker_id, visible in self._subtitle_track_visibility.items()
-            if not visible
-        }
-        hidden_speakers.update(
-            str(speaker_id)
-            for speaker_id in getattr(self.timeline, "hidden_speakers", set())
-        )
-        if hidden_speakers:
-            hidden.update(
-                cue.id for cue in revision.cues
-                if cue.speaker_id in hidden_speakers
-            )
+        # Layer filtering happens after bilingual expansion in project_display_cues.
+        # Removing a parent here would also discard its independently visible translation.
         for cue_id in sorted(hidden - self._advanced_ass_hidden):
             self._studio_trace("ASS_ADVANCED_SUPPRESS", cue_id=cue_id, reason="authored_or_speaker_hidden")
         for cue_id in sorted(self._advanced_ass_hidden - hidden):

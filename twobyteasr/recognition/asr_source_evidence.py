@@ -31,6 +31,15 @@ def independent_model(value):
 
 
 def _confidence(row, model):
+    decision=row.get('caption_arbitration') or {}
+    provider=decision.get('provider_source') or row.get('provider_source') or {}
+    if (provider.get('confidence_available') is not True
+            and 'moss-transcribe-diarize-pro' in str(model).casefold()
+            and row.get('confidence') in (0.78,'0.78')):
+        return None  # old MOSI adapter receipt, before provenance was persisted
+    if model != 'qwen3-asr' and (provider.get('confidence_available') is False
+            or decision.get('confidence_kind') in {'adapter_compatibility_default','not_reported','unknown'}):
+        return None
     key = {'moss': 'moss_confidence', 'firered': 'firered_confidence',
         'qwen3-asr': 'qwen_confidence'}.get(model, 'confidence')
     value = row.get(key)
@@ -176,7 +185,13 @@ def project_row_observations(reference, row, cue, *, role_models=None, projectio
                 cue_text_start=text_start if text_start >= 0 else None,
                 cue_text_end=text_start+len(normalized_comparison) if text_start >= 0 else None,
                 text_projection_basis='unique_normalized_primary_text_match',
-                comparison_text=comparison, speaker_id=str(row.get('speaker_id') or ''),
+                comparison_text=comparison,
+                reference_speaker_id=str(row.get('speaker_id') or ''),
+                speaker_id=str(scope.get('project_speaker_id') or (
+                    scope.get('speaker_id') if scope.get('speaker_independent') or scope.get('speaker_verified') else '') or (
+                    row.get('speaker_id') if field == 'primary' or row.get('speaker_independent') is True else '') or ''),
+                speaker_verified=bool(scope.get('project_speaker_id') or scope.get('speaker_independent') or
+                    scope.get('speaker_verified') or field == 'primary' or row.get('speaker_independent') is True),
                 confidence=scope.get('confidence', _confidence(row, model)))
             output.append(payload)
     return output
@@ -343,6 +358,64 @@ def _mark_neighbor_context(observations, cue):
     return observations
 
 
+def _has_competing_speaker(project, cue):
+    # Project snapshots retain a cue-local temporal index; never scan all
+    # captions for each reference or infer ownership from a display colour.
+    runtime = getattr(project, '_studio_state_runtime', None)
+    if runtime is not None and runtime.cue_by_id:
+        peers = runtime.visible_cues(cue.start_ms, cue.end_ms)
+    else:
+        from ..timeline.studio_edit_sequence import TemporalIntervalIndex
+        cues = getattr(project, 'cues', ())
+        key = (id(cues),len(cues))
+        cached = getattr(project, '_speaker_overlap_index', None)
+        if cached is None or cached[0] != key:
+            cached = key,TemporalIntervalIndex((c.start_ms,c.end_ms,c) for c in cues)
+            project._speaker_overlap_index = cached
+        peers = cached[1].query(cue.start_ms, cue.end_ms)
+    return any(other.id != cue.id and other.speaker_id != cue.speaker_id for other in peers)
+
+
+def _bind_observation_owner(observation, cue, competing):
+    owner = observation.get('speaker_id')
+    reason = None
+    if owner and owner != cue.speaker_id:
+        reason = 'other_speaker'
+    elif competing and not (owner == cue.speaker_id and observation.get('speaker_verified')):
+        reason = 'mixed_reference_without_speaker_attribution'
+    observation.update(cue_id=cue.id, cue_speaker_id=cue.speaker_id,
+        ownership_reason=observation.get('ownership_reason') or reason or observation.get('ownership') or 'same_source_local_range')
+    if reason:
+        observation.update(context_only=True,coverage_unknown=True,ownership='needs_confirmation')
+    return observation
+
+
+def _partial_agreement_is_context(observation, cue):
+    from ..subtitle_rules.studio_qc import normalize_spoken_text
+    current=normalize_spoken_text(cue.text)
+    comparison=normalize_spoken_text(observation.get('comparison_text') or '')
+    reading=normalize_spoken_text(observation.get('text') or '')
+    if (not observation.get('candidate_partial') and comparison and comparison != current
+            and (comparison in current or current in comparison) and reading==comparison):
+        observation.update(context_only=True,coverage_unknown=True,
+            ownership_reason='partial_reference_agreement_does_not_delete_unobserved_words')
+    return observation
+
+
+def full_text_scope(observation):
+    return (not observation.get('context_only') and not observation.get('coverage_unknown')
+        and observation.get('cue_text_start')==0 and observation.get('cue_text_length')
+        and observation.get('cue_text_end')==observation.get('cue_text_length'))
+
+
+def unsupported_projected_shortening(cue, text, observations):
+    from ..subtitle_rules.machine_text_policy import compliant_candidate
+    from ..subtitle_rules.studio_qc import normalize_spoken_text
+    safe=compliant_candidate(cue.text,text)
+    return (len(normalize_spoken_text(safe)) < len(normalize_spoken_text(cue.text))
+            and not any(full_text_scope(row) for row in observations))
+
+
 def cue_source_hypotheses(project, cue, *, index=None):
     from .source_candidate_mapping import associations, project_candidate, local_match, source_text
     assigned, suppressed = associations(project)
@@ -372,6 +445,7 @@ def cue_source_hypotheses(project, cue, *, index=None):
     else:
         candidates = list(evidence.items())
     result, seen = [], set()
+    competing = _has_competing_speaker(project, cue)
     overlapping_sources = {str(row.get('speaker_id') or '') for _, row in candidates
                            if isinstance(row, Mapping) and not row.get('cue_alignment')}
     for ref, row in candidates:
@@ -384,6 +458,8 @@ def cue_source_hypotheses(project, cue, *, index=None):
             if (getattr(project, 'render_settings', {}) or {}).get('_cue_domain') == 'timeline'
             else project_row_observations(ref, row, cue, role_models=role_models))
         for observation in observations:
+            _partial_agreement_is_context(observation, cue)
+            _bind_observation_owner(observation, cue, competing)
             if ref in suppressed and observation.get('source') == 'firered':
                 continue
             if (len(overlapping_sources) > 1 and not row.get('cue_alignment')
@@ -399,6 +475,7 @@ def cue_source_hypotheses(project, cue, *, index=None):
             projected = project_candidate(candidate, cue)
             if projected is None:
                 continue
+            _bind_observation_owner(projected, cue, competing)
             key = ('candidate', projected['candidate_id'], projected['text'])
             if key not in seen:
                 seen.add(key)
@@ -483,3 +560,59 @@ def coverage_summary(hypotheses):
         missing=not present, partial=partial, coverage_unknown=unknown_coverage,
         agreement=bool(present and known_texts and not conflict),
         single_source=bool(minimum == maximum == 1 and not unknown_coverage))
+
+
+def annotate_suggestions(project, cue, suggestions):
+    """Runtime provenance; no persisted project format or recognition schema change."""
+    from dataclasses import replace
+    if cue is None: return ()
+    observations = None
+    result=[]
+    for row in suggestions:
+        options=[]
+        for option in row.options:
+            provenance=[]
+            if row.kind == 'model':
+                from ..subtitle_rules.review_suggestions import _content
+                if len(_content(option.text or '')) < len(_content(row.original)):
+                    if observations is None: observations=cue_source_hypotheses(project,cue)
+                    supported = [observed for observed in observations
+                        if not observed.get('context_only') and not observed.get('coverage_unknown')
+                        and observed.get('cue_text_start')==0
+                        and observed.get('cue_text_end')==observed.get('cue_text_length')
+                        and (not option.sources or MODEL_LABELS.get(observed['model'],observed['model']) in option.sources
+                             or observed['model'] in option.sources)]
+                    if not supported:continue
+                if observations is None: observations=cue_source_hypotheses(project,cue)
+                for observed in observations:
+                    if observed.get('context_only'):continue
+                    label=MODEL_LABELS.get(observed['model'],observed['model'])
+                    if option.sources and label not in option.sources and observed['model'] not in option.sources:continue
+                    from difflib import SequenceMatcher
+                    from ..subtitle_rules.review_suggestions import _map
+                    operations=SequenceMatcher(None,cue.text,str(observed.get('text') or ''),autojunk=False).get_opcodes()
+                    offered=str(observed.get('text') or '')[_map(operations,row.start):_map(operations,row.end)]
+                    if offered != option.text:continue
+                    provenance.append(tuple(dict(cue_id=cue.id,speaker_id=cue.speaker_id,
+                        reference=observed['reference'],model=observed['model'],
+                        start_ms=observed['start_ms'],end_ms=observed['end_ms'],
+                        reference_text=observed.get('observed_text',observed['text']),
+                        reference_speaker_id=observed.get('speaker_id',''),
+                        suggestion_type=row.kind,reason=observed.get('ownership_reason','same_source_local_range')).items()))
+            else:
+                provenance.append(tuple(dict(cue_id=cue.id,speaker_id=cue.speaker_id,
+                    start_ms=cue.start_ms,end_ms=cue.end_ms,suggestion_type=row.kind,
+                    reason='confirmed_glossary' if row.kind=='glossary' else 'explicit_pronoun_tool').items()))
+            if row.kind=='model' and option.sources and not provenance:continue
+            options.append(replace(option,provenance=tuple(provenance)))
+        if options:result.append(replace(row,options=tuple(options)))
+    return tuple(result)
+
+
+def current_suggestion_option(project,cue,row,index):
+    if cue is None or not 0 <= index < len(row.options):return False
+    accepted=annotate_suggestions(project,cue,(row,))
+    if not accepted:return False
+    selected=row.options[index]
+    return any((value.text,value.operation,value.sources)==(selected.text,selected.operation,selected.sources)
+        and (not selected.provenance or selected.provenance==value.provenance) for value in accepted[0].options)

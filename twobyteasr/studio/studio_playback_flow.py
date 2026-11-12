@@ -472,7 +472,9 @@ class StudioPlaybackFlowMixin:
         # (2026-10-27, user: follow is on but does nothing); only the
         # timeline's own text editor sits on that view and needs it still.
         inline_editor = getattr(self.timeline, '_inline_editor', None)
-        if (self.follow_playhead_toggle.isChecked()
+        if self._selection_centered():
+            self.timeline.center_playhead(milliseconds)
+        elif (self.follow_playhead_toggle.isChecked()
                 and not (inline_editor is not None and inline_editor.isVisible())
                 and not getattr(self.timeline, '_scrub_drag', False)
                 and not getattr(self.timeline, '_pan_drag', None)):
@@ -622,7 +624,7 @@ class StudioPlaybackFlowMixin:
     @measured('active_cues')
     def _update_active_cues(self, milliseconds: int) -> None:
         from ..projects.studio_runtime_state import state_for
-        self._follow_caption_editor(milliseconds)
+        self._follow_caption_editor(milliseconds, clock_sample=True)
         self.cue_controller.sync_playhead_target(milliseconds, rule=self._playhead_target_rule())
         sample=getattr(self,'_caption_sample_ms',None)
         if callable(sample):milliseconds=sample(milliseconds)
@@ -656,6 +658,7 @@ class StudioPlaybackFlowMixin:
         if cue:
             self.session.preferred_subtitle_speaker = cue.speaker_id
         self.select_cue(cue_id)
+        self._remember_subtitle_navigation(cue_id)
 
     def _follow_toggle_changed(self, checked: bool) -> None:
         # Viewport policy never changes the user's explicit editing target.
@@ -669,7 +672,16 @@ class StudioPlaybackFlowMixin:
 
     @measured('seek_request')
     @observed('player.seek')
-    def _seek(self, seconds: float, *, accurate: bool = True) -> None:
+    def _seek(self, seconds: float, *, accurate: bool = True, preserve_subtitle_target: bool = False) -> None:
+        seconds = self.timeline._bounded_time_ms(round(seconds * 1000)) / 1000.0
+        if not preserve_subtitle_target:
+            self._subtitle_locate_window_target_ms = None
+            self._subtitle_endpoint_hold = False
+            # User selection is independent of both the view mode and an
+            # ordinary seek. Only retire the last endpoint request's position.
+            self._subtitle_navigation_requested_ms = None
+        if self._selection_centered():
+            self.timeline.center_playhead(round(seconds * 1000), force=True)
         from .caption_seek_preparation import coordinate_caption_seek
         if coordinate_caption_seek(self,seconds,accurate):return
         StudioPlaybackFlowMixin._seek_immediate(self,seconds,accurate=accurate)
@@ -678,8 +690,11 @@ class StudioPlaybackFlowMixin:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
         timeline_ms = round(seconds * 1000)
-        if not getattr(self.timeline,'_viewport_manipulated',lambda:False)():
+        if (timeline_ms != getattr(self, '_subtitle_locate_window_target_ms', None)
+                and not getattr(self.timeline,'_viewport_manipulated',lambda:False)()):
             self.timeline._manual_view_hold = False
+            if self._selection_centered():
+                self.timeline._follow_suspended_until = 0
         if not getattr(self, '_highlight_seeking', False):
             self._highlight_preview = None
         self._invalidate_audio_tail()
@@ -1123,8 +1138,8 @@ class StudioPlaybackFlowMixin:
     def _playback_state_changed(self, paused: bool) -> None:
         if getattr(self, '_closing_project', False):
             return
-        if not paused and hasattr(self, 'timeline'):
-            self.timeline._manual_view_hold = False
+        if hasattr(self, 'timeline'):
+            self._sync_navigation_playback_intent(paused)
         if not paused and hasattr(self, 'source_monitor'):
             self.source_monitor.pause()
         if getattr(self.video, '_seek_hold_active', False):
@@ -1160,7 +1175,7 @@ class StudioPlaybackFlowMixin:
         self._resource_governor.set_playback(not paused)
         if paused and self.selected_cue_id and getattr(self, '_selection_needs_hydration', False):
             # Explicit fast review selections may defer their own inspector.
-            self.select_cue(self.selected_cue_id)
+            getattr(self, '_select_cue_observation', self.select_cue)(self.selected_cue_id)
         if self.project and hasattr(self, "timeline"):
             self._sync_video_compositor(int(self.timeline.playhead_ms))
         cue = self._renderer_cue_at_playhead() if self.project else None
