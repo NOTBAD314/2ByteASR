@@ -92,6 +92,7 @@ class BunnyMascot(QWidget):
         self._open_until = 0.0
         self._hop_from = -1.0
         self.stretch = 0.0               # >0 taller and thinner, <0 squashed (the tutorial's puck)
+        self.impact_offset = QPointF()  # paint-only; never changes physics or window geometry
         self._started = time.perf_counter()
         self._next_blink = self._started + 1.2
         self._blink_until = 0.0
@@ -203,6 +204,7 @@ class BunnyMascot(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.translate(self.impact_offset)
         # Canvas origin so the trimmed bunny sits at (pad_x, pad_top).
         painter.translate(self.pad_x - self.trim[0] * s, self.pad_top - self.trim[1] * s)
         lift = self._hop_lift(now)

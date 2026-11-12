@@ -32,6 +32,7 @@ def tier_hue(theme, color: str) -> str:
 
 def language_badge_qss(theme) -> str:
     """Badge rules for one theme; the row applies them to itself."""
+    from ..design.typography import TITLE_FONT_STACK
     from ..design.ui_theme import blend_hex
     fill = 0.14 if theme.is_light else 0.2
     edge = 0.32 if theme.is_light else 0.42
@@ -60,6 +61,8 @@ QLabel#languageBadge {{
     border: 1px solid transparent; background: transparent; color: {theme.text_secondary};
 }}
 QLabel#languageBadge[short="true"] {{ padding: 0px 4px; border-radius: 7px; min-width: 14px; min-height: 20px; }}
+QLabel#languageBadge[grid="true"] {{ padding: 2px 9px; font-size: 13px; min-height: 20px; min-width: 34px;
+    font-family: {TITLE_FONT_STACK}; font-weight: 800; }}
 {tier_rules}
 QLabel#languageBadge[tier="more"] {{
     background: {theme.surface_elevated}; color: {theme.accent_text}; border: 1px solid {theme.border};
@@ -112,13 +115,18 @@ class LanguageBadgeRow(QWidget):
     the card layout (no resize feedback).
     """
 
-    def __init__(self, parent=None, *, short: bool = False, caption: bool = False, grid_columns: int = 0):
+    def __init__(self, parent=None, *, short: bool = False, caption: bool = False, grid_columns: int = 0,
+                 fill: bool = False, show_more: bool = True):
         super().__init__(parent)
         self.setObjectName("languageBadgeRow")
         self.short = bool(short)
         # grid_columns > 0 (model list column, 2026-11-11): the badges wrap
         # into rows of that many, full names, no caption.
         self.grid_columns = max(0, int(grid_columns))
+        # fill: the badges share the row's width (detail panel), with a ✓ on
+        # supported languages. show_more=False leaves out the "+N" badge.
+        self.fill = bool(fill)
+        self.show_more = bool(show_more)
         self._compact = False
         self._fit_pending = False
         self._support = None
@@ -152,13 +160,16 @@ class LanguageBadgeRow(QWidget):
         from PySide6.QtWidgets import QGridLayout
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(4)
-        layout.setVerticalSpacing(4)
+        layout.setHorizontalSpacing(6 if self.fill else 5)
+        layout.setVerticalSpacing(6 if self.fill else 5)
         self.caption = None
         self.badges = {}
         position = 0
         for code in BADGE_LANGUAGES:
             badge = self._badge()
+            badge.setProperty("grid", True)
+            if self.fill:
+                badge.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.badges[code] = badge
             layout.addWidget(badge, position // self.grid_columns, position % self.grid_columns)
             position += 1
@@ -168,7 +179,12 @@ class LanguageBadgeRow(QWidget):
         layout.addWidget(self.more, position // self.grid_columns, position % self.grid_columns,
                          1, self.grid_columns - position % self.grid_columns,
                          Qt.AlignmentFlag.AlignLeft)
-        layout.setColumnStretch(self.grid_columns, 1)
+        self.more.setProperty("grid", True)
+        if not self.fill:
+            layout.setColumnStretch(self.grid_columns, 1)
+        else:
+            for column in range(self.grid_columns):
+                layout.setColumnStretch(column, 1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.set_support(None)
         self.refresh_theme_palette()
@@ -206,12 +222,15 @@ class LanguageBadgeRow(QWidget):
         short = self.short or self._compact
         for code, badge in self.badges.items():
             name = LANGUAGE_NAMES[code]
-            badge.setText(short_name(code, language) if short else translate(name, language))
+            label = short_name(code, language) if short else translate(name, language)
+            if self.fill and TIER_COLORS.get(str(badge.property("tier"))) == "yes":
+                label = "✓ " + label
+            badge.setText(label)
             bind_text(badge, "{language}：{tier}", property="toolTip",
                       language=tr(name), tier=tr(TIER_NAMES[str(badge.property("tier"))]))
         more = support.get("more")
         template = more_text(more, short=short)
-        if template:
+        if template and self.show_more:
             count = more if isinstance(more, str) else str(more)
             self.more.setText(translate(template, language).format(count=count))
             bind_text(self.more, summary or "{count}", property="toolTip", count=count)

@@ -223,7 +223,8 @@ def test_only_workflow_recommended_models_get_recommendation_badge():
     card = ModelCard(next(item for item in MODELS if item.key == "moss"))
     assert card.property("recommended") is True
     assert card.recommendation_badge is not None
-    assert "2ByteASR" in card.recommendation_badge.text()
+    assert "推荐" in card.recommendation_badge.text()
+    assert "2ByteASR" in card.recommendation_badge.toolTip()
     card.deleteLater()
 
 

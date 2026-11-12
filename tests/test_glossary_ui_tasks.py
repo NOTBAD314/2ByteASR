@@ -81,6 +81,26 @@ def _spin(app, condition, timeout=5.0):
 
 # ---------------------------------------------------------------- 截图问题 1 回归
 
+def test_home_store_write_invalidates_resident_rows_without_resetting_search(dialog):
+    legacy.add_learned_mapping('性能词库', '旧词', '旧词')
+    dialog.state['game'] = '性能词库'
+    dialog.refresh_current_game()
+    assert dialog._term_model.rowCount() == 1
+    dialog.search.setText('新词')
+    legacy.add_learned_mapping('性能词库', '新词', '新词')
+    dialog.refresh_current_game()
+    assert dialog.search.text() == '新词'
+    assert dialog._term_model.rowCount() == 1
+    assert dialog._term_model.data_for_row(0)['target'] == '新词'
+
+
+def test_old_batch_summary_cannot_replace_a_new_library(dialog):
+    dialog._batch_request_key = ('current',)
+    dialog.batch_status.setText('current library')
+    dialog._receive_batch_summary(('previous',), (['previous'], {'effective_terms':99}, {}))
+    assert dialog.batch_status.text() == 'current library'
+
+
 def test_switching_game_keeps_task_visible_and_button_semantic(dialog, monkeypatch):
     """运行中任务：切到其它游戏 → 任务栏仍显示该任务；任务游戏按钮=更新中；其它游戏可发起。"""
     import threading

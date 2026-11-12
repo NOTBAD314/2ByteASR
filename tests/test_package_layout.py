@@ -39,7 +39,7 @@ QT_FREE = {
     "recognition": {"recognition_history", "history_diagnosis_panel"},
     "providers": {"api_setup_dialog", "endpoint_editor_ui"},
     "storage": {"storage_ui", "storage_relocation_ui"},
-    "local_models": {"model_storage", "model_workshop", "model_language_badges", "download_widgets"},
+    "local_models": {"model_storage", "model_workshop", "model_language_badges", "download_widgets", "model_picker_cards"},
 }
 QT_ROOTS = ("PySide6", "qtawesome", "shiboken6")
 

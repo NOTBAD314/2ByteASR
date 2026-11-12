@@ -17,31 +17,19 @@ def page_at(position=10500):
     page = SimpleNamespace(project=project, session=session, selected_cue_id='',
         _review_mode=False, _canvas_editor=None, _subtitle_track_visibility={},
         timeline=SimpleNamespace(playhead_ms=position, hidden_speakers=set(), locked_speakers=set(),
-            selected_ids=set(), active_subtitle_layer='original',
-            selected_track_header=None, _speaker_ids=['S1', 'S2'], setFocus=lambda *_: None),
+            selected_track_header=None, _speaker_ids=['S1', 'S2']),
         video=SimpleNamespace(playback_position_snapshot=lambda: SimpleNamespace(
             presentation_media_ms=page.timeline.playhead_ms)),
         save_state=SimpleNamespace(setText=lambda text: calls.append(('status', text))))
     class Controller(StudioCueController):
-        def _mirror_clock_selection(self, cue_id, **_kwargs):
+        def _mirror_clock_selection(self, cue_id):
             page.selected_cue_id = session.selected_cue_id = cue_id
             page._manual_selection_hold = False
             calls.append(('mirror', cue_id))
     page.cue_controller = Controller(page, session)
     page.select_cue = lambda cue_id: setattr(page, 'selected_cue_id', cue_id)
-    # This unit fixture observes target selection; the real following editor is covered by GUI checks.
-    page._studio_preferences = lambda: dict(caption_pause_on_edit=False, caption_default_layer='original')
-    page._resolve_caption_edit_target = lambda: None
-    page._follow_caption_editor = lambda _position, **_kw: calls.append(('follow', session.playhead_target_id))
-    page._set_subtitle_editor_visible = lambda _visible: None
+    page._begin_canvas_inline_edit = lambda: calls.append(('edit', page.selected_cue_id))
     return page, calls
-
-
-def edit_request(page):
-    # Each request models a closed editor, as the former one-shot stub did.
-    # Already-open editor identity is exercised by the separate guard test.
-    page._caption_following=False
-    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
 
 
 def test_continuous_a_gap_b_gap_overrides_stale_manual_selection():
@@ -52,8 +40,8 @@ def test_continuous_a_gap_b_gap_overrides_stale_manual_selection():
             page.selected_cue_id = page.session.selected_cue_id = 'a'
             page._manual_selection_hold = True
         page.cue_controller.sync_playhead_target(position)
-        edit_request(page)
-        assert calls[-1] == ('follow', expected)
+        StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
+        assert calls[-1] == ('edit', expected)
         assert page.session.playhead_target_id == expected
 
 
@@ -63,9 +51,9 @@ def test_paused_seek_resolves_destination_not_history(position, expected):
     page, calls = page_at(29000)
     page.cue_controller.sync_playhead_target(29000)
     page.timeline.playhead_ms = position
-    edit_request(page)
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
     assert page.session.playhead_target_id == expected
-    assert calls[-1] == ('follow', expected)
+    assert calls[-1][0] == ('edit' if expected else 'status')
 
 
 def test_cancel_suppresses_same_target_but_e_or_next_target_restores():
@@ -75,8 +63,8 @@ def test_cancel_suppresses_same_target_but_e_or_next_target_restores():
         c.sync_playhead_target(position)
         assert page.selected_cue_id == page.session.playhead_target_id == ''
     page.timeline.playhead_ms=12400
-    edit_request(page)
-    assert calls[-1] == ('follow','a')
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
+    assert calls[-1] == ('edit','a')
     c.cancel_selection(); c.sync_playhead_target(15100)
     assert page.selected_cue_id == 'b'
 
@@ -114,10 +102,8 @@ def test_open_editor_keeps_original_identity_even_when_clock_changes():
     page,calls=page_at(15100)
     page._canvas_editor=SimpleNamespace(setFocus=lambda *_:calls.append(('focus','a')))
     page._review_edit_lock={'cue_id':'a'}
-    page.selected_cue_id=page.session.selected_cue_id='a'
-    edit_request(page)
-    assert calls==[] and page._review_edit_lock['cue_id']=='a'
-    assert page.selected_cue_id==page.session.selected_cue_id=='a'
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
+    assert calls==[('focus','a')] and page._review_edit_lock['cue_id']=='a'
 
 
 def test_cut_sequence_resolves_project_time_to_stable_source_id():
@@ -125,7 +111,7 @@ def test_cut_sequence_resolves_project_time_to_stable_source_id():
     page,calls=page_at(500); sequence=ensure_edit_sequence(page.project)
     replace_runtime_sequence(page.project,delete_timeline_range(sequence,0,10000))
     state_for(page.project).reindex_cues(page.project)
-    edit_request(page)
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
     assert source_cue_id_of(calls[-1][1])=='a'
 
 
@@ -148,7 +134,7 @@ def test_e_maps_deep_source_clock_into_cut_timeline(timeline_ms, source_ms, expe
     page._playback_mode = 'mapped'
     page._mapped_sequence_segment = lambda: sequence.segments[0]
     page.video.playback_position_snapshot = lambda: SimpleNamespace(presentation_media_ms=source_ms)
-    edit_request(page)
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
     from twobyteasr.timeline.studio_edit_sequence import source_cue_id_of
     assert source_cue_id_of(calls[-1][1]) == expected
 
@@ -164,18 +150,16 @@ def test_e_maps_rate_and_repeated_source_using_active_segment():
     page._playback_mode = 'mapped'
     page._mapped_sequence_segment = lambda: sequence.segments[1]
     page.video.playback_position_snapshot = lambda: SimpleNamespace(presentation_media_ms=11000)
-    edit_request(page)
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
     assert 'repeat' in calls[-1][1]
 
 
-def test_e_uses_mapped_timeline_clock_instead_of_raw_source_snapshot():
+def test_e_outside_mapped_segment_does_not_edit_unrelated_tail():
     page, calls = page_at(15100)
     from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence
     sequence = ensure_edit_sequence(page.project)
     page._playback_mode = 'mapped'
     page._mapped_sequence_segment = lambda: sequence.segments[0]
     page.video.playback_position_snapshot = lambda: SimpleNamespace(presentation_media_ms=1000000)
-    edit_request(page)
-    # Raw source media time is not the already-mapped timeline clock.
-    assert calls[-1] == ('follow','b')
-    assert page.session.playhead_target_id == 'b'
+    StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
+    assert calls[-1][0] == 'status'

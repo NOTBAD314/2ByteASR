@@ -507,9 +507,10 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
                 "AISHELL-4 CER 14.84%，长音频多说话人同表最佳",
                 "MOSS-Transcribe-Diarize 官方表：AISHELL-4 14.84 / Alimeeting 24.86（同表最佳），对照 Gemini 3 Pro 22.75/26.75、Doubao 18.18/25.25、ElevenLabs 19.58/25.70、Gemini 2.5 Pro 42.70/27.43。",
                 [_MOSS_URL]),
-            "zh": _ref(80, "tier", "综合档位估算",
+            "zh": _ref(85, "tier", "2ByteASR 使用体验校准",
                 "AISHELL-4 同表最佳，但属长音频多人口径，与朗读集不可直比",
-                "MOSS 的公开成绩都在长音频/多说话人集（AISHELL-4/Alimeeting/Podcast/Movies），无普通话朗读集数字。其胜出对象含通用 API（Doubao/Gemini），中文能力属第一梯队；按档位估 80（区间 75-85）。说话人区分能力不计入文字准确度。",
+                "MOSS 的公开成绩都在长音频/多说话人集（AISHELL-4/Alimeeting/Podcast/Movies），无普通话朗读集数字。其胜出对象含通用 API（Doubao/Gemini），中文能力属第一梯队；原按档位估 80（区间 75-85），"
+                "2026-11-12 按 2ByteASR 实际使用体验（作者指定）校准为 85。说话人区分能力不计入文字准确度。",
                 [_MOSS_URL]),
             "zh_dialect": _ref(70, "tier", "通用参考（方言未验证）",
                 "中文长音频证据迁移；无方言集成绩",
@@ -525,6 +526,16 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
                 "MOSI 未公布 MOSS-Transcribe-Diarize Pro 的独立评测表。它与本地 MOSS-Transcribe-Diarize 同源（本地版普通话档位 80，长音频多人同表最佳），"
                 "2026-11-11 按 2ByteASR 实际使用体验（作者指定）校准为 90。说话人区分能力不计入文字准确度。",
                 [_MOSS_URL]),
+        },
+        "default": None, "unsupported": {}, "gap": "仅中文场景有参考",
+    },
+    ("qwen_cloud_filetrans", "accuracy"): {
+        "scenes": {
+            "zh": _ref(70, "tier", "2ByteASR 使用体验校准",
+                "Qwen Audio 3.1 录音文件识别；无公开同表成绩，按 2ByteASR 使用体验定为 70",
+                "阿里云未公布 Qwen-Audio-3.1-ASR-Flash 录音文件识别的独立评测表。2026-11-12 按 2ByteASR 实际使用体验（作者指定）定为 70。"
+                "说话人区分能力不计入文字准确度。",
+                [_QWEN_URL]),
         },
         "default": None, "unsupported": {}, "gap": "仅中文场景有参考",
     },

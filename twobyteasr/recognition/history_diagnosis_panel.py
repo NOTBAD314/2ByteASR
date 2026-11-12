@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushB
 from ..i18n import bind_text, current_language, tr, translate
 from ..i18n_widgets import user_text
 from .diagnosis_catalog import ACTION_LABELS
-from .history_diagnosis import RESUME_ACTION, DiagnosisView, ai_view, local_view, structured_messages, view_text
+from .history_diagnosis import (ANALYSE_ACTION, RESUME_ACTION, DiagnosisView, ai_view, local_view,
+                                structured_messages, view_text)
 
 AI_STAGE = "polish"
 
@@ -34,6 +35,65 @@ def _label(text: str = "", name: str = "historyDiagBody", *, wrap: bool = True, 
     return label
 
 
+_ERROR_LINE = None
+_PATH = None
+
+
+def key_log_lines(lines, limit: int = 4) -> list[tuple[str, bool]]:
+    """The failing part of each log line (2026-11-12, user): folder paths
+    dropped, a line cut into clauses, advice left out; only clauses that
+    name the failure are marked, with at most one clause of context."""
+    import re
+    global _ERROR_LINE, _PATH
+    if _ERROR_LINE is None:
+        _ERROR_LINE = re.compile(r"(?i)not installed|missing|denied|unauthori|forbidden|timed? ?out|\bfail(ed|ure)?\b|"
+                                 r"\berror:|exception|traceback|\b(40[13]|429|5\d\d)\b|未安装|缺少|拒绝|超时|失败|无法")
+        _PATH = re.compile(r"\(?[A-Za-z]:[\\/][^\s()（）;；,，]*\)?|\(?/(?:Users|home|private)/[^\s()（）;；,，]*\)?")
+    advice = re.compile(r"^(请|可以|建议|please\b|try\b)", re.I)
+    out: list[tuple[str, bool]] = []
+    for line in lines:
+        value = _PATH.sub("", " ".join(str(line).split()))
+        value = re.sub(r"\s+([)）,，:：])", r"\1", " ".join(value.split())).strip()
+        clauses = [part.strip(" ;；。：") for part in re.split(r"[;；。：]", value) if part.strip(" ;；。：")]
+        clauses = [part for part in clauses if not advice.match(part)] or clauses
+        failing = [part for part in clauses if _ERROR_LINE.search(part)]
+        if not failing:
+            out.append((value, False))
+        else:
+            first = clauses[0]
+            if first not in failing:
+                out.append((first, False))
+            out.extend((part, True) for part in failing)
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def log_html(lines) -> str:
+    """Log lines as a table; lines that name the failure on a red band."""
+    import html
+    import re
+    from ..design.theme_manager import theme_key
+    from ..design.ui_theme import blend_hex, theme_definition
+    t = theme_definition(theme_key())
+    base = getattr(t, "log_background", "") or t.media
+    band = blend_hex(base, t.danger, 0.42)
+    hot = blend_hex("#ffffff", t.danger, 0.12)
+    rows = []
+    for text, failing in key_log_lines(lines):
+        text = html.escape(breakable(text))
+        if failing:
+            rows.append(f'<tr><td bgcolor="{band}" style="color:{hot}; padding:3px 6px;">{text}</td></tr>')
+        else:
+            rows.append(f'<tr><td style="padding:3px 6px;">{text}</td></tr>')
+    return '<table width="100%" cellspacing="0" cellpadding="0">' + "".join(rows) + "</table>"
+
+
+def breakable(text: str) -> str:
+    """Let long paths wrap: a zero-width space after each separator."""
+    return str(text).replace("\\", "\\\u200b").replace("/", "/\u200b")
+
+
 def _clear(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -49,6 +109,10 @@ def _clear(layout) -> None:
 def action_label(action: str) -> str:
     if action == RESUME_ACTION:
         return str(tr("重试未完成部分"))
+    if action == ANALYSE_ACTION:
+        return str(tr("让 AI 分析"))
+    if action == "support":
+        return str(tr("回报问题"))
     return str(translate(ACTION_LABELS.get(action, action), current_language())).rstrip("…")
 
 
@@ -72,7 +136,8 @@ class HistoryDiagnosisPanel(QFrame):
         self.answer = ""
         ready, service, _gate = AiAnalysisPanel._readiness(settings)
         self.ai_ready = ready
-        self.service = service
+        from .recognition_history import short_service_name
+        self.service = short_service_name(service) or service
         version = current_app_version()
         self.diagnosis = diagnose_run(DiagnosisInput(report=report, item_error=item_error, ai_ready=ready if settings else None,
                                                      app_version=version))
@@ -173,6 +238,7 @@ class HistoryDiagnosisPanel(QFrame):
             if view.reasons:
                 card = QFrame()
                 card.setObjectName("historyDiagCard")
+                card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 reasons = QVBoxLayout(card)
                 reasons.setContentsMargins(14, 12, 14, 12)
                 reasons.setSpacing(7)
@@ -184,11 +250,15 @@ class HistoryDiagnosisPanel(QFrame):
             if view.log_lines:
                 logs = QFrame()
                 logs.setObjectName("historyDiagLogCard")
+                logs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 log_box = QVBoxLayout(logs)
                 log_box.setContentsMargins(0, 0, 0, 0)
                 log_box.setSpacing(6)
                 log_box.addWidget(_label("关键日志", "historyCaption", wrap=False))
-                code = _label("\n".join(view.log_lines), "historyDiagLog", translated=True)
+                code = _label("", "historyDiagLog", translated=True)
+                code.setTextFormat(Qt.TextFormat.RichText)
+                code.setText(log_html(view.log_lines))
+                code.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 log_box.addWidget(code, 1)
                 row.addWidget(logs, 1)
@@ -219,26 +289,46 @@ class HistoryDiagnosisPanel(QFrame):
         frame.setObjectName("historyDiagStep")
         frame.setProperty("first", index == 1)
         row = QHBoxLayout(frame)
-        row.setContentsMargins(14, 10, 12, 10)
+        row.setContentsMargins(14, 9, 10, 9)
         row.setSpacing(12)
-        number = QLabel(str(index))
+        from .recognition_history import _ElideLabel, _RoundBadge
+        number = _RoundBadge(28)
+        number.setText(str(index))
         number.setObjectName("historyDiagStepNumber")
-        number.setProperty("first", index == 1)
-        number.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        number.setFixedSize(28, 28)
+        number.setProperty("tone", "ai_first" if index == 1 else "ai")
         row.addWidget(number, 0, Qt.AlignmentFlag.AlignVCenter)
-        text = QVBoxLayout()
-        text.setSpacing(1)
-        text.addWidget(_label(step.title, "historyDiagStrong", translated=True))
+        # 2026-11-12 (user): each step on one line; long text ends in "…"
+        # and is complete in the tooltip.
+        title = _ElideLabel(step.title, "historyDiagStepTitle")
+        title.setToolTip(step.title + (f"\n{step.detail}" if step.detail else ""))
+        # Measured with the Heavy face the sheet applies later.
+        from PySide6.QtGui import QFont, QFontMetrics
+        from ..design.typography import SOURCE_HAN_FAMILY_ALIASES
+        heavy = QFont(SOURCE_HAN_FAMILY_ALIASES[0])
+        heavy.setPixelSize(15)
+        heavy.setWeight(QFont.Weight.ExtraBold)
+        title_width = QFontMetrics(heavy).horizontalAdvance(step.title) + 16
+        title.setMinimumWidth(min(title_width, 260 if step.detail else 440))
+        title.setMaximumWidth(title_width)
+        row.addWidget(title, 3 if step.detail else 1)
         if step.detail:
-            text.addWidget(_label(step.detail, "historyMuted", translated=True))
-        row.addLayout(text, 1)
+            detail = _ElideLabel(step.detail, "historyDiagStepDetail")
+            detail.setToolTip(step.detail)
+            row.addWidget(detail, 2)
+        else:
+            row.addStretch(1)
         if step.action:
             button = QPushButton(action_label(step.action))
             button.setObjectName("historyAiButton" if index == 1 else "historyRowButton")
-            button.clicked.connect(lambda _checked=False, action=step.action: self.action_requested.emit(action))
+            button.clicked.connect(lambda _checked=False, action=step.action: self._step_action(action))
             row.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
         return frame
+
+    def _step_action(self, action: str) -> None:
+        if action == ANALYSE_ACTION:
+            self.start()
+        else:
+            self.action_requested.emit(action)
 
     def _update_cta(self, status: str = "") -> None:
         running = self._worker is not None

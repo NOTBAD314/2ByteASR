@@ -6,8 +6,8 @@ build all eight, ~2 s); edits made in categories visited earlier are kept.
 """
 from pathlib import Path
 import os
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtWidgets import (QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 from ..design.main_ui_dialogs import SpringDialog
 from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme
@@ -60,108 +60,152 @@ class ApplicationSettingsDialog(SpringDialog):
         from ..design.theme_scopes import SHELL_QSS
         self.setStyleSheet(SHELL_QSS)
         bind_text(self, '应用设置', property='windowTitle')
-        self.setMinimumSize(480, 300)
-        self.resize(860, 650)
+        from .rounded_window import SHADOW, RoundedWindow
+        from .settings_widgets import Bunny, ChoiceCards, ChoiceChips, PillSwitch, question
+        self.setMinimumSize(560 + 2 * SHADOW, 420 + 2 * SHADOW)
+        self.resize(900 + 2 * SHADOW, 660 + 2 * SHADOW)
+        # 2026-11-12 (user, design C): a rounded window of its own; chunky
+        # sidebar tiles, one light sheet with the bunny's tip, question headings.
+        self.setAutoFillBackground(False)
         outer=QVBoxLayout(self);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
-        header=QFrame();header.setObjectName('settingsHeader')
-        h=QHBoxLayout(header);h.setContentsMargins(24,20,16,20)
-        title=QLabel('应用设置');title.setProperty('typography','title');h.addWidget(title)
-        h.addStretch()
-        close=button_role(QPushButton('×'),'ghost');close.setFixedSize(32,32);bind_text(close, '关闭设置', property='toolTip')
-        close.setStyleSheet('padding: 0; min-width: 0; min-height: 0; font-size: 22px;')
-        close.clicked.connect(self.reject);h.addWidget(close);outer.addWidget(header)
-        # Native system move retains Windows snapping without geometry animation.
-        header.mousePressEvent=lambda e: self.windowHandle().startSystemMove() if e.button()==Qt.MouseButton.LeftButton and self.windowHandle() else None
-        body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0)
-        self.navigation=QListWidget();self.navigation.setObjectName('settingsNavigation');self.navigation.setFixedWidth(160)
+        self.root=QWidget();self.root.setObjectName('settingsRoot')
+        self.root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True);outer.addWidget(self.root)
+        body=QHBoxLayout(self.root);body.setContentsMargins(10,10,10,10);body.setSpacing(10)
+        sidebar=QFrame();sidebar.setObjectName('settingsSidebar')
+        side=QVBoxLayout(sidebar);side.setContentsMargins(6,12,4,8);side.setSpacing(6)
+        brand=bind_text(QLabel(),'设置');brand.setObjectName('settingsSidebarTitle');side.addWidget(brand)
+        self.navigation=QListWidget();self.navigation.setObjectName('settingsNavigation');self.navigation.setFixedWidth(184)
         self.navigation.setProperty('i18nItems', True)
-        body.addWidget(self.navigation)
+        self.navigation.setIconSize(QSize(32, 32))
+        self.navigation.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        side.addWidget(self.navigation,1)
+        body.addWidget(sidebar)
+        sheet=QWidget();sheet.setObjectName('settingsSheet')
+        sheet.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        column=QVBoxLayout(sheet);column.setContentsMargins(0,0,0,0);column.setSpacing(0)
+        header=QFrame();header.setObjectName('settingsHeader')
+        h=QHBoxLayout(header);h.setContentsMargins(24,16,16,8);h.setSpacing(10)
+        h.addWidget(Bunny(46),0,Qt.AlignmentFlag.AlignVCenter)
+        self.page_tip=QLabel();self.page_tip.setObjectName('settingsTip');self.page_tip.setWordWrap(True)
+        h.addWidget(self.page_tip,1,Qt.AlignmentFlag.AlignVCenter)
+        h.addSpacing(24)
+        close=QPushButton('×');close.setObjectName('settingsClose');bind_text(close, '关闭设置', property='toolTip')
+        close.setAccessibleName('×');close.setAutoDefault(False)
+        close.clicked.connect(self.reject);h.addWidget(close,0,Qt.AlignmentFlag.AlignTop)
+        column.addWidget(header)
         self.pages=QStackedWidget();self.pages.setMinimumSize(0,0)
         from PySide6.QtWidgets import QSizePolicy
         self.pages.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Ignored)
-        body.addWidget(self.pages,1);outer.addLayout(body,1)
+        column.addWidget(self.pages,1)
+        body.addWidget(sheet,1)
+        self._page_tips={}
 
         def page(title, description):
             scroll=QScrollArea();scroll.setObjectName('settingsScroll');scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame);scroll.viewport().setObjectName('settingsViewport')
             content=QWidget();content.setObjectName('settingsPage');lay=QVBoxLayout(content)
-            lay.setContentsMargins(28,24,28,24);lay.setSpacing(16)
-            name=QLabel(title);name.setProperty('typography','section');lay.addWidget(name)
-            sub=QLabel(description);sub.setObjectName('settingsDescription');sub.setWordWrap(True);lay.addWidget(sub)
+            lay.setContentsMargins(26,8,26,20);lay.setSpacing(22)
+            # The page's description is the bunny's tip in the sheet header.
+            self._page_tips[self._building_section]=description
             scroll.setWidget(content);self._place_page(scroll)
             return lay
 
-        def section(lay):
+        def section(lay, ask=''):
             frame=QFrame();frame.setObjectName('settingsSection')
-            rows=QVBoxLayout(frame);rows.setContentsMargins(0,16,0,0);rows.setSpacing(16)
+            rows=QVBoxLayout(frame);rows.setContentsMargins(0,0,0,0);rows.setSpacing(12)
+            if ask:
+                rows.addWidget(question(ask))
             lay.addWidget(frame)
             return rows
 
+        def words(title, note=''):
+            box=QVBoxLayout();box.setSpacing(3)
+            label=QLabel(title);label.setObjectName('settingsRowTitle');box.addWidget(label)
+            if note:
+                hint=QLabel(note);hint.setObjectName('settingsDescription');hint.setWordWrap(True);box.addWidget(hint)
+            return box
+
         def row(lay,title,control,note=''):
             line=QHBoxLayout();line.setSpacing(16)
-            words=QVBoxLayout();words.setSpacing(4)
-            label=QLabel(title);label.setObjectName('settingsRowTitle');words.addWidget(label)
-            if note:
-                hint=QLabel(note);hint.setObjectName('settingsDescription');hint.setWordWrap(True);words.addWidget(hint)
-            line.addLayout(words,1);line.addWidget(control,0,Qt.AlignmentFlag.AlignVCenter);lay.addLayout(line)
+            line.addLayout(words(title,note),1);line.addWidget(control,0,Qt.AlignmentFlag.AlignVCenter);lay.addLayout(line)
+            return control
+
+        def stacked(lay,title,control,note=''):
+            """Title and note above a wide control (chips, cards, paths)."""
+            box=words(title,note);box.addSpacing(4);box.addWidget(control);lay.addLayout(box)
             return control
 
         def toggle(checked):
-            control=QCheckBox();control.setChecked(bool(checked));return control
+            return PillSwitch(checked)
+
+        def path_field(edit, change, reset=None):
+            from ..design.themed_icons import cached_icon_pixmap
+            from ..design.theme_manager import theme_definition, theme_key
+            field=QFrame();field.setObjectName('settingsPathField')
+            line=QHBoxLayout(field);line.setContentsMargins(14,6,6,6);line.setSpacing(8)
+            mark=QLabel();mark.setPixmap(cached_icon_pixmap('fa5s.folder-open',theme_definition(theme_key()).accent,QSize(18,18)))
+            line.addWidget(mark);line.addWidget(edit,1)
+            if reset is not None:
+                reset.setObjectName('settingsPathReset');line.addWidget(reset)
+            change.setObjectName('settingsPathChange');line.addWidget(change)
+            for button in (change, reset):
+                if button is not None:
+                    button.setAutoDefault(False);button.setCursor(Qt.CursorShape.PointingHandCursor)
+            return field
 
         def build_project():
-            project=page('工程与保存','设置新工程的位置，以及工作中自动保存和恢复的方式。')
+            project=page('工程与保存','这些只影响新工程，已有工程不会被搬走。')
             if repaired:
                 warning = QLabel(tr('部分旧设置无效，已使用默认值。保存前会备份原文件；取消不会修改文件。'))
+                warning.setObjectName('settingsDescription')
                 warning.setWordWrap(True)
                 project.addWidget(warning)
-            startup=section(project)
+            startup=section(project,'打开软件后，先看到哪里？')
             self.startup_page=field_width(StudioComboBox(),'preferred')
             for label,value in [('字幕识别主页','recognition'),('工程库','project_library')]:
                 self.startup_page.addItem(label,value)
             self.startup_page.setCurrentIndex(max(0,self.startup_page.findData(str(preferences.get('startup_page','recognition')))))
-            row(startup,'启动后显示',self.startup_page,'双击工程文件时直接打开该工程')
+            bind_text(self.startup_page, '启动后显示', property='accessibleName')
+            startup.addWidget(ChoiceCards(self.startup_page,[('马上开始识别新素材','lines'),('先挑一个工程继续','grid')]))
+            double_click=QLabel('双击工程文件时直接打开该工程');double_click.setObjectName('settingsDescription')
+            startup.addWidget(double_click)
             repair=button_role(QPushButton('关联／修复工程文件关联'),'secondary')
             repair.clicked.connect(self._repair_project_association)
             row(startup,'工程文件关联',repair,'为 .2byteproj 注册当前程序；默认应用由 Windows 管理')
-            storage=section(project)
-            label=QLabel('默认工程位置');label.setObjectName('settingsRowTitle');storage.addWidget(label)
-            rootrow=QHBoxLayout();rootrow.setSpacing(8)
+            storage=section(project,'新工程放在哪里？')
             self.root_edit=field_width(QLineEdit(str(project_root)),'expanding');bind_text(self.root_edit, '默认工程保存位置', property='accessibleName')
-            rootrow.addWidget(self.root_edit,1)
-            choose=button_role(QPushButton('浏览…'),'secondary');choose.clicked.connect(lambda:browse(self,self.root_edit));rootrow.addWidget(choose)
-            storage.addLayout(rootrow)
-            reset=button_role(QPushButton('恢复默认位置'),'ghost')
+            choose=QPushButton('浏览…');choose.clicked.connect(lambda:browse(self,self.root_edit))
+            reset=QPushButton('恢复默认位置')
             reset.clicked.connect(lambda:self.root_edit.setText(str(Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData'/'Local'))/'2ByteASR'/'Projects')))
-            storage.addWidget(reset,0,Qt.AlignmentFlag.AlignLeft)
+            storage.addWidget(path_field(self.root_edit,choose,reset))
             from PySide6.QtCore import QSettings
             frame_settings=QSettings('2ByteASR','2ByteASR')
-            storage.addWidget(QLabel('保存当前帧的位置（独立于视频导出目录）'))
-            frame_row=QHBoxLayout()
             self.frame_directory=QLineEdit(str(frame_settings.value('frame_export/directory','')))
             bind_text(self.frame_directory, '首次保存帧时选择', property='placeholderText')
-            frame_row.addWidget(self.frame_directory,1)
             choose_frame=QPushButton('浏览…')
             choose_frame.clicked.connect(lambda:browse(self,self.frame_directory))
-            frame_row.addWidget(choose_frame);storage.addLayout(frame_row)
+            stacked(storage,'保存当前帧的位置（独立于视频导出目录）',path_field(self.frame_directory,choose_frame))
             self.accepted.connect(lambda:frame_settings.setValue('frame_export/directory',self.frame_directory.text().strip()))
             saving=section(project)
             self.auto_save=toggle(preferences.get('autosave_enabled',True));bind_text(self.auto_save, '自动保存', property='accessibleName')
-            row(saving,'自动保存',self.auto_save,'在后台保留工作进度')
+            ask=QHBoxLayout();ask.setSpacing(12)
+            ask.addWidget(question('要帮你自动保存吗？'));ask.addWidget(self.auto_save);ask.addStretch(1)
+            saving.addLayout(ask)
             self.interval=field_width(StudioComboBox(),'compact')
             for label,value in [('30 秒',30),('1 分钟',60),('2 分钟',120),('5 分钟',300)]:self.interval.addItem(label,value)
             self.interval.setCurrentIndex(max(0,self.interval.findData(int(preferences.get('autosave_interval_seconds',30) or 30))))
-            row(saving,'保存间隔',self.interval)
+            bind_text(self.interval, '保存间隔', property='accessibleName')
+            saving.addWidget(ChoiceChips(self.interval,prefix='每隔',suffix='保存一次'))
             self.interval.setEnabled(self.auto_save.isChecked());self.auto_save.toggled.connect(self.interval.setEnabled)
             self.recovery_policy=field_width(StudioComboBox(),'preferred')
             for label,value in [('每次询问','ask'),('恢复较新的自动保存','auto'),('打开正式保存','official')]:self.recovery_policy.addItem(label,value)
             self.recovery_policy.setCurrentIndex(max(0,self.recovery_policy.findData(str(preferences.get('recovery_policy','ask')))))
-            row(saving,'打开工程时',self.recovery_policy)
+            stacked(saving,'打开工程时',ChoiceChips(self.recovery_policy))
             project.addStretch()
 
         def build_studio():
             studio=page('Studio 与维护','让工作区记住你的习惯。维护操作不会删除工程文件。')
-            editing=section(studio)
+            editing=section(studio,'按 E 编辑字幕时，要怎样？')
             self.caption_pause_on_edit=toggle(preferences.get('caption_pause_on_edit',True))
             bind_text(self.caption_pause_on_edit, '按 E 编辑时暂停播放', property='accessibleName')
             row(editing,'按 E 时暂停播放',self.caption_pause_on_edit,'关闭后可边播边改；开始输入后仍锁定当前字幕')
@@ -169,8 +213,8 @@ class ApplicationSettingsDialog(SpringDialog):
             self.caption_default_layer.addItem(tr('译文优先'),'translation')
             self.caption_default_layer.addItem(tr('原文优先'),'original')
             self.caption_default_layer.setCurrentIndex(max(0,self.caption_default_layer.findData(str(preferences.get('caption_default_layer','translation')))))
-            row(editing,'E 默认编辑内容',self.caption_default_layer,'双语时优先使用所选内容；没有译文时打开原文，直接选定某层仍编辑该层')
-            layout=section(studio)
+            stacked(editing,'E 默认编辑内容',ChoiceChips(self.caption_default_layer),'双语时优先使用所选内容；没有译文时打开原文，直接选定某层仍编辑该层')
+            layout=section(studio,'打开工程时，要帮你准备什么？')
             self.cover=toggle(preferences.get('auto_cover',True));bind_text(self.cover, '自动生成工程封面', property='accessibleName')
             row(layout,'生成工程封面',self.cover,'从素材中生成工程库缩略图')
             self.restore_layout_box=toggle(preferences.get('restore_layout',True));bind_text(self.restore_layout_box, '打开工程时恢复上次布局', property='accessibleName')
@@ -179,8 +223,8 @@ class ApplicationSettingsDialog(SpringDialog):
             self.speaker_tracks=field_width(StudioComboBox(),'compact')
             for count in (1,2,3,5,8):self.speaker_tracks.addItem(tr('{count} 位',count=count),count)
             self.speaker_tracks.setCurrentIndex(max(0,self.speaker_tracks.findData(int(preferences.get('speaker_main_tracks',2) or 2))))
-            row(layout,'默认独立字幕轨',self.speaker_tracks,'字幕最多的几位说话人各占一条轨，其余合成一条；工程里手动选过的不变')
-            maintenance=section(studio)
+            stacked(layout,'默认独立字幕轨',ChoiceChips(self.speaker_tracks),'字幕最多的几位说话人各占一条轨，其余合成一条；工程里手动选过的不变')
+            maintenance=section(studio,'需要整理一下吗？')
             usage=button_role(QPushButton('查看用量与估算费用'),'secondary')
             from ..studio.usage_dialog import open_usage
             usage.clicked.connect(lambda:open_usage(self, project=getattr(getattr(advanced_owner, '_studio_page_instance', None), 'project', None)))
@@ -249,8 +293,7 @@ class ApplicationSettingsDialog(SpringDialog):
             from PySide6.QtWidgets import QComboBox
             self.advanced_controls = {}
             for group_name, entries in groups:
-                group = section(advanced)
-                group_title = QLabel(group_name); group_title.setProperty('typography', 'section'); group.addWidget(group_title)
+                group = section(advanced, group_name)
                 for key, title, note in entries:
                     source = getattr(advanced_owner, key)
                     if isinstance(source, QComboBox):
@@ -310,19 +353,29 @@ class ApplicationSettingsDialog(SpringDialog):
                                  ('关于',build_about)]
         self._section_built=set();self._sections_building=set();self._building_section=None
         self._input_baseline={}
+        from PySide6.QtWidgets import QListWidgetItem
+        from .settings_widgets import section_icon
         for label,_build in self._section_builders:
-            self.navigation.addItem(label);self.pages.addWidget(QWidget())
+            self.navigation.addItem(QListWidgetItem(section_icon(label),label));self.pages.addWidget(QWidget())
+        self._icons_theme=theme_key()
         self.navigation.currentRowChanged.connect(self._select_section)
 
         footer=QFrame();footer.setObjectName('settingsFooter')
-        f=QHBoxLayout(footer);f.setContentsMargins(24,16,24,16);f.setSpacing(8)
-        hint=QLabel('保存后应用更改');hint.setProperty('typography','meta');f.addWidget(hint,1)
+        f=QHBoxLayout(footer);f.setContentsMargins(26,10,18,16);f.setSpacing(10)
+        self._footer=f
+        f.addStretch(1)
         self.buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel)
         save=self.buttons.button(QDialogButtonBox.StandardButton.Save);bind_text(save, '保存更改');button_role(save,'primary')
         cancel=self.buttons.button(QDialogButtonBox.StandardButton.Cancel);bind_text(cancel, '取消');button_role(cancel,'secondary')
         self.buttons.accepted.connect(self.accept);self.buttons.rejected.connect(self.reject)
-        f.addWidget(self.buttons);outer.addWidget(footer)
+        f.addWidget(self.buttons);column.addWidget(footer)
         apply_secondary_surface_theme(self)
+        self.chrome=RoundedWindow(self, self.root, title_areas=[brand, header], radius=26, maximizable=False)
+        # The rounded window resizes from its edges; the bounds' corner grip
+        # would sit in the transparent shadow.
+        from PySide6.QtWidgets import QSizeGrip
+        for grip in self.findChildren(QSizeGrip):
+            grip.setMaximumSize(0, 0)
         self.navigation.setCurrentRow(0)
         # _values() lists only inputs changed since their category was built.
         self._saved_values = ()
@@ -379,11 +432,51 @@ class ApplicationSettingsDialog(SpringDialog):
             apply_to(page)
             apply_ui_language(page, current_language())
 
+    def add_report_button(self, text):
+        """回报问题／导出诊断 as a quiet link at the footer's left (2026-11-12)."""
+        button = bind_text(QPushButton(), text)
+        button.setObjectName('settingsReport')
+        button.setAutoDefault(False)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._footer.insertWidget(0, button)
+        return button
+
+    def _show_tip(self, index):
+        label = self._section_builders[index][0]
+        bind_text(self.page_tip, self._page_tips.get(index) or label)
+
+    def _refresh_section_icons(self):
+        if self.__dict__.get('_icons_theme') in (None, theme_key()):
+            return
+        from .settings_widgets import section_icon
+        self._icons_theme = theme_key()
+        for index, (label, _build) in enumerate(self._section_builders):
+            item = self.navigation.item(index)
+            if item is not None:
+                item.setIcon(section_icon(label))
+
+    def changeEvent(self, event):
+        from PySide6.QtCore import QEvent
+        if event.type() in (QEvent.Type.StyleChange, QEvent.Type.PaletteChange):
+            self._refresh_section_icons()
+        super().changeEvent(event)
+
+    def paintEvent(self, event):
+        # The rounded window paints its own shadow and corners; no square fill.
+        from PySide6.QtWidgets import QDialog
+        QDialog.paintEvent(self, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self._refresh_section_icons()
+
     def _select_section(self, index):
         if index < 0:
             return
         self._build_section(index)
         self.pages.setCurrentIndex(index)
+        self._show_tip(index)
         timer = self.__dict__.get('_mcp_timer')
         if timer is not None:
             if self._section_builders[index][0] == '外部 AI（MCP）':
@@ -437,10 +530,9 @@ class ApplicationSettingsDialog(SpringDialog):
         from ..studio import shortcut_registry
         from ..studio.studio_shortcuts import ShortcutSettingsPanel
         content = QWidget(); content.setObjectName('settingsPage')
-        lay = QVBoxLayout(content); lay.setContentsMargins(28, 24, 20, 16); lay.setSpacing(12)
-        name = QLabel('快捷键'); name.setProperty('typography', 'section'); lay.addWidget(name)
-        sub = QLabel('点一下按键，再按新的组合；按 Esc 取消。同一页面里不能重复，不同页面可以共用。')
-        sub.setObjectName('settingsDescription'); sub.setWordWrap(True); lay.addWidget(sub)
+        lay = QVBoxLayout(content); lay.setContentsMargins(26, 8, 20, 16); lay.setSpacing(12)
+        # The bunny's tip in the sheet header says how keys are changed.
+        self._page_tips[self._building_section] = '点一下按键，再按新的组合；按 Esc 取消。同一页面里不能重复，不同页面可以共用。'
         self._place_page(content)
         self.shortcut_panel = ShortcutSettingsPanel(shortcut_registry.current_values(), self,
                                                     scopes=tuple(shortcut_registry.SCOPE_LABELS), embedded=True,

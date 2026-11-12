@@ -265,6 +265,9 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-qc-worker':
         from twobyteasr.subtitle_rules.qc_process import main as qc_main
         return qc_main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--glossary-summary-worker':
+        from twobyteasr.glossary.summary_process import main as glossary_summary_main
+        return glossary_summary_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--subtitle-export-worker':
         from twobyteasr.exports.subtitle_export_process import main as subtitle_export_main
         return subtitle_export_main()

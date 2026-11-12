@@ -42,15 +42,31 @@ def cloud_request_hints(endpoint, settings, requested_language=None):
     from ..glossary.terminology import recognition_hotwords, runtime_snapshot
     models = (settings or {}).get('models', {})
     if is_filetrans_model(endpoint.get('model')):
-        return filetrans_hints_for_model(endpoint['model'], recognition_hotwords(runtime_snapshot()),
-                                         vocabulary_id=models.get('asr_vocabulary_id', ''),
-                                         vocabulary_model=models.get('asr_vocabulary_model', ''),
-                                         language=requested_language)
+        hints = filetrans_hints_for_model(endpoint['model'], recognition_hotwords(runtime_snapshot()),
+                                          vocabulary_id=models.get('asr_vocabulary_id', ''),
+                                          vocabulary_model=models.get('asr_vocabulary_model', ''),
+                                          language=requested_language)
+        hints.update(qwen_diarize_hint(endpoint, settings))
+        return hints
     if endpoint.get('model') == MOSI_MODEL:
         return keyterm_hints(recognition_hotwords(runtime_snapshot()))
     if endpoint.get('protocol') == 'openrouter_verbose_json' and endpoint.get('model') == MAI_TRANSCRIBE_2:
         return mai_phrase_hints(recognition_hotwords(runtime_snapshot()))
     return {}
+
+
+def qwen_diarize_hint(endpoint, settings):
+    """Qwen Audio 3.1 from the official Qwen API: speakers only when turned on.
+
+    2026-11-12 (user): its speaker labels were poor, so the model picker turns
+    them off by default (``models.qwen_audio_diarize``). Bailian keeps asking
+    for them as before.
+    """
+    from .qwen31_asr import FILETRANS
+    if endpoint.get('provider') != 'qwen_cloud_filetrans' or endpoint.get('model') != FILETRANS:
+        return {}
+    models = (settings or {}).get('models', {}) or {}
+    return {'filetrans_diarize': bool(models.get('qwen_audio_diarize', False))}
 
 
 def cache_hint_signature(endpoint, settings, requested_language=None):
@@ -61,7 +77,10 @@ def cache_hint_signature(endpoint, settings, requested_language=None):
     from .asr_language_control import policy
     language_control=policy(endpoint,requested_language)
     if endpoint.get('model') not in {QWEN3_FILETRANS, MOSI_MODEL, MAI_TRANSCRIBE_2}:
-        return {'source_language_constraint':language_control['request_language']} if language_control['parameter_sent'] else {}
+        signature = {'source_language_constraint':language_control['request_language']} if language_control['parameter_sent'] else {}
+        # A result asked without speakers must not be reused for one with them (and back).
+        signature.update(qwen_diarize_hint(endpoint, settings))
+        return signature
     hints = cloud_request_hints(endpoint, settings, requested_language)
     keep = {k: hints.get(k) for k in ('filetrans_language', 'mosi_keyterms', 'mosi_diarize', 'azure_phrases') if k in hints}
     if endpoint.get('model') == MAI_TRANSCRIBE_2:

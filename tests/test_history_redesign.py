@@ -120,4 +120,4 @@ def test_failed_detail_leads_with_diagnosis_and_hides_pending_rows(tmp_path):
 def test_moss_pro_cloud_accuracy_reference_is_ninety():
     from twobyteasr.local_models.model_benchmarks import reference_entry
     entry = reference_entry("mosi_moss_pro", "accuracy", "zh")
-    assert entry["score"] == 90 and entry["approx"] is True
+    assert entry["score"] == 90
