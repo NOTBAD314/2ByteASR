@@ -93,3 +93,32 @@ for name, project, formats in [('simple-srt', simple, {'srt'}), ('retained-srt',
         cases.append(row)
         (out / 'result.json').write_text(json.dumps(cases, ensure_ascii=False, indent=2), 'utf8')
         print(json.dumps(row, ensure_ascii=False), flush=True)
+
+# Reproduce the audit's wait primitive inside a timer callback. The real GUI
+# completes subtitle tasks from a QTimer, so both event-loop modes matter.
+from PySide6.QtCore import QEventLoop, QTimer, qVersion
+from PySide6.QtWidgets import QApplication
+application = QApplication.instance() or QApplication([])
+timer_result = {'qt': qVersion()}
+def timer_wait_probe():
+    ticks = []
+    timer = QTimer(application)
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    timer.start()
+    deadline = time.monotonic() + .5
+    while time.monotonic() < deadline:
+        application.processEvents()
+        time.sleep(.005)
+    timer_result['process_events_ticks'] = len(ticks)
+    before = len(ticks)
+    loop = QEventLoop()
+    QTimer.singleShot(500, loop.quit)
+    loop.exec()
+    timer_result['nested_event_loop_ticks'] = len(ticks) - before
+    timer.stop()
+    (out / 'qt-timer-result.json').write_text(json.dumps(timer_result, indent=2), 'utf8')
+    print(json.dumps(timer_result), flush=True)
+    application.quit()
+QTimer.singleShot(0, timer_wait_probe)
+application.exec()
