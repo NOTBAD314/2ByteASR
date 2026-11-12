@@ -417,7 +417,8 @@ def test_translation_without_a_key_explains_instead_of_a_grey_button(monkeypatch
     asked = []
     monkeypatch.setattr(api_key_explainer, "offer_api_key_help", lambda widget: asked.append(widget) or "cancel")
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, "settings", lambda: _settings())
-    dialog = SimpleNamespace(service=QLabel(), start_button=QPushButton(), status=QLabel(), _scope_ids=lambda: None)
+    dialog = SimpleNamespace(service=QLabel(), start_button=QPushButton(), status=QLabel(), _scope_ids=lambda: None,
+                             settings_button=QPushButton(), service_dot=QLabel(), _repolish=lambda _widget: None)
     _keys(monkeypatch)
     assert SubtitleTranslationDialog._describe_service(dialog)
     assert dialog.service.text() == "这个功能要用 AI，需要先填 API Key" and dialog.start_button.isEnabled()
@@ -425,7 +426,7 @@ def test_translation_without_a_key_explains_instead_of_a_grey_button(monkeypatch
     assert len(asked) == 1 and dialog.status.text() == "翻译没有运行：还没填 API Key"
     _keys(monkeypatch, {"bailian": "sk-test"})
     assert SubtitleTranslationDialog._describe_service(dialog)
-    assert dialog.service.text().startswith("使用已配置的 AI 文字服务") and dialog.start_button.isEnabled()
+    assert "只发字幕文字" in dialog.service.text() and dialog.start_button.isEnabled()
 
 
 def test_translation_other_configuration_problems_keep_the_grey_button(monkeypatch):
@@ -437,7 +438,8 @@ def test_translation_other_configuration_problems_keep_the_grey_button(monkeypat
         raise RuntimeError("settings unreadable")
 
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, "settings", broken)
-    dialog = SimpleNamespace(service=QLabel(), start_button=QPushButton())
+    dialog = SimpleNamespace(service=QLabel(), start_button=QPushButton(), settings_button=QPushButton(),
+                             service_dot=QLabel(), _repolish=lambda _widget: None)
     assert not SubtitleTranslationDialog._describe_service(dialog)
     assert dialog.service.text().startswith("还没有配置 AI 文字服务") and not dialog.start_button.isEnabled()
 

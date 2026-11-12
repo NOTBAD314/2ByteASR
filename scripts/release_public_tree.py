@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # without them a build from the public commit (macOS CI) has no tutorial animations.
 SCOPED_PREFIXES = ("twobyteasr/", "scripts/", "packaging/", "installer/", "launcher/", "lexicons/",
                    "licenses/", ".github/workflows/", "docs/releases/", "docs/api-setup/", "renderer/", "tests/",
-                   "assets/onboarding/")
+                   "assets/onboarding/", "assets/mascot/")
 ROOT_FILES = {"LICENSE", "THIRD_PARTY_NOTICES.md", "PROJECT_LICENSE.md", "SOURCE_DELIVERY.md",
               "BUILD_FROM_SOURCE.md", "CHANGELOG.md", "CONTRIBUTING.md", "UPDATING.md", "RELEASING.md",
               "2byteasr_version.json", "dependencies.lock.json", "game_profiles.json", "glossary.txt",

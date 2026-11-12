@@ -81,10 +81,14 @@ def test_group_row_lanes_hits_and_heights(timeline):
     timeline.set_project(project)
     timeline.set_visible_window(95_000, 15_000)
     rows = timeline._display_rows()
-    assert [kind for kind, _key, _h in rows] == ["group", "speaker", "speaker"]
+    assert [kind for kind, _key, _h in rows] == ["group_header", "speaker", "speaker"]
+    assert rows[0][2] == timeline.GROUP_HEADER_HEIGHT
     rects = timeline._track_layout()[0]
-    assert rects["S3"] == rects["S6"] and rects["S3"] != rects["S1"]
-    # Simultaneous secondary lines: two sub-lanes, both hittable.
+    assert 'S3' not in rects and 'S6' not in rects
+    timeline.set_group_expanded(True)
+    rects = timeline._track_layout()[0]
+    assert rects['S3'] != rects['S4']
+    # Only explicit expansion exposes each speaker's own hittable row.
     assert timeline._group_lane_count == 2
     q3, q4 = (next(c for c in project.cues if c.id == key) for key in ("q3", "q4"))
     band3, band4 = timeline._cue_band(q3, rects["S3"]), timeline._cue_band(q4, rects["S4"])
@@ -106,8 +110,10 @@ def test_dragging_on_the_group_row_never_hands_a_line_to_another_member(timeline
     q3 = next(c for c in project.cues if c.id == "q3")
     timeline._drag = ("q3", "move", 0, q3.start_ms, q3.end_ms)
     try:
-        lane4 = timeline._cue_band(next(c for c in project.cues if c.id == "q4"), rects["S4"])
-        assert timeline._speaker_at(QPoint(500, round(lane4.center().y()))) == "S3"
+        assert 'S4' not in rects
+        header=timeline._row_layout()[3][0][2]
+        assert timeline._speaker_at(QPoint(500,round(header.center().y()))) == ''
+        assert timeline._cue_at(QPoint(500,round(header.center().y())))[0] is None
     finally:
         timeline._drag = None
 
@@ -119,7 +125,7 @@ def test_expand_old_project_and_undoable_organize(timeline):
     assert all(kind == "speaker" for kind, _key, _h in timeline._display_rows())   # old project untouched
     page = SimpleNamespace(project=project, undo_stack=QUndoStack(), timeline=timeline, save_state=None)
     studio_roles.organize(page)
-    assert [k for k, _key, _h in timeline._display_rows()][0] == "group"
+    assert [k for k, _key, _h in timeline._display_rows()][0] == "group_header"
     timeline.set_group_expanded(True)
     kinds = [k for k, _key, _h in timeline._display_rows()]
     assert kinds[0] == "group_header" and kinds.count("speaker") == 6

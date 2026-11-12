@@ -186,6 +186,11 @@ class SetCueFieldsCommand(QUndoCommand):
                     changes["start_ms"] = mapped[0]
                 if "end_ms" in changes:
                     changes["end_ms"] = mapped[1]
+        if (MutationOrigin(origin) in {MutationOrigin.MODEL_ADOPTION, MutationOrigin.ASR, MutationOrigin.LLM, MutationOrigin.SAFE_FIX}
+                and 'text' in changes):
+            from ..subtitle_rules.machine_text_policy import machine_text_allowed
+            if not machine_text_allowed(cue.text, changes['text']):
+                raise ValueError('机器建议不得删除原文代称与口语表达')
         self._coalesce_text = set(changes) == {'text'} or ('text' in changes and text == '编辑字幕与局部格式')
         if 'text' in changes and str(changes['text']) != cue.text:
             from ..caption_style.text_marks import remap_marks, layer_marks, remapped_override
@@ -1648,6 +1653,11 @@ class BatchReplaceTextCommand(QUndoCommand):
         super().__init__(f"批量替换“{needle}”" if needle else "Batch replace text")
         self.project = project
         self.after = {str(cue_id): str(value) for cue_id, value in values.items()}
+        if MutationOrigin(origin) in {MutationOrigin.MODEL_ADOPTION, MutationOrigin.ASR, MutationOrigin.LLM, MutationOrigin.SAFE_FIX}:
+            from ..subtitle_rules.machine_text_policy import machine_text_allowed
+            for cue in project.cues:
+                if cue.id in self.after and not machine_text_allowed(cue.text,self.after[cue.id]):
+                    raise ValueError('机器建议不得删除原文代称与口语表达')
         self.before = {
             cue.id: cue.text for cue in project.cues if cue.id in self.after
         }
@@ -1919,23 +1929,64 @@ class RepairDisplayHandoffsCommand(EditCueIntervalsCommand):
         self.setText("收口说话人交接边界")
         self.before_audit=copy.deepcopy(project.generation_metadata.get('display_overlap_audit'))
         self.after_audit=copy.deepcopy(audit)
+        self.transforms_before={c.id:copy.deepcopy(c.transform) for c in project.cues if c.id in self.after}
+        self.transforms_after=copy.deepcopy(self.transforms_before)
+        for key,(start,end,_) in self.after.items():
+            if any(p['left']==key and p['classification']=='editorial_handoff' for p in audit.get('pairs_before',())):
+                self.transforms_after[key]['display_handoff']=dict(version='editorial-handoff-v1',
+                    base_display_interval_ms=list(self.before[key][:2]),display_interval_ms=[start,end],
+                    reason='bounded_tail_handoff',adjustment_ms=end-self.before[key][1],
+                    acoustic_overlap_claim='unchanged')
+                pair=next(p for p in audit['pairs_before'] if p['left']==key and p['classification']=='editorial_handoff')
+                self.transforms_after[key]['display_handoff']['successor_id']=pair['right']
 
-    def redo(self):
-        self.project.generation_metadata['display_overlap_audit']=copy.deepcopy(self.after_audit)
-        super().redo()
-
-    def undo(self):
-        self.project.generation_metadata['display_overlap_audit']=dict(status='user_undone',previous=copy.deepcopy(self.before_audit))
-        super().undo()
+    def _apply(self,values):
+        forward=values is self.after
+        transforms=self.transforms_after if forward else self.transforms_before
+        def mutate():
+            for cue in self.project.cues:
+                if cue.id in values:
+                    cue.start_ms,cue.end_ms,cue.speaker_id=values[cue.id]
+                    cue.transform=copy.deepcopy(transforms[cue.id])
+            self.project.generation_metadata['display_overlap_audit']=(copy.deepcopy(self.after_audit) if forward
+                else dict(status='user_undone',previous=copy.deepcopy(self.before_audit)))
+        _commit_mutation(self.project,action_id=self.text(),dirty=_field_domains(('start_ms','end_ms','transform'))|
+            DirtyDomain.ADVANCED_PREVIEW|DirtyDomain.PROJECT_METADATA,cue_ids=values,mutate=mutate,
+            changed=self.changed,sync_caption_words=False,generation_metadata_keys=('display_overlap_audit',))
 
 
 class BridgeShortGapsCommand(EditCueIntervalsCommand):
     """Undoable end-only bridge of caption gaps of 0.5 s or less (2026-10-10)."""
-    def __init__(self, project, ends, changed=None):
+    def __init__(self, project, ends, changed=None, *, audit=None):
         from .timeline_cue_gesture import CueInterval
         values={c.id:CueInterval(c.start_ms,ends[c.id],c.speaker_id) for c in project.cues if c.id in ends}
         super().__init__(project,values,changed)
         self.setText("衔接短间隙")
+        from ..subtitle_rules.display_continuity import VERSION
+        self.transforms_before = {c.id:copy.deepcopy(c.transform) for c in project.cues if c.id in self.after}
+        self.transforms_after = copy.deepcopy(self.transforms_before)
+        self.audit_before=copy.deepcopy(project.generation_metadata.get('display_handoff_audit'))
+        self.audit_after=copy.deepcopy(audit)
+        for key,(start,end,_) in self.after.items():
+            self.transforms_after[key]['display_handoff'] = dict(version=VERSION,
+                base_display_interval_ms=list(self.before[key][:2]),display_interval_ms=[start,end],
+                reason='bounded_display_continuation',stage='studio_bridge_short_gaps',speech_evidence_changed=False)
+
+    def _apply(self, values):
+        transforms = self.transforms_after if values is self.after else self.transforms_before
+        def mutate():
+            for cue in self.project.cues:
+                if cue.id in values:
+                    cue.start_ms,cue.end_ms,cue.speaker_id=values[cue.id]
+                    cue.transform=copy.deepcopy(transforms[cue.id])
+            report=self.audit_after if values is self.after else self.audit_before
+            if report is None:
+                self.project.generation_metadata.pop('display_handoff_audit',None)
+            else:
+                self.project.generation_metadata['display_handoff_audit']=copy.deepcopy(report)
+        _commit_mutation(self.project,action_id=self.text(),
+            dirty=_field_domains(('start_ms','end_ms','transform')) | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.PROJECT_METADATA,
+            cue_ids=values,mutate=mutate,changed=self.changed)
 
 
 class BatchTimingCommand(QUndoCommand):

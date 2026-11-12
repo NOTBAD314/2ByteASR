@@ -456,14 +456,14 @@ class FrostOverlay(QWidget):
     def refresh(self) -> None:
         """Take a new picture of the target soon (after the current event)."""
         self._paint_icons()
-        if self.isHidden() or self._pending:
+        if not self.isVisible() or self._pending:
             return
         self._pending = True
         QTimer.singleShot(0, self, self._take_picture)
 
     def _take_picture(self) -> None:
         self._pending = False
-        if self.isHidden() or self._target.width() <= 0 or self._target.height() <= 0:
+        if not self.isVisible() or self._target.width() <= 0 or self._target.height() <= 0:
             return
         grab = self._target.grab()
         if grab.isNull():

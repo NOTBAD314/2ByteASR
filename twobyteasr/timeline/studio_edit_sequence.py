@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Generic, Iterable, Mapping, Sequence, TypeVar
 
 from ..projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from ..projects.field_flags import flag
 
 
 EDIT_SEQUENCE_VERSION = 1
@@ -430,7 +431,7 @@ class EditSequence:
 
     def validate(self) -> None:
         self.version = int(self.version or EDIT_SEQUENCE_VERSION)
-        self.video_track_locked = bool(self.video_track_locked)
+        self.video_track_locked = flag(self.video_track_locked, default=True)
         self.source_path = str(self.source_path or "")
         self.source_duration_ms = _int_ms(self.source_duration_ms)
         self.danmaku_path = str(self.danmaku_path or "")
@@ -533,7 +534,7 @@ class EditSequence:
             version=int(data.get("version") or EDIT_SEQUENCE_VERSION),
             # The lock field was introduced after the first project fixtures.
             # Missing means the legacy/default locked V1 track, not unlocked.
-            video_track_locked=bool(data.get("video_track_locked", True)),
+            video_track_locked=flag(data.get("video_track_locked"), default=True),
             source_path=source_path,
             source_duration_ms=source_duration,
             segments=[
@@ -733,6 +734,12 @@ def runtime_of(project: SubtitleProject) -> EditSequenceRuntime:
             sequence.segments = [VideoSegment(c.id, assets[c.asset_id].canonical_source,
                 c.source_in_ms, c.source_out_ms, c.timeline_in_ms, c.timeline_out_ms)
                 for c in primary.clips if c.asset_id in assets]
+    # A persisted graph owns its track lock. EditSequence is its legacy
+    # projection; absent legacy fields must not invent a second veto.
+    from .studio_media_pool import primary_video_track_id
+    primary = next((t for t in project.video_tracks if t.id == primary_video_track_id(project)), None)
+    if primary is not None:
+        sequence.video_track_locked = primary.locked
     runtime = EditSequenceRuntime(sequence)
     setattr(project, "_edit_sequence_runtime", runtime)
     return runtime

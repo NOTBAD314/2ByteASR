@@ -403,6 +403,12 @@ def _review_candidates_from_evidence(
         (None, "Current", cue.text),
         *((candidate, candidate.label, candidate.text) for candidate in evidence),
     ):
+        if label != 'Current':
+            from .machine_text_policy import compliant_candidate
+            proposed = compliant_candidate(cue.text,str(text))
+            if proposed == cue.text and normalize_spoken_text(text) != normalize_spoken_text(cue.text):
+                continue
+            text = proposed
         normalized = normalize_candidate_text(text)
         equivalent = (
             bool(equivalent_to_current.get(item, False))
@@ -411,6 +417,9 @@ def _review_candidates_from_evidence(
                 normalize_spoken_text(cue.text) == normalize_spoken_text(text)
                 or bool(item and item.context_only and segmentation_equivalent(cue.text, text)))
         )
+        if (label != 'Current' and normalize_spoken_text(cue.text)
+                and normalize_spoken_text(cue.text) in normalize_spoken_text(text)):
+            equivalent = True
         if label != "Current" and equivalent:
             normalized = normalize_candidate_text(cue.text)
         if not normalized:
@@ -511,19 +520,30 @@ def model_evidence(
             coverage=coverage_summary(selected) if not contextual else {}
             partial=(coverage.get('current_text_supported') is False and not coverage.get('conflict')
                      and any(s.get('source_count',0)>0 for s in coverage.get('text_spans',())))
+            from ..recognition.asr_source_evidence import unsupported_projected_shortening
+            shortening = unsupported_projected_shortening(cue,join_pieces(parts),selected)
             result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=join_pieces(parts),
-                source=model, confidence=min(confidence) if confidence else None, context_only=contextual or partial))
+                source=model, confidence=min(confidence) if confidence else None, context_only=contextual or partial or shortening))
     return tuple(result)
 
 
 def _confidence_values(project: SubtitleProject, cue: StudioCue) -> list[float]:
     result: list[float] = []
+    models=(project.generation_metadata or {}).get('models') or {}
+    legacy_mosi=(models.get('primary_asr_backend')=='api' and models.get('qwen_asr_api_protocol')=='mosi_transcriptions'
+                 and models.get('qwen_asr_api_model')=='moss-transcribe-diarize-pro')
     for reference in cue.evidence_refs:
         row = project.asr_evidence.get(reference, {})
         if not isinstance(row, Mapping):
             continue
+        confidence_meta = (row.get('caption_arbitration') or {}).get('provider_source') or row.get('provider_source') or {}
         for key, value in row.items():
             name = str(key).casefold()
+            if (name=='confidence' and legacy_mosi and str(row.get('primary_source') or '').startswith('api')
+                    and confidence_meta.get('confidence_available') is not True and value in (0.78,'0.78')):
+                continue
+            if name == 'confidence' and confidence_meta.get('confidence_available') is False:
+                continue
             # Availability/version/other metadata are not model scores;
             # bool is numeric in Python and would otherwise become 0/1.
             if (name != 'confidence' and not name.endswith('_confidence')) or isinstance(value, bool):
@@ -604,172 +624,147 @@ def _spanning_evidence_matches_current(
     return False
 
 
+def local_asr_observations(project, cue, index=None):
+    """Only same-owner, bounded alternatives may participate in content QC."""
+    from ..recognition.asr_source_evidence import cue_source_hypotheses, independent_model
+    result=[]
+    current=normalize_spoken_text(cue.text)
+    for row in cue_source_hypotheses(project,cue,index=index):
+        # Editing one word invalidates an internal word map, but an explicit
+        # reference owning the entire original utterance still supplies a
+        # full-range alternative. Do not erase its other unresolved patches.
+        original_start=row.get('original_start_ms')
+        original_end=row.get('original_end_ms')
+        full_source=(row.get('reference') in cue.evidence_refs
+            and original_start is not None and original_end is not None
+            and original_end>original_start
+            and row.get('source_start_ms',row.get('start_ms'))==original_start
+            and row.get('source_end_ms',row.get('end_ms'))==original_end
+            and row.get('end_ms',0)-row.get('start_ms',0)==original_end-original_start
+            and row.get('start_ms')==cue.start_ms and row.get('end_ms')==cue.end_ms)
+        if (row.get('context_only') or row.get('coverage_unknown') and not full_source
+                or row.get('ownership') in {'needs_confirmation','other_source_context'}
+                or row.get('speaker_id') not in {'',None,cue.speaker_id}
+                or not independent_model(row.get('model'))):
+            continue
+        text=normalize_spoken_text(row.get('text',''))
+        comparison=normalize_spoken_text(row.get('comparison_text') or cue.text)
+        if not text or not comparison:
+            continue
+        # Containment and badly different spans describe context/coverage,
+        # not an alternative reading of the same words.
+        if text != comparison and (text in comparison or comparison in text):
+            continue
+        if min(len(text),len(comparison))/max(len(text),len(comparison)) < .65:
+            continue
+        # The immutable source comparison must still locate in this edited cue.
+        if comparison not in current and SequenceMatcher(None,current,comparison,autojunk=False).ratio() < .65:
+            continue
+        from ..recognition.asr_source_evidence import unsupported_projected_shortening
+        if unsupported_projected_shortening(cue,row['text'],(row,)):continue
+        result.append(row)
+    return result
+
+
 class ASREvidenceRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
-        evidence = context.evidence_by_cue.get(cue.id)
-        if evidence is None:
-            evidence = model_evidence(context.project, cue, index=context.evidence_index)
-            context.evidence_by_cue[cue.id] = evidence
-        from ..recognition.asr_source_evidence import cue_source_hypotheses, coverage_summary
-        coverage = coverage_summary(cue_source_hypotheses(context.project, cue, index=context.evidence_index))
-        associated = [r for r in cue_source_hypotheses(context.project, cue, index=context.evidence_index)
-                      if r.get('candidate_id')]
-        uncertain = [r for r in associated if r.get('ownership') == 'needs_confirmation']
+        from ..recognition.asr_source_evidence import cue_source_hypotheses, MODEL_LABELS
+        evidence=model_evidence(context.project,cue,index=context.evidence_index)
+        context.evidence_by_cue[cue.id]=evidence
+        all_rows=cue_source_hypotheses(context.project,cue,index=context.evidence_index)
+        rejected=[]
+        for ref in cue.evidence_refs:
+            source=context.project.asr_evidence.get(ref,{})
+            if source.get('speaker_id') not in {'',None,cue.speaker_id}:
+                continue
+            receipt=(source.get('caption_arbitration') or {}).get('terminology_polish') or {}
+            for edit in receipt.get('rejected_edits',()):
+                quote=str(edit.get('from') or '')
+                if quote and quote in cue.text:
+                    rejected.append(QCEvidence('已拦截提议',f"{quote} → {edit.get('to','')}（{edit.get('rule_id','安全检查')}）",
+                        source=str(ref),context_only=True))
+        if rejected:
+            yield QCIssue('rejected_model_proposal',QCSeverity.INFO,QCCategory.ASR,cue.id,
+                '错误提议已拦截','原文保留；模型曾提出修改不构成字幕错误，也不代表人工或音频已确认。',
+                tuple(dict.fromkeys(rejected)),source='polishing_safety')
+        confidence_values=_confidence_values(context.project,cue)
+        matching_models={e.source for e in evidence if not e.context_only
+                         and normalize_spoken_text(e.text)==normalize_spoken_text(cue.text)}
+        if confidence_values and min(confidence_values)<context.config.low_confidence_warning and len(matching_models)<3:
+            confidence=min(confidence_values)
+            yield QCIssue('low_confidence',QCSeverity.INFO,QCCategory.ASR,cue.id,'识别置信度说明',
+                f'模型置信度约 {confidence:.0%}；单独不足以证明字幕错误。',
+                (QCEvidence('识别置信度',confidence=confidence,source='asr_evidence'),),source='asr_evidence')
+        uncertain=[r for r in all_rows if r.get('ownership')=='needs_confirmation']
         if uncertain:
-            yield QCIssue('candidate_ownership', QCSeverity.WARNING, QCCategory.ASR,
-                cue.id, '候选归属待确认',
-                '混合音频候选无法可靠归属。请试听并手动选择修改位置。' + ' '.join(
-                    f"候选「{r['observed_text']}」涉及来源 {', '.join(r['related_references'])}，"
-                    f"原范围 {r['original_start_ms']/1000:.3f}–{r['original_end_ms']/1000:.3f}s。"
-                    for r in uncertain), evidence, source='asr_candidate_ownership')
-        patches = [r for r in associated if r.get('candidate_partial') and r['text'] != cue.text]
-        if patches:
-            yield QCIssue('local_model_correction', QCSeverity.WARNING, QCCategory.ASR,
-                cue.id, '局部模型纠错候选', '独立候选对应本句中的局部文字，采用时保留其余全文。',
-                tuple(e for e in evidence if not e.context_only), source='asr_local_candidate')
-        projection_difference = coverage.get('current_text_supported') is False and not coverage['conflict']
-        if projection_difference:
-            yield QCIssue(
-                'current_projection_difference', QCSeverity.INFO, QCCategory.ASR,
-                cue.id, '局部证据覆盖说明',
-                '当前范围未覆盖全文的额外证据；没有具体文字冲突。字幕默认可用，原始证据保留供查看。',
-                evidence, source='asr_projection',
-            )
-        distinct: dict[str, QCEvidence] = {_compact(cue.text): QCEvidence("Current", cue.text, "project")}
-        segmentation_rows: list[QCEvidence] = []
-        equivalent_to_current: dict[QCEvidence, bool] = {}
-        for item in evidence:
-            normalized = _compact(item.text)
-            if normalized:
-                if item.context_only:
-                    segmentation_rows.append(item)
-                    equivalent_to_current[item] = False
+            yield QCIssue('candidate_ownership',QCSeverity.INFO,QCCategory.ASR,cue.id,
+                '候选归属说明','混合音频的候选归属尚未核实；原文保留，此记录不证明字幕有错。',
+                tuple(e for e in evidence if e.context_only),source='asr_candidate_ownership')
+        rows=local_asr_observations(context.project,cue,context.evidence_index)
+        if not rows:
+            if evidence:
+                yield QCIssue('segmentation_difference',QCSeverity.INFO,QCCategory.ASR,cue.id,
+                    '局部证据说明','范围、断句或说话人归属不足以构成具体纠错，保留原始上下文。',
+                    evidence,source='asr_segmentation')
+            return
+        # Reference omission is comparison evidence, not a correction vote.
+        def omission(row):
+            source=normalize_spoken_text(row.get('comparison_text') or cue.text)
+            other=normalize_spoken_text(row['text'])
+            return bool(other and source!=other and sum(b.size for b in SequenceMatcher(None,source,other,autojunk=False).get_matching_blocks())==len(other))
+        omitted=[row for row in rows if omission(row)]
+        if omitted:
+            yield QCIssue('reference_omission',QCSeverity.INFO,QCCategory.ASR,cue.id,
+                '参考转写缺字','辅助模型未返回当前主稿的部分文字；这不是删除依据，保留原文并可试听比对。',
+                tuple(QCEvidence(MODEL_LABELS.get(r['model'],r['model']),r['text'],r['model'],context_only=True) for r in omitted),
+                source='asr_reference_omission')
+            rows=[row for row in rows if not omission(row)]
+        if not rows:
+            return
+        # Repeated output from one model never contributes another vote.
+        readings={}
+        for row in rows:
+            key=(row['model'],normalize_spoken_text(row['text']),row.get('comparison_text',''))
+            readings.setdefault(key,row)
+        rows=list(readings.values())
+        conflicts=[]
+        for n,left in enumerate(rows):
+            for right in rows[n+1:]:
+                if left['model']==right['model']:
                     continue
-                equivalent = (
-                    normalize_spoken_text(cue.text) == normalize_spoken_text(item.text)
-                    or item.context_only and (segmentation_equivalent(cue.text, item.text)
-                        or _spanning_evidence_matches_current(
-                            context.project, cue, item, index=context.evidence_index))
-                )
-                equivalent_to_current[item] = equivalent
-                if equivalent:
-                    segmentation_rows.append(item)
-                else:
-                    distinct.setdefault(normalized, item)
-        if segmentation_rows and len(distinct) == 1:
-            context_only = all(row.context_only for row in segmentation_rows)
-            yield QCIssue(
-                "segmentation_difference",
-                QCSeverity.INFO,
-                QCCategory.ASR,
-                cue.id,
-                "邻条语音上下文" if context_only else "分段方式不同",
-                "只保留相邻原始语音上下文，不能据此修改本条。" if context_only else "本条语音内容一致；邻条上下文、分段、标点或数字写法记录不构成纠错任务。",
-                tuple(segmentation_rows),
-                source="asr_segmentation",
-            )
-        if len(distinct) > 1 and not projection_difference:
-            items = list(distinct.values())
-            pairs = [
-                (items[index], other)
-                for index in range(len(items))
-                for other in items[index + 1:]
-            ]
-            conflicting = [
-                (left, right)
-                for left, right in pairs
-                if SequenceMatcher(None, _compact(left.text), _compact(right.text), autojunk=False).ratio()
-                < context.config.disagreement_similarity
-            ]
-            if conflicting:
-                # Ratio alone flags "AI sentence-split differences" as critical
-                # conflicts. Only pairs whose raw texts are NOT segmentation-
-                # equivalent carry real content risk; the rest become advisory.
-                content_conflicts = tuple(
-                    (left, right)
-                    for left, right in conflicting
-                    if normalize_spoken_text(left.text) != normalize_spoken_text(right.text)
-                    and not ((left.context_only or right.context_only)
-                             and segmentation_equivalent(left.text, right.text))
-                )
-                if content_conflicts:
-                    yield QCIssue(
-                        "model_disagreement",
-                        QCSeverity.CRITICAL,
-                        QCCategory.ASR,
-                        cue.id,
-                        "多模型冲突",
-                        "不同识别模型对当前字幕给出了明显不同的文本，请试听后选择。",
-                        tuple(distinct.values()),
-                        source="asr_evidence",
-                    )
-                else:
-                    yield QCIssue(
-                        "segmentation_difference",
-                        QCSeverity.INFO,
-                        QCCategory.ASR,
-                        cue.id,
-                        "断句差异建议",
-                        "模型内容一致，仅断句或分段方式不同；如需更顺滑可考虑合并相邻字幕。",
-                        tuple(distinct.values()),
-                        source="asr_segmentation",
-                    )
-        agreement_sources = max(
-            (
-                len([source for source in candidate.sources if source != 'Current'])
-                for candidate in _review_candidates_from_evidence(
-                    cue,
-                    evidence,
-                    equivalent_to_current=equivalent_to_current,
-                )
-            ),
-            default=0,
-        )
-        confidence_values = _confidence_values(context.project, cue)
-        if confidence_values:
-            confidence = min(confidence_values)
-            # Independent matching transcripts are stronger positive evidence
-            # than one decoder's token confidence. Agreement stays out of the
-            # priority queue unless another real QC rule finds a problem.
-            if agreement_sources >= 3 and not projection_difference:
-                severity = None
-            elif confidence < context.config.low_confidence_warning:
-                # Confidence alone is weak evidence. A real model conflict is
-                # emitted separately as critical; otherwise this is advisory.
-                severity = QCSeverity.WARNING
-            else:
-                severity = None
-            if severity:
-                yield QCIssue(
-                    "low_confidence",
-                    severity,
-                    QCCategory.ASR,
-                    cue.id,
-                    "低置信度",
-                    f"主识别置信度约 {confidence:.0%}，建议结合音频确认。",
-                    (QCEvidence("识别置信度", confidence=confidence, source="asr_evidence"),),
-                    source="asr_evidence",
-                )
-        votes = Counter(
-            _compact(item.text)
-            for item in evidence
-            if _compact(item.text) and not item.context_only and not equivalent_to_current.get(item, False)
-        )
-        if votes:
-            majority, count = votes.most_common(1)[0]
-            current = _compact(cue.text)
-            if count >= 2 and majority != current:
-                supporters = tuple(item for item in evidence if _compact(item.text) == majority)
-                yield QCIssue(
-                    "suspected_word",
-                    QCSeverity.WARNING,
-                    QCCategory.ASR,
-                    cue.id,
-                    "疑似错词",
-                    "至少两个模型给出了相同的另一种写法。",
-                    supporters,
-                    source="model_consensus",
-                )
+                same_range=(normalize_spoken_text(left.get('comparison_text') or cue.text)
+                            ==normalize_spoken_text(right.get('comparison_text') or cue.text))
+                overlap=min(left['end_ms'],right['end_ms'])-max(left['start_ms'],right['start_ms'])
+                x,y=normalize_spoken_text(left['text']),normalize_spoken_text(right['text'])
+                if same_range and overlap>0 and x!=y and x not in y and y not in x:
+                    conflicts.extend((left,right))
+        alternatives=[r for r in rows if normalize_spoken_text(r['text'])
+                      !=normalize_spoken_text(r.get('comparison_text') or cue.text)]
+        # Compare to the current cue only to offer a specific candidate, never
+        # to invent a second independent ASR model.
+        if not alternatives:
+            alternatives=[r for r in rows if normalize_spoken_text(r['text'])!=normalize_spoken_text(cue.text)
+                and not segmentation_equivalent(cue.text,r['text'])]
+        selected=conflicts or alternatives
+        if not selected:
+            return
+        items=tuple(dict.fromkeys(QCEvidence(MODEL_LABELS.get(r['model'],r['model']),r['text'],r['model'])
+                                  for r in selected))
+        votes=defaultdict(set)
+        for row in alternatives:
+            votes[normalize_spoken_text(row['text'])].add(row['model'])
+        consensus=any(len(models)>=2 for models in votes.values())
+        strong_conflict=any(SequenceMatcher(None,normalize_spoken_text(a['text']),
+            normalize_spoken_text(b['text']),autojunk=False).ratio()<.6
+            for a,b in zip(conflicts[::2],conflicts[1::2]))
+        partial=any(r.get('candidate_partial') for r in selected)
+        yield QCIssue('model_disagreement' if conflicts and not partial else 'local_model_correction',
+            QCSeverity.CRITICAL if consensus or strong_conflict else QCSeverity.WARNING,QCCategory.ASR,cue.id,
+            '独立模型局部冲突' if conflicts else '局部识别候选',
+            '同一说话人、相同局部范围的独立模型存在具体文字差异，请定位试听。' if conflicts
+            else '一个外部模型提供了具体局部替代文本，可试听后选择。',items,
+            fix_metadata={'evidence_scope':[(r['model'],r.get('reference'),r['start_ms'],r['end_ms'],
+                           r.get('speaker_id'),r.get('comparison_text')) for r in selected]},source='asr_evidence')
 
 
 class TextQualityRule:
@@ -815,7 +810,7 @@ class TextQualityRule:
                 fix_action="normalize_text", source="text_rule",
             )
         repeated = re.search(rf"([{_CJK}])\1{{3,}}", text)
-        if repeated:
+        if repeated and not re.fullmatch(r'(?:好|行|对|嗯|是|可以|试试){2,}', re.sub(r'[\s，。！？、,.!?]', '', text)):
             yield QCIssue(
                 "repeated_character", QCSeverity.WARNING, QCCategory.TEXT, cue.id,
                 "连续重复字", f"“{repeated.group(0)}”可能是识别重复，也可能是语气表达，请人工确认。",
@@ -837,7 +832,9 @@ class TerminologyRule:
             wrong = next((form for form in entry.wrong_forms if form and form in text), "")
             model_support = tuple(
                 item for item in evidence
-                if canonical in item.text
+                if canonical in item.text and not item.context_only
+                and any(r['model']==item.source and canonical in r['text']
+                        for r in local_asr_observations(context.project,cue,context.evidence_index))
                 and not (
                     canonical not in text
                     and _spanning_evidence_matches_current(
@@ -874,6 +871,7 @@ class TerminologyRule:
 
 class TimelineRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
+        from .grouping_syntax import INDEPENDENT_RESPONSES
         previous, following = context.neighbors(cue)
         duration = cue.end_ms - cue.start_ms
         if not cue.text.strip():
@@ -889,7 +887,8 @@ class TimelineRule:
                 else QCSeverity.WARNING
             )
             yield QCIssue(
-                "short_duration", severity, QCCategory.TIMELINE, cue.id,
+                "short_duration", QCSeverity.INFO if (_compact(cue.text) in INDEPENDENT_RESPONSES
+                    or _is_pure_interjection(cue.text) or _compact(cue.text) in {'好','对','是的','好的'}) else severity, QCCategory.TIMELINE, cue.id,
                 "持续时间过短", f"当前字幕仅持续 {duration} ms。",
                 source="timeline_rule",
             )

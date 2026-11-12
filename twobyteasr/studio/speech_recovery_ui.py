@@ -5,7 +5,7 @@ from ..i18n import tr
 from ..recognition.speech_recovery_project import project_ranges
 
 STATUS_LABELS = dict(pending='疑似漏识，待恢复', partial='部分恢复',
-                     needs_confirmation='疑似语音，待试听确认', failed='处理失败，待重试')
+                     needs_confirmation='疑似语音，待试听确认', failed='处理失败，待重试',timing_confirmation='文字仍在，时间待核对')
 STAGE_LABELS = dict(parsed_response='原始响应解析', response_generation='模型生成', window_merge='跨窗合并',
                     language_acceptance='语言接纳', speaker_filter_alignment='说话人筛选与对齐',
                     segmentation='断句', final_cues='最终字幕', deduplication='去重',
@@ -13,6 +13,7 @@ STAGE_LABELS = dict(parsed_response='原始响应解析', response_generation='�
 REASON_LABELS = dict(speech_without_transcript='检测到疑似人声，缺少有效字幕', token_limit='输出达到预算',
     unfinished_transcript_tail='尾句未完整返回', unexpected_stop='生成异常结束',
     invalid_timestamp='返回时间戳异常', downstream_text_loss='上游文字在此阶段缺失',
+    text_retained_timing_contracted='原文完整，时间范围收紧；尚未完成试听',
     parsed_text_lost_in_merge='已有识别文字在合并时缺失', content_blocked='服务内容安全审查拒绝')
 
 
@@ -28,7 +29,7 @@ def summary(ranges):
     counts = Counter(row.get('classification') for row in rows)
     parts = []
     for kind, text in (('processing_failure', '处理失败'), ('supported_speech_gap', '疑似漏识'),
-                       ('uncertain_speech', '待试听确认')):
+                       ('uncertain_speech', '待试听确认'),('timing_confirmation','时间待核对')):
         if counts[kind]:
             parts.append(f'{text} {counts[kind]} 处')
     return '识别已结束 · ' + ' · '.join(parts) if parts else '语音范围已处理'
@@ -38,10 +39,10 @@ def open_recovery(page):
     from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QCheckBox
     from ..design.studio_theme import apply_secondary_surface_theme
     project = page.project
-    ranges = project_ranges(project)
+    ranges = project_ranges(project,include_timing=True)
     dialog = QDialog(page)
     dialog.setObjectName('speechRecoveryDialog')
-    dialog.setWindowTitle(tr('语音缺口待恢复'))
+    dialog.setWindowTitle(tr('语音缺口与时间核对'))
     dialog.resize(720, 420)
     layout = QVBoxLayout(dialog)
     layout.addWidget(QLabel(summary(ranges)))
@@ -82,7 +83,10 @@ def open_recovery(page):
         line = QHBoxLayout()
         checkbox = QCheckBox(content)
         checkbox.setObjectName('speechGapSelect')
-        selected.append((row['id'], checkbox))
+        timing_only=row.get('classification')=='timing_confirmation'
+        if timing_only:
+            checkbox.hide()
+        else:selected.append((row['id'], checkbox))
         line.addWidget(checkbox)
         start, end = row['timeline_start_ms'], row['timeline_end_ms']
         reason = '、'.join(REASON_LABELS.get(r, r) for r in row['reason'].split(','))
@@ -103,13 +107,19 @@ def open_recovery(page):
         line.addWidget(jump)
         retry = QPushButton(tr('仅重试该范围…'), content)
         retry.setObjectName('speechGapRetry')
+        if timing_only:
+            retry.setText(tr('查看文字与时间'))
+            retry.setObjectName('speechGapTimingReview')
+            retry.setToolTip(tr('文字已保留，只核对时间；不会自动请求重新识别。'))
         if row.get('reason') == 'content_blocked':
             retry.setToolTip(tr('此范围已有服务内容安全拒绝，请在识别面板选择本地模型恢复'))
         retry.setEnabled(not getattr(page, '_recognition_running', False))
-        def recognize(_checked=False, bounds=(start, end)):
+        def recognize(_checked=False, bounds=(start, end),timing_only=timing_only):
             if page.project is project and not getattr(page, '_recognition_running', False):
                 dialog.accept()
-                page._open_recognition_sheet(range_ms=bounds)
+                if timing_only:
+                    page._seek(bounds[0]/1000)
+                else:page._open_recognition_sheet(range_ms=bounds)
         retry.clicked.connect(recognize)
         line.addWidget(retry)
         listing.addLayout(line)
@@ -122,32 +132,9 @@ def open_recovery(page):
     return dialog
 
 
-def sync_action(page):
-    from PySide6.QtWidgets import QPushButton
-    ranges = project_ranges(getattr(page, 'project', None))
-    parts = page._recognition_chip_parts()
-    if parts is None:
+def add_actions(page, menu):
+    """Keep the existing gap listening/recovery panel in the timeline menu."""
+    if not project_ranges(getattr(page, 'project', None), include_timing=True):
         return
-    frame, label = parts
-    button = getattr(page, '_speech_recovery_button', None)
-    running = getattr(page, '_recognition_running', False)
-    for name in ('recognition_cancel_button', 'recognition_zero_cancel'):
-        cancel = getattr(page, name, None)
-        if cancel is not None:
-            cancel.setVisible(bool(running) and not getattr(page, '_recognition_cancelling', False))
-    if ranges and button is None:
-        button = QPushButton(tr('查看语音缺口…'), frame)
-        button.setObjectName('speechRecoveryButton')
-        button.clicked.connect(lambda _checked=False: open_recovery(page))
-        frame.layout().addWidget(button)
-        page._speech_recovery_button = button
-    if button is not None:
-        button.setVisible(bool(ranges) and not running)
-    if ranges and not running:
-        terminal = str(getattr(page, '_recognition_status_sticky', '') or '')
-        failure = terminal.startswith(('识别未完成', '识别已取消'))
-        label.setText(terminal+'\n'+summary(ranges) if failure else summary(ranges))
-        frame.show()
-    elif not running and getattr(page, '_speech_recovery_had_ranges', False):
-        label.setText(tr('语音范围已处理'))
-    page._speech_recovery_had_ranges = bool(ranges)
+    action = menu.addAction(tr('语音缺口与时间核对…'), lambda: open_recovery(page))
+    action.setObjectName('speechRecoveryAction')

@@ -212,6 +212,7 @@ def review_project(project, entries):
     """Small immutable review input; IDs are runtime addresses, never row numbers."""
     view = copy.copy(project)
     cues = {cue.id: cue for cue in project.cues}
+    view._review_dialogue_cues = tuple(copy.copy(cue) for cue in project.cues)
     view.cues = []
     for entry in entries:
         cue = copy.copy(cues[entry.target.cue_id])

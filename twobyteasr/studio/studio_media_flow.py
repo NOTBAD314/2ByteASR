@@ -271,13 +271,17 @@ class StudioMediaFlowMixin:
 
             started = perf_counter()
             lanes_before = {track.id for track in self.project.audio_tracks}
+            from ..projects.studio_runtime_state import state_for
+            # Capture before the pure media hydration. A pending caption edit
+            # has a different token and must still force its normal rebuild.
+            caption_token = (id(self.project.cues), state_for(self.project).language_source_revision)
             asset = hydrate_media_contract(
                 self.project,
                 identity,
                 source_path=media_path,
             )
             self._media_probe_error = ""
-            self.timeline.refresh_media_graph()
+            self.timeline.refresh_media_graph(unchanged_caption_token=caption_token)
             self._refresh_edit_playback_state()
             if {track.id for track in self.project.audio_tracks} - lanes_before:
                 # A project saved before multi-track import gained the
@@ -1830,10 +1834,6 @@ class StudioMediaFlowMixin:
         recognize = getattr(self, "cue_recognize_button", None)
         if recognize is not None:
             recognize.setVisible(not getattr(self, "_recognition_running", False))
-        from .language_recovery_ui import sync_action
-        sync_action(self)
-        from .speech_recovery_ui import sync_action as sync_speech_recovery
-        sync_speech_recovery(self)
 
     def _recognition_show_status(self, stage: str, detail: str = "") -> None:
         task = getattr(self, '_recognition_subtitle_task', None)
@@ -1880,13 +1880,11 @@ class StudioMediaFlowMixin:
 
     def _update_recognition_elapsed(self, force: bool = False) -> None:
         parts = self._recognition_chip_parts()
-        if parts is None:
-            return
-        _frame, label = parts
         running = bool(getattr(self, "_recognition_running", False))
         if not running and not force:
             return
-        bind_text(label, self._recognition_status_text())
+        if parts is not None:
+            bind_text(parts[1], self._recognition_status_text())
         zero_label = getattr(self, "recognition_zero_label", None)
         if zero_label is not None and getattr(self, "_recognition_running", False):
             bind_text(zero_label, self._recognition_status_text())
@@ -2029,9 +2027,6 @@ class StudioMediaFlowMixin:
         if timer is not None:
             timer.stop()
         parts = self._recognition_chip_parts()
-        if parts is None:
-            return
-        _frame, label = parts
         duration = float(getattr(getattr(self.project, "media", None), "duration_ms", 0) or 0) / 1000.0
         request=getattr(self,'_recognition_request_options',{}) or {}
         span=request.get('recognition_range_ms')
@@ -2039,10 +2034,13 @@ class StudioMediaFlowMixin:
             duration=max(0.,(float(span[1])-float(span[0]))/1000)
         rate = duration / float(elapsed_seconds) if elapsed_seconds > 0 and duration > 0 else 0.0
         suffix = f" · {rate:.1f}× realtime" if rate else ""
-        label.setProperty("recognitionStage", "")
-        label.setToolTip("")
         final_text = f"识别完成 · {float(elapsed_seconds):.1f} 秒{suffix}"
-        label.setText(final_text)
+        self._recognition_stage_message = final_text
+        if parts is not None:
+            label = parts[1]
+            label.setProperty("recognitionStage", "")
+            label.setToolTip("")
+            label.setText(final_text)
         self._recognition_status_sticky = final_text
         self._sync_recognition_zero_state()
         for name in ("recognition_cancel_button", "recognition_zero_cancel"):
@@ -2058,14 +2056,13 @@ class StudioMediaFlowMixin:
     def note_recognition_kept_in_memory(self) -> None:
         """完成时用户选择"保留编辑"：新字幕已写入工程文件，当前窗口不动。"""
         parts = self._recognition_chip_parts()
-        if parts is None:
-            return
-        _frame, label = parts
         text = (
             "识别完成 · 新字幕已写入工程文件；当前窗口保留你的编辑，"
             "重新打开工程即可加载新字幕"
         )
-        label.setText(text)
+        self._recognition_stage_message = text
+        if parts is not None:
+            parts[1].setText(text)
         self._recognition_status_sticky = text
         self._sync_recognition_zero_state()
 
@@ -2082,16 +2079,16 @@ class StudioMediaFlowMixin:
         if timer is not None:
             timer.stop()
         parts = self._recognition_chip_parts()
-        if parts is None:
-            return
-        frame, label = parts
-        label.setProperty("recognitionStage", "")
         title = '识别已取消' if cancelled else '识别未完成'
         text = f"{title} · {str(message or '请查看运行日志')}"
-        label.setText(text)
+        self._recognition_stage_message = text
+        if parts is not None:
+            frame, label = parts
+            label.setProperty("recognitionStage", "")
+            label.setText(text)
+            frame.show()
+            frame.raise_()
         self._recognition_status_sticky = text
-        frame.show()
-        frame.raise_()
         self._sync_recognition_zero_state()
         for name in ("recognition_cancel_button", "recognition_zero_cancel"):
             button = getattr(self, name, None)
@@ -2100,6 +2097,15 @@ class StudioMediaFlowMixin:
 
     def _finish_recognition_subtitle_task(self, status, message):
         task = getattr(self, '_recognition_subtitle_task', None)
+        if status == 'failed' and (task is None or task.ended is not None and task.project is self.project):
+            # Startup/reload failures can happen before a running task exists,
+            # or after recognition completed. Their only visible record must
+            # not depend on the removed caption-list status row.
+            task = self._new_subtitle_task('工程重新识别', ())
+            task.unit_label = '个输入范围'
+            task.cancelled = bool(getattr(self, '_recognition_cancelling', False))
+            self._recognition_subtitle_task = task
+            task.update(dict(range_id='source',range_label='工程识别或结果载入',status='running'))
         if task is not None and task.ended is None:
             if status == 'suggestion' and task.rows.get('source', {}).get('issues'):
                 status = 'review'

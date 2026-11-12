@@ -259,7 +259,7 @@ if _pin_root:
     # Retain the verified predecessor's resources before collection too.
     _known = {entry[0].replace('\\', '/') for entry in a.binaries + a.datas}
     for _resource_folder in ('assets', 'docs', '_tcl_data', '_tk_data', 'tcl8',
-                             'renderer/prebuilt-export', 'third_party'):
+                             'renderer/prebuilt-export', 'renderer/public/fonts', 'third_party'):
         for _resource in sorted((_pin_root / _resource_folder).rglob('*')):
             if not _resource.is_file():
                 continue
@@ -278,6 +278,18 @@ if _pin_root:
         _retained_file = _pin_root / _retained_name
         if _retained_name not in _known and _retained_file.is_file():
             a.binaries.append((_retained_name, str(_retained_file), 'BINARY'))
+            _known.add(_retained_name)
+    # Analysis can omit compatibility/OpenSSL libraries on a newer build
+    # machine even though the validated daily includes them for other hosts.
+    # Preserve the complete pinned DLL/PYD set before COLLECT, including
+    # dependencies not selected by this machine's import analysis.
+    for _native_input in sorted(_pin_root.rglob('*')):
+        if not _native_input.is_file() or _native_input.suffix.lower() not in {'.dll', '.pyd'}:
+            continue
+        _native_destination = _native_input.relative_to(_pin_root).as_posix()
+        if _native_destination not in _known:
+            a.binaries.append((_native_destination, str(_native_input), 'BINARY'))
+            _known.add(_native_destination)
     # Finalize provenance after a valid Analysis cache is reused; changing
     # only build identity must not force analysis of unchanged Python code.
     from twobyteasr.diagnostics.build_identity import source_snapshot_sha256, write_build_metadata

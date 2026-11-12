@@ -173,7 +173,8 @@ def test_ui_has_nonblocking_verified_update_flow():
 def test_model_workshop_has_obvious_header_return_action():
     source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     assert 'AnimatedButton("返回字幕识别")' in source
-    assert 'self.return_recognition_button.setObjectName("outline")' in source
+    # 2026-11-11: same accent-tinted style as the other header places to go.
+    assert 'self.return_recognition_button.setObjectName("softAction")' in source
     assert "self.return_recognition_button.setVisible(" in source
     assert "self.term_library_page" in source
 
@@ -503,8 +504,8 @@ def test_completion_dialog_requests_attention_when_window_is_in_background():
     assert "QApplication.alert(self, 0)" in source
     assert "WindowStaysOnTopHint" in source
     assert source.count("self._show_task_notification(") >= 2
-    assert 'AnimatedButton("完成并返回主菜单")' in source
-    assert "close.clicked.connect(self._return_to_main_menu)" in source
+    assert "self.result_return_button = CompletionActionCard('完成并返回主菜单'" in source
+    assert "self.result_return_button.clicked.connect(lambda: self._completion_action('return', self._return_to_main_menu))" in source
 
 
 def test_completion_dialog_has_theme_stable_light_surface_and_status_colors():

@@ -69,10 +69,12 @@ def child(output, window=None):
     window.resize(1440, 920)
     window.show()
 
+    model_action = 'keep'
     def complete(messages, **kwargs):
         requests.append(messages)
         payload = json.loads(messages[-1]['content'])
-        return json.dumps({'results': [dict(cue_id=row['cue_id'], action='keep') for row in payload['cues']]})
+        return json.dumps({'results': [dict(cue_id=row['cue_id'], action=model_action,
+            split_after_chars=[]) for row in payload['cues']]})
 
     try:
         with patch('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete)), \
@@ -86,6 +88,12 @@ def child(output, window=None):
             check('before screenshot', window.grab().save(str(output/'01-before.png')))
             page.run_sentence_refine(whole_project=False, retry_ids=['a', 'b'])
             wait(lambda: page._refine_task.ended is not None)
+            check('qualified AI keep preserves all original boundaries', page.project.cues == before)
+            # In the current protocol keep retains source boundaries; an empty
+            # split list explicitly requests one complete range with no cut.
+            model_action = 'split'
+            page.run_sentence_refine(whole_project=False, retry_ids=['a', 'b'])
+            wait(lambda: page._refine_task.ended is not None)
             check('selected eleven-character expression merges', page.project.cues[1].text == '他进我们罗隐的斩杀线了')
             check('unselected cues stay identical', page.project.cues[0] == before[0] and page.project.cues[2:] == before[3:])
             check('translation retained', 'our kill range' in next(iter(page.project.generation_metadata['translations'].values())))
@@ -97,7 +105,7 @@ def child(output, window=None):
             wait(lambda: page._refine_task.ended is not None)
             check('fourteen characters survive short pause', any(c.text == '我们先走到前面然后看一下情况' for c in page.project.cues))
             check('overlapping blue speaker retains exact interval', next(c for c in page.project.cues if c.id == 'blue') == before[-1])
-            check('bounded requests', len(requests) == 2)
+            check('bounded requests', len(requests) == 3)
             page.select_cue(page.project.cues[1].id)
             settle(.5)
             check('after screenshot', window.grab().save(str(output/'02-after.png')))

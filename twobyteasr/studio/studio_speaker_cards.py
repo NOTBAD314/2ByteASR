@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
 )
 
@@ -27,13 +27,9 @@ def build_speaker_manager_qss(theme) -> str:
     return f"""
         QWidget#speakerManagerBody, QScrollArea#speakerCardScroll, QWidget#speakerCardHost {{
             background: {theme.surface}; border: 0; }}
-        QFrame#speakerCard {{ background: {theme.surface_elevated}; border: 1px solid {theme.border};
-            border-radius: 10px; }}
-        QFrame#speakerCard[pending="true"] {{ border-color: {theme.warning}; }}
-        QFrame#speakerCard[folded="true"] {{ background: {theme.panel}; border-style: dashed; }}
-        QFrame#speakerCard[group="true"] {{ background: {theme.panel}; }}
+        QFrame#speakerCard {{ background: transparent; border: 0; }}
         QFrame#speakerCard QLabel {{ background: transparent; }}
-        QLineEdit#speakerName {{ font-size: 15px; font-weight: 700; color: {theme.text};
+        QLineEdit#speakerName {{ font-size: 18px; font-weight: 800; color: {theme.text};
             background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 6px; }}
         QLineEdit#speakerName:hover {{ border-color: {theme.border}; }}
         QLineEdit#speakerName:focus {{ border-color: {theme.accent}; background: {theme.input_surface}; }}
@@ -52,14 +48,12 @@ def build_speaker_manager_qss(theme) -> str:
         QToolButton#speakerPlay {{ background: {theme.accent_tint}; border: 0; border-radius: 13px; }}
         QToolButton#speakerPlay:hover {{ background: {theme.accent}; }}
         QToolButton#speakerPlay[playing="true"] {{ background: {theme.accent}; }}
-        QPushButton#roleSegment {{ background: {theme.input_surface}; color: {theme.text_secondary};
-            border: 1px solid {theme.border_strong}; border-radius: 0; padding: 3px 12px; min-height: 22px; font-size: 12px; }}
-        QPushButton#roleSegment[segment="first"] {{ border-top-left-radius: 7px; border-bottom-left-radius: 7px; }}
-        QPushButton#roleSegment[segment="last"] {{ border-top-right-radius: 7px; border-bottom-right-radius: 7px; }}
-        QPushButton#roleSegment[segment="middle"], QPushButton#roleSegment[segment="last"] {{ border-left: 0; }}
+        QPushButton#roleSegment {{ background: {theme.input_surface}; color: {theme.text_muted};
+            border: 0; border-radius: 0; padding: 3px 11px; min-height: 20px; font-size: 12px; font-weight: 600; }}
+        QPushButton#roleSegment[segment="first"] {{ border-top-left-radius: 13px; border-bottom-left-radius: 13px; }}
+        QPushButton#roleSegment[segment="last"] {{ border-top-right-radius: 13px; border-bottom-right-radius: 13px; }}
         QPushButton#roleSegment:hover {{ color: {theme.text}; background: {theme.selected}; }}
-        QPushButton#roleSegment:checked {{ background: {theme.accent}; color: {theme.text_on_accent};
-            border-color: {theme.accent}; font-weight: 700; }}
+        QPushButton#roleSegment:checked {{ background: {theme.accent}; color: {theme.text_on_accent}; font-weight: 700; }}
         QPushButton#roleSegment:disabled {{ color: {theme.disabled}; }}
         QToolButton#speakerMerge {{ background: {theme.input_surface}; color: {theme.text_secondary};
             border: 1px solid {theme.border_strong}; border-radius: 7px; padding: 3px 10px; min-height: 22px; font-size: 12px; }}
@@ -264,21 +258,18 @@ class SpeakerCard(QFrame):
         # inside the card and sub-layouts attached first, so no control is
         # built parentless and re-parented (each move re-ran style sheet work);
         # the two menus are themed when first opened.
+        # 2026-11-12 (speaker board, 方案 B): the card is now the right-hand
+        # detail column; chips in the boxes only select and drag.
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 11)
-        root.setSpacing(7)
+        root.setContentsMargins(2, 4, 2, 8)
+        root.setSpacing(8)
 
         head = QHBoxLayout()
-        head.setSpacing(4)
+        head.setSpacing(6)
         root.addLayout(head)
-        self.select_check = QCheckBox(self)
-        self.select_check.setToolTip(tr("勾选后可用上方的批量操作"))
-        self.select_check.hide()
-        self.select_check.toggled.connect(lambda _checked: owner._card_selection_changed())
-        head.addWidget(self.select_check)
         self.swatch = QToolButton(self)
         self.swatch.setObjectName("speakerSwatch")
-        self.swatch.setIconSize(QSize(16, 16))
+        self.swatch.setIconSize(QSize(30, 30))
         self.swatch.setCursor(Qt.CursorShape.PointingHandCursor)
         bind_text(self.swatch, "换颜色", property="toolTip")
         self.swatch.clicked.connect(lambda: owner._card_choose_color(self))
@@ -292,16 +283,6 @@ class SpeakerCard(QFrame):
         self.name_edit.editingFinished.connect(lambda: owner._card_commit_name(self))
         self.name_edit.installEventFilter(owner)
         head.addWidget(self.name_edit, 1)
-        self.pill = QLabel(self)
-        self.pill.setObjectName("speakerPill")
-        self.pill.hide()
-        head.addWidget(self.pill)
-        self.host_button = self._icon_button(self, checkable=True)
-        self.host_button.clicked.connect(lambda checked: owner._card_set_host(self, checked))
-        head.addWidget(self.host_button)
-        self.visible_button = self._icon_button(self, checkable=True)
-        self.visible_button.clicked.connect(lambda checked: owner._card_set_visible(self, checked))
-        head.addWidget(self.visible_button)
         self.more_button = self._icon_button(self)
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bind_text(self.more_button, "更多操作", property="toolTip")
@@ -317,7 +298,7 @@ class SpeakerCard(QFrame):
         root.addWidget(self.name_error)
 
         meta = QHBoxLayout()
-        meta.setSpacing(10)
+        meta.setSpacing(8)
         root.addLayout(meta)
         self.id_label = QLabel(self)
         self.id_label.setObjectName("speakerId")
@@ -326,10 +307,30 @@ class SpeakerCard(QFrame):
         self.meta_label.setObjectName("speakerMeta")
         meta.addWidget(self.meta_label, 1)
 
+        toggles = QHBoxLayout()
+        toggles.setSpacing(6)
+        root.addLayout(toggles)
+        self.pill = QLabel(self)
+        self.pill.setObjectName("speakerPill")
+        self.pill.hide()
+        toggles.addWidget(self.pill)
+        self.host_button = self._icon_button(self, checkable=True)
+        self.host_button.clicked.connect(lambda checked: owner._card_set_host(self, checked))
+        toggles.addWidget(self.host_button)
+        self.visible_button = self._icon_button(self, checkable=True)
+        self.visible_button.clicked.connect(lambda checked: owner._card_set_visible(self, checked))
+        toggles.addWidget(self.visible_button)
+        toggles.addStretch(1)
+
+        self.strip_title = self._section(tr("出现位置"))
+        root.addWidget(self.strip_title)
         self.strip = TimeStrip(self)
+        self.strip.setMinimumHeight(30)
+        self.strip.setMaximumHeight(30)
         self.strip.seek_requested.connect(lambda ms: owner._card_preview_at(self, ms))
         root.addWidget(self.strip)
 
+        root.addWidget(self._section(tr("听一听")))
         excerpt = QHBoxLayout()
         excerpt.setSpacing(8)
         root.addLayout(excerpt)
@@ -354,25 +355,57 @@ class SpeakerCard(QFrame):
         self.status_label.hide()
         root.addWidget(self.status_label)
 
+        self.roles_title = self._section(tr("用途"))
+        root.addWidget(self.roles_title)
         foot = QHBoxLayout()
         foot.setSpacing(8)
         self.roles = RoleSegment(self)
         self.roles.role_clicked.connect(lambda role: owner._card_role_clicked(self, role))
         foot.addWidget(self.roles)
         self.restore_button = QPushButton(tr('恢复'))
+        self.restore_button.setObjectName("speakerPillButton")
         self.restore_button.clicked.connect(lambda: owner._card_role_clicked(self, 'unconfirmed' if owner._anonymous() else 'main'))
         foot.addWidget(self.restore_button)
+        foot.addStretch(1)
+        root.addLayout(foot)
+
+        self.merged_label = QLabel(self)
+        self.merged_label.setObjectName("speakerMeta")
+        self.merged_label.setWordWrap(True)
+        self.merged_label.hide()
+        root.addWidget(self.merged_label)
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
         self.merge_button = QToolButton(self)
-        self.merge_button.setObjectName("speakerMerge")
+        self.merge_button.setObjectName("speakerPillButton")
         bind_text(self.merge_button, "合并到 ▾")
         bind_text(self.merge_button, "把这位的字幕并到另一位", property="toolTip")
         self.merge_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.merge_menu = create_studio_menu(self.merge_button, theme_on_show=True)
         self.merge_menu.aboutToShow.connect(lambda: owner._card_fill_merge_menu(self, self.merge_menu))
         self.merge_button.setMenu(self.merge_menu)
-        foot.addWidget(self.merge_button)
-        foot.addStretch(1)
-        root.addLayout(foot)
+        actions.addWidget(self.merge_button)
+        self.split_button = QToolButton(self)
+        self.split_button.setObjectName("speakerGhostButton")
+        bind_text(self.split_button, "拆开并入的标签 ▾")
+        self.split_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.split_menu = create_studio_menu(self.split_button, theme_on_show=True)
+        self.split_menu.aboutToShow.connect(lambda: owner._card_fill_split_menu(self, self.split_menu))
+        self.split_button.setMenu(self.split_menu)
+        self.split_button.hide()
+        actions.addWidget(self.split_button)
+        self.group_button = QPushButton(self)
+        self.group_button.setObjectName("speakerGhostButton")
+        self.group_button.clicked.connect(lambda: owner._card_toggle_group(self))
+        actions.addWidget(self.group_button)
+        actions.addStretch(1)
+        root.addLayout(actions)
+        root.addStretch(1)
+
+    def _section(self, text: str) -> QLabel:
+        label = QLabel(text, self)
+        label.setObjectName("speakerSection")
+        return label
 
     @staticmethod
     def _icon_button(parent=None, *, checkable: bool = False) -> QToolButton:
@@ -410,7 +443,7 @@ class SpeakerCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         color = data.get("color") or "#888888"
-        self.swatch.setIcon(color_dot_icon(color, 16, ring=theme.border_strong))
+        self.swatch.setIcon(color_dot_icon(color, 30, ring=theme.border_strong))
         self.swatch.setEnabled(present)
         self.set_name_text(str(data.get("name") or self.key))
         self.name_edit.setEnabled(present)
@@ -448,7 +481,14 @@ class SpeakerCard(QFrame):
         self.status_label.setVisible(bool(status))
         role = data.get("role")
         self.roles.setVisible(role is not None)
+        self.roles_title.setVisible(role is not None)
         self.roles.set_role(str(role or ""))
         self.restore_button.setVisible(role == 'ignore')
         self.merge_button.setVisible(bool(data.get("can_merge")))
-        self.select_check.setEnabled(present)
+        merged = list(data.get("merged") or ())
+        self.merged_label.setText(tr("并入了：{names}", names="、".join(name for _key, name in merged)))
+        self.merged_label.setVisible(bool(merged))
+        self.split_button.setVisible(bool(merged))
+        group = data.get("timeline_group")
+        self.group_button.setVisible(present and group in {"main", "secondary"})
+        bind_text(self.group_button, "移到次要角色" if group == "main" else "移到主要角色")

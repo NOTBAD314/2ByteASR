@@ -7,7 +7,7 @@ import copy
 import os
 from collections.abc import Mapping
 
-from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -142,7 +142,8 @@ STYLE_LABEL_WIDTH = 40
 STYLE_LABEL_MAX_WIDTH = 112
 STYLE_LABEL_GAP = 8
 STYLE_ROW_INSET = 13
-STYLE_SWITCH_SLOT = 34
+STYLE_SWITCH_SLOT = 36  # same width as the sliders button: the last column lines up
+STYLE_CHEVRON_SLOT = 36  # 2026-11-12: a square sliders button (design A)
 
 
 class StyleGridLabel(QLabel):
@@ -383,6 +384,8 @@ class StylePropertyRow(QFrame):
     def set_trailing(self, widget: QWidget) -> None:
         """Put the row's on/off switch in the shared trailing slot."""
         self.trailing.layout().addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._has_trailing = True
+        self.trailing.setVisible(bool(getattr(self, "_inline_mode", False)))
 
     def set_inline(self, inline: bool = True, *, summary: bool = True, expandable: bool = True) -> None:
         """One line: title, the property's own controls, a short summary and
@@ -390,7 +393,10 @@ class StylePropertyRow(QFrame):
         self._inline_mode = bool(inline)
         self._expandable = bool(expandable)
         self._header_layout.setSpacing(STYLE_LABEL_GAP)
-        self.trailing.setVisible(bool(inline))
+        # 2026-11-12 (user): no empty slots at the end of a row. A row with a
+        # switch ends with the switch, one with settings ends with the
+        # sliders button, so the last control of every row lines up.
+        self.trailing.setVisible(bool(inline) and getattr(self, "_has_trailing", False))
         self.set_label_width(self._label_width)
         self.summary_label.setVisible(not inline)
         self.inline_summary.setVisible(inline and summary)
@@ -399,10 +405,46 @@ class StylePropertyRow(QFrame):
         # The summary takes the spare width when it is shown.
         self._header_layout.setStretch(self._header_stretch, 0 if inline and summary else 1)
         self.chevron.setVisible(expandable or callable(self._on_activate))
-        if inline and expandable and not callable(self._on_activate):
-            self.chevron.setText("更多 ▸")
+        if inline:
+            # 2026-11-11 (user): 填充 had a pencil, 描边 had 更多, and the rows
+            # ended at different places. One slot, one word, kept when empty.
+            self._show_trailing_icon(False)
+            self.chevron.setProperty("slot", True)
+            self.chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.chevron.setFixedWidth(STYLE_CHEVRON_SLOT)
+            policy = self.chevron.sizePolicy()
+            policy.setRetainSizeWhenHidden(False)
+            self.chevron.setSizePolicy(policy)
         layout = self.layout()
         layout.setContentsMargins(10, 5, 8, 5)
+
+    def _show_trailing_icon(self, open_: bool) -> None:
+        """The inline row's trailing control: a sliders icon in a square
+        (2026-11-12, user, design A); tinted while its editor is open."""
+        from ..design.themed_icons import colored_icon
+        theme = theme_definition(theme_key())
+        self.chevron.setText("")
+        self.chevron.setFixedHeight(STYLE_FIELD_HEIGHT - 2)
+        self.chevron.setPixmap(colored_icon("fa5s.sliders-h", theme.accent_text).pixmap(15, 15))
+        caption = tr("收起") if open_ else tr("更多设置")
+        self.chevron.setToolTip(caption)
+        self.chevron.setAccessibleName(caption)
+        if self.chevron.property("open") != open_:
+            self.chevron.setProperty("open", open_)
+            self.chevron.style().unpolish(self.chevron)
+            self.chevron.style().polish(self.chevron)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange and getattr(self, "_inline_mode", False):
+            self._show_trailing_icon(bool(self.chevron.property("open")))
+
+    def stretch_inline(self) -> None:
+        """The row's own controls take the spare width (a wide colour well)
+        instead of an empty stretch before the 更多 slot."""
+        self.inline_summary.setVisible(False)
+        self._header_layout.setStretchFactor(self._inline, 1)
+        self._header_layout.setStretch(self._header_stretch, 0)
 
     def set_label_width(self, width: int) -> None:
         """Title column width; expanded editors start in the control column."""
@@ -425,40 +467,10 @@ class StylePropertyRow(QFrame):
         self.chip.set_colors(self._tint_colors)
         self.update()
 
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        # 2026-10-18 (user): an active property shows its color at the row's
-        # right edge, fading to transparent (it was a left-edge tint before
-        # 2026-09). Rows that are off pass no colors.
-        if not self._tint_colors or not getattr(self, "_inline_mode", False):
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Only the row's own line: an expanded editor below stays on the surface.
-        header = self._header.geometry()
-        rect = QRectF(0.0, 0.0, float(self.width()), float(min(self.height(), header.bottom() + header.top() + 1)))
-        gradient = QLinearGradient(rect.topRight(), rect.topLeft())
-        colors = [QColor(value) for value in self._tint_colors]
-        reach = 0.6  # share of the row width the fade covers
-        if len(colors) == 1:
-            colors = colors * 2
-        # Black on a light theme or white on a dark one would read as a grey
-        # band; scale the strength down by the contrast with the panel.
-        surface = QColor(theme_definition(theme_key()).surface)
-        for index, color in enumerate(colors):
-            tinted = QColor(color)
-            contrast = abs(tinted.lightnessF() - surface.lightnessF())
-            strength = 1.0 - 0.62 * max(0.0, contrast - 0.25) / 0.75
-            tinted.setAlpha(int((46 * (1.0 - index / max(1, len(colors))) + 18) * strength))
-            gradient.setColorAt(reach * 0.5 * index / max(1, len(colors) - 1), tinted)
-        clear = QColor(colors[-1])
-        clear.setAlpha(0)
-        gradient.setColorAt(reach, clear)
-        gradient.setColorAt(1.0, clear)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(gradient)
-        painter.drawRect(rect)
-        painter.end()
+    # 2026-10-18 to 2026-11-11 the row painted its colour as a fade at its
+    # right edge. Every inline row now shows the colour in its own well or
+    # swatch, and the fade read as a cheap grey band behind the controls
+    # (2026-11-12, user), so the row paints nothing of its own.
 
     def set_expanded(self, expanded: bool) -> None:
         expanded = bool(expanded)
@@ -467,8 +479,8 @@ class StylePropertyRow(QFrame):
                 if other is not self and other.content.isVisible():
                     other.set_expanded(False)
         self.content.setVisible(expanded)
-        if getattr(self, "_inline_mode", False) and not callable(self._on_activate):
-            self.chevron.setText("收起 ▾" if expanded else "更多 ▸")
+        if getattr(self, "_inline_mode", False):
+            self._show_trailing_icon(expanded and not callable(self._on_activate))
         else:
             self.chevron.setText("▾" if expanded else "▸")
         if self.property("expanded") != expanded:
@@ -543,12 +555,20 @@ class StyleScopeSelector(QWidget):
     def _reflow(self):
         if not self._short or not self._buttons:
             return
-        widest = 0
+        widths = []
         for button in self._buttons:
+            # Text only: a radio button's own minimum counts its hidden
+            # indicator and pushed four short labels onto two rows, which
+            # then overlapped the row below (2026-11-12).
             font = QFont(button.font());font.setWeight(QFont.Weight.Bold)
-            widest = max(widest, QFontMetrics(font).horizontalAdvance(button.text()) + 20, button.minimumSizeHint().width())
+            # Each column needs only its own text, 6px padding on both
+            # sides and the 1px border. Multiplying the longest caption by
+            # four wasted the spare width and still wrapped at 351px.
+            widths.append(QFontMetrics(font).horizontalAdvance(button.text()) + 14)
         gap = max(0, self._layout.horizontalSpacing())
-        columns = next((n for n in (4, 2, 1) if n*widest+(n-1)*gap <= self.width()), 1)
+        def required(columns):
+            return sum(max(widths[column::columns], default=0) for column in range(columns)) + (columns-1)*gap
+        columns = next((n for n in (4, 2, 1) if required(n) <= self.width()), 1)
         if getattr(self, '_scope_columns', 0) != columns:
             while self._layout.count(): self._layout.takeAt(0)
             for column in range(4): self._layout.setColumnStretch(column, 0)
@@ -702,7 +722,9 @@ class StyleColorButton(QToolButton):
         rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         radius = 7.0
         if not self._enabled_state:
-            painter.setOpacity(0.38)
+            self._paint_off(painter, rect, radius, theme)
+            painter.end()
+            return
         clip = QPainterPath()
         clip.addRoundedRect(rect, radius, radius)
         painter.setClipPath(clip)
@@ -741,12 +763,69 @@ class StyleColorButton(QToolButton):
                     row += 1
             painter.fillRect(rect, self._color)
         painter.setClipping(False)
+        self._paint_value(painter, rect)
         painter.setOpacity(1.0)
         hovered = self.underMouse() and self.isEnabled()
         painter.setPen(QPen(QColor(theme.accent if hovered else theme.border_strong), 1.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, radius, radius)
         painter.end()
+
+    WELL_TEXT_WIDTH = 66
+
+    def _paint_off(self, painter, rect, radius, theme) -> None:
+        """A switched-off property (2026-11-12, user, design A): a dashed
+        outline around a small swatch, the muted value and 未启用."""
+        pen = QPen(QColor(theme.border_strong), 1.2, Qt.PenStyle.DashLine)
+        pen.setDashPattern([3.0, 3.0])
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
+        swatch = QRectF(rect.left() + 9, rect.center().y() - 8, 16, 16)
+        painter.setPen(QPen(QColor(0, 0, 0, 60), 1))
+        painter.setBrush(QColor(self._color.red(), self._color.green(), self._color.blue()))
+        painter.drawRoundedRect(swatch, 4, 4)
+        font = QFont(self.font())
+        font.setPixelSize(12)
+        painter.setFont(font)
+        painter.setPen(QColor(theme.text_muted))
+        text_rect = rect.adjusted(swatch.width() + 16, 0, -8, 0)
+        off = tr("未启用")
+        metrics = QFontMetrics(font)
+        if text_rect.width() >= metrics.horizontalAdvance(self.value_text() + "  " + off) + 6:
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, off)
+        if text_rect.width() >= metrics.horizontalAdvance(self.value_text()):
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.value_text())
+
+    def value_text(self) -> str:
+        """What a wide well writes on its colour: the hex value, or the
+        gradient kind (2026-11-11, user: the box shows the colour it holds)."""
+        if getattr(self, '_mixed_colors', ()):
+            return ''
+        if self._fill_spec.kind != "solid":
+            return tr(self._label)
+        if self._color.alpha() == 0:
+            return tr('透明')
+        return self._color.name(QColor.NameFormat.HexRgb).upper()
+
+    def value_ink(self) -> QColor:
+        """Dark or light text, whichever reads on the painted colour."""
+        color = self._color
+        if color.alpha() < 128:
+            return QColor("#2b2521")
+        return QColor("#2b2521") if (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) > 150 else QColor("#ffffff")
+
+    def _paint_value(self, painter, rect) -> None:
+        text = self.value_text()
+        if not text or rect.width() < self.WELL_TEXT_WIDTH:
+            return
+        font = QFont(self.font())
+        font.setPixelSize(12)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(self.value_ink())
+        painter.drawText(rect.adjusted(10.0, 0.0, -8.0, 0.0),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
 
     def enterEvent(self, event) -> None:
         super().enterEvent(event)

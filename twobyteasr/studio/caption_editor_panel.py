@@ -61,7 +61,8 @@ class CaptionSuggestionView(QScrollArea):
         self.setProperty('uiZoomOwnSize', True)
         self._fit_pending = False
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setWidgetResizable(True)
+        self.setWidgetResizable(False)
+        self._maximum_width, self._maximum_height = 700, 220
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -79,6 +80,7 @@ class CaptionSuggestionView(QScrollArea):
         self._selection = None
         self._frames = []
         self._buttons = {}
+        self._rows_generation = 0
 
     def reset(self):
         self._display = []
@@ -259,30 +261,34 @@ class CaptionSuggestionView(QScrollArea):
             self.activated.emit(mark, selected)
 
     def _rebuild(self):
+        self._rows_generation += 1
+        generation = self._rows_generation
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget() is not None:
+                item.widget().hide()
                 item.widget().deleteLater()
         self._frames, self._buttons = [], {}
         for index, item in enumerate(self._display):
             frame = QFrame(self._body)
             frame.setObjectName("captionSuggestionRow")
             frame.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            row_layout = QHBoxLayout(frame)
+            from ..design.soft_widgets import WrapLayout
+            row_layout = WrapLayout(frame, spacing=4, fill=False, center=True)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(4)
             # The suspect word and its position stay for accessibility and
             # keyboard location; the bubble itself points at the word.
             suspect = QPushButton(f"「{item.row.original or '∅'}」".replace('&', '&&'), frame)
             suspect.setObjectName("captionSuspect")
             suspect.setToolTip(f"第 {item.row.start + 1}–{item.row.end} 字；只处理这一处")
             suspect.setEnabled(item.status == "pending")
-            suspect.clicked.connect(lambda checked=False, i=index: self._locate(i))
+            suspect.clicked.connect(lambda checked=False, i=index, g=generation: self._locate(i) if g == self._rows_generation else None)
             suspect.hide()
             row_layout.addWidget(suspect)
             if item.status == "pending":
                 for option, value in enumerate(item.row.options):
                     button = QPushButton((value.text or "∅").replace('&', '&&'), frame)
+                    button._candidate_text = value.text if isinstance(value.text, str) else "候选不可用"
                     button.setObjectName("captionCandidateButton")
                     button.setAccessibleName(f"将{item.row.original}替换为{value.text}")
                     button.setToolTip(f"「{item.row.original}」→「{value.text}」 · 点击或空格采纳")
@@ -290,9 +296,10 @@ class CaptionSuggestionView(QScrollArea):
                     button.setAutoExclusive(False)
                     button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
                     button.setCursor(Qt.CursorShape.PointingHandCursor)
-                    button.clicked.connect(lambda checked=False, i=index, j=option: self._activate(i, j))
+                    button.clicked.connect(lambda checked=False, i=index, j=option, g=generation: self._activate(i, j) if g == self._rows_generation else None)
                     button.installEventFilter(self)
                     button._caption_choice = (index, option)
+                    button._caption_generation = generation
                     self._buttons[index, option] = button
                     row_layout.addWidget(button)
             else:
@@ -321,7 +328,8 @@ class CaptionSuggestionView(QScrollArea):
         from PySide6.QtCore import QEvent
         if watched is self._body and event.type() == QEvent.Type.LayoutRequest:
             self._schedule_fit()
-        if event.type() == QEvent.Type.FocusIn and hasattr(watched, "_caption_choice"):
+        if (event.type() == QEvent.Type.FocusIn and hasattr(watched, "_caption_choice")
+                and watched._caption_generation == self._rows_generation):
             self._choose(*watched._caption_choice)
         return super().eventFilter(watched, event)
 
@@ -329,10 +337,16 @@ class CaptionSuggestionView(QScrollArea):
         if self._fit_pending:
             return
         self._fit_pending = True
-        QTimer.singleShot(0, self._fit_rows)
+        QTimer.singleShot(0, self, self._fit_rows)
 
     def _visible_frame(self):
         return next((frame for frame in self._frames if not frame.isHidden()), None)
+
+    def set_budget(self, width, height):
+        budget = max(48, int(width)), max(38, int(height))
+        if budget != (self._maximum_width, self._maximum_height):
+            self._maximum_width, self._maximum_height = budget
+            self._fit_rows()
 
     def _fit_rows(self):
         self._fit_pending = False
@@ -340,10 +354,34 @@ class CaptionSuggestionView(QScrollArea):
         if frame is None:
             size = QSize(0, 0)
         else:
-            for widget in (frame, *frame.findChildren(QWidget)):
-                widget.ensurePolished()
-            frame.layout().activate()
-            size = frame.sizeHint()
+            natural = 0
+            for button in frame.findChildren(QPushButton):
+                if not hasattr(button, '_candidate_text'): continue
+                button.ensurePolished()
+                metrics = button.fontMetrics()
+                value = button._candidate_text or '∅'
+                width = max(24, self._maximum_width - 22)
+                lines, line = [], ''
+                for char in value:
+                    if char == '\n' or line and metrics.horizontalAdvance(line+char) > width:
+                        lines.append(line); line = ''
+                    if char != '\n': line += char
+                lines.append(line)
+                label = '\n'.join(lines).replace('&', '&&')
+                if button.text() != label: button.setText(label)
+                wanted = max(38, max(metrics.horizontalAdvance(v) for v in lines) + 22)
+                button.setFixedSize(min(self._maximum_width, wanted), max(38, len(lines)*metrics.lineSpacing()+14))
+                natural += button.width()+4
+            width = min(self._maximum_width, max(38, natural-4, frame.minimumSizeHint().width()))
+            if frame.width() != width: frame.setFixedWidth(width)
+            layout = frame.layout()
+            layout.activate()
+            height = max(38, layout.heightForWidth(width), layout.sizeHint().height())
+            frame.setFixedHeight(height)
+            self._body.setFixedSize(width, height)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            size = QSize(width + (self.verticalScrollBar().sizeHint().width() if height > self._maximum_height else 0),
+                         min(height, self._maximum_height))
         if self.size() != size or self.minimumSize() != size or self.maximumSize() != size:
             self.setFixedSize(size)
             self.updateGeometry()
@@ -408,12 +446,12 @@ class CaptionSuggestionBubble(QWidget):
         if watched is self.view:
             kind = event.type()
             if kind in (QEvent.Type.Show, QEvent.Type.Hide):
-                QTimer.singleShot(0, self._follow_view)
+                QTimer.singleShot(0, self, self._follow_view)
             elif kind in (QEvent.Type.Resize, QEvent.Type.LayoutRequest):
                 self.adjustSize()
                 owner = self.parentWidget()
                 if hasattr(owner, 'place_bubble'):
-                    QTimer.singleShot(0, owner.place_bubble)
+                    QTimer.singleShot(0, owner, owner.place_bubble)
         return super().eventFilter(watched, event)
 
     def _follow_view(self):
@@ -655,6 +693,7 @@ class CaptionEditorPanel(QFrame):
     TEXT_PX = 22
     MIN_CARD = 380
     TAG_OVERHANG = 11
+    FACE_GUTTER = 36
 
     def __init__(self, editor_type, parent=None):
         super().__init__(parent)
@@ -712,7 +751,7 @@ class CaptionEditorPanel(QFrame):
         self.face = QFrame(self.card)
         self.face.setObjectName("captionCardFace")
         face_layout = QVBoxLayout(self.face)
-        face_layout.setContentsMargins(20, 16, 20, 12)
+        face_layout.setContentsMargins(self.FACE_GUTTER, 16, self.FACE_GUTTER, 12)
         face_layout.setSpacing(6)
         self.reference = QLabel(self.face)
         self.reference.setObjectName("captionEditorReference")
@@ -921,15 +960,40 @@ class CaptionEditorPanel(QFrame):
         strip = self.strip_row.sizeHint().width() + 20
         metrics = QFontMetrics(self.editor.font())
         text = max((metrics.horizontalAdvance(line[:512]) for line in self.editor.toPlainText().split('\n')), default=0)
-        text = max(text, int(minimum_text)) + 40 + 12
-        bubble = self.bubble.sizeHint().width() + 24 if self.suggestions.has_rows() else 0
+        text = max(text, int(minimum_text)) + 2*self.FACE_GUTTER + 12
+        bubble = 0
+        item = self.suggestions.current_row()
+        if item is not None:
+            # Intrinsic candidate content, not last frame's constrained view.
+            # Feeding the wrapped viewport width back here drifts a few pixels
+            # on every cursor/layout event near a width limit.
+            buttons = [b for (index,_),b in self.suggestions._buttons.items()
+                       if self.suggestions._display[index] is item]
+            if buttons:
+                fm = buttons[0].fontMetrics()
+                bubble = sum(max(38,fm.horizontalAdvance(str(option.text or '')[:512])+22)
+                             for option in item.row.options) + 4*max(0,len(item.row.options)-1) + 34
+            else:
+                bubble = self.bubble.sizeHint().width()+24
         return int(max(160, min(int(maximum), max(self.MIN_CARD, strip, text, bubble))))
 
     def _queue_place(self, *_args):
         if self._place_pending:
             return
         self._place_pending = True
-        QTimer.singleShot(0, self.place_bubble)
+        QTimer.singleShot(0, self, self.place_bubble)
+
+    def prepare_geometry(self, width, maximum_height):
+        self.setFixedWidth(max(120, int(width)))
+        self.resize_editor(max(80, width-2*self.FACE_GUTTER))
+        self._card_layout.activate()
+        content_height = self._card_layout.totalHeightForWidth(width) if self._card_layout.hasHeightForWidth() else self.card.sizeHint().height()
+        self.suggestions.set_budget(max(48, width-24), max(38, maximum_height-max(80, content_height)-24))
+        self.bubble.adjustSize()
+        lane = max(self.TAG_OVERHANG+1, self.bubble.sizeHint().height()+4) if self.suggestions.has_rows() else self.TAG_OVERHANG+1
+        if self.lane.height() != lane: self.lane.setFixedHeight(lane)
+        self._outer.invalidate()
+        self._outer.activate()
 
     def place_bubble(self):
         """Put the tag on the face edge and the bubble over the suspect word."""
@@ -969,15 +1033,10 @@ class CaptionEditorPanel(QFrame):
             x = max(0, min(self.width() - width, above.x() - width // 2))
             down = not self._strip_above
             self.bubble.set_tail(above.x() - x, down)
-            # Everything under the lane moves with it, so the lane needed is
-            # the current lane plus however far the bubble sticks out.
-            current = self.lane.height()
-            if down:
-                y = above.y() - height + 2
-                lane = max(lane, current - y)
-            else:
-                y = below.y() + 2
-                lane = max(lane, current + y + height - self.height())
+            # Reserve the complete measured bubble before window placement.
+            # This is independent of the previous lane/window geometry.
+            lane = max(lane, height + 4)
+            y = face.top() - height + 2 if down else face.bottom() + 2
             self.bubble.move(x, y)
             self.bubble.show()
             self.bubble.raise_()
@@ -1106,6 +1165,9 @@ class CaptionEditorPanel(QFrame):
                 text = "Shift+A/D 候选↔正文 · Shift+W 候选 · Shift+C 切割 · Shift+Enter 换行"
         if self.split_mode.isChecked():
             text += ' · C 切割（输入法选字时暂停）'
+        navigation = self.property('navigationKey')
+        if navigation:
+            text += f' · {navigation} 字幕起点／终点'
         text += ' · Enter/Shift+R 保存并关闭'
         self.hint.setText(text)
         self.ignore_button.setEnabled(self.suggestions.selected[0] >= 0)
@@ -1121,12 +1183,12 @@ class CaptionEditorPanel(QFrame):
             self.updateGeometry()
         return super().eventFilter(watched, event)
 
-    def resize_editor(self):
+    def resize_editor(self, available_width=None):
         # Bound this small field using font metrics, without forcing full
         # document layout on each key or recursively resizing from show events.
         import math
         metrics = self.editor.fontMetrics()
-        width = max(80, self.editor.viewport().width() - 8)
+        width = max(80, (self.editor.viewport().width() if available_width is None else available_width) - 8)
         lines = 0
         for text in self.editor.toPlainText().split('\n'):
             lines += max(1, math.ceil(metrics.horizontalAdvance(text[:512]) / width))
@@ -1189,7 +1251,7 @@ class CaptionEditorPanel(QFrame):
             f"QToolButton{{color:{MUTED};background:transparent;border:0;font-size:11px;}}"
             "QScrollArea#captionSuggestionScroll,QWidget#captionSuggestionsBody{background:transparent;border:0;}"
             "QFrame#captionSuggestionRow{background:transparent;border:0;}"
-            f"QPushButton#captionCandidateButton{{background:transparent;color:{INK};border:0;border-radius:13px;min-width:38px;min-height:38px;max-height:38px;padding:0 9px;font-size:19px;font-weight:700;}}"
+            f"QPushButton#captionCandidateButton{{background:transparent;color:{INK};border:0;border-radius:13px;min-width:38px;min-height:38px;padding:0 9px;font-size:19px;font-weight:700;}}"
             f"QPushButton#captionCandidateButton:hover{{background:{CHIP};}}"
             f"QPushButton#captionCandidateButton:checked,QPushButton#captionCandidateButton:focus{{background:{AMBER};border-bottom:3px solid {AMBER_EDGE};}}"
             f"QLabel#captionSuggestionHandled{{color:{MUTED};font-size:12px;padding:0 10px;min-height:38px;}}"

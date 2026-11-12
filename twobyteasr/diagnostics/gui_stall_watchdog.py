@@ -36,7 +36,10 @@ from PySide6.QtCore import QObject, Qt, QTimer
 
 
 BEAT_MS = 50
-STALL_MS = 250.0
+try:
+    STALL_MS = max(100.0, float(os.environ.get('TWOBYTEASR_STALL_SAMPLE_MS', '250')))
+except ValueError:
+    STALL_MS = 250.0
 ONGOING_MS = 2000.0
 STACK_DEPTH = 18
 MAX_RECORDS = 400

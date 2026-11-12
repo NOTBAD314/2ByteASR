@@ -267,12 +267,10 @@ def start(window, output):
             window._completion_action=lambda key,*a,**k:calls.append(key)
             todo.set_ai(enabled=True)
             try:
-                for target in (todo.ai_card.icon,todo.ai_card.title,todo.ai_card.badge,None,todo.ai_card.action):
+                card=window.result_ai_card
+                for pos in (QPoint(card.width()//2,20),card.rect().center(),QPoint(card.width()//2,card.height()-25)):
                     before=len(calls)
-                    if target is todo.ai_card.action:QTest.mouseClick(target,Qt.LeftButton)
-                    else:
-                        pos=QPoint(todo.ai_card.width()//2,2) if target is None else target.geometry().center()
-                        QTest.mouseClick(todo.ai_card,Qt.LeftButton,pos=pos)
+                    QTest.mouseClick(card,Qt.LeftButton,pos=pos)
                     check('whole AI pill routes once '+str(before),len(calls)==before+1 and calls[-1]=='repolish')
             finally:window._completion_action=completion_action
             for percent in (80,100,120):

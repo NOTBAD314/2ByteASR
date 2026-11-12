@@ -108,7 +108,7 @@ def entries(window) -> list[Entry]:
               '首页 → 字幕语言与输出', _focus_home(window, 'recognition_language')),
         Entry('范例工程', ('范例', '示例', 'sample', 'demo', '试用', '体验'), '说明 → 打开范例工程',
               lambda: window._open_sample_project()),
-        Entry('新手引导', ('引导', '教程', '新手', 'guide', 'tutorial', '帮助', '开始'), '说明 → 显示新手引导',
+        Entry('新手引导', ('引导', '教程', '新手', 'guide', 'tutorial', '帮助', '开始'), '首页',
               lambda: window._next_step_action('show_guide')),
         Entry('界面主题与动画', ('主题', '外观', '深色', '浅色', 'theme', 'dark', '动画'), '应用设置 → 外观',
               _settings(window, '外观')),

@@ -65,6 +65,89 @@ from ..i18n import tr
 REVIEW_DOCK_ROW_HEIGHT = 92
 
 
+class CountChip(QPushButton):
+    """A filter segment whose count is a small pill (2026-11-12, user,
+    design A). ``text()`` stays "全部 250" for the code that reads it; only
+    the painting splits it into the caption and the count."""
+
+    def __init__(self, caption: str, key: str, parent=None):
+        super().__init__(caption, parent)
+        self.key = key
+
+    def parts(self) -> tuple[str, str]:
+        head, _, tail = self.text().rpartition(" ")
+        if head and (tail.isdigit() or tail == "--"):
+            return head, tail
+        return self.text(), ""
+
+    def pill_colors(self, theme, count: str) -> tuple[str, str]:
+        from ..design.ui_theme import blend_hex
+        busy = count.isdigit() and int(count) > 0
+        if self.key == "all":
+            return theme.text, theme.surface
+        if self.key == "priority" and busy:
+            return theme.warning, theme.text_on_accent
+        if self.key == "critical" and busy:
+            return theme.danger, theme.text_on_accent
+        return blend_hex(theme.surface, theme.text, 0.14), theme.text_secondary
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        head, count = self.parts()
+        metrics = self.fontMetrics()
+        width = metrics.horizontalAdvance(head) + (metrics.horizontalAdvance(count) + 22 if count else 0) + 20
+        return QSize(width, hint.height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QPainter
+        from PySide6.QtWidgets import QStyle, QStyleOptionButton, QStylePainter
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+        painter = QStylePainter(self)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
+        theme = theme_definition(theme_key())
+        head, count = self.parts()
+        metrics = self.fontMetrics()
+        pill_text = count
+        pill_font = self.font()
+        pill_font.setPixelSize(max(10, self.font().pixelSize() - 2) if self.font().pixelSize() > 0 else 11)
+        pill_font.setBold(True)
+        from PySide6.QtGui import QFontMetrics
+        pill_metrics = QFontMetrics(pill_font)
+        pill_width = pill_metrics.horizontalAdvance(pill_text) + 12 if pill_text else 0
+        pill_height = pill_metrics.height() + 2
+        room = self.width() - 12
+        available = max(0, room - pill_width - (6 if pill_text else 0))
+        if metrics.horizontalAdvance(head) > available:
+            # A narrow list: the short word reads better than 「建…」.
+            from ..i18n import tr as _tr
+            head = _tr({"priority": "建议", "critical": "检查"}.get(self.key, head)) if self.key in {"priority", "critical"} else head
+        head_width = min(metrics.horizontalAdvance(head), available)
+        total = head_width + (6 + pill_width if pill_text else 0)
+        left = (self.width() - total) / 2
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(self.palette().color(self.foregroundRole()) if not self.isChecked() else QColor(theme.text))
+        painter.setFont(self.font())
+        painter.drawText(QRectF(left, 0, head_width, self.height()), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                         metrics.elidedText(head, Qt.TextElideMode.ElideRight, int(head_width)))
+        if pill_text:
+            fill, ink = self.pill_colors(theme, count)
+            pill = QRectF(left + head_width + 6, (self.height() - pill_height) / 2, pill_width, pill_height)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(fill))
+            painter.drawRoundedRect(pill, pill_height / 2, pill_height / 2)
+            painter.setFont(pill_font)
+            painter.setPen(QColor(ink))
+            painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), pill_text)
+
+
 class ResponsiveCueTableView(QTableView):
     first_selected_rows_painted = Signal(int)
 
@@ -148,41 +231,52 @@ class StudioWorkspaceBuilder:
 
     def build_steps(self):
         """Create Qt controls on the GUI thread in dependency-ordered sections."""
+        from ..design.gui_slices import GuiSlice, GUI_YIELD
+        _gui_slice = GuiSlice()
         page = self.page
         _icon = self._icon
         _icon_label = self._icon_label
+        yield from _gui_slice.checkpoint()
         _time_spinbox = self._time_spinbox
         AdvancedLiveCanvas = self._advanced_live_canvas_type
         MpvCanvas = self._mpv_canvas_type
         SubtitlePositionOverlay = self._position_overlay_type
+        yield from _gui_slice.checkpoint()
         WaveformTimeline = self._waveform_timeline_type
         _SubtitleEditCardEditor = self._subtitle_editor_type
         outer = QVBoxLayout(page)
         outer.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         outer.setSpacing(0)
         toolbar = QFrame()
         toolbar.setObjectName("studioToolbar")
         page.studio_toolbar = toolbar
+        yield from _gui_slice.checkpoint()
         toolbar.installEventFilter(page)
         bar = QHBoxLayout(toolbar)
         bar.setContentsMargins(12, 7, 12, 7)
         bar.setSpacing(6)
+        yield from _gui_slice.checkpoint()
         page._studio_command_layout = bar
         back = page._tool_button("fa5s.arrow-left", "返回上一层", page._request_back)
         page.studio_back_button = back
         bar.addWidget(back)
+        yield from _gui_slice.checkpoint()
         from ..design.elided_label import ElidedLabel
         page.filename = ElidedLabel("兔白字幕", minimum=120)
         page.filename.setObjectName("studioFilename")
         page.filename.setMinimumWidth(120)
+        yield from _gui_slice.checkpoint()
         page.filename.setMaximumWidth(420)
         bar.addWidget(page.filename)
         page.filename.installEventFilter(page)
         from .studio_widgets import StudioStatusLabel
+        yield from _gui_slice.checkpoint()
         page.save_state = StudioStatusLabel("未打开项目")
         page.save_state.setObjectName("studioSaveState")
         page.save_state.setMinimumWidth(110)
         page.save_state.setMaximumWidth(220)
+        yield from _gui_slice.checkpoint()
         page.save_state.setWordWrap(False)
         # 2026-10-18 (user: 已自动保存 drawn under the home icon): an Ignored
         # policy hints 0 px, so a tight bar gave the label no room while its
@@ -191,6 +285,7 @@ class StudioWorkspaceBuilder:
         page.save_state.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         bar.addWidget(page.save_state)
         page.save_state.installEventFilter(page)
+        yield from _gui_slice.checkpoint()
         page.subtitle_tasks_button = page._tool_button("fa5s.tasks", "查看字幕任务进度与结果", page.show_subtitle_tasks)
         page.subtitle_tasks_button.setText("任务进度")
         # 2026-11-10 (user): a quiet round icon while idle; a progress pill
@@ -198,18 +293,22 @@ class StudioWorkspaceBuilder:
         # (_refresh_subtitle_task_entry).
         page.subtitle_tasks_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         page.subtitle_tasks_button.setObjectName("studioSubtitleTasks")
+        yield from _gui_slice.checkpoint()
         page.subtitle_tasks_button.setProperty("taskState", "idle")
         page.subtitle_tasks_button.setIconSize(QSize(15, 15))
         page.subtitle_tasks_button.setFixedWidth(32)
         page.subtitle_tasks_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        yield from _gui_slice.checkpoint()
         install_themed_icon(page.subtitle_tasks_button, "fa5s.tasks", "accent")
         page.subtitle_tasks_dot = QFrame(page.subtitle_tasks_button)
         page.subtitle_tasks_dot.setObjectName("studioTaskDot")
         page.subtitle_tasks_dot.setFixedSize(8, 8)
+        yield from _gui_slice.checkpoint()
         page.subtitle_tasks_dot.move(22, 1)
         page.subtitle_tasks_dot.hide()
         bar.addWidget(page.subtitle_tasks_button)
         bar.addStretch(1)
+        yield from _gui_slice.checkpoint()
         # 2026-10-23 (user's design B): the commands sit in tonal tracks by
         # kind (navigation / view / tools / export) instead of between
         # dividers. A track hides itself while all of its commands are hidden.
@@ -217,22 +316,27 @@ class StudioWorkspaceBuilder:
         nav_track, view_track, tool_track, export_track = SoftTrack(), SoftTrack(), SoftTrack(), SoftTrack()
         page._studio_toolbar_tracks = (nav_track, view_track, tool_track, export_track)
         bar.addWidget(nav_track)
+        yield from _gui_slice.checkpoint()
         home = page._tool_button("fa5s.home", "返回字幕识别", page._request_return_home)
         page.studio_home_button = home
         nav_track.add(home)
         library = page._tool_button("fa5s.th-large", "兔白字幕工程库", page._request_return_library)
+        yield from _gui_slice.checkpoint()
         library.setCheckable(True)
         page.studio_library_button = library
         nav_track.add(library)
         open_button = page._tool_button("fa5s.folder-open", "打开已有工程", page.open_project_dialog)
+        yield from _gui_slice.checkpoint()
         page.studio_open_button = open_button
         nav_track.add(open_button)
         import_media = page._tool_button("fa5s.plus", "导入媒体", page.import_media_dialog)
         page.studio_import_media_button = import_media
+        yield from _gui_slice.checkpoint()
         nav_track.add(import_media)
         from ..app.link_download_controller import show_link_download
         page.studio_link_download_button = page._tool_button("fa5s.download", "链接下载", lambda: show_link_download(page))
         nav_track.add(page.studio_link_download_button)
+        yield from _gui_slice.checkpoint()
         # 2026-10-26 (user's design B): running link downloads show here; the
         # controller attaches it the first time it is used.
         from ..app.link_quick_card import ProgressCapsule
@@ -241,10 +345,12 @@ class StudioWorkspaceBuilder:
         page.studio_hub_settings_button = page._tool_button(
             "fa5s.cog", "应用设置", page._show_hub_preferences
         )
+        yield from _gui_slice.checkpoint()
         nav_track.add(page.studio_hub_settings_button)
         page.relink_button = page._tool_button("fa5s.link", "重新定位源媒体", page._relink_media)
         page.relink_button.hide()
         nav_track.add(page.relink_button)
+        yield from _gui_slice.checkpoint()
         for button in nav_track.members:
             button.setIconSize(QSize(18, 18))
         # 2026-10-21 (user): 保存 / 撤销 / 重做 live in the Tool Panel header
@@ -253,14 +359,17 @@ class StudioWorkspaceBuilder:
         page.save_button = page._tool_button("fa5s.save", "保存项目 ({key})", page.save, shortcut="save")
         page.studio_save_button = page.save_button
         undo_button = page._tool_button("fa5s.undo", "撤销 ({key})", page._undo_interactive, shortcut="undo")
+        yield from _gui_slice.checkpoint()
         redo_button = page._tool_button("fa5s.redo", "重做 ({key})", page._redo_interactive, shortcut="redo")
         page.studio_undo_button, page.studio_redo_button = undo_button, redo_button
         undo_button.setEnabled(page.undo_stack.canUndo())
         redo_button.setEnabled(page.undo_stack.canRedo())
+        yield from _gui_slice.checkpoint()
         page.undo_stack.canUndoChanged.connect(undo_button.setEnabled)
         page.undo_stack.canRedoChanged.connect(redo_button.setEnabled)
         page.workspace_actions: dict[str, QAction] = {}
         page.editor_field_actions: dict[str, QAction] = {}
+        yield from _gui_slice.checkpoint()
         # Display mode lives in the Tool Panel settings menu, not the removed
         # workspace dropdown.
         page.mono_display_action = QAction("单语", page)
@@ -268,53 +377,64 @@ class StudioWorkspaceBuilder:
         for action in (page.mono_display_action, page.bilingual_display_action):
             action.setCheckable(True)
         page.mono_display_action.setChecked(True)
+        yield from _gui_slice.checkpoint()
         page.mono_display_action.triggered.connect(lambda: page._set_bilingual_mode(False))
         page.bilingual_display_action.triggered.connect(lambda: page._set_bilingual_mode(True))
         page.cue_list_toggle_button = QPushButton("字幕列表")
         page.cue_list_toggle_button.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         page.cue_list_toggle_button.setIcon(_icon("fa5s.list", GREEN))
         page.cue_list_toggle_button.setCheckable(True)
         page.cue_list_toggle_button.setChecked(True)
         bind_text(page.cue_list_toggle_button, '显示或收起左侧字幕列表', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.cue_list_toggle_button.clicked.connect(
             lambda checked: page._set_major_panel_visible("cue_list", checked)
         )
         bar.addWidget(view_track)
         view_track.add(page.cue_list_toggle_button)
         page.context_expand_button = QPushButton("工具面板")
+        yield from _gui_slice.checkpoint()
         page.context_expand_button.setObjectName("studioButton")
         page.context_expand_button.setIcon(_icon("fa5s.columns", GREEN))
         page.context_expand_button.setCheckable(True)
         page.context_expand_button.setChecked(True)
+        yield from _gui_slice.checkpoint()
         bind_text(page.context_expand_button, '显示或收起右侧工具面板', property='toolTip')
         page.context_expand_button.clicked.connect(page._toggle_context_panel)
         view_track.add(page.context_expand_button)
         page.review_mode_button = QPushButton("进入审核模式")
+        yield from _gui_slice.checkpoint()
         page.review_mode_button.setObjectName("studioButton")
         # 2026-09-06（用户四图反馈·图三）：审核模式此前是工具行里唯一无图标的
         # 按钮；与行内其它工具按钮统一走 themed role 图标（随主题重着色）。
         install_themed_icon(page.review_mode_button, "fa5s.glasses", "primary")
         page.review_mode_button.setCheckable(True)
         page._shortcut_tooltip(page.review_mode_button, '{key} 进入 / 退出审核模式', 'toggle_review')
+        yield from _gui_slice.checkpoint()
         page.review_mode_button.toggled.connect(page._set_review_mode)
         page.review_mode_button.setParent(page)
         page.review_mode_button.hide()
         find_replace = QPushButton("批量替换")
+        yield from _gui_slice.checkpoint()
         page.studio_find_replace_button = find_replace
         find_replace.setObjectName("studioButton")
         find_replace.setStyleSheet("min-width: 86px; padding: 0 4px;")
         find_replace.setIcon(_icon("fa5s.exchange-alt", GREEN))
+        yield from _gui_slice.checkpoint()
         page._shortcut_tooltip(find_replace, '查找并替换字幕文字 ({find} / {replace})',
                                {'find': 'find', 'replace': 'find_replace'})
         find_replace.clicked.connect(page._open_find_replace)
         bar.addWidget(tool_track)
         tool_track.add(find_replace)
+        yield from _gui_slice.checkpoint()
         # 2026-10-14: the user's own line-broken script, timed by the project's
         # word timestamps only (no model, no AI); see studio_script_match.
         script_match = QPushButton("匹配文稿")
         page.studio_script_match_button = script_match
         script_match.setObjectName("studioButton")
         bind_text(script_match, '贴上已断好句的完整文稿，只用字级时间对齐（不调用模型或 AI）', property='toolTip')
+        yield from _gui_slice.checkpoint()
 
         def open_script_match():
             from .studio_script_match import open_script_match_dialog
@@ -324,28 +444,34 @@ class StudioWorkspaceBuilder:
         # 2026-09-02（用户指示）：说话人管理改为与其它工具一致的
         # 文本按钮 + 同色图标，不再是无文字的白色纯图标。
         page.speaker_manager_button = QPushButton("说话人管理")
+        yield from _gui_slice.checkpoint()
         page.speaker_manager_button.setObjectName("studioButton")
         page.speaker_manager_button.setIcon(_icon("fa5s.users", GREEN))
         bind_text(page.speaker_manager_button, '打开 Speaker Manager', property='toolTip')
         page.speaker_manager_button.clicked.connect(page._open_speaker_manager)
+        yield from _gui_slice.checkpoint()
         tool_track.add(page.speaker_manager_button)
         page.bilingual_toggle_button = QPushButton("双语 / 翻译")
         page.bilingual_toggle_button.setObjectName("studioButton")
         page.bilingual_toggle_button.setIcon(_icon("fa5s.language", GREEN))
+        yield from _gui_slice.checkpoint()
         page.bilingual_toggle_button.setCheckable(True)
         bind_text(page.bilingual_toggle_button, '翻译选取字幕或整个工程；切换原文、译文、双语与排版', property='toolTip')
         from PySide6.QtWidgets import QMenu
 
         bilingual_menu = create_studio_menu(page)
+        yield from _gui_slice.checkpoint()
         # Original / translation / bilingual display, order, fonts, translation.
         from .studio_bilingual import build_menu as build_bilingual_menu
         build_bilingual_menu(page, bilingual_menu)
         page.bilingual_toggle_button.setMenu(bilingual_menu)
         tool_track.add(page.bilingual_toggle_button)
+        yield from _gui_slice.checkpoint()
         page.studio_usage_button = QPushButton(tr('API 用量与费用'))
         page.studio_usage_button.setObjectName('studioButton')
         from .usage_dialog import open_usage
         page.studio_usage_button.clicked.connect(lambda: open_usage(page, project=page.project))
+        yield from _gui_slice.checkpoint()
         # 2026-10-21 (user): only in ⋯, not on the bar; same window as before.
         page.studio_usage_button.setParent(page)
         page.studio_usage_button.hide()
@@ -353,52 +479,63 @@ class StudioWorkspaceBuilder:
         # and every export; the manuscript is never rewritten by the choice.
         page.punctuation_button = QPushButton("标点")
         page.punctuation_button.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         page.punctuation_button.setIcon(_icon("fa5s.paragraph", GREEN))
         punctuation_menu = create_studio_menu(page)
         from .studio_punctuation import build_menu as build_punctuation_menu
         build_punctuation_menu(page, punctuation_menu)
+        yield from _gui_slice.checkpoint()
         page.punctuation_button.setMenu(punctuation_menu)
         tool_track.add(page.punctuation_button)
         # 字幕简繁转换 (2026-10-19) is a submenu of 双语 / 翻译 since 2026-10-22
         # (user request); it has no toolbar button of its own.
         clip_assistant = QPushButton("剪辑助手")
         page.studio_clip_assistant_button = clip_assistant
+        yield from _gui_slice.checkpoint()
         clip_assistant.setObjectName("studioButton")
         clip_assistant.setIcon(_icon("fa5s.film", GREEN))
         bind_text(clip_assistant, '录播爆点候选 / 剪辑助手', property='toolTip')
         clip_assistant.clicked.connect(page._open_clip_assistant)
+        yield from _gui_slice.checkpoint()
         clip_assistant.setParent(page)
         clip_assistant.hide()
         shortcut_entry = QPushButton("快捷键设置")
         page.studio_shortcut_entry_button = shortcut_entry
+        yield from _gui_slice.checkpoint()
         # One owned entry only. The old unattached icon button was later shown
         # by _set_hub_toolbar_mode(False), becoming an orphan native window.
         page.studio_shortcut_button = shortcut_entry
         shortcut_entry.setObjectName("studioButton")
         shortcut_entry.setStyleSheet("min-width: 86px; padding: 0 4px;")
         shortcut_entry.setIcon(_icon("fa5s.keyboard", GREEN))
+        yield from _gui_slice.checkpoint()
         bind_text(shortcut_entry, '配置 Studio 快捷键', property='toolTip')
         shortcut_entry.clicked.connect(page._show_shortcut_settings)
         tool_track.add(shortcut_entry)
         # Keys come from the shortcut registry (_install_shortcuts re-keys them).
         find_replace_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find_replace", "Ctrl+H")), page)
+        yield from _gui_slice.checkpoint()
         find_replace_shortcut.activated.connect(page._open_find_replace)
         page._find_replace_shortcut = find_replace_shortcut
         # Ctrl+F is the usual "find"; it opens the same find/replace tools.
         find_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find", "Ctrl+F")), page)
         find_shortcut.activated.connect(page._open_find_replace)
+        yield from _gui_slice.checkpoint()
         page._find_shortcut = find_shortcut
         export = QPushButton("导出字幕")
         page.studio_export_button = export
         export.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         export.setIcon(_icon("fa5s.file-export"))
         export.clicked.connect(page.export_subtitles)
         bar.addWidget(export_track)
         export_track.add(export)
+        yield from _gui_slice.checkpoint()
         render = QPushButton("导出音视频")
         page.studio_render_button = render
         render.setObjectName("studioButton")
         render.clicked.connect(page._open_render_dialog)
+        yield from _gui_slice.checkpoint()
         export_track.add(render)
         # 2026-10-21 (user, later; ported 2026-10-24): the flag alone was not
         # recognisable, so the button says 回报问题 again, in the warning colour.
@@ -407,10 +544,12 @@ class StudioWorkspaceBuilder:
         page.report_problem_button = QPushButton()
         page.report_problem_button.setObjectName("studioReportProblemButton")
         bind_text(page.report_problem_button, '回报问题')
+        yield from _gui_slice.checkpoint()
         bind_text(page.report_problem_button, '标记出问题的时间，导出诊断包给开发者', property='toolTip')
         bind_text(page.report_problem_button, '回报问题', property='accessibleName')
         from ..diagnostics.support_dialog import open_support_dialog
         page.report_problem_button.clicked.connect(lambda: open_support_dialog(page, page))
+        yield from _gui_slice.checkpoint()
         tool_track.insert_after(page.bilingual_toggle_button, page.report_problem_button)
         # Less frequent commands share one menu; their existing buttons retain
         # signal/shortcut ownership and are used by the menu actions.
@@ -424,6 +563,7 @@ class StudioWorkspaceBuilder:
             ('设置', (page.punctuation_button, shortcut_entry, page.studio_usage_button)),
         )
         page._studio_compact_commands = (page.speaker_manager_button, shortcut_entry, find_replace, script_match)
+        yield from _gui_slice.checkpoint()
         # Leave the bar first to last when it is too narrow (_fit_studio_toolbar).
         page._studio_toolbar_collapse_order = (script_match, shortcut_entry, find_replace,
                                                page.punctuation_button,
@@ -434,6 +574,7 @@ class StudioWorkspaceBuilder:
         page._studio_hub_commands = (page.report_problem_button,)
         page._studio_toolbar_return_commands = (page.report_problem_button,)
         overflow=page._tool_button('fa5s.ellipsis-h', '更多工作区操作', lambda: None)
+        yield from _gui_slice.checkpoint()
         overflow_menu=create_studio_menu(overflow)
         def update_workspace_menu():
             overflow_menu.clear()
@@ -471,10 +612,12 @@ class StudioWorkspaceBuilder:
                 action.triggered.connect(lambda _checked=False, button=source: button.click())
         overflow_menu.aboutToShow.connect(update_workspace_menu)
         overflow.setMenu(overflow_menu);overflow.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        yield from _gui_slice.checkpoint()
         overflow.setProperty('hideMenuIndicator', True)  # "•••" already says "more"
         # Ends the middle commands, so 压制成片 stays rightmost (2026-10-21, user).
         bar.insertWidget(bar.indexOf(export_track), overflow)
         from ..design.presentation import button_role
+        yield from _gui_slice.checkpoint()
         for button, role, icon_name in (
             (page.cue_list_toggle_button,'toggle','fa5s.list'),
             (page.context_expand_button,'toggle','fa5s.columns'),
@@ -497,18 +640,21 @@ class StudioWorkspaceBuilder:
             button.setProperty('hasMenu', True)
         render.setProperty('emphasis', 'accent')
         install_themed_icon(render, 'fa5s.file-video', 'on_accent')
+        yield from _gui_slice.checkpoint()
         page.report_problem_button.setProperty('emphasis', 'warning')
         install_themed_icon(page.report_problem_button, 'fa5s.flag', 'warning')
         # The application header is intentionally removed in Studio focus
         # mode. Keep the expected desktop controls in the Studio toolbar.
         controls = QFrame()
         controls.setObjectName("studioWindowControls")
+        yield from _gui_slice.checkpoint()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(4, 0, 0, 0)
         controls_layout.setSpacing(1)
         page.studio_minimize_button = page._window_control(
             "fa5s.minus", "最小化", lambda: page.window().showMinimized()
         )
+        yield from _gui_slice.checkpoint()
         page.studio_maximize_button = page._window_control(
             "fa5s.square", "最大化", page._toggle_window_maximized
         )
@@ -518,6 +664,7 @@ class StudioWorkspaceBuilder:
         for control in (page.studio_minimize_button, page.studio_maximize_button, page.studio_close_button):
             controls_layout.addWidget(control)
         bar.addWidget(controls)
+        yield from _gui_slice.checkpoint()
         outer.addWidget(toolbar)
         page._hub_toolbar_hidden = [
             page.studio_save_button if hasattr(page, "studio_save_button") else page.save_button,
@@ -529,40 +676,49 @@ class StudioWorkspaceBuilder:
         ]
         page._hub_toolbar_hidden.extend([page.relink_button])
         page._hub_toolbar_hidden.extend(toolbar.findChildren(QFrame, "toolbarDivider"))
+        yield from _gui_slice.checkpoint()
         page._set_hub_toolbar_mode(True)
         yield '工作台工具栏'
         page.teach_banner = QFrame()
         page.teach_banner.setObjectName("studioTeachBanner")
+        yield from _gui_slice.checkpoint()
         page._apply_teach_banner_theme()
         teach_layout = QHBoxLayout(page.teach_banner)
         teach_layout.setContentsMargins(14, 6, 10, 6)
         teach_layout.setSpacing(8)
+        yield from _gui_slice.checkpoint()
         page.teach_text = QLabel()
         page.teach_text.setWordWrap(True)
         teach_layout.addWidget(page.teach_text, 1)
         page.teach_close = page._tool_button("fa5s.times", "关闭提示", page.teach_banner.hide)
+        yield from _gui_slice.checkpoint()
         teach_layout.addWidget(page.teach_close)
         page.teach_banner.hide()
         outer.addWidget(page.teach_banner)
 
         from .studio_media_availability import StudioMediaAvailability
+        yield from _gui_slice.checkpoint()
         page.media_availability = StudioMediaAvailability(page, outer)
         page.audio_status_banner = QFrame(page)
         audio_row = QHBoxLayout(page.audio_status_banner)
         page.audio_status_label = QLabel('')
+        yield from _gui_slice.checkpoint()
         page.audio_status_label.setWordWrap(True)
         audio_row.addWidget(page.audio_status_label, 1)
         page.audio_retry_button = QPushButton('重试音频')
         page.audio_retry_button.clicked.connect(page._retry_audio_output)
+        yield from _gui_slice.checkpoint()
         audio_row.addWidget(page.audio_retry_button)
         page.audio_silent_button = QPushButton('无声预览')
         page.audio_silent_button.clicked.connect(page._select_silent_preview)
         audio_row.addWidget(page.audio_silent_button)
+        yield from _gui_slice.checkpoint()
         outer.addWidget(page.audio_status_banner)
         page.audio_status_banner.hide()
 
         page.workspace_host = QWidget(page)
         page.workspace_splitter = QSplitter(Qt.Orientation.Vertical, page.workspace_host)
+        yield from _gui_slice.checkpoint()
         page.workspace_splitter.setObjectName("studioWorkspaceSplitter")
         page.workspace_splitter.setChildrenCollapsible(False)
         page.workspace_splitter.setHandleWidth(5)
@@ -572,10 +728,12 @@ class StudioWorkspaceBuilder:
         # window and picture now match the surface within 1 ms of each step
         # (scripts/verify_studio_splitter_headed.py).
         page.workspace_splitter.setOpaqueResize(True)
+        yield from _gui_slice.checkpoint()
         page.upper_splitter = QSplitter(Qt.Orientation.Horizontal, page.workspace_splitter)
         page.upper_splitter.setObjectName("studioUpperSplitter")
         page.upper_splitter.setChildrenCollapsible(False)
         page.upper_splitter.setHandleWidth(5)
+        yield from _gui_slice.checkpoint()
         page.upper_splitter.setOpaqueResize(True)
 
         page.cue_list_panel = self._cue_list_panel()
@@ -586,24 +744,29 @@ class StudioWorkspaceBuilder:
         page.center_splitter.setObjectName("studioCenterSplitter")
         page.center_splitter.setChildrenCollapsible(False)
         page.center_splitter.setHandleWidth(5)
+        yield from _gui_slice.checkpoint()
         page.center_splitter.setOpaqueResize(True)
         video_host = QWidget(page.center_splitter)
         # 2026-10-22: no fixed minimum below the picture + review strip;
         # 160 px squeezed the strip's legend onto the candidate cards.
         video_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         video_layout = QVBoxLayout(video_host)
+        yield from _gui_slice.checkpoint()
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
         from .video_viewport import VideoViewportHost
         overlay_host = VideoViewportHost(video_host) if sys.platform == 'win32' else QWidget(video_host)
+        yield from _gui_slice.checkpoint()
         overlay_host.setObjectName("studioVideoOverlayHost")
         page.video_overlay_host = overlay_host
         video_stack = QGridLayout(overlay_host)
         video_stack.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         video_stack.setSpacing(0)
         page.video = MpvCanvas(overlay_host)
         page.video.error.connect(page._show_video_error)
         page.video.position_changed.connect(page._position_changed)
+        yield from _gui_slice.checkpoint()
         page.video.playback_state_changed.connect(page._playback_state_changed)
         # 十八轮：双击视频层 → AI 字幕工坊（对话式二修特效字幕）。
         page.video.workshop_requested.connect(page._open_web_theme_workshop)
@@ -612,115 +775,141 @@ class StudioWorkspaceBuilder:
         else:
             video_stack.addWidget(page.video, 0, 0)
         from ..playback.video_compositor import VideoCompositionScene
+        yield from _gui_slice.checkpoint()
         from ..playback.audio_engine import StudioAudioEngine
 
         page.video_compositor = VideoCompositionScene(page.video)
         page.audio_engine = StudioAudioEngine(page)
         page.video.playback_prepare = lambda: page._sync_video_compositor(int(page.timeline.playhead_ms))
+        yield from _gui_slice.checkpoint()
         page.video.playback_ready = page._playback_buffers_ready
         page.audio_engine.telemetry_changed.connect(page._audio_output_state_changed)
         page.video.audio_playback_failed.connect(page._audio_playback_failed)
         page.video.set_external_clock_provider(page.audio_engine.clock_observation)
+        yield from _gui_slice.checkpoint()
         page.video_compositor.transform_preview.connect(page._video_transform_previewed)
         page.video_compositor.transform_committed.connect(page._video_transform_committed)
         empty_host = QWidget(overlay_host)
         empty_host.setObjectName("studioVideoEmptyHost")
+        yield from _gui_slice.checkpoint()
         empty_layout = QVBoxLayout(empty_host)
         empty_layout.setContentsMargins(20, 20, 20, 20)
         empty_layout.setSpacing(0)
         empty_layout.addStretch(1)
+        yield from _gui_slice.checkpoint()
         page.video_drop_zone = QFrame()
         page.video_drop_zone.setObjectName("studioVideoDropZone")
         page.video_drop_zone.setMinimumSize(280, 220)
         page.video_drop_zone.setMaximumWidth(720)
+        yield from _gui_slice.checkpoint()
         page.video_drop_zone.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
         drop_layout = QVBoxLayout(page.video_drop_zone)
         drop_layout.setContentsMargins(28, 24, 28, 24)
         drop_layout.setSpacing(10)
+        yield from _gui_slice.checkpoint()
         page.video_empty_icon = QLabel()
         page.video_empty_icon.setObjectName("studioVideoEmptyIcon")
         page.video_empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.video_empty_icon.setPixmap(_icon("fa5s.film").pixmap(40, 40))
+        yield from _gui_slice.checkpoint()
         drop_layout.addWidget(page.video_empty_icon, 0, Qt.AlignmentFlag.AlignHCenter)
         page.video_empty_label = QLabel("拖入视频或音频")
         page.video_empty_label.setObjectName("studioVideoEmptyHint")
         page.video_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        yield from _gui_slice.checkpoint()
         page.video_empty_label.setWordWrap(True)
         page.video_empty_label.setMinimumWidth(0)
         drop_layout.addWidget(page.video_empty_label)
         page.video_empty_import = QPushButton("导入媒体")
+        yield from _gui_slice.checkpoint()
         page.video_empty_import.setObjectName("studioPrimary")
         page.video_empty_import.setMinimumHeight(36)
         page.video_empty_import.setMinimumWidth(132)
         page.video_empty_import.setCursor(Qt.CursorShape.PointingHandCursor)
+        yield from _gui_slice.checkpoint()
         page.video_empty_import.clicked.connect(page.import_media_dialog)
         drop_layout.addWidget(page.video_empty_import, 0, Qt.AlignmentFlag.AlignHCenter)
         recovery_row = QHBoxLayout()
         recovery_row.setSpacing(8)
+        yield from _gui_slice.checkpoint()
         page.video_empty_retry = QPushButton("重试")
         page.video_empty_retry.setObjectName("studioPrimary")
         page.video_empty_retry.clicked.connect(page._retry_media_ingest)
         page.video_empty_retry.hide()
+        yield from _gui_slice.checkpoint()
         recovery_row.addWidget(page.video_empty_retry)
         page.video_empty_reselect = QPushButton("重新选择")
         page.video_empty_reselect.setObjectName("studioButton")
         page.video_empty_reselect.clicked.connect(page.import_media_dialog)
+        yield from _gui_slice.checkpoint()
         page.video_empty_reselect.hide()
         recovery_row.addWidget(page.video_empty_reselect)
         drop_layout.addLayout(recovery_row)
         page.video_empty_note = QLabel("支持 MP4 / FLV / MKV / MOV / MP3 / WAV 等常用格式")
+        yield from _gui_slice.checkpoint()
         page.video_empty_note.setObjectName("studioVideoEmptyNote")
         page.video_empty_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.video_empty_note.setWordWrap(True)
         page.video_empty_note.setMinimumWidth(0)
+        yield from _gui_slice.checkpoint()
         drop_layout.addWidget(page.video_empty_note)
         empty_layout.addWidget(page.video_drop_zone, 0, Qt.AlignmentFlag.AlignCenter)
         empty_layout.addStretch(1)
         page.video_empty_hint = empty_host
+        yield from _gui_slice.checkpoint()
         empty_host.hide()
         video_stack.addWidget(empty_host, 0, 0)
         # One child overlay stack owns every Studio visual. A Qt.Tool here is
         # an independent top-level HWND and can flash outside the main window.
         page.advanced_cue_overlay = AdvancedLiveCanvas(page.video)
         page.advanced_cue_overlay.hide()
+        yield from _gui_slice.checkpoint()
 
         # A separate native owned tool stays above mpv without resizing it.
         from .caption_editor_panel import CaptionEditorPanel
         from .caption_editor_window import CaptionEditorWindow
         page.subtitle_edit_dock = CaptionEditorWindow(page)
         page.subtitle_edit_card = CaptionEditorPanel(_SubtitleEditCardEditor, page.subtitle_edit_dock)
+        yield from _gui_slice.checkpoint()
         page.subtitle_edit_dock.set_panel(page.subtitle_edit_card)
         page.subtitle_edit_title = page.subtitle_edit_card.title
         page.subtitle_edit_input = page.subtitle_edit_card.editor
         page.caption_close_button = page.subtitle_edit_card.close_button
+        yield from _gui_slice.checkpoint()
         page.caption_close_button.clicked.connect(lambda: page._cancel_bound_caption_editor(trigger='header_close'))
         page.subtitle_edit_input.commit_requested.connect(
             lambda advance=False: page._commit_canvas_inline_edit(advance=advance))
         page.subtitle_edit_input.cancel_requested.connect(page._cancel_canvas_inline_edit)
         page.subtitle_edit_input.composition_changed.connect(
             lambda active: setattr(page, '_studio_ime_composing', active))
+        yield from _gui_slice.checkpoint()
         page.subtitle_edit_input.textChanged.connect(page._queue_edit_preview)
         page._apply_subtitle_edit_card_theme()
         # The sequence retains its native canvas, overlays and transport.
         # Sources own a separate decoder and never rebind that canvas.
         page.source_tabs = QTabWidget()
         page.source_tabs.setObjectName('studioSourceTabs')
+        yield from _gui_slice.checkpoint()
         page.source_tabs.setMinimumWidth(275)
         page.source_tabs.addTab(page.cue_list_panel, '字幕列表')
         from .studio_source_monitor import StudioSourceMonitor
-        page.source_monitor = StudioSourceMonitor(page)
+        page.source_monitor = StudioSourceMonitor(page, parent=page, deferred_build=True)
+        yield from page.source_monitor.build_steps()
+        yield from _gui_slice.checkpoint()
         page.source_tabs.addTab(page.source_monitor, '源素材')
         # Each transport keeps its own intent. The source's hideEvent pauses
         # that source; opening its tab never pauses or rebinds the sequence.
         page.upper_splitter.insertWidget(0, page.source_tabs)
         video_layout.addWidget(overlay_host, 1)
         page.subtitle_edit_dock.hide()
+        yield from _gui_slice.checkpoint()
         yield '视频承载区'
         page.review_summary_strip = QFrame()
         page.review_summary_strip.setObjectName("reviewSummaryStrip")
         strip_layout = QVBoxLayout(page.review_summary_strip)
+        yield from _gui_slice.checkpoint()
         strip_layout.setContentsMargins(10, 4, 10, 4)
         strip_layout.setSpacing(7)
         strip_header = QHBoxLayout()
@@ -728,42 +917,52 @@ class StudioWorkspaceBuilder:
         # width the strip held the video column at 886 px, so the side
         # dividers could not move on a 1536 px wide (1080p 125%) window.
         from ..design.elided_label import ElidedLabel
+        yield from _gui_slice.checkpoint()
         page.review_summary_text = ElidedLabel("需要检查：-", mode=Qt.TextElideMode.ElideRight, minimum=80)
         page.review_summary_text.setObjectName("reviewIssueSummary")
         strip_header.addWidget(page.review_summary_text, 1)
         page.review_reason_label = ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=40)
+        yield from _gui_slice.checkpoint()
         page.review_reason_label.setObjectName("reviewReason")
         strip_header.addWidget(page.review_reason_label, 2)
         page.review_queue_label = QLabel("需要检查  - / -")
         page.review_queue_label.setObjectName("reviewQueueCount")
+        yield from _gui_slice.checkpoint()
         page.review_queue_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         strip_header.addWidget(page.review_queue_label, 0)
         review_confirm = QPushButton("当前正确")
         review_confirm.setObjectName("studioPrimary")
+        yield from _gui_slice.checkpoint()
         page._shortcut_tooltip(review_confirm, '确认当前字幕，不修改文本 ({key})', 'confirm_review')
         review_confirm.clicked.connect(page._confirm_current_review)
         strip_header.addWidget(review_confirm)
         review_replay = QPushButton("重听")
+        yield from _gui_slice.checkpoint()
         review_replay.setObjectName("studioButton")
         review_replay.clicked.connect(page._play_review_context)
         strip_header.addWidget(review_replay)
         review_details = QPushButton("详情")
+        yield from _gui_slice.checkpoint()
         review_details.setObjectName("studioButton")
         review_details.clicked.connect(page._show_current_issue_details)
         strip_header.addWidget(review_details)
         review_collapse = QToolButton()
+        yield from _gui_slice.checkpoint()
         review_collapse.setObjectName("reviewCollapseButton")
         review_collapse.setText("⌃")
         bind_text(review_collapse, '收起或展开审核面板', property='toolTip')
         review_collapse.setCheckable(True)
+        yield from _gui_slice.checkpoint()
         review_collapse.toggled.connect(page._toggle_review_dock)
         strip_header.addWidget(review_collapse)
         strip_layout.addLayout(strip_header)
         page.review_dock_candidates = QWidget()
+        yield from _gui_slice.checkpoint()
         page.review_dock_candidate_layout = QGridLayout(page.review_dock_candidates)
         page.review_dock_candidate_layout.setContentsMargins(0, 0, 0, 0)
         page.review_dock_candidate_layout.setHorizontalSpacing(8)
         page.review_dock_candidate_layout.setVerticalSpacing(6)
+        yield from _gui_slice.checkpoint()
         # 2026-10-15: one fixed-height row. Rebuilt cards used to change the
         # strip between 125 and 255 px per caption, so the video above it
         # (mpv, captions, overlays) re-laid out on every review step.
@@ -771,15 +970,18 @@ class StudioWorkspaceBuilder:
         page.review_dock_scroll.setObjectName("reviewDockScroll")
         page.review_dock_scroll.setWidgetResizable(True)
         page.review_dock_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        yield from _gui_slice.checkpoint()
         page.review_dock_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         page.review_dock_scroll.setFixedHeight(REVIEW_DOCK_ROW_HEIGHT)
         page.review_dock_scroll.setWidget(page.review_dock_candidates)
         strip_layout.addWidget(page.review_dock_scroll)
+        yield from _gui_slice.checkpoint()
         page.review_legend = ElidedLabel("[1–4] 采用并下一条   [W/D/↓] 下一条 [S/A/↑] 上一条   [Space] 重听   [E] 编辑   [Shift+R] 采纳建议 [P] 他/她   [R] 退出审核   [Enter] 当前正确",
                                          mode=Qt.TextElideMode.ElideRight, minimum=120)
         page.review_legend.setObjectName("reviewLegend")
         strip_layout.addWidget(page.review_legend)
         page.review_summary_strip.hide()
+        yield from _gui_slice.checkpoint()
         video_layout.addWidget(page.review_summary_strip)
         # Keep exactly one regular Qt child for Transform painting/interaction.
         # It must never become a helper top-level HWND.
@@ -787,10 +989,12 @@ class StudioWorkspaceBuilder:
         page.video.video_display_size_changed.connect(page.position_overlay.set_video_size)
         if isinstance(overlay_host, VideoViewportHost):
             page.video.video_display_size_changed.connect(overlay_host.set_video_size)
+        yield from _gui_slice.checkpoint()
         page.position_overlay.position_moved.connect(page._position_overlay_moved)
         page.position_overlay.position_committed.connect(page._position_overlay_committed)
         page.position_overlay.font_size_preview.connect(page._position_overlay_font_preview)
         page.position_overlay.font_size_committed.connect(page._position_overlay_font_committed)
+        yield from _gui_slice.checkpoint()
         page.position_overlay.position_cancelled.connect(page._position_overlay_cancelled)
         page.position_overlay.doubleClickRequested.connect(page._edit_caption_from_canvas)
         page.position_overlay.interaction_started.connect(
@@ -799,56 +1003,69 @@ class StudioWorkspaceBuilder:
         # The page's application filter receives these events once. Installing
         # it on video too repeats every Move/Resize and renderer publication.
         page.position_slider = QSlider(Qt.Orientation.Horizontal)
+        yield from _gui_slice.checkpoint()
         page.position_slider.setRange(0, 1000)
         page.position_slider.sliderMoved.connect(page._slider_seek)
         page.position_slider.hide()
         page.center_splitter.addWidget(video_host)
+        yield from _gui_slice.checkpoint()
 
         page.cue_editor = QFrame()
         page.cue_editor.setObjectName("cueEditor")
         page.cue_editor.setMinimumHeight(88)
         editor_layout = QVBoxLayout(page.cue_editor)
+        yield from _gui_slice.checkpoint()
         editor_layout.setContentsMargins(14, 7, 12, 8)
         editor_layout.setSpacing(5)
 
         page.editor_fields = QHBoxLayout()
         fields = page.editor_fields
+        yield from _gui_slice.checkpoint()
         fields.setSpacing(5)
         page.editor_title = QLabel("当前字幕编辑器")
         page.editor_title.setObjectName("sectionTitle")
         fields.addWidget(page.editor_title)
+        yield from _gui_slice.checkpoint()
         fields.addSpacing(5)
         page.speaker_label = QLabel("说话人")
         page.speaker_label.setObjectName("fieldLabel")
         fields.addWidget(page.speaker_label)
+        yield from _gui_slice.checkpoint()
         page.speaker = StudioComboBox()
         page.speaker.setMinimumWidth(104)
         page.speaker.setMaximumWidth(150)
         page.speaker.setProperty("i18nUserText", True)
+        yield from _gui_slice.checkpoint()
         page.speaker.currentIndexChanged.connect(page._speaker_changed)
         fields.addWidget(page.speaker)
         page.editor_field_widgets = {"speaker": (page.speaker_label, page.speaker)}
         page.start_label = QLabel("开始")
+        yield from _gui_slice.checkpoint()
         page.start_label.setObjectName("fieldLabel")
         fields.addWidget(page.start_label)
         page.start_ms = _time_spinbox()
         page.start_ms.setMaximumWidth(138)
+        yield from _gui_slice.checkpoint()
         page.start_ms.editingFinished.connect(page._timing_fields_changed)
         fields.addWidget(page.start_ms)
         page.editor_field_widgets["start"] = (page.start_label, page.start_ms)
         page.duration_label = QLabel("时长")
+        yield from _gui_slice.checkpoint()
         page.duration_label.setObjectName("fieldLabel")
         fields.addWidget(page.duration_label)
         page.duration_ms = _time_spinbox()
         page.duration_ms.setMaximumWidth(138)
+        yield from _gui_slice.checkpoint()
         page.duration_ms.editingFinished.connect(page._timing_fields_changed)
         fields.addWidget(page.duration_ms)
         page.editor_field_widgets["duration"] = (page.duration_label, page.duration_ms)
         page.end_ms = _time_spinbox()
+        yield from _gui_slice.checkpoint()
         fields.addStretch(1)
         page.mono_button = QPushButton("单语")
         page.bilingual_button = QPushButton("双语")
         bind_text(page.mono_button, '单语显示模式', property='toolTip')
+        yield from _gui_slice.checkpoint()
         bind_text(page.bilingual_button, '双语显示模式', property='toolTip')
         page.language_group = QButtonGroup(page)
         page.language_group.setExclusive(True)
@@ -859,30 +1076,36 @@ class StudioWorkspaceBuilder:
             # 2026-09-02：编辑字段旁的双语 chip 退役（工具栏语言按钮接管）；
             # 保留对象以兼容 _set_bilingual_mode 的既有引用。
             button.hide()
+        yield from _gui_slice.checkpoint()
         page.mono_button.setChecked(True)
         page.mono_button.clicked.connect(lambda: page._set_bilingual_mode(False))
         page.bilingual_button.clicked.connect(lambda: page._set_bilingual_mode(True))
         page.editor_field_widgets["language"] = (page.mono_button, page.bilingual_button)
+        yield from _gui_slice.checkpoint()
         page.editor_metadata = QWidget(page.cue_editor)
         page.editor_metadata.setLayout(fields)
         page.editor_metadata.hide()
         editor_layout.addWidget(page.editor_metadata)
+        yield from _gui_slice.checkpoint()
 
         from .caption_text_tools import CaptionInputEdit as InputLatencyTextEdit
         page.cue_text = InputLatencyTextEdit(page.cue_editor)
         page.cue_text.setObjectName("cueText")
         bind_text(page.cue_text, '当前字幕文本', property='placeholderText')
+        yield from _gui_slice.checkpoint()
         page.cue_text.setMinimumHeight(58)
         page.cue_text.textChanged.connect(page._text_changed)
         # 2026-10-22: Ctrl+Enter splits the current caption at the text cursor.
         page._cue_text_split_shortcut = QShortcut(QKeySequence("Ctrl+Return"), page.cue_text)
         page._cue_text_split_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        yield from _gui_slice.checkpoint()
         page._cue_text_split_shortcut.activated.connect(lambda: page.cue_controller.split_at_text(
             page.selected_cue_id, page.cue_text._caption_tools.split_position(),
             page.cue_text.mapToGlobal(page.cue_text.cursorRect().bottomLeft())))
         from .studio_translation_edit import TranslationTextEdit
         page.translation_text = TranslationTextEdit(page, page.cue_editor)
         page.translation_text.setObjectName("cueText")
+        yield from _gui_slice.checkpoint()
         bind_text(page.translation_text, '第二语言文本', property='placeholderText')
         page.translation_text.setMinimumHeight(54)
         page.translation_text.hide()
@@ -890,6 +1113,7 @@ class StudioWorkspaceBuilder:
         # are reparented into the compact Style panel below, so the central
         # video no longer gives up height to a duplicate editor.
         page.cue_editor.hide()
+        yield from _gui_slice.checkpoint()
         page.center_splitter.setStretchFactor(0, 1)
         page.center_splitter.setSizes([648])
         page.upper_splitter.addWidget(page.center_splitter)
@@ -901,14 +1125,17 @@ class StudioWorkspaceBuilder:
         # 2026-10-11: the splitter may widen the tool panel (clip candidates are
         # long texts); 520 left no room to drag it wider on large screens.
         page.context_panel.setMaximumWidth(760)
+        yield from _gui_slice.checkpoint()
         page.context_panel.setMinimumHeight(120)
         context_layout = QVBoxLayout(page.context_panel)
         context_layout.setContentsMargins(0, 0, 0, 0)
         context_layout.setSpacing(0)
+        yield from _gui_slice.checkpoint()
         context_header = QHBoxLayout()
         context_header.setContentsMargins(10, 5, 6, 0)
         context_title = QLabel("工具面板")
         context_title.setObjectName("sectionTitle")
+        yield from _gui_slice.checkpoint()
         context_header.addWidget(context_title)
         context_header.addStretch(1)
         # 2026-10-21 (user): 保存 / 撤销 / 重做 moved here from the top bar, one
@@ -916,17 +1143,21 @@ class StudioWorkspaceBuilder:
         for button in (page.save_button, page.studio_undo_button, page.studio_redo_button):
             context_header.addWidget(button)
         context_header.addSpacing(6)
+        yield from _gui_slice.checkpoint()
         # 2026-09-06（用户四图反馈·图四）：面板头的「字幕显示」（文A 图标）按钮删除
         # ——与工具栏「双语」按钮重复；单语/双语切换与 AI 翻译入口都从工具栏走。
         # mono/bilingual_display_action 保留：菜单语义动作仍被 _set_bilingual_mode 使用。
         collapse = page._tool_button("fa5s.chevron-right", "收起右侧面板", page._collapse_context_panel)
         context_header.addWidget(collapse)
         context_layout.addLayout(context_header)
+        page.context_header = context_header  # the style tab adds its scope summary here
         from PySide6.QtWidgets import QStackedWidget
+        yield from _gui_slice.checkpoint()
         page.context_stack = QStackedWidget(page.context_panel)
         page.context_drawer = QTabWidget(page.context_stack)
         page.context_drawer.setObjectName("contextDrawer")
         page.context_drawer.tabBar().hide()
+        yield from _gui_slice.checkpoint()
         # Keep tab geometry inside a narrow context drawer. The page toggles
         # scroll buttons only when measured tab content exceeds the available
         # width, so wide layouts retain the clean non-scrolling baseline.
@@ -936,12 +1167,14 @@ class StudioWorkspaceBuilder:
         page.context_drawer.tabBar().setExpanding(True)
         page.context_drawer.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
         page.context_drawer.setIconSize(QSize(18, 18))
+        yield from _gui_slice.checkpoint()
         page._context_tab_mode = ""
-        page.context_drawer.addTab(self._scroll_context_panel(self._ai_panel()), QIcon(), "AI设计")
+        page.context_drawer.addTab(self._scroll_context_panel((yield from self._ai_panel_steps())), QIcon(), "AI设计")
         # 二十七轮（agy 复审）：样式面板内容随特效字幕模式伸缩，常驻细滚动条
         # 明示可滚——展开快速调整时不再像"布局截断"。
         yield 'AI 工具'
         style_panel = yield from page.style_controller._style_panel_steps()
+        yield from _gui_slice.checkpoint()
         style_scroll = self._scroll_context_panel(style_panel)
         style_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         page.context_drawer.addTab(style_scroll, QIcon(), "样式")
@@ -951,7 +1184,7 @@ class StudioWorkspaceBuilder:
         )
         yield '动效面板'
         page.video_transform_tab_index = page.context_drawer.addTab(
-            self._scroll_context_panel(self._video_transform_panel()), QIcon(), "视频"
+            self._scroll_context_panel((yield from self._video_transform_panel_steps())), QIcon(), "视频"
         )
         yield '视频面板'
         from .studio_highlight_ui import HighlightAssistantPanel
@@ -977,14 +1210,17 @@ class StudioWorkspaceBuilder:
         ])
         page.context_drawer.currentChanged.connect(page._remember_context_tab)
         from .tool_tab_bar import ToolTabSelector
+        yield from _gui_slice.checkpoint()
         page.context_tools = ToolTabSelector(page.context_drawer, page.context_panel)
         context_layout.addWidget(page.context_tools)
         page.context_stack.currentChanged.connect(lambda _index:page.context_tools.setVisible(page.context_stack.currentWidget() is page.context_drawer))
         page.context_stack.addWidget(page.context_drawer)
+        yield from _gui_slice.checkpoint()
         context_layout.addWidget(page.context_stack, 1)
         page.upper_splitter.addWidget(page.context_panel)
         page.upper_splitter.setStretchFactor(0, 0)
         page.upper_splitter.setStretchFactor(1, 1)
+        yield from _gui_slice.checkpoint()
         page.upper_splitter.setStretchFactor(2, 0)
         page.upper_splitter.setSizes([320, 680, 440])
         page.upper_splitter.splitterMoved.connect(
@@ -997,17 +1233,20 @@ class StudioWorkspaceBuilder:
         # Keep the only lightweight adaptive label update on the horizontal
         # splitter; never force layouts or drain posted events while dragging.
         page.workspace_splitter.addWidget(page.upper_splitter)
+        yield from _gui_slice.checkpoint()
 
         yield '工具面板'
         timeline_host = QFrame()
         timeline_host.setObjectName("timelineHost")
         timeline_layout = QVBoxLayout(timeline_host)
+        yield from _gui_slice.checkpoint()
         timeline_layout.setContentsMargins(0, 0, 0, 0)
         timeline_layout.setSpacing(0)
         timeline_toolbar = QHBoxLayout()
         # Parent controls as they are created; removing an unparented layout
         # item during construction can invalidate its native style resources.
         timeline_layout.addLayout(timeline_toolbar)
+        yield from _gui_slice.checkpoint()
         from .project_range_ui import ProjectRangeBar
         page.project_range_bar = ProjectRangeBar(lambda:page.project,
             lambda:page.timeline.playhead_ms, lambda ms:page._seek(ms/1000.0),
@@ -1019,10 +1258,12 @@ class StudioWorkspaceBuilder:
         # cleared from the timeline context menu, auto-avoid lives in the
         # timeline options menu, frame/cover become icon buttons.
         page.project_range_bar.hide()
+        yield from _gui_slice.checkpoint()
         page.auto_stacking_toggle=QCheckBox('字幕自动避让')
         page.auto_stacking_toggle.setObjectName('timelineToggleChip')
         page.auto_stacking_toggle.setChecked(True)
         bind_text(page.auto_stacking_toggle, '每条字幕显示期间保持避让位置，结束后释放空位；新字幕按可见边缘紧凑排列。右键可预览基础位置重排。', property='toolTip')
+        yield from _gui_slice.checkpoint()
         def toggle_stacking(checked):
             if page.project:
                 page.project.studio_state['auto_subtitle_stacking']=bool(checked)
@@ -1074,14 +1315,15 @@ class StudioWorkspaceBuilder:
             bind_text(control, '字幕自动避让 ⚠' if warnings else '字幕自动避让')
             bind_text(control, '\n'.join(warnings[:8]) if warnings else '每条字幕显示期间保持避让位置，结束后释放空位；保留人工基础位置。右键可按范围重新排版，一次撤销。', property='toolTip')
         page.project_range_bar._timer.timeout.connect(refresh_stacking)
+        yield from _gui_slice.checkpoint()
         page.auto_stacking_toggle.setParent(page)
         page.auto_stacking_toggle.hide()
         page._fill_stacking_menu = fill_stacking_menu
         timeline_toolbar.setContentsMargins(12, 6, 10, 6)
-        timeline_title = QLabel("时间轴")
-        timeline_title.setObjectName("sectionTitle")
-        timeline_toolbar.addWidget(timeline_title)
-        timeline_toolbar.addSpacing(10)
+        yield from _gui_slice.checkpoint()
+        # 2026-11-12 (user): no 「时间轴」 title, so the 当前字幕 pill fits left
+        # of the transport while it stays under the video.
+        yield from _gui_slice.checkpoint()
         page.media_pool_button = page._tool_button(
             "fa5s.photo-video",
             "打开媒体池",
@@ -1094,6 +1336,7 @@ class StudioWorkspaceBuilder:
         page.add_subtitle_track_button = page._tool_button(
             'fa5s.closed-captioning', '新建字幕轨 · 按 {key} 在此轨添加字幕', lambda: add_subtitle_track(page),
             shortcut='add_subtitle')
+        yield from _gui_slice.checkpoint()
         # 2026-10-21 (user): media pool, new tracks and transitions moved into
         # 「…」 and the "+" above the track names, so the bar fits one row. The
         # buttons stay (hidden) for their shortcut hints and existing callers.
@@ -1105,6 +1348,7 @@ class StudioWorkspaceBuilder:
             'fa6s.t', '添加字幕 ({key}) · 在播放头创建字幕块', page._add_subtitle_at_playhead, shortcut='add_subtitle')
         timeline_toolbar.addWidget(page.add_subtitle_button)
         page.selection_tool_button = page._tool_button("fa5s.mouse-pointer", "选择工具 ({key})", lambda: page._set_timeline_tool("selection"), shortcut="selection_tool")
+        yield from _gui_slice.checkpoint()
         page.track_forward_tool_button = page._tool_button("fa5s.arrow-right", "轨道向前选择 ({key}) · Shift 单轨", lambda: page._set_timeline_tool("track_forward"), shortcut="track_forward_tool")
         page.razor_tool_button = page._tool_button("fa5s.cut", "剃刀工具 ({key})——移动鼠标预览切点与前后文字，点击切开；Esc 取消", lambda: page._set_timeline_tool("razor"), shortcut="razor_tool")
         # 2026-09-03（用户需求重做）：合并工具点选字幕后按住向左/右拖动即定向
@@ -1113,15 +1357,18 @@ class StudioWorkspaceBuilder:
         for button in (page.selection_tool_button, page.track_forward_tool_button, page.razor_tool_button, page.merge_tool_button):
             button.setCheckable(True)
             timeline_toolbar.addWidget(button)
+        yield from _gui_slice.checkpoint()
         page.selection_tool_button.setChecked(True)
         from .studio_transition_ui import menu as transition_menu
         transition_button=page._tool_button('fa5s.adjust','转场 · {video} 视频 / {audio} 音频',lambda:None,
                                             shortcut={'video':'video_transition','audio':'audio_transition'})
         transition_button.setPopupMode(QToolButton.InstantPopup)
+        yield from _gui_slice.checkpoint()
         transition_button.setMenu(transition_menu(page))
         transition_button.setParent(page)
         transition_button.hide()
         page.transition_button = transition_button
+        yield from _gui_slice.checkpoint()
         page.clip_selection_count=QLabel('')
         timeline_toolbar.addWidget(page.clip_selection_count)
         timeline_toolbar.addWidget(page._toolbar_divider())
@@ -1132,53 +1379,64 @@ class StudioWorkspaceBuilder:
             page._tool_button("fa5s.step-forward", "波纹向后合并 ({key})", lambda: page.cue_controller.merge_with_neighbor(1), shortcut="merge_next"),
             page._tool_button("fa5s.trash-alt", "删除当前字幕 ({key})", page._delete_current, shortcut="delete"),
         )
+        yield from _gui_slice.checkpoint()
         for button in cue_commands:
             timeline_toolbar.addWidget(button)
         timeline_toolbar.addWidget(page._toolbar_divider())
         page.smart_align_button = page._tool_button("fa5s.magic", "智能修轴当前字幕", page._smart_align_current)
         timeline_toolbar.addWidget(page.smart_align_button)
+        yield from _gui_slice.checkpoint()
         page.loop_cue_button = page._tool_button("fa5s.sync-alt", "循环当前字幕（前后留 250/300ms）", page._toggle_loop_current)
         timeline_toolbar.addWidget(page.loop_cue_button)
         timeline_toolbar.addWidget(page._toolbar_divider())
         page.ai_optimize_button = page._tool_button("fa5s.magic", "AI 优化当前字幕", lambda: page._toggle_drawer(0))
+        yield from _gui_slice.checkpoint()
         page.reasr_button = page._tool_button("fa5s.microphone", "重新识别当前字幕", page._reasr_current)
         page.cue_more_button = page._tool_button("fa5s.ellipsis-h", "更多操作 · 编辑当前字幕、排版、媒体池与转场", page._show_cue_more_menu)
         for button in (page.ai_optimize_button, page.reasr_button, page.cue_more_button):
             timeline_toolbar.addWidget(button)
         timeline_toolbar.addWidget(page._toolbar_divider())
+        yield from _gui_slice.checkpoint()
         transport_start = page._tool_button("fa5s.step-backward", "上一帧 ({key})", lambda: page._frame_step(True), shortcut="frame_left")
         timeline_toolbar.addWidget(transport_start)
         page.play_button = page._tool_button("fa5s.play", "播放或暂停 ({key})", page._toggle_playback, shortcut="play_pause")
         page.play_button.setProperty("transportRole", "play")
+        yield from _gui_slice.checkpoint()
         # Glyph in the on-accent colour at about half the circle, so it reads as
         # centred with room around it (2026-10-14: 24 px in a 34 px circle).
         install_themed_icon(page.play_button, "fa5s.play", "on_accent")
         page.play_button.setIconSize(QSize(16, 16))
         timeline_toolbar.addWidget(page.play_button)
         timeline_toolbar.addWidget(page._tool_button("fa5s.step-forward", "下一帧 ({key})", lambda: page._frame_step(False), shortcut="frame_right"))
+        yield from _gui_slice.checkpoint()
         page.position_label = QLabel("00:00:00.000")
         page.position_label.setObjectName("timelineTimecode")
         page.position_label.setMinimumWidth(112)
         timeline_toolbar.addWidget(page.position_label)
+        yield from _gui_slice.checkpoint()
         page.timecode_input = QLineEdit()
         page.timecode_input.setObjectName("timelineTimecodeInput")
         page.timecode_input.setPlaceholderText("hh:mm:ss.ms")
         page.timecode_input.setText("00:00:00.000")
+        yield from _gui_slice.checkpoint()
         page.timecode_input.setFixedWidth(140)  # 128 clipped the first digit
         bind_text(page.timecode_input, '输入时间码并回车跳转（mm:ss.ms 或 hh:mm:ss.ms）', property='toolTip')
         page.timecode_input.returnPressed.connect(page._go_to_timecode)
         timeline_toolbar.addWidget(page.timecode_input)
+        yield from _gui_slice.checkpoint()
         # 五十二轮：当前时间/总时长构成读数层级——当前可输入（chip）、总时长 muted。
         page.timeline_duration_label = QLabel("")
         page.timeline_duration_label.setObjectName("timelineDuration")
         bind_text(page.timeline_duration_label, '时间轴总时长（当前时间可编辑跳转）', property='toolTip')
         timeline_toolbar.addWidget(page.timeline_duration_label)
+        yield from _gui_slice.checkpoint()
         page.speed_box = StudioComboBox()
         # 80 px: room for 0.75x beside the round arrow chip (68 clipped it).
         page.speed_box.setFixedWidth(80)
         for value in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0, 8.0):
             page.speed_box.addItem(f"{value:g}x", value)
         page.speed_box.setCurrentIndex(page.speed_box.findData(1.0))
+        yield from _gui_slice.checkpoint()
         page.speed_box.currentIndexChanged.connect(
             lambda: page._set_speed(float(page.speed_box.currentData()))
         )
@@ -1187,17 +1445,20 @@ class StudioWorkspaceBuilder:
         # export keep full resolution; the choice is per machine, not project.
         from PySide6.QtCore import QSettings
         from ..i18n_widgets import add_combo_item
+        yield from _gui_slice.checkpoint()
         from ..playback.platform_mpv import preview_scale_value, preview_surface
         page.preview_scale_box = StudioComboBox(page)
         page.preview_scale_box.setObjectName("previewScaleBox")
         for label, value in (("原画", 1.0), ("1/2 画质", 0.5), ("1/4 画质", 0.25)):
             add_combo_item(page.preview_scale_box, label, value)
+        yield from _gui_slice.checkpoint()
         # Size to the label in every UI language, not the 180 px field rule.
         page.preview_scale_box.setProperty("fieldWidth", "previewScale")
         page.preview_scale_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         bind_text(page.preview_scale_box, '预览画质：只影响播放预览，字幕和导出不变；大视频播放卡顿时可选 1/2 或 1/4',
                   property='toolTip')
         remembered = preview_scale_value(QSettings("2ByteASR", "2ByteASR").value("studio/preview_scale", 1.0))
+        yield from _gui_slice.checkpoint()
         page.preview_scale_box.setCurrentIndex(max(0, page.preview_scale_box.findData(remembered)))
         page.preview_scale_box.currentIndexChanged.connect(
             lambda: page._set_preview_scale(float(page.preview_scale_box.currentData()))
@@ -1205,43 +1466,53 @@ class StudioWorkspaceBuilder:
         page._set_preview_scale(remembered, remember=False)
         # The Mac Qt video sink cannot shrink decoding; offer it where it works.
         page.preview_scale_box.setVisible(preview_surface() != "embedded-qt-video-sink")
+        yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.preview_scale_box)
         timeline_toolbar.addWidget(_icon_label("fa5s.volume-up"))
         page.volume_slider = QSlider(Qt.Orientation.Horizontal)
         page.volume_slider.setRange(0, 100)
+        yield from _gui_slice.checkpoint()
         page.volume_slider.setValue(70)
         page.volume_slider.setFixedWidth(72)
         bind_text(page.volume_slider, '播放音量', property='toolTip')
         page.volume_slider.valueChanged.connect(page._set_volume)
+        yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.volume_slider)
         page.audio_diagnostic_button=QPushButton('声音诊断', page)
         page.audio_diagnostic_button.hide()
         bind_text(page.audio_diagnostic_button, '启动最多 120 秒本应用状态诊断；再次点击标记异常，不录音', property='toolTip')
+        yield from _gui_slice.checkpoint()
         from ..diagnostics.audio_diagnostic_marker import AudioDiagnosticMarker
         page.audio_diagnostic_marker=AudioDiagnosticMarker(page,page.audio_diagnostic_button)
         timeline_toolbar.addStretch(1)
         timeline_toolbar.addWidget(page._toolbar_divider())
+        yield from _gui_slice.checkpoint()
         view_start = page._tool_button("fa5s.search-minus", "缩小时间轴 (Ctrl+滚轮)", lambda: page._zoom_timeline(1.25))
         timeline_toolbar.addWidget(view_start)
         # 2026-10-30 (user, draft B): a zoom slider between 缩小 and 放大.
         from .timeline_zoom_slider import TimelineZoomSlider
         page.timeline_zoom_slider = TimelineZoomSlider(page)
+        yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.timeline_zoom_slider)
         zoom_in = page._tool_button("fa5s.search-plus", "放大时间轴 (Ctrl+滚轮)", lambda: page._zoom_timeline(0.8))
         timeline_toolbar.addWidget(zoom_in)
         fit_button = page._tool_button("fa5s.compress-arrows-alt", "时间轴适应窗口", page._fit_timeline)
+        yield from _gui_slice.checkpoint()
         page.timeline_fit_button = fit_button
         timeline_toolbar.addWidget(fit_button)
         zoom_buttons = (view_start, zoom_in, fit_button)
         page.waveform_toggle = QCheckBox("显示波形")
+        yield from _gui_slice.checkpoint()
         page.waveform_toggle.setObjectName("timelineToggleChip")
         page.waveform_toggle.setChecked(True)
         bind_text(page.waveform_toggle, '显示或隐藏紧凑波形轨道', property='toolTip')
         timeline_toolbar.addWidget(page.waveform_toggle)
+        yield from _gui_slice.checkpoint()
         page.filmstrip_toggle = QCheckBox('缩略图')
         page.filmstrip_toggle.setObjectName("timelineToggleChip")
         page.filmstrip_toggle.setChecked(True)
         bind_text(page.filmstrip_toggle, '显示视频缩略图；按视口在后台生成，播放时暂停生成', property='toolTip')
+        yield from _gui_slice.checkpoint()
         def toggle_filmstrip(checked):
             page.timeline.filmstrip_visible=bool(checked)
             if page.project:page.project.studio_state['video_thumbnails_visible']=bool(checked)
@@ -1251,14 +1522,73 @@ class StudioWorkspaceBuilder:
         page.filmstrip_toggle.toggled.connect(toggle_filmstrip)
         timeline_toolbar.addWidget(page.filmstrip_toggle)
         page.follow_playhead_toggle = QCheckBox("跟随播放头")
+        yield from _gui_slice.checkpoint()
         page.follow_playhead_toggle.setObjectName("timelineToggleChip")
         page.follow_playhead_toggle.setChecked(True)
         bind_text(page.follow_playhead_toggle, '开启时连续跟随；关闭时仅越界翻页，播放头左对齐。字幕选择保持不变。', property='toolTip')
         page.follow_playhead_toggle.toggled.connect(page._follow_toggle_changed)
+        yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.follow_playhead_toggle)
+        # 2026-11-12 (user, draft B split in two): locate / start / end stay
+        # here as icons; the 当前字幕 pill left of the transport holds the
+        # number and the single-cue edits (built below). Words live in tooltips
+        # so the transport keeps its place under the video.
+        page.selection_center_toggle = page._tool_button(
+            'fa5s.bullseye', '选中定位并居中 · 跳到活动字幕起点，显示15秒；片头从0开始。播放跟随由独立开关控制。',
+            page._locate_selected_subtitle)
+        bind_text(page.selection_center_toggle, '选中定位并居中', property='accessibleName')
+        page.cue_start_button = page._tool_button(
+            'ph.arrow-line-left-bold', '跳到当前字幕起点 · {key} 在起点和终点之间往返',
+            page._jump_current_subtitle_start, shortcut='jump_cue_boundary')
+        bind_text(page.cue_start_button, '跳到当前字幕起点', property='accessibleName')
+        page.cue_end_button = page._tool_button(
+            'ph.arrow-line-right-bold', '跳到当前字幕终点 · {key} 在起点和终点之间往返',
+            page._jump_current_subtitle_end, shortcut='jump_cue_boundary')
+        bind_text(page.cue_end_button, '跳到当前字幕终点', property='accessibleName')
+        for button in (page.selection_center_toggle, page.cue_start_button, page.cue_end_button):
+            timeline_toolbar.addWidget(button)
+        # The start/end toggle stays the Alt+J command; its own button left the bar.
+        page.cue_boundary_button = page._tool_button('fa5s.exchange-alt', '跳转到当前字幕起点／终点 ({key})',
+                                                    page._jump_current_subtitle_boundary, shortcut='jump_cue_boundary')
+        page.cue_boundary_button.setParent(page)
+        page.cue_boundary_button.hide()
+        page.secondary_group_button = QToolButton()
+        page.secondary_group_button.setText(tr('次要角色'))
+        page.secondary_group_button.setAccessibleName(tr('次要角色：展开、收起或隐藏'))
+        page.secondary_group_button.setPopupMode(QToolButton.InstantPopup)
+        secondary_menu = create_studio_menu(page.secondary_group_button)
+        def update_secondary_menu():
+            secondary_menu.clear()
+            timeline = getattr(page, 'timeline', None)
+            if timeline is None or not timeline._group_members:
+                secondary_menu.addAction(tr('没有次要角色分组')).setEnabled(False)
+                return
+            expanded = timeline._group_expanded
+            secondary_menu.addAction(tr('收起次要角色') if expanded else tr('展开次要角色'),
+                                    lambda: timeline.set_group_expanded(not expanded))
+            from ..recognition.speaker_roles import GROUP_KEY
+            hidden = timeline._group_header_state()[0]
+            secondary_menu.addAction(tr('恢复显示次要角色') if hidden else tr('一键隐藏次要角色'),
+                                    lambda: page._subtitle_visibility_changed(GROUP_KEY, hidden))
+            roles_menu = create_studio_menu(secondary_menu)
+            roles_menu.setTitle(tr('角色显示（原文和译文）'))
+            secondary_menu._role_menu = roles_menu
+            secondary_menu.addMenu(roles_menu)
+            from .studio_cue_table import _speaker_name
+            visible = page.project.studio_state.get('subtitle_track_visibility', {})
+            for speaker in timeline._group_members:
+                action = roles_menu.addAction(_speaker_name(page.project,speaker))
+                action.setCheckable(True)
+                action.setChecked(visible.get('speaker:'+speaker,True))
+                action.toggled.connect(lambda shown,speaker=speaker:
+                    page._subtitle_visibility_changed('speaker:'+speaker,shown))
+        secondary_menu.aboutToShow.connect(update_secondary_menu)
+        page.secondary_group_button.setMenu(secondary_menu)
+        timeline_toolbar.addWidget(page.secondary_group_button)
         page.snap_toggle = QCheckBox("吸附")
         page.snap_toggle.setObjectName("timelineToggleChip")
         page.snap_toggle.setChecked(True)
+        yield from _gui_slice.checkpoint()
         page._shortcut_tooltip(page.snap_toggle, '拖动字幕时吸附到播放头、相邻边界和静音点（快捷键 {key}）', 'toggle_snap')
         page.snap_toggle.toggled.connect(page._toggle_timeline_snap)
         timeline_toolbar.addWidget(page.snap_toggle)
@@ -1272,16 +1602,19 @@ class StudioWorkspaceBuilder:
             toggle.toggled.connect(tint)
             toggle.setIconSize(QSize(18, 18))
             toggle.setProperty('iconOnly', True)
+        yield from _gui_slice.checkpoint()
         from ..exports.frame_export_ui import install_frame_button
         install_frame_button(page, timeline_toolbar)
         from ..cover.cover_studio import install_cover_button
         install_cover_button(page, timeline_toolbar)
+        yield from _gui_slice.checkpoint()
         for button in (page.save_frame_button, page.make_cover_button):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setIconSize(QSize(18, 18))
         bind_text(page.make_cover_button, '制作封面：当前截图、新建封面或选择模板', property='toolTip')
         yield '时间轴工具栏'
         page.timeline_options_button = page._tool_button('fa5s.sliders-h', '时间轴显示选项', lambda: None)
+        yield from _gui_slice.checkpoint()
         page.timeline_options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         options_menu = create_studio_menu(page.timeline_options_button)
 
@@ -1291,6 +1624,10 @@ class StudioWorkspaceBuilder:
             # Subtitle layout (自动避让 / 重新排版 / 衔接间隙) moved to the cue
             # ••• menu; the zoom commands appear only while their buttons are
             # folded off a narrow bar (Ctrl+wheel zooms as well).
+            options_menu.addAction(page.selection_center_toggle.accessibleName(), page.selection_center_toggle.click)
+            from .studio_speaker_roles import group_actions
+            if page.project is not None:
+                group_actions(page, options_menu)
             for toggle in (page.waveform_toggle, page.filmstrip_toggle, page.follow_playhead_toggle, page.snap_toggle):
                 shown = options_menu.addAction(toggle.accessibleName())  # no icon: the check mark shows
                 shown.setCheckable(True)
@@ -1304,15 +1641,22 @@ class StudioWorkspaceBuilder:
                     options_menu.addAction(button.icon(), button.toolTip(), button.click)
 
         options_menu.aboutToShow.connect(update_options_menu)
+        yield from _gui_slice.checkpoint()
         options_menu.setToolTipsVisible(True)
         page.timeline_options_button.setMenu(options_menu)
         timeline_toolbar.addWidget(page.timeline_options_button)
         # Keep the functional command groups stable. Single-cue
         # commands move into a menu without changing their callbacks.
         # Marked by a property, not found by tooltip: tooltips name the current key.
-        for button in (*cue_commands, page.smart_align_button, page.loop_cue_button,
-                       page.ai_optimize_button, page.reasr_button):
-            button.setProperty('cueMenuCommand', True)
+        # Ripple merges and delete stay on the bar in the 当前字幕 pill; the
+        # 更多 menu still lists every single-cue command in its old order.
+        cue_pill_commands = cue_commands[2:]
+        cue_menu_sources = (*cue_commands, page.smart_align_button, page.loop_cue_button,
+                            page.ai_optimize_button, page.reasr_button)
+        for button in cue_menu_sources:
+            if button not in cue_pill_commands:
+                button.setProperty('cueMenuCommand', True)
+        yield from _gui_slice.checkpoint()
         hidden_timeline=[]
         for i in range(timeline_toolbar.count()):
             widget=timeline_toolbar.itemAt(i).widget()
@@ -1321,6 +1665,7 @@ class StudioWorkspaceBuilder:
         for widget in hidden_timeline:
             timeline_toolbar.removeWidget(widget);widget.setParent(page);widget.hide()
         page._timeline_overflow_widgets=hidden_timeline
+        yield from _gui_slice.checkpoint()
         # The AI ones (修轴 / 优化 / 重识别) are reached from the「AI 工具」menu.
         ai_cue_buttons = {page.smart_align_button, page.ai_optimize_button, page.reasr_button}
         cue_menu=create_studio_menu(page.cue_more_button)
@@ -1332,7 +1677,7 @@ class StudioWorkspaceBuilder:
             from ..design.rich_menu import add_header
             from .studio_widgets import _icon
             add_header(cue_menu, tr('编辑当前字幕'))
-            for source in hidden_timeline:
+            for source in cue_menu_sources:
                 if source in ai_cue_buttons:
                     continue
                 action=cue_menu.addAction(source.icon(),source.toolTip())
@@ -1356,10 +1701,12 @@ class StudioWorkspaceBuilder:
             transitions.setIcon(_icon('fa5s.adjust'))
             cue_menu.addMenu(transitions)
         cue_menu.aboutToShow.connect(update_cue_menu)
+        yield from _gui_slice.checkpoint()
         page.cue_more_button.clicked.disconnect()
         page.cue_more_button.setMenu(cue_menu)
         page.cue_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         timeline_toolbar.removeWidget(page.position_label);page.position_label.hide()
+        yield from _gui_slice.checkpoint()
         # Stripped groups leave empty dividers; one delimiter at each side of
         # transport is enough and avoids isolated vertical lines.
         for i in reversed(range(timeline_toolbar.count())):
@@ -1367,7 +1714,23 @@ class StudioWorkspaceBuilder:
             if isinstance(widget,QFrame) and not isinstance(widget,QLabel):
                 timeline_toolbar.removeWidget(widget);widget.hide()
         timeline_toolbar.insertStretch(timeline_toolbar.indexOf(page.cue_more_button)+1,1)
+        # 「当前字幕」 pill: which subtitle, then the ripple merges and delete.
+        page.cue_capsule_badge = QLabel('#—')
+        page.cue_capsule_badge.setObjectName('timelineCueBadge')
+        page.cue_capsule_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bind_text(page.cue_capsule_badge, '当前字幕在列表中的序号；未选中时按钮不可用', property='toolTip')
+        cue_pill = (page.cue_capsule_badge, *cue_pill_commands)
+        page._cue_capsule_buttons = (page.selection_center_toggle, page.cue_start_button,
+                                     page.cue_end_button, *cue_pill_commands)
+        cue_pill_commands[-1].setProperty('danger', True)
+        for widget in cue_pill_commands:
+            timeline_toolbar.removeWidget(widget)
+        pill_index = timeline_toolbar.indexOf(transport_start)
+        for offset, widget in enumerate(cue_pill):
+            timeline_toolbar.insertWidget(pill_index + offset, widget)
+        page._sync_cue_capsule()
         timeline_toolbar.setSpacing(4)
+        yield from _gui_slice.checkpoint()
         page._timeline_command_layout = timeline_toolbar
         for index in range(timeline_toolbar.count()):
             widget = timeline_toolbar.itemAt(index).widget()
@@ -1382,90 +1745,125 @@ class StudioWorkspaceBuilder:
             toggle.setText('')
             bind_text(toggle, name, property='accessibleName')
         from .studio_toolbar_layout import install_command_groups
+        yield from _gui_slice.checkpoint()
         # Display switches and zoom fold into 时间轴选项 (which lists both)
         # before the bar would take a second row.
+        navigation = (page.selection_center_toggle, page.cue_start_button, page.cue_end_button,
+                      page.secondary_group_button)
+        for widget in navigation:
+            timeline_toolbar.removeWidget(widget)
+        navigation_index = timeline_toolbar.indexOf(page.waveform_toggle)
+        for offset, widget in enumerate(navigation):
+            timeline_toolbar.insertWidget(navigation_index + offset, widget)
         install_command_groups(page,timeline_layout,timeline_toolbar,transport_start,view_start,
                                toggles_start=page.waveform_toggle, output_start=page.save_frame_button,
-                               fold=("display", "view"))
+                               navigation_start=page.selection_center_toggle, cue_start=page.cue_capsule_badge,
+                               fold=("display", "view", "cue"))
+        page.clip_selection_count.hide()  # grouped while visible; shown with a count
         # The transport pill sits under the video, not the bar's middle.
         from .studio_toolbar_layout import centre_on
         centre_on(page, page.video)
         page.timeline = WaveformTimeline()
+        page.timeline.set_center_playhead_mode(False)
+        page.timeline.cue_navigation_requested.connect(page._navigate_selected_subtitle)
+        yield from _gui_slice.checkpoint()
         from .source_timeline_drop import SourceTimelineDrop
         page.source_timeline_drop = SourceTimelineDrop(page)
         page.timeline.interaction_changed.connect(
             page._resource_governor.set_dragging
         )
         page.timeline.cue_selected.connect(page._timeline_cue_clicked)
+        yield from _gui_slice.checkpoint()
         page.timeline.subtitle_visibility_changed.connect(page._subtitle_visibility_changed)
         page.timeline.subtitle_lock_changed.connect(page._schedule_autosave)
         page.timeline.selection_changed.connect(page._timeline_selection_changed)
         page.timeline.group_move_committed.connect(page._move_selected_clip_group)
+        yield from _gui_slice.checkpoint()
         page.timeline.group_copy_committed.connect(page._copy_selected_clip_group)
-        page.timeline.selection_count_changed.connect(lambda n:bind_text(page.clip_selection_count,'已选 {count} 个片段',count=n) if n else page.clip_selection_count.clear())
+        def show_clip_count(n):
+            # Hidden while empty so it takes no room left of the transport.
+            bind_text(page.clip_selection_count, '已选 {count} 个片段', count=n) if n else page.clip_selection_count.clear()
+            page.clip_selection_count.setVisible(bool(n))
+        page.timeline.selection_count_changed.connect(show_clip_count)
         from .studio_transition_ui import show_properties
         page.timeline.transition_selected.connect(lambda key:show_properties(page,key))
+        yield from _gui_slice.checkpoint()
         from .timeline_scrub import TimelineScrub
         page._timeline_scrub = TimelineScrub(page)
         page.timeline.seek_requested.connect(page._timeline_scrub.request)
         page.timeline.scrub_finished.connect(page._timeline_scrub.finish)
+        yield from _gui_slice.checkpoint()
         page.timeline.scrub_cancelled.connect(page._timeline_scrub.cancel)
         page.timeline.snap_changed.connect(page.snap_toggle.setChecked)
         page.timeline_zoom_slider.attach(page.timeline)
         from .studio_timing_preview import CueTimingPreview
+        yield from _gui_slice.checkpoint()
         page._cue_timing_preview = CueTimingPreview(page)
         page.timeline.timing_edit_started.connect(page._cue_timing_preview.start)
         page.timeline.timing_preview_changed.connect(page._cue_timing_preview.update)
         page.timeline.timing_edit_committed.connect(lambda values: page.cue_controller.commit_timeline_edit(values))
+        yield from _gui_slice.checkpoint()
         page.timeline.timing_edit_finished.connect(page._cue_timing_preview.finish)
         page.timeline.speaker_changed.connect(page._timeline_speaker_changed)
         page.timeline.context_menu_requested.connect(page._show_timeline_menu)
         from .studio_translation_edit import sync_editor_layer
+        yield from _gui_slice.checkpoint()
         page.timeline.subtitle_layer_changed.connect(lambda _layer: sync_editor_layer(page, explicit=True))
         page.timeline.razor_split_requested.connect(page._split_at)
         page.timeline.merge_pair_requested.connect(page._merge_pair_clicked)
         page.timeline.video_razor_requested.connect(page._razor_video_at)
+        yield from _gui_slice.checkpoint()
         page.timeline.video_clip_razor_requested.connect(page._razor_video_clip_at)
         page.timeline.audio_clip_razor_requested.connect(page._razor_audio_clip_at)
         from ..projects.project_range import set_range
         page.timeline.range_edit_committed.connect(lambda start, end: set_range(page.project, start, end, page.undo_stack) if page.project else None)
+        yield from _gui_slice.checkpoint()
         page.timeline.edit_blocked.connect(page.save_state.setText)
         page.timeline.video_lock_toggled.connect(page._toggle_video_lock)
         page.timeline.video_track_action_requested.connect(page._video_track_action)
         page.timeline.audio_track_action_requested.connect(page._audio_track_action)
+        yield from _gui_slice.checkpoint()
         from ..timeline.studio_track_delete import delete_track, track_menu
         page.timeline.track_delete_requested.connect(lambda kind,track_id:delete_track(page,kind,track_id))
         page.timeline.track_menu_requested.connect(lambda kind,track_id,pos:track_menu(page,kind,track_id,pos))
         page.timeline.video_track_menu_requested.connect(page._show_video_track_menu)
+        yield from _gui_slice.checkpoint()
         page.timeline.video_clip_selected.connect(page._video_clip_selected)
         page.timeline.video_clip_move_committed.connect(page._video_clip_move_committed)
         page.timeline.video_track_reorder_requested.connect(page._video_track_reorder_to)
         page.timeline.video_clip_reassign_committed.connect(page._video_clip_reassign_committed)
+        yield from _gui_slice.checkpoint()
         page.timeline.video_segment_lift_requested.connect(page._video_segment_lift_requested)
         page.timeline.video_track_swap_requested.connect(page._video_track_swap_requested)
         page.timeline.video_clip_trim_committed.connect(page._video_clip_trim_committed)
         page.timeline.candidate_clicked.connect(page._on_candidate_clicked)
+        yield from _gui_slice.checkpoint()
         page.highlight_panel.preview_requested.connect(lambda flag: page._on_candidate_clicked(page.highlight_panel.current_id(), bool(flag)))
         page.highlight_panel.context_requested.connect(page._highlight_context)
         page.highlight_panel.edit_requested.connect(page._edit_highlight_range)
         page.highlight_panel.source_changed.connect(page._change_highlight_source)
+        yield from _gui_slice.checkpoint()
         page.highlight_panel.add_to_bin_requested.connect(lambda cue_id: page._set_candidate_status(cue_id, "accepted"))
         page.highlight_panel.ignore_requested.connect(lambda cue_id: page._set_candidate_status(cue_id, "ignored"))
         page.highlight_panel.remove_from_bin_requested.connect(page._remove_candidate_from_bin)
         page.highlight_panel.candidate_move_requested.connect(page._move_candidate_in_bin)
+        yield from _gui_slice.checkpoint()
         page.highlight_panel.clear_bin_requested.connect(page._clear_candidate_bin)
         page.highlight_panel.generate_requested.connect(page._generate_highlight_edit)
         page.highlight_panel.restore_requested.connect(page._restore_full_sequence)
         page.highlight_panel.analyze_requested.connect(page._analyze_highlights)
+        yield from _gui_slice.checkpoint()
         page.highlight_panel.cancel_requested.connect(page._cancel_highlight_analysis)
         page.highlight_panel.xml_selected.connect(page._import_danmaku_xml)
         page.highlight_panel.xml_unbind_requested.connect(page._unbind_danmaku_xml)
         page.highlight_panel.add_mark_in_out_requested.connect(page._add_io_candidate)
+        yield from _gui_slice.checkpoint()
         # 四十四轮：自动剪口播气口。
         page.highlight_panel.autocut_detect_requested.connect(page._detect_autocut_silence)
         page.highlight_panel.autocut_apply_requested.connect(page._apply_autocut)
         page.highlight_panel.autocut_cancel_requested.connect(page._cancel_autocut)
         page.highlight_panel.autocut_preview_requested.connect(page._preview_autocut_seam)
+        yield from _gui_slice.checkpoint()
         page.timeline.text_edit_committed.connect(page._timeline_text_edited)
         # 2026-10-22: Ctrl+Enter in the inline editor splits at the text cursor.
         page.timeline.text_split_requested.connect(
@@ -1473,10 +1871,12 @@ class StudioWorkspaceBuilder:
         page.waveform_toggle.toggled.connect(page.timeline.set_waveform_visible)
         # 2026-11-09 (user, redesign): whole-project overview strip.
         from .timeline_overview import TimelineOverview
+        yield from _gui_slice.checkpoint()
         page.timeline_overview = TimelineOverview(page, page.timeline)
         timeline_layout.addWidget(page.timeline_overview)
         timeline_layout.addWidget(page.timeline, 1)
         from .timeline_add_track import install_add_track_button
+        yield from _gui_slice.checkpoint()
         install_add_track_button(page)
         # The toolbar layout (SetMinimumSize) derives the host minimum from
         # the toolbar and the timeline; no fixed floor (2026-10-22).
@@ -1486,33 +1886,40 @@ class StudioWorkspaceBuilder:
         # timeline keeps the height it was given or the user dragged.
         page.workspace_splitter.setStretchFactor(0, 1)
         page.workspace_splitter.setStretchFactor(1, 0)
+        yield from _gui_slice.checkpoint()
         page.workspace_splitter.setSizes([560, 380])
         yield '时间轴'
         workspace_layers = QStackedLayout(page.workspace_host)
         workspace_layers.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         # These pages are mutually exclusive. A raised alien QWidget cannot
         # occlude the native mpv child on Windows. Hide the inactive subtree.
         workspace_layers.setStackingMode(QStackedLayout.StackingMode.StackOne)
         page.workspace_layers = workspace_layers
         workspace_layers.addWidget(page.workspace_splitter)
         outer.addWidget(page.workspace_host, 1)
+        yield from _gui_slice.checkpoint()
         page.export_workspace = None
 
         page.studio_empty = QFrame(page.workspace_host)
         page.studio_empty.setObjectName("studioEmptyState")
         empty_layout = QVBoxLayout(page.studio_empty)
+        yield from _gui_slice.checkpoint()
         empty_layout.setContentsMargins(0, 0, 0, 0)
         page.project_library_scroll = QScrollArea()
         page.project_library_scroll.setObjectName("projectLibraryScroll")
         page.project_library_scroll.setWidgetResizable(True)
+        yield from _gui_slice.checkpoint()
         page.project_library_scroll.setFrameShape(QFrame.Shape.NoFrame)
         page.project_library_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         library_page = QWidget()
         library_page.setObjectName("projectLibraryPage")
+        yield from _gui_slice.checkpoint()
         page.project_library_scroll.viewport().setObjectName("projectLibraryViewport")
         library_layout = QVBoxLayout(library_page)
         library_layout.setContentsMargins(42, 24, 42, 48)
         library_layout.setSpacing(16)
+        yield from _gui_slice.checkpoint()
         page.project_library_scroll.setWidget(library_page)
         empty_layout.addWidget(page.project_library_scroll)
 
@@ -1520,176 +1927,218 @@ class StudioWorkspaceBuilder:
         # product identity first, then the resume action and recent projects.
         yield '工程库布局'
         page.project_library_header = QFrame()
+        yield from _gui_slice.checkpoint()
         page.project_library_header.setObjectName("projectLibraryHeader")
         page.project_library_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         header_layout = QVBoxLayout(page.project_library_header)
         header_layout.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         header_layout.setSpacing(14)
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
         from ..app.main_ui_branding import HeaderMascot
+        yield from _gui_slice.checkpoint()
         page.project_library_mascot = HeaderMascot(full_artwork=True)
         page.project_library_mascot.setParent(page.project_library_header)
         page.project_library_mascot.hide()
         brand_text = QVBoxLayout()
+        yield from _gui_slice.checkpoint()
         brand_text.setSpacing(1)
         page.project_library_brand = QLabel("工程库")
         page.project_library_brand.setObjectName("projectLibraryBrand")
         brand_text.addWidget(page.project_library_brand)
+        yield from _gui_slice.checkpoint()
         page.project_library_brand_meta = QLabel("继续编辑，或开始新的字幕创作。")
         page.project_library_brand_meta.setObjectName("projectLibraryBrandMeta")
         brand_text.addWidget(page.project_library_brand_meta)
         brand_row.addLayout(brand_text, 0)
+        yield from _gui_slice.checkpoint()
         brand_row.addStretch(1)
         header_actions = QWidget()
         header_actions.setObjectName("projectLibraryHeaderActions")
         header_actions.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        yield from _gui_slice.checkpoint()
         header_actions_layout = QHBoxLayout(header_actions)
         header_actions_layout.setContentsMargins(0, 0, 0, 0)
         header_actions_layout.setSpacing(10)
         page.project_import_button = QPushButton("导入工程")
+        yield from _gui_slice.checkpoint()
         page.project_import_button.setObjectName("hubToolbarButton")
         install_themed_icon(page.project_import_button, "fa5s.folder-open")
         page.project_import_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_import_button.setMinimumHeight(42)
+        yield from _gui_slice.checkpoint()
         page.project_import_button.setMinimumWidth(118)
         page.project_import_button.clicked.connect(page.open_project_dialog)
         header_actions_layout.addWidget(page.project_import_button)
         page.project_new_button = QPushButton("新建工程")
+        yield from _gui_slice.checkpoint()
         page.project_new_button.setObjectName("hubPrimary")
         install_themed_icon(page.project_new_button, "fa5s.file-video", "on_accent")
         page.project_new_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_new_button.setMinimumHeight(42)
+        yield from _gui_slice.checkpoint()
         page.project_new_button.setMinimumWidth(132)
         page.project_new_button.clicked.connect(page._create_blank_studio)
         header_actions_layout.addWidget(page.project_new_button)
         brand_row.addWidget(header_actions, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        yield from _gui_slice.checkpoint()
         header_layout.addLayout(brand_row)
         intro_row = QVBoxLayout()
         intro_row.setSpacing(3)
         page.project_library_eyebrow = QLabel("工程库")
+        yield from _gui_slice.checkpoint()
         page.project_library_eyebrow.setObjectName("projectLibraryEyebrow")
         page.project_library_eyebrow.setParent(page.project_library_header)
         page.project_library_eyebrow.hide()
         page.project_library_title = QLabel("继续字幕编辑")
+        yield from _gui_slice.checkpoint()
         page.project_library_title.setObjectName("projectLibraryTitle")
         page.project_library_title.setParent(page.project_library_header)
         page.project_library_title.hide()
         page.project_library_subtitle = QLabel("打开已有工程，继续编辑字幕。")
+        yield from _gui_slice.checkpoint()
         page.project_library_subtitle.setObjectName("projectLibrarySubtitle")
         page.project_library_subtitle.setParent(page.project_library_header)
         page.project_library_subtitle.hide()
         library_layout.addWidget(page.project_library_header)
+        yield from _gui_slice.checkpoint()
 
         yield '工程库标题'
         page.resume_hero = QFrame()
         page.resume_hero.setObjectName("resumeProjectCard")
         page.resume_hero.setMinimumHeight(280)
+        yield from _gui_slice.checkpoint()
         page.resume_hero.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         resume_layout = QHBoxLayout(page.resume_hero)
         resume_layout.setContentsMargins(22, 16, 16, 16)
         resume_layout.setSpacing(18)
+        yield from _gui_slice.checkpoint()
         page.resume_info = QFrame()
         page.resume_info.setObjectName("resumeProjectInfo")
         page.resume_info.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         page.resume_info.setMinimumWidth(260)
+        yield from _gui_slice.checkpoint()
         resume_info_layout = QVBoxLayout(page.resume_info)
         resume_info_layout.setContentsMargins(8, 8, 8, 8)
         resume_info_layout.setSpacing(12)
         # Center the copy beside the cover instead of leaving a gap under it.
         resume_info_layout.addStretch(1)
+        yield from _gui_slice.checkpoint()
         page.resume_eyebrow = QLabel("最近编辑")
         page.resume_eyebrow.setObjectName("resumeProjectEyebrow")
         resume_info_layout.addWidget(page.resume_eyebrow)
         page.resume_title = QLabel("还没有打开过工程")
+        yield from _gui_slice.checkpoint()
         page.resume_title.setObjectName("resumeProjectTitle")
         page.resume_title.setWordWrap(True)
         page.resume_title.setMinimumHeight(44)
         resume_info_layout.addWidget(page.resume_title)
+        yield from _gui_slice.checkpoint()
         page.resume_meta = QLabel("导入视频或打开 .2byteproj，开始你的第一批字幕。")
         page.resume_meta.setObjectName("resumeProjectMeta")
         page.resume_meta.setWordWrap(True)
         resume_info_layout.addWidget(page.resume_meta)
+        yield from _gui_slice.checkpoint()
         # Real project state as a semantic pill; the source file stays plain text.
         resume_status_row = QHBoxLayout()
         resume_status_row.setSpacing(10)
         page.resume_status_pill = QLabel("")
         page.resume_status_pill.setObjectName("resumeProjectStatusPill")
+        yield from _gui_slice.checkpoint()
         page.resume_status_pill.hide()
         resume_status_row.addWidget(page.resume_status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
         page.resume_status = QLabel("等待开始")
         page.resume_status.setObjectName("resumeProjectStatus")
+        yield from _gui_slice.checkpoint()
         page.resume_status.setWordWrap(True)
         resume_status_row.addWidget(page.resume_status, 1)
         resume_info_layout.addLayout(resume_status_row)
         resume_actions = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         resume_actions.setSpacing(8)
         page.resume_continue_button = QPushButton("继续编辑")
         page.resume_continue_button.setObjectName("hubPrimary")
         install_themed_icon(page.resume_continue_button, "fa5s.play", "on_accent")
+        yield from _gui_slice.checkpoint()
         page.resume_continue_button.setEnabled(False)
         page.resume_continue_button.clicked.connect(lambda: page._open_recent_project_card(getattr(page, "_resume_target", "")))
         resume_actions.addWidget(page.resume_continue_button)
         page.resume_details_button = QPushButton("查看详情")
+        yield from _gui_slice.checkpoint()
         page.resume_details_button.setObjectName("hubSecondary")
         page.resume_details_button.setEnabled(False)
         page.resume_details_button.clicked.connect(lambda: page._show_recent_project_details(getattr(page, "_resume_target", "")))
         resume_actions.addWidget(page.resume_details_button)
+        yield from _gui_slice.checkpoint()
         resume_actions.addStretch(1)
         resume_info_layout.addLayout(resume_actions)
         resume_info_layout.addStretch(1)
         resume_layout.addWidget(page.resume_info, 1)
+        yield from _gui_slice.checkpoint()
         page.resume_preview = QFrame()
         page.resume_preview.setObjectName("resumeProjectPreview")
         page.resume_preview.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         preview_grid = QGridLayout(page.resume_preview)
+        yield from _gui_slice.checkpoint()
         preview_grid.setContentsMargins(0, 0, 0, 0)
         preview_grid.setSpacing(0)
         page.resume_preview_image = CoverPreviewLabel()
         page.resume_preview_image.setObjectName("resumeProjectPreviewImage")
+        yield from _gui_slice.checkpoint()
         page.resume_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.resume_preview_image.set_corner_radius(10)
         page.resume_preview_image.set_fit_mode("contain")
         page.resume_preview_image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        yield from _gui_slice.checkpoint()
         preview_grid.addWidget(page.resume_preview_image, 0, 0)
         resume_layout.addWidget(page.resume_preview, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         library_layout.addWidget(page.resume_hero)
 
         library_toolbar = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         library_toolbar.setSpacing(10)
         page.all_projects_heading = QLabel("最近工程")
         page.all_projects_heading.setObjectName("projectLibrarySectionTitle")
         page.all_projects_heading.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        yield from _gui_slice.checkpoint()
         library_toolbar.addWidget(page.all_projects_heading)
         library_toolbar.addStretch(1)
         # 五十二轮：排序/搜索/视图切换统一为一个 toolbar——同高(40)、同圆角(10)、
         # 同基线，整组不再高低不齐。
         page.project_sort = StudioComboBox()
         page.project_sort.setObjectName("projectSort")
+        yield from _gui_slice.checkpoint()
         page.project_sort.setMinimumHeight(40)
         page.project_sort.setMinimumWidth(128)
         page.project_sort.addItem("最近使用", "recent")
         page.project_sort.addItem("最近创建", "created")
+        yield from _gui_slice.checkpoint()
         page.project_sort.addItem("名称", "name")
         page.project_sort.currentIndexChanged.connect(lambda _index: page._refresh_studio_empty_state())
         library_toolbar.addWidget(page.project_sort)
         page.project_search = QLineEdit()
+        yield from _gui_slice.checkpoint()
         page.project_search.setObjectName("projectLibrarySearch")
         bind_text(page.project_search, '搜索工程...', property='placeholderText')
         page.project_search.setClearButtonEnabled(True)
         page.project_search.setMinimumHeight(40)
+        yield from _gui_slice.checkpoint()
         page.project_search.setMaximumWidth(280)
         search_action = page.project_search.addAction(_icon("fa5s.search"), QLineEdit.ActionPosition.LeadingPosition)
         install_themed_icon(search_action, "fa5s.search", "muted")
         page.project_search.textChanged.connect(lambda _text: page._refresh_studio_empty_state())
+        yield from _gui_slice.checkpoint()
         library_toolbar.addWidget(page.project_search)
         page.project_view_group = QButtonGroup(page)
         page.project_view_group.setExclusive(True)
         view_switcher = QFrame()
+        yield from _gui_slice.checkpoint()
         view_switcher.setObjectName("projectViewSwitcher")
         view_switcher_layout = QHBoxLayout(view_switcher)
         view_switcher_layout.setContentsMargins(2, 2, 2, 2)
         view_switcher_layout.setSpacing(2)
+        yield from _gui_slice.checkpoint()
         page.project_card_view_button = QToolButton()
         page.project_card_view_button.setObjectName("projectViewButton")
         # 五十二轮：视图切换图标走 themed role 注册（随主题重着色）。此前
@@ -1697,32 +2146,39 @@ class StudioWorkspaceBuilder:
         # 图标≈不可见（用户"卡片/列表切换图标几乎看不见"根因）。
         install_themed_icon(page.project_card_view_button, "fa5s.th-large")
         bind_text(page.project_card_view_button, '卡片视图', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.project_card_view_button.setCheckable(True)
         page.project_card_view_button.clicked.connect(lambda: page._set_project_library_view("card"))
         page.project_view_group.addButton(page.project_card_view_button)
         view_switcher_layout.addWidget(page.project_card_view_button)
+        yield from _gui_slice.checkpoint()
         page.project_list_view_button = QToolButton()
         page.project_list_view_button.setObjectName("projectViewButton")
         install_themed_icon(page.project_list_view_button, "fa5s.list")
         bind_text(page.project_list_view_button, '紧凑列表视图', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.project_list_view_button.setCheckable(True)
         page.project_list_view_button.clicked.connect(lambda: page._set_project_library_view("list"))
         page.project_view_group.addButton(page.project_list_view_button)
         view_switcher_layout.addWidget(page.project_list_view_button)
+        yield from _gui_slice.checkpoint()
         library_toolbar.addWidget(view_switcher)
         page.project_view_switcher = view_switcher
         page.project_manage_button = QPushButton("管理")
         page.project_manage_button.setObjectName("hubToolbarButton")
+        yield from _gui_slice.checkpoint()
         install_themed_icon(page.project_manage_button, "fa5s.tasks")
         page.project_manage_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_manage_button.setMinimumHeight(40)
         page.project_manage_button.setCheckable(True)
+        yield from _gui_slice.checkpoint()
         bind_text(page.project_manage_button, '批量选择工程，可一键清理空工程', property='toolTip')
         page.project_manage_button.clicked.connect(
             lambda checked=False: page._set_library_manage_mode(bool(checked))
         )
         library_toolbar.addWidget(page.project_manage_button)
         library_layout.addLayout(library_toolbar)
+        yield from _gui_slice.checkpoint()
 
         # Batch-manage bar: visible only in selection mode. Selection is keyed
         # by resolved project path so sort/search stays live while managing.
@@ -1730,90 +2186,121 @@ class StudioWorkspaceBuilder:
         page.project_manage_bar.setObjectName("libraryManageBar")
         manage_bar_layout = QHBoxLayout(page.project_manage_bar)
         manage_bar_layout.setContentsMargins(16, 10, 16, 10)
+        yield from _gui_slice.checkpoint()
         manage_bar_layout.setSpacing(8)
         page.project_manage_count_label = QLabel("已选 0 项")
         page.project_manage_count_label.setObjectName("libraryManageCount")
         manage_bar_layout.addWidget(page.project_manage_count_label)
+        yield from _gui_slice.checkpoint()
         manage_bar_layout.addStretch(1)
         page.project_select_empty_button = QPushButton("选中空工程")
         page.project_select_empty_button.setObjectName("libraryManageAction")
         bind_text(page.project_select_empty_button, '选中 0 条字幕且无源媒体的工程', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.project_select_empty_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_select_empty_button.clicked.connect(lambda: page._library_select_empty_projects())
         manage_bar_layout.addWidget(page.project_select_empty_button)
         page.project_select_all_button = QPushButton("全选")
+        yield from _gui_slice.checkpoint()
         page.project_select_all_button.setObjectName("libraryManageAction")
         page.project_select_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_select_all_button.clicked.connect(lambda: page._library_select_displayed(select_all=True))
         manage_bar_layout.addWidget(page.project_select_all_button)
+        yield from _gui_slice.checkpoint()
         page.project_delete_button = QPushButton("删除所选")
         page.project_delete_button.setObjectName("libraryManageDanger")
         install_themed_icon(page.project_delete_button, "fa5s.trash-alt")
         page.project_delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        yield from _gui_slice.checkpoint()
         page.project_delete_button.setEnabled(False)
         page.project_delete_button.clicked.connect(lambda: page._delete_selected_library_projects())
         manage_bar_layout.addWidget(page.project_delete_button)
         page.project_manage_exit_button = QPushButton("完成")
+        yield from _gui_slice.checkpoint()
         page.project_manage_exit_button.setObjectName("libraryManageAction")
         page.project_manage_exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.project_manage_exit_button.clicked.connect(lambda: page._set_library_manage_mode(False))
         manage_bar_layout.addWidget(page.project_manage_exit_button)
+        yield from _gui_slice.checkpoint()
         page._library_manage_esc_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), page.project_manage_bar)
         page._library_manage_esc_shortcut.activated.connect(lambda: page._set_library_manage_mode(False))
         page.project_manage_bar.hide()
         library_layout.addWidget(page.project_manage_bar)
+        yield from _gui_slice.checkpoint()
 
         yield '工程库导航'
         page.all_projects_stack = QStackedWidget()
         page.all_projects_stack.setObjectName("projectLibraryViewStack")
         page.all_projects_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        yield from _gui_slice.checkpoint()
         page.all_projects_stack.setMinimumHeight(360)
         page.all_projects_host = QWidget()
         page.all_projects_host.setObjectName("projectGridHost")
         page.all_projects_layout = QGridLayout(page.all_projects_host)
+        yield from _gui_slice.checkpoint()
         page.all_projects_layout.setContentsMargins(0, 0, 0, 0)
         page.all_projects_layout.setHorizontalSpacing(24)
         page.all_projects_layout.setVerticalSpacing(16)
         page.all_projects_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        yield from _gui_slice.checkpoint()
         page.all_projects_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         page.all_projects_stack.addWidget(page.all_projects_host)
         page.project_list_host = QWidget()
         page.project_list_host.setObjectName("projectListHost")
+        yield from _gui_slice.checkpoint()
         page.project_list_layout = QVBoxLayout(page.project_list_host)
         page.project_list_layout.setContentsMargins(0, 0, 0, 0)
         page.project_list_layout.setSpacing(8)
         page.project_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        yield from _gui_slice.checkpoint()
         page.all_projects_stack.addWidget(page.project_list_host)
         page.all_projects_stack.setCurrentIndex(0)
         page.project_card_view_button.setChecked(True)
         library_layout.addWidget(page.all_projects_stack)
+        yield from _gui_slice.checkpoint()
         page.project_library_empty = QLabel("没有找到匹配的工程")
         page.project_library_empty.setObjectName("projectLibrarySubtitle")
         page.project_library_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.project_library_empty.hide()
+        yield from _gui_slice.checkpoint()
         library_layout.addWidget(page.project_library_empty)
         page.hub_loading_label = QLabel()
         page.hub_loading_label.setObjectName("projectLibrarySubtitle")
         page.hub_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        yield from _gui_slice.checkpoint()
         page.hub_loading_label.hide()
         library_layout.addWidget(page.hub_loading_label)
         library_layout.addStretch(1)
         workspace_layers.addWidget(page.studio_empty)
+        yield from _gui_slice.checkpoint()
         workspace_layers.setCurrentWidget(page.studio_empty)
         page._hub_ui_ready = True
         page.project_library_scroll.viewport().installEventFilter(page)
         page.studio_empty.show()
+        yield from _gui_slice.checkpoint()
         page.studio_empty.raise_()
         QTimer.singleShot(0, page._refresh_studio_empty_state)
         for field, visible in page._editor_field_visibility.items():
             page._set_editor_field_visible(field, visible)
         QTimer.singleShot(0, page._update_editor_compactness)
+        yield from _gui_slice.checkpoint()
         QTimer.singleShot(0, page._update_cue_table_layout)
         from ..design.presentation import prepare_controls, field_width
         prepare_controls(page)
         for editor in (page.project_search,):
             field_width(editor, 'preferred', size='compact')
+        yield from _gui_slice.checkpoint()
         QTimer.singleShot(0, page._update_context_tab_labels)
+
+        # First-show style work is part of the cooperative preparation too.
+        if page.parentWidget() is not None:
+            page.resize(page.parentWidget().size())
+        from ..design.theme_scopes import prepare_steps
+        yield from prepare_steps(page, all_branches=True)
+        from ..i18n_widgets import apply_steps
+        from ..i18n import current_language
+        yield from apply_steps(page, current_language())
+        yield from prepare_steps(page, all_branches=True)
 
     def _cue_list_panel(self) -> QFrame:
         page = self.page
@@ -1883,36 +2370,25 @@ class StudioWorkspaceBuilder:
         page.cue_ai_button.setMenu(ai_menu)
         title_row.addWidget(page.cue_ai_button)
         layout.addLayout(title_row)
-        # 四十二轮：后台识别状态芯片——识别启动后弹窗关闭，运行/完成/失败
-        # 状态与取消按钮都落在这里，用户可以继续看视频编辑工程。
-        page.recognition_chip = QFrame()
-        page.recognition_chip.setObjectName("contextCard")
-        chip_layout = QHBoxLayout(page.recognition_chip)
-        chip_layout.setContentsMargins(10, 6, 8, 6)
-        chip_layout.setSpacing(8)
-        page.recognition_chip_label = QLabel("识别中")
-        page.recognition_chip_label.setObjectName("studioSaveState")
-        page.recognition_chip_label.setWordWrap(True)
-        chip_layout.addWidget(page.recognition_chip_label, 1)
-        page.recognition_cancel_button = QPushButton("取消识别")
-        page.recognition_cancel_button.setObjectName("studioButton")
-        page.recognition_cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        bind_text(page.recognition_cancel_button, '安全取消当前识别任务（在阶段边界退出）', property='toolTip')
-        page.recognition_cancel_button.clicked.connect(page.recognition_cancel_requested.emit)
-        chip_layout.addWidget(page.recognition_cancel_button)
-        page.recognition_chip.hide()
-        layout.addWidget(page.recognition_chip)
+        # Task progress and failures belong to the existing task panel. Do not
+        # create a recognition/recovery status row above the caption filters.
         # 2026-11-09 (redesign): the three filters share one row; review
         # controls (连续审核 / 开始审核) take the row below.
-        filters = QHBoxLayout()
-        filters.setSpacing(4)
+        # 2026-11-11 (user's design A): one segmented track instead of three
+        # separate white chips. 2026-11-12: 开始审核 sits at the end of the
+        # search row and 连续审核 at the left of the footer, as drawn.
+        page.cue_filter_track = QFrame()
+        page.cue_filter_track.setObjectName("cueFilterTrack")
+        filters = QHBoxLayout(page.cue_filter_track)
+        filters.setContentsMargins(3, 3, 3, 3)
+        filters.setSpacing(3)
         page.cue_filter_group = QButtonGroup(page)
         page.cue_filter_group.setExclusive(True)
         page.cue_filter_buttons: dict[str, QPushButton] = {}
         for index, (key, caption) in enumerate(
             (("all", "全部"), ("priority", "建议确认"), ("critical", "需要检查"))
         ):
-            button = QPushButton(caption)
+            button = CountChip(caption, key)
             button.setObjectName("filterChip")
             button.setCheckable(True)
             button.clicked.connect(lambda _checked=False, value=key: page._set_cue_filter(value))
@@ -1922,35 +2398,28 @@ class StudioWorkspaceBuilder:
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             filters.addWidget(button, 1)
         page.cue_filter_buttons["all"].setChecked(True)
-        layout.addLayout(filters)
-        review_row = QHBoxLayout()
-        review_row.setSpacing(6)
+        layout.addWidget(page.cue_filter_track)
         page.continuous_review_toggle = QCheckBox("连续审核")
         bind_text(page.continuous_review_toggle, '播放当前审核字幕前后语境，并在片段结束后暂停', property='toolTip')
         page.continuous_review_toggle.toggled.connect(page._set_continuous_review)
-        review_row.addWidget(page.continuous_review_toggle)
-        review_row.addStretch(1)
         page.review_entry_button = QPushButton("▶ 开始审核")
         page.review_entry_button.setObjectName("reviewEntryButton")
+        # Its label shortens on a narrow list; the text pass must not pin the long width.
+        page.review_entry_button.setProperty("flexibleWidth", True)
         bind_text(page.review_entry_button, '进入优先审核；快捷键 R', property='toolTip')
         page.review_entry_button.clicked.connect(lambda: page._set_review_mode(not page._review_mode))
-        review_row.addWidget(page.review_entry_button)
-        layout.addLayout(review_row)
-        page.confirm_all_reviews_button = QPushButton('全部标记已检查（0）')
-        page.confirm_all_reviews_button.setObjectName('studioButton')
-        page.confirm_all_reviews_button.setEnabled(False)
-        bind_text(page.confirm_all_reviews_button, '保留当前字幕内容，确认本工程全部待检查项。', property='toolTip')
-        page.confirm_all_reviews_button.clicked.connect(page._confirm_all_reviews)
-        layout.addWidget(page.confirm_all_reviews_button)
-        bulk_review_hint = QLabel('保留当前字幕内容，确认本工程全部待检查项。')
-        bulk_review_hint.setWordWrap(True)
-        bulk_review_hint.setObjectName('mutedText')
-        layout.addWidget(bulk_review_hint)
+        layout.addWidget(self._bulk_review_strip())
         search_row = QHBoxLayout()
+        search_row.setSpacing(6)
         page.cue_search = QLineEdit()
         page.cue_search.setObjectName("cueSearch")
         bind_text(page.cue_search, '搜索文本、说话人...', property='placeholderText')
         page.cue_search.setClearButtonEnabled(True)
+        from ..design.themed_icons import colored_icon as _colored_icon
+        from ..design.theme_manager import theme_key as _theme_key
+        from ..design.ui_theme import theme_definition as _theme_definition
+        page.cue_search.addAction(_colored_icon("fa5s.search", _theme_definition(_theme_key()).text_muted),
+                                  QLineEdit.ActionPosition.LeadingPosition)
         page.cue_search.textChanged.connect(lambda value: page.cue_model.set_query(value))
         search_row.addWidget(page.cue_search, 1)
         filter_button = page._tool_button("fa5s.filter", "筛选当前字幕列表", page._show_filter_menu)
@@ -1959,7 +2428,12 @@ class StudioWorkspaceBuilder:
         page.cue_view_button = page._tool_button("fa5s.table", "表格视图 · 关闭后按双行阅读显示（时间、说话人、状态在上，句子在下）",
                                                   lambda: None)
         page.cue_view_button.setCheckable(True)
-        search_row.addWidget(page.cue_view_button)
+        # 2026-11-12 (user, design A): the search box takes the row's width;
+        # the table/reading toggle sits beside 「AI 工具」 in the title row.
+        title_row.insertWidget(1, page.cue_view_button)
+        filter_button.setObjectName("cueFilterButton")
+        filter_button.setIconSize(QSize(14, 14))  # 2026-11-12 (user): the 24 px funnel was too big
+        search_row.addWidget(page.review_entry_button)
         layout.addLayout(search_row)
 
         page.cue_table = ResponsiveCueTableView()
@@ -1978,6 +2452,10 @@ class StudioWorkspaceBuilder:
         page.cue_table.setTabKeyNavigation(True)
         page.cue_table.setAlternatingRowColors(True)
         page.cue_table.setShowGrid(False)
+        # 2026-11-12 (user): the rows take the whole width and the wheel
+        # scrolls them; no visible scroll bar beside the cards.
+        page.cue_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page.cue_table.setFrameShape(QFrame.Shape.NoFrame)
         page.cue_table.verticalHeader().hide()
         page.cue_table.verticalHeader().setDefaultSectionSize(42)
         page.cue_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -2103,37 +2581,133 @@ class StudioWorkspaceBuilder:
         layout.addWidget(page.cue_empty_state, 1)
 
         footer = QHBoxLayout()
-        footer.addWidget(QLabel("跳转"))
+        footer.setSpacing(6)
+        footer.addWidget(page.continuous_review_toggle)
         page.jump_spin = QSpinBox()
+        page.jump_spin.setObjectName("cueStepPosition")
         page.jump_spin.setRange(1, 1)
-        page.jump_spin.setFixedWidth(70)
+        page.jump_spin.setFixedWidth(56)
+        page.jump_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        page.jump_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        bind_text(page.jump_spin, '跳转到第几条（输入后回车）', property='toolTip')
+        bind_text(page.jump_spin, '跳转', property='accessibleName')
         # Only a number the user changed jumps; the box otherwise follows the
         # selection (_sync_jump_position sets it with signals blocked).
         page.jump_spin.valueChanged.connect(lambda _value: setattr(page, "_jump_pending", True))
         page.jump_spin.editingFinished.connect(page._jump_to_row)
-        footer.addWidget(page.jump_spin)
         page.cue_total_label = QLabel("/ 0")
-        page.cue_total_label.setObjectName("studioSaveState")
-        footer.addWidget(page.cue_total_label)
+        page.cue_total_label.setObjectName("cueStepTotal")
         footer.addStretch(1)
-        previous = QPushButton("上一条")
-        previous.setObjectName("studioButton")
-        previous.clicked.connect(lambda: page._step_cue(-1))
-        footer.addWidget(previous)
-        following = QPushButton("下一条")
-        following.setObjectName("studioButton")
-        following.clicked.connect(lambda: page._step_cue(1))
-        footer.addWidget(following)
+        # 2026-11-11 (user's design A): 上一条 / 下一条 as one pill stepper.
+        stepper = page.cue_stepper = QFrame()
+        stepper.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        stepper.setObjectName("cueStepper")
+        steps = QHBoxLayout(stepper)
+        steps.setContentsMargins(3, 3, 3, 3)
+        steps.setSpacing(3)
+        for name, glyph, caption, delta in (("cueStepPrevious", "‹", "上一条", -1), ("cueStepNext", "›", "下一条", 1)):
+            step = QPushButton(glyph)
+            step.setObjectName(name)
+            step.setCursor(Qt.CursorShape.PointingHandCursor)
+            bind_text(step, caption, property='toolTip')
+            bind_text(step, caption, property='accessibleName')
+            step.clicked.connect(lambda _checked=False, value=delta: page._step_cue(value))
+            steps.addWidget(step)
+            setattr(page, "cue_step_previous" if delta < 0 else "cue_step_next", step)
+            if delta < 0:
+                # The position between the arrows: type a number to jump.
+                steps.addWidget(page.jump_spin)
+                steps.addWidget(page.cue_total_label)
+                steps.addSpacing(4)
+        footer.addWidget(stepper)
         more = page._tool_button("fa5s.ellipsis-h", "更多字幕列表操作", page._show_cue_more_menu)
         footer.addWidget(more)
         layout.addLayout(footer)
+        self._compact_review_labels(panel)
         return panel
 
+    def _compact_review_labels(self, panel) -> None:
+        """A narrow list shortens 开始审核 / 连续审核 so the search box and
+        the stepper keep their room; the tooltips keep the full meaning."""
+        page = self.page
+        state = {"compact": None}
+
+        def apply(width: int) -> None:
+            compact = width < (352 if state["compact"] else 336)
+            if compact == state["compact"]:
+                return
+            state["compact"] = compact
+            bind_text(page.review_entry_button, "▶ 审核" if compact else "▶ 开始审核")
+            bind_text(page.continuous_review_toggle, "连续" if compact else "连续审核")
+            # The total is also in the 全部 filter; a narrow pill keeps only the position.
+            page.cue_total_label.setVisible(not compact)
+
+        class _Width(QObject):
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.Resize:
+                    apply(watched.width())
+                return False
+        panel._compact_review_filter = _Width(panel)
+        panel.installEventFilter(panel._compact_review_filter)
+        apply(panel.width())
+
+    def _bulk_review_strip(self) -> QWidget:
+        """A one-line strip for 全部标记已检查, shown only while the button is
+        enabled (2026-11-11, user's design A). The review code keeps driving
+        ``page.confirm_all_reviews_button`` (text and enabled state); a page
+        without ``_confirm_all_reviews`` never enables it, so the strip stays hidden."""
+        from ..design.elided_label import ElidedLabel
+        page = self.page
+        strip = page.confirm_all_reviews_strip = QFrame()
+        strip.setObjectName("bulkReviewStrip")
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(12, 3, 3, 3)
+        row.setSpacing(8)
+        dot = QLabel()
+        dot.setObjectName("bulkReviewDot")
+        dot.setFixedSize(8, 8)
+        row.addWidget(dot)
+        note = page.confirm_all_reviews_note = ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=0)
+        note.setObjectName("bulkReviewNote")
+        bind_text(note, '保留当前字幕内容，确认本工程全部待检查项。', property='toolTip')
+        row.addWidget(note, 1)
+        button = page.confirm_all_reviews_button = QPushButton('全部标为已检查')
+        button.setObjectName("bulkReviewButton")
+        from ..design.themed_icons import colored_icon as _colored_icon
+        from ..design.theme_manager import theme_key as _theme_key
+        from ..design.ui_theme import theme_definition as _theme_definition
+        button.setIcon(_colored_icon("fa5s.check-double", _theme_definition(_theme_key()).text_on_accent))
+        button.setIconSize(QSize(12, 12))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setEnabled(False)
+        bind_text(button, '保留当前字幕内容，确认本工程全部待检查项。', property='toolTip')
+        handler = getattr(page, "_confirm_all_reviews", None)
+        if handler is not None:
+            button.clicked.connect(handler)
+        row.addWidget(button)
+
+        class _FollowEnabled(QObject):
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.EnabledChange:
+                    strip.setVisible(watched.isEnabled())
+                return False
+        strip._follow_enabled = _FollowEnabled(strip)
+        button.installEventFilter(strip._follow_enabled)
+        strip.setVisible(False)
+        return strip
+
     def _video_transform_panel(self) -> QWidget:
+        from ..design.gui_slices import finish
+        return finish(self._video_transform_panel_steps())
+
+    def _video_transform_panel_steps(self):
+        from ..design.gui_slices import GuiSlice, GUI_YIELD
+        _gui_slice = GuiSlice()
         page = self.page
         panel = QWidget()
         panel.setObjectName("videoInspector")
         layout = QVBoxLayout(panel)
+        yield from _gui_slice.checkpoint()
         layout.setContentsMargins(14, 6, 14, 16)
         layout.setSpacing(10)
         # 2026-10-23 (user's design C): the selected clip as a tinted chip, then
@@ -2141,22 +2715,27 @@ class StudioWorkspaceBuilder:
         # a small canvas picture to drag the clip's position, soft fields.
         from ..design.soft_widgets import FoldCard, SegmentedControl, UnitField, WrapLayout, flexible_combo
         from .video_inspector_widgets import SliderValueRow, VideoPositionPad
+        yield from _gui_slice.checkpoint()
         chip = QFrame()
         chip.setObjectName("videoClipChip")
         chip_row = QHBoxLayout(chip)
         chip_row.setContentsMargins(10, 8, 12, 8)
+        yield from _gui_slice.checkpoint()
         chip_row.setSpacing(10)
         chip_icon = QLabel()
         chip_icon.setObjectName("videoClipIcon")
         chip_icon.setFixedSize(30, 30)
+        yield from _gui_slice.checkpoint()
         chip_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         chip_icon.setPixmap(self._icon("fa5s.film", "#ffffff").pixmap(15, 15))
         chip_row.addWidget(chip_icon)
         page.video_clip_icon = chip_icon
+        yield from _gui_slice.checkpoint()
         page.video_transform_selection_label = QLabel("在时间线选择视频片段或字幕")
         page.video_transform_selection_label.setObjectName("videoSelectionSummary")
         page.video_transform_selection_label.setWordWrap(True)
         chip_row.addWidget(page.video_transform_selection_label, 1)
+        yield from _gui_slice.checkpoint()
         layout.addWidget(chip)
         # 2026-10-24 (user): captions move here too. A selected caption shows
         # its 位置与变换 card in place of the clip cards (the two selections
@@ -2164,32 +2743,39 @@ class StudioWorkspaceBuilder:
         from ..caption_style.caption_transform_panel import CaptionTransformPanel
         page.caption_transform_panel = CaptionTransformPanel(page)
         page.caption_transform_panel.hide()
+        yield from _gui_slice.checkpoint()
         layout.addWidget(page.caption_transform_panel)
         clip_host = QWidget()
         clip_host.setObjectName("videoClipControls")
         page.video_clip_controls = clip_host
+        yield from _gui_slice.checkpoint()
         clip_layout = QVBoxLayout(clip_host)
         clip_layout.setContentsMargins(0, 0, 0, 0)
         clip_layout.setSpacing(10)
         layout.addWidget(clip_host)
+        yield from _gui_slice.checkpoint()
         # A locked track says so under the clip name, with the way out beside it.
         # Both start hidden; an empty row takes no room.
         page.video_lock_notice = QLabel('轨道已锁定，位置与外观暂不可编辑。')
         page.video_lock_notice.setWordWrap(True)
         page.video_lock_notice.setObjectName('softMeta')
         page.video_unlock_button = QPushButton('解锁轨道')
+        yield from _gui_slice.checkpoint()
         page.video_unlock_button.setObjectName('studioButton')
         page.video_unlock_button.setProperty('softRole', 'tint')
         page.video_unlock_button.setProperty('softSize', 'sm')
         page.video_unlock_button.setProperty('flexibleWidth', True)
+        yield from _gui_slice.checkpoint()
         page.video_unlock_button.clicked.connect(page._unlock_selected_video_track)
         page.video_lock_notice.hide()
         page.video_unlock_button.hide()
         lock_row = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         lock_row.setSpacing(8)
         lock_row.addWidget(page.video_lock_notice, 1)
         lock_row.addWidget(page.video_unlock_button, 0, Qt.AlignmentFlag.AlignVCenter)
         clip_layout.addLayout(lock_row)
+        yield from _gui_slice.checkpoint()
         from .studio_transition_ui import create_inspector
         create_inspector(page,clip_layout)
 
@@ -2216,6 +2802,7 @@ class StudioWorkspaceBuilder:
             ("锚点 X", "video_anchor_x", 0.0, 100.0, "%"),
             ("锚点 Y", "video_anchor_y", 0.0, 100.0, "%"),
         )
+        yield from _gui_slice.checkpoint()
         page.video_transform_controls = []
         for index in (0, 1, 2, 3, 4, 6, 7):
             _label, name, minimum, maximum, suffix = controls[index]
@@ -2234,10 +2821,12 @@ class StudioWorkspaceBuilder:
             return row
 
         motion_card = FoldCard("运动", expanded=True)
+        yield from _gui_slice.checkpoint()
         motion_card.setProperty("summaryWhenOpen", True)
         motion_card.set_expanded(True, notify=False)
         page.video_motion_card = motion_card
         body = motion_card.body_layout
+        yield from _gui_slice.checkpoint()
 
         def canvas_aspect():
             media = getattr(page.project, "media", None) if page.project else None
@@ -2248,15 +2837,18 @@ class StudioWorkspaceBuilder:
                                                    page._video_transform_control_committed, aspect=canvas_aspect)
         body.addWidget(page.video_position_pad)
         page.video_canvas_hint = QLabel("拖动小画面里的圆点改位置；数值可左右拖动调节，也可以在画面里直接拖动、缩放片段。")
+        yield from _gui_slice.checkpoint()
         page.video_canvas_hint.setObjectName("softMeta")
         page.video_canvas_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         page.video_canvas_hint.setWordWrap(True)
         body.addWidget(page.video_canvas_hint)
+        yield from _gui_slice.checkpoint()
         # 五十轮（用户反馈）：缩放默认等比（链锁 ON），改 X 自动带 Y；按钮可关闭。
         page.video_scale_link = QToolButton()
         page.video_scale_link.setObjectName("videoScaleLink")
         page.video_scale_link.setCheckable(True)
         page.video_scale_link.setChecked(True)
+        yield from _gui_slice.checkpoint()
         bind_text(page.video_scale_link, '等比缩放：锁定时修改 X/Y 任一值，另一值同步', property='toolTip')
         install_themed_icon(page.video_scale_link, "fa5s.link", "accent")
 
@@ -2265,12 +2857,14 @@ class StudioWorkspaceBuilder:
                                 "accent" if checked else "secondary")
 
         page.video_scale_link.toggled.connect(_scale_link_toggled)
+        yield from _gui_slice.checkpoint()
         link_room = QWidget()
         link_room.setFixedWidth(34)
         body.addLayout(field_row("位置", (UnitField(page.video_position_x, axis="X"), 1),
                                  (UnitField(page.video_position_y, axis="Y"), 1), (link_room, 0)))
         body.addLayout(field_row("缩放", (UnitField(page.video_scale_x, axis="X"), 1),
                                  (UnitField(page.video_scale_y, axis="Y"), 1), (page.video_scale_link, 0)))
+        yield from _gui_slice.checkpoint()
 
         # 旋转 and 锚点 share a line; with longer words (Russian) 锚点 moves
         # under 旋转 instead of squeezing the boxes.
@@ -2279,31 +2873,38 @@ class StudioWorkspaceBuilder:
         anchor_boxes = (UnitField(page.video_anchor_x, axis="X", sample="100.00"),
                         UnitField(page.video_anchor_y, axis="Y", sample="100.00"))
         rotation_row = field_row("旋转", (rotation_box, 1))
+        yield from _gui_slice.checkpoint()
         rotation_row.setContentsMargins(0, 0, 0, 0)
         rotation_group.setLayout(rotation_row)
         anchor_row = field_row("锚点", (anchor_boxes[0], 1), (anchor_boxes[1], 1))
         anchor_row.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         anchor_group.setLayout(anchor_row)
         rotation_line = WrapLayout(spacing=10, fill=True, by_minimum=True)
         rotation_line.addWidget(rotation_group)
         rotation_line.addWidget(anchor_group)
+        yield from _gui_slice.checkpoint()
         body.addLayout(rotation_line)
         # No more stacking of X under Y (fields shrink with the drawer).
         page._video_axis_pairs = []
         page.video_fit_mode = QComboBox(panel)
         page.video_fit_mode.addItem("完整显示", "contain")
+        yield from _gui_slice.checkpoint()
         page.video_fit_mode.addItem("填满画布", "cover")
         page.video_fit_mode.addItem("拉伸", "stretch")
         bind_text(page.video_fit_mode, '按所选方式适配整个画布，并重置位置、缩放与旋转；可撤销。', property='toolTip')
         page.video_fit_mode.activated.connect(page._video_fit_mode_committed)
+        yield from _gui_slice.checkpoint()
         page.video_fit_mode.hide()
         page.video_fit_segments = SegmentedControl(page.video_fit_mode)
         bind_text(page.video_fit_segments, '按所选方式适配整个画布，并重置位置、缩放与旋转；可撤销。', property='toolTip')
         body.addLayout(field_row("适配", (page.video_fit_segments, 1)))
+        yield from _gui_slice.checkpoint()
         page.video_transform_reset = QPushButton('重设变换')
         page.video_transform_reset.setObjectName('studioButton')
         page.video_transform_reset.setProperty('softRole', 'ghost')
         page.video_transform_reset.setProperty('softSize', 'sm')
+        yield from _gui_slice.checkpoint()
         page.video_transform_reset.setProperty('flexibleWidth', True)
 
         def reset_transform():
@@ -2313,10 +2914,12 @@ class StudioWorkspaceBuilder:
                 page._video_transform_committed(track.id, clip.id, vars(VideoTransform()))
         page.video_transform_reset.clicked.connect(reset_transform)
         reset_row = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         reset_row.addStretch(1)
         reset_row.addWidget(page.video_transform_reset)
         body.addLayout(reset_row)
         clip_layout.addWidget(motion_card)
+        yield from _gui_slice.checkpoint()
 
         page.video_blend_mode = QComboBox()
         for blend_label, blend_value in (
@@ -2330,33 +2933,40 @@ class StudioWorkspaceBuilder:
             page.video_blend_mode.addItem(blend_label, blend_value)
         page.video_blend_mode.activated.connect(page._video_effects_control_committed)
         blend_card = FoldCard("透明度与叠加", expanded=False)
+        yield from _gui_slice.checkpoint()
         page.video_blend_card = blend_card
         page.video_opacity = spin('video_opacity', 0., 100., '%')
         page.video_transform_controls.append(page.video_opacity)
         page._video_slider_rows = [SliderValueRow("不透明度", page.video_opacity,
                                                   page._video_transform_control_committed)]
+        yield from _gui_slice.checkpoint()
         blend_card.body_layout.addWidget(page._video_slider_rows[0])
         flexible_combo(page.video_blend_mode)
         blend_card.body_layout.addLayout(field_row("混合模式", (page.video_blend_mode, 1)))
         clip_layout.addWidget(blend_card)
+        yield from _gui_slice.checkpoint()
 
         # ADR-0005（四十五轮）：绿幕抠像（Ultra Key）。开关在卡片标题右边。
         page.video_key_enabled = QCheckBox()
         page.video_key_enabled.setProperty("softSwitch", True)
         bind_text(page.video_key_enabled, '启用抠像', property='accessibleName')
         bind_text(page.video_key_enabled, '启用抠像', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.video_key_enabled.toggled.connect(page._video_effects_control_committed)
         chroma_card = FoldCard("绿幕抠像", expanded=False, trailing=page.video_key_enabled)
         page.video_chroma_card = chroma_card
         chroma = chroma_card.body_layout
+        yield from _gui_slice.checkpoint()
         page.video_key_color = QPushButton()
         page.video_key_color.setFixedSize(34, 34)
         page.video_key_color.setCursor(Qt.CursorShape.PointingHandCursor)
         page.video_key_color.setStyleSheet("background: #00ff00; border: 0; border-radius: 9px;")
+        yield from _gui_slice.checkpoint()
         bind_text(page.video_key_color, '点击选择键控颜色（默认抠绿）', property='toolTip')
         page.video_key_color.clicked.connect(page._video_key_color_clicked)
         page.video_key_color_hex = QLabel("#00FF00")
         page.video_key_color_hex.setObjectName("softLabel")
+        yield from _gui_slice.checkpoint()
         key_color_row = field_row("键控颜色", (page.video_key_color, 0), (page.video_key_color_hex, 1))
         chroma.addLayout(key_color_row)
 
@@ -2372,28 +2982,34 @@ class StudioWorkspaceBuilder:
             return control
 
         page.video_key_similarity = key_spin("video_key_similarity", 100.0)
+        yield from _gui_slice.checkpoint()
         page.video_key_similarity.setValue(32)
         bind_text(page.video_key_similarity, '颜色距离阈值：越大抠得越狠', property='toolTip')
         page._video_slider_rows.append(SliderValueRow("相似度", page.video_key_similarity,
                                                       page._video_effects_control_committed))
         chroma.addWidget(page._video_slider_rows[-1])
+        yield from _gui_slice.checkpoint()
         page.video_key_smoothness = key_spin("video_key_smoothness", 100.0)
         page.video_key_smoothness.setValue(10)
         bind_text(page.video_key_smoothness, '边缘渐变带宽：越大过渡越柔和', property='toolTip')
         page._video_slider_rows.append(SliderValueRow("平滑度", page.video_key_smoothness,
                                                       page._video_effects_control_committed))
+        yield from _gui_slice.checkpoint()
         chroma.addWidget(page._video_slider_rows[-1])
         page.video_key_spill = QCheckBox("抑制颜色溢出（边缘去绿边）")
         page.video_key_spill.setProperty("softSwitch", True)
         page.video_key_spill.setChecked(True)
+        yield from _gui_slice.checkpoint()
         page.video_key_spill.toggled.connect(page._video_effects_control_committed)
         chroma.addWidget(page.video_key_spill)
         page.video_key_hint = QLabel("对叠加素材抠绿幕：选颜色→调相似度；预览即时生效。")
         page.video_key_hint.setObjectName("softMeta")
+        yield from _gui_slice.checkpoint()
         page.video_key_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         page.video_key_hint.setWordWrap(True)
         chroma.addWidget(page.video_key_hint)
         clip_layout.addWidget(chroma_card)
+        yield from _gui_slice.checkpoint()
 
         def refresh_video_summaries(*_args) -> None:
             def number(control):
@@ -2411,36 +3027,44 @@ class StudioWorkspaceBuilder:
         for control in page.video_transform_controls:
             control.valueChanged.connect(refresh_video_summaries)
         page.video_blend_mode.currentIndexChanged.connect(refresh_video_summaries)
+        yield from _gui_slice.checkpoint()
         page.video_key_enabled.toggled.connect(refresh_video_summaries)
         refresh_video_summaries()
 
         audio_box = QGroupBox("声音与混音")
         audio_box.setObjectName("videoInspectorSection")
+        yield from _gui_slice.checkpoint()
         audio_layout = QVBoxLayout(audio_box)
         audio_layout.setSpacing(10)
         page.video_audio_enabled = QCheckBox("此片段启用音频")
         page.video_audio_enabled.toggled.connect(page._video_clip_audio_toggled)
+        yield from _gui_slice.checkpoint()
         audio_layout.addWidget(page.video_audio_enabled)
         page.video_audio_solo = QCheckBox("S · Solo / 独听此轨")
         page.video_audio_solo.toggled.connect(page._video_audio_solo_toggled)
         audio_layout.addWidget(page.video_audio_solo)
+        yield from _gui_slice.checkpoint()
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("混音方式"))
         page.video_audio_mode = QComboBox()
         # 2026-09-06（四图反馈·图二）：全部混音=取消唯一 master，V1/V2 同时出声。
         page.video_audio_mode.addItem("所有轨道混音", "mix_all")
+        yield from _gui_slice.checkpoint()
         page.video_audio_mode.addItem("旧版指定声音（兼容）", "manual")
         page.video_audio_mode.activated.connect(page._video_audio_mode_changed)
         mode_row.addWidget(page.video_audio_mode, 1)
         audio_layout.addLayout(mode_row)
+        yield from _gui_slice.checkpoint()
         master_row = QHBoxLayout()
         master_row.addWidget(QLabel("旧版指定轨"))
         page.video_audio_master = QComboBox()
         page.video_audio_master.activated.connect(page._video_audio_master_changed)
+        yield from _gui_slice.checkpoint()
         master_row.addWidget(page.video_audio_master, 1)
         audio_layout.addLayout(master_row)
         page.video_audio_owner_label = QLabel("当前声音：-")
         page.video_audio_owner_label.setWordWrap(True)
+        yield from _gui_slice.checkpoint()
         audio_layout.addWidget(page.video_audio_owner_label)
         clip_layout.addWidget(audio_box)
         # Retain legacy inspector state bindings for old projects, while all
@@ -2448,10 +3072,12 @@ class StudioWorkspaceBuilder:
         audio_box.hide()
         # Defaults for newly applied transitions: secondary, collapsed, last.
         from .studio_transition_ui import create_default_durations
+        yield from _gui_slice.checkpoint()
         create_default_durations(page, clip_layout)
         audio_hint = QLabel('声音开关、Solo 和音量请在对应的 A 波形行调整。')
         audio_hint.setWordWrap(True)
         audio_hint.setObjectName('contextEmpty')
+        yield from _gui_slice.checkpoint()
         clip_layout.addWidget(audio_hint)
         layout.addStretch(1)
         for control in [
@@ -2462,6 +3088,7 @@ class StudioWorkspaceBuilder:
             control.setEnabled(False)
         # Nothing is selected yet: blank fields, not "缩放 1.00%" / "不透明度 0.00%".
         show_placeholders = getattr(page, "_show_video_transform_placeholders", None)
+        yield from _gui_slice.checkpoint()
         if callable(show_placeholders):
             show_placeholders(True)
         return panel
@@ -2512,10 +3139,17 @@ class StudioWorkspaceBuilder:
         return panel
 
     def _ai_panel(self) -> QWidget:
+        from ..design.gui_slices import finish
+        return finish(self._ai_panel_steps())
+
+    def _ai_panel_steps(self):
+        from ..design.gui_slices import GuiSlice, GUI_YIELD
+        _gui_slice = GuiSlice()
         page = self.page
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 14, 14, 14)
+        yield from _gui_slice.checkpoint()
         # 2026-10-23 (user's design B): three numbered cards — the service,
         # the style request and generate + apply — with the less used tools
         # as quiet links under them. Every control and its signals as before.
@@ -2523,6 +3157,7 @@ class StudioWorkspaceBuilder:
         layout.setSpacing(12)
         page.ai_empty_state = QLabel("先描述字幕视觉要求，再生成三套可编辑的视觉与动效方案。", panel)
         page.ai_empty_state.setObjectName("contextEmpty")
+        yield from _gui_slice.checkpoint()
         page.ai_empty_state.setWordWrap(True)
         page.ai_empty_state.hide()
 
@@ -2539,6 +3174,7 @@ class StudioWorkspaceBuilder:
             return row
 
         provider_card, provider_layout = soft_card()
+        yield from _gui_slice.checkpoint()
         page.ai_provider = StudioComboBox()
         models = page.runtime_settings.get("models", {})
         current_service = get_active_service(page.runtime_settings)
@@ -2546,6 +3182,7 @@ class StudioWorkspaceBuilder:
             current_service
         ].get("capabilities", ()):
             current_service = "custom"
+        yield from _gui_slice.checkpoint()
         for service_id, spec in AI_SERVICE_SPECS.items():
             if "structured_output" not in spec.get("capabilities", ()):
                 continue
@@ -2553,44 +3190,54 @@ class StudioWorkspaceBuilder:
         page.ai_provider.setCurrentIndex(max(0, page.ai_provider.findData(current_service)))
         page.ai_model = StudioComboBox()
         page.ai_model.setEditable(True)
+        yield from _gui_slice.checkpoint()
         service = AI_SERVICE_SPECS.get(current_service, AI_SERVICE_SPECS["custom"])
         resolved = active_service_values(page.runtime_settings, stage="polish")
         configured_model = str(resolved.get("model") or models.get("polish_model") or "")
         model_values = list(service_model_catalog(page.runtime_settings, current_service))
+        yield from _gui_slice.checkpoint()
         if configured_model and configured_model not in model_values:
             model_values.insert(0, configured_model)
         for model_id in dict.fromkeys(item for item in model_values if item):
             page.ai_model.addItem(model_id, model_id)
         page.ai_model.setCurrentText(configured_model or str(service.get("model") or ""))
         page.ai_provider_status = StatusBadge("REQUESTING")
+        yield from _gui_slice.checkpoint()
         bind_text(page.ai_provider_status, '● 检测中')
         provider_layout.addLayout(step_header(1, "生成服务", page.ai_provider_status))
         service_row = QHBoxLayout()
         service_row.setSpacing(6)
+        yield from _gui_slice.checkpoint()
         service_row.addWidget(CaptionField("服务商", page.ai_provider), 1)
         service_row.addWidget(CaptionField("模型（可输入）", page.ai_model), 1)
         provider_layout.addLayout(service_row)
         page.ai_provider_capabilities = QLabel()
+        yield from _gui_slice.checkpoint()
         page.ai_provider_capabilities.setObjectName("softMeta")
         page.ai_provider_capabilities.setWordWrap(True)
         provider_layout.addWidget(page.ai_provider_capabilities)
         credential_row = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         credential_row.setSpacing(8)
         page.ai_provider_credential = QLabel("凭据：正在解析")
         page.ai_provider_credential.setObjectName("softMeta")
         page.ai_provider_credential.setWordWrap(True)
+        yield from _gui_slice.checkpoint()
         credential_row.addWidget(page.ai_provider_credential, 1)
         page.ai_provider_settings = QPushButton("前往设置")
         page.ai_provider_settings.setObjectName("studioButton")
         page.ai_provider_settings.setProperty("softRole", "tint")
+        yield from _gui_slice.checkpoint()
         page.ai_provider_settings.setProperty("softSize", "sm")
         page.ai_provider_settings.clicked.connect(page._open_ai_provider_settings)
         credential_row.addWidget(page.ai_provider_settings)
         provider_layout.addLayout(credential_row)
+        yield from _gui_slice.checkpoint()
         page.ai_provider_health = QLabel("状态：未检测")
         page.ai_provider_health.setObjectName("softMeta")
         page.ai_provider_health.setWordWrap(True)
         provider_layout.addWidget(page.ai_provider_health)
+        yield from _gui_slice.checkpoint()
         probe_row = WrapLayout(spacing=6, fill=True)
         page.ai_test_connection = QPushButton("测试连接")
         page.ai_test_connection.setObjectName("studioButton")
@@ -2599,15 +3246,18 @@ class StudioWorkspaceBuilder:
                 str(page.ai_provider.currentData() or "custom"), force=True
             )
         )
+        yield from _gui_slice.checkpoint()
         probe_row.addWidget(page.ai_test_connection)
         page.ai_refresh_models = QPushButton("刷新模型")
         page.ai_refresh_models.setObjectName("studioButton")
         page.ai_refresh_models.clicked.connect(lambda: page._start_ai_provider_probe(
             str(page.ai_provider.currentData() or 'custom'),refresh_models=True))
+        yield from _gui_slice.checkpoint()
         probe_row.addWidget(page.ai_refresh_models)
         page.ai_network_detail_toggle=QPushButton("技术详情")
         bind_text(page.ai_network_detail_toggle, '技术详情 / 网络诊断', property='toolTip')
         page.ai_network_detail_toggle.setCheckable(True)
+        yield from _gui_slice.checkpoint()
         probe_row.addWidget(page.ai_network_detail_toggle)
         for button in (page.ai_test_connection, page.ai_refresh_models, page.ai_network_detail_toggle):
             button.setProperty("softSize", "sm")
@@ -2615,14 +3265,17 @@ class StudioWorkspaceBuilder:
             button.setMinimumWidth(0)
         provider_layout.addLayout(probe_row)
         page.ai_network_detail=QPlainTextEdit()
+        yield from _gui_slice.checkpoint()
         page.ai_network_detail.setReadOnly(True)
         page.ai_network_detail.setMaximumHeight(150)
         page.ai_network_detail.hide()
         page.ai_network_detail_toggle.toggled.connect(page.ai_network_detail.setVisible)
+        yield from _gui_slice.checkpoint()
         provider_layout.addWidget(page.ai_network_detail)
         account_row=QHBoxLayout()
         page.ai_cli_login=QPushButton("打开官方 Codex 登录")
         page.ai_cli_logout=QPushButton("退出 Codex 登录")
+        yield from _gui_slice.checkpoint()
         page.ai_cli_login.clicked.connect(lambda:page._ai_cli_account_action("login"))
         page.ai_cli_logout.clicked.connect(lambda:page._ai_cli_account_action("logout"))
         for button in (page.ai_cli_login,page.ai_cli_logout):
@@ -2630,42 +3283,50 @@ class StudioWorkspaceBuilder:
             button.setVisible(str(page.ai_provider.currentData())=="codex_cli")
             account_row.addWidget(button)
         provider_layout.addLayout(account_row)
+        yield from _gui_slice.checkpoint()
         page.ai_provider.currentIndexChanged.connect(page._ai_design_provider_changed)
         page.ai_model.currentTextChanged.connect(page._ai_design_model_changed)
         page._refresh_ai_design_provider_summary()
         layout.addWidget(provider_card)
+        yield from _gui_slice.checkpoint()
         page.ai_provider_section = provider_card
 
         prompt_card, prompt_layout = soft_card()
         prompt_layout.addLayout(step_header(2, "描述字幕风格"))
         page.ai_prompt = QPlainTextEdit()
+        yield from _gui_slice.checkpoint()
         page.ai_prompt.setObjectName("aiPromptInput")
         bind_text(page.ai_prompt, '输入主题即可，例如：初音未来风格 / Minecraft像素风格。\n也可以补充构图、色彩、动作或参考；系统会展开成完整作品。', property='placeholderText')
         # 十六轮用户反馈：原框过高且不像输入框——收敛为两行高的明确输入区。
         page.ai_prompt.setMinimumHeight(64)
         page.ai_prompt.setMaximumHeight(96)
+        yield from _gui_slice.checkpoint()
         prompt_layout.addWidget(page.ai_prompt)
         # 二十三轮：效果范围双模式——特效字幕（元素集中字幕带，不碍画面）/
         # 全画面动效（大出入场+元素遍布画面）。默认特效字幕。
         page.ai_effect_scope = QComboBox()
         page.ai_effect_scope.addItem("特效字幕（元素集中在字幕附近）", "subtitle")
         page.ai_effect_scope.addItem("动效丰富视频画面（全画面大动效）", "fullscreen")
+        yield from _gui_slice.checkpoint()
         page.ai_candidate_mode = QComboBox()
         for label,value in [('先生成1个完整候选','single'),('比较3个组件草案（一次设计请求）','drafts'),('生成3个完整候选','full3')]:
             page.ai_candidate_mode.addItem(label,value)
         bind_text(page.ai_candidate_mode, '草案来自可运行定义，可直接采用；后续只按明确选择增补。3个完整候选会增加模型调用与费用。', property='toolTip')
         page.ai_candidate_concurrency = QComboBox()
+        yield from _gui_slice.checkpoint()
         for count in (1,2,3):page.ai_candidate_concurrency.addItem(str(count), count)
         page.ai_candidate_concurrency.setCurrentIndex(1)
         page.ai_wait_mode = QComboBox()
         for label, value in [('完整设计 · 最长30分钟','long30'),('完整设计 · 最长15分钟','long15'),
                              ('复杂设计 · 最长60分钟','long60'),('使用设置中的自定义时限','configured')]:
             page.ai_wait_mode.addItem(label,value)
+        yield from _gui_slice.checkpoint()
         bind_text(page.ai_wait_mode, '总预算包含生成与技术修复。网络活动、收到正文和完成候选分别显示；可随时安全取消并保留草稿。', property='toolTip')
         page.ai_wait_mode.setCurrentIndex(max(0,page.ai_wait_mode.findData(
             models.get('ai_design_wait_mode','long30'))))
         options = QGridLayout()
         options.setHorizontalSpacing(6)
+        yield from _gui_slice.checkpoint()
         options.setVerticalSpacing(6)
         for index, (caption, combo) in enumerate((
             ("效果范围", page.ai_effect_scope), ("候选", page.ai_candidate_mode),
@@ -2674,27 +3335,33 @@ class StudioWorkspaceBuilder:
             options.addWidget(CaptionField(caption, combo), index // 2, index % 2)
         options.setColumnStretch(0, 1)
         options.setColumnStretch(1, 1)
+        yield from _gui_slice.checkpoint()
         prompt_layout.addLayout(options)
         layout.addWidget(prompt_card)
         page.ai_prompt_section = prompt_card
 
         actions_card, actions = soft_card()
+        yield from _gui_slice.checkpoint()
         actions.addLayout(step_header(3, "生成并应用"))
         page.ai_design_target_label = QLabel('当前设计对象：未选择字幕')
         page.ai_design_target_label.setObjectName("softMeta")
         page.ai_design_target_label.setWordWrap(True)
+        yield from _gui_slice.checkpoint()
         actions.addWidget(page.ai_design_target_label)
         page.ai_generate = QPushButton("生成字幕设计")
         page.ai_generate.setObjectName("studioPrimary")
         page.ai_generate.setProperty("softSize", "lg")
+        yield from _gui_slice.checkpoint()
         install_themed_icon(page.ai_generate, "fa5s.magic", "on_accent")
         page.ai_generate.clicked.connect(page._request_ai_suggestion)
         actions.addWidget(page.ai_generate)
         page.ai_resume_saved_button=QPushButton('继续已保存的草稿…')
+        yield from _gui_slice.checkpoint()
         page.ai_resume_saved_button.setObjectName('studioButton')
         page.ai_resume_saved_button.clicked.connect(lambda:page._theme_drafts().open_saved_response())
         page.ai_copy_diagnostics = QPushButton("复制诊断")
         page.ai_copy_diagnostics.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         page.ai_copy_diagnostics.clicked.connect(page._copy_ai_provider_diagnostics)
         # 2026-09-02: 「本地备选」按钮移除——旧 ASS 动效回退已被内置网页主题
         # 兜底取代（生成失败时自动套 fallback_web_theme）。保留兼容属性，
@@ -2702,46 +3369,57 @@ class StudioWorkspaceBuilder:
         page.ai_use_local_fallback = QPushButton("本地备选", panel)
         page.ai_use_local_fallback.setObjectName("studioButton")
         page.ai_use_local_fallback.hide()
+        yield from _gui_slice.checkpoint()
         result_row = QHBoxLayout()
         result_row.setSpacing(6)
         apply_scope = QComboBox()
         apply_scope.setObjectName("studioCombo")
+        yield from _gui_slice.checkpoint()
         apply_scope.addItem("当前字幕", "current")
         apply_scope.addItem("该说话人字幕", "speaker")
         apply_scope.addItem("全部字幕", "all")
         flexible_combo(apply_scope)
+        yield from _gui_slice.checkpoint()
         apply_scope.setProperty("softSize", "lg")
         page.ai_apply_scope = apply_scope
         result_row.addWidget(apply_scope, 2)
         apply_button = QPushButton("应用到当前字幕")
+        yield from _gui_slice.checkpoint()
         page.ai_apply_button = apply_button
         apply_button.setEnabled(False)
         apply_button.setObjectName("studioPrimary")
         apply_button.setProperty("flexibleWidth", True)
+        yield from _gui_slice.checkpoint()
         apply_button.setProperty("softSize", "lg")  # the step's main action stays 40 px tall
         apply_button.clicked.connect(page._apply_ai_preview)
         result_row.addWidget(apply_button, 3)
         actions.addLayout(result_row)
+        yield from _gui_slice.checkpoint()
         page.ai_application_status = QLabel('当前字幕尚未应用方案')
         page.ai_application_status.setObjectName('softMeta')
         page.ai_application_status.setWordWrap(True)
         actions.addWidget(page.ai_application_status)
+        yield from _gui_slice.checkpoint()
         result_row = WrapLayout(spacing=6, fill=True)
         save_button = QPushButton("保存样式")
         page.ai_save_style_button = save_button
         save_button.setEnabled(False)
+        yield from _gui_slice.checkpoint()
         save_button.setObjectName("studioButton")
         save_button.clicked.connect(page._save_ai_design_presets)
         result_row.addWidget(save_button)
         ignore_button = QPushButton("清除")
+        yield from _gui_slice.checkpoint()
         ignore_button.setObjectName("studioButton")
         ignore_button.clicked.connect(page._ignore_ai_preview)
         result_row.addWidget(ignore_button)
         page.ai_local_polish_button = QPushButton('本地精修文字…')
+        yield from _gui_slice.checkpoint()
         page.ai_local_polish_button.setObjectName('studioButton')
         from ..caption_design.theme_local_polish import open_polish_dialog
         page.ai_local_polish_button.clicked.connect(lambda: open_polish_dialog(page))
         page.ai_local_polish_button.setEnabled(False)
+        yield from _gui_slice.checkpoint()
         result_row.addWidget(page.ai_local_polish_button)
         for button in (save_button, ignore_button, page.ai_local_polish_button):
             button.setProperty("softSize", "sm")
@@ -2749,15 +3427,18 @@ class StudioWorkspaceBuilder:
             button.setMinimumWidth(0)
         actions.addLayout(result_row)
         page.ai_transform_hint = QLabel('可编辑主题 · 拖动字幕移动，拖动角点等比缩放；双击改字。')
+        yield from _gui_slice.checkpoint()
         page.ai_transform_hint.setObjectName('softMeta')
         page.ai_transform_hint.setWordWrap(True)
         page.ai_transform_hint.hide()
         actions.addWidget(page.ai_transform_hint)
+        yield from _gui_slice.checkpoint()
         from ..caption_design.theme_application_ui import install_application_status
         install_application_status(page)
         layout.addWidget(actions_card)
         # Quiet links for the less used tools (导入档案 joins further below).
         links = QWidget()
+        yield from _gui_slice.checkpoint()
         page._ai_link_row = WrapLayout(links, spacing=2, fill=False, center=True)
         for button in (page.ai_resume_saved_button, page.ai_copy_diagnostics):
             button.setProperty("softRole", "ghost")
@@ -2766,36 +3447,44 @@ class StudioWorkspaceBuilder:
         layout.addWidget(links)
 
         suggestion_card, suggestion_layout = page._context_card("设计草稿")
+        yield from _gui_slice.checkpoint()
         suggestion_card.setProperty("softCard", True)
         page.ai_suggestion_card = suggestion_card
         page.ai_suggestion_title = QLabel("尚未生成当前视觉方案")
         page.ai_suggestion_title.setObjectName("cardMeta")
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_suggestion_title)
         page.ai_gradient_swatch = QLabel()
         page.ai_gradient_swatch.setFixedHeight(18)
         page.ai_gradient_swatch.setStyleSheet("background:#343a38; border-radius:4px;")
+        yield from _gui_slice.checkpoint()
         page.ai_gradient_swatch.hide()
         suggestion_layout.addWidget(page.ai_gradient_swatch)
         # 2026-09-02（十六轮用户指定）：单条大幅演示带——只保留字幕与近旁特效
         # （裁掉 16:9 上半空白），入场→持续→出场真实帧循环播放，看得更大更清楚。
         storyboard_wrap = QWidget()
         storyboard_wrap.setObjectName("aiStoryboardWrap")
+        yield from _gui_slice.checkpoint()
         storyboard_col = QVBoxLayout(storyboard_wrap)
         storyboard_col.setContentsMargins(0, 2, 0, 2)
         storyboard_col.setSpacing(2)
         demo = QLabel("渲染中…")
+        yield from _gui_slice.checkpoint()
         demo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         demo.setWordWrap(True)
         demo.setMinimumSize(300, 190)
         demo.setStyleSheet("background:#101018; border-radius:6px; color:#7f8aa0;")
+        yield from _gui_slice.checkpoint()
         demo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         storyboard_col.addWidget(demo, 1)
         demo_caption = QLabel("特效字幕动画演示 · 入场 → 持续 → 出场（循环）")
         demo_caption.setObjectName("cardMeta")
+        yield from _gui_slice.checkpoint()
         demo_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         storyboard_col.addWidget(demo_caption)
         six_grid = QGridLayout()
         six_grid.setSpacing(4)
+        yield from _gui_slice.checkpoint()
         page.ai_storyboard_six_labels = []
         for index in range(6):
             label = bind_text(QLabel(), '分镜 {value0}', value0=index + 1)
@@ -2808,43 +3497,53 @@ class StudioWorkspaceBuilder:
             page.ai_storyboard_six_labels.append(label)
         storyboard_col.addLayout(six_grid)
         page.ai_web_theme_demo_label = demo
+        yield from _gui_slice.checkpoint()
         # 兼容旧 automation 引用：单框语义（十六轮起不再是三格）。
         page.ai_web_theme_storyboard_labels = [demo]
         storyboard_wrap.hide()
         suggestion_layout.addWidget(storyboard_wrap)
         page.ai_web_theme_storyboard_wrap = storyboard_wrap
+        yield from _gui_slice.checkpoint()
         page.ai_variant_row = QVBoxLayout()
         page.ai_variant_buttons: list[QPushButton] = []
         suggestion_layout.addLayout(page.ai_variant_row)
         page.ai_preview = QPlainTextEdit()
+        yield from _gui_slice.checkpoint()
         page.ai_preview.setObjectName("contextText")
         page.ai_preview.setReadOnly(True)
         bind_text(page.ai_preview, '生成后，这里会显示视觉设计配方，不会修改字幕文本。', property='placeholderText')
         page.ai_preview.setMinimumHeight(90)
+        yield from _gui_slice.checkpoint()
         page.ai_preview.setMaximumHeight(180)
         suggestion_layout.addWidget(page.ai_preview)
         page.ai_confidence = QLabel("设计草稿是 AI 输出，不是输入框。")
         page.ai_confidence.setObjectName("cardMeta")
+        yield from _gui_slice.checkpoint()
         page.ai_confidence.setWordWrap(True)
         suggestion_layout.addWidget(page.ai_confidence)
         concepts_toggle = QPushButton('展开三个概念方向与评分依据')
         concepts_toggle.setObjectName('studioButton')
+        yield from _gui_slice.checkpoint()
         concepts_toggle.setCheckable(True)
         page.ai_concept_details = QPlainTextEdit()
         page.ai_concept_details.setReadOnly(True)
         page.ai_concept_details.setMaximumHeight(200)
+        yield from _gui_slice.checkpoint()
         page.ai_concept_details.hide()
         concepts_toggle.toggled.connect(page.ai_concept_details.setVisible)
         suggestion_layout.addWidget(concepts_toggle)
         suggestion_layout.addWidget(page.ai_concept_details)
+        yield from _gui_slice.checkpoint()
         page.ai_concept_choice=StudioComboBox()
         bind_text(page.ai_concept_choice, '选择已保存的方向；不会重新请求候选', property='toolTip')
         page.ai_concept_choice.hide()
         page.ai_concept_choice.currentIndexChanged.connect(lambda _index:page._theme_drafts().select_concept(page.ai_concept_choice.currentData()))
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_concept_choice)
         page.ai_quality_details = QLabel('校验结果将在六帧渲染后显示')
         page.ai_quality_details.setObjectName('cardMeta')
         page.ai_quality_details.setWordWrap(True)
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_quality_details)
         repair_grid = QGridLayout()
         page.ai_directed_repair_buttons = []
@@ -2859,98 +3558,119 @@ class StudioWorkspaceBuilder:
             button.clicked.connect(lambda _checked=False,text=request,art=art_revision:page._theme_drafts().repair(text,art_revision=art))
             repair_grid.addWidget(button,index//2,index%2)
             page.ai_directed_repair_buttons.append(button)
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addLayout(repair_grid)
         retry_row = QHBoxLayout()
         page.ai_retry_render_button = QPushButton('重试预览')
         page.ai_retry_theme_code_button = QPushButton('重试主题代码')
+        yield from _gui_slice.checkpoint()
         page.ai_retry_theme_code_button.setEnabled(False)
         page.ai_retry_theme_code_button.clicked.connect(lambda:page._theme_drafts().retry_theme_code())
         page.ai_cancel_render_button = QPushButton('取消当前请求')
         page.ai_draft_diagnostics_button = QPushButton('复制草稿诊断')
+        yield from _gui_slice.checkpoint()
         for button in (page.ai_retry_theme_code_button,page.ai_retry_render_button,page.ai_cancel_render_button,page.ai_draft_diagnostics_button):
             button.setObjectName('studioButton')
             retry_row.addWidget(button)
         page.ai_retry_render_button.setEnabled(False)
         page.ai_cancel_render_button.setEnabled(False)
         page.ai_retry_render_button.clicked.connect(lambda:page._theme_drafts().render())
+        yield from _gui_slice.checkpoint()
         page.ai_cancel_render_button.clicked.connect(lambda:page._theme_drafts().cancel())
         def copy_draft_diagnostics():
             import json
             QApplication.clipboard().setText(json.dumps(page._theme_drafts().diagnostics(),ensure_ascii=False,indent=2))
         page.ai_draft_diagnostics_button.clicked.connect(copy_draft_diagnostics)
         suggestion_layout.addLayout(retry_row)
+        yield from _gui_slice.checkpoint()
         page.ai_local_theme_button=QPushButton('使用本地稳定模板生成')
         page.ai_local_theme_button.setObjectName('studioButton')
         page.ai_local_theme_button.setEnabled(False)
         page.ai_local_theme_button.clicked.connect(lambda:page._theme_drafts().use_local_template())
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_local_theme_button)
         page.ai_progress_bar = QProgressBar()
         page.ai_progress_bar.setTextVisible(False)
         page.ai_progress_bar.setRange(0, 100)
+        yield from _gui_slice.checkpoint()
         page.ai_progress_bar.setValue(0)
         page.ai_progress_bar.setVisible(False)
         suggestion_layout.addWidget(page.ai_progress_bar)
         page.ai_stream_console = QPlainTextEdit()
+        yield from _gui_slice.checkpoint()
         page.ai_stream_console.setObjectName("aiStreamConsole")
         page.ai_stream_console.setReadOnly(True)
         page.ai_stream_console.setMinimumHeight(150)
         page.ai_stream_console.setMaximumHeight(320)
+        yield from _gui_slice.checkpoint()
         page.ai_stream_console.setMaximumBlockCount(800)
         page.ai_stream_console.setVisible(False)
         bind_text(page.ai_stream_console, 'AI 输出流（HTML/CSS 代码将实时显示在这里）', property='placeholderText')
         page.ai_stream_console.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
+        yield from _gui_slice.checkpoint()
         page.ai_stream_toggle = QPushButton('展开原始输出与技术详情')
         page.ai_stream_toggle.setObjectName('studioButton')
         page.ai_stream_toggle.setCheckable(True)
         page.ai_stream_toggle.toggled.connect(page.ai_stream_console.setVisible)
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_stream_toggle)
         suggestion_layout.addWidget(page.ai_stream_console)
         suggestion_layout.setStretchFactor(page.ai_stream_console, 1)
         page.ai_raw_response_button = QPushButton("查看 AI 原始 JSON", suggestion_layout.parentWidget())
+        yield from _gui_slice.checkpoint()
         page.ai_raw_response_button.setObjectName("studioButton")
         page.ai_raw_response_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.ai_raw_response_button.clicked.connect(page._show_ai_raw_response)
         # 2026-09-02：常显——用户需要每次运行的 JSON 记录来复盘与改进。
         page.ai_raw_response_button.setVisible(True)
+        yield from _gui_slice.checkpoint()
         suggestion_layout.addWidget(page.ai_raw_response_button)
         # 特效字幕档案（十六轮：自然语言修改框已移入样式面板的「特效字幕调整」，
         # 这里只保留档案导出/导入）。
         refine_row = QWidget()
         refine_layout = QHBoxLayout(refine_row)
         refine_layout.setContentsMargins(0, 4, 0, 0)
+        yield from _gui_slice.checkpoint()
         refine_layout.setSpacing(6)
         page.ai_export_archive_button = QPushButton("导出档案")
         page.ai_export_archive_button.setEnabled(False)
         page.ai_export_archive_button.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         bind_text(page.ai_export_archive_button, '导出为独立档案（theme.html 双击即可播放动画演示 + theme.json）', property='toolTip')
         page.ai_export_archive_button.clicked.connect(page._export_ai_theme_archive)
         refine_layout.addWidget(page.ai_export_archive_button, 1)
         page.ai_import_archive_button = QPushButton("导入档案")
+        yield from _gui_slice.checkpoint()
         page.ai_import_archive_button.setObjectName("studioButton")
         bind_text(page.ai_import_archive_button, '从 .2byte-theme 档案（theme.html/theme.json）载入主题', property='toolTip')
         page.ai_import_archive_button.clicked.connect(page._import_ai_theme_archive)
         # Existing archives must be importable before any AI draft exists.
         # The draft card and refinement row are deliberately hidden initially.
         page.ai_import_archive_button.setProperty("softRole", "ghost")
+        yield from _gui_slice.checkpoint()
         page.ai_import_archive_button.setProperty("softSize", "sm")
         page._ai_link_row.insertWidget(1, page.ai_import_archive_button)
         page.ai_workshop_button = QPushButton("AI 字幕工坊…")
         page.ai_workshop_button.setObjectName("studioButton")
+        yield from _gui_slice.checkpoint()
         bind_text(page.ai_workshop_button, '对话式精修已应用的特效字幕：预览真实动画 + 自然语言修改（也可双击视频画面）', property='toolTip')
         page.ai_workshop_button.clicked.connect(page._open_web_theme_workshop)
         refine_layout.addWidget(page.ai_workshop_button, 1)
         page.ai_refine_row = refine_row
+        yield from _gui_slice.checkpoint()
         refine_row.hide()
         suggestion_layout.addWidget(refine_row)
         suggestion_card.hide()
         layout.addWidget(suggestion_card)
+        yield from _gui_slice.checkpoint()
         # Compatibility fields remain for old automation hooks, but the
         # duplicate visual-design surface is no longer user-visible.
         page.ai_style_prompt = QLineEdit(panel)
         page.ai_style_prompt.hide()
         page.ai_style_result = QLabel(panel)
         page.ai_style_result.hide()
+        yield from _gui_slice.checkpoint()
         layout.addStretch(1)
         return panel

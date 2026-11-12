@@ -117,7 +117,7 @@ def make_ranges(cues, project, language, *, combine=False):
     return result
 
 
-def repair_chinese_range(unit, action, project):
+def repair_chinese_range(unit, action, project, *, fallback=False):
     """Run the recognition quality engine on an immutable Studio range.
 
     Real word evidence is copied in project seconds. Missing words permit
@@ -145,16 +145,25 @@ def repair_chinese_range(unit, action, project):
     else:
         boundaries = [display_length(unit.cue.text[:index+1]) for index in action.split_after_chars]
         boundaries.append(quality.total)
-    final, issues = quality.repair(boundaries)
+    from .ai_boundary_policy import inspect, minimal_fallback
+    if fallback:
+        final, _receipts = minimal_fallback(quality,boundaries)
+    else:
+        final = boundaries
+    issues = inspect(quality,final)
     if issues:
-        raise RefineError('完整词、语义或实际时间约束无法同时满足，保留原范围并待复核', 'constraint_conflict')
+        from .ai_boundary_policy import windows
+        error=RefineError('当前范围仍有明确拆词或字数超限，需要定向修正', 'constraint_conflict')
+        error.candidate_boundaries=list(boundaries)
+        error.editable_windows=windows(quality,boundaries)
+        raise error
     if final == boundaries and action.action == 'keep':
         return action, []
     offsets = [quality.index.raw_edges[edge]-1 for edge in final[:-1]]
     repaired = CueRefineAction(unit.cue.id, 'split', split_after_chars=offsets)
     # This check also refuses newly inferred cuts with no word/source timing.
     build_range_replacement(unit, repaired, project, set())
-    return repaired, [dict(reason='complete_expression_policy', before=boundaries, after=final)]
+    return repaired, [dict(reason='local_minimal_fallback' if fallback else 'ai_accepted', before=boundaries, after=final)]
 
 
 def validate_quality(unit, action, language, *, hard_limit=None):
@@ -163,7 +172,7 @@ def validate_quality(unit, action, language, *, hard_limit=None):
         cursor = 0
         for piece in pieces[:-1]:
             cursor += len(piece)
-            if (cursor-1 not in unit.candidates.values()
+            if (not (hard_limit and language.split('-')[0]=='zh') and cursor-1 not in unit.candidates.values()
                     and not (unit.cue.text[cursor-1:cursor].isspace() or unit.cue.text[cursor:cursor+1].isspace())):
                 raise RefineError('原字幕边界位于完整词语内部，需要重新选择边界', 'semantic_boundary')
     else:

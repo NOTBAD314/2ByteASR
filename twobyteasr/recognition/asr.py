@@ -1700,6 +1700,8 @@ def _api_transcription_rows(result, chunk):
         from ..subtitle_rules.text_rules import content_exact
         length = len(content_exact(text))
         row['provider_source'] = dict(
+            confidence_available=bool(original.get('confidence_available', original.get('confidence') is not None)),
+            confidence_source=original.get('confidence_source', 'provider_reported' if original.get('confidence') is not None else 'not_reported'),
             sentence_id=original.get('sentence_id'), channel_id=original.get('channel_id',0),
             raw_sentence_text=str(original.get('text') or fallback_text),
             content_start=content_cursor, content_end=content_cursor+length,
@@ -3255,12 +3257,16 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
         "max_new_tokens": int(_legacy_runtime_value("QWEN_ASR_MAX_NEW_TOKENS", QWEN_ASR_MAX_NEW_TOKENS)),
         "sample_rate": AUDIO_SAMPLE_RATE, "audio_format": "float32-mono-npy-v1",
         # Chinese for Chinese tasks (unchanged), Japanese / English / Korean for those, None = identify.
-        "language": qwen_language_name(task_language)}
+        "language": qwen_language_name(task_language), "generation_evidence": True}
+    prepared_context = context
     if task_language not in ("zh", "", None) and task_language != "auto":
         # The context is a Chinese terminology hint; it must not steer any other language.
         context = ""
     record_run_event("asr_terminology_input", backend="qwen3_worker", model="Qwen3-ASR",
         method="context_hint", native_hotwords=False, context_sent=bool(context),
+        prepared_context_characters=len(prepared_context),
+        context_policy='language_scoped_terminology_hint' if context else 'independent_acoustic_reference',
+        context_omission_reason='non_chinese_hint_intentionally_omitted' if prepared_context and not context else None,
         **_qwen_context_receipt(context))
     with tempfile.TemporaryDirectory(prefix="qwen_asr_worker_") as temp_dir:
         jobs = []
@@ -3298,11 +3304,18 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
             evidence_path=str(Path(evidence_root) / "qwen-native-windows.json"))
         references = []
         for chunk, value in zip(chunks, values):
+            if ((value.get('generation') or {}).get('token_limit_reached')
+                    or (value.get('generation') or {}).get('stop_reason') == 'other_stop'):
+                record_run_event('qwen_window_incomplete', source_window_id=value['segment_id'],
+                    start=chunk['start'], end=chunk['end'], generation=value['generation'],
+                    action='raw_diagnostic_retained; no_independent_vote')
+                continue
             text = clean_subtitle_text(value.get("text", ""))
             if content_only(text):
                 references.append({"start": chunk["start"], "end": chunk["end"], "text": text,
                     "confidence": float(value.get("confidence", 0.0) or 0.0),
-                    "language": str(value.get("language") or "")})
+                    "language": str(value.get("language") or ""),
+                    "generation": value.get('generation', {}), "source_window_id":value['segment_id']})
         if not references:
             raise RuntimeError("Qwen worker returned no parsed text")
         return references

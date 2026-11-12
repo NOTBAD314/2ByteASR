@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 
 from .caption_arbitration import content
 
-POLICY = 'overlap-candidate-v1'
+POLICY = 'overlap-candidate-v3-local-patch-owner'
 
 
 def local_match(source, reading):
@@ -39,7 +39,8 @@ def associations(project, *, refresh=False):
     from ..subtitle_rules.studio_qc import _EvidenceTimeIndex
     from ..subtitle_rules.current_issues import digest
     evidence = project.asr_evidence
-    key = (id(evidence), len(evidence), POLICY)
+    runtime=getattr(project,'_studio_state_runtime',None)
+    key = (id(evidence), len(evidence), POLICY, getattr(runtime,'qc_revision',None))
     cached = getattr(project, '_overlap_candidate_mapping', None)
     if not refresh and cached is not None and cached[0] == key:
         return cached[1]
@@ -48,7 +49,19 @@ def associations(project, *, refresh=False):
     for ref, row in evidence.items():
         if not isinstance(row, dict) or row.get('cue_alignment'):
             continue
-        original = (row.get('caption_arbitration') or {}).get('independent_input_evidence') or {}
+        arbitration = row.get('caption_arbitration') or {}
+        coverage = arbitration.get('source_coverage') or row.get('source_coverage') or {}
+        scopes = coverage.get('firered') or ()
+        scopes = scopes if isinstance(scopes,(list,tuple)) else ()
+        hypotheses = row.get('hypotheses') or ()
+        hypotheses = hypotheses if isinstance(hypotheses,(list,tuple)) else ()
+        owned = lambda scope: isinstance(scope,dict) and (scope.get('project_speaker_id') or
+            scope.get('speaker_independent') is True or scope.get('speaker_verified') is True)
+        explicit_aux = (row.get('speaker_independent') is True or any(owned(scope) for scope in scopes)
+            or any(owned(scope) for scope in hypotheses
+                   if isinstance(scope,dict) and 'firered' in str(scope.get('model') or scope.get('source') or '').casefold()))
+        if explicit_aux:continue
+        original = arbitration.get('independent_input_evidence') or {}
         reading = original.get('firered') or row.get('firered_text')
         if not reading:
             continue
@@ -84,7 +97,11 @@ def associations(project, *, refresh=False):
                        ownership='local_anchor_and_time' if reliable else 'needs_confirmation')
         if reliable:
             _, target, match = matches[0]
-            assigned[target].append(dict(payload, **match))
+            owner = str(evidence[target].get('speaker_id') or '')
+            competing = [(peer, str(other.get('speaker_id') or ''), str(source_text(other)))
+                for peer,other in peers if str(other.get('speaker_id') or '') not in {'',owner}]
+            assigned[target].append(dict(payload, **match, speaker_id=owner, speaker_verified=bool(owner),
+                                         competing_utterances=competing))
         else:
             for target, _ in peers:
                 assigned[target].append(dict(payload))
@@ -123,7 +140,19 @@ def project_candidate(candidate, cue):
         if candidate['ownership'] != 'needs_confirmation' and not local_match(expected, current):
             return None
         left, right, text = None, None, candidate['observed_text']
-    return dict(candidate, text=text, source='firered',
+    contaminated = False
+    if certain and not candidate.get('speaker_independent'):
+        # A long unique source anchor identifies the utterance, not every
+        # changed word inside a mono mixture. Do not move a competing reply
+        # into this speaker merely because the surrounding sentence matches.
+        for tag,a,b,c,d in SequenceMatcher(None,expected,replacement,autojunk=False).get_opcodes():
+            new = content(replacement[c:d])
+            if tag=='equal' or not new:continue
+            if any(new==content(other) or len(new)>=2 and new in content(other)
+                   or len(new)==1 and content(other) and set(content(other))=={new}
+                   for _,_,other in candidate.get('competing_utterances',())):
+                contaminated=True;break
+    result = dict(candidate, text=text, source='firered',
         reference='candidate:'+candidate['candidate_id'],
         candidate_partial=certain, context_only=not certain, coverage_unknown=not certain,
         ownership='local_anchor_and_time' if certain else 'needs_confirmation',
@@ -134,5 +163,9 @@ def project_candidate(candidate, cue):
         cue_text_end=start+len(expected) if certain else None,
         comparison_text=cue.text if certain else '',
         patch_start=left, patch_end=right, expected_text=expected,
-        speaker_id='', confidence=None,
+        speaker_id=candidate.get('speaker_id',''), speaker_verified=candidate.get('speaker_verified',False), confidence=None,
         input_version=digest([cue.id, cue.text, cue.start_ms, cue.end_ms, candidate['candidate_id']]))
+    if contaminated:
+        result.update(context_only=True,coverage_unknown=True,speaker_verified=False,
+                      ownership='needs_confirmation',ownership_reason='replacement_matches_other_speaker')
+    return result

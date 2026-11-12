@@ -132,6 +132,7 @@ def test_studio_hints_and_overflow_menu_follow_a_rebind(qapp, store):
         # The single-cue commands still leave the bar for the "更多" menu, which
         # lists them under their current tooltips.
         hidden = page._timeline_overflow_widgets
+        pill = [widget.toolTip() for widget in page._cue_capsule_buttons]
         menu = page.cue_more_button.menu()
         menu.aboutToShow.emit()
         entries = [action.text() for action in menu.actions()]
@@ -146,7 +147,11 @@ def test_studio_hints_and_overflow_menu_follow_a_rebind(qapp, store):
     assert tips["frame"] == "保存工程画布原分辨率图片（F9）"
     assert f"({reg.display('Shift+T')})" in tips["add"] and f"按 {reg.display('Shift+T')} " in tips["track"]
     assert tips["review"].startswith("F8 ") and "(F3 / " in tips["find"]
-    assert len(hidden) == 9 and all(widget.property("cueMenuCommand") for widget in hidden)
+    # 2026-11-12 (user, draft B): ripple merges and delete moved into the
+    # 当前字幕 pill on the bar; the 更多 menu keeps listing them.
+    assert len(hidden) == 6 and all(widget.property("cueMenuCommand") for widget in hidden)
+    assert f"删除当前字幕 ({reg.display('Backspace')})" in pill
+    assert f"波纹向前合并 ({reg.display('Shift+Q')})" in pill and f"波纹向后合并 ({reg.display('Shift+W')})" in pill
     assert f"拆分当前字幕 ({reg.display('Ctrl+Alt+S')})" in entries
     assert f"删除当前字幕 ({reg.display('Backspace')})" in entries
     assert mark_in == reg.display("I")

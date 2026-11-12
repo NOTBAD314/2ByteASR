@@ -76,6 +76,38 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clean-ui-original-mg-support':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-board':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'japanese-workspace':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-ui-delivery':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bilingual-integrity':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ui-style-integrity':
+        from .ui_style_integrity_audit import install
+        install()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'devin-daily':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'handoff-ai-priority':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'stability-performance':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -119,7 +151,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality','display-continuity'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -250,7 +282,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'subtitle-navigation', 'timeline-cue-pill', 'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces', 'theme-loading'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -274,7 +306,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'editor-integrity','subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -489,6 +521,49 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clean-ui-original-mg-support':
+        from .clean_ui_support_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-board':
+        from .speaker_board_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'japanese-workspace':
+        from .japanese_workspace_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-ui-delivery':
+        from .vm2_ui_delivery_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bilingual-integrity':
+        from .bilingual_integrity_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ui-style-integrity':
+        from .ui_style_integrity_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'devin-daily':
+        from .devin_daily_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'handoff-ai-priority':
+        from .handoff_ai_priority_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'stable-captions':
         from .stable_captions_audit import start
         output = audit_directory()
@@ -780,6 +855,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'theme-loading':
+        from .theme_loading_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'loading-faces':
         from .loading_faces_audit import start
         output = audit_directory()
@@ -787,6 +867,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-loading':
         from .studio_loading_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'subtitle-navigation':
+        from .subtitle_navigation_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-cue-pill':
+        from .timeline_cue_pill_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -1067,6 +1157,11 @@ def start_acceptance(window) -> None:
         if output is not None:
             start(window, output)
         return
+    if scenario == 'editor-integrity':
+        from .editor_integrity_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'caption-caret-split':
         from .caption_caret_split_audit import start
         output = audit_directory()
@@ -1086,6 +1181,12 @@ def start_acceptance(window) -> None:
         from .qwen31_grouping_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
+        return
+    if scenario == 'display-continuity':
+        from .display_continuity_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
         return
     if scenario == 'review-reliability':
         from .review_reliability_audit import start

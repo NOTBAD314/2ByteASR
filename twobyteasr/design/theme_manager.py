@@ -39,6 +39,10 @@ class _ThemeRootFilter(QObject):
         # the type once (PySide builds an enum object per call) and leave
         # immediately for the many events this filter does not handle.
         event_type = event.type()
+        if (event_type == QEvent.Type.Paint and isinstance(widget, QWidget)
+                and widget.__dict__.get('_theme_component_scope', False)):
+            from .theme_scopes import apply_scope
+            apply_scope(widget)
         if event_type != _PARENT_CHANGE and event_type != _SHOW:
             return False
         if event_type == _PARENT_CHANGE and isinstance(widget, QWidget):
@@ -53,6 +57,11 @@ class _ThemeRootFilter(QObject):
                     del widget._theme_root_sheet
                     widget._theme_root_local_sheet = ""
         if event_type == _SHOW and isinstance(widget, QWidget):
+            if widget.__dict__.get('_theme_icon_pending', False):
+                from .themed_icons import refresh_widget_icons
+                refresh_widget_icons(widget)
+            from .theme_scopes import shown
+            shown(widget)
             if getattr(widget, "_secondary_theme_surface", False):
                 from .studio_theme import refresh_secondary_surface_theme
                 refresh_secondary_surface_theme(widget)
@@ -60,8 +69,8 @@ class _ThemeRootFilter(QObject):
             if pending:
                 widget._theme_refresh_pending = False
                 if widget.objectName() == "subtitleStudio":
-                    from .studio_theme import build_studio_qss
-                    widget.setStyleSheet(build_studio_qss(theme_definition(theme_key())))
+                    from .theme_scopes import refresh
+                    refresh(widget)
                     widget._set_hub_toolbar_mode(getattr(widget, "_project_view_state", "") == "hub")
                 refresh = getattr(widget, "refresh_theme_palette", None)
                 if callable(refresh):
@@ -87,6 +96,10 @@ class _ThemeRootFilter(QObject):
         return False
 
     def apply_root(self, widget):
+        from .theme_scopes import managed_window, refresh
+        if managed_window(widget):
+            refresh(widget)
+            return
         if getattr(widget, '_owns_theme_sheet', False):
             refresh = getattr(widget, 'refresh_theme_palette', None)
             if callable(refresh):refresh()
@@ -380,6 +393,8 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
     app = app or QApplication.instance()
     if app is None:
         raise RuntimeError("QApplication is required before applying a theme")
+    app._theme_request_generation = getattr(app, '_theme_request_generation', 0) + 1
+    from .theme_updates import queue, dispatch
     normalized = save_theme_key(key or theme_key())
     theme = theme_definition(normalized)
     from .popup_corners import install_rounded_popups
@@ -388,6 +403,7 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
         # Same theme already live: stylesheet churn would only re-polish
         # every widget for no visual change.
         return theme
+    queue().reset()
     app._applied_theme_key = normalized
     from .main_ui_theme import APP_QSS
     from .qss_retheme import retheme_qss
@@ -428,7 +444,7 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
             app.installEventFilter(app._theme_root_filter)
             app.setStyleSheet("/* Window-owned theme sheets; see _ThemeRootFilter. */")
         for root in app.topLevelWidgets():
-            if root.parentWidget() is None and root.objectName() != "subtitleStudio":
+            if root.parentWidget() is None and root.objectName() != "subtitleStudio" and root.isVisible():
                 app._theme_root_filter.apply_root(root)
         t = _trace_mark("window theme sheets", t)
 
@@ -440,9 +456,8 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
                 if page.parentWidget() is not None and not page.isVisible():
                     page._theme_refresh_pending = True
                     continue
-                sheet = build_studio_qss(theme)
-                if page.styleSheet() != sheet:
-                    page.setStyleSheet(sheet)
+                from .theme_scopes import refresh
+                refresh(page)
                 hub_refresh = getattr(page, "_set_hub_toolbar_mode", None)
                 if callable(hub_refresh):
                     hub_refresh(getattr(page, "_project_view_state", "") == "hub")
@@ -453,7 +468,7 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
                 refresh_secondary_surface_theme(widget)
             if hasattr(widget, "refresh_theme_palette"):
                 if widget.isVisible():
-                    widget.refresh_theme_palette()
+                    dispatch(widget.refresh_theme_palette)
                 else:
                     widget._theme_refresh_pending = True
             if widget.objectName() in {"projectLibraryScroll", "projectLibraryViewport", "projectLibraryPage"}:
@@ -484,6 +499,22 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
 def apply_theme(key: str, app: QApplication | None = None) -> ThemeDefinition:
     """Public concise alias used by settings and acceptance scripts."""
     return apply_application_theme(app=app, key=key)
+
+
+def request_theme(key: str, app: QApplication | None = None) -> None:
+    """Let the selected card/hint paint; collapse pending previews to the last one."""
+    from PySide6.QtCore import QTimer
+    app = app or QApplication.instance()
+    app._theme_request_generation = getattr(app, '_theme_request_generation', 0) + 1
+    generation = app._theme_request_generation
+    def commit():
+        if generation == app._theme_request_generation:
+            app._theme_async_apply = True
+            try:
+                apply_theme(key, app)
+            finally:
+                app._theme_async_apply = False
+    QTimer.singleShot(16, app, commit)
 
 
 def available_themes() -> tuple[ThemeDefinition, ...]:

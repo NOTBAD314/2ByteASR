@@ -123,3 +123,21 @@ def test_background_preparation_keeps_native_cues_native_and_authored_advanced(m
         assert [cache.prepared(store.render,cue,840,472).route.engine for cue in ('A','B','C')]==['native','native','remotion']
         assert cache.prepared(store.render,'A',840,472).snapshot.style_recipe['layout']['fitLocked']
     finally:cache.close()
+
+
+def test_hidden_source_prepares_translation_without_missing_parent_failure():
+    from twobyteasr.rendering.caption_playback_cache import PlaybackCaptionCache
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioCue,StudioMedia
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    p=SubtitleProject(StudioMedia('fixture.mp4',duration_ms=3000),cues=[StudioCue('a',0,1000,'原文'),StudioCue('far',2000,3000,'缺译文')])
+    p.generation_metadata['translations']={'a':'译文'}
+    p.studio_state.update(bilingual={'mode':'bilingual'},subtitle_track_visibility={'S00':False})
+    store=StudioRevisionStore(p);cache=PlaybackCaptionCache();errors=[];cache.failed.connect(errors.append)
+    try:
+        cache.prepare(store.render,('a','far'),840,472)
+        pump_until(lambda:errors or cache.prepared(store.render,'a#tr',840,472) is not None)
+        assert not errors
+        assert cache.prepared(store.render,'a',840,472) is None
+        assert cache.failure(store.render,'a',840,472) is None and cache.failure(store.render,'far',840,472) is None
+        assert cache.prepared(store.render,'a#tr',840,472).snapshot.text=='译文'
+    finally:cache.close()

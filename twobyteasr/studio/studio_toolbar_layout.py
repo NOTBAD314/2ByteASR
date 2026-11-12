@@ -10,8 +10,9 @@ from PySide6.QtWidgets import QHBoxLayout, QLayout, QSizePolicy, QWidget
 # (2026-10-21, user: no second row; the transport under the video). A bar
 # folds only the roles its builder names, i.e. those reachable elsewhere
 # (the Studio timeline repeats them in 时间轴选项).
-FOLD_ORDER = ("display", "view")
-PILL_GROUPS = ("editing", "view", "display", "output")
+# The 当前字幕 pill goes last; its commands stay in the timeline 「…」 menu.
+FOLD_ORDER = ("display", "view", "cue")
+PILL_GROUPS = ("editing", "cue", "view", "navigation", "display", "output")
 
 
 class CommandBar(QWidget):
@@ -285,7 +286,7 @@ def centre_on(page, widget):
 
 def install_command_groups(page, parent_layout, old_layout, transport_start, view_start,
                            *, diagnostics_start=None, toggles_start=None, refine_start=None, output_start=None,
-                           fold=()):
+                           fold=(), navigation_start=None, cue_start=None):
     """Keep functional groups intact, with the project range in its own row."""
     bar = CommandBar()
     bar.setObjectName("studioTimelineCommandBar")
@@ -296,6 +297,11 @@ def install_command_groups(page, parent_layout, old_layout, transport_start, vie
     boundaries = {transport_start: "transport", view_start: "view"}
     if diagnostics_start is not None:
         boundaries = {transport_start: "transport", diagnostics_start: "view"}
+    if navigation_start is not None:
+        boundaries[navigation_start] = "navigation"
+    if cue_start is not None:
+        # The 当前字幕 pill between the editing tools and the transport.
+        boundaries[cue_start] = "cue"
     if toggles_start is not None:
         boundaries[toggles_start] = "display"
     if refine_start is not None:

@@ -1090,6 +1090,7 @@ class MainWindow(QWidget):
         self._media_input_cards: dict[str, QWidget] = {}
         self._completion_dialog = None
         self._support_dialog = None
+        self._support_entry_dialog = None
         self.setAcceptDrops(True)
         self.setObjectName("appRoot")
         # Frameless but fully resizable (P0). Custom titlebar + edge resize.
@@ -1150,9 +1151,8 @@ class MainWindow(QWidget):
         if sys.platform == 'win32':
             self.pages.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
             self.pages.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-        from .home_widgets import HomeTooltipMute
-        self._home_tooltip_mute = HomeTooltipMute(self)
-        QApplication.instance().installEventFilter(self._home_tooltip_mute)
+        from ..design.hover_hints import install_hover_hint_policy
+        install_hover_hint_policy()
         self.settings_scroll = self._scrollable(
             QWidget() if self._recognition_page_deferred else self._settings_page())
         self.pages.addWidget(self.settings_scroll)
@@ -1589,7 +1589,9 @@ class MainWindow(QWidget):
         self.model_workshop_button.clicked.connect(self._open_model_workshop)
         row.addWidget(self.model_workshop_button)
         self.return_recognition_button = AnimatedButton("返回字幕识别")
-        self.return_recognition_button.setObjectName("outline")
+        # 2026-11-11 (user): the outlined button looked unlike every other
+        # header command; it is now one of the accent-tinted places to go.
+        self.return_recognition_button.setObjectName("softAction")
         install_themed_icon(self.return_recognition_button, "fa5s.arrow-left", "accent")
         self.return_recognition_button.clicked.connect(self._return_to_settings)
         self.return_recognition_button.hide()
@@ -1609,7 +1611,7 @@ class MainWindow(QWidget):
         row.addWidget(self.help_button)
         from ..design.presentation import button_role
         for button in (self.update_button, self.subtitle_studio_button, self.model_workshop_button,
-                       self.app_settings_button, self.help_button):
+                       self.return_recognition_button, self.app_settings_button, self.help_button):
             button_role(button, "secondary", size="default")
             button.setProperty("homeNavigation", True)
             button.setIconSize(QSize(18, 18))
@@ -1642,31 +1644,21 @@ class MainWindow(QWidget):
         return header
 
     def _show_help_menu(self):
-        from PySide6.QtWidgets import QMenu
-        from ..studio import shortcut_registry as keys
-        menu = QMenu(self)
-        menu.setObjectName("helpMenu")
-        search_key = keys.tooltip_key("home.search")
-        entries = (
-            ("新手教学", self._start_home_tour),
-            ("显示新手引导", lambda: self._next_step_action("show_guide")),
-            ("打开范例工程", self._open_sample_project),
-            ("选择识别方式…", lambda: self._next_step_action("choose_plan")),
-            ("申请与设置 API…", self._open_api_setup_guide),
-            ("API Key 是什么？", self._open_api_key_explainer),
-            (None, None),
-            (tr("搜索功能与设置…（{key}）", key=search_key), self._open_feature_search),
-            ("快捷键…", lambda: self._open_application_settings(initial_section="快捷键")),
-            ("回报问题／导出诊断…", self._open_diagnostics_dialog),
-            ("重新显示工作台操作提示", self._reset_teach_hints),
-        )
-        for label, handler in entries:
-            if label is None:
-                menu.addSeparator()
-                continue
-            action = menu.addAction(str(tr(label)) if type(label) is str else str(label))
-            action.triggered.connect(lambda _checked=False, callback=handler: callback())
-        menu.exec(self.help_button.mapToGlobal(self.help_button.rect().bottomLeft()))
+        """2026-11-11 (user): a rounder, friendlier card that keeps only what people open it for."""
+        from .help_menu import CuteMenu
+        menu = CuteMenu(self)
+        menu.add_hello()
+        menu.add_row("新手教学", "兔白带你做出第一份字幕", "fa5s.graduation-cap", self._start_home_tour)
+        menu.add_row("打开范例工程", "看看做好的字幕长什么样", "fa5s.folder-open", self._open_sample_project)
+        menu.add_row("选择识别方式…", "云端还是本机，随时能换", "fa5s.cloud",
+                     lambda: self._next_step_action("choose_plan"))
+        menu.add_dots()
+        menu.add_row("回报问题／导出诊断…", "遇到问题，把记录打包给我们", "fa5s.life-ring", self._open_diagnostics_dialog)
+        menu.add_row("重新显示工作台操作提示", "工作台的小提示再出现一次", "fa5s.lightbulb", self._reset_teach_hints)
+        # Right edge under the button's right edge: the button sits near the window's right side.
+        from .help_menu import SHADOW
+        anchor = self.help_button.mapToGlobal(self.help_button.rect().bottomRight())
+        menu.exec(anchor + QPoint(SHADOW - menu.sizeHint().width(), 4 - SHADOW))
 
     def _open_diagnostics_dialog(self):
         from ..diagnostics.diagnostics_report import open_diagnostics_dialog
@@ -1863,6 +1855,11 @@ class MainWindow(QWidget):
             self._ensure_recognition_page()
         if widget is None or self.pages.currentWidget() is widget:
             return
+        if widget is self.settings_scroll and self.__dict__.pop("_home_inline_theme_pending", False):
+            self._style_media_summary()
+        if widget is self.pages.widget(1) and self.__dict__.pop("_progress_inline_theme_pending", False):
+            self._style_active_tasks_label()
+            self._restyle_progress_page()
         if widget is self.pages.widget(2) and hasattr(self, 'result_preview'):
             self._refresh_completion_preview()
         with navigation_phase('navigation.prepare_target'):
@@ -3220,19 +3217,19 @@ class MainWindow(QWidget):
         if support_entry_hidden():
             self.support_button.hide()
             return
-        if self._support_dialog is not None:
-            target = self._support_dialog._confirmation or self._support_dialog
+        if self._support_entry_dialog is not None:
+            target = self._support_entry_dialog._confirmation or self._support_entry_dialog
             target.raise_()
             target.activateWindow()
             return
         dialog = SupportDialog(self)
-        self._support_dialog = dialog
+        self._support_entry_dialog = dialog
         dialog.entry_hidden.connect(self._support_entry_hidden)
         dialog.finished.connect(self._support_closed)
         dialog.show()
 
     def _support_closed(self, _result):
-        dialog, self._support_dialog = self._support_dialog, None
+        dialog, self._support_entry_dialog = self._support_entry_dialog, None
         if dialog is not None:
             dialog.deleteLater()
 
@@ -3363,7 +3360,14 @@ class MainWindow(QWidget):
             self._home_tour_pending = True
             return
         from . import onboarding
-        from .home_tour import start_home_tour
+        from .home_tour import GuidedTour, start_home_tour
+        running = self.findChild(GuidedTour)
+        if part != "advanced" and (running is None or getattr(running, "mode", "") == "closed") \
+                and not self.__dict__.get("_tutorial_plan_chosen"):
+            # 2026-11-11 (user): the cloud / local comparison first, then step ① - the step used to
+            # appear and the comparison opened over it 450 ms later (a visible twitch).
+            self._choose_plan_in_tutorial()
+            self._tutorial_plan_chosen = True
 
         def done(completed):
             onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
@@ -4128,6 +4132,13 @@ class MainWindow(QWidget):
         self._restore_glossary_switch()
         bind_text(self.terms, '使用本批已确认词库进行本地匹配和文字校对；联网核验独立选择', property='toolTip')
         self.game_box.currentTextChanged.connect(self._auto_enable_terms)
+        # 2026-11-11 (user): choosing a game / content switches 原文校对术语库 on by default. Only the
+        # user's own choice does (picked from the list, a recent chip, or a typed name confirmed);
+        # restoring the saved name at start keeps a saved OFF.
+        self.game_box.activated.connect(lambda _index: self._content_chosen())
+        self.content_quick_picks.picked.connect(lambda _name: self._content_chosen())
+        if self.game_box.lineEdit() is not None:
+            self.game_box.lineEdit().editingFinished.connect(self._content_chosen)
         self.terms.toggled.connect(lambda _checked: self._resolve_glossary_binding())
         self.game_box.currentTextChanged.connect(self._refresh_asr_summary)
         self.game_box.currentTextChanged.connect(
@@ -6318,10 +6329,10 @@ class MainWindow(QWidget):
         summary_layout.setContentsMargins(22, 16, 22, 16)
         summary_layout.setSpacing(16)
         self.result_icon = QLabel()
-        self.result_icon.setFixedSize(40, 40)
+        self.result_icon.setFixedSize(44, 44)
         self.result_icon.setStyleSheet('padding:0; margin:0; border:none; background:transparent;')
         self.result_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        summary_layout.addWidget(self.result_icon, 0, Qt.AlignmentFlag.AlignTop)
+        summary_layout.addWidget(self.result_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         summary_copy = QVBoxLayout()
         summary_copy.setSpacing(4)
         self.result_title = CompletionTitle('字幕已生成')
@@ -6383,23 +6394,31 @@ class MainWindow(QWidget):
         self.result_stats.setObjectName('resultStats')
         stats_layout = QHBoxLayout(self.result_stats)
         stats_layout.setContentsMargins(0, 0, 0, 0)
-        stats_layout.setSpacing(28)
+        stats_layout.setSpacing(10)
         self.result_stat_values = {}
         self.result_stat_captions = {}
-        for key, caption in (('count', '条字幕'), ('elapsed', '用时')):
-            block = QVBoxLayout()
+        self.result_stat_tiles = {}
+        # 2026-11-12 (user, design A): each number is a small tile; the media
+        # length joins them when the report records it.
+        for key, caption in (('count', '条字幕'), ('elapsed', '用时'), ('audio', '音频时长')):
+            tile = QFrame()
+            tile.setObjectName('resultStatTile')
+            block = QVBoxLayout(tile)
+            block.setContentsMargins(18, 8, 18, 8)
             block.setSpacing(0)
             value = QLabel('—')
             value.setObjectName('resultStatValue')
-            value.setAlignment(Qt.AlignmentFlag.AlignRight)
+            value.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             label = QLabel(caption)
             label.setObjectName('resultStatCaption')
-            label.setAlignment(Qt.AlignmentFlag.AlignRight)
+            label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             block.addWidget(value)
             block.addWidget(label)
-            stats_layout.addLayout(block)
+            stats_layout.addWidget(tile)
             self.result_stat_values[key] = value
             self.result_stat_captions[key] = label
+            self.result_stat_tiles[key] = tile
+        self.result_stat_tiles['audio'].hide()
         self.result_stats.hide()
         summary_layout.addWidget(self.result_stats, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(summary_card)
@@ -6407,8 +6426,9 @@ class MainWindow(QWidget):
         self.result_more_button.setText('更多操作')
         self.result_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         from .completion_todo import CompletionTodoSection
-        self.result_todo = CompletionTodoSection(self.result_more_button)
-        layout.addWidget(self.result_todo)
+        # 2026-11-11 (user, design A): AI proofreading is the first of four
+        # main action cards; this strip keeps what most users can leave alone.
+        self.result_todo = CompletionTodoSection(self.result_more_button, ai_in_bar=False)
         # AI glossary proofreading (2026-10-09, M14; the release highlight on
         # the result since 2026-10-30): choose libraries, add terms, review
         # and apply suggestions.
@@ -6429,25 +6449,42 @@ class MainWindow(QWidget):
         self.result_files.setProperty('completionRadius', COMPLETION_RADIUS_MAIN)
         self.result_files.setReadOnly(True)
         self.result_files_panel = CompletionInfoPanel(self.result_files_toggle, self.result_files)
+        from .completion_facts import CompletionFactsBody, CompletionTimingBody
+        self.result_facts_body = CompletionFactsBody()
+        self.result_files_panel.set_summary_body(self.result_facts_body)
         self.result_console = QTextEdit()
         self.result_console.setObjectName('resultConsole')
         self.result_console.setProperty('completionRadius', COMPLETION_RADIUS_MAIN)
         self.result_console.setReadOnly(True)
         self.result_console.setWordWrapMode(QTextOption.WrapMode.NoWrap)
         self.result_log_panel = CompletionInfoPanel(self.result_log_toggle, self.result_console)
+        self.result_timing_body = CompletionTimingBody()
+        self.result_log_panel.set_summary_body(self.result_timing_body)
         self.result_log_panel.mode_changed.connect(lambda: self._toggle_completion_log(self.result_log_panel.mode == 'full'))
         from .completion_widgets import CompletionFoldRow
         self.result_folds = CompletionFoldRow((self.result_files_panel, self.result_log_panel))
         self.result_details_toggle = self.result_log_toggle
         self.result_detail_row = self.result_console
-        self.export_result_button = CompletionActionCard('导出字幕', '保存 SRT、ASS、TXT 等字幕文件', 'fa5s.file-export', hue='primary')
-        self.open_studio_result_button = CompletionActionCard('打开字幕工作台', '检查字幕、调整时间轴与字幕样式', 'fa5s.closed-captioning', hue='brand')
-        self.result_return_button = CompletionActionCard('完成并返回主菜单', '确认结果已保存，返回主菜单', 'fa5s.home', hue='finish')
+        self.result_ai_card = CompletionActionCard('AI 词库校对', '找出写错的人名和术语，勾选的才会改', 'fa5s.magic',
+                                                   hue='ai', action_text='开始校对', badge='新')
+        bind_text(self.result_ai_card, '把写错的人名和术语一次找出来，原文和建议并排对照，勾选的才会改；改完能在字幕工作台撤销。',
+                  property='toolTip')
+        self.result_ai_card.follow(self.repolish_current_glossary_button)
+        self.result_todo.ai_changed.connect(lambda _enabled, unfinished: self.result_ai_card.set_note(
+            tr('还有 {count} 段没校完，可补做', count=unfinished) if unfinished else ''))
+        self.export_result_button = CompletionActionCard('导出字幕', '保存 SRT、ASS、TXT 等字幕文件', 'fa5s.file-export',
+                                                         hue='primary', action_text='导出')
+        self.open_studio_result_button = CompletionActionCard('打开字幕工作台', '检查字幕、调整时间轴与字幕样式', 'fa5s.closed-captioning',
+                                                              hue='brand', action_text='打开工作台')
+        self.result_return_button = CompletionActionCard('完成并返回主菜单', '确认结果已保存，返回主菜单', 'fa5s.home',
+                                                         hue='finish', action_text='返回主菜单')
         self.export_result_button.clicked.connect(lambda: self._completion_action('export', self._export_completion_result))
         self.open_studio_result_button.clicked.connect(lambda: self._completion_action('studio', self._open_studio_from_result))
         self.result_return_button.clicked.connect(lambda: self._completion_action('return', self._return_to_main_menu))
-        self.result_action_grid = CompletionActionGrid((self.export_result_button, self.open_studio_result_button, self.result_return_button))
+        self.result_action_grid = CompletionActionGrid((self.result_ai_card, self.open_studio_result_button,
+                                                        self.export_result_button, self.result_return_button))
         layout.addWidget(self.result_action_grid)
+        layout.addWidget(self.result_todo)
         layout.addWidget(self.result_folds)
         # The delivered subtitles themselves, below the actions (2026-10-07).
         from .completion_widgets import CompletionPreview
@@ -6476,7 +6513,7 @@ class MainWindow(QWidget):
         self.result_secondary_bar = self.result_action_grid
         self.result_secondary_layout = self.result_action_grid.grid
         self.result_content.bind_actions(layout,
-            (self.export_result_button, self.open_studio_result_button, self.result_return_button),
+            (self.result_ai_card, self.open_studio_result_button, self.export_result_button, self.result_return_button),
             viewport=scroll.viewport(), summary_layout=summary_layout, summary_copy=summary_copy, page_layout=outer,
             panels=(self.result_files_panel, self.result_log_panel), action_grid=self.result_action_grid,
             extra_sections=(self.result_todo,), preview=self.result_preview, fold_row=self.result_folds)
@@ -6627,7 +6664,9 @@ class MainWindow(QWidget):
                 self.result_summary.setText(self.result_summary.text() + '\n' + batch)
                 self.result_summary_meta.setText(self.result_summary_meta.text() + '\n' + batch)
             self.result_summary.hide()
-            self.result_summary_meta.show()
+            # 2026-11-12 (user): the card shows the file name only; 「采纳 N 处
+            # 文字修改」 wrapped it to two lines. The text is kept for reports.
+            self.result_summary_meta.hide()
             self.result_stats.show()
             bind_text(self.result_review_summary, '待检查问题 {count} 项', count=outcome.review_issue_count)
             self.result_review_summary.hide()
@@ -6655,7 +6694,8 @@ class MainWindow(QWidget):
             else:
                 color, icon, tone = theme.success, 'fa5s.check-circle', 'warning' if outcome.core_status == 'partial' else 'success'
             self.result_title.set_tone(tone)
-            self.result_icon.setPixmap(_icon(icon, color).pixmap(QSize(32, 32)))
+            from .completion_widgets import result_badge
+            self.result_icon.setPixmap(result_badge(icon, color, theme.on_vivid, 44))
             # Card wash follows the result itself (usable → success); the
             # unfinished part stays in the title pill and the review chip.
             outcome_tone = 'success' if usable and outcome.core_status not in {'unknown'} else tone
@@ -6806,6 +6846,9 @@ class MainWindow(QWidget):
         index = self.result_task_selector.currentIndex()
         if not tasks or not 0 <= index < len(tasks):
             self._completion_summary = None
+            self.result_facts_body.set_content((), ())
+            self.result_timing_body.set_content((), ())
+            self.result_todo.set_rejected(0)
             self.result_files_panel.set_summary_lines(())
             self.result_log_panel.set_summary_lines(())
             self._refresh_completion_preview()
@@ -6821,8 +6864,17 @@ class MainWindow(QWidget):
             media_path=item.media_path, project_path=item.project_path, project_loaded=project is not None,
             project_cues=len(project.cues) if project is not None else None,
             project_error=evidence.get('project_error', ''), language=getattr(self, '_ui_language', 'zh'),
-            save_state=(getattr(self, '_proofread_save_states', {}).get(str(item.project_path)) or {}).get('state', ''))
+            save_state=(getattr(self, '_proofread_save_states', {}).get(str(item.project_path)) or {}).get('state', ''),
+            speakers=len({cue.speaker_id for cue in project.cues if cue.speaker_id}) if project is not None else None)
         self._completion_summary = summary
+        seconds = ((evidence.get('display_payload') or {}).get('result') or {}).get('audio_seconds')             if isinstance(evidence.get('display_payload'), dict) else None
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            minutes, rest = divmod(round(float(seconds)), 60)
+            self.result_stat_values['audio'].setText(f'{minutes}:{rest:02d}' if minutes else f'{rest}s')
+        self.result_stat_tiles['audio'].setVisible(isinstance(seconds, (int, float)) and seconds > 0)
+        self.result_facts_body.set_content(summary.tiles, summary.facts)
+        self.result_timing_body.set_content(summary.timings, summary.chips)
+        self.result_todo.set_rejected(summary.ai_rejected or 0, summary.rejected_reason)
         self.result_files_panel.set_summary_lines(summary.task_lines)
         self.result_log_panel.set_summary_lines(summary.log_lines)
         self._sync_completion_save_state()
@@ -7846,12 +7898,18 @@ class MainWindow(QWidget):
     def refresh_theme_palette(self) -> None:
         """Refresh MainWindow-owned inline colors after a global theme switch."""
         if hasattr(self, "media_name") and hasattr(self, "media_drop_hint"):
-            self._style_media_summary()
+            if self.settings_scroll.isVisible():
+                self._style_media_summary()
+            else:
+                self._home_inline_theme_pending = True
         # The runtime-page active-tasks box is styled inline (not via the global
         # QSS), so it must be re-styled here too. A second same-name definition
         # used to shadow this call and left the box on its build-time theme.
-        self._style_active_tasks_label()
-        self._restyle_progress_page()
+        if self.pages.currentIndex() == 1:
+            self._style_active_tasks_label()
+            self._restyle_progress_page()
+        else:
+            self._progress_inline_theme_pending = True
         frost = self.__dict__.get("content_frost")
         if frost is not None:
             frost.refresh()  # the frosted picture and its tint follow the theme
@@ -8631,6 +8689,15 @@ class MainWindow(QWidget):
         checked = self.terms.isChecked()
         return ids if checked else (), checked
 
+    def _content_chosen(self):
+        """A game / content the user just chose: 原文校对术语库 on (once per newly chosen name)."""
+        name = self.game_box.currentText().strip()
+        if not name or name == self.__dict__.get("_terms_auto_for"):
+            return
+        self._terms_auto_for = name
+        if not self.terms.isChecked():
+            self.terms.setChecked(True)
+
     def _auto_enable_terms(self, value: str):
         # Editing the content name must preserve an explicit OFF choice.
         self._resolve_glossary_binding()
@@ -8814,7 +8881,9 @@ class MainWindow(QWidget):
         self.translation_term_libraries.summary.hide()
         self.translation_term_libraries.manage.setObjectName("homeHeaderAction")
         self.translation_term_libraries.manage.setProperty("homeZone", "content")
-        output_row.addWidget(self.translation_term_libraries, 0, Qt.AlignmentFlag.AlignVCenter)
+        # 2026-11-11 (user): no 选择／编辑翻译词库 button on the home row; the glossary choice above
+        # (原文校对术语库) covers it. The widget stays for the saved value and its audits, never shown.
+        self.translation_term_libraries.hide()
         self.aligner_download_button = AnimatedButton("去模型工坊下载 Qwen3-ForcedAligner（约 1.8 GB）")
         self.aligner_download_button.setObjectName("homeHeaderAction")
         self.aligner_download_button.clicked.connect(self._open_aligner_in_workshop)
@@ -8871,9 +8940,6 @@ class MainWindow(QWidget):
         field = self.__dict__.get("translation_field")
         if field is not None:
             field.setVisible(translating)
-            terms = self.__dict__.get("translation_term_libraries")
-            if terms is not None:
-                terms.setVisible(translating)
             self._subtitle_language_row.setStretchFactor(self.subtitle_output_fields, 2 if translating else 1)
         summary = self.__dict__.get("subtitle_language_summary")
         if summary is not None:
@@ -12622,7 +12688,8 @@ class MainWindow(QWidget):
                 self._recognition_terminal = 'failed'
             self._finish_progress_presentation()
             self._refresh_progress_cards()
-        self.result_icon.setPixmap(_icon("fa5s.exclamation-circle", CORAL).pixmap(QSize(72, 72)))
+        from .completion_widgets import result_badge
+        self.result_icon.setPixmap(result_badge("fa5s.exclamation-circle", _active_theme_definition().danger, "#ffffff", 44))
         title='识别意外中断' if interrupted else '识别未完成'
         bind_text(self.result_title, title)
         self.result_title.setProperty("i18nText",title)
@@ -12903,6 +12970,24 @@ def run_desktop_app(
     app.setWindowIcon(_app_icon())
     app.setStyle("Fusion")
     apply_application_theme(app)
+    from ..design.loading_font import loading_font
+    loading_font()
+    # Resolve the two authored UI faces once before the window accepts input.
+    # A cold heading's fallback/font-link lookup otherwise blocked the first
+    # library paint, despite the PNG animation already being prepared.
+    from ..design.typography import TITLE_FONT_FAMILIES, UI_FONT_FAMILIES
+    from PySide6.QtGui import QFontMetrics
+    for families, size, weight in ((TITLE_FONT_FAMILIES, 26, QFont.Weight.ExtraBold),
+                                   (UI_FONT_FAMILIES, 13, QFont.Weight.Medium)):
+        warm_font = QFont(app.font())
+        warm_font.setFamilies(list(families))
+        warm_font.setPixelSize(size)
+        warm_font.setWeight(weight)
+        QFontMetrics(warm_font).horizontalAdvance('兔白字幕 最近编辑 0123456789 ABC')
+    from ..design.mascot_assets import provider as mascot_assets
+    assets = mascot_assets()
+    for height in (150, 170):
+        assets.request(height, app.primaryScreen().devicePixelRatio())
     _register_bundled_fonts()
     app.setFont(_app_font())
     instance_guard = instance_guard or _acquire_instance_lock()
@@ -13274,7 +13359,8 @@ def _preview(screenshot_path: str, state: str = "settings") -> int:
     elif state == "result":
         window.pages.setCurrentIndex(2)
         window.workflow.set_active(3, finished=True)
-        window.result_icon.setPixmap(_icon("fa5s.check-circle", GREEN).pixmap(QSize(72, 72)))
+        from .completion_widgets import result_badge
+        window.result_icon.setPixmap(result_badge("fa5s.check-circle", _active_theme_definition().success, "#ffffff", 44))
         bind_text(window.result_title, '字幕生成完成')
         bind_text(window.result_summary, '成功 1 个 · 失败 0 个 · 取消 0 个 · 总耗时 168.4 秒')
         window.result_files.setHtml(
