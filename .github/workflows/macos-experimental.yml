@@ -1,533 +1,65 @@
-name: macOS arm64 experimental
-
+name: qualify-unchanged-1.0.0-DMG-on-two-systems
 on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: 'Exact trusted 40-character source commit in this repository'
         required: true
         type: string
-      run_model_smoke:
-        description: 'GUI prepare one locked SenseVoice CPU model, then real Chinese Home/Studio flow (no LLM)'
-        required: false
-        default: false
-        type: boolean
-      desktop_model_set:
-        description: 'Models the desktop flow prepares in the workshop: SenseVoice CPU, or MOSS + FireRed on the Apple GPU (MPS)'
-        required: false
-        default: sensevoice
-        type: choice
-        options: [sensevoice, mac-gpu]
-      run_cloud_mlx_smoke:
-        description: 'Cloud-only flow via the installed app worker (loopback), real Keychain round trip, MLX prepare + timed recognition/alignment (downloads ~2.3 GB of models)'
-        required: false
-        default: false
-        type: boolean
-      maximum_artifact_bytes:
-        description: 'Bounded installer plus receipts, maximum600MiB, one-day retention'
-        required: true
-        type: string
-      run_app_checks:
-        description: 'Build the .app/DMG and run the app checks (the job above); off = only the optional local-model job'
-        required: false
-        default: true
-        type: boolean
-      app_runner:
-        description: 'Standard Apple Silicon runner for the app checks'
-        required: false
-        default: macos-15
-        type: choice
-        options: [macos-15, macos-26]
-      mlx_keys:
-        description: 'MLX models for the timed MLX check'
-        required: false
-        default: 'mlx_qwen_aligner,mlx_qwen3_asr_0_6b'
-        type: string
-      run_local_models:
-        description: 'Time MOSS and FireRed (PyTorch) on MPS and CPU with the locked runtimes and models (~7 GB downloads)'
-        required: false
-        default: false
-        type: boolean
-      local_models_runner:
-        description: 'Runner for the local-model job (xlarge = paid larger runner with GPU cores)'
-        required: false
-        default: macos-15
-        type: choice
-        options: [macos-15, macos-15-xlarge, macos-26-xlarge]
-      local_models_args:
-        description: 'Arguments for scripts/macos_local_models_bench.py (devices, models, MOSS dtypes, clips)'
-        required: false
-        default: '--devices mps,cpu --models moss,firered --long-repeats 8'
-        type: string
-      run_studio_perf:
-        description: 'Installed app: Studio editing smoothness on a synthetic 10-minute 1080p 1000-cue project and 60 s export speed'
-        required: false
-        default: false
-        type: boolean
-      candidate_run_id:
-        description: 'Optional existing DMG producer run to test through the installed frozen GPU model entry; use run_app_checks=false'
-        required: false
-        default: ''
-        type: string
-      candidate_source_sha:
-        description: 'Exact app source SHA of that existing DMG (distinct from this checker source_sha)'
-        required: false
-        default: ''
-        type: string
-      candidate_mlx_only:
-        description: 'Only repeat installed MLX checks; keep independent MPS results from the previous run'
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: read
-
-concurrency:
-  # Runs on different runner sizes may proceed side by side (2026-10-14).
-  group: macos-arm64-experimental-${{ github.repository }}-${{ inputs.app_runner }}-${{ inputs.local_models_runner }}-${{ inputs.run_app_checks }}
-  cancel-in-progress: false
-
+  actions: read
 jobs:
-  native-arm64:
-    # Official standard runner: macOS 15 / Apple Silicon arm64. Rechecked
-    # 2026-10-03. One bounded dispatch after the actual included quota and
-    # existing stop-usage budgets were checked. No automatic retry or cache.
-    # 2026-10-14: the runner is selectable; the job can be switched off.
-    if: ${{ inputs.run_app_checks }}
-    outputs:
-      has_installer: ${{ steps.dmg.outcome == 'success' }}
-    runs-on: ${{ inputs.app_runner || 'macos-15' }}
-    # 24 before 2026-10-13; the optional cloud/MLX checks need up to ~20 more,
-    # the optional Studio performance check up to ~35 (2026-10-14).
-    # Runs without them finish as before; this only caps a hung run.
-    timeout-minutes: 100
-    defaults:
-      run:
-        shell: bash
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      PYTHONUTF8: '1'
-      MACOSX_DEPLOYMENT_TARGET: '14.0'
-      PIP_DISABLE_PIP_VERSION_CHECK: '1'
-      MAXIMUM_ARTIFACT_BYTES: ${{ inputs.maximum_artifact_bytes }}
-    steps:
-      - name: Validate fixed source input
-        run: |
-          set -euo pipefail
-          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'An exact trusted commit SHA is required'; exit 2; }
-          test "$(uname -m)" = arm64
-          [[ "$MAXIMUM_ARTIFACT_BYTES" =~ ^[0-9]+$ ]]
-          test "$MAXIMUM_ARTIFACT_BYTES" -ge 16777216
-          test "$MAXIMUM_ARTIFACT_BYTES" -le 629145600
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Node24, official action.yml checked 2026-10-02
-        with:
-          ref: ${{ inputs.source_sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Verify checkout identity and establish disposable boundary
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          test -z "$(git status --porcelain)"
-          qa="$RUNNER_TEMP/tmp/2byteasr-macos-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir -p "$qa"
-          printf 'MAC_QA_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
-          printf 'TWOBYTEASR_TEST_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
-          printf '{"workflow_ref":"%s","workflow_sha":"%s","source_sha":"%s","run_id":"%s","attempt":"%s"}\n' "$GITHUB_WORKFLOW_REF" "$GITHUB_WORKFLOW_SHA" "$SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$qa/workflow-identity.json"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # Node24, official action.yml checked 2026-10-02
-        with:
-          python-version: '3.10.11'
-          architecture: arm64
-      - name: Real venv entry and production worker import regression
-        id: runtime_identity
-        run: |
-          set -euo pipefail
-          python scripts/macos_runtime_identity.py --output "$MAC_QA_ROOT/runtime-identity.json"
-      - name: Acquire, pour and verify pinned official native media
-        id: media
-        run: |
-          set -euo pipefail
-          python scripts/macos_install_media.py --output "$MAC_QA_ROOT/media"
-      - name: Prepare isolated native CPU runtime and build dependencies
-        id: runtime
-        run: |
-          set -euo pipefail
-          python scripts/macos_prepare_runtime.py --runtime "$MAC_QA_ROOT/runtime" --receipt "$MAC_QA_ROOT/runtime.json"
-          printf 'TWOBYTEASR_MAIN_PYTHON=%s\n' "$MAC_QA_ROOT/runtime/bin/python" >> "$GITHUB_ENV"
-          printf 'TWOBYTEASR_TEST_ROOT=%s\n' "$MAC_QA_ROOT" >> "$GITHUB_ENV"
-      - name: Fresh native .app, archive, relocate and normal-entry startup
-        id: build
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_build.py --source-sha "$SOURCE_SHA" --output "$MAC_QA_ROOT/build" --runtime "$MAC_QA_ROOT/runtime" --media-receipt "$MAC_QA_ROOT/media/media-install.json"
-      # 2026-10-13: one playhead test is deselected on every platform. Since 2026-10-04 (d8f26305) E/R
-      # targets ignore hidden tracks on purpose or not; recorded in docs/KNOWN_ISSUES.md, not decided here.
-      - name: Imports, native capabilities and platform regressions
-        if: ${{ always() && steps.runtime.outcome == 'success' && steps.media.outcome == 'success' }}
-        id: regressions
-        continue-on-error: true
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          set -euo pipefail
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_doctor.py --require-host --probe-torch --output "$MAC_QA_ROOT/doctor.json"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_regressions.py --qa-root "$MAC_QA_ROOT"
-      - name: Build real DMG and verify drag-install Unicode copy
-        if: ${{ always() && steps.build.outcome == 'success' }}
-        id: dmg
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg" --install-to-applications
-      - name: Installed app normal new blank project, save and reopen
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: blank_project
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); assert r["passed"] is True; print(r["installed_app"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_blank_project_macos.py --app "$app" --output "$MAC_QA_ROOT/blank-project"
-      - name: Installed app E30 asynchronous save and stable completed waveform
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: edit_save
-        continue-on-error: true
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part saves --output "$MAC_QA_ROOT/cold-save"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform --output "$MAC_QA_ROOT/waveform-stability"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform-full --output "$MAC_QA_ROOT/full-waveform"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caret_split_smoke.py --app "$app" --output "$MAC_QA_ROOT/caret-split"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario stable-captions --output "$MAC_QA_ROOT/stable-captions"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario chinese-complete-expression --output "$MAC_QA_ROOT/chinese-complete-expression"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario speaker-board --output "$MAC_QA_ROOT/speaker-board"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario timeline-cue-pill --output "$MAC_QA_ROOT/timeline-cue-pill"
-      # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
-      # (no real upload, no cost); the Keychain probe uses its own test item.
-      - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
-        if: ${{ always() && (inputs.run_cloud_mlx_smoke || inputs.run_model_smoke) && steps.dmg.outcome == 'success' }}
-        id: cloud_only
-        continue-on-error: true
-        timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); print(r["installed_app"])')
-          ffmpeg=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/media/media-install.json"))["media"]["ffmpeg"]["tools"]["ffmpeg"]["path"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_cloud_only_flow.py --out "$MAC_QA_ROOT/cloud-only" --cloud loopback --no-model-runtime --speech say --ffmpeg "$ffmpeg" --worker-exe "$app/Contents/MacOS/2ByteASR"
-      - name: Real Keychain round trip (separate test item, random non-key value)
-        if: ${{ always() && (inputs.run_cloud_mlx_smoke || inputs.run_model_smoke) && steps.runtime.outcome == 'success' }}
-        id: keychain
-        continue-on-error: true
-        timeout-minutes: 3
-        run: |
-          set -euo pipefail
-          # 2026-10-14: GitHub's macOS VMs can lack a default keychain (a real user
-          # account always has its login keychain); use a throwaway one on this runner.
-          if ! out=$(security default-keychain 2>/dev/null) || [ -z "$out" ]; then
-            kc="$RUNNER_TEMP/2byteasr-ci.keychain-db"
-            security create-keychain -p ci "$kc"
-            security unlock-keychain -p ci "$kc"
-            security set-keychain-settings "$kc"
-            security list-keychains -d user -s "$kc"
-            security default-keychain -s "$kc"
-            echo "created throwaway default keychain for this runner"
-          fi
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_keychain_probe.py --output "$MAC_QA_ROOT/keychain"
-      - name: MLX runtime and models, timed Chinese recognition and alignment
-        if: ${{ always() && inputs.run_cloud_mlx_smoke && steps.runtime.outcome == 'success' }}
-        id: mlx
-        continue-on-error: true
-        timeout-minutes: 20
-        env:
-          MLX_KEYS: ${{ inputs.mlx_keys || 'mlx_qwen_aligner,mlx_qwen3_asr_0_6b' }}
-        run: |
-          set -euo pipefail
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_mlx_smoke.py --output "$MAC_QA_ROOT/mlx" --keys "$MLX_KEYS" --source HF_OFFICIAL
-      - name: Cloud recognition plus local MLX alignment (loopback)
-        if: ${{ always() && inputs.run_cloud_mlx_smoke && steps.mlx.outcome == 'success' && steps.media.outcome == 'success' }}
-        id: cloud_mlx
-        continue-on-error: true
-        timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          ffmpeg=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/media/media-install.json"))["media"]["ffmpeg"]["tools"]["ffmpeg"]["path"])')
-          export TWOBYTEASR_MLX_PYTHON=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/mlx/result.json"))["runtime_python"])')
-          env "2BYTEASR_MODEL_ROOT=$MAC_QA_ROOT/mlx/models" "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_cloud_only_flow.py --out "$MAC_QA_ROOT/cloud-mlx" --cloud loopback --speech say --ffmpeg "$ffmpeg" --align --align-backend mlx_qwen_aligner
-      - name: Packaged Qt QVideoSink real-frame media smoke
-        if: ${{ always() && steps.build.outcome == 'success' }}
-        id: preview
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          "$MAC_QA_ROOT/build/dist/2ByteASR.app/Contents/MacOS/2ByteASR" --macos-media-smoke "$MAC_QA_ROOT/native-media-smoke"
-      - name: Packaged compositor and transparent 12 second animation
-        if: ${{ always() && steps.dmg.outcome == 'success' }}
-        id: renderer_smoke
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          python scripts/macos_renderer_smoke.py --app "$app" --output "$MAC_QA_ROOT/renderer-smoke"
-      - name: Actual native video hardware probe with no software fallback
-        if: ${{ always() && steps.media.outcome == 'success' && steps.runtime.outcome == 'success' }}
-        id: hardware
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          ffmpeg=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/media/media-install.json"))["media"]["ffmpeg"]["tools"]["ffmpeg"]["path"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_hardware_probe.py --ffmpeg "$ffmpeg" --output "$MAC_QA_ROOT/hardware-probe"
-      - name: Optional actual GUI model preparation and Chinese Home to Studio
-        if: ${{ always() && inputs.run_model_smoke && steps.build.outcome == 'success' }}
-        id: desktop
-        continue-on-error: true
-        # MOSS + FireRed (2026-10-14): two PyTorch runtimes, ~6.3 GB of models and GPU readiness runs.
-        timeout-minutes: ${{ inputs.desktop_model_set == 'mac-gpu' && 75 || 20 }}
-        env:
-          DESKTOP_MODEL_SET: ${{ inputs.desktop_model_set || 'sensevoice' }}
-        run: |
-          set -euo pipefail
-          python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
-          # Speech is synthesized here with the runner's built-in voice; no audio file is committed.
-          audio="$MAC_QA_ROOT/smoke-speech.wav"
-          text='今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。'
-          if say -v Tingting --data-format=LEI16@16000 -o "$audio" "$text" && test -s "$audio"; then
-            origin='macOS say -v Tingting (zh_CN), synthesized on this runner'
-          else
-            audio="$GITHUB_WORKSPACE/assets/diagnostics/speech_en.wav"; text=''
-            origin='repository assets/diagnostics/speech_en.wav (no Chinese voice on this runner)'
-          fi
-          python -c 'import json,sys,hashlib; p=sys.argv[1]; json.dump(dict(audio=p,origin=sys.argv[2],text=sys.argv[3],sha256=hashlib.sha256(open(p,"rb").read()).hexdigest()),open(sys.argv[4],"w",encoding="utf8"),ensure_ascii=False,indent=2)' "$audio" "$origin" "$text" "$MAC_QA_ROOT/fixture-origin.json"
-          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow" --model-set "$DESKTOP_MODEL_SET"
-      - name: Studio editing smoothness and export speed (installed app, synthetic project)
-        if: ${{ always() && inputs.run_studio_perf && steps.dmg.outcome == 'success' }}
-        id: studio_perf
-        continue-on-error: true
-        timeout-minutes: 40
-        run: |
-          set -euo pipefail
-          app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); print(r["installed_app"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_studio_perf.py --app "$app" --output "$MAC_QA_ROOT/studio-perf"
-      - name: Record separate validation outcomes
-        if: always()
-        env:
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
-          TEST_OUTCOME: ${{ steps.regressions.outcome }}
-          STUDIO_PERF_REQUESTED: ${{ inputs.run_studio_perf }}
-          MODEL_REQUESTED: ${{ inputs.run_model_smoke }}
-          CLOUD_MLX_REQUESTED: ${{ inputs.run_cloud_mlx_smoke }}
-        run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT"
-      - name: Bound artifact storage before upload
-        if: always()
-        run: |
-          set -euo pipefail
-          test -n "${MAC_QA_ROOT:-}" || exit 0
-          python scripts/macos_collect_artifacts.py --qa-root "$MAC_QA_ROOT" --maximum-bytes "$MAXIMUM_ARTIFACT_BYTES"
-      - name: Retain diagnostic receipts first
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # Node24, official action.yml checked 2026-10-02
-        with:
-          name: macos-arm64-receipts-${{ inputs.source_sha }}
-          retention-days: 1
-          if-no-files-found: warn
-          compression-level: 0
-          path: ${{ env.MAC_QA_ROOT }}/artifacts/receipts/
-      - name: Retain real installer within observed included allowance
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: macos-arm64-setup-${{ inputs.source_sha }}
-          retention-days: 1
-          if-no-files-found: warn
-          compression-level: 0
-          path: ${{ env.MAC_QA_ROOT }}/artifacts/application/
-      - name: Enforce installer, blank project and requested desktop results
-        if: always()
-        run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
-
-  same-candidate-newer-macos:
-    needs: native-arm64
-    if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
-    runs-on: ${{ inputs.app_runner == 'macos-26' && 'macos-15' || 'macos-26' }}
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      PYTHONUTF8: '1'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ inputs.source_sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.10.11'
-          architecture: arm64
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-        with:
-          name: macos-arm64-setup-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/tmp/candidate-input
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-        with:
-          name: macos-arm64-receipts-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/tmp/candidate-receipts
-      - name: Verify the unchanged DMG on the newer OS
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          # Only the external checker needs QColor to create its empty-project
-          # fixture. App launch environments deliberately omit this venv.
-          python -m venv "$RUNNER_TEMP/tmp/checker-runtime"
-          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
-          dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
-          test -f "$dmg"
-          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
-      - name: Select bounded regression receipts
-        if: always()
-        run: |
-          if test -d "$RUNNER_TEMP/tmp/newer-macos-candidate"; then
-            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/newer-macos-candidate" --maximum-bytes 67108864
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: macos-newer-receipts-${{ inputs.source_sha }}
-          retention-days: 1
-          if-no-files-found: warn
-          path: ${{ runner.temp }}/tmp/newer-macos-candidate/artifacts/receipts/
-
-  installed-candidate-models:
-    needs: native-arm64
-    if: ${{ always() && (inputs.candidate_run_id != '' || (inputs.run_app_checks && inputs.run_cloud_mlx_smoke && needs.native-arm64.outputs.has_installer == 'true')) }}
+  same-dmg:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 65
-    permissions:
-      contents: read
-      actions: read
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      APP_SOURCE_SHA: ${{ inputs.candidate_source_sha || inputs.source_sha }}
-      PYTHONUTF8: '1'
-    defaults:
-      run:
-        shell: bash
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.source_sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.10.11'
           architecture: arm64
-      - name: Validate checker and app identities
-        run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          [[ "$APP_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
-          name: macos-arm64-setup-${{ inputs.candidate_source_sha || inputs.source_sha }}
-          path: ${{ runner.temp }}/tmp/model-candidate-input
-          run-id: ${{ inputs.candidate_run_id || github.run_id }}
+          name: macos-arm64-setup-1a1c07097f3ad1788a0b07a8f1e52107c32e87df
+          run-id: 43209827566
           github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/tmp/qualification-input
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
-          name: macos-arm64-receipts-${{ inputs.candidate_source_sha || inputs.source_sha }}
-          path: ${{ runner.temp }}/tmp/model-candidate-receipts
-          run-id: ${{ inputs.candidate_run_id || github.run_id }}
+          name: macos-arm64-receipts-1a1c07097f3ad1788a0b07a8f1e52107c32e87df
+          run-id: 43209827566
           github-token: ${{ github.token }}
-      - name: Actual frozen MLX and MPS model preparation and sample inference
-        env:
-          MLX_ONLY: ${{ inputs.candidate_mlx_only }}
+          path: ${{ runner.temp }}/tmp/qualification-receipts
+      - name: Prepare checker and prove native socket path boundary
+        shell: bash
         run: |
-          dmg=$(find "$RUNNER_TEMP/tmp/model-candidate-input" -name '*.dmg' -type f)
-          test -f "$dmg"
-          extra=()
-          if [ "$MLX_ONLY" = true ]; then extra+=(--mlx-only); fi
-          python scripts/macos_installed_models_smoke.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/model-candidate-receipts/dmg/dmg-result.json" --app-source-sha "$APP_SOURCE_SHA" --output "$RUNNER_TEMP/tmp/installed-model-check" "${extra[@]}"
+          test '${{ inputs.source_sha }}' = '1a1c07097f3ad1788a0b07a8f1e52107c32e87df'
+          python -m venv "$RUNNER_TEMP/tmp/qualification-runtime"
+          "$RUNNER_TEMP/tmp/qualification-runtime/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
+          "$RUNNER_TEMP/tmp/qualification-runtime/bin/python" scripts/macos_socket_path_probe.py "$RUNNER_TEMP/tmp/socket-proof"
+      - name: Full unchanged installed candidate with bounded temporary paths
+        shell: bash
+        run: |
+          dmg=$(find "$RUNNER_TEMP/tmp/qualification-input" -name '*.dmg' -type f)
+          "$RUNNER_TEMP/tmp/qualification-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/qualification-receipts/dmg/dmg-result.json" --source-sha '1a1c07097f3ad1788a0b07a8f1e52107c32e87df' --output "$RUNNER_TEMP/tmp/q"
+      - name: Select bounded qualification receipts
+        if: always()
+        shell: bash
+        run: |
+          if test -d "$RUNNER_TEMP/tmp/q"; then
+            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/q" --maximum-bytes 67108864
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: installed-model-receipts-${{ matrix.os }}-${{ inputs.candidate_source_sha || inputs.source_sha }}
+          name: macos-final-qualification-${{ matrix.os }}
           retention-days: 1
-          if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/tmp/installed-model-check/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/*.log
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.log
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.png
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/exports/*
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/runtime-evidence/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.log
-
-  local-models:
-    # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
-    # the Apple GPU (MPS) and the CPU. GitHub documents that MPS is not
-    # available on its arm64 runners; the job records what PyTorch reports.
-    if: ${{ inputs.run_local_models }}
-    runs-on: ${{ inputs.local_models_runner || 'macos-15' }}
-    timeout-minutes: 150
-    defaults:
-      run:
-        shell: bash
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      PYTHONUTF8: '1'
-      PIP_DISABLE_PIP_VERSION_CHECK: '1'
-    steps:
-      - name: Validate fixed source input
-        run: |
-          set -euo pipefail
-          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'An exact trusted commit SHA is required'; exit 2; }
-          test "$(uname -m)" = arm64
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Node24, official action.yml checked 2026-10-02
-        with:
-          ref: ${{ inputs.source_sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # Node24, official action.yml checked 2026-10-02
-        with:
-          python-version: '3.12'
-          architecture: arm64
-      - name: Tools (uv, huggingface_hub)
-        run: |
-          set -euo pipefail
-          python -m pip install uv==0.11.7 huggingface_hub==1.24.0
-          df -h "$HOME" | tail -1
-      - name: MOSS and FireRed on MPS and CPU
-        timeout-minutes: 140
-        env:
-          BENCH_ARGS: ${{ inputs.local_models_args || '--devices mps,cpu --models moss,firered --long-repeats 8' }}
-        run: |
-          set -euo pipefail
-          # Word-split on purpose: the input is a plain argument list (no quotes or shell syntax).
-          [[ "$BENCH_ARGS" =~ ^[A-Za-z0-9_,.\ =-]*$ ]] || { echo 'local_models_args: letters, digits, , . - = and spaces only'; exit 2; }
-          # shellcheck disable=SC2086
-          python scripts/macos_local_models_bench.py --work "$RUNNER_TEMP/bench" \
-            --output "$RUNNER_TEMP/receipts/local-models.json" $BENCH_ARGS
-      - name: Collect logs (no models, no audio)
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/receipts/logs"
-          find "$RUNNER_TEMP/bench" -maxdepth 1 \( -name '*.log' -o -name '*.json' \) -size -5M -exec cp {} "$RUNNER_TEMP/receipts/logs/" \; || true
-      - name: Retain receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # Node24, official action.yml checked 2026-10-02
-        with:
-          name: macos-local-models-${{ inputs.local_models_runner }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/receipts
-          retention-days: 3
-          if-no-files-found: warn
+            ${{ runner.temp }}/tmp/q/artifacts/receipts/
+            ${{ runner.temp }}/tmp/socket-proof/*.json
