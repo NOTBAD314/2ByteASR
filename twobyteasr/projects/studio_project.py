@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from PySide6.QtGui import QColor
+from .field_flags import flag
 
 
 PROJECT_SCHEMA_VERSION = 1
@@ -278,7 +279,7 @@ class VideoTrack:
         self.enabled = bool(self.enabled)
         self.muted = bool(self.muted)
         self.soloed = bool(self.soloed)
-        self.locked = bool(self.locked)
+        self.locked = flag(self.locked)
         self.z_index = int(self.z_index or 0)
         self.kind = str(self.kind or "video").strip().lower()
         if self.kind != "video":
@@ -352,7 +353,7 @@ class AudioTrack:
         self.enabled = bool(self.enabled)
         self.muted = bool(self.muted)
         self.soloed = bool(self.soloed)
-        self.locked = bool(self.locked)
+        self.locked = flag(self.locked)
         self.z_index = int(self.z_index or 0)
         self.linked_video_track_id = str(self.linked_video_track_id or "").strip()
         self.stream_ordinal = max(-1, int(self.stream_ordinal if self.stream_ordinal is not None else -1))
@@ -1126,7 +1127,9 @@ class SubtitleProject:
                     timeline_in_ms=0,
                     timeline_out_ms=asset.duration_ms,
                 )],
-                locked=bool(_mapping(self.edit_sequence, owned=True).get("video_track_locked", True)),
+                locked=flag(
+                    _mapping(self.edit_sequence, owned=True).get("video_track_locked"),
+                    default=bool(_mapping(self.edit_sequence, owned=True).get("segments"))),
                 z_index=0,
             )]
         track_ids: set[str] = set()
@@ -1248,10 +1251,8 @@ class SubtitleProject:
         )
 
     def visible_cues(self) -> list["StudioCue"]:
-        hidden = self.hidden_speaker_ids()
-        if not hidden:
-            return list(self.cues)
-        return [cue for cue in self.cues if cue.speaker_id not in hidden]
+        from ..subtitle_rules.display_continuity import visible_display_cues
+        return visible_display_cues(self)
 
     def to_dict(self) -> dict[str, Any]:
         from ..timeline.studio_edit_sequence import persist_sequence
@@ -1856,6 +1857,12 @@ def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
         if isinstance(payload, dict):
             prune_unused_derived_payload(payload)
         project = SubtitleProject.from_dict(payload, owned=True)
+        from .low_share_speakers import restore_automatic_low_share
+        project = restore_automatic_low_share(project)
+        from .source_span_repair import repair as repair_source_spans
+        repair_source_spans(project)
+        from ..recognition.speech_coverage import reconcile_legacy_text_loss
+        reconcile_legacy_text_loss(project)
         if project.studio_state.get("link_imports"):
             from ..media.link_manifest import relocate_project_downloads
             relocate_project_downloads(project, project_path)
@@ -2745,6 +2752,8 @@ def project_from_runtime_cues(
         if spans:
             segmentation_spans[cue_id] = {'parts':copy.deepcopy(spans),
                 'timing_basis':str(getattr(cue,'timing_basis','source_evidence')),
+                'origin':str(getattr(cue,'grouping_origin','unrecorded')),
+                'boundary_receipt':copy.deepcopy(getattr(cue,'grouping_boundary_receipt',{})),
                 'language':str(getattr(cue,'segmentation_language',''))}
         text = str(getattr(cue, "text", "") or "")
         studio_cues.append(
@@ -2756,6 +2765,8 @@ def project_from_runtime_cues(
                 speaker_id=speaker_id,
                 original_text=text,
                 evidence_refs=[],
+                transform={'display_handoff':copy.deepcopy(cue.display_handoff)}
+                    if getattr(cue,'display_handoff',None) else {},
             )
         )
     project = SubtitleProject(
@@ -2977,18 +2988,9 @@ def create_studio_outputs(
             for item in provisional_rows
             if str(item.get("id") or "")
         }
-        replacement: dict[str, list[str]] = {}
-        for item in provisional_rows:
-            provisional_id = str(item.get("id") or "")
-            if not provisional_id:
-                continue
-            start_ms = int(item.get("start_ms") or 0)
-            end_ms = max(start_ms + 1, int(item.get("end_ms") or start_ms + 1))
-            replacement[provisional_id] = [
-                cue.id
-                for cue in project.cues
-                if cue.end_ms > start_ms and cue.start_ms < end_ms
-            ]
+        from .recognition_provenance import replacement_mapping
+        replacement,receipts=replacement_mapping(project,provisional_rows,segment_rows)
+        project.generation_metadata['asr_replacement_receipts']=receipts
         states.update({cue.id: "final" for cue in project.cues})
         project.generation_metadata["asr_cue_states"] = states
         project.generation_metadata["asr_replacement_mapping"] = replacement

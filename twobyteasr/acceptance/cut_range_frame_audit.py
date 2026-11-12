@@ -91,16 +91,16 @@ def start(window,out):
             check('exact_range_edit',range_points(p)[0]==2000)
             # Real manager controls, including table multi-selection and undo.
             from ..studio.studio_speaker_manager import SpeakerManagerDialog
-            manager=SpeakerManagerDialog(page);manager.show();manager.multi_button.setChecked(True);manager.more_toggle.setChecked(True);pump(.3)
-            click_text(manager,'全选');check('batch_selection',len(manager._selected_ids())==2)
-            click_text(manager,'归入游戏背景声');check('batch_background',len(p.speakers)==1 and len(p.cues)==4)
+            manager=SpeakerManagerDialog(page);manager.show();manager.more_toggle.setChecked(True);pump(.3)
+            manager._select_visible('all');check('batch_selection',len(manager._selected_ids())==2)
+            click_text(manager,'归入游戏声');check('batch_background',len(p.speakers)==1 and len(p.cues)==4)
             page.undo_stack.undo();manager.refresh();pump(.2);check('batch_undo',len(p.speakers)==2)
-            manager.speaker_filter.setText('主要');click_text(manager,'全选')
+            manager.speaker_filter.setText('主要');manager._select_visible('all')
             check('filtered_selection_scope',manager._selected_ids()=={'A'})
-            manager.speaker_filter.clear();click_text(manager,'全选')
+            manager.speaker_filter.clear();manager._select_visible('all')
             click_text(manager,'删除身份，字幕移到统一轨')
             check('delete_identity_keeps_text',len(p.speakers)==1 and signature()==before)
-            page.undo_stack.undo();manager.refresh();click_text(manager,'全选')
+            page.undo_stack.undo();manager.refresh();manager._select_visible('all')
             from PySide6.QtWidgets import QMessageBox
             confirmation={}
             def confirm_delete():

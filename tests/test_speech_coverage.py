@@ -351,3 +351,74 @@ def test_worker_attempt_history_survives_in_the_independent_project_ledger():
     state = coverage.audit_primary(payload, [dict(start=100, end=140, speech_verified=True)], context,
                                    duration=140, legacy=legacy, source='moss')
     assert not coverage.pending(state) and state['worker_recovery'][0]['attempts']
+
+
+def test_text_retained_with_tightened_time_is_diagnostic_not_text_loss():
+    state={'identity':'x','speech_ranges':[[0,5]],'gaps':[],'stages':[]}
+    coverage.checkpoint(state,'before',[dict(row(0,5,'博士'),segment_id=1)])
+    coverage.checkpoint(state,'segmentation',[dict(row(2,2.6,'博士'),cue_id=7,source_spans=[{'source_id':1}])])
+    assert not state['gaps']
+    assert state['timing_diagnostics'][0]['reason']=='text_retained_timing_contracted'
+
+
+def test_real_text_loss_is_detected_even_when_time_envelope_stays_equal():
+    state={'identity':'x','speech_ranges':[[0,5]],'gaps':[],'stages':[]}
+    coverage.checkpoint(state,'before',[dict(row(0,5,'これは否定ではありません'),segment_id=1)])
+    coverage.checkpoint(state,'segmentation',[dict(row(0,5,'これは否定です'),cue_id=7,source_spans=[{'source_id':1}])])
+    assert state['gaps'][0]['first_missing_stage']=='segmentation'
+    assert state['gaps'][0]['text_evidence'][0]['id']==1
+
+
+def test_legacy_timing_claim_reclassified_without_silence_or_audio_recovery_claim():
+    p=SimpleNamespace(generation_metadata={'speaker_recovery':{'raw_segments':[row(10,15,'博士')]},
+        'speech_coverage':{'gaps':[{'id':'gap','start':12,'end':15,'reason':'downstream_text_loss',
+            'status':'needs_confirmation','first_missing_stage':'segmentation'}]}},
+        cues=[SimpleNamespace(id='cue',start_ms=10000,end_ms=10500,text='博士',speaker_id='S02')])
+    assert coverage.reconcile_legacy_text_loss(p)==['gap']
+    gap=p.generation_metadata['speech_coverage']['gaps'][0]
+    assert gap['status']=='excluded' and gap['text_reconciliation']['acoustic_verification']=='not_performed'
+    assert gap['text_reconciliation']['request_count']==0
+
+
+def test_reconciled_text_claim_remains_locatable_as_timing_review():
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
+    from twobyteasr.recognition.speech_recovery_project import project_ranges
+    p=SubtitleProject(StudioMedia('fixture.mp4',duration_ms=20000))
+    p.generation_metadata['speech_coverage']={'duration':20,'gaps':[dict(id='timing',start=10,end=12,
+        status='excluded',reason='downstream_text_loss',first_missing_stage='segmentation',remaining_ranges=[[10,12]],
+        text_reconciliation={'reason':'text_retained_timing_contracted','acoustic_verification':'not_performed'})]}
+    assert project_ranges(p)==[]
+    shown=project_ranges(p,include_timing=True)
+    assert len(shown)==1 and shown[0]['classification']=='timing_confirmation'
+    assert (shown[0]['timeline_start_ms'],shown[0]['timeline_end_ms'])==(10000,12000)
+    assert p.generation_metadata['speech_coverage']['gaps'][0]['reason']=='downstream_text_loss'
+
+
+def test_adopted_source_checkpoint_traces_legal_polish_without_false_segmentation_loss():
+    state={'identity':'x','speech_ranges':[[0,4]],'gaps':[],'stages':[]}
+    old=dict(row(0,4,'し品名さん'),segment_id=7)
+    approved=dict(row(0,4,'白名さんは'),segment_id=7)
+    coverage.checkpoint(state,'speaker_filter',[old])
+    coverage.checkpoint(state,'prepared_source',[approved])
+    coverage.checkpoint(state,'segmentation',[dict(row(1,2,'白名さんは'),cue_id=31,
+        source_spans=[dict(source_id=7,char_start=0,char_end=5,raw_text='白名さんは')])])
+    assert not state['gaps']
+    assert state['stages'][1]['source_changes'][0]['source_id']==7
+    assert state['stages'][1]['source_changes'][0]['before']=='し品名さん'
+
+
+def test_repeated_source_cannot_be_replaced_by_another_same_text_source():
+    state={'identity':'x','speech_ranges':[[0,4]],'gaps':[],'stages':[]}
+    coverage.checkpoint(state,'prepared_source',[dict(row(0,2,'はい'),segment_id=7),dict(row(2,4,'はい'),segment_id=8)])
+    coverage.checkpoint(state,'segmentation',[dict(row(0,4,'はい'),cue_id=1,
+        source_spans=[dict(source_id=7,char_start=0,char_end=2,raw_text='はい')])])
+    assert state['gaps'] and state['gaps'][0]['text_evidence'][0]['id']==8
+
+
+def test_legal_repeat_merge_uses_source_spans_not_reindexed_cue_ids():
+    state={'identity':'x','speech_ranges':[[0,4]],'gaps':[],'stages':[]}
+    a=dict(row(0,2,'はい'),cue_id=31,source_spans=[dict(source_id=7,char_start=0,char_end=2,raw_text='はい')])
+    b=dict(row(2,4,'はい'),cue_id=32,source_spans=[dict(source_id=7,char_start=2,char_end=4,raw_text='はい')])
+    joined=dict(row(0,4,'はいはい'),cue_id=1,source_spans=[dict(source_id=7,char_start=0,char_end=4,raw_text='はいはい')])
+    coverage.checkpoint(state,'segmentation',[a,b]);coverage.checkpoint(state,'final_cues',[joined])
+    assert not state['gaps']

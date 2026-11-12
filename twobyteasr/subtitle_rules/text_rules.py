@@ -1,4 +1,4 @@
-﻿"""Shared subtitle text normalization, numeral, and editorial safety rules."""
+"""Shared subtitle text normalization, numeral, and editorial safety rules."""
 
 import os
 import re
@@ -736,7 +736,6 @@ def apply_editorial_segment_rules(segments):
             if not re.search(r"[^\W_]", segment.text):
                 dropped_count += 1
                 continue
-            segment.segment_id = len(normalized) + 1
             normalized.append(segment)
             continue
         if japanese:
@@ -746,7 +745,6 @@ def apply_editorial_segment_rules(segments):
             if not content_only(segment.text):
                 dropped_count += 1
                 continue
-            segment.segment_id = len(normalized) + 1
             normalized.append(segment)
             continue
         suppressed_count += sum(
@@ -765,7 +763,6 @@ def apply_editorial_segment_rules(segments):
         if not content_only(segment.text):
             dropped_count += 1
             continue
-        segment.segment_id = len(normalized) + 1
         normalized.append(segment)
     if suppressed_count or canonical_count or collapsed_repeat_count or dropped_count:
         print(

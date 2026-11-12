@@ -34,6 +34,8 @@ class StudioStylePanelMixin:
     def _style_section(self, title: str, *, expanded: bool = True) -> tuple[QFrame, QVBoxLayout]:
         section = QFrame()
         section.setObjectName("styleSection")
+        # 2026-11-12 (user, design A): each section is its own rounded card.
+        section.setProperty("softCard", True)
         outer = QVBoxLayout(section)
         # Tighter sections (2026-10-09, M16): parameters reach the top sooner.
         outer.setContentsMargins(4, 6, 4, 8)

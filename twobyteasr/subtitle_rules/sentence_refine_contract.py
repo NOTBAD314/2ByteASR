@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 
-PROTOCOL_VERSION = "studio-refine-v5-zh-complete-expression"
+PROTOCOL_VERSION = "studio-refine-v6-ai-owned-boundaries"
 
 
 class RefineError(ValueError):
@@ -124,7 +124,9 @@ def boundary_candidates(text, language="", terms=()):
     if language == "ja":
         spans = japanese_phrase_spans(text)
     elif language in ("", "zh", "zh-CN", "zh-TW"):
-        spans = chinese_word_spans(text)
+        # Weak tokenizer/POS preferences must not veto an AI-selected edge.
+        # Explicit terms, numbers and graphemes below remain protected.
+        spans = []
     else:
         spans = []
     if language in {'en', 'ko', 'es', 'de', 'fr', 'pt', 'it', 'ru'}:

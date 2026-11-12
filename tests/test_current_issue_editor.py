@@ -60,12 +60,12 @@ def test_adoption_remembers_only_the_chosen_span_and_roundtrips(tmp_path,monkeyp
         page._refresh_review_risks({'a'},sync=True)
         remaining=current_issue_view(p).for_cue('a')
         assert any(r.kind=='independent_time_check' for r in remaining)
-        lexical=[r for r in remaining if r.kind=='model_disagreement']
+        lexical=[r for r in remaining if r.kind in {'model_disagreement','local_model_correction'}]
         assert len(lexical)==(1 if legacy else 0)
         if lexical:assert [r.original for r in lexical[0].suggestions]==['乙']
         saved=save_project(p,tmp_path/'accepted.2byteproj');reopened=load_project(saved)
         reopened._qc_result=engine.analyze(reopened)
-        assert len([r for r in current_issue_view(reopened).for_cue('a') if r.kind=='model_disagreement'])==(1 if legacy else 0)
+        assert len([r for r in current_issue_view(reopened).for_cue('a') if r.kind in {'model_disagreement','local_model_correction'}])==(1 if legacy else 0)
         page.undo_stack.undo();assert p.cues[0].text==before
         page.undo_stack.redo();assert p.cues[0].text==expected
     finally:
@@ -186,8 +186,10 @@ def test_ignored_candidate_is_transactional_and_other_issues_remain(tmp_path, mo
     try:
         p = page.project
         monkeypatch.setattr(page, '_finish_chunked_qc_scan', lambda *args: None)
+        p.asr_evidence={'actual':dict(start_ms=1000,end_ms=4000,speaker_id='S00',primary_source='moss',moss_text='名称错了',firered_text='名称对了')}
+        p.cues[0].evidence_refs=['actual']
         p._qc_result = QCResult({'a': (QCIssue('model_disagreement', QCSeverity.CRITICAL, QCCategory.ASR, 'a', '候选', '具体名称',
-            (QCEvidence('model', '名称对了'),)), issue('a', 'short_duration', category=QCCategory.TIMELINE))})
+            (QCEvidence('FireRed', '名称对了', 'firered'),)), issue('a', 'short_duration', category=QCCategory.TIMELINE))})
         invalidate(p); page.select_cue('a'); page.timeline.explicit_subtitle_id = 'a'
         page._open_caption_editor(); wait_editor_data(page)
         page._ignore_editor_suggestion()
@@ -325,9 +327,11 @@ def test_editor_click_shift_r_ime_and_unicode_stale_candidates(tmp_path, monkeyp
     try:
         p = page.project
         monkeypatch.setattr(page, '_finish_chunked_qc_scan', lambda *args: None)
+        p.asr_evidence={'actual':dict(start_ms=1000,end_ms=4000,speaker_id='S00',primary_source='moss',moss_text='😀那维来特',firered_text='😀那维莱特')}
+        p.cues[0].evidence_refs=['actual']
         p._qc_result = QCResult({'a': (QCIssue('model_disagreement', QCSeverity.CRITICAL, QCCategory.ASR, 'a', '名称不同', '候选名称',
-            (QCEvidence('model', '😀那维莱特'),)),)})
-        invalidate(p); page.select_cue('a'); page.timeline.explicit_subtitle_id = 'a'; page.timeline.set_playhead(1200); page._shortcut_edit_at_playhead()
+            (QCEvidence('FireRed', '😀那维莱特', 'firered'),)),)})
+        invalidate(p); page.select_cue('a'); page.timeline.explicit_subtitle_id = 'a'; page.timeline.set_playhead(1200); page.timeline.set_playhead(1200); page._shortcut_edit_at_playhead()
         app.processEvents(); QTest.qWait(40)
         assert len(page._caption_draft.suggestions) == 1
         assert page._apply_editor_suggestion()
@@ -336,7 +340,7 @@ def test_editor_click_shift_r_ime_and_unicode_stale_candidates(tmp_path, monkeyp
         assert page._canvas_editor is not None
         page._cancel_canvas_inline_edit()
         assert current_issue_view(p).for_cue('a')
-        page._shortcut_edit_at_playhead(); QTest.qWait(40)
+        page.timeline.set_playhead(1200); page._shortcut_edit_at_playhead(); QTest.qWait(40)
         QApplication.sendEvent(page.subtitle_edit_input, QInputMethodEvent('拼音', []))
         QTest.keyClick(page.subtitle_edit_input, Qt.Key.Key_R, Qt.KeyboardModifier.ShiftModifier)
         assert '那维来特' in page.subtitle_edit_input.toPlainText()
@@ -346,7 +350,7 @@ def test_editor_click_shift_r_ime_and_unicode_stale_candidates(tmp_path, monkeyp
         QTest.keyClick(page.subtitle_edit_input, Qt.Key.Key_W, Qt.KeyboardModifier.ShiftModifier)
         QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Space)
         assert page.subtitle_edit_input.toPlainText() == '😀那维莱特'
-        page._cancel_canvas_inline_edit(); page._shortcut_edit_at_playhead()
+        page._cancel_canvas_inline_edit(); page.timeline.set_playhead(1200); page._shortcut_edit_at_playhead()
         page.subtitle_edit_input.insertPlainText('x')
         assert not page._apply_editor_suggestion()
         assert page._cue_lookup['a'].text == '😀那维来特'

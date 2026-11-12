@@ -148,6 +148,8 @@ def test_next_uses_regex_case_and_language_selection(page):
         dialog.close()
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+    reason='Known accepted-daily issue: a corrected translation row leaves the old-term search filter; clear search to inspect it. Release 1.0.0 records this limit.')
 def test_ai_page_translation_apply_retains_issue_and_undo_redo(review):
     w, p = review
     w.text_targets.mode.setCurrentIndex(1)

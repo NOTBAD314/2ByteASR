@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QStyle,
-                               QStyledItemDelegate, QToolTip, QVBoxLayout, QWidget)
+                               QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from ..i18n import tr
 from .support_triage import ago_text, local_clock, seconds_text, step_chips, step_headline
@@ -482,12 +482,8 @@ class TimelineStrip(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        step_id, text = self._hit(event.position())
+        step_id, _text = self._hit(event.position())
         self.setCursor(Qt.CursorShape.PointingHandCursor if step_id else Qt.CursorShape.ArrowCursor)
-        if text:
-            QToolTip.showText(event.globalPosition().toPoint(), text, self)
-        else:
-            QToolTip.hideText()
         super().mouseMoveEvent(event)
 
     def keyPressEvent(self, event):

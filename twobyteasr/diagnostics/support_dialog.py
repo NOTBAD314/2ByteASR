@@ -13,17 +13,32 @@ import threading
 import uuid
 import weakref
 import time
+from collections.abc import Mapping
 
 
 def settings_summary(window):
     """Whitelist only. Never dump settings, environment or a project file."""
     settings=getattr(getattr(window,"legacy",None),"RUNTIME_SETTINGS",{}) or {}
-    models=settings.get("models",{})
+    missing=[]
+    def mapping(value, field):
+        if isinstance(value, Mapping):return value
+        missing.append(dict(stage='settings_summary',reason='invalid_settings_section',field=field))
+        return {}
+    settings=mapping(settings,'settings')
+    models=mapping(settings.get("models",{}),'models')
+    language=mapping(settings.get('subtitle_language') or {},'subtitle_language')
+    switches=mapping(settings.get('switches') or {},'switches')
+    def scalar(value,field):
+        if value is None or isinstance(value,(str,bool,int)):return value
+        missing.append(dict(stage='settings_summary',reason='invalid_setting_value',field=field))
+        return None
     allowed=("primary_asr_backend","firered_asr_backend","qwen_asr_backend","polish_provider","polish_model","group_provider","group_model")
-    return {"models":{k:models.get(k) for k in allowed},
-            "language":(settings.get("subtitle_language") or {}).get("recognition_language"),
-            "switches":{k:settings.get("switches",{}).get(k) for k in
+    result={"models":{k:scalar(models.get(k),k) for k in allowed},
+            "language":scalar(language.get("recognition_language"),'recognition_language'),
+            "switches":{k:scalar(switches.get(k),k) for k in
                         ("use_ai_grouping","use_ai_polish","subtitle_punctuation","use_ja_ctc_aligner")}}
+    if missing:result['_missing']=missing
+    return result
 
 
 SCOPES = (("最近 15 分钟", "recent"), ("本次运行", "session"),
@@ -32,7 +47,7 @@ PAGE_ROWS = 100
 
 
 def open_support_dialog(owner, page=None):
-    from PySide6.QtCore import QObject, Signal, Qt, QDateTime, QUrl, QTimer, QEvent
+    from PySide6.QtCore import QObject, Signal, Qt, QDateTime, QUrl, QTimer, QEvent, QStandardPaths
     from PySide6.QtGui import QDesktopServices, QFontMetrics
     from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDateTimeEdit, QDialog,
         QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
@@ -109,6 +124,12 @@ def open_support_dialog(owner, page=None):
             root.addWidget(self._build_footer())
             apply_secondary_surface_theme(self)
             self._apply_theme()
+            screen=owner.screen() or QApplication.primaryScreen()
+            if screen is not None:
+                available=screen.availableGeometry()
+                self.setMinimumWidth(min(760,max(320,available.width()-32)))
+                self.resize(min(960,available.width()-32),min(880,available.height()-64))
+                self.move(available.center()-self.rect().center())
             self._timer=QTimer(self);self._timer.setInterval(1000);self._timer.timeout.connect(self._tick);self._timer.start()
             # The complete form paints and accepts text before any diagnostic
             # worker starts competing for the GIL with the first layout.
@@ -314,7 +335,8 @@ def open_support_dialog(owner, page=None):
             self.export=QPushButton("导出诊断包…");self.export.setObjectName("diagnosticExportButton")
             button_role(self.export,"primary");self.export.setDefault(True)
             self.export.clicked.connect(self._choose_export);row.addWidget(self.export)
-            self.export.setEnabled(False);self.copy.setEnabled(False)
+            # Export is independent of the optional timeline/viewer load.
+            self.export.setEnabled(not getattr(owner,'_diagnostic_export_active',None));self.copy.setEnabled(False)
             layout.addLayout(row)
             status=QHBoxLayout();status.setSpacing(12)
             status.addWidget(self.content,0,Qt.AlignmentFlag.AlignTop)
@@ -373,6 +395,15 @@ def open_support_dialog(owner, page=None):
 
         def _tick(self):
             if self._closed:return
+            busy=bool(getattr(owner,'_diagnostic_export_active',None))
+            if not self._exporting:
+                self.export.setEnabled(not busy)
+                waiting=getattr(self,'_waiting_for_export',False)
+                if busy and not waiting:
+                    bind_text(self.note,tr('正在导出另一份诊断包；完成后可再次导出。'))
+                elif waiting and not busy:
+                    bind_text(self.note,tr('上一份诊断包已结束，可以再次导出。'))
+                self._waiting_for_export=busy
             if instance:
                 self.details_mode.blockSignals(True);self.details_mode.setChecked(instance.detailed);self.details_mode.blockSignals(False)
                 if instance.write_error and not getattr(self,"_warned_write",False):
@@ -443,18 +474,19 @@ def open_support_dialog(owner, page=None):
                 self.timeline.set_message(tr("读取诊断记录失败"))
                 return
             self._data=data;self._rows=data["events"];self._search_rows=data['search_rows']
-            self.export.setEnabled(True);self.copy.setEnabled(True)
+            self.export.setEnabled(not self._exporting and not getattr(owner,'_diagnostic_export_active',None));self.copy.setEnabled(True)
             emit('report.collection',result='completed',report_id=report_id,
                 timings=data.get('collection_timings',{}),event_count=len(self._rows))
             self._analysis=data["analysis"]
-            self.summary.setPlainText(data['summary'])
+            if self._result is None:self.summary.setPlainText(data['summary'])
             self._render()
             # Populate the 600-cell log table only when its page is requested.
             self._log_pending=True
             if self.views.currentIndex()==1:self._filter()
             size=data['event_bytes']
-            bind_text(self.note,tr("{count} 笔记录（约 {size} KiB）。诊断包只在本机生成，不含字幕全文、媒体、提示词与 AI 回复，由你自己发送。",
-                                   count=f"{len(self._rows):,}",size=f"{size/1024:.0f}"))
+            if not self._exporting and self._result is None and not getattr(owner,'_diagnostic_export_active',None):
+                bind_text(self.note,tr("{count} 笔记录（约 {size} KiB）。诊断包只在本机生成，不含字幕全文、媒体、提示词与 AI 回复，由你自己发送。",
+                                       count=f"{len(self._rows):,}",size=f"{size/1024:.0f}"))
 
         # ---- presentation -----------------------------------------------
         def _render_legend(self):
@@ -643,15 +675,55 @@ def open_support_dialog(owner, page=None):
 
         # ---- export / copy / clean --------------------------------------
         def _choose_export(self):
-            target,_=QFileDialog.getSaveFileName(self,tr("导出诊断包"),f"2ByteASR-{report_id}.zip","ZIP (*.zip)")
+            if self._closed or self._exporting:return
+            try:
+                # A relative filename makes the native dialog start in the
+                # program's cwd, which may be a read-only install directory.
+                folders=(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation),
+                         str(Path.home()),QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation))
+                directory=next((Path(p) for p in folders if p and Path(p).is_dir()),None)
+                if directory is None:raise FileNotFoundError('No existing user save directory')
+                initial=str(directory.absolute()/f"2ByteASR-{report_id}.zip")
+                target,_=QFileDialog.getSaveFileName(self,tr("导出诊断包"),initial,"ZIP (*.zip)")
+            except Exception as exc:
+                self._export_failed(exc,'save_dialog')
+                return
+            if self._closed:return
             if target:self._export_to(target)
+            else:bind_text(self.note,tr('已取消保存诊断包；可以重新选择位置。'))
+
+        def _export_failed(self,exc,stage):
+            from .support_bundle import export_failure_details
+            exc.diagnostic_stage=stage
+            result=export_failure_details(exc)
+            self._result=result
+            self.export.setEnabled(True);self.copy.setEnabled(True)
+            self.folder.setEnabled(False);self.folder.hide();self.folder_action.setEnabled(False)
+            bind_text(self.note,tr("导出失败（{error}，阶段 {stage}），旧文件没有被替换。可复制摘要中的技术详情。",error=result['error'],stage=stage))
+            self.summary.setPlainText(result['details'])
+            emit('export.end',level='ERROR',result='failed',report_id=report_id,phase=stage,error_code=result['error'])
 
         def _export_to(self,target):
             if self._closed or self._exporting:return
-            options=self._options();options.update(description=self.description.text(),content=list(self._selected) if self.content.isChecked() else None,
-                                                   settings=settings_summary(owner.window()))
+            if getattr(owner,'_diagnostic_export_active',None):
+                self._waiting_for_export=True;self.export.setEnabled(False)
+                bind_text(self.note,tr('正在导出另一份诊断包；完成后可再次导出。'))
+                return
+            try:
+                options=self._options()
+                options.update(description=self.description.text(),content=list(self._selected) if self.content.isChecked() else None)
+            except Exception as exc:
+                self._export_failed(exc,'parameter_preparation')
+                return
+            try:options['settings']=settings_summary(owner)
+            except Exception as exc:
+                # Settings are optional. Keep the report usable, with an
+                # explicit missing entry rather than an unhandled GUI slot.
+                options['settings']={'_missing':[dict(stage='settings_summary',reason=type(exc).__name__)]}
+            self._export_ticket=object();owner._diagnostic_export_active=self._export_ticket
             self._exporting=True;self._jobs+=1
-            self.export.setEnabled(False);bind_text(self.note,tr("正在后台导出并检查诊断包…"))
+            self.export.setEnabled(False);self.folder.setEnabled(False);self.folder.hide();self.folder_action.setEnabled(False)
+            bind_text(self.note,tr("正在后台导出并检查诊断包…"))
             emit("export.start",result="started",report_id=report_id,target_path=target)
             def work():
                 try:
@@ -666,13 +738,17 @@ def open_support_dialog(owner, page=None):
                 except RuntimeError:pass
             try:threading.Thread(target=work,name="diagnostic-export",daemon=True).start()
             except Exception as exc:
+                from .support_bundle import export_failure_details
+                exc.diagnostic_stage='worker_start'
                 emit("export.end",level="ERROR",result="failed",report_id=report_id,error_code=type(exc).__name__)
-                self._exported({"error":type(exc).__name__})
+                self._exported(export_failure_details(exc))
 
         def _exported(self,result):
+            if getattr(owner,'_diagnostic_export_active',None) is getattr(self,'_export_ticket',None):
+                owner._diagnostic_export_active=None
             self._exporting=False
             if self._job_finished():return
-            self.export.setEnabled(True);self._result=result
+            self.export.setEnabled(True);self.copy.setEnabled(True);self._result=result
             if result.get("error"):
                 bind_text(self.note,tr("导出失败（{error}，阶段 {stage}），旧文件没有被替换。可复制摘要中的技术详情。",error=result["error"],stage=result.get('stage','export')))
                 self.summary.setPlainText(self.summary.toPlainText()+'\n\n'+result.get('details',result['error']))
@@ -681,8 +757,7 @@ def open_support_dialog(owner, page=None):
             self.folder.setEnabled(True);self.folder.show();self.folder_action.setEnabled(True)
             message=tr("已导出并检查：{name}（{size} KiB），部分记录缺失，原因写在 manifest.json。请自己发送给开发者。") if result["status"]=="partial" \
                 else tr("已导出并检查：{name}（{size} KiB）。请自己发送给开发者。")
-            bind_text(self.note,tr(message.source,name=Path(result["target"]).name,size=f"{result['bytes']/1024:.1f}"))
-            self.note.setToolTip(result["target"])
+            bind_text(self.note,tr(message.source,name=result["target"],size=f"{result['bytes']/1024:.1f}"))
 
         def _copy(self):
             from .event_log import Sanitizer

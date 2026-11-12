@@ -67,6 +67,7 @@ class StudioLoadingView(QFrame):
         self._cover_painted_region = QRegion()
         self._cover_painted_stamp = self._cover_submitted_stamp = None
         self.setObjectName('studioLoadingSurface')
+        self._owns_theme_sheet = True
         if self.uses_native_cover:
             # The format is immutable once the native resource exists.
             # This order requests alpha for this child, never for its root.
@@ -83,6 +84,7 @@ class StudioLoadingView(QFrame):
         self.library_mode = False
         self._ambient = None
         self._line_key = ''
+        self.media_notice = ''
         self._progress_signature = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -298,6 +300,7 @@ class StudioLoadingView(QFrame):
         self.bar.reset_progress()
         self.cover.set_failed(False)
         self._line_key = ''
+        self.media_notice = ''
         self._progress_signature = None
         for mascot in (self.perch, self.library_bunny):
             mascot.set_mood('idle')
@@ -355,13 +358,13 @@ class StudioLoadingView(QFrame):
             chip.setVisible(bool(text))
 
     # ------------------------------------------------------------- updates
-    def show_progress(self, completed, current, detail='', failed=''):
+    def show_progress(self, completed, current, detail='', failed='', error=''):
         """Mirror the session's real state onto the active face."""
         from ..i18n import current_language
-        signature=(frozenset(completed),current,detail,failed,self.library_mode,current_language())
+        signature=(frozenset(completed),current,detail,failed,error,self.media_notice,self.library_mode,current_language())
         if getattr(self,'_progress_signature',None)==signature:return
         self._progress_signature=signature
-        from .loading_faces import FAILED_LINE, READY_LINE, STAGE_ICONS, STAGE_LINES, _tr
+        from .loading_faces import DEFAULT_LINE, READY_LINE, STAGE_ICONS, STAGE_LINES, _tr, failure_line
         from ..i18n import tr
         if self.library_mode:
             done, group = library_step_state(completed, detail)
@@ -377,7 +380,8 @@ class StudioLoadingView(QFrame):
             self.bar.failed = bool(failed)
             self.bar.finished = len(completed) >= len(TASKS)
             self.bar.update()
-        line = FAILED_LINE if failed else READY_LINE if not stage_for_line else STAGE_LINES.get(stage_for_line, '')
+        line = (failure_line(failed, error) if failed else self.media_notice or
+                (READY_LINE if not stage_for_line else STAGE_LINES.get(stage_for_line, DEFAULT_LINE)))
         mascot = self.library_bunny if self.library_mode else self.perch
         mascot.set_mood('sad' if failed else 'idle')
         if line != self._line_key:
@@ -536,6 +540,9 @@ class StudioLoadingView(QFrame):
         if self.card.size() != size:
             self.card.setFixedSize(size)
         self._place_perch()
+
+    def refresh_theme_palette(self):
+        self.apply_theme()
 
     def apply_theme(self):
         from ..design.theme_manager import theme_key, theme_definition
@@ -975,7 +982,7 @@ class StudioLoadingSession(QObject):
         self._elapsed_timer.stop()
         self.view.steps_view.set_state(self.completed, '', stage)
         bind_text(self.view.label, '{stage}失败\n{error}\n工程文件仍保留，可重试载入：\n{value2}', stage=stage, error=error, value2=self.path)
-        self.view.show_progress(self.completed, '', self._detail, failed=stage)
+        self.view.show_progress(self.completed, '', self._detail, failed=stage, error=str(error))
         self.view.retry.show()
         self.view.copy_error.show()
         self.view.fit_card()

@@ -48,9 +48,15 @@ class TimelineFeedbackMixin:
         pixels = min(180, max(32, width * .12))
         return round((self.visible_duration_ms if visible_duration is None else visible_duration) * pixels / width)
 
+    def _scroll_minimum(self, visible_duration=None):
+        visible = self.visible_duration_ms if visible_duration is None else visible_duration
+        return -round(visible / 2) if getattr(self, 'center_playhead_mode', False) else 0
+
     def _scroll_maximum(self, visible_duration=None):
         visible = self.visible_duration_ms if visible_duration is None else visible_duration
         duration = self._duration_ms()
+        if getattr(self, 'center_playhead_mode', False):
+            return duration - round(visible / 2)
         return max(0, duration + self._tail_padding_ms(visible) - visible,
                    min(duration, getattr(self, '_page_tail_start_ms', 0)))
 
@@ -124,12 +130,12 @@ class TimelineFeedbackMixin:
                tuple((t.id, t.locked) for t in self.project.audio_tracks), clip.playback_rate, rate)
         if key == getattr(self, '_media_cut_key', None):
             return True
-        blocked = tr('轨道已锁定，请先解锁') if track.locked else ''
+        blocked = tr('轨道 {track} 已锁定，请先解锁', track=track.id) if track.locked else ''
         targets = [(kind, track.id, clip.id)]
         if kind == 'video':
             from ..timeline.studio_clip_edit import split_origin, video_track_locked
             if video_track_locked(self.project, track):
-                blocked = tr('轨道已锁定，请先解锁')
+                blocked = tr('视频轨 {track} 已锁定，请先解锁', track=track.id)
             for group in self.project.av_track_groups:
                 if group.linked and group.video_track_id == track.id:
                     sound = next((t for t in self.project.audio_tracks if t.id == group.audio_track_id), None)
@@ -137,7 +143,7 @@ class TimelineFeedbackMixin:
                         if audio.linked_video_clip_id == clip.id:
                             targets.append(('audio', sound.id, audio.id))
                     if sound and sound.locked:
-                        blocked = tr('关联音轨已锁定，请先解锁')
+                        blocked = tr('关联音轨 {track} 已锁定，请先解锁', track=sound.id)
             origin_key = key[:5] + key[13:17]
             if origin_key != getattr(self, '_cut_origin_key', None):
                 self._cut_origin_key = origin_key

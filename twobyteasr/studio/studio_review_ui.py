@@ -76,8 +76,18 @@ class StudioReviewMixin:
         view = current_issue_view(self.project) if self.project else None
         count = sum(row.disposition == 'actionable' and row.level in {'high','suggested'}
                     for row in view.records) if view else 0
-        bind_text(button, '全部标记已检查（{count}）', count=count)
+        # 2026-11-12 (user, design A): the strip says how many are waiting;
+        # the button only says what it does.
+        bind_text(button, '全部标为已检查')
+        note = getattr(self, 'confirm_all_reviews_note', None)
+        if note is not None:
+            bind_text(note, '{count} 项待确认', count=count)
+        button.setProperty('pendingCount', count)
         button.setEnabled(count > 0)
+        hint=getattr(self,'bulk_review_hint',None)
+        if hint is not None:
+            totals=view.totals() if view else {'cues':0,'issues':0}
+            hint.setText(f"全工程 {totals['cues']} 条字幕，包含 {totals['issues']} 个问题点。可逐项定位试听；纯诊断另列。")
 
     def _show_current_issue_details(self):
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QToolButton
@@ -90,10 +100,22 @@ class StudioReviewMixin:
         dialog.resize(700, 420)
         layout = QVBoxLayout(dialog)
         browser = QTextBrowser(dialog)
-        parts = ['<b>当前待办</b>']
+        totals=view.totals()
+        parts = [f"<p>{totals['cues']} 条字幕，包含 {totals['issues']} 个问题点</p><b>当前待办</b>"]
         for index, row in enumerate(rows):
             parts.append(f"<p>{html.escape(row.layer + ' · ' + row.language + ' · ' + row.label)}<br>{html.escape(row.detail)}<br>"
                 f"<a href='locate:{index}'>定位试听</a> · <a href='edit:{index}'>编辑此语言层</a> · <a href='timing:{index}'>调整时间</a></p>")
+        peers=[]
+        for group in view.candidate_groups():
+            if not any(row.cue_id==self.selected_cue_id for row,_ in group):
+                continue
+            _row,suggestion=group[0]
+            links=[]
+            for peer,_mark in group:
+                peers.append(peer)
+                links.append(f"<a href='peer:{len(peers)-1}'>{peer.start_ms/1000:.3f}s · {html.escape(peer.cue_id)}</a>")
+            parts.append(f"<p>同一候选一组：{html.escape(suggestion.original)} → "
+                f"{html.escape(' / '.join(o.text for o in suggestion.options))}；全部位置：{' · '.join(links)}</p>")
         if not rows:
             parts.append('<p>当前没有需要处理的问题。</p>')
         browser.setHtml(''.join(parts))
@@ -102,10 +124,10 @@ class StudioReviewMixin:
         def action(url):
             try:
                 kind, number = url.toString().split(':', 1)
-                row = rows[int(number)]
+                row = (peers if kind=='peer' else rows)[int(number)]
             except (ValueError, IndexError):
                 return
-            if kind not in {'locate', 'edit', 'timing'}:
+            if kind not in {'locate', 'edit', 'timing','peer'}:
                 return
             dialog.accept()
             def perform():
@@ -232,11 +254,17 @@ class StudioReviewMixin:
         # landing on the previous caption (2026-10-18). Its track goes first.
         self.session.preferred_subtitle_speaker = cue.speaker_id
         self.select_cue(cue.id)
-        self._seek(cue.start_ms / 1000.0)
+        if self._selection_centered():
+            self._navigate_selected_subtitle(cue.id)
+        else:
+            self._seek(cue.start_ms / 1000.0)
 
     def _sync_jump_position(self) -> None:
         """The 跳转 box shows the selected caption's number (2026-10-18, user:
         after 上一条 / 下一条 it kept the old number)."""
+        sync_capsule = getattr(self, "_sync_cue_capsule", None)
+        if callable(sync_capsule):
+            sync_capsule()  # the 当前字幕 pill shows the same number
         spin = getattr(self, "jump_spin", None)
         if spin is None or getattr(self, "_jump_pending", False):
             return  # a number the user is typing stays until they jump
@@ -1163,6 +1191,10 @@ class StudioReviewMixin:
         try:
             rows = tuple(review_suggestions(cue.text, others, resolver=self._review_term_resolver(),
                                              pronouns=language in ("", "zh")))
+            from ..recognition.asr_source_evidence import annotate_suggestions
+            rows = annotate_suggestions(self.project,cue,rows)
+            from ..subtitle_rules.current_issues import unhandled_suggestion
+            rows = tuple(value for row in rows if (value:=unhandled_suggestion(self.project,cue.id,'original',row)) is not None)
             from ..subtitle_rules.current_issues import DECISIONS, suggestion_handled
             target = self._resolve_caption_edit_target(cue.id, 'original')
             decisions = self.project.studio_state.get(DECISIONS, {})
@@ -1207,6 +1239,8 @@ class StudioReviewMixin:
         if cue is None or not 0 <= int(mark) < len(suggestions):
             return False
         row = suggestions[int(mark)]
+        from ..recognition.asr_source_evidence import current_suggestion_option
+        if not current_suggestion_option(self.project,cue,row,int(option)):return False
         draft = getattr(self, '_caption_draft', None)
         if draft is not None:
             if draft.target.cue_id != cue.id or draft.target.layer != 'original':

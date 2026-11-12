@@ -70,9 +70,10 @@ def active_cues(page, milliseconds):
                 candidates[key]=replace(by_id[key],start_ms=value.start_ms,end_ms=value.end_ms,speaker_id=value.speaker_id)
         cues=candidates.values()
     hidden = getattr(page.timeline, 'hidden_speakers', set())
+    from ..subtitle_rules.display_continuity import visible_display_cues
+    cues = visible_display_cues(project,cues)
     order = {key: index for index, key in enumerate(getattr(page.timeline, '_speaker_ids', ()))}
-    return tuple(sorted((c for c in cues if c.speaker_id not in hidden
-                         and page._subtitle_track_visibility.get(c.speaker_id, True)),
+    return tuple(sorted(cues,
                         key=lambda c: (-order.get(c.speaker_id, 0), c.start_ms, c.id)))
 
 
@@ -781,22 +782,32 @@ class CaptionScene(QObject):
         """Prepared captions of one scene: every cue, then (bilingual display)
         the translation companion of every translated cue. ``None`` marks a
         caption that is not prepared yet; such a scene is not drawn or cached."""
-        items = [(cue.id, self.prepare(cue)) for cue in cues]
         page = self.page
         from ..caption_style.bilingual_layout import companion_id, settings_from_state, translations_of
+        from ..caption_style.subtitle_visibility import layer_visible
+        mode=settings_from_state(page.project.studio_state).mode
+        translated=translations_of(page.project.generation_metadata)
+        items = [(cue.id,self.prepare(cue)) for cue in cues
+                 if layer_visible(page.project,cue,'translation' if mode=='translation' and translated.get(cue.id) else 'original')]
         if settings_from_state(page.project.studio_state).mode == "bilingual":
             translated = translations_of(page.project.generation_metadata)
             cache = getattr(page, '_caption_playback_cache', None)
             for cue in cues:
-                if not str(translated.get(cue.id, '') or '').strip():
+                if not layer_visible(page.project,cue,'translation') or not str(translated.get(cue.id, '') or '').strip():
                     continue
                 from ..caption_style.bilingual_layout import theme_owns_translation
-                if theme_owns_translation(page.project.style_recipes, cue):
+                if theme_owns_translation(page.project.style_recipes, cue) and layer_visible(page.project,cue,'original'):
                     continue
                 key = companion_id(cue.id)
                 prepared = page._prepared_caption(key)
                 if prepared is None and cache is not None:
                     prepared = cache.failure(page._revision_store.render, key, *page._advanced_preview_size())
+                if (prepared is not None and hasattr(prepared,'snapshot')
+                        and (key in getattr(page,'_live_edit_text_overrides',{})
+                             or key in getattr(page,'_live_transform_overrides',{}))):
+                    from types import SimpleNamespace
+                    prepared=self.prepare(SimpleNamespace(id=key,start_ms=prepared.snapshot.start_ms,
+                                                          end_ms=prepared.snapshot.end_ms))
                 items.append((key, prepared))
         from ..caption_style.collision_layout import ProjectCollisionLayout
         cache = getattr(self, '_instance_layout', None)
@@ -904,7 +915,8 @@ class CaptionScene(QObject):
             cache=getattr(page,'_caption_playback_cache',None)
             return cache.failure(page._revision_store.render,cue.id,*page._advanced_preview_size()) if cache else None
         snapshot=prepared.snapshot
-        text=getattr(page,'_live_edit_text_overrides',{}).get(cue.id,snapshot.text)
+        overrides=getattr(page,'_live_edit_text_overrides',{})
+        text=overrides.get(getattr(snapshot,'cue_id',cue.id),overrides.get(cue.id,snapshot.text))
         changes=getattr(page,'_live_transform_overrides',{}).get(cue.id,{})
         timing=(cue.start_ms,cue.end_ms)!=(snapshot.start_ms,snapshot.end_ms)
         if text==snapshot.text and not changes and not timing:return prepared

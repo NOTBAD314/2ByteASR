@@ -23,17 +23,17 @@ def test_picker_keeps_canceled_selection_in_place_until_reopened(app):
         def _action_text(self, model, state): return ('取消使用' if state == 'selected' else '使用', True)
     controller = Controller()
     picker = ModelPickerPanel(controller, 'primary')
-    assert picker.cards_layout.itemAt(0).widget() is picker.cards[keys[-1]]
+    assert picker.cards_layout.itemAt(1).widget() is picker.cards[keys[-1]]
     controller.selected = ''; picker.refresh()
-    assert picker.cards_layout.itemAt(0).widget() is picker.cards[keys[-1]]
+    assert picker.cards_layout.itemAt(1).widget() is picker.cards[keys[-1]]
     # MainWindow retains the same panel between openings.
     picker.resize(860, 680); picker.show(); app.processEvents()
     picker.scroll.verticalScrollBar().setValue(100)
     picker.begin_session()
-    assert picker.cards_layout.itemAt(0).widget() is picker.cards[keys[0]]
+    assert picker.cards_layout.itemAt(1).widget() is picker.cards[keys[0]]
     assert picker.scroll.verticalScrollBar().value() == 0
     controller.selected = keys[1]; picker.refresh()
-    assert picker.cards_layout.itemAt(0).widget() is picker.cards[keys[1]]
+    assert picker.cards_layout.itemAt(1).widget() is picker.cards[keys[1]]
     picker.hide(); picker.deleteLater()
 
 def test_advanced_settings_edit_is_transactional(app, monkeypatch, tmp_path):

@@ -10,15 +10,16 @@ undoable edit; manual translations are never overwritten silently.
 from __future__ import annotations
 
 import json
-import os
 import threading
-from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-                               QProgressBar, QPushButton, QRadioButton, QVBoxLayout, QApplication)
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
+                               QWidget, QApplication)
 
 from ..i18n import bind_text, tr, user_text
+from .translation_dialog_parts import (LayoutButton, ScopeCard, StatusBar, build_translation_dialog_qss, chip,
+                                       passive, step_badge)
 
 from ..subtitle_rules.recognition_translation import load_cache, save_cache  # noqa: E402
 
@@ -41,6 +42,16 @@ def failure_reason(code) -> str:
     if code.endswith("_output") or code.startswith("not_") or code == "no_chinese":
         return "译文不是所选语言"
     return "没有通过检查"
+
+
+def _flag_text(code: str) -> str:
+    """Two letters for a language pill: 简 / 繁 for Chinese scripts, else the code (IT, JA, EN …)."""
+    code = str(code or "")
+    if code in ("zh-Hans", "zh"):
+        return "简" if code == "zh-Hans" else "中"
+    if code == "zh-Hant":
+        return "繁"
+    return code.split("-")[0][:2].upper() or "?"
 
 
 def _european_label(language: str) -> str:
@@ -73,7 +84,18 @@ class SubtitleTranslationDialog(QDialog):
     def __init__(self, page, parent=None, *, scope=None, cue_ids=None, target=None, atomic_display=False) -> None:
         super().__init__(parent)
         bind_text(self, '翻译 / 生成双语字幕', property='windowTitle')
-        self.setMinimumWidth(520)
+        # 2026-11-11 (user picked 方案 A): three steps instead of one long column of text.
+        self.setObjectName('translationDialog')
+        # 2026-11-11 (user): not the Windows title bar; a round card in the app's own style.
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumWidth(580 + 2 * self.SHADOW)
+        from ..design.studio_theme import _active_theme, apply_secondary_surface_theme, build_secondary_surface_qss
+        apply_secondary_surface_theme(self)
+        self._theme = _active_theme(None)
+        self.setStyleSheet(build_secondary_surface_qss(self._theme) + build_translation_dialog_qss(self._theme))
+        self._phase = 'idle'
         self.page = page
         self.project = page.project
         self._atomic_display = bool(atomic_display)
@@ -88,126 +110,379 @@ class SubtitleTranslationDialog(QDialog):
         self._signals.event.connect(self._on_event)
         from ..subtitle_rules.subtitle_translation import migrate
         migrate(self.project)
-        layout = QVBoxLayout(self)
+        frame = QVBoxLayout(self)
+        frame.setContentsMargins(self.SHADOW, self.SHADOW - 4, self.SHADOW, self.SHADOW + 4)
+        self._card = QFrame()
+        self._card.setObjectName('translationCard')
+        frame.addWidget(self._card)
+        outer = QVBoxLayout(self._card)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
         from ..subtitle_rules.language_rules import project_language
         from ..subtitle_rules.subtitle_translation import _translation_language
         language = _translation_language(self.project)
-        self.language_note = QLabel()
-        self.language_note.setWordWrap(True)
         self._language = language
         from ..projects.subtitle_import import language_label
-        bind_text(self.language_note, '原文：{language}。翻译读取已提交的正文；译文独立保存，原文、说话人和时间不变。',
-                  language=language_label(language) if language else tr('未记录（旧工程按日语处理，请确认）'))
-        if language and not project_language(self.project):
-            self.language_note.setText(self.language_note.text() + str(tr('语言依据导入标记或明确词库方向，请确认。')))
-        layout.addWidget(self.language_note)
-        self.scope_group = QButtonGroup(self)
-        selected = list(cue_ids if cue_ids is not None else (getattr(page, "selected_cue_ids", lambda: [])() or []))
-        self._selected = selected
-        scopes = (("pending", tr("只处理未翻译、失败和需要更新的字幕")), ("all", tr("全部字幕（人工译文保留）")),
-                  ("selected", tr("选中的 {count} 条字幕", count=len(selected))))
-        self.scope_buttons = {}
-        for key, label in scopes:
-            button = QRadioButton(label)
-            self.scope_group.addButton(button)
-            self.scope_buttons[key] = button
-            layout.addWidget(button)
-        self.scope_buttons["selected"].setEnabled(bool(selected))
-        initial_scope = scope if scope in ('all', 'pending') else ('selected' if selected else 'pending')
-        self.scope_buttons[initial_scope].setChecked(True)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("译文语言")))
+        theme = self._theme
+        from ..design.themed_icons import colored_icon
+
+        # -- header: what goes into what ------------------------------------
+        header = QFrame()
+        header.setObjectName('translationHeader')
+        head = QVBoxLayout(header)
+        head.setContentsMargins(24, 20, 24, 12)
+        head.setSpacing(12)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        badge = QLabel()
+        badge.setObjectName('translationBadge')
+        badge.setFixedSize(34, 34)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setPixmap(colored_icon('ph.translate', theme.text_on_accent).pixmap(20, 20))
+        title = QLabel()
+        title.setObjectName('translationTitle')
+        bind_text(title, '翻译字幕')
+        title_row.addWidget(badge)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        self.window_close_button = QPushButton('×')
+        self.window_close_button.setObjectName('translationWindowClose')
+        self.window_close_button.setFixedSize(34, 34)
+        self.window_close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.window_close_button, '关闭', property='toolTip')
+        self.window_close_button.clicked.connect(lambda: self._cancel_or_close())
+        title_row.addWidget(self.window_close_button, 0, Qt.AlignmentFlag.AlignTop)
+        head.addLayout(title_row)
+        pair = QHBoxLayout()
+        pair.setSpacing(10)
+        source_pill, _flag = self._language_pill(_flag_text(language) if language else '?', target=False)
+        self.source_language_label = QLabel(language_label(language) if language else tr('未记录'))
+        self.source_language_label.setObjectName('translationLangName')
+        source_pill.layout().addWidget(self.source_language_label)
+        arrow = QLabel('→')
+        arrow.setObjectName('translationArrow')
+        target_pill, self.target_flag = self._language_pill('', target=True)
         # Any target in another language than the source (2026-10-14); native names.
         from ..subtitle_rules.subtitle_translation import TARGET_LABELS, targets_for
         self.script = user_text(QComboBox())
+        self.script.setObjectName('translationTargetCombo')
+        self.script.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         for language_target in targets_for(language):
             self.script.addItem(TARGET_LABELS[language_target], language_target)
         stored = (target or (self.project.generation_metadata.get("translation_records") or {}).get("target")
                   or (self.project.generation_metadata.get("subtitle_output") or {}).get("translation_script")
                   or "zh-Hans")
         self.script.setCurrentIndex(max(0, self.script.findData(stored)))
-        row.addWidget(self.script, 1)
-        layout.addLayout(row)
+        target_pill.layout().addWidget(self.script)
+        pair.addWidget(source_pill)
+        pair.addWidget(arrow)
+        pair.addWidget(target_pill)
+        pair.addStretch(1)
+        head.addLayout(pair)
+        note_row = QHBoxLayout()
+        note_row.setSpacing(6)
+        lock = QLabel()
+        lock.setPixmap(colored_icon('ph.lock-simple', theme.text_muted).pixmap(13, 13))
+        lock.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lock.setContentsMargins(0, 2, 0, 0)
+        self.language_note = QLabel()
+        self.language_note.setObjectName('translationSafeNote')
+        self.language_note.setWordWrap(True)
+        bind_text(self.language_note, '只发字幕文字，不发音频；译文单独保存，原文、说话人和时间都不动。')
+        bind_text(self.language_note, '翻译读取已提交的正文。', property='toolTip')
+        if not language:
+            self.language_note.setText(self.language_note.text() + str(tr('旧工程没有记录原文语言，按日语处理，请确认。')))
+        elif not project_language(self.project):
+            self.language_note.setText(self.language_note.text() + str(tr('语言依据导入标记或明确词库方向，请确认。')))
+        note_row.addWidget(lock)
+        note_row.addWidget(self.language_note, 1)
+        head.addLayout(note_row)
+        outer.addWidget(header)
+        header.mousePressEvent = self._drag_window   # no title bar: the header moves the window
+
+        self._header = header
+        body = QWidget()
+        body.setObjectName('translationBody')
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 4, 24, 12)
+        layout.setSpacing(16)
+        self._body = body
+        # Small screens: the steps scroll, header and buttons stay (_fit_height).
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName('translationScroll')
+        self._scroll.viewport().setObjectName('translationScrollViewport')
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setMinimumHeight(160)
+        self._scroll.setWidget(body)
+        outer.addWidget(self._scroll, 1)
+
+        # -- 1 翻译哪些 ------------------------------------------------------
+        self.scope_section = QWidget()
+        section = QVBoxLayout(self.scope_section)
+        section.setContentsMargins(0, 0, 0, 0)
+        section.setSpacing(10)
+        section.addWidget(self._section_header(1, '翻译哪些'))
+        self.scope_group = QButtonGroup(self)
+        self.scope_group.setExclusive(True)
+        selected = list(cue_ids if cue_ids is not None else (getattr(page, "selected_cue_ids", lambda: [])() or []))
+        self._selected = selected
+        cards = QHBoxLayout()
+        cards.setSpacing(10)
+        self.scope_buttons = {}
+        for key, label in (("pending", tr("待处理")), ("all", tr("全部")), ("selected", tr("选中的"))):
+            card = ScopeCard(key, label)
+            self.scope_group.addButton(card)
+            self.scope_buttons[key] = card
+            cards.addWidget(card, 1)
+        section.addLayout(cards)
+        layout.addWidget(self.scope_section)
+        self.scope_buttons["selected"].set_values(len(selected), tr("时间轴上选中的") if selected
+                                                  else tr("先在列表或时间轴上选中"))
+        self.scope_buttons["selected"].setEnabled(bool(selected))
+        initial_scope = scope if scope in ('all', 'pending') else ('selected' if selected else 'pending')
+        self.scope_buttons[initial_scope].setChecked(True)
+        self.scope_group.buttonToggled.connect(lambda *_args: self._refresh_start_label())
+
+        # -- 2 让 AI 更懂这部作品（默认收起） ---------------------------------
+        self.advanced_section = QWidget()
+        section = QVBoxLayout(self.advanced_section)
+        section.setContentsMargins(0, 0, 0, 0)
+        section.setSpacing(10)
+        self.advanced_toggle = LayoutButton()
+        self.advanced_toggle.setObjectName('translationSectionToggle')
+        self.advanced_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle_row = self._header_row(self.advanced_toggle, 2, '让 AI 更懂这部作品')
+        toggle_row.addWidget(chip(tr('可选')))
+        toggle_row.addStretch(1)
+        self.context_chip, self.terms_chip = chip(), chip()
+        toggle_row.addWidget(self.context_chip)
+        toggle_row.addWidget(self.terms_chip)
+        self.advanced_caret = passive(QLabel())
+        toggle_row.addWidget(self.advanced_caret)
+        self.advanced_toggle.clicked.connect(self._toggle_advanced)
+        section.addWidget(self.advanced_toggle)
+        self.advanced = QFrame()
+        self.advanced.setObjectName('translationAdvanced')
+        inner = QVBoxLayout(self.advanced)
+        inner.setContentsMargins(14, 12, 14, 14)
+        inner.setSpacing(10)
         self.context = QLineEdit(str(self.project.generation_metadata.get("translation_context")
                                      or getattr(page, "_content_name", "") or ""))
+        self.context.setObjectName('translationContext')
         bind_text(self.context, '背景（可选）：作品 / 游戏名、角色关系，帮助译名一致', property='placeholderText')
-        layout.addWidget(self.context)
+        inner.addWidget(self.context)
         from ..glossary.translation_terms_ui import project_widget
         self.term_libraries = project_widget(page, self)
-        layout.addWidget(self.term_libraries)
+        self.term_libraries.summary.setObjectName('translationLibText')
+        self.term_libraries.manage.setObjectName('translationSecondary')
+        self.term_libraries.manage.clicked.connect(self._refresh_advanced_summary)
+        inner.addWidget(self._library_row('ph.book-open', self.term_libraries))
         import subtitle_core as legacy
         catalog = {str(row['id']): str(row['name']) for row in legacy.glossary_catalog()}
         source_names = '、'.join(catalog.get(identity, identity) for identity in self.project.glossary_ids) or tr('未选择')
         if not self.project.generation_metadata.get('source_glossary_enabled', True):
             source_names = tr('已关闭') + ' · ' + source_names
-        layout.addWidget(QLabel(tr('原文校对术语库') + '：' + source_names))
+        self.source_terms_label = QLabel(tr('原文校对术语库') + '：' + source_names)
+        self.source_terms_label.setObjectName('translationLibText')
+        self.source_terms_label.setWordWrap(True)
+        inner.addWidget(self._library_row('ph.check-bold', self.source_terms_label))
         self.glossary = QPlainTextEdit()
+        self.glossary.setObjectName('translationGlossary')
         self.glossary.setMaximumHeight(90)
         self._glossary_hint()
         pairs = self.project.generation_metadata.get("translation_glossary") or []
         self.glossary.setPlainText("\n".join(f"{a} = {b}" for a, b in pairs if a and b))
-        layout.addWidget(self.glossary)
+        inner.addWidget(self.glossary)
+        self.advanced.hide()
+        section.addWidget(self.advanced)
+        layout.addWidget(self.advanced_section)
+        self.context.textChanged.connect(self._refresh_advanced_summary)
+        self.glossary.textChanged.connect(self._refresh_advanced_summary)
+
+        # -- 翻译中 -----------------------------------------------------------
+        self.run_box = QFrame()
+        self.run_box.setObjectName('translationRunBox')
+        run = QVBoxLayout(self.run_box)
+        run.setContentsMargins(16, 14, 16, 14)
+        run.setSpacing(10)
+        run_top = QHBoxLayout()
+        run_top.setSpacing(10)
+        self.run_percent = QLabel('0%')
+        self.run_percent.setObjectName('translationRunPercent')
+        self.run_detail = QLabel()
+        self.run_detail.setObjectName('translationRunDetail')
+        self.run_detail.setWordWrap(True)
+        run_top.addWidget(self.run_percent, 0, Qt.AlignmentFlag.AlignBottom)
+        run_top.addWidget(self.run_detail, 1, Qt.AlignmentFlag.AlignBottom)
+        run.addLayout(run_top)
+        self.progress = QProgressBar()
+        self.progress.setObjectName('translationProgress')
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        run.addWidget(self.progress)
+        run_hint = QLabel()
+        run_hint.setObjectName('translationHint')
+        run_hint.setWordWrap(True)
+        bind_text(run_hint, '可以先去编辑别的字幕；结束后一起写入，期间改过的字幕不会被覆盖。')
+        run.addWidget(run_hint)
+        self.run_box.hide()
+        layout.addWidget(self.run_box)
+
+        # -- 结果 / 提示 --------------------------------------------------------
+        self.result_card = QFrame()
+        self.result_card.setObjectName('translationResultCard')
+        result = QVBoxLayout(self.result_card)
+        result.setContentsMargins(16, 12, 16, 14)
+        result.setSpacing(6)
+        self.result_title = QLabel()
+        self.result_title.setObjectName('translationResultTitle')
+        self.result_title.setWordWrap(True)
+        self.status = QLabel()
+        self.status.setObjectName('translationStatus')
+        self.status.setWordWrap(True)
+        self.accept_suggestions_button = QPushButton(tr("用 AI 结果替换这些人工译文"))
+        self.accept_suggestions_button.setObjectName('translationSecondary')
+        self.accept_suggestions_button.hide()
+        self.accept_suggestions_button.clicked.connect(self._accept_suggestions)
+        result.addWidget(self.result_title)
+        result.addWidget(self.status)
+        result.addWidget(self.accept_suggestions_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.result_card.hide()
+        layout.addWidget(self.result_card)
+
+        # -- 3 这个工程翻到哪了 -------------------------------------------------
+        self.overview = QWidget()
+        section = QVBoxLayout(self.overview)
+        section.setContentsMargins(0, 0, 0, 0)
+        section.setSpacing(10)
+        section.addWidget(self._section_header(3, '这个工程翻到哪了'))
+        self.status_bar = StatusBar()
+        section.addWidget(self.status_bar)
         self.counts = QLabel()
+        self.counts.setObjectName('translationLegend')
+        self.counts.setTextFormat(Qt.TextFormat.RichText)
         self.counts.setWordWrap(True)
-        layout.addWidget(self.counts)
+        section.addWidget(self.counts)
         # 2026-10-27 (user): in a long video one failed line was impossible to find.
-        failed_row = QHBoxLayout()
+        self.failed_box = QFrame()
+        self.failed_box.setObjectName('translationAlert')
+        failed_row = QHBoxLayout(self.failed_box)
+        failed_row.setContentsMargins(12, 10, 12, 10)
+        failed_row.setSpacing(12)
+        alert_icon = QLabel()
+        alert_icon.setObjectName('translationAlertIcon')
+        alert_icon.setFixedSize(32, 32)
+        alert_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        alert_icon.setPixmap(colored_icon('ph.warning-circle', theme.surface).pixmap(18, 18))
+        failed_text = QVBoxLayout()
+        failed_text.setSpacing(2)
+        self.failed_title = QLabel()
+        self.failed_title.setObjectName('translationAlertTitle')
+        self.failed_title.setTextFormat(Qt.TextFormat.RichText)
         self.failed_note = QLabel()
         self.failed_note.setWordWrap(True)
-        self.failed_note.setObjectName("contextMeta")
+        self.failed_note.setObjectName("translationAlertDetail")
+        failed_text.addWidget(self.failed_title)
+        failed_text.addWidget(self.failed_note)
         self.locate_failed_button = QPushButton(tr("定位"))
+        self.locate_failed_button.setObjectName('translationPillButton')
+        self.locate_failed_button.setIcon(colored_icon('ph.crosshair', theme.text))
         self.locate_failed_button.clicked.connect(self._locate_failed)
-        failed_row.addWidget(self.failed_note, 1)
-        failed_row.addWidget(self.locate_failed_button)
-        layout.addLayout(failed_row)
+        failed_row.addWidget(alert_icon, 0, Qt.AlignmentFlag.AlignTop)
+        failed_row.addLayout(failed_text, 1)
+        failed_row.addWidget(self.locate_failed_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        section.addWidget(self.failed_box)
         self._failed_ids, self._failed_cursor = [], 0
-        self.service = QLabel()
-        self.service.setWordWrap(True)
-        self.service.setObjectName("contextMeta")
-        layout.addWidget(self.service)
-        self.settings_button = QPushButton(tr('前往设置：AI 文字翻译服务 / API Key'))
-        self.settings_button.clicked.connect(self._go_to_settings)
-        layout.addWidget(self.settings_button)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        layout.addWidget(self.overview)
+
+        # -- 请求日志与用量（默认收起） -------------------------------------------
+        self.log_toggle = QPushButton()
+        self.log_toggle.setObjectName('translationLogToggle')
+        self.log_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.log_toggle.setIcon(colored_icon('ph.list-bullets', theme.text_muted))
+        self.log_toggle.clicked.connect(self._toggle_log)
+        self.log_panel = QWidget()
+        log = QVBoxLayout(self.log_panel)
+        log.setContentsMargins(0, 0, 0, 0)
+        log.setSpacing(6)
         self.log_note = QLabel(tr("请求日志只保留批次、用量与验证摘要；要分享字幕内容，请在「回报问题」中选择。"))
+        self.log_note.setObjectName('translationHint')
         self.log_note.setWordWrap(True)
-        layout.addWidget(self.log_note)
         self.request_log = QPlainTextEdit()
+        self.request_log.setObjectName('translationLog')
         self.request_log.setReadOnly(True)
         self.request_log.setMaximumBlockCount(1000)
         self.request_log.setFixedHeight(125)
         self.request_log.setPlaceholderText(tr("开始后显示每批请求、耗时、用量、失败原因和重试过程。"))
-        layout.addWidget(self.request_log)
-        buttons = QHBoxLayout()
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
         self.copy_log_button = QPushButton(tr("复制请求日志"))
+        self.copy_log_button.setObjectName('translationSecondary')
+        self.copy_log_button.setIcon(colored_icon('ph.copy', theme.text))
         self.copy_log_button.setEnabled(False)
         self.copy_log_button.clicked.connect(self._copy_log)
-        buttons.addWidget(self.copy_log_button)
         self.usage_button = QPushButton(tr('用量与估算费用'))
+        self.usage_button.setObjectName('translationSecondary')
         self.usage_button.clicked.connect(self._show_usage)
-        buttons.addWidget(self.usage_button)
+        tools.addWidget(self.copy_log_button)
+        tools.addWidget(self.usage_button)
+        tools.addStretch(1)
         self._usage_task_id = ''
-        self.accept_suggestions_button = QPushButton(tr("用 AI 结果替换这些人工译文"))
-        self.accept_suggestions_button.hide()
-        self.accept_suggestions_button.clicked.connect(self._accept_suggestions)
-        buttons.addWidget(self.accept_suggestions_button)
-        buttons.addStretch(1)
+        log.addLayout(tools)
+        log.addWidget(self.request_log)
+        log.addWidget(self.log_note)
+        self.log_panel.hide()
+        layout.addWidget(self.log_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.log_panel)
+        layout.addStretch(1)  # spare height stays below the steps
+
+        # -- footer: which service, start / close --------------------------------
+        footer = QFrame()
+        footer.setObjectName('translationFooter')
+        buttons = QHBoxLayout(footer)
+        buttons.setContentsMargins(24, 12, 24, 16)
+        buttons.setSpacing(8)
+        self.service_dot = QLabel()
+        self.service_dot.setObjectName('translationServiceDot')
+        self.service_dot.setFixedSize(8, 8)
+        self.service = QLabel()
+        self.service.setObjectName("translationService")
+        # 2026-11-11 (user: the service name was cut off): it wraps onto a second line instead.
+        self.service.setWordWrap(True)
+        self.service.setMinimumWidth(150)
+        self.service.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.settings_button = QPushButton(tr('更换'))
+        self.settings_button.setObjectName('translationLink')
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_button.setToolTip(tr('前往设置：AI 文字翻译服务 / API Key'))
+        self.settings_button.clicked.connect(self._go_to_settings)
         self.start_button = QPushButton(tr("开始翻译"))
-        self.start_button.setObjectName("primaryButton")
+        self.start_button.setObjectName("translationStart")
+        self.start_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.start_button.setDefault(True)
         self.start_button.clicked.connect(self._start)
-        self.cancel_button = QPushButton(tr("取消"))
+        self.cancel_button = QPushButton(tr("关闭"))
+        self.cancel_button.setObjectName('translationClose')
         self.cancel_button.clicked.connect(self._cancel_or_close)
-        buttons.addWidget(self.start_button)
+        buttons.addWidget(self.service_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        buttons.addSpacing(2)
+        buttons.addWidget(self.service, 1)
+        buttons.addWidget(self.settings_button)
+        buttons.addSpacing(8)
         buttons.addWidget(self.cancel_button)
-        layout.addLayout(buttons)
+        buttons.addWidget(self.start_button)
+        outer.addWidget(footer)
+        self._footer = footer
+
         self._provider_ready = self._describe_service()
         self._refresh_counts()
+        self._refresh_target_flag()
+        self._refresh_advanced_summary()
+        self._refresh_log_toggle()
         self.script.currentIndexChanged.connect(self._target_changed)
+        self._fit_height()
 
     def _go_to_settings(self):
         from .translation_actions import open_translation_settings
@@ -217,12 +492,183 @@ class SubtitleTranslationDialog(QDialog):
         from .usage_dialog import open_usage
         open_usage(self, project=self.project, task_id=self._usage_task_id)
 
+    # -- layout pieces -------------------------------------------------------
+    def _language_pill(self, flag_text: str, *, target: bool):
+        pill = QFrame()
+        pill.setObjectName('translationLangPill')
+        pill.setProperty('target', target)
+        row = QHBoxLayout(pill)
+        row.setContentsMargins(7, 6, 16, 6)
+        row.setSpacing(8)
+        flag = QLabel(flag_text)
+        flag.setObjectName('translationLangFlag')
+        flag.setProperty('target', target)
+        flag.setFixedSize(30, 30)
+        flag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(flag)
+        return pill, flag
+
+    @staticmethod
+    def _header_row(owner: QWidget, number: int, title: str) -> QHBoxLayout:
+        """Step badge + title at x = 0 of ``owner``: the three steps line up (2026-11-11 user)."""
+        row = QHBoxLayout(owner)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        label = passive(QLabel())
+        label.setObjectName('translationSectionTitle')
+        bind_text(label, title)
+        row.addWidget(step_badge(number))
+        row.addWidget(label)
+        return row
+
+    def _section_header(self, number: int, title: str) -> QWidget:
+        header = QWidget()
+        header.setObjectName('translationSectionHeader')
+        self._header_row(header, number, title).addStretch(1)
+        return header
+
+    def _library_row(self, icon: str, content: QWidget) -> QFrame:
+        from ..design.themed_icons import colored_icon
+        frame = QFrame()
+        frame.setObjectName('translationLibRow')
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(12, 8, 8, 8)
+        row.setSpacing(10)
+        glyph = QLabel()
+        glyph.setPixmap(colored_icon(icon, self._theme.text_secondary).pixmap(16, 16))
+        row.addWidget(glyph, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(content, 1)
+        return frame
+
+    def _toggle_advanced(self) -> None:
+        self.advanced.setVisible(self.advanced.isHidden())
+        self._refresh_advanced_summary()
+        self._fit_height()
+
+    def _refresh_advanced_summary(self) -> None:
+        from ..design.themed_icons import colored_icon
+        from ..glossary.translation_terms import normalize, policy_of
+        opened = not self.advanced.isHidden()
+        self.advanced_caret.setPixmap(colored_icon('ph.caret-up' if opened else 'ph.caret-down',
+                                                   self._theme.text_muted).pixmap(14, 14))
+        self.context_chip.setVisible(not opened)
+        self.terms_chip.setVisible(not opened)
+        bind_text(self.context_chip, '背景 已填' if self.context.text().strip() else '背景 未填')
+        try:
+            policy = normalize(policy_of(self.project))
+            libraries = len(policy['selected_ids']) if policy['enabled'] else 0
+        except Exception:  # noqa: BLE001 - only a summary chip
+            libraries = 0
+        libraries += len(self.project.glossary_ids or ()) if self.project.generation_metadata.get(
+            'source_glossary_enabled', True) else 0
+        if libraries or parse_glossary(self.glossary.toPlainText()):
+            bind_text(self.terms_chip, '术语 已设')
+        else:
+            bind_text(self.terms_chip, '术语库 未选')
+
+    def _toggle_log(self) -> None:
+        self.log_panel.setVisible(self.log_panel.isHidden())
+        self._refresh_log_toggle()
+        self._fit_height()
+
+    def _refresh_log_toggle(self) -> None:
+        lines = self.request_log.blockCount() if self.request_log.toPlainText() else 0
+        arrow = '▴' if not self.log_panel.isHidden() else '▾'
+        if lines:
+            bind_text(self.log_toggle, '请求日志与用量 · {count} 行 {arrow}', count=lines, arrow=arrow)
+        else:
+            bind_text(self.log_toggle, '请求日志与用量 {arrow}', arrow=arrow)
+
+    def _refresh_target_flag(self) -> None:
+        self.target_flag.setText(_flag_text(self._target()))
+
+    def _refresh_start_label(self) -> None:
+        card = next((card for card in self.scope_buttons.values() if card.isChecked()), None)
+        bind_text(self.start_button, '开始翻译 · {count} 条', count=card.count() if card is not None else 0)
+
+    SHADOW = 14                                          # room around the round card for its soft shadow
+    RADIUS = 26
+
+    def _drag_window(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.windowHandle() is not None:
+            self.windowHandle().startSystemMove()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QPainter
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        card = QRectF(self._card.geometry()) if hasattr(self, '_card') else QRectF(self.rect())
+        for spread, alpha in ((14, 14), (9, 22), (4, 34)):
+            painter.setBrush(QColor(0, 0, 0, alpha))
+            painter.drawRoundedRect(card.adjusted(-spread / 2, -spread / 2 + 3, spread / 2, spread / 2 + 5),
+                                    self.RADIUS + spread / 2, self.RADIUS + spread / 2)
+        painter.end()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        # Sizes before the first show predate the style sheet's fonts and paddings.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._fit_height)
+
+    def _fit_height(self) -> None:
+        """Grow to the content, at most the screen's free height; the steps scroll beyond that."""
+        if not hasattr(self, '_footer'):
+            return
+        def height(widget, width):
+            # Wrapped labels: the height at the real width, not the size hint's guess.
+            layout = widget.layout()
+            if layout is not None and layout.hasHeightForWidth():
+                return layout.totalHeightForWidth(width)
+            return widget.sizeHint().height()
+
+        width = max(self.width(), self.minimumWidth())
+        inner = width - 2 * self.SHADOW
+        wanted = (height(self._header, inner) + height(self._body, inner) + height(self._footer, inner) + 2
+                  + 2 * self.SHADOW)
+        screen = self.screen() or QApplication.primaryScreen()
+        limit = screen.availableGeometry().height() - 80 if screen is not None else wanted
+        self.resize(max(self.width(), self.minimumWidth()), max(360, min(wanted, limit)))
+
+    @staticmethod
+    def _repolish(widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _set_phase(self, phase: str) -> None:
+        """idle / run / done: what the dialog shows around the same controls."""
+        self._phase = phase
+        running = phase == 'run'
+        for widget in (self.scope_section, self.advanced_section, self.overview):
+            widget.setVisible(not running)
+        self.run_box.setVisible(running)
+        self.start_button.setVisible(not running)
+        if running:
+            self.result_card.hide()
+            self.run_percent.setText('0%')
+        self.cancel_button.setProperty('stop', running)
+        bind_text(self.cancel_button, '停止' if running else '关闭')
+        self._repolish(self.cancel_button)
+        self._fit_height()
+
+    def _show_result(self, tone: str, title: str, **values) -> None:
+        """The card above the overview: ``tone`` ok / bad / info, ``self.status`` holds the details."""
+        self.result_card.setProperty('tone', tone)
+        bind_text(self.result_title, title, **values)
+        self._repolish(self.result_card)
+        for child in self.result_card.findChildren(QLabel):
+            self._repolish(child)
+        self.result_card.show()
+        self._fit_height()
+
     # -- state -------------------------------------------------------------
     def _target(self) -> str:
         return str(self.script.currentData() or "zh-Hans")
 
     def _target_changed(self, _index: int) -> None:
         self._glossary_hint()
+        self._refresh_target_flag()
         self._refresh_counts()
 
     def _glossary_hint(self) -> None:
@@ -242,7 +688,21 @@ class SubtitleTranslationDialog(QDialog):
     def _refresh_counts(self) -> None:
         from ..subtitle_rules.subtitle_translation import status_counts
         counts = status_counts(self.project, target=self._target())
-        bind_text(self.counts, " · ".join(f"{tr(label)} {counts.get(key, 0)}" for key, label in STATUS_LABELS))
+        t = self._theme
+        colors = {"untranslated": t.text_muted, "done": t.success, "manual": t.accent_text,
+                  "needs_update": t.warning, "failed": t.danger}
+        self.counts.setText("&nbsp;&nbsp;&nbsp;".join(
+            f'<span style="color:{colors[key]}">●</span>&nbsp;{tr(label)}&nbsp;<b>{counts.get(key, 0)}</b>'
+            for key, label in STATUS_LABELS))
+        self.status_bar.set_segments([(counts.get(key, 0), colors[key])
+                                      for key in ("done", "manual", "needs_update", "failed")], t.selected)
+        pending = sum(counts.get(key, 0) for key in ("untranslated", "failed", "needs_update"))
+        self.scope_buttons["pending"].set_values(pending, tr("失败 {failed} · 未译 {untranslated} · 需更新 {update}",
+                                                             failed=counts.get("failed", 0),
+                                                             untranslated=counts.get("untranslated", 0),
+                                                             update=counts.get("needs_update", 0)))
+        self.scope_buttons["all"].set_values(sum(counts.values()), tr("人工译文会保留"))
+        self._refresh_start_label()
         self._refresh_failed()
 
     def _cue_number(self, cue_id: str) -> str:
@@ -257,8 +717,11 @@ class SubtitleTranslationDialog(QDialog):
             self._failed_ids, self._failed_cursor = failed, 0
         self.failed_note.setVisible(bool(failed))
         self.locate_failed_button.setVisible(bool(failed))
+        self.failed_box.setVisible(bool(failed))
         if not failed:
             return
+        self.failed_title.setText(str(tr('{count} 条没翻成功', count=f'<b style="color:{self._theme.danger}; '
+                                                                   f'font-size:15px">{len(failed)}</b>')))
         records = records_of(self.project)
         items = " · ".join(f"#{self._cue_number(cue_id)} {tr(failure_reason((records.get(cue_id) or {}).get('error')))}"
                            for cue_id in failed[:3])
@@ -310,14 +773,25 @@ class SubtitleTranslationDialog(QDialog):
             missing = not ready and text_ai_key_missing(settings, "polish")
         except Exception:  # noqa: BLE001 - shown to the user as "not configured"
             ready, name = False, ""
+        # 2026-11-11: one short line in the footer; the full sentence is the tooltip.
         if ready:
+            bind_text(self.service, "{name} · 可能产生费用", name=name)
             bind_text(self.service, "使用已配置的 AI 文字服务：{name}。只发送字幕文字和前后几句上下文（不发送音频），"
-                                    "按批请求，可能产生费用；不会改用其他模型。", name=name)
+                                    "按批请求，可能产生费用；不会改用其他模型。", name=name, property='toolTip')
+            bind_text(self.settings_button, '更换')
         elif missing:
             # 2026-10-15: only the key is missing — 开始翻译 stays clickable and explains it.
-            bind_text(self.service, '文字翻译服务 {name} 尚未填写 API Key。请前往“字幕校对”服务设置；不是语音识别 ASR 的 Key。', name=name)
+            bind_text(self.service, '{name} 还没填 API Key', name=name)
+            bind_text(self.service, '文字翻译服务 {name} 尚未填写 API Key。请前往“字幕校对”服务设置；不是语音识别 ASR 的 Key。',
+                      name=name, property='toolTip')
+            bind_text(self.settings_button, '去填写')
         else:
-            bind_text(self.service, "还没有配置 AI 文字服务：请先在设置中配置“字幕校对”使用的服务，再回来翻译。")
+            bind_text(self.service, "还没有配置 AI 文字服务")
+            bind_text(self.service, "还没有配置 AI 文字服务：请先在设置中配置“字幕校对”使用的服务，再回来翻译。",
+                      property='toolTip')
+            bind_text(self.settings_button, '前往设置')
+        self.service_dot.setProperty('state', 'ready' if ready else 'missing' if missing else 'none')
+        self._repolish(self.service_dot)
         self.start_button.setEnabled(ready or missing)
         return ready or missing
 
@@ -350,6 +824,7 @@ class SubtitleTranslationDialog(QDialog):
             return
         if not self._owns_project():
             bind_text(self.status, '工程已切换或关闭，请在当前工程重新打开翻译。')
+            self._show_result('info', '没有开始')
             return
         from ..caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
         from ..providers.ai_providers import provider_for_stage
@@ -369,11 +844,13 @@ class SubtitleTranslationDialog(QDialog):
             ids = [cue_id for cue_id in ids if cue_id in eligible]
         if ids is not None and not ids:
             bind_text(self.status, "所选内容没有属于本次源语言的待处理原文；独立译文轨道请使用译文校对。")
+            self._show_result('info', '没有要翻译的字幕')
             return
         from ..providers.llm_config import text_ai_key_missing
         if text_ai_key_missing(GLOBAL_PROVIDER_REGISTRY.settings(), 'polish'):
             self._describe_service()
-            bind_text(self.status, '翻译没有运行：请点击“前往设置”填写当前文字服务的 API Key；保存后会检查原文并继续。')
+            bind_text(self.status, '翻译没有运行：请点击右下角“去填写”填写当前文字服务的 API Key；保存后会检查原文并继续。')
+            self._show_result('info', '还差一步：填写 API Key')
             self.settings_button.setFocus()
             return
         self.request_log.clear()
@@ -383,6 +860,7 @@ class SubtitleTranslationDialog(QDialog):
         self._log = TranslationLog()
         self.copy_log_button.setEnabled(True)
         self.request_log.appendPlainText(tr("日志文件：{path}", path=str(self._log.path)))
+        self._refresh_log_toggle()
         self.project.generation_metadata["translation_glossary"] = [list(pair) for pair in pairs]
         self.project.generation_metadata["translation_context"] = self.context.text().strip()
         from dataclasses import replace
@@ -412,6 +890,10 @@ class SubtitleTranslationDialog(QDialog):
             button.setEnabled(False)
         bind_text(self.cancel_button, "停止")
         bind_text(self.status, "正在翻译…")
+        self._run_total = len(ids) if ids is not None else len(source.cues)
+        bind_text(self.run_detail, '正在把 {count} 条翻成{target}', count=self._run_total, target=self.script.currentText())
+        self.progress.setValue(0)
+        self._set_phase('run')
         cache = load_cache()
 
         def record(event):
@@ -456,8 +938,12 @@ class SubtitleTranslationDialog(QDialog):
         self._thread.start()
 
     def _on_progress(self, done: int, total: int, message: str) -> None:
-        self.progress.setValue(int(100 * done / max(1, total)))
+        percent = int(100 * done / max(1, total))
+        self.progress.setValue(percent)
+        self.run_percent.setText(f"{percent}%")
         bind_text(self.status, "已完成 {done}/{total} 条 {message}", done=done, total=total, message=message)
+        if not self._cancel.is_set():
+            bind_text(self.run_detail, "已完成 {done} / {total} 条 {message}", done=done, total=total, message=message)
 
     def _on_event(self, event: dict) -> None:
         from ..providers.provider_diagnostics import redact_diagnostics
@@ -507,6 +993,7 @@ class SubtitleTranslationDialog(QDialog):
                                if key not in {"at", "provider", "model", "target", "failed"}}, ensure_ascii=False)
         self.request_log.appendPlainText(prefix + text)
         self.request_log.verticalScrollBar().setValue(self.request_log.verticalScrollBar().maximum())
+        self._refresh_log_toggle()
 
     def _copy_log(self) -> None:
         from ..providers.provider_diagnostics import redact_diagnostics
@@ -520,6 +1007,7 @@ class SubtitleTranslationDialog(QDialog):
 
     def _on_finished(self, result) -> None:
         self._thread = None
+        self._set_phase('done')
         self.script.setEnabled(True)
         self.settings_button.setEnabled(True)
         for key, button in self.scope_buttons.items():
@@ -531,6 +1019,7 @@ class SubtitleTranslationDialog(QDialog):
             self.accept_suggestions_button.hide()
             bind_text(self.cancel_button, '关闭')
             bind_text(self.status, '工程已切换或关闭，这次翻译结果未写入。')
+            self._show_result('info', '结果没有写入')
             self.translation_finished.emit(False, {})
             return
         self.start_button.setEnabled(self._provider_ready)
@@ -547,6 +1036,8 @@ class SubtitleTranslationDialog(QDialog):
             error = failure_hint(getattr(result, 'category', '')) + str(redact_diagnostics(str(result)))
             self.request_log.appendPlainText(error)
             bind_text(self.status, "翻译没有完成：{error}。已完成的部分没有写入，可以再试。", error=error[:200])
+            self._show_result('bad', '这一次没翻成功')
+            self._refresh_log_toggle()
             self.translation_finished.emit(False, {})
             return
         from ..diagnostics.studio_events import background_result
@@ -555,12 +1046,14 @@ class SubtitleTranslationDialog(QDialog):
             background_result(getattr(self,"_diagnostic",{}), self.project,
                               decision="discarded_target_changed", cancelled=result.cancelled, applied_count=0)
             bind_text(self.status, '目标语言已变化，迟到的翻译结果没有写入。')
+            self._show_result('info', '结果没有写入')
             self.translation_finished.emit(False, {})
             return
         if (self.page.project is not self.project
                 or getattr(self, "_session_generation", None) != getattr(getattr(self.page, "session", None), "generation", None)):
             self._log_disowned_result(result)
             bind_text(self.status, '工程已切换，迟到的翻译结果没有写入。请求用量仍保留在记录中。')
+            self._show_result('info', '结果没有写入')
             self.translation_finished.emit(False, {})
             return
         from ..subtitle_rules.subtitle_translation import apply_translation_result
@@ -583,6 +1076,7 @@ class SubtitleTranslationDialog(QDialog):
                     error = outcome["error"] or RuntimeError("translation transaction was not committed")
                     emit("translation.failed", level="ERROR", result="failed", exception=exception_info(error))
                     bind_text(self.status, "翻译结果未写入：{error}", error=str(error))
+                    self._show_result('bad', '结果没有写入')
                     self.translation_finished.emit(False, {})
                     return
             decision = ("partially_accepted" if result.discarded and result.translations else
@@ -602,10 +1096,14 @@ class SubtitleTranslationDialog(QDialog):
         if result.cache_hits:
             parts.append(tr("其中 {count} 条来自翻译缓存", count=len(result.cache_hits)))
         if result.failed:
-            parts.append(tr("失败 {count} 条（可选“只处理未翻译、失败…”再试）", count=len(result.failed)))
+            parts.append(tr("失败 {count} 条（选“待处理”可以再试）", count=len(result.failed)))
             from ..providers.provider_diagnostics import redact_diagnostics
             reason = str(redact_diagnostics(result.fatal_error or next(iter(result.failed.values()))))
-            parts.append(tr("失败原因：{error}（详情见请求日志）", error=reason[:180]))
+            if result.fatal_error:
+                parts.append(tr("失败原因：{error}（详情见请求日志）", error=reason[:180]))
+            else:
+                parts.append(tr("失败原因：{reason}（{error}，详情见请求日志）", reason=tr(failure_reason(reason)),
+                                error=reason[:180]))
         if result.suggestions:
             parts.append(tr("人工译文 {count} 条保留不变（AI 结果可选择替换）", count=len(result.suggestions)))
             self.accept_suggestions_button.show()
@@ -614,6 +1112,17 @@ class SubtitleTranslationDialog(QDialog):
         if result.cancelled:
             parts.append(tr("已停止；已完成的部分已保存"))
         bind_text(self.status, "；".join(parts) + "。")
+        if result.failed and result.translations:
+            self._show_result('bad', '翻好 {done} 条，{failed} 条没成功', done=len(result.translations),
+                              failed=len(result.failed))
+        elif result.failed:
+            self._show_result('bad', '这一次没翻成功')
+        elif result.cancelled:
+            self._show_result('info', '已停止')
+        elif result.translations:
+            self._show_result('ok', '翻好了 {count} 条', count=len(result.translations))
+        else:
+            self._show_result('info', '这次没有新的译文')
         self.progress.setValue(100)
         self._refresh_counts()
         if result.translations and self._atomic_display:
@@ -651,6 +1160,7 @@ class SubtitleTranslationDialog(QDialog):
         if self._thread is not None:
             self._cancel.set()
             bind_text(self.status, "正在停止：等待当前这一批返回…")
+            bind_text(self.run_detail, "正在停止：等待当前这一批返回…")
             return
         self.reject()
 

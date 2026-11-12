@@ -556,7 +556,7 @@ def start(window, out):
             outcome = with_dialog(SubtitleTranslationDialog, translate_with_key, page._open_translation_dialog)
             check('with a key 字幕翻译 runs as before (no note, request sent)',
                   not notes_at('translate-with-key') and any(row['kind'] == 'translate' for row in requests)
-                  and seen.get('service', '').startswith('使用已配置的 AI 文字服务') and not _blocked,
+                  and '只发字幕文字' in seen.get('service', '') and not _blocked,
                   dict(seen=seen, error=outcome.get('error')))
 
             def cleanup_with_key(dialog):

@@ -333,7 +333,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
             cue=motion_layout_layer(cue,'original',effects)
             out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original'))
             continue
-        if settings.mode == 'bilingual' and theme_owns_translation(style_recipes, cue):
+        if settings.mode == 'bilingual' and theme_owns_translation(style_recipes, cue) and not cue.appearance_override.get('_separate_display_layers'):
             shown=copy.deepcopy(cue)
             shown.appearance_override['_theme_translation']=text
             out.append(materialize_layer(shown,'original'))
@@ -454,7 +454,15 @@ def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
     if snapshot is None:
         snapshot = snapshot_active(project)
     styled = visual_cues(styled, snapshot)
-    return display_cues(styled,
+    from .subtitle_visibility import layer_visible
+    separated=[]
+    for cue in styled:
+        if theme_owns_translation(project.style_recipes,cue) and not all(layer_visible(project,cue,layer) for layer in ('original','translation')):
+            cue=copy.deepcopy(cue)
+            cue.appearance_override.update(_separate_display_layers=True,_theme_translation='')
+        separated.append(cue)
+    styled=separated
+    shown = display_cues(styled,
                         translations=style_translations(project.studio_state,
                                                         translations_of(project.generation_metadata), protected_terms=protected_terms_of(project)),
                         settings=settings_from_state(project.studio_state), styles=project.styles,
@@ -462,6 +470,8 @@ def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
                         speakers=project.speakers, style_recipes=project.style_recipes,effects=project.effects,
                         play_res_x=int(project.render_settings.get("play_res_x", 1920)),
                         play_res_y=int(project.render_settings.get("play_res_y", 1080)), cancel_check=cancel_check)
+    from .subtitle_visibility import display_layer_visible
+    return [cue for cue in shown if display_layer_visible(project,cue)]
 
 
 def materialize_display_project(project):

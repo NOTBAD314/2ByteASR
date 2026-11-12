@@ -16,7 +16,19 @@ from .grouping_syntax import (
 )
 from .text_rules import content_exact, display_length
 
-QUALITY_VERSION = "grouping-quality-v4-complete-expression-14"
+
+def _dictionary_identity():
+    import hashlib
+    import jieba
+    with jieba.get_dict_file() as dictionary:
+        digest = hashlib.sha256(dictionary.read()).hexdigest()
+    return dict(name='jieba', version=jieba.__version__, dictionary_sha256=digest)
+
+
+from functools import lru_cache
+_dictionary_identity = lru_cache(maxsize=1)(_dictionary_identity)
+
+QUALITY_VERSION = "grouping-quality-v6-ai-owned-boundaries"
 STANDALONE_RESPONSES = frozenset({'对撞', '不急', '等一下', '没错', '明白', '知道了', '好的', '对的', '是的', '好吧', '可以的'})
 
 
@@ -95,6 +107,7 @@ class BoundaryQuality:
         self.awkward = set()
         self.protected_conflicts = set()
         self.stable_boundaries = set()
+        self.confirmed_expressions = []
         self.soft_dependencies = set()
         self.semantic_required = set()
         self.independent_edges = set()
@@ -105,6 +118,8 @@ class BoundaryQuality:
         self.estimated_split_offsets = set()
         self.candidate_edges = set(self.required) | {self.total}
         self.syntax_reasons = {}
+        self.syntax_spans = []
+        self.tagged_tokens = []
         self.clause_edges = set()
         self.known_word_interiors = set()
         self.named_entity_interiors = set()
@@ -215,6 +230,11 @@ class BoundaryQuality:
             # still bad when it happens to be a legal character/word index.
             import jieba.posseg as posseg
             tagged = list(posseg.cut(content))
+            token_cursor = start
+            for token in tagged:
+                self.tagged_tokens.append(dict(start=token_cursor, end=token_cursor+len(token.word),
+                                               text=token.word, pos=token.flag))
+                token_cursor += len(token.word)
             position = 0
             for i, token in enumerate(tagged):
                 word_start, word_end = position, position+len(token.word)
@@ -243,12 +263,15 @@ class BoundaryQuality:
                     self.named_component_interiors.update(range(start+word_start+1,
                         start+word_end+len(following.word)))
                 dependent = (token.flag in {"d","p","c"} and following.flag[0] in "vanrdmp")
+                if token.word in {'其实','本来','原本'} and following.flag == 'p':
+                    dependent = False
+                    self.soft_dependencies.add(start+word_end)
                 # Modal predicates and verb objects are not complete clauses.
                 dependent = dependent or (token.word in {"可以","能够","必须","应该","需要"}
                     and following.flag.startswith("v"))
                 dependent = dependent or (token.flag.startswith('v') and following.flag=='m'
                     and (i+2 < len(tagged) and tagged[i+2].flag=='q'
-                         or len(following.word)>1 and following.word[-1] in '把个次位张块枚'))
+                         or len(following.word)>1 and following.word[-1] in '把个次位张块枚轮只'))
                 previous = i-1
                 adjective = False
                 while previous >= 0 and tagged[previous].flag in {"d","a","ad","an"}:
@@ -268,6 +291,7 @@ class BoundaryQuality:
                     self.soft_dependencies.add(start+word_end)
             phrase_spans, clauses, conditions = syntax_boundary_evidence(local_index, self.max_chars)
             for left, right, reason in phrase_spans:
+                self.syntax_spans.append((start+left, start+right, reason))
                 for cut in range(start+left+1, start+right):
                     self.forbidden.add(cut)
                     self.syntax_reasons[cut] = reason
@@ -313,8 +337,69 @@ class BoundaryQuality:
                 and any(token.flag[0] in 'va' for token in tagged[1:4])
                 and cut not in self.forbidden | self.awkward):
             return False
-        return not (re.match(r'(?:我|你|他|她|我们|你们|他们)', following)
-                    and cut not in self.forbidden | self.awkward)
+        if re.match(r'(?:我|你|他|她|我们|你们|他们)', following) and cut not in self.forbidden | self.awkward:
+            return False
+        # A new deictic/causative clause belongs to its right-hand predicate.
+        # The next cue may currently contain only its opening words.
+        right_context = self.index.content[cut:min(self.total, end+16)]
+        if re.match(r'(?:这里|这边|那里|那边)(?:就|是)|并且|让(?:我|你|他|她|我们|你们|他们)', right_context):
+            return False
+        if cut in self.forbidden | self.awkward | self.soft_dependencies:
+            return True
+        left_text = self.index.content[start:cut]
+        left_tokens = list(posseg.cut(left_text))
+        if not left_tokens or not tagged:
+            return False
+        tail, head = left_tokens[-1], tagged[0]
+        # Positive attachment evidence: modifier/head, predicate/object, or
+        # successive actions sharing an implicit subject. Adjacency and spare
+        # character capacity alone never justify joining two expressions.
+        if tail.word in {'的', '得', '地', '把', '被'}:
+            return True
+        if tail.flag.startswith('v') and head.flag.startswith(('n', 'r')):
+            return True
+        if tail.word == '没有' and any(t.flag.startswith('n') for t in tagged):
+            return True
+        if tail.flag.startswith('v') and re.match(r'(?:到|往|向|回)(?:前|后|上|下|左|右|家|里|外|这|那)', following):
+            return True
+        if tail.flag in {'d', 'p', 'c'} and head.flag.startswith(('v', 'a', 'n', 'r')):
+            return True
+        if tail.word in {'来说','而言','来讲'} and head.flag.startswith(('a','d')):
+            return True
+        return bool(re.match(r'然后(?=.{1,12})', following)
+                    and (any(t.flag.startswith('v') for t in left_tokens)
+                         or tail.word in {'过去','回来','回去','上来','下来','上去','下去'}))
+
+    def explain_boundary(self, edge):
+        """Observable evidence, with soft guesses kept separate from locks."""
+        reasons = []
+        for name, offsets in (
+                ('dictionary_word', self.known_word_interiors),
+                ('explicit_term_or_number', self.explicit_word_interiors),
+                ('inferred_token', self.inferred_word_interiors),
+                ('pos_dependency', self.pos_dependency_edges),
+                ('clause_start', self.clause_edges), ('source_edge', self.source_edges)):
+            if edge in offsets:
+                reasons.append(name)
+        return dict(offset=edge, left=self.index.slice(max(0,edge-16),edge),
+            right=self.index.slice(edge,min(self.total,edge+16)),
+            hard=edge in self.required, allowed=edge not in self.forbidden,
+            reasons=reasons, syntax=[dict(start=a,end=b,reason=r) for a,b,r in self.syntax_spans if a < edge < b],
+            pause_seconds=self.pauses.get(edge), boundary_origin=self.boundary_reasons.get(edge))
+
+    def tokenizer_identity(self):
+        import hashlib
+        import json
+        from .segmentation import lexical_boundary_terms
+        return dict(_dictionary_identity(), protected_terms_sha256=hashlib.sha256(
+            json.dumps(sorted(lexical_boundary_terms()),ensure_ascii=False).encode('utf-8')).hexdigest())
+
+    def dependent_fragment(self, start, end):
+        # This is a contextual span check, not a minimum cue length or a list
+        # of banned answers. A separate 去吗？ has no crossing dependency.
+        return (0 < end-start <= 4 and any(
+            a < edge < b for a,b,_ in self.syntax_spans for edge in (start,end)
+            if edge not in self.required))
 
     def inspect(self, boundaries):
         from .grouping_contract import validate_boundary_offsets
@@ -354,6 +439,8 @@ class BoundaryQuality:
                     and (start not in self.required or end not in self.required)):
                 issues.append(dict(kind='dependent_fragment',start=start,end=end))
             if self.dependent_quantity(start,end):
+                issues.append(dict(kind='dependent_fragment',start=start,end=end))
+            elif self.dependent_fragment(start,end):
                 issues.append(dict(kind='dependent_fragment',start=start,end=end))
             if end in self.estimated_split_offsets:
                 issues.append(dict(kind="estimated_source_split", start=end, end=end))
@@ -410,7 +497,8 @@ class BoundaryQuality:
                 and all(self.can_join(left, cut, right) for cut in internal)):
             return [right]
         points = [left, *(x for x in self.allowed if left < x < right
-                         and (x in original or x in self.candidate_edges)), right]
+                         and (x in original or x in self.candidate_edges)
+                         and not any(a < x < b for a,b in self.confirmed_expressions)), right]
         scores, previous = {left: 0.}, {}
         required = sorted(x for x in self.required | self.semantic_required | set(fixed) if left < x < right)
         required = sorted(set(required) | {x for x in self.independent_edges if left < x < right})
@@ -423,12 +511,12 @@ class BoundaryQuality:
                     continue
                 if end < right and end in self.awkward and end not in original and end not in self.required:
                     continue
-                if end < right and end in self.soft_dependencies and end not in original and end not in self.required:
-                    continue
                 if bisect_right(required, start) < bisect_right(required, end-1):
                     continue
                 duration = self.duration(start, end)
                 if self.dependent_quantity(start,end):
+                    continue
+                if self.dependent_fragment(start,end):
                     continue
                 if not self.new_single_character_has_evidence(start, end, original):
                     continue
@@ -467,6 +555,10 @@ class BoundaryQuality:
     def repair(self, boundaries, *, record=None, rule="quality_local_window"):
         result = list(boundaries)
         while True:
+            # Newly adjacent expressions can change attachment evidence. A
+            # fixed point must survive a fresh quality object as well as a
+            # second pass on this instance.
+            self.confirmed_expressions = self.complete_expressions(result)
             final, issues = self._repair_pass(result, record=record, rule=rule)
             if final == result:
                 return final, issues
@@ -474,15 +566,41 @@ class BoundaryQuality:
             # Reevaluate newly adjacent cues within this call for idempotency.
             result = final
 
+    def complete_expressions(self, boundaries):
+        """Protect a baseline only when its context supports completeness."""
+        import jieba.posseg as posseg
+        confirmed = []
+        edges = [0, *boundaries]
+        for number, (start,end) in enumerate(zip(edges,edges[1:])):
+            if end-start > self.max_chars or self.duration(start,end) > self.max_seconds+.05:
+                continue
+            if any(start < edge < end for edge in self.required | self.semantic_required):
+                continue
+            if (start in self.forbidden or end in self.forbidden
+                    or self.dependent_fragment(start,end)):
+                continue
+            if number and self.can_join(edges[number-1],start,end):
+                continue
+            if number+2 < len(edges) and self.can_join(start,end,edges[number+2]):
+                continue
+            text = self.index.content[start:end]
+            if re.search(r'(?:的|得|地|把|被|能够|可以|必须|应该|需要|就是|也是|是|会|要)$',text):
+                continue
+            if (self.independent_expression(start,end)
+                    or any(t.flag.startswith(('v','a')) for t in posseg.cut(text))):
+                confirmed.append((start,end))
+        return confirmed
+
     def _repair_pass(self, boundaries, *, record=None, rule="quality_local_window"):
         original = list(boundaries)
         issues = self.inspect(original)
-        unstable = self.forbidden | self.awkward
+        unstable = self.forbidden | self.awkward | self.soft_dependencies
         unstable = unstable | {edge for issue in issues if issue['kind'] in {'short_tail','dependent_fragment'}
                                for edge in (issue['start'],issue['end'])
                                if edge not in self.source_edges}
         unstable.update(issue['start'] for issue in issues if issue['kind']=='estimated_source_split')
         unstable.update(issue['start'] for issue in issues if issue['kind']=='unnecessary_boundary')
+        unstable.difference_update(edge for span in self.confirmed_expressions for edge in span)
         self.stable_boundaries = set(original)-unstable
         result = set(original)
         for left, right in self.windows(original, issues):
@@ -512,6 +630,9 @@ class BoundaryQuality:
                     removed_reasons={str(edge): 'complete_expression_within_limit' for edge in old_edges-new_edges
                                      if any(i['kind']=='unnecessary_boundary' and i['start']==edge for i in issues)},
                     protected_reasons=self.boundary_reasons,
+                    removed_evidence=[self.explain_boundary(edge) for edge in sorted(old_edges-new_edges)],
+                    added_evidence=[self.explain_boundary(edge) for edge in sorted(new_edges-old_edges)],
+                    quality_before=self.inspect(sorted(result)), quality_after=self.inspect(proposed),
                     before=self.index.pieces([left, *before])[1:] if left else self.index.pieces(before),
                     after=[self.index.slice(a,b) for a,b in zip([left,*candidate],candidate)])
             if accepted:
@@ -530,10 +651,10 @@ class BoundaryQuality:
                     sum(i['kind'] in {'length','duration'} for i in issues), len(issues))
         return score(new) < score(old)
 
-    def accept_change(self, before, after):
+    def accept_change(self, before, after, *, preserve_stable=True):
         if (self.required-set(after)) - set(self.required-set(before)):
             return False, "protected_boundary_missing"
-        if not self.stable_boundaries.issubset(after):
+        if preserve_stable and not self.stable_boundaries.issubset(after):
             return False, "valid_model_boundary_changed"
         if (self.semantic_required-set(after)) - set(self.semantic_required-set(before)):
             return False, "connective_ownership_changed"
@@ -543,8 +664,10 @@ class BoundaryQuality:
             return False, "new_word_or_connective_damage"
         if (set(after) & self.awkward) - set(before):
             return False, "new_syntactic_damage"
-        if (set(after) & self.soft_dependencies) - set(before):
-            return False, "new_dependency_damage"
+        if any(a < edge < b for edge in set(after)-set(before) for a,b in self.confirmed_expressions):
+            return False, 'complete_expression_regression'
+        # A lone POS-based subject/predicate preference is a cost in the
+        # solver, not an absolute ban on otherwise understandable clauses.
         old_issues, new_issues = self.inspect(before), self.inspect(after)
         for kind in ("length","duration","short_tail","estimated_source_split","dependent_fragment"):
             if sum(i['kind']==kind for i in new_issues)>sum(i['kind']==kind for i in old_issues):
@@ -613,6 +736,20 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
                 'source_gap_or_independent_turn')
         else:
             quality.boundary_reasons[cursor] = 'optional_source_chunk'
+        # Separate complete source expressions plus a fresh causative actor
+        # can disambiguate a cross-source /d + /v guess (并肩 | 让我们…).
+        # This does not lock arbitrary short ASR chunks or remove real words.
+        if (cursor not in quality.required and 4 <= display_length(left.text) <= quality.max_chars
+                and display_length(right.text) <= quality.max_chars
+                and re.match(r'(?:让|请)(?:我|你|他|她|我们|你们|他们)', content_exact(right.text))
+                and not re.search(r'(?:想|要|能|会|继续|开始)$', content_exact(left.text))
+                and cursor in quality.pos_dependency_edges
+                and cursor not in quality.known_word_interiors | quality.explicit_word_interiors | set(quality.syntax_reasons)):
+            quality.forbidden.discard(cursor)
+            quality.pos_dependency_edges.discard(cursor)
+            quality.independent_edges.add(cursor)
+            quality.clause_edges.add(cursor)
+            quality.boundary_reasons[cursor] = 'source_expression_with_new_actor'
     cursor = 0
     for segment in segments:
         end = cursor+len(content_exact(segment.text))
@@ -644,7 +781,10 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
                 value = content_exact(word.get("text", ""))
                 found = content.find(value,position) if value else -1
                 if found >= 0:
-                    quality.forbidden.update(range(cursor+found+1,cursor+found+len(value)))
+                    # Provider/alignment blocks can contain several lexical
+                    # words. They constrain timing; the lexical analyser owns
+                    # indivisibility. An interior cue endpoint is estimated
+                    # unless its own word observation can substantiate it.
                     position = found+len(value)
         cursor += display_length(segment.text)
     # A pronoun at the end of a real utterance may be an object (相信他),
@@ -711,10 +851,14 @@ def boundary_timing_basis(segments, tokens, seconds, edge, char):
     return "estimate"
 
 
-def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=None):
+def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=None, repair=True):
     from ..recognition.transcript_data import SubtitleCue
     quality = quality_for_segments(segments, tokens, protected=protected)
-    final, issues = quality.repair(boundaries, record=record)
+    if repair:
+        final, issues = quality.repair(boundaries, record=record)
+    else:
+        from .ai_boundary_policy import inspect
+        final, issues = list(boundaries), inspect(quality,boundaries)
     cues, start, cursor, owner_index = [], 0, 0, 0
     owner_ends = []
     for segment in segments:

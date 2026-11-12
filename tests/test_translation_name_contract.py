@@ -192,6 +192,7 @@ def test_studio_pending_scope_uses_edited_inline_snapshot_before_selection(monke
         selected.extend(ids);return ids
     dialog=SimpleNamespace(_thread=None,_owns_project=lambda:True,_scope_ids=scope,_target=lambda:'zh-Hans',
         project=project,status=QLabel(),_describe_service=lambda:None,settings_button=SimpleNamespace(setFocus=lambda:None),
+        _show_result=lambda *_args,**_values:None,
         glossary=SimpleNamespace(toPlainText=lambda:'エイミスさん = 爱弥斯小姐'))
     monkeypatch.setattr(llm_config,'text_ai_key_missing',lambda *a,**k:True)
     SubtitleTranslationDialog._start(dialog)

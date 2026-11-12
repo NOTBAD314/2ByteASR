@@ -54,6 +54,13 @@ def repetition_cleanup(issue, text=''):
 
 def issue_enabled(issue, cleanup=True, text=''):
     """Already-applied edits stay visible; the switch never reverts text."""
+    if issue.get('kind') != 'suspect' and not issue.get('checked') and text:
+        from ..subtitle_rules.machine_text_policy import machine_text_allowed
+        span = issue.get('span')
+        replacement = issue.get('replacement')
+        if isinstance(span, (list,tuple)) and len(span)==2 and isinstance(replacement,str):
+            a,b = span
+            if not machine_text_allowed(text, text[:a]+replacement+text[b:]): return False
     return bool(cleanup or issue.get('checked') or not repetition_cleanup(issue, text))
 
 

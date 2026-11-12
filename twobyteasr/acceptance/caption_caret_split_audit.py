@@ -71,7 +71,7 @@ def start(window, output):
             start = text.index('ここ')
             page._caption_draft.suggestions = (
                 ReviewSuggestion(start, start + 2, 'ここ',
-                                 (SuggestionOption('此処'), SuggestionOption('ここ')), 'model'),
+                                 (SuggestionOption('此処'), SuggestionOption('ココ')), 'model'),
                 ReviewSuggestion(text.index('明日'), text.index('明日') + 2, '明日',
                                  (SuggestionOption('あす'),), 'model'),
             )

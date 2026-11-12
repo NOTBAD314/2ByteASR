@@ -36,6 +36,8 @@ MAX_MARKS = 8
 class SuggestionOption:
     text: str
     sources: tuple[str, ...] = ()
+    operation: str = "replace"
+    provenance: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,12 @@ class ReviewSuggestion:
         text = str(text)
         if text[self.start:self.end] != self.original or not 0 <= option < len(self.options):
             return text
-        return text[:self.start] + self.options[option].text + text[self.end:]
+        selected = self.options[option]
+        if not isinstance(selected.text, str) or selected.text == '' and selected.operation != 'delete':
+            return text
+        value = text[:self.start] + selected.text + text[self.end:]
+        from .machine_text_policy import machine_text_allowed
+        return value if machine_text_allowed(text, value) else text
 
 
 def _has_content(value: str) -> bool:
@@ -88,6 +95,8 @@ def model_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[str
             continue
         if unicodedata.normalize('NFC',text)==unicodedata.normalize('NFC',current):
             continue
+        from .machine_text_policy import compliant_candidate
+        text = compliant_candidate(current, text)
         matcher = SequenceMatcher(None, current, text, autojunk=False)
         if matcher.ratio() < MIN_CANDIDATE_RATIO:
             continue
@@ -112,14 +121,31 @@ def model_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[str
             replacement = text[_map(opcodes, start):_map(opcodes, end)]
             if replacement == original or _content(replacement) == _content(original):
                 continue
+            # Recognizer absence is not acoustic evidence for deletion. Keep
+            # the complete candidate available in its own comparison card.
+            if _has_content(original) and not _has_content(replacement):
+                continue
+            kana = lambda value: ''.join(chr(ord(c)-0x60) if 'ァ' <= c <= 'ヶ' else c for c in value)
+            if kana(_content(original)) == kana(_content(replacement)):
+                continue
             entry = options.setdefault(replacement, [order, []])
             entry[1].extend(source for source in sources if source not in entry[1])
         if not options or len(original) > MAX_SPAN_CHARS or any(len(value) > MAX_SPAN_CHARS for value in options):
             continue
         ranked = sorted(options.items(), key=lambda item: (-len(item[1][1]), item[1][0]))
         result.append(ReviewSuggestion(start, end, original,
-                                       tuple(SuggestionOption(value, tuple(meta[1])) for value, meta in ranked), MODEL))
+                                       tuple(SuggestionOption(value, tuple(meta[1]), "delete" if value == "" else "replace") for value, meta in ranked), MODEL))
     return result
+
+
+def validated_suggestion(current, row):
+    """Recheck cached/malformed proposals at every receive/apply boundary."""
+    from dataclasses import replace
+    if not 0 <= row.start <= row.end <= len(current) or current[row.start:row.end] != row.original:
+        return None
+    options = tuple(option for n,option in enumerate(row.options)
+                    if row.apply(current,n) != current)
+    return replace(row, options=options) if options else None
 
 
 def glossary_suggestions(current: str, resolver, *, scene=None) -> list[ReviewSuggestion]:
@@ -156,7 +182,8 @@ def review_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[st
     for group in (model_suggestions(current, candidates), glossary_suggestions(current, resolver, scene=scene),
                   pronoun_suggestions(current) if pronouns else []):
         for row in group:
-            if not _overlaps(row, taken):
+            row = validated_suggestion(current, row)
+            if row is not None and not _overlaps(row, taken):
                 taken.append(row)
     taken.sort(key=lambda row: (row.start, row.end))
     if len([row for row in taken if row.kind != PRONOUN]) > MAX_MARKS:
