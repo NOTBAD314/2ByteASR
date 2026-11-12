@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain)"
-          qa="$RUNNER_TEMP/tmp/2byteasr-macos-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          qa="$RUNNER_TEMP/tmp/q101"
           mkdir -p "$qa"
           printf 'MAC_QA_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
           printf 'TWOBYTEASR_TEST_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
@@ -197,15 +197,15 @@ jobs:
         run: |
           set -euo pipefail
           app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-proof" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part saves --output "$MAC_QA_ROOT/cold-save"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform --output "$MAC_QA_ROOT/waveform-stability"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform-full --output "$MAC_QA_ROOT/full-waveform"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caret_split_smoke.py --app "$app" --output "$MAC_QA_ROOT/caret-split"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario stable-captions --output "$MAC_QA_ROOT/stable-captions"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario chinese-complete-expression --output "$MAC_QA_ROOT/chinese-complete-expression"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario speaker-board --output "$MAC_QA_ROOT/speaker-board"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario timeline-cue-pill --output "$MAC_QA_ROOT/timeline-cue-pill"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-stable-captions" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario stable-captions --output "$MAC_QA_ROOT/stable-captions"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-chinese-complete-expression" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario chinese-complete-expression --output "$MAC_QA_ROOT/chinese-complete-expression"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-speaker-board" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario speaker-board --output "$MAC_QA_ROOT/speaker-board"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-timeline-cue-pill" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario timeline-cue-pill --output "$MAC_QA_ROOT/timeline-cue-pill"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
@@ -312,6 +312,16 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); print(r["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_studio_perf.py --app "$app" --output "$MAC_QA_ROOT/studio-perf"
+      - name: Installed 1.0.1 model cards settings and workshop columns
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: release_ui
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-release-ui" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario vm2-model-settings --output "$MAC_QA_ROOT/vm2-model-settings"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-workshop-columns" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario workshop-columns --output "$MAC_QA_ROOT/workshop-columns"
       - name: Record separate validation outcomes
         if: always()
         env:
@@ -347,7 +357,9 @@ jobs:
           path: ${{ env.MAC_QA_ROOT }}/artifacts/application/
       - name: Enforce installer, blank project and requested desktop results
         if: always()
-        run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
+        run: |
+          python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
+          test '${{ steps.release_ui.outcome }}' = success
 
   same-candidate-newer-macos:
     needs: native-arm64
@@ -387,12 +399,12 @@ jobs:
           "$RUNNER_TEMP/tmp/checker-runtime/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
           dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
           test -f "$dmg"
-          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
+          python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/display-other" "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/q101-other"
       - name: Select bounded regression receipts
         if: always()
         run: |
-          if test -d "$RUNNER_TEMP/tmp/newer-macos-candidate"; then
-            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/newer-macos-candidate" --maximum-bytes 67108864
+          if test -d "$RUNNER_TEMP/tmp/q101-other"; then
+            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/q101-other" --maximum-bytes 67108864
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -400,7 +412,7 @@ jobs:
           name: macos-newer-receipts-${{ inputs.source_sha }}
           retention-days: 1
           if-no-files-found: warn
-          path: ${{ runner.temp }}/tmp/newer-macos-candidate/artifacts/receipts/
+          path: ${{ runner.temp }}/tmp/q101-other/artifacts/receipts/
 
   installed-candidate-models:
     needs: native-arm64

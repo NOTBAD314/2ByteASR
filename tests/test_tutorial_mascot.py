@@ -293,16 +293,21 @@ def test_the_bunny_is_dragged_slides_bounces_and_shakes_the_window(app, monkeypa
     window.close()
 
 
-def test_a_shake_moves_the_window_and_puts_it_back(app):
-    from PySide6.QtCore import QPoint
+def test_a_shake_is_local_and_never_moves_the_window(app):
+    from PySide6.QtCore import QPointF, QVariantAnimation
     from twobyteasr.app.home_tour import TourStep
     window, tour = _tour(app, [TourStep('卡片')])
     window.move(200, 150)
     app.processEvents()
     origin = window.pos()
+    tour.start()
+    _until(app, lambda: tour.mode == 'shown')
     tour._shake_window(1.0)
     seen = set()
-    _until(app, lambda: seen.add((window.pos().x(), window.pos().y())) or tour._shake_origin is None, 2.0)
-    assert len(seen) > 2 and window.pos() == origin                    # it shook, then stood where it was
+    mascot = tour.bubble.mascot
+    _until(app, lambda: seen.add((mascot.impact_offset.x(), mascot.impact_offset.y())) or
+           tour._shake.state() != QVariantAnimation.State.Running, 2.0)
+    assert len(seen) > 2 and window.pos() == origin
+    assert mascot.impact_offset == QPointF()
     tour.close_tour(False)
     window.close()

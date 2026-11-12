@@ -53,16 +53,33 @@ def zoom_factor() -> float:
     return zoom_percent() / 100.0
 
 
-def px(value: float) -> int:
+def _scope_factor(widget, factor):
+    hook=getattr(widget,'ui_zoom_factor',None)
+    return max(.5,min(4.,float(hook(factor)))) if callable(hook) else factor
+
+
+def effective_factor(widget=None) -> float:
+    """A page may raise its reading size; independent windows keep user zoom."""
+    factor=zoom_factor()
+    current=widget
+    while current is not None:
+        if callable(getattr(current,'ui_zoom_factor',None)):
+            return _scope_factor(current,factor)
+        if current.isWindow():break
+        current=current.parentWidget()
+    return factor
+
+
+def px(value: float, widget=None) -> int:
     """``value`` logical pixels at the current zoom (never below 1)."""
-    return max(1, round(float(value) * zoom_factor()))
+    return max(1, round(float(value) * effective_factor(widget)))
 
 
-def logical(value: float) -> int:
+def logical(value: float, widget=None) -> int:
     """A measured size in 100% pixels. Responsive breakpoints compare this,
     so a zoomed page picks the layout of a correspondingly smaller window
     (as a browser's zoom narrows the page) instead of overflowing."""
-    return round(float(value) / zoom_factor())
+    return round(float(value) / effective_factor(widget))
 
 
 def _scale_px(value: float, factor: float) -> str:
@@ -161,7 +178,7 @@ def set_size(widget: QWidget, **logical: int) -> None:
         if key in logical:
             value = logical.pop(key)
             logical[f"min_{axis}"] = logical[f"max_{axis}"] = value
-    factor = zoom_factor()
+    factor = effective_factor(widget)
     current = _current_sizes(widget)
     values = dict(current)
     for name, value in logical.items():
@@ -176,7 +193,7 @@ def set_sheet(widget: QWidget, sheet: str) -> None:
     current zoom right away. The first zoom pass over a lazily built page then
     finds nothing to change, instead of replacing (and re-polishing the whole
     subtree under) a large page sheet a second time (2026-10-12)."""
-    factor = zoom_factor()
+    factor = effective_factor(widget)
     if abs(factor - 1.0) < 1e-6 and not _state["touched"]:
         widget.setStyleSheet(sheet)
         return
@@ -196,7 +213,7 @@ def set_layout(layout, margins=None, spacing=None) -> None:
         values[:4] = [int(value) for value in margins]
     if spacing is not None:
         values[4] = int(spacing)
-    factor = zoom_factor()
+    factor = effective_factor(layout.parentWidget())
     target = [value if value <= 0 else max(1, round(value * factor)) for value in values]
     layout.setProperty("_uiZoomLayout", values)
     layout.setProperty("_uiZoomLayoutLast", target)
@@ -342,16 +359,17 @@ def apply_to(root: QWidget | None, factor: float | None = None) -> int:
     """Scale ``root``'s subtree to ``factor``; returns widgets visited."""
     if root is None:
         return 0
-    factor = zoom_factor() if factor is None else float(factor)
+    factor = effective_factor(root) if factor is None else float(factor)
     if abs(factor - 1.0) < 1e-6 and not _state["touched"] and root.property("_uiZoomApplied") is None:
         return 0  # nothing was ever scaled: leave startup alone
     root.setProperty("_uiZoomApplied", round(factor * 100))
     visited = 0
     if isinstance(root, QDialog) and root.isWindow():
         _fit_dialog(root, factor)
-    stack = [root]
+    stack = [(root,factor)]
     while stack:
-        widget = stack.pop()
+        widget,factor = stack.pop()
+        factor = _scope_factor(widget,factor)
         if widget.objectName() == "subtitleStudio":
             protect_studio(widget, factor)
             continue
@@ -372,7 +390,7 @@ def apply_to(root: QWidget | None, factor: float | None = None) -> int:
                 hook(factor)
             except Exception:
                 pass
-        stack.extend(widget.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly))
+        stack.extend((child,factor) for child in widget.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly))
     return visited
 
 

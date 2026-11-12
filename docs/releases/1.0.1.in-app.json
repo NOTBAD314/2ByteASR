@@ -1,0 +1,4 @@
+{
+  "zh": "· 模型卡筛选：按角色、云端或本机挑选模型，支持语言与参考分一目了然。\n· 三步匹配文稿：选素材、贴文稿、开始匹配，支持拖入与行数提示。\n· 模型工坊对齐：宽屏阅读更舒适，缩放后新加载行保持同列。\n· 设置更好找：按问题分组，常用偏好集中呈现。\n· 操作更跟手：复用模型与记录，后台统计词库，缩短兔白碰撞反馈。",
+  "en": "Filter model cards by role or cloud/local execution. Match an existing transcript in three steps. Read aligned workshop columns with coordinated wide-window sizing. Find settings in clearer groups, with reusable model/history views, background glossary counts and shorter bunny feedback."
+}

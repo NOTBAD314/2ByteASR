@@ -117,7 +117,8 @@ def test_speed_public_reference_shown_without_local_run():
 def test_estimate_scores_marked_with_approx_prefix():
     model = next(m for m in MODELS if m.key == "sensevoice")
     evidence = _metric_evidence(model, "accuracy", None, "zh")
-    assert evidence["value"].startswith("约 ")
+    # 2026-11-12 (user): scores show no 约; the estimate stays marked in the data and tooltip.
+    assert not evidence["value"].startswith("约") and "估算" in evidence["tooltip"]
     assert evidence.get("approx") is True
     firered = _metric_evidence(
         next(m for m in MODELS if m.key == "firered"), "accuracy", None, "zh"

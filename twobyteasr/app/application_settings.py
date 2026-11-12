@@ -236,8 +236,7 @@ def open_application_settings(
         )
         retain(owner, dialog, 'application')
         from ..diagnostics.support_dialog import open_support_dialog
-        from PySide6.QtWidgets import QDialogButtonBox
-        report_button = dialog.buttons.addButton("回报问题／导出诊断", QDialogButtonBox.ButtonRole.ActionRole)
+        report_button = dialog.add_report_button("回报问题／导出诊断")
         report_button.clicked.connect(lambda: open_support_dialog(dialog, getattr(parent, "_studio_page", None)))
         emit("settings.dialog", result="completed", phase="created")
         dialog.finished.connect(lambda code: emit("settings.dialog",result="completed",phase="closed",dialog_code=code))

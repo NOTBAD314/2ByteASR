@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import qtawesome as qta
-from PySide6.QtCore import QObject, QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import QFrame  # for dim backdrop on technical dialog
 from PySide6.QtWidgets import (
@@ -444,8 +444,8 @@ MODELS = (
     # host). 2026-10-28: audio goes to the provider's temporary space by default;
     # the user's own OSS is an explicit choice (it was required 2026-10-14..28, ADR 0112).
     # 2026-10-25: one card for both official sites, 千问AI平台 (中国站) and Qwen Cloud (国际站).
-    WorkshopModel('qwen_cloud_filetrans','api','Qwen 官方 API｜录音文件识别','QC',
-        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · 千问AI平台或 Qwen Cloud 的 API Key','不占本地空间',
+    WorkshopModel('qwen_cloud_filetrans','api','Qwen Audio 3.1','QC',
+        '云端长文件 · 字级时间 · 0.1 元/小时','在线 · 千问AI平台或 Qwen Cloud 的 API Key','不占本地空间',
         '不需要显卡与本地模型；默认不用建 OSS',
         'Qwen 官方 API 的录音文件识别，分中国站千问AI平台（platform.qianwenai.com，服务在北京）与国际站 Qwen Cloud（home.qwencloud.com，服务在新加坡），在设置窗口顶部切换。Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频默认先传到服务商临时空间（48 小时后自动删除），不用建 OSS；也可以改用你自己的 OSS 私有存储（限时签名链接交给服务商，结果保存后删除）。单文件不超过 12 小时。两站的 Key 不能互换，也不能与阿里云百炼的互换。超时不会自动重新付费提交。',(),
         logo_asset='qwen.png',api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
@@ -456,8 +456,8 @@ MODELS = (
         logo_asset='qwen.png',api_preset='qwen31_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     # 2026-10-13: cloud MOSS on the MOSI platform; independent of the local
     # "moss" card (no shared settings, key or job state).
-    WorkshopModel('mosi_moss_pro','api','MOSS-Transcribe-Diarize Pro 云端','MP',
-        '云端多人转写 · 本地文件直传','在线 · 只需 MOSI API Key','不占本地空间',
+    WorkshopModel('mosi_moss_pro','api','MOSS Pro','MP',
+        '云端多说话人 · 2 元/小时','在线 · 只需 MOSI API Key','不占本地空间',
         '不需要显卡与本地模型；句段级时间',
         'MOSI 平台的 moss-transcribe-diarize-pro：上传本次音频，返回文字、句段起止时间与说话人。单次最长 60 分钟，更长自动分段且各段说话人不合并。只有句段时间；需要按字剪辑时可再配本地对齐模型。按音频时长计费（官方价格页 ¥2.00/小时，2026-10-13 核对）。',(),
         logo_asset='openmoss.png',api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),),
@@ -1095,12 +1095,12 @@ def _runtime_role_available(model: WorkshopModel, role: str) -> bool:
 
 
 # 2026-11-11 (workshop design A): model rows line up under one list header.
-WORKSHOP_MONOGRAM = 44
-WORKSHOP_COLUMN_SPACING = 16
-WORKSHOP_LANGUAGE_COLUMN = 204
-WORKSHOP_METRIC_COLUMN = 100
-WORKSHOP_METRIC_SPACING = 14
-WORKSHOP_ACTION_COLUMN = 112
+WORKSHOP_MONOGRAM = 46
+WORKSHOP_COLUMN_SPACING = 12
+WORKSHOP_LANGUAGE_COLUMN = 196
+WORKSHOP_METRIC_COLUMN = 96
+WORKSHOP_METRIC_SPACING = 10
+WORKSHOP_ACTION_COLUMN = 96
 
 
 def _stars(score: int) -> str:
@@ -1512,7 +1512,8 @@ def _reference_evidence(
 
     score = int(entry["score"])
     approx = bool(entry.get("approx"))
-    value = tr("约 {score}", score=score) if approx else str(score)
+    # 2026-11-12 (user): no 约 on any score; the tooltip still names the basis.
+    value = str(score)
     note = f"{translate(entry['label'], language)} · {translate(entry['reason'], language)}"
     if suffix:
         note = f"{suffix} · {note}"
@@ -1797,7 +1798,8 @@ class _EvidenceTrack(QWidget):
 class RatingBar(QWidget):
     """Official evidence row with a neutral, non-ranking horizontal track."""
 
-    def __init__(self, label: str, evidence: dict, parent=None, *, label_width: int = 42, stacked: bool = False):
+    def __init__(self, label: str, evidence: dict, parent=None, *, label_width: int = 42, stacked: bool = False,
+                 card: bool = False):
         super().__init__(parent)
         self._label = label
         self._evidence = dict(evidence)
@@ -1827,6 +1829,21 @@ class RatingBar(QWidget):
         self._note = ElideLabel(str(evidence.get("note") or ""))
         self._note.setObjectName("workshopMetricEvidence")
         box.addWidget(self._note)
+        if card:
+            # Detail panel metric card: caption, big number, bar, two-line note.
+            row.removeWidget(self._caption)
+            row.removeWidget(self._word)
+            box.insertWidget(0, self._caption)
+            box.insertWidget(1, self._word)
+            self._caption.setObjectName("workshopMetricCaption")
+            self._word.setObjectName("workshopMetricBig")
+            self._word.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._track.setFixedHeight(10)
+            box.removeWidget(self._note)
+            self._note.hide()
+            self._card_note = ElideLabel("")
+            self._card_note.setObjectName("workshopMetricEvidence")
+            box.addWidget(self._card_note)
         if stacked:
             self._caption.hide()
             self._note.hide()
@@ -1856,8 +1873,21 @@ class RatingBar(QWidget):
                 self._word.style().unpolish(self._word)
                 self._word.style().polish(self._word)
         self._note.setText(note)
+        if getattr(self, "_card_note", None) is not None:
+            self._card_note.setText(note)
         self.setAccessibleName(f"{translate(caption, current_language())}, {value}, {note}")
         bind_text(self, str(evidence.get('tooltip') or translate('仅展示可追溯官方证据；不同数据集、指标和硬件不换算成统一分数。', current_language())) + '\n' + translate(COMPARISON_NOTE, current_language()) + ('\n' + translate(SPEED_NOTE, current_language()) if caption == '速度指数' else ''), property='toolTip')
+
+    def show_word(self, text: str) -> None:
+        """A short word in the number's place (e.g. 云端), no bar."""
+        self._word.setText(translate(text, current_language()))
+        self._word.setProperty("numeric", True)
+        self._word.style().unpolish(self._word)
+        self._word.style().polish(self._word)
+        policy = self._track.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self._track.setSizePolicy(policy)
+        self._track.hide()
 
     def apply_compact(self, compact: bool):
         self._caption.setMinimumWidth(42 if compact else 48)
@@ -2732,7 +2762,81 @@ def build_workshop_qss(theme=None) -> str:
     active = theme or theme_definition(theme_key())
     from ..design.control_qss import build_control_qss
     from ..design.surface_qss import build_surface_qss
-    return retheme_qss(WORKSHOP_QSS, active) + _workshop_theme_override(active) + build_control_qss(active) + build_surface_qss(active)
+    return (retheme_qss(WORKSHOP_QSS, active) + _workshop_theme_override(active) + build_control_qss(active)
+            + build_surface_qss(active) + _workshop_design_a_qss(active))
+
+
+def _workshop_design_a_qss(t) -> str:
+    """2026-11-11 workshop design A; last so it wins over the shared sheets."""
+    from ..design.typography import TITLE_FONT_STACK
+    from ..design.ui_theme import blend_hex
+    on_accent = getattr(t, "text_on_accent", "") or "#ffffff"
+    heavy = f"font-family: {TITLE_FONT_STACK}; font-weight: 800;"
+    tint = blend_hex(t.surface, t.text, 0.085 if t.is_light else 0.14)
+    tint_hover = blend_hex(t.surface, t.text, 0.14 if t.is_light else 0.2)
+    count_bg = blend_hex(t.surface, t.text, 0.12 if t.is_light else 0.2)
+    return f"""
+QPushButton#workshopToolButton {{ background: {tint}; color: {t.text}; border: 0; border-radius: 10px;
+    padding: 8px 14px; {heavy} font-size: 13px; }}
+QPushButton#workshopToolButton:hover {{ background: {tint_hover}; }}
+QFrame#workshopDetail QPushButton#workshopToolButton {{ background: {t.surface_elevated}; border: 1px solid {t.border_strong}; }}
+QFrame#workshopDetail QPushButton#workshopToolButton:hover {{ background: {tint}; }}
+QPushButton#workshopAction {{ {heavy} }}
+QLabel#workshopColumnCaption {{ {heavy} font-size: 12px; color: {t.text_muted}; }}
+QFrame#workshopModelCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px; }}
+QFrame#workshopModelCard:hover {{ border-color: {t.border_strong}; }}
+QFrame#workshopModelCard[selected="true"] {{ background: {t.selected}; border: 2px solid {t.accent}; }}
+QLabel#workshopModelTitle {{ color: {t.text}; font-size: 16px; {heavy} }}
+QFrame#workshopModelCard QLabel#workshopMuted {{ font-size: 13px; }}
+QFrame#workshopTabBar {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
+QPushButton#workshopTab {{ background: transparent; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+    color: {t.text_secondary}; font-size: 15px; {heavy} padding: 8px 34px 8px 2px; min-height: 22px; }}
+QPushButton#workshopTab:hover {{ color: {t.text}; background: transparent; }}
+QPushButton#workshopTab:checked {{ color: {t.accent}; border-bottom: 3px solid {t.accent}; background: transparent; }}
+QLabel#workshopTabCount {{ background: {count_bg}; color: {t.text}; border-radius: 9px; padding: 1px 7px;
+    font-size: 12px; {heavy} }}
+QLabel#workshopRatingNumber[numeric="true"] {{ font-size: 23px; {heavy} }}
+RatingBar[metricKind="accuracy"] QLabel#workshopRatingNumber[numeric="true"],
+RatingBar[metricKind="accuracy"] QLabel#workshopMetricBig {{ color: {t.success}; }}
+RatingBar[metricKind="speed"] QLabel#workshopRatingNumber[numeric="true"],
+RatingBar[metricKind="speed"] QLabel#workshopMetricBig {{ color: {t.warning}; }}
+QLabel#workshopFactKey {{ color: {t.text_muted}; font-size: 12px; }}
+QLabel#workshopFlowChip {{ background: {t.surface_elevated}; color: {t.text}; border: 1px solid {t.border}; border-radius: 6px;
+    padding: 2px 5px; font-size: 12px; {heavy} }}
+QLabel#workshopFlowChipLast {{ background: {t.warning_soft}; color: {t.warning}; border-radius: 6px; padding: 2px 5px;
+    font-size: 12px; {heavy} }}
+QLabel#workshopFlowArrow {{ color: {t.text_muted}; {heavy} padding: 2px 0; }}
+QLabel#workshopRecommendationBadge {{ background: {t.info_soft}; color: {t.info}; border: 0; border-radius: 6px;
+    padding: 2px 7px; font-size: 11px; font-weight: 700; }}
+QLabel#workshopSizeText {{ background: transparent; border: 0; color: {t.text_secondary}; font-size: 12px;
+    font-weight: 600; padding: 2px 2px; }}
+QLabel#workshopStateBadge, QLabel#workshopKindBadge {{ border-radius: 6px; padding: 3px 9px; font-size: 12px; font-weight: 600; }}
+QFrame#workshopComboCard {{ background: {t.timeline}; border: 0; border-radius: 14px; }}
+QLabel#workshopComboHeading {{ color: {t.text}; font-size: 15px; }}
+QLabel#workshopComboRole {{ color: {t.text_muted}; font-size: 11px; font-weight: 600; }}
+QLabel#workshopComboModel {{ color: {t.text}; font-size: 13px; font-weight: 600; }}
+QLabel#workshopComboStatus {{ background: {t.success_soft}; color: {t.success}; border-radius: 6px; padding: 1px 7px;
+    font-size: 11px; font-weight: 600; }}
+QFrame#workshopHealthCard {{ background: transparent; border: 0; }}
+QProgressBar#workshopHealthBar {{ background: {t.border}; border: 0; border-radius: 3px; }}
+QProgressBar#workshopHealthBar::chunk {{ background: {t.text_secondary}; border-radius: 3px; }}
+QFrame#workshopDetail {{ background: {t.panel}; border: 0; border-left: 1px solid {t.border}; border-radius: 0; }}
+QLabel#workshopDetailTitle {{ color: {t.text}; font-size: 20px; {heavy} }}
+QLabel#workshopDetailCaption {{ color: {t.text_secondary}; font-size: 13px; {heavy} }}
+QLabel#workshopDetailBody {{ color: {t.text}; font-size: 13px; }}
+QFrame#workshopMetricCard, QFrame#workshopFactCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
+QLabel#workshopMetricCaption {{ color: {t.text_secondary}; font-size: 13px; {heavy} }}
+QLabel#workshopMetricBig {{ color: {t.text}; font-size: 36px; {heavy} }}
+QLabel#workshopFactStrong {{ color: {t.text}; {heavy} font-size: 13px; }}
+QPushButton#workshopDangerText {{ background: {t.surface_elevated}; color: {t.danger}; border: 1px solid {t.border_strong};
+    border-radius: 10px; padding: 8px 10px; {heavy} }}
+QPushButton#workshopDangerText:hover {{ background: {t.danger_soft}; }}
+QPushButton#workshopDangerText:disabled {{ color: {t.disabled}; }}
+QPushButton#workshopPrimary, QFrame#workshopDetail QPushButton[buttonRole="primary"] {{ background: {t.accent};
+    color: {on_accent}; border: 1px solid {t.accent}; border-radius: 12px; font-size: 15px; {heavy} min-height: 40px; }}
+QLabel#workshopComboHeading, QLabel#workshopComboModel {{ {heavy} }}
+QLabel#workshopStateBadge, QLabel#workshopKindBadge, QLabel#workshopRecommendationBadge {{ {heavy} }}
+"""
 
 
 class _PillFlowLayout(QLayout):
@@ -2796,14 +2900,26 @@ class _PillFlowLayout(QLayout):
         return y + line - rect.y()
 
 
+def _workshop_language_width() -> int:
+    """One logical width shared by every row, including translated labels."""
+    from PySide6.QtGui import QFont,QFontMetrics
+    from ..design.typography import TITLE_FONT_STACK
+    from .model_languages import BADGE_LANGUAGES,LANGUAGE_NAMES
+    font=QFont();font.setFamilies([name.strip(' \"\'') for name in TITLE_FONT_STACK.split(',')])
+    font.setPixelSize(13);font.setWeight(QFont.Weight.ExtraBold)
+    metrics=QFontMetrics(font)
+    cell=max(metrics.horizontalAdvance(translate(LANGUAGE_NAMES[code],current_language())) for code in BADGE_LANGUAGES)+20
+    return max(WORKSHOP_LANGUAGE_COLUMN,cell*3+10)
+
+
 def model_list_header() -> QWidget:
     """Column captions over model rows (workshop design A, 2026-11-11)."""
     header = QWidget()
     header.setObjectName("workshopListHeader")
     row = QHBoxLayout(header)
-    # The rows' frame and inner margins: 1 px border + 14 px.
-    row.setContentsMargins(15, 2, 15, 0)
-    row.setSpacing(WORKSHOP_COLUMN_SPACING)
+    from ..app.ui_zoom import set_layout,set_size
+    # The same inner margin as each row, plus its one-pixel frame.
+    set_layout(row,margins=(12,2,12,0),spacing=WORKSHOP_COLUMN_SPACING)
 
     def caption(text, width=None, align=Qt.AlignmentFlag.AlignLeft, tip=""):
         label = QLabel()
@@ -2813,13 +2929,24 @@ def model_list_header() -> QWidget:
         label.setObjectName("workshopColumnCaption")
         label.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
         if width:
-            label.setFixedWidth(width)
+            set_size(label,fixed_w=width)
         return label
 
     row.addWidget(caption("模型"), 1)
-    row.addWidget(caption("支持语言", WORKSHOP_LANGUAGE_COLUMN))
+    languages=caption("支持语言", _workshop_language_width(), Qt.AlignmentFlag.AlignHCenter)
+    row.addWidget(languages)
+    def sync_header(factor):
+        from ..app.ui_zoom import px
+        set_size(languages,fixed_w=_workshop_language_width())
+        margin=px(12,header)+1
+        top=px(2,header)
+        row.setContentsMargins(margin,top,margin,0)
+        row.setProperty('_uiZoomLayoutLast',[margin,top,margin,0,row.spacing()])
+    header.apply_ui_zoom=sync_header
+    from ..app.ui_zoom import effective_factor
+    sync_header(effective_factor(header))
     metrics = QHBoxLayout()
-    metrics.setSpacing(WORKSHOP_METRIC_SPACING)
+    set_layout(metrics,margins=(0,0,0,0),spacing=WORKSHOP_METRIC_SPACING)
     metrics.addWidget(caption("准确度", WORKSHOP_METRIC_COLUMN, Qt.AlignmentFlag.AlignHCenter, COMPARISON_NOTE))
     metrics.addWidget(caption("速度", WORKSHOP_METRIC_COLUMN, Qt.AlignmentFlag.AlignHCenter, SPEED_NOTE))
     row.addLayout(metrics)
@@ -2833,6 +2960,10 @@ class ModelCard(QFrame):
     download_requested = Signal(str)
     uninstall_requested = Signal(str)
     api_configure_requested = Signal(str)
+
+    def set_action_state(self, text, enabled):
+        self.action.setText(text)
+        self.action.setEnabled(enabled)
 
     def __init__(self, model: WorkshopModel, parent=None):
         super().__init__(parent)
@@ -2859,7 +2990,7 @@ class ModelCard(QFrame):
         self.monogram.setToolTip(model.name)
         logo_size = QSize(38, 38) if model.logo_asset else QSize(24, 24)
         self._paint_monogram(logo_size)
-        self._row.addWidget(self.monogram, 0, Qt.AlignmentFlag.AlignTop)
+        self._row.addWidget(self.monogram, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.info_host = QWidget(self)
         self.info_host.setObjectName("workshopCardInfo")
@@ -2876,26 +3007,33 @@ class ModelCard(QFrame):
         text = QVBoxLayout(text_host)
         text.setContentsMargins(0, 0, 0, 0)
         text.setSpacing(4)
-        title_row = QVBoxLayout()
+        title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(7)
-        # Names and descriptions are shown in full (wrapping), never elided.
+        title_row.setSpacing(8)
+        # Names and descriptions are shown in full (wrapping), never elided;
+        # the recommendation badge follows the name on the same line.
         self.title_label = QLabel(model.name)
         self.title_label.setWordWrap(True)
         self.title_label.setMinimumWidth(0)
-        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        # A wrapping label in a row is offered its minimum width first: ask
+        # for the whole name (up to a sane cap) so it wraps only when narrow.
+        self._title_full_width = self.title_label.fontMetrics().horizontalAdvance(model.name) + 6
         bind_text(self.title_label, model.name)
         bind_text(self.title_label, model.name, property='toolTip')
         self.title_label.setObjectName("workshopModelTitle")
-        title_row.addWidget(self.title_label, 1)
+        self.title_label.setProperty('uiZoomOwnSize',True)
+        title_row.addWidget(self.title_label, 0)
         self.recommendation_badge = None
         if getattr(model, "recommended", False):
             self.recommendation_badge = PillLabel(
-                "★ 2ByteASR 推荐", "workshopRecommendationBadge"
+                "★ 推荐", "workshopRecommendationBadge"
             )
+            bind_text(self.recommendation_badge, "2ByteASR 推荐", property="toolTip")
             title_row.addWidget(
-                self.recommendation_badge, 0, Qt.AlignmentFlag.AlignTop
+                self.recommendation_badge, 0, Qt.AlignmentFlag.AlignVCenter
             )
+        title_row.addStretch(1)
         text.addLayout(title_row)
         self.summary_label = QLabel(model_scene(model))
         self.summary_label.setWordWrap(True)
@@ -2916,29 +3054,32 @@ class ModelCard(QFrame):
         )
         facts.addWidget(self.kind_badge)
         size_text = ui_literal(_install_size_label(model.size), current_language())
-        self.size_label = PillLabel(size_text, "workshopSizeBadge")
+        self.size_label = PillLabel(size_text, "workshopSizeText")
         bind_text(self.size_label, '体积 {size_text}', property='accessibleName', size_text=size_text)
         self.size_label.setToolTip(SIZE_NOTE)
         facts.addWidget(self.size_label)
+        # Task tags (语音转写 · 说话人 …) live in the detail panel, not the row.
         self.language_pills = []
-        for lang in model_task_badges(model)[:3]:
-            pill = PillLabel(str(lang), "langPill")
-            self.language_pills.append(pill)
-            facts.addWidget(pill)
         text.addWidget(facts_host)
-        columns.addWidget(text_host, 1)
+        columns.addWidget(text_host, 1, Qt.AlignmentFlag.AlignVCenter)
 
         # 2026-10-18: the same six language badges on every row, in the same
         # place, so one column (e.g. 日语) can be scanned down the list.
         from .model_language_badges import LanguageBadgeRow
         from .model_languages import language_support
-        self.language_row = LanguageBadgeRow(grid_columns=3)
+        self.language_row = LanguageBadgeRow(grid_columns=3, show_more=False)
         self.language_row.set_support(language_support(model.key))
         self.language_row.setFixedWidth(WORKSHOP_LANGUAGE_COLUMN)
+        grid=self.language_row.layout()
+        grid.setColumnStretch(3,0)
+        for column in range(3):grid.setColumnStretch(column,1)
+        for badge in self.language_row.badges.values():
+            badge.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
         columns.addWidget(self.language_row, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.metrics_host = QWidget(self.info_host)
         self.metrics_host.setObjectName("workshopCardMetrics")
+        self.metrics_host.setProperty('uiZoomOwnSize',True)
         self.metrics_host.setFixedWidth(WORKSHOP_METRIC_COLUMN * 2 + WORKSHOP_METRIC_SPACING)
         policy = self.metrics_host.sizePolicy()
         # A model without evidence keeps its (empty) columns so rows stay aligned.
@@ -3010,15 +3151,37 @@ class ModelCard(QFrame):
         action_box.addWidget(self.action_controls, 1)
         self._row.addWidget(self.action_host, 0)
         # Unavailable evidence never acquires a synthetic score.
-        self.metrics_host.setVisible(any(
+        self.accuracy_bar.setProperty("metricKind", "accuracy")
+        self.speed_bar.setProperty("metricKind", "speed")
+        self._show_cloud_speed()
+        self.metrics_host.setVisible(model_is_online(model) or any(
             bool(_metric_evidence(model, kind).get("available"))
             for kind in ("accuracy", "speed")
         ))
         self.info_host.setMinimumWidth(0)
         self.info_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._sync_column_sizes()
+
+    def _sync_column_sizes(self):
+        from ..app.ui_zoom import set_layout,set_size,px
+        set_size(self,min_h=84)
+        set_size(self.monogram,fixed_w=WORKSHOP_MONOGRAM,fixed_h=WORKSHOP_MONOGRAM)
+        set_size(self.language_row,fixed_w=_workshop_language_width())
+        self.metrics_host.setFixedWidth(px(WORKSHOP_METRIC_COLUMN,self)*2+px(WORKSHOP_METRIC_SPACING,self))
+        set_size(self.action_host,fixed_w=WORKSHOP_ACTION_COLUMN)
+        set_layout(self._root,margins=(12,8,12,8),spacing=6)
+        set_layout(self._row,margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+        set_layout(self.info_host.layout(),margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+
+    def apply_ui_zoom(self,factor):
+        self._sync_column_sizes()
+        self._apply_compact_layout(self.width()/factor<760)
+        if getattr(self,'_logo_factor',None)!=factor:
+            self._logo_factor=factor;self._paint_monogram()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._compact_title_pending = True
         available_width = self.width()
         ancestor = self.parentWidget()
         while ancestor is not None:
@@ -3026,16 +3189,25 @@ class ModelCard(QFrame):
                 available_width = min(available_width, ancestor.viewport().width())
                 break
             ancestor = ancestor.parentWidget()
-        self._apply_compact_layout(available_width < 760)
+        from ..app.ui_zoom import logical
+        self._apply_compact_layout(logical(available_width,self) < 760)
 
     def _apply_compact_layout(self, compact: bool):
+        cap = 240 if compact else 380
+        from ..app.ui_zoom import px
+        # Measured with the polished (bold) font, which the sheet applies late.
+        full = self.title_label.fontMetrics().horizontalAdvance(self.model.name) + px(8,self)
+        fixed=24+WORKSHOP_MONOGRAM+WORKSHOP_COLUMN_SPACING*4+_workshop_language_width()+WORKSHOP_METRIC_COLUMN*2+WORKSHOP_METRIC_SPACING+WORKSHOP_ACTION_COLUMN
+        badge=self.recommendation_badge.sizeHint().width()+px(8,self) if self.recommendation_badge is not None else 0
+        width = min(full,px(cap,self),max(px(70,self),self.width()-px(fixed,self)-badge))
+        if self.title_label.minimumWidth() != width:
+            self.title_label.setMinimumWidth(width)
         if self._compact is compact:
             return
         self._compact = compact
-        self._root.setContentsMargins(14, 10, 14, 10)
-        self._root.setSpacing(8)
-        self._row.setSpacing(WORKSHOP_COLUMN_SPACING)
-        self.action.setMinimumWidth(82 if compact else 92)
+        self._sync_column_sizes()
+        from ..app.ui_zoom import set_size
+        set_size(self.action,min_w=82)
         self.accuracy_bar.apply_compact(compact)
         self.speed_bar.apply_compact(compact)
         self.updateGeometry()
@@ -3075,7 +3247,9 @@ class ModelCard(QFrame):
         without a logo or a vendor colour) follows the active theme instead of
         a light-green tile that glares on dark themes (2026-10-07)."""
         model = self.model
-        logo_size = logo_size or (QSize(38, 38) if model.logo_asset else QSize(24, 24))
+        from ..app.ui_zoom import px
+        edge=px(38 if model.logo_asset else 24,self)
+        logo_size = logo_size or QSize(edge,edge)
         generic = not model.logo_asset and model.icon_background == WorkshopModel.icon_background
         if generic:
             from ..design.theme_manager import theme_key
@@ -3126,6 +3300,12 @@ class ModelCard(QFrame):
         self.speed_bar.set_evidence(
             _metric_evidence(self.model, "speed", role, scene, api_model)
         )
+        self._show_cloud_speed()
+
+    def _show_cloud_speed(self) -> None:
+        """An online model without a speed figure runs in the cloud: say so."""
+        if model_is_online(self.model) and not self.speed_bar._evidence.get("available"):
+            self.speed_bar.show_word("云端")
 
 
 
@@ -5548,6 +5728,136 @@ class ModelTechnicalDialog(QWidget):
         layout.addWidget(section)
 
 
+class _DeferredModelCard(QFrame):
+    """Stable row; build the unchanged card only near the viewport."""
+    selected = Signal(str)
+    action_requested = Signal(str)
+    download_requested = Signal(str)
+    uninstall_requested = Signal(str)
+    api_configure_requested = Signal(str)
+
+    def __init__(self, model, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self._card = None
+        self._pending = {}
+        from ..app.ui_zoom import set_size
+        set_size(self,min_h=84)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+    def materialize(self):
+        if self._card is None:
+            card = self._make_card()
+            self._card = card
+            for signal in ('selected', 'action_requested', 'download_requested', 'uninstall_requested', 'api_configure_requested'):
+                getattr(card, signal).connect(getattr(self, signal).emit)
+            if hasattr(self, 'diarize_toggled'):
+                card.diarize_toggled.connect(self.diarize_toggled.emit)
+            for method, args in self._pending.items():
+                getattr(card, method)(*args)
+            self.layout().addWidget(card)
+            apply_ui_language(card, current_language())
+            if isinstance(card,ModelCard):
+                from ..app.ui_zoom import apply_to
+                apply_to(card)
+            card.show()
+        return self._card
+
+    def _make_card(self):
+        return ModelCard(self.model)
+
+    def __getattr__(self, name):
+        if name in {'action','download','uninstall','configure','accuracy_bar','speed_bar',
+                    'language_badges','title_label','monogram','info_host','metrics_host'}:
+            return getattr(self.materialize(), name)
+        raise AttributeError(name)
+
+    def _apply(self, method, *args):
+        self._pending[method] = args
+        if self._card is not None: getattr(self._card, method)(*args)
+
+    def set_action_state(self, text, enabled): self._apply('set_action_state', text, enabled)
+    def set_reference_role(self, *args): self._apply('set_reference_role', *args)
+    def sync_configure_button(self, state): self._apply('sync_configure_button', state)
+    def set_uninstall_available(self, visible, enabled=True): self._apply('set_uninstall_available', visible, enabled)
+    def set_state_badge(self, text, tone='muted'):
+        self._state_badge_state = (text, tone)
+        self._apply('set_state_badge', text, tone)
+    def set_selected(self, selected):
+        self.setProperty('selected', selected)
+        self._apply('set_selected', selected)
+    def refresh_theme_palette(self):
+        if self._card is not None: self._card.refresh_theme_palette()
+
+
+class _CardViewport(QObject):
+    """At most one additional card per turn, only while visible."""
+    def __init__(self, scroll, cards):
+        super().__init__(scroll)
+        self.scroll, self.cards = scroll, cards
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(16)
+        self.timer.timeout.connect(self._next)
+        scroll.viewport().installEventFilter(self)
+        scroll.verticalScrollBar().valueChanged.connect(self.schedule)
+        scroll.verticalScrollBar().rangeChanged.connect(self.schedule)
+
+    def eventFilter(self, _obj, event):
+        if event.type() in (QEvent.Type.Show, QEvent.Type.Resize): self.schedule()
+        elif event.type() == QEvent.Type.Hide: self.timer.stop()
+        return False
+
+    def schedule(self, *_):
+        if self.scroll.isVisible() and not self.timer.isActive(): self.timer.start()
+
+    def _next(self):
+        if not self.scroll.isVisible(): return
+        viewport = self.scroll.viewport()
+        for card in self.cards.values():
+            if card.isHidden() or card._card is not None: continue
+            rect = QRect(card.mapTo(viewport, QPoint()), card.size())
+            if rect.intersects(viewport.rect().adjusted(0, -40, 0, 120)):
+                card.materialize()
+                self.timer.start()
+                break
+
+
+class _DeferredPickerCard(_DeferredModelCard):
+    """Keep the card wall's state and filters without constructing offscreen cards."""
+    diarize_toggled = Signal(bool)
+
+    def __init__(self, model, role, **options):
+        super().__init__(model)
+        from .model_picker_copy import picker_copy
+        self.role = role
+        self._options = options
+        self.online = bool(options['online'])
+        self.tags = set(picker_copy(model.key, role).tags)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        if options.get('diarization') and role == 'primary':
+            self.tags.add('speakers')
+        self.setMinimumHeight(240)
+
+    def _make_card(self):
+        from .model_picker_cards import PickerCard
+        return PickerCard(self.model, self.role, **self._options)
+
+    def __getattr__(self, name):
+        if name in {'summary_label', 'state_badge', 'diarize'}:
+            return getattr(self.materialize(), name)
+        return super().__getattr__(name)
+
+    def set_diarize(self, enabled):
+        self._apply('set_diarize', enabled)
+
+    def matches(self, filter_key):
+        from .model_picker_cards import PickerCard
+        return PickerCard.matches(self, filter_key)
+
+
 class ModelWorkshopPage(QWidget):
     return_requested = Signal()
     terms_requested = Signal()
@@ -5566,8 +5876,10 @@ class ModelWorkshopPage(QWidget):
     mac_cpu_runtime_checked = Signal(object)
     registry_checked = Signal(object)
 
-    def __init__(self, root: Path, runtime_settings: dict, parent=None):
+    def __init__(self, root: Path, runtime_settings: dict, parent=None, *, defer_ui=False):
         super().__init__(parent)
+        self._ui_built = False
+        self._async_status = defer_ui
         self.root = Path(root)
         self.runtime_settings = runtime_settings
         self._installed: set[str] = set()
@@ -5607,12 +5919,17 @@ class ModelWorkshopPage(QWidget):
         self.setObjectName("modelWorkshopRoot")
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
-        self._build()
+        if not defer_ui:
+            self._build()
+            self._ui_built = True
         self._download_activity_timer = QTimer(self)
         self._download_activity_timer.setInterval(500)
         self._download_activity_timer.timeout.connect(self._sync_download_activity)
-        self._download_activity_timer.start()
-        self.refresh()
+        if self._async_status:
+            self._check_registry_in_background()
+            self.refresh(check_status=False)
+        else:
+            self.refresh()
 
         # P1-9: safe orphan temp cleanup. The scan can traverse a large runtime
         # evidence tree, so both startup and periodic work stay off the GUI thread.
@@ -5621,8 +5938,17 @@ class ModelWorkshopPage(QWidget):
         self._temp_cleanup_timer = QTimer(self)
         self._temp_cleanup_timer.setInterval(60_000)
         self._temp_cleanup_timer.timeout.connect(self._periodic_temp_cleanup)
-        self._temp_cleanup_timer.start()
         QTimer.singleShot(0, self._periodic_temp_cleanup)
+
+    def ensure_ui(self):
+        if self._ui_built:
+            return
+        self._build()
+        self._ui_built = True
+        self.refresh(registry=self._registry, check_status=False)
+        if self._density_comfortable is not None:
+            density, self._density_comfortable = self._density_comfortable, None
+            self.apply_density(density)
 
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
@@ -5670,11 +5996,12 @@ class ModelWorkshopPage(QWidget):
     def _build(self):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(12)
+        outer.setSpacing(6)
         outer.addWidget(self._build_sidebar())
         # P0: use QSplitter for content + detail so model clicks NEVER change the right panel width.
         # Width stability is owned by the splitter layout, not by content sizeHint or detail children.
         split = QSplitter(Qt.Orientation.Horizontal)
+        split.setHandleWidth(4)
         split.setChildrenCollapsible(False)
         split.addWidget(self._build_content())
         detail_scroll = QScrollArea()
@@ -5705,12 +6032,38 @@ class ModelWorkshopPage(QWidget):
         self._detail_is_compact = compact_detail
         self.sidebar.setVisible(not compact)
         split.setOrientation(Qt.Orientation.Horizontal)
-        self._responsive_detail.setMinimumWidth(0 if compact_detail else 300)
-        self._responsive_detail.setMaximumWidth(16777215 if compact_detail else 400)
+        from ..app.ui_zoom import set_size
+        set_size(self._responsive_detail,min_w=0 if compact_detail else 300,max_w=16777215 if compact_detail else 400)
         if self._responsive_detail.parentWidget() is split:
             self._responsive_detail.setVisible(not compact_detail)
         self.compact_details_button.setVisible(compact_detail)
         self.role_subtitle.setVisible(self.height() >= 480)
+        self._queue_reading_size()
+
+    def ui_zoom_factor(self,user_factor):
+        # Wide management windows grow their content, not just empty name space.
+        return max(user_factor,min(2.75,self.width()/1440.))
+
+    def apply_ui_zoom(self,factor):
+        self._reading_factor=factor
+        if hasattr(self,'detail_monogram'):
+            model=next((m for m in MODELS if m.key==self.detail_model_key),None)
+            if model is not None:
+                edge=round((38 if model.logo_asset else 24)*factor)
+                size=QSize(edge,edge)
+                self.detail_monogram.setPixmap(_model_logo(model,size).pixmap(size))
+
+    def _queue_reading_size(self):
+        if getattr(self,'_reading_pending',False):return
+        self._reading_pending=True
+        QTimer.singleShot(0,self._apply_reading_size)
+
+    def _apply_reading_size(self):
+        self._reading_pending=False
+        from ..app.ui_zoom import apply_to,effective_factor
+        factor=effective_factor(self)
+        if abs(factor-getattr(self,'_reading_factor',0))>.005:
+            apply_to(self,factor)
 
     def _show_compact_details(self):
         if self._responsive_detail.parentWidget() is not self._responsive_split:
@@ -5799,15 +6152,15 @@ class ModelWorkshopPage(QWidget):
             row.addLayout(text_box, 1)
             status_label = QLabel()
             status_label.setObjectName("workshopComboStatus")
-            status_label.setWordWrap(True)
-            status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row.addWidget(status_label)
+            status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row.addWidget(status_label, 0, Qt.AlignmentFlag.AlignBottom)
             combo_layout.addLayout(row)
             self.combo_model_labels[key] = model_label
             self.combo_status_labels[key] = status_label
             if key != "review":
                 combo_layout.addSpacing(2)
         layout.addWidget(combo)
+        layout.addStretch(1)
         self.download_estimate = QLabel()
         self.download_estimate.setObjectName("workshopTiny")
         self.download_estimate.setWordWrap(True)
@@ -5825,18 +6178,26 @@ class ModelWorkshopPage(QWidget):
         self.health_summary.setObjectName("workshopTiny")
         self.health_summary.setWordWrap(True)
         health_layout.addWidget(self.health_summary)
+        self.health_bar = QProgressBar()
+        self.health_bar.setObjectName("workshopHealthBar")
+        self.health_bar.setTextVisible(False)
+        self.health_bar.setFixedHeight(6)
+        self.health_bar.setRange(0, 1)
+        self.health_bar.setValue(0)
+        health_layout.addWidget(self.health_bar)
         self.storage_button = QPushButton("存储管理")
         self.storage_button.setObjectName("workshopSecondary")
         self.storage_button.clicked.connect(self._show_storage_manager)
         health_layout.addWidget(self.storage_button)
         layout.addWidget(health)
-        layout.addStretch(1)
         return sidebar
 
     def restore_active_navigation(self):
-        self.workspace_navigation.set_active("workshop")
+        if self._ui_built:
+            self.workspace_navigation.set_active("workshop")
 
     def focus_primary_backend(self, backend: str):
+        self.ensure_ui()
         """Open the primary tab on the model chosen by the setup wizard."""
         key = {
             "moss": "moss",
@@ -5860,10 +6221,11 @@ class ModelWorkshopPage(QWidget):
         content.setObjectName("workshopContent")
         content.setMinimumWidth(0)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(8)
 
         top = QHBoxLayout()
+        top.setContentsMargins(16,0,16,0)
         title_box = QVBoxLayout()
         title = QLabel("模型工坊")
         title.setObjectName("workshopPageTitle")
@@ -5916,10 +6278,15 @@ class ModelWorkshopPage(QWidget):
         self.download_activity.hide()
         layout.addWidget(self.download_activity)
 
-        tabs = QHBoxLayout()
-        tabs.setSpacing(7)
+        # 2026-11-12 (workshop design A): underlined tabs with a count, on a rule.
+        tab_bar = QFrame()
+        tab_bar.setObjectName("workshopTabBar")
+        tabs = QHBoxLayout(tab_bar)
+        tabs.setContentsMargins(16, 0, 16, 0)
+        tabs.setSpacing(22)
         self.tab_group = QButtonGroup(self)
         self.tab_group.setExclusive(True)
+        self.tab_counts: dict[str, QLabel] = {}
         for text, role in (("主力转写", "primary"), ("字幕时间轴", "timeline"), ("文字复核", "review"), ("在线 API", "api")):
             button = QPushButton(text)
             button.setObjectName("workshopTab")
@@ -5927,10 +6294,19 @@ class ModelWorkshopPage(QWidget):
             button.setProperty("role", role)
             button.setChecked(role == self.browser_role)
             button.clicked.connect(lambda _checked=False, value=role: self._set_role(value))
+            inner = QHBoxLayout(button)
+            inner.setContentsMargins(0, 0, 0, 3)
+            inner.addStretch(1)
+            count = QLabel(str(sum(1 for model in MODELS
+                                   if model_platform_available(model) and role in _browser_groups(model))))
+            count.setObjectName("workshopTabCount")
+            count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            inner.addWidget(count, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.tab_counts[role] = count
             self.tab_group.addButton(button)
             tabs.addWidget(button)
         tabs.addStretch(1)
-        layout.addLayout(tabs)
+        layout.addWidget(tab_bar)
 
         self.ai_segmentation_button = QPushButton("AI 模型 / 智能断句")
         self.ai_segmentation_button.setObjectName("workshopToolButton")
@@ -5942,6 +6318,7 @@ class ModelWorkshopPage(QWidget):
         self.task_settings_button.clicked.connect(self.task_settings_requested)
 
         search_row = QHBoxLayout()
+        search_row.setContentsMargins(16,0,16,0)
         self.search = QLineEdit()
         self.search.setObjectName("workshopSearch")
         bind_text(self.search, '搜索模型或使用场景', property='placeholderText')
@@ -6034,13 +6411,14 @@ class ModelWorkshopPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setObjectName("workshopScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = QWidget()
         host.setObjectName("workshopScrollHost")
         self.card_layout = QVBoxLayout(host)
         self.card_layout.setContentsMargins(0, 0, 0, 0)
-        self.card_layout.setSpacing(10)  # P0-2: 8~12px spacing between cards so they don't visually merge
+        self.card_layout.setSpacing(8)
         self.list_header = self._build_list_header()
         self.card_layout.addWidget(self.list_header)
         by_key = {model.key: model for model in MODELS}
@@ -6048,7 +6426,7 @@ class ModelWorkshopPage(QWidget):
             model = by_key.get(key)
             if model is None:
                 continue
-            card = ModelCard(model)
+            card = (_DeferredModelCard if self._async_status else ModelCard)(model)
             card.selected.connect(self._select_model)
             card.action_requested.connect(self._perform_action)
             card.download_requested.connect(self._download_card)
@@ -6063,6 +6441,8 @@ class ModelWorkshopPage(QWidget):
         self.card_layout.addWidget(self.empty_label)
         self.card_layout.addStretch(1)
         scroll.setWidget(host)
+        if self._async_status:
+            self._card_viewport = _CardViewport(scroll, self._cards)
         layout.addWidget(scroll, 1)
         return content
 
@@ -6082,90 +6462,131 @@ class ModelWorkshopPage(QWidget):
         detail.setMinimumWidth(0)
         detail.setMaximumWidth(380)
         layout = QVBoxLayout(detail)
-        layout.setContentsMargins(18, 14, 18, 16)
-        layout.setSpacing(10)
-        self.detail_badge = PillLabel("", "workshopStateBadge")
-        layout.addWidget(self.detail_badge, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addSpacing(2)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(12)
+        # 2026-11-11 (workshop design A): logo + name + badges, description,
+        # two metric cards, languages, workflow, one facts card, then actions.
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        self.detail_monogram = QLabel()
+        self.detail_monogram.setObjectName("workshopMonogram")
+        self.detail_monogram.setFixedSize(52, 52)
+        self.detail_monogram.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self.detail_monogram, 0, Qt.AlignmentFlag.AlignTop)
+        head_text = QVBoxLayout()
+        head_text.setSpacing(5)
         self.detail_title = QLabel()
         self.detail_title.setObjectName("workshopDetailTitle")
         self.detail_title.setWordWrap(True)
         # Explicitly prevent the title from affecting panel width.
         self.detail_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.detail_title)
+        head_text.addWidget(self.detail_title)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        self.detail_rec_note = PillLabel("★ 2ByteASR 推荐", "recTag")
+        self.detail_rec_note.setVisible(False)
+        chips.addWidget(self.detail_rec_note)
+        self.detail_badge = PillLabel("", "workshopStateBadge")
+        chips.addWidget(self.detail_badge)
+        chips.addStretch(1)
+        head_text.addLayout(chips)
+        head.addLayout(head_text, 1)
+        layout.addLayout(head)
         self.detail_description = QLabel()
         self.detail_description.setObjectName("workshopMuted")
         self.detail_description.setWordWrap(True)
         self.detail_description.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.detail_description)
-        self.detail_task = QLabel()
-        self.detail_task.setObjectName("workshopMuted")
-        self.detail_task.setWordWrap(True)
-        self.detail_task.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.detail_task)
-        workflow_title = QLabel("工作方式")
-        workflow_title.setObjectName("workshopSection")
-        layout.addWidget(workflow_title)
-        self.detail_workflow = QLabel()
-        self.detail_workflow.setObjectName("workshopMuted")
-        self.detail_workflow.setWordWrap(True)
-        self.detail_workflow.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.detail_workflow)
-        layout.addSpacing(2)
-        self.install_size_card = QLabel()
-        self.install_size_card.setObjectName("workshopInstallSizeCard")
-        self.install_size_card.setToolTip(SIZE_NOTE)
-        self.install_size_card.setWordWrap(True)
-        self.install_size_card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.install_size_card)
-        layout.addSpacing(2)
-        self.detail_rec_note = PillLabel("★ 2ByteASR 推荐", "recTag")
-        self.detail_rec_note.setVisible(False)
-        layout.addWidget(self.detail_rec_note, 0, Qt.AlignmentFlag.AlignLeft)
         self.detail_rec_reason = QLabel()
         self.detail_rec_reason.setObjectName("workshopRecommendationReason")
         self.detail_rec_reason.setVisible(False)
         self.detail_rec_reason.setWordWrap(True)
         self.detail_rec_reason.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.detail_rec_reason)
-        layout.addSpacing(6)
         self.detail_metric_section = QLabel("2ByteASR 参考指数")
-        self.detail_metric_section.setObjectName("workshopSection")
+        self.detail_metric_section.setObjectName("workshopDetailCaption")
         self.detail_metric_section.setToolTip(COMPARISON_NOTE)
         layout.addWidget(self.detail_metric_section)
+        metric_cards = QHBoxLayout()
+        metric_cards.setSpacing(10)
         self.capability_rows: list[RatingBar] = []
         for label in ("转写准确度", "速度指数"):
+            frame = QFrame()
+            frame.setObjectName("workshopMetricCard")
+            frame.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            frame_box = QVBoxLayout(frame)
+            frame_box.setContentsMargins(12, 10, 12, 10)
             bar = RatingBar(
                 label,
                 {"available": False, "value": "—", "note": "读取官方资料"},
-                label_width=52,
+                label_width=0, card=True,
             )
-            layout.addWidget(bar)
+            bar.setProperty("metricKind", "accuracy" if label == "转写准确度" else "speed")
+            frame_box.addWidget(bar)
+            metric_cards.addWidget(frame, 1)
             self.capability_rows.append(bar)
-        layout.addSpacing(6)
-        rule = QFrame()
-        rule.setObjectName("workshopRule")
-        rule.setFixedHeight(1)
-        layout.addWidget(rule)
-        install_title = QLabel("安装与兼容")
-        install_title.setObjectName("workshopSection")
-        layout.addWidget(install_title)
+        layout.addLayout(metric_cards)
+        language_title = QLabel("支持语言")
+        language_title.setObjectName("workshopDetailCaption")
+        layout.addWidget(language_title)
+        from .model_language_badges import LanguageBadgeRow
+        self.detail_languages = LanguageBadgeRow(grid_columns=3, fill=True)
+        layout.addWidget(self.detail_languages)
+        workflow_title = QLabel("工作方式")
+        workflow_title.setObjectName("workshopDetailCaption")
+        layout.addWidget(workflow_title)
+        # One line of steps (音频 → 语音识别 → 文本 + 时间轴); the longer
+        # notes stay in the tooltip and the technical details.
+        self.detail_workflow = QLabel()
+        self.detail_workflow.setObjectName("workshopDetailBody")
+        self.detail_workflow.hide()
+        self.detail_workflow_host = QWidget()
+        self.detail_workflow_flow = _PillFlowLayout(self.detail_workflow_host, spacing=3)
+        layout.addWidget(self.detail_workflow_host)
+        facts = QFrame()
+        facts.setObjectName("workshopFactCard")
+        facts_grid = QGridLayout(facts)
+        facts_grid.setContentsMargins(14, 12, 14, 12)
+        facts_grid.setHorizontalSpacing(14)
+        facts_grid.setVerticalSpacing(7)
+
+        def fact_row(row, key):
+            caption = QLabel()
+            bind_text(caption, key)
+            caption.setObjectName("workshopFactKey")
+            facts_grid.addWidget(caption, row, 0, Qt.AlignmentFlag.AlignTop)
+            value = QLabel()
+            value.setObjectName("workshopFactStrong")
+            value.setWordWrap(True)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            facts_grid.addWidget(value, row, 1)
+            return value
+
+        self.detail_task = fact_row(0, "用途")
+        self.detail_run = fact_row(1, "运行")
+        self.install_size_card = fact_row(2, "磁盘")
+        self.install_size_card.setToolTip(SIZE_NOTE)
+        self.detail_source = fact_row(3, "来源")
+        facts_grid.setColumnStretch(1, 1)
+        facts_box = QVBoxLayout()
+        facts_grid.addLayout(facts_box, 4, 0, 1, 2)
         self.detail_install = QLabel()
         self.detail_install.setObjectName("workshopMuted")
         self.detail_install.setWordWrap(True)
-        layout.addWidget(self.detail_install)
+        self.detail_install.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        facts_box.addWidget(self.detail_install)
+        layout.addWidget(facts)
         # 文案保持紧凑，主要操作稳定落在详情栏底部。
         layout.addStretch(1)
         layout.addSpacing(16)
         self.detail_action = QPushButton()
         self.detail_action.setObjectName("workshopPrimary")
+        self.detail_action.setMinimumHeight(42)
         self.detail_action.clicked.connect(lambda: self._perform_action(self.detail_model_key))
         layout.addWidget(self.detail_action)
-        self.detail_docs = QPushButton("查看技术说明")
-        self.detail_docs.setObjectName("workshopSecondary")
-        install_themed_icon(self.detail_docs, "fa5s.file-alt")
+        self.detail_docs = QPushButton("技术说明")
+        self.detail_docs.setObjectName("workshopToolButton")
         self.detail_docs.clicked.connect(self._show_technical_details)
-        layout.addWidget(self.detail_docs)
         # API 模型详情：显式配置入口（三十四轮——配置完成后没有再次编辑
         # key/模型/地址的办法）。
         self.detail_configure = QPushButton("配置密钥与接口")
@@ -6177,14 +6598,16 @@ class ModelWorkshopPage(QWidget):
         self.detail_configure.hide()
         manage_row = QHBoxLayout()
         manage_row.setSpacing(8)
-        self.detail_repair = QPushButton("校验并修复")
-        self.detail_repair.setObjectName("workshopSecondary")
+        manage_row.addWidget(self.detail_docs, 1)
+        self.detail_repair = QPushButton("校验修复")
+        self.detail_repair.setObjectName("workshopToolButton")
         self.detail_repair.clicked.connect(self._repair_selected)
-        manage_row.addWidget(self.detail_repair)
-        self.detail_uninstall = QPushButton("永久删除模型文件")
-        self.detail_uninstall.setObjectName("workshopSecondary")
+        manage_row.addWidget(self.detail_repair, 1)
+        self.detail_uninstall = QPushButton("删除文件")
+        bind_text(self.detail_uninstall, "永久删除模型文件", property="toolTip")
+        self.detail_uninstall.setObjectName("workshopDangerText")
         self.detail_uninstall.clicked.connect(self._uninstall_selected)
-        manage_row.addWidget(self.detail_uninstall)
+        manage_row.addWidget(self.detail_uninstall, 1)
         layout.addLayout(manage_row)
         note = QLabel("模型切换只影响下一次字幕任务")
         note.setObjectName("workshopTiny")
@@ -6200,6 +6623,8 @@ class ModelWorkshopPage(QWidget):
         if self._density_comfortable is comfortable:
             return
         self._density_comfortable = comfortable
+        if not self._ui_built:
+            return
         # Sidebar/detail widths are now set via SizePolicy + max in _build_*; keep only font scaling here.
         self.page_title.setStyleSheet(
             f"font-family: {TITLE_FONT_STACK}; "
@@ -6207,10 +6632,10 @@ class ModelWorkshopPage(QWidget):
         )
         self.detail_title.setStyleSheet(
             f"font-family: {TITLE_FONT_STACK}; "
-            f"font-size: {24 if comfortable else 21}px; font-weight: {WEIGHT_SCALE['heavy']};"
+            f"font-size: {21 if comfortable else 19}px; font-weight: {WEIGHT_SCALE['heavy']};"
         )
         for card in self._cards.values():
-            card.setMinimumHeight(176)
+            card.setMinimumHeight(84)
 
     def update_runtime_settings(self, runtime_settings: dict):
         self.runtime_settings = runtime_settings
@@ -6219,7 +6644,7 @@ class ModelWorkshopPage(QWidget):
         # when something it shows can differ; downloads, removals, storage
         # changes and language switches call refresh() themselves.
         if self._refresh_signature() != self._last_refresh_signature:
-            self.refresh()
+            self.refresh(registry=self._registry, check_status=False)
 
     def _refresh_signature(self) -> tuple:
         from ..system.environment import preflight_cache_token
@@ -6255,16 +6680,31 @@ class ModelWorkshopPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._download_activity_timer.start()
+        self._temp_cleanup_timer.start()
         if self._shown_once:
             # Files may have changed outside the app since the last visit:
             # re-check the registry off the GUI thread; refresh only on change.
             QTimer.singleShot(0, self._check_registry_in_background)
         self._shown_once = True
 
-    def _check_registry_in_background(self):
+    def hideEvent(self, event):
+        for name in ('_download_activity_timer','_temp_cleanup_timer'):
+            timer = getattr(self,name,None)
+            if timer is not None: timer.stop()
+        super().hideEvent(event)
+
+    def _check_registry_in_background(self, *, force=False):
         if self._registry_check_running:
+            if force and self._async_status:
+                from .model_status_cache import request_registry
+                request_registry(self.root, self.registry_checked.emit, force=True)
             return
         self._registry_check_running = True
+        if self._async_status:
+            from .model_status_cache import request_registry
+            request_registry(self.root, self.registry_checked.emit, force=force)
+            return
         root = Path(self.root)
         signal = self.registry_checked
 
@@ -6282,11 +6722,23 @@ class ModelWorkshopPage(QWidget):
         threading.Thread(target=work, daemon=True, name="workshop-registry-check").start()
 
     def _registry_check_done(self, registry):
+        if self._async_status and registry is not None:
+            from .model_status_cache import registry_is_current
+            if not registry_is_current(self.root, registry):
+                return  # invalidated after emit but before this queued GUI callback
         self._registry_check_running = False
         if registry is None:
             return
         if _registry_fingerprint(registry) != _registry_fingerprint(self._registry):
             self.refresh(registry=registry)
+
+    def _realize_first_cards(self):
+        if self._async_status and not self.isVisible():
+            return  # the viewport's Show schedules bounded creation after shell paint
+        for card in [card for card in self._cards.values() if not card.isHidden()][:2]:
+            if isinstance(card, _DeferredModelCard): card.materialize()
+        viewport = getattr(self, '_card_viewport', None)
+        if viewport is not None: viewport.schedule()
 
     def _active_download_dialog(
         self, download_key: str | None = None
@@ -6316,6 +6768,8 @@ class ModelWorkshopPage(QWidget):
         dialog.activateWindow()
 
     def _sync_download_activity(self):
+        if not self._ui_built or not self.isVisible():
+            return
         dialog = self._active_download_dialog()
         if dialog is None:
             self.download_activity.hide()
@@ -6356,7 +6810,19 @@ class ModelWorkshopPage(QWidget):
             label += f" · {status}"
         self.download_activity_text.setText(label + percent_text)
 
-    def refresh(self, registry=None):
+    def refresh(self, registry=None, *, check_status=True):
+        if self._async_status:
+            if registry is None:
+                from .model_status_cache import cached_registry
+                registry = cached_registry(self.root)
+                if check_status:
+                    self._check_registry_in_background(force=True)
+            self._registry = registry
+            self._installed = registry.installed_keys() if registry is not None else set()
+            if not self._ui_built:
+                self._last_refresh_signature = self._refresh_signature()
+                self.models_refreshed.emit()
+                return
         self._refresh_count += 1
         self._state_memo = {}
         try:
@@ -6369,11 +6835,11 @@ class ModelWorkshopPage(QWidget):
     def _refresh(self, registry=None):
         language = current_language()
         self._refresh_role_subtitle()
-        if registry is None:
+        if registry is None and not self._async_status:
             from .model_registry import scan_model_registry
             registry = scan_model_registry(install_root=Path(self.root))
         self._registry = registry
-        self._installed = self._registry.installed_keys()
+        self._installed = self._registry.installed_keys() if self._registry is not None else set()
         bind_text(self.available_badge, f'{self._available_count()} ' + ('models available' if language == 'en' else ui_literal('个模型可用', language)))
         local_models = tuple(model for model in MODELS if model.install_keys)
         installed_count = sum(
@@ -6382,7 +6848,9 @@ class ModelWorkshopPage(QWidget):
             if all(key in self._installed for key in model.install_keys)
         )
         self.set_health(installed_count, len(local_models))
-        if self._registry.error:
+        if self._registry is None:
+            self.health_summary.setText(tr('正在检查模型文件…'))
+        if self._registry is not None and self._registry.error:
             self.health_summary.setText(self._registry.error)
             self.health_summary.setWordWrap(True)
         self._refresh_combo()
@@ -6390,8 +6858,7 @@ class ModelWorkshopPage(QWidget):
             model = card.model
             state = self._model_state(model, self.browser_role)
             text, enabled = self._action_text(model, state)
-            card.action.setText(translate(text, language))
-            card.action.setEnabled(enabled)
+            card.set_action_state(translate(text, language), enabled)
             card.sync_configure_button(state)
             card.set_selected(state == "selected")
             manageable = self._has_managed_local_files(model)
@@ -6429,20 +6896,25 @@ class ModelWorkshopPage(QWidget):
                 )
         self._apply_filter()
         self._refresh_detail()
+        self._realize_first_cards()
 
 
     def _model_is_current(self, model: WorkshopModel) -> bool:
         return model.key in self._current_model_keys()
 
     def _download_card(self, key: str):
-        if key in self._cards:
+        model = next((m for m in MODELS if m.key == key), None)
+        if model is not None:
             self._view_model(key)
-            self._download(self._cards[key].model)
+            self._download(model)
 
 
 
     def set_health(self, installed_count: int, total_count: int):
         missing = max(0, int(total_count) - int(installed_count))
+        if hasattr(self, "health_bar"):
+            self.health_bar.setRange(0, max(1, int(total_count)))
+            self.health_bar.setValue(max(0, int(installed_count)))
         (bind_text(self.health_summary, f'Installed {installed_count} · Not installed {missing}') if current_language() == 'en' else bind_text(self.health_summary, '已安装 {value0} · 未安装 {value1}', value0=installed_count, value1=missing))
 
     def _current_model_keys(self) -> set[str]:
@@ -6515,6 +6987,8 @@ class ModelWorkshopPage(QWidget):
         if registry and registry.error and model.install_keys:
             return 'unreadable'
         records = [registry.record(key) for key in model.install_keys] if registry else []
+        if self._async_status and registry is None and model.install_keys:
+            return 'checking'
         if any(record and record.health.value == 'UNREADABLE' for record in records):
             return 'unreadable'
         if any(record and record.health.value in {'PARTIAL', 'CORRUPT'} for record in records):
@@ -6968,8 +7442,14 @@ class ModelWorkshopPage(QWidget):
             card.setVisible(show)
             visible += int(show)
         self.empty_label.setVisible(visible == 0)
+        viewport = getattr(self, '_card_viewport', None)
+        if viewport is not None:
+            viewport.schedule()
 
     def _view_model(self, key: str):
+        if not self._ui_built:
+            self.detail_model_key = key
+            return
         if key not in self._cards:
             return
         self.detail_model_key = key
@@ -6977,10 +7457,10 @@ class ModelWorkshopPage(QWidget):
 
     def _select_model(self, key: str, *, role: str | None = None):
         """Handle a card click without conflating detail focus and runtime state."""
-        if key not in self._cards:
+        model = next((m for m in MODELS if m.key == key), None)
+        if model is None:
             return
         self._view_model(key)
-        model = self._cards[key].model
         effective_role = role or self.browser_role
         state = self._model_state(model, effective_role)
         if state in {"selected", "installed", "configured"}:
@@ -7027,25 +7507,70 @@ class ModelWorkshopPage(QWidget):
         self.detail_badge.style().unpolish(self.detail_badge)
         self.detail_badge.style().polish(self.detail_badge)
         bind_text(self.detail_title, model.name)
+        card = self._cards[self.detail_model_key]
+        pixmap = card.monogram.pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            self.detail_monogram.setPixmap(pixmap)
+        self.detail_monogram.setStyleSheet(card.monogram.styleSheet())
+        from .model_languages import language_support
+        self.detail_languages.set_support(language_support(model.key))
         is_online = model_is_online(model)
         size_heading = "本地磁盘占用" if is_online else "本地磁盘占用（预计）"
         size_value = "无需本地下载" if is_online else _install_size_label(model.size)
-        self.install_size_card.setText(
-            f"{translate(size_heading, language)}\n"
-            f"{translate(size_value, language)}"
-        )
+        self.install_size_card.setText(translate(size_value, language))
+        self.install_size_card.setToolTip(translate(size_heading, language) + "\n" + translate(SIZE_NOTE, language))
+        self.detail_run.setText(translate(model_mode_text(model), language))
+        if model.download_key:
+            source = "ModelScope → Hugging Face → 镜像 · 可断点续传"
+        elif model.api_preset:
+            source = "在线服务 · 需要 API Key"
+        else:
+            source = "内置"
+        self.detail_source.setText(translate(source, language))
         self.detail_description.setText(model_scene(model))
         self.detail_task.setText(" · ".join(model_task_badges(model)))
-        self.detail_workflow.setText(model_workflow(model))
+        workflow = model_workflow(model)
+        self.detail_workflow.setText(workflow)
+        self.detail_workflow_host.setToolTip(workflow)
+        while self.detail_workflow_flow.count():
+            item = self.detail_workflow_flow.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        steps = [" ".join(part.split()).replace(" + ", "+") for part in workflow.splitlines()[0].split("→")
+                 if part.strip()]
+        # Keep it on one line: when the steps would not fit, leave out the
+        # input step (音频), which every model starts from.
+        metrics = self.detail_title.fontMetrics()
+        available = max(260, self.detail.width() - 44)
+        needed = sum(metrics.horizontalAdvance(step) * 1.1 + 14 for step in steps) + 22 * (len(steps) - 1)
+        if len(steps) > 2 and needed > available:
+            steps = steps[1:]
+        for index, step in enumerate(steps):
+            # An arrow and the step after it wrap together: never a lone arrow.
+            unit = QWidget()
+            unit_row = QHBoxLayout(unit)
+            unit_row.setContentsMargins(0, 0, 0, 0)
+            unit_row.setSpacing(3)
+            if index:
+                arrow = QLabel("→")
+                arrow.setObjectName("workshopFlowArrow")
+                unit_row.addWidget(arrow)
+            chip = QLabel(step)
+            chip.setObjectName("workshopFlowChipLast" if index == len(steps) - 1 else "workshopFlowChip")
+            unit_row.addWidget(chip)
+            self.detail_workflow_flow.addWidget(unit)
         is_rec = bool(getattr(model, "recommended", False))
         self.detail_rec_note.setVisible(is_rec)
         self.detail_rec_reason.setVisible(is_rec)
+        self.detail_metric_section.setVisible(True)
         if is_rec:
             rationale = {
                 "mosi_moss_pro": "免安装、不占显卡，云端完成多人转写与说话人区分，适合作为主力转写首选。",
                 "moss": "中文长音频与说话人区分，适合作为第一阶段主力转写。",
                 "firered": "字级时间轴精度适合作为第二阶段字幕时间轴。",
                 "qwen_local": "多语言与专名复核适合作为第三阶段文字复核。",
+                "qwen_aligner": "11 种语言的字/词级对齐，没有 NVIDIA 显卡也能用 CPU 运行，适合作为字幕时间轴。",
+                "mlx_qwen_aligner": "11 种语言的字/词级对齐，在 Apple Silicon 上本机运行，适合作为字幕时间轴。",
             }.get(model.key, "适合当前 2ByteASR 工作流角色。")
             self.detail_rec_reason.setText(translate(rationale, language))
         detail_evidence = (
@@ -7061,15 +7586,15 @@ class ModelWorkshopPage(QWidget):
         bind_text(self.detail_metric_section, translate('2ByteASR 参考指数', language) + ' · ' + _benchmark_scene_label(model_metric_scene(model, self._benchmark_scene), language))
         for bar, evidence in zip(self.capability_rows, detail_evidence):
             bar.set_evidence(evidence)
-        compatibility = translate(model_mode_text(model), language)
+            bar._track.show()
+        if is_online and not detail_evidence[1].get("available"):
+            self.capability_rows[1].show_word("云端")
+        compatibility = ""
         if model.download_key:
-            compatibility += "\n" + translate("自动来源先试 ModelScope，再试 Hugging Face 官方；HF 镜像可在下载窗口手动选择（可能回源官方）；可断点续传。", language)
             if model.auto_stage:
-                compatibility += f"\n{translate('安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。', language)}"
+                compatibility = translate('安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。', language)
             elif not _runtime_role_available(model, self.browser_role):
-                compatibility += f"\n{translate('模型文件可先下载；当前角色适配尚未完成，不会替换现有后端。', language)}"
-        elif model.api_preset:
-            compatibility += "\n" + translate("在设置页保存对应服务的模型、地址与 API Key。", language)
+                compatibility = translate('模型文件可先下载；当前角色适配尚未完成，不会替换现有后端。', language)
         self.detail_install.setText(compatibility)
         registry = getattr(self, '_registry', None)
         records = [registry.record(key) for key in model.install_keys] if registry else []
@@ -7085,12 +7610,17 @@ class ModelWorkshopPage(QWidget):
             complete_issues.append(str(record.installation_path)+'\n'+'\n'.join(missing))
         self.detail_install.setToolTip('\n\n'.join(complete_issues))
         if issues:
-            self.detail_install.setText(compatibility + '\n' + '\n'.join(issues))
+            self.detail_install.setText((compatibility + '\n' if compatibility else '') + '\n'.join(issues))
         if registry and registry.error:
             self.detail_install.setText(registry.error)
+        self.detail_install.setVisible(bool(self.detail_install.text().strip()))
         action_text, enabled = self._action_text(model, state)
         if state == "missing":
             action_text = f"{translate('下载', language)} {model.name}"
+        elif action_text == "使用":
+            role_name = {"primary": "设为主力转写", "api": "设为主力转写", "timeline": "设为字幕时间轴",
+                         "review": "设为文字复核"}.get(self.browser_role, "使用")
+            action_text = role_name
         self.detail_action.setText(translate(action_text, language))
         from ..design.presentation import button_role
         self.detail_action.setObjectName('studioButton' if state == 'selected' else 'studioPrimary')
@@ -7105,10 +7635,10 @@ class ModelWorkshopPage(QWidget):
         self.detail_uninstall.setEnabled(manageable and not self._model_is_current(model) and model.key not in self._removing)
 
     def _perform_action(self, key: str, *, role: str | None = None):
-        if key not in self._cards:
+        model = next((m for m in MODELS if m.key == key), None)
+        if model is None:
             return
         self._view_model(key)
-        model = self._cards[key].model
         effective_role = role or self.browser_role
         if effective_role == "api":
             # 「在线 API」浏览视角的操作作用于主力转写。此前 role="api" 落进
@@ -7134,7 +7664,7 @@ class ModelWorkshopPage(QWidget):
                     and self.runtime_settings.get("models", {}).get("firered_asr_backend") == "off"):
                 # CTC is a second pass within the timeline stage. Turning its
                 # switch on while that stage stays off would never run it.
-                aligner = self._cards["qwen_aligner"].model
+                aligner = next(m for m in MODELS if m.key == 'qwen_aligner')
                 if self._model_state(aligner, "timeline") not in {"installed", "selected"}:
                     QMessageBox.information(self, tr("需要安装时间轴模型"),
                                             tr("日语 CTC 用于校正句首。请先安装并启用 Qwen3-ForcedAligner，再使用日语 CTC。"))
@@ -7664,12 +8194,33 @@ class ModelWorkshopPage(QWidget):
         return None
 
 
+def _paint_picker_logo(model: WorkshopModel):
+    """The vendor logo (or themed placeholder) for a picker card's logo label."""
+    def paint(label: QLabel, size: QSize) -> None:
+        generic = not model.logo_asset and model.icon_background == WorkshopModel.icon_background
+        if generic:
+            from ..design.theme_manager import theme_key
+            from ..design.ui_theme import theme_definition
+            theme = theme_definition(theme_key())
+            label.setPixmap(_icon(model.icon_name, theme.accent_text).pixmap(QSize(24, 24)))
+            label.setStyleSheet(f"background: {theme.surface_elevated}; border: 1px solid {theme.border}; border-radius: 14px;")
+            return
+        label.setPixmap(_model_logo(model, size).pixmap(size))
+        if not model.logo_asset:
+            label.setStyleSheet(f"background: {model.icon_background}; border-radius: 14px;")
+    return paint
+
+
 class ModelPickerPanel(QWidget):
     """Shared role-scoped model picker used by the recognition home.
 
     It intentionally delegates state, downloads, API setup and backend changes
     to ``ModelWorkshopPage`` instead of keeping a second model catalog or a
     second installation path.
+
+    2026-11-12 (user picked design B): a card wall, two cards per row, filter
+    chips, the role's recommended models first, one line of copy per card and
+    the price on cloud cards. The host shows it without its grey header bar.
     """
 
     close_requested = Signal()
@@ -7684,9 +8235,12 @@ class ModelPickerPanel(QWidget):
         super().__init__(parent)
         self.controller = controller
         self.role = role if role in self.ROLE_LABELS else "primary"
-        self.cards: dict[str, ModelCard] = {}
+        self.cards: dict[str, "PickerCard"] = {}
         self._pinned_keys: list[str] = []
-        self.setStyleSheet(build_workshop_qss())
+        self._filter = "all"
+        self._order: list[str] = []
+        self.setObjectName("modelPickerPanel")
+        self.refresh_theme_palette()
         self._build()
         self.controller.models_refreshed.connect(self.refresh)
         # Populate from the controller's cached install state before first paint.
@@ -7694,7 +8248,13 @@ class ModelPickerPanel(QWidget):
         self.refresh()
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(build_workshop_qss())
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+        from .model_picker_cards import build_picker_qss
+        self.setStyleSheet(build_workshop_qss() + build_picker_qss(theme_definition(theme_key())))
+        for card in self.cards.values():
+            if not isinstance(card, _DeferredPickerCard) or card._card is not None:
+                _paint_picker_logo(card.model)(card.monogram, QSize(34, 34))
 
     def begin_session(self) -> None:
         """Reset temporary pinning when the cached picker is opened again."""
@@ -7703,30 +8263,52 @@ class ModelPickerPanel(QWidget):
         self.scroll.verticalScrollBar().setValue(0)
 
     def _build(self):
+        from PySide6.QtWidgets import QButtonGroup, QGridLayout
+        from .model_picker_copy import FILTERS, recommended_for
+        from .model_picker_cards import PickerCard
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(26, 20, 18, 18)
         layout.setSpacing(10)
         header = QHBoxLayout()
+        header.setSpacing(12)
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        self.breadcrumb = QLabel()
-        self.breadcrumb.setObjectName("workshopMuted")
-        title_box.addWidget(self.breadcrumb)
-        title = QLabel("选择模型")
-        title.setObjectName("workshopPageTitle")
-        title_box.addWidget(title)
-        note = QLabel("可直接下载、安装、使用或切换；模型工坊保留全部参数和高级信息。")
-        note.setObjectName("workshopMuted")
-        title_box.addWidget(note)
-        header.addLayout(title_box, 1)
+        self.title = QLabel()
+        self.title.setObjectName("pickerTitle")
+        title_box.addWidget(self.title)
         self.current_badge = QLabel()
-        self.current_badge.setObjectName("workshopBadge")
-        header.addWidget(self.current_badge, 0, Qt.AlignmentFlag.AlignTop)
+        self.current_badge.setObjectName("pickerCurrent")
+        title_box.addWidget(self.current_badge)
+        self.breadcrumb = QLabel()   # kept for callers; the title names the role now
+        self.breadcrumb.hide()
+        header.addLayout(title_box, 1)
+        self.close_button = QPushButton("×")
+        self.close_button.setObjectName("pickerClose")
+        self.close_button.setAutoDefault(False)
+        bind_text(self.close_button, "关闭", property="toolTip")
+        bind_text(self.close_button, "关闭", property="accessibleName")
+        self.close_button.clicked.connect(self.close_requested)
+        header.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
-        # 2026-10-18: what the four language badge styles on the cards mean.
-        from .model_language_badges import LanguageLegend
-        self.language_legend = LanguageLegend()
-        layout.addWidget(self.language_legend)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        self.filter_group = QButtonGroup(self)
+        self.filter_group.setExclusive(True)
+        self.filter_buttons: dict[str, QPushButton] = {}
+        for key, label in FILTERS.get(self.role, FILTERS["primary"]):
+            chip = bind_text(QPushButton(), label)
+            chip.setObjectName("pickerFilter")
+            chip.setCheckable(True)
+            chip.setAutoDefault(False)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setChecked(key == "all")
+            chip.clicked.connect(lambda _checked=False, k=key: self._set_filter(k))
+            self.filter_group.addButton(chip)
+            self.filter_buttons[key] = chip
+            chips.addWidget(chip)
+        chips.addStretch(1)
+        layout.addLayout(chips)
         # 2026-10-18: why the Chinese timing models are not used for the
         # spoken language chosen on home (shown for Japanese/English only).
         self.language_note = QLabel()
@@ -7739,46 +8321,62 @@ class ModelPickerPanel(QWidget):
         self.scroll = scroll
         scroll.setObjectName("workshopScroll")
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = QWidget()
         host.setObjectName("workshopScrollHost")
-        cards_layout = QVBoxLayout(host)
-        self.cards_layout = cards_layout
-        cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(10)  # P0-2: consistent 8-12px spacing in picker too
-        self.list_header = model_list_header()
-        cards_layout.addWidget(self.list_header)
-        by_key = {key: card.model for key, card in self.controller._cards.items()}
+        self.cards_grid = QGridLayout(host)
+        self.cards_grid.setContentsMargins(0, 2, 8, 2)
+        self.cards_grid.setHorizontalSpacing(14)
+        self.cards_grid.setVerticalSpacing(14)
+        self.cards_grid.setColumnStretch(0, 1)
+        self.cards_grid.setColumnStretch(1, 1)
+        recommended = recommended_for(self.role)
+        by_key = {model.key: model for model in MODELS}
+        language = current_language()
         for key in CANONICAL_MODEL_ORDER:
             model = by_key.get(key)
             if (model is None or not model_platform_available(model)
                     or self.role not in _model_roles(model)):
                 continue
-            card = ModelCard(model)
+            online = model_is_online(model)
+            card = (_DeferredPickerCard if getattr(self.controller, '_async_status', False) else PickerCard)(
+                model, self.role, recommended=key in recommended, logo=_paint_picker_logo(model),
+                accuracy=_metric_evidence(model, "accuracy", self.role),
+                online=online,
+                size_text="" if online else ui_literal(_install_size_label(model.size), language),
+                diarization="DIARIZATION" in tuple(getattr(model, "asr_capabilities", ()) or ()),
+            )
             card.selected.connect(self._select)
             card.action_requested.connect(self._perform_action)
-            card.download_requested.connect(self.controller._download_card)
-            # 三十八轮：主页选择弹窗此前没接"配置"红链的信号——点了没有任何
-            # 反应（工坊页有接，弹窗漏了）。转发给 controller 的同名信号，
+            card.download_requested.connect(getattr(self.controller, "_download_card", lambda _key: None))
+            # 三十八轮：主页选择弹窗的"配置"转发给 controller 的同名信号，
             # 由 MainWindow 打开对应服务商的密钥窗口。
-            card.api_configure_requested.connect(
-                self.controller.api_configure_requested.emit
-            )
-            card.set_uninstall_available(False)
+            card.api_configure_requested.connect(self.controller.api_configure_requested.emit)
+            card.diarize_toggled.connect(self._set_qwen_diarize)
             card.setToolTip(model.description)
             self.cards[key] = card
-            cards_layout.addWidget(card)
-        cards_layout.addStretch(1)
+        self._catalog = [key for key in recommended if key in self.cards] + \
+            [key for key in self.cards if key not in recommended]
         scroll.setWidget(host)
         layout.addWidget(scroll, 1)
+        if getattr(self.controller, '_async_status', False):
+            self._card_viewport = _CardViewport(scroll, self.cards)
+
         footer = QHBoxLayout()
+        footer.setSpacing(10)
+        self.footer_note = QLabel()
+        self.footer_note.setObjectName("pickerFooterNote")
+        footer.addWidget(self.footer_note)
         footer.addStretch(1)
-        close = QPushButton("完成")
-        close.setObjectName("workshopAction")
+        close = bind_text(QPushButton(), "完成")
+        close.setObjectName("pickerDone")
+        close.setAutoDefault(False)
         close.clicked.connect(self.close_requested)
         footer.addWidget(close)
         layout.addLayout(footer)
 
+    # ------------------------------------------------------------ actions
     def _select(self, key: str):
         if key not in self.cards:
             return
@@ -7789,11 +8387,64 @@ class ModelPickerPanel(QWidget):
         self.controller._perform_action(key, role=self.role)
         self.refresh()
 
+    def _set_filter(self, key: str):
+        self._filter = key
+        self._relayout()
+        self.scroll.verticalScrollBar().setValue(0)
+
+    def _set_qwen_diarize(self, enabled: bool):
+        """Qwen Audio 3.1 speaker labels: off unless the user turns them on."""
+        settings = getattr(self.controller, "runtime_settings", None)
+        if not isinstance(settings, dict):
+            return
+        settings.setdefault("models", {})["qwen_audio_diarize"] = bool(enabled)
+        try:
+            from ..storage.settings import save_runtime_settings
+            save_runtime_settings(settings)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Cannot save the Qwen Audio 3.1 speaker setting")
+
+    def ordered_keys(self) -> list[str]:
+        """Cards in shown order (selected and pinned first), filtered or not."""
+        return list(self._order)
+
+    def _relayout(self):
+        grid = self.cards_grid
+        while grid.count():
+            grid.takeAt(0)
+        visible = [key for key in self._order if self.cards[key].matches(self._filter)]
+        for index, key in enumerate(visible):
+            card = self.cards[key]
+            grid.addWidget(card, index // 2, index % 2)  # cards of one row share its height
+            card.show()
+        for key in self._order:
+            if key not in visible:
+                self.cards[key].hide()
+        rows = (len(visible) + 1) // 2
+        for row in range(grid.rowCount()):
+            grid.setRowStretch(row, 0)
+        grid.setRowStretch(rows, 1)
+        language = current_language()
+        hidden = len(self._order) - len(visible)
+        if hidden:
+            (self.footer_note.setText(f"{len(visible)} shown · {hidden} filtered out") if language == "en"
+             else bind_text(self.footer_note, "显示 {value0} 个 · 另有 {value1} 个被筛掉", value0=len(visible), value1=hidden))
+        else:
+            (self.footer_note.setText(f"{len(visible)} models") if language == "en"
+             else bind_text(self.footer_note, "共 {value0} 个模型", value0=len(visible)))
+        viewport = getattr(self, '_card_viewport', None)
+        if viewport is not None:
+            viewport.schedule()
+
     def refresh(self):
         language = current_language()
         role_label = translate(self.ROLE_LABELS[self.role], language)
         (bind_text(self.breadcrumb, f'Recognition plan · {role_label}') if language == 'en' else bind_text(self.breadcrumb, '识别方案 · {value0}', value0=role_label))
+        (self.title.setText(f'Choose the {role_label} model') if language == 'en' else bind_text(self.title, '选{value0}模型', value0=role_label))
         selected_name = "尚未选择"
+        settings = getattr(self.controller, "runtime_settings", None) or {}
+        diarize = bool((settings.get("models") or {}).get("qwen_audio_diarize", False)) if isinstance(settings, dict) else False
         for key, card in self.cards.items():
             state = self.controller._model_state(card.model, self.role)
             text, enabled = self.controller._action_text(card.model, state)
@@ -7803,45 +8454,43 @@ class ModelPickerPanel(QWidget):
                     self._pinned_keys.append(key)
             elif state == "missing":
                 text = "下载并安装"
-            card.action.setText(translate(text, language))
-            card.action.setEnabled(enabled)
+            card.set_action_state(translate(text, language), enabled)
             card.sync_configure_button(state)
             card.set_selected(state == "selected")
-            card.set_uninstall_available(False)
-            if card.model.api_preset:
+            card.set_diarize(diarize)
+            if state == "selected":
+                card.set_state_badge(translate("正在使用", language), "current")
+            elif card.model.api_preset:
                 ready = state in {"selected", "configured"}
-                card.set_state_badge(
-                    translate("已配置" if ready else "未配置", language),
-                    "ready" if ready else "missing",
-                )
+                card.set_state_badge(translate("已配置" if ready else "未配置", language),
+                                     "ready" if ready else "missing")
             else:
                 ready = state in {"selected", "installed", "downloaded", "language_unused"}
                 badge_text = {'partial': '权重不完整', 'unreadable': '目录无法读取',
-                              'runtime_missing': '权重已安装 · 环境未就绪',
+                              'runtime_missing': '环境未就绪',
                               'checking': '检查运行库', 'inference_pending': '推理待验证',
-                              'load_failed': '权重已校验 · 加载未通过'}.get(state, "已安装" if ready else "未安装")
-                card.set_state_badge(
-                    translate(badge_text, language),
-                    "ready" if ready else "missing",
-                )
-        selected_key = self.controller._selected_model_key_for_role(self.role)
+                              'load_failed': '加载未通过'}.get(state, "已安装" if ready else "未安装")
+                card.set_state_badge(translate(badge_text, language), "ready" if ready else "missing")
+        selected_key = self.controller._selected_model_key_for_role(self.role) \
+            if hasattr(self.controller, "_selected_model_key_for_role") else None
         if selected_key in self.cards:
             selected_name = self.cards[selected_key].model.name
-        language_stage = self._language_stage()
+        language_stage = self._language_stage() if hasattr(self.controller, "runtime_settings") else None
         if language_stage is not None:
             selected_name = translate(language_stage["name"], language)  # the home card's name
         (bind_text(self.current_badge, f'Current: {selected_name}') if language == 'en' else bind_text(self.current_badge, '当前：{value0}', value0=ui_literal(selected_name)))
-        self._refresh_language_note(language_stage)
-        # Pin for this opening. Canceling a model must not move the button
-        # away under the pointer; begin_session restores catalog order.
+        if hasattr(self.controller, "runtime_settings"):
+            self._refresh_language_note(language_stage)
+        # Pin for this opening. Canceling a model must not move the card away
+        # under the pointer; begin_session restores the role's order.
         selected = [key for key, card in self.cards.items() if card.property("selected")]
         pinned = selected + [key for key in self._pinned_keys if key not in selected]
-        ordered = pinned + [key for key in self.cards if key not in pinned]
-        for index, key in enumerate(ordered, 1):  # index 0 is the column header
-            card = self.cards[key]
-            if self.cards_layout.itemAt(index).widget() is not card:
-                self.cards_layout.removeWidget(card)
-                self.cards_layout.insertWidget(index, card)
+        order = pinned + [key for key in self._catalog if key not in pinned]
+        if order != self._order:
+            self._order = order
+            self._relayout()
+        elif not self.footer_note.text():
+            self._relayout()
 
     def _language_stage(self):
         """The timeline the home card names for the spoken language, or None."""

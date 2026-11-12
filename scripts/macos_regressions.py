@@ -24,6 +24,7 @@ SELECTORS.extend(['tests/test_caption_caret_split.py', 'tests/test_caption_edito
 SELECTORS.extend(['tests/test_stable_caption_instances.py', 'tests/test_chinese_complete_expression.py'])
 SELECTORS.append('tests/test_subtitle_export_process.py')
 SELECTORS.append('tests/test_stable_caption_pixel_evidence.py')
+SELECTORS.extend(['tests/test_interaction_performance.py', 'tests/test_ui_zoom_scope.py'])
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);a=parser.parse_args()

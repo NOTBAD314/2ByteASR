@@ -167,11 +167,11 @@ def offer_qss(theme) -> str:
     size_ink = theme.accent if contrast_ratio(theme.accent, theme.surface) >= 4.5 else theme.text
     rules = [
         f"QDialog#updateOffer {{ background: transparent; }}",  # painted as a rounded card
-        f"QLabel#updateOfferPill {{ background: {theme.accent}; color: {on_accent}; border-radius: 11px;"
-        f" padding: 3px 10px; font-size: 12px; font-weight: 700; }}",
-        f"QLabel#updateOfferMeta {{ color: {theme.text_muted}; font-size: 13px; }}",
-        f"QLabel#updateOfferVersion {{ color: {theme.text}; font-size: 52px; font-weight: 900; }}",
-        f"QLabel#updateOfferCardTitle {{ color: {theme.text}; font-size: 15px; font-weight: 700; background: transparent; }}",
+        f"QLabel#updateOfferPill {{ background: {theme.accent}; color: {on_accent}; border-radius: 10px;"
+        f" padding: 2px 9px; font-size: 11.5px; font-weight: 700; }}",
+        f"QLabel#updateOfferMeta {{ color: {theme.text_muted}; font-size: 12.5px; }}",
+        f"QLabel#updateOfferVersion {{ color: {theme.accent}; font-size: 60px; }}",
+        f"QLabel#updateOfferCardTitle {{ color: {theme.text}; font-size: 16px; font-weight: 800; background: transparent; }}",
         f"QLabel#updateOfferCardText {{ color: {theme.text_secondary}; font-size: 12px; background: transparent; }}",
         f"QFrame#updateOfferList {{ background: {theme.surface_elevated}; border: 1px solid {theme.border};"
         f" border-radius: 16px; }}",
@@ -182,7 +182,7 @@ def offer_qss(theme) -> str:
         f"QLabel#updateOfferDetail {{ color: {theme.text_secondary}; font-size: 12px; }}",
         f"QPushButton#updateOfferPrimary {{ background: {theme.accent}; color: {on_accent}; border: 0;"
         f" border-radius: 16px; min-height: 52px; max-height: 52px; font-size: 16px; font-weight: 700; }}",
-        f"QLabel#updateOfferAlso {{ color: {theme.text_secondary}; font-size: 12px; background: transparent; }}",
+        f"QLabel#updateOfferAlso {{ color: {theme.text_muted}; font-size: 11.5px; background: transparent; }}",
         f"QPushButton#updateOfferPrimary:hover {{ background: {theme.accent_hover}; }}",
         f"QPushButton#updateOfferPrimary:pressed {{ background: {theme.accent_pressed}; }}",
         f"QPushButton#updateOfferLater {{ background: {theme.surface}; color: {theme.text};"
@@ -197,6 +197,8 @@ def offer_qss(theme) -> str:
     ]
     for index, tint in enumerate(tints):
         rules.append(f"QFrame#updateOfferCard[tint=\"{index}\"] {{ background: {tint}; border: 0; border-radius: 18px; }}")
+        # 2026-11-12 (user): card titles in the card's own vivid colour, not black.
+        rules.append(f"QFrame#updateOfferCard[tint=\"{index}\"] QLabel#updateOfferCardTitle {{ color: {card_ink(theme, index)}; }}")
     return '\n'.join(rules)
 
 
@@ -243,6 +245,13 @@ class UpdateOfferDialog(SpringDialog):
         layout.addLayout(top)
         version = QLabel(str(check.latest_version))
         version.setObjectName('updateOfferVersion')
+        # 2026-11-12 (user): the version number in 猫啃什锦黑 (bundled with the app).
+        from ..design.loading_font import loading_font
+        version_font = loading_font()
+        version_font.setPixelSize(60)
+        version.setFont(version_font)
+        # The app sheet's font-family wins over setFont; name the family here too.
+        version.setStyleSheet(f"font-family: '{version_font.family()}'; font-size: 60px;")
         layout.addWidget(version)
 
         notes = manifest.note_for(current_language()) if manifest else ''
@@ -263,7 +272,7 @@ class UpdateOfferDialog(SpringDialog):
 
         self.remind_box = None
         if plan is not None and plan.mode == 'components':
-            primary = QPushButton(tr('下载并准备更新'))
+            primary = QPushButton(tr('下载并准备更新 · {value0}', value0=format_bytes(plan.download_bytes)))
             primary.clicked.connect(lambda: self._finish('download'))
         else:
             primary = QPushButton(tr('下载安装包'))
@@ -346,8 +355,8 @@ class UpdateOfferDialog(SpringDialog):
             body.setContentsMargins(16, 14, 16, 14)
             body.setSpacing(12 if wide else 6)
             icon = QLabel()
-            icon.setPixmap(colored_icon(HIGHLIGHT_ICONS[index], card_ink(theme, index)).pixmap(22, 22))
-            icon.setFixedSize(24, 24)
+            icon.setPixmap(colored_icon(HIGHLIGHT_ICONS[index], card_ink(theme, index)).pixmap(26, 26))
+            icon.setFixedSize(28, 28)
             icon.setStyleSheet('background: transparent;')
             words = QVBoxLayout()
             words.setSpacing(3)
@@ -425,7 +434,7 @@ class UpdateOfferDialog(SpringDialog):
                 lines.append(tr('模型：{value0} 有新版本，只有用到该模型时才需要下载。',
                                 value0='、'.join(plan.model_changes)))
         self.size_share = share
-        if headline:
+        if headline and not (plan is not None and plan.mode == 'components'):
             track = QFrame()
             track.setObjectName('updateOfferTrack')
             track.setFixedHeight(12)

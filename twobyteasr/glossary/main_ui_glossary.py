@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections import Counter
 from copy import deepcopy
 from .glossary_write_feedback import glossary_write_errors
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -284,10 +286,12 @@ class _TermMappingsModel(QAbstractTableModel):
             )
         return True
 
-    def set_data(self, items: list[dict]):
+    def set_data(self, items: list[dict], *, prepared=False):
         if items == self._rows:
             return False
-        rows = deepcopy(items) if items else []
+        # Background preparation owns these immutable row dictionaries.
+        # Ordinary callers keep the existing defensive-copy contract.
+        rows = list(items) if prepared else deepcopy(items) if items else []
         old_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in self._rows]
         new_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in rows]
         if old_keys == new_keys:
@@ -500,6 +504,8 @@ class TermLibraryDialog(QWidget):
     """
 
     libraries_changed = Signal()
+    _term_rows_prepared = Signal(int, object)
+    _batch_summary_ready = Signal(object, object)
 
     def __init__(
         self,
@@ -537,10 +543,32 @@ class TermLibraryDialog(QWidget):
         # 650 rows should switch in <200ms when cached. We still pay the first load cost once per game.
         self._mappings_cache: dict[str, list] = {}
         self._library_stats_cache: dict[str, dict[str, int]] = {}
+        self._building_game_index = True
+        self._sidebar_count_cursor = 0
+        self._sidebar_counts_timer = QTimer(self)
+        self._sidebar_counts_timer.setSingleShot(True)
+        self._sidebar_counts_timer.setInterval(100)
+        self._sidebar_counts_timer.timeout.connect(self._fill_next_sidebar_count)
         self._confirming_references = False
         self._builtin_cache: dict[str, tuple] = {}
         self._builtin_entry_cache: dict[str, list[dict[str, str]]] = {}
         self._term_rows_cache = None
+        self._rows_prepared_async = False
+        self._batch_revision = 0
+        self._batch_summary_cache = {}
+        self._batch_request_key = None
+        self._batch_running = False
+        self._batch_queued = None
+        self._summary_cancel = threading.Event()
+        QApplication.instance().aboutToQuit.connect(self._summary_cancel.set)
+        self._batch_summary_ready.connect(self._receive_batch_summary)
+        self._row_generation = 0
+        self._row_build_running = False
+        self._row_build_queued = None
+        self._row_build_state = None
+        self._library_read_stamp = None
+        self._library_stamp_observed = False
+        self._term_rows_prepared.connect(self._receive_term_rows)
         self._filter_key = None
         self._filter_running = False
         self._filter_pending = False
@@ -575,6 +603,8 @@ class TermLibraryDialog(QWidget):
         for entry in getattr(self.legacy, "glossary_catalog", lambda: [])():
             self.add_game_item(entry["name"], library_id=entry["id"])
         self.libraries_changed.connect(self._notify_owner_library_changed)
+        self._building_game_index = False
+        self._sidebar_counts_timer.start()
         # Do not setCurrentRow(0) here — that triggers sync heavy refresh_current_game.
         # After show(), the owner will kick refresh on next tick. If no games, just enable editor focus later.
         if not self.game_list.count():
@@ -607,6 +637,9 @@ class TermLibraryDialog(QWidget):
         self._builtin_cache.clear()
         self._builtin_entry_cache.clear()
         self._term_rows_cache = None
+        self._batch_revision += 1
+        self._row_generation += 1
+        self._row_build_state = None
         self._filter_key = None
         self.libraries_changed.emit()
 
@@ -1541,7 +1574,11 @@ class TermLibraryDialog(QWidget):
             self.listing.selectionModel().selectionChanged.connect(self.update_remove_action)
         except Exception:
             pass
-        content_body_layout.addWidget(self.listing, 3)
+        card_stage = QWidget()
+        card_stage_layout = QGridLayout(card_stage)
+        card_stage_layout.setContentsMargins(0, 0, 0, 0)
+        card_stage_layout.addWidget(self.listing, 0, 0)
+        content_body_layout.addWidget(card_stage, 3)
         # 空态：没有词条时给两个起点（线上词库 / 自己整理）；筛选后没词时只说明
         self.listing_empty = QWidget()
         self.listing_empty.setObjectName("termMappingEmpty")
@@ -1621,7 +1658,8 @@ class TermLibraryDialog(QWidget):
         empty_layout.addWidget(self.start_cards)
         empty_layout.addStretch(1)
         self.listing_empty.hide()
-        content_body_layout.addWidget(self.listing_empty, 3)
+        card_stage_layout.addWidget(self.listing_empty, 0, 0)
+        self.listing_empty.raise_()
         content_layout.addWidget(content_body, 1)
 
         # 页底：一个开关决定这个词库用不用在本批字幕
@@ -1705,6 +1743,7 @@ class TermLibraryDialog(QWidget):
 
     def showEvent(self, event):  # noqa: N802 - Qt API
         super().showEvent(event)
+        if self._sidebar_count_cursor < self.game_list.count(): self._sidebar_counts_timer.start()
         if getattr(self, "_hub_counts_checked", False):
             return
         self._hub_counts_checked = True
@@ -2004,10 +2043,30 @@ class TermLibraryDialog(QWidget):
         return self._library_stats_cache[identity]
 
     def _game_term_count(self, game_name, library_id=None):
+        if self._building_game_index:
+            return '…'
         return self._library_stats(game_name, library_id)['confirmed']
 
     def _game_reference_count(self, game_name, library_id=None):
+        if self._building_game_index:
+            return '…'
         return self._library_stats(game_name, library_id)['reference'] if game_name else 0
+
+    def _fill_next_sidebar_count(self):
+        if not self.isVisible(): return
+        if self._row_build_running:
+            self._sidebar_counts_timer.start()
+            return
+        if self._sidebar_count_cursor >= self.game_list.count(): return
+        item = self.game_list.item(self._sidebar_count_cursor)
+        self._sidebar_count_cursor += 1
+        name = str(item.data(Qt.ItemDataRole.UserRole) or '')
+        identity = str(item.data(Qt.ItemDataRole.UserRole + 1) or self._game_identity(name))
+        row = self.game_list.itemWidget(item)
+        if isinstance(row, TermGameListRow):
+            stats = self._library_stats(name, identity)
+            row.update_content(name, stats['confirmed'], self._game_type_label(name, identity), stats['reference'])
+        self._sidebar_counts_timer.start()
 
     def _game_type_label(self, game_name, library_id=None):
         content_type = getattr(
@@ -2023,7 +2082,7 @@ class TermLibraryDialog(QWidget):
         current_type = getattr(self.legacy, "learned_content_type", lambda _name: "game")(game_name)
         return (
             f"类型：{type_labels.get(current_type, '其它内容')}\n"
-            f"已确认术语 {self._game_term_count(game_name)} 条\n"
+            f"已确认术语 {self._library_stats_cache.get(self._library_key(game_name), {}).get('confirmed', '…')} 条\n"
             f"查看《{game_name}》的已学习术语与内置词库"
         )
 
@@ -2039,13 +2098,16 @@ class TermLibraryDialog(QWidget):
             item.setToolTip(self._game_item_tooltip(name))
             row = self.game_list.itemWidget(item)
             if isinstance(row, TermGameListRow):
+                stats = self._library_stats_cache.get(identity, {})
                 row.update_content(
                     name,
-                    self._game_term_count(name, identity),
+                    stats.get('confirmed', '…'),
                     self._game_type_label(name, identity),
-                    self._game_reference_count(name, identity),
+                    stats.get('reference', '…'),
                 )
                 row.set_in_use(identity in enabled)
+        self._sidebar_count_cursor = 0
+        self._sidebar_counts_timer.start()
 
     def _filter_games(self, text=""):
         query = text.strip().casefold()
@@ -2314,6 +2376,54 @@ class TermLibraryDialog(QWidget):
                 self._filter_pending = False
                 QTimer.singleShot(0, self.refresh_learned)
 
+    def _prepare_term_rows(self, data_state, rows):
+        if self._row_build_state is not None and data_state == self._row_build_state:
+            return
+        self._row_generation += 1
+        generation = self._row_generation
+        self._row_build_state = data_state
+        # One running preparation and one replacement, never an unbounded queue.
+        self._row_build_queued = (generation, data_state, rows)
+        self.listing.setEnabled(False)
+        bind_text(self.selected_stats, '正在准备术语…')
+        self._start_term_rows()
+
+    def _start_term_rows(self):
+        if self._row_build_running or self._row_build_queued is None: return
+        generation, state, rows = self._row_build_queued
+        self._row_build_queued = None
+        self._row_build_running = True
+        signal = self._term_rows_prepared
+        group = type(self)._group_term_rows
+        def work():
+            try:
+                result = (deepcopy(state), rows, deepcopy(group(rows)))
+            except Exception as exc:
+                result = exc
+            try: signal.emit(generation, result)
+            except RuntimeError: pass
+        threading.Thread(target=work, name='term-row-preparation', daemon=True).start()
+
+    def _receive_term_rows(self, generation, result):
+        self._row_build_running = False
+        if generation == self._row_generation:
+            self._row_build_state = None
+            self.listing.setEnabled(True)
+            if isinstance(result, Exception):
+                bind_text(self.selected_stats, '术语读取失败，请重新选择词库')
+            elif result[0] == self._term_data_state():
+                self._term_rows_cache = result
+                self._rows_prepared_async = True
+                self._filter_key = None
+                if self.isVisible():
+                    self.refresh_learned()
+                    stats = self._card_stats
+                    bind_text(self.selected_stats, '{value0} 条已确认', value0=stats['confirmed'])
+                    bind_text(self.official_stats, '{value0} 条参考{value1}', value0=stats['reference'],
+                        value1=f" · {stats['hidden']} 已隐藏" if stats['hidden'] else '')
+                    QTimer.singleShot(100, self, self.refresh_learning_suggestions)
+        self._start_term_rows()
+
     def _apply_term_filter(self):
         """Populate the unified term table (learned + builtin references)."""
         import time as _t
@@ -2324,7 +2434,11 @@ class TermLibraryDialog(QWidget):
         data_state = self._term_data_state()
         if self._term_rows_cache is None or data_state != self._term_rows_cache[0]:
             rows = self._unified_term_rows() if game_name else []
+            if len(rows) > 1000:
+                self._prepare_term_rows(self._term_data_state(), rows)
+                return
             cards = self._group_term_rows(rows)
+            self._rows_prepared_async = False
             self._term_rows_cache = (deepcopy(self._term_data_state()), rows, cards)
             self._filter_key = None
             if self._diagnostics is not None:
@@ -2369,7 +2483,7 @@ class TermLibraryDialog(QWidget):
                 continue
             items_for_model.append(row)
         _t_model0 = _t.perf_counter()
-        changed = self._term_model.set_data(items_for_model)
+        changed = self._term_model.set_data(items_for_model, prepared=self._rows_prepared_async)
         if changed and self._diagnostics is not None:
             self._diagnostics['results_applied'] += 1
         _t_model1 = _t.perf_counter()
@@ -2392,7 +2506,9 @@ class TermLibraryDialog(QWidget):
         self._update_status_counts(self._card_stats)
         self._queue_term_toolbar()
         has_rows = len(items_for_model) > 0
-        self.listing.setVisible(has_rows)
+        # Keep the resident view shown while data is prepared. Its empty
+        # overlay avoids repeated view hide/show and layout work on filtering.
+        self.listing.setVisible(True)
         # 空态区分：完全没词 vs 筛选后没词
         self.listing_empty.setVisible(not has_rows)
         if rows:
@@ -2500,6 +2616,17 @@ class TermLibraryDialog(QWidget):
     def refresh_current_game(self):
         import time as _t
         _t0 = _t.perf_counter()
+        try:
+            stat = Path(self.legacy.LEARNED_TERMS_PATH).stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except (AttributeError, OSError):
+            stamp = None
+        if self._library_stamp_observed and stamp != self._library_read_stamp:
+            # Home additions and imports can mutate the same store while this
+            # resident page is hidden; keep filters/scroll but reject old rows.
+            self._notify_library_changed()
+        self._library_read_stamp = stamp
+        self._library_stamp_observed = True
         game_name = self.state["game"]
         library_id = self._library_key(game_name)
         self._sync_ai_note_button()
@@ -2559,13 +2686,18 @@ class TermLibraryDialog(QWidget):
         # Now the visible "row creation" step: populate model (no QWidget per row)
         t_row0 = _t.perf_counter()
         self.refresh_learned()
-        self.refresh_learning_suggestions()
+        if not self._row_build_running:
+            self.refresh_learning_suggestions()
         t_row1 = _t.perf_counter()
         if GUI_PROFILE_ENABLED:
             print(f"[perf] Term row creation (model set) ~{int((t_row1-t_row0)*1000)}ms")
-        stats = dict(getattr(self, "_card_stats", None) or self._term_stats())  # one card = one term
+        stats = dict(getattr(self, "_card_stats", None) or (
+            {'confirmed': 0, 'reference': 0, 'hidden': 0} if self._row_build_running else self._term_stats()))
         ((bind_text(self.selected_stats, f"{stats['confirmed']} confirmed") if current_language() == 'en' else bind_text(self.selected_stats, '{value0} 条已确认', value0=stats['confirmed'])) if game_name else bind_text(self.selected_stats, translate('尚未选择', current_language())))
         ((bind_text(self.official_stats, f"{stats['reference']} references" + (f" · {stats['hidden']} hidden" if stats['hidden'] else '')) if current_language() == 'en' else bind_text(self.official_stats, '{value0} 条参考{value1}', value0=stats['reference'], value1=f" · {stats['hidden']} 已隐藏" if stats['hidden'] else '')) if game_name else bind_text(self.official_stats, translate('0 条参考', current_language())))
+        if self._row_build_running:
+            bind_text(self.selected_stats, '正在准备术语…')
+            self.official_stats.setText('…')
         # Schedule the viewport paint without entering a nested event loop from
         # a selection handler.
         try:
@@ -2628,6 +2760,12 @@ class TermLibraryDialog(QWidget):
         self.update_remove_action()
         self._refresh_share_nudge()
         self._refresh_term_guide()
+        keep = {self._library_key(), self.state.get('game','')}
+        for cache, limit in ((self._mappings_cache,8), (self._builtin_cache,8),
+                             (self._builtin_entry_cache,8), (self._library_stats_cache,64)):
+            for key in list(cache):
+                if len(cache) <= limit: break
+                if key not in keep: cache.pop(key, None)
 
     def update_remove_action(self):
         by_status = self._selected_rows_by_status()
@@ -3892,14 +4030,73 @@ class TermLibraryDialog(QWidget):
         return bool(identity) and identity in self.owner._enabled_glossary_ids()
 
     def _refresh_batch_bar(self):
-        enabled_ids = self.owner._enabled_glossary_ids()
-        in_batch = self._current_game_in_batch()
-        from .terminology import snapshot_glossaries
+        enabled_ids = tuple(self.owner._enabled_glossary_ids())
         terms_widget = getattr(self.owner, 'terms', None)
         terms_active = terms_widget is None or terms_widget.isChecked()
-        snapshot = snapshot_glossaries(self.legacy, enabled_ids if terms_active else ())
-        names = [getattr(item, 'name', '') for item in getattr(snapshot, 'libraries', ())]
-        summary = snapshot.summary()
+        def stamp(name):
+            try:
+                value = Path(getattr(self.legacy, name, '')).stat()
+                return value.st_mtime_ns, value.st_size
+            except OSError:
+                return None
+        key = (enabled_ids, terms_active, self._library_key(), self.state.get('game', ''),
+               self._batch_revision, current_language(), stamp('LEARNED_TERMS_PATH'), stamp('GAME_PROFILES_PATH'))
+        self._batch_request_key = key
+        cached = self._batch_summary_cache.get(key)
+        if cached is not None:
+            self._apply_batch_summary(key, cached)
+        elif self._batch_queued is None or self._batch_queued != key:
+            self.batch_status.setText(tr('正在统计本批词库…'))
+            self._batch_queued = key
+            QTimer.singleShot(500, self, self._start_batch_summary)
+        self.use_game.setEnabled(bool(self.state['game']))
+        self._sync_batch_switch()
+
+    def _start_batch_summary(self):
+        if self._batch_running or self._batch_queued is None: return
+        key, self._batch_queued = self._batch_queued, None
+        self._batch_running = True
+        legacy, signal, cancel = self.legacy, self._batch_summary_ready, self._summary_cancel
+        def work():
+            try:
+                from .terminology import snapshot_glossaries
+                enabled, active, current_id = key[:3]
+                snapshot = snapshot_glossaries(legacy, enabled if active else ())
+                from .summary_process import summarize
+                same = active and enabled == (current_id,)
+                snapshots = [snapshot]
+                if current_id and not same:
+                    snapshots.append(snapshot_glossaries(legacy, (current_id,)))
+                # Tiny summaries finish in a few milliseconds; only the large
+                # regex/index build needs a separate interpreter and its GIL.
+                term_count = sum(len(library.terms) for item in snapshots for library in item.libraries)
+                summaries = [item.summary() for item in snapshots] if term_count <= 800 else summarize(snapshots, cancel)
+                summary = summaries[0]
+                current_summary = summary if same else summaries[1] if len(summaries)>1 else {}
+                result = ([item.name for item in snapshot.libraries], summary, current_summary)
+            except Exception as exc:
+                result = exc
+            try: signal.emit(key, result)
+            except RuntimeError: pass
+        threading.Thread(target=work, name='term-batch-summary', daemon=True).start()
+
+    def _receive_batch_summary(self, key, result):
+        self._batch_running = False
+        if not isinstance(result, Exception):
+            self._batch_summary_cache[key] = result
+            while len(self._batch_summary_cache) > 8:
+                self._batch_summary_cache.pop(next(iter(self._batch_summary_cache)))
+            if key == self._batch_request_key:
+                self._apply_batch_summary(key, result)
+        elif key == self._batch_request_key:
+            self.batch_status.setText(tr('词库统计暂不可用，请重新进入页面'))
+        if self._batch_queued == key: self._batch_queued = None
+        self._start_batch_summary()
+
+    def _apply_batch_summary(self, key, result):
+        enabled_ids, terms_active, library_id, game = key[:4]
+        names, summary, current_summary = result
+        in_batch = library_id in enabled_ids
         count = int(summary.get('effective_terms', 0))
         label = f"本批已启用 {len(enabled_ids)} 个词库 · 有效规范词 {count} 个"
         if enabled_ids and not terms_active:
@@ -3910,16 +4107,13 @@ class TermLibraryDialog(QWidget):
             label += "；没有已确认规范词，请添加或确认参考。"
         if summary.get('conflicts'):
             label += f"；{len(summary['conflicts'])} 处冲突未执行"
-        if self.state.get('game'):
-            current_summary = snapshot_glossaries(self.legacy, (self._library_key(),)).summary()
+        if game:
             current_count = int(current_summary.get('effective_terms', 0))
             if current_count == 0:
-                label += f"；当前浏览《{self.state['game']}》有效 0 词"
+                label += f"；当前浏览《{game}》有效 0 词"
                 if in_batch:
                     label += "（已加入本批，但请先添加或确认词条）"
         self.batch_status.setText(label)
-        self.use_game.setEnabled(bool(self.state["game"]))
-        self._sync_batch_switch()
 
     def toggle_current_game_in_batch(self):
         if not self.prepare_for_task():

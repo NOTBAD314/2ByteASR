@@ -76,6 +76,16 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-model-settings':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'interaction-performance':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        from .interaction_performance_audit import instrument
+        instrument()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clean-ui-original-mg-support':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -521,6 +531,11 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-model-settings':
+        from .vm2_model_settings_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clean-ui-original-mg-support':
         from .clean_ui_support_audit import start
         output = audit_directory()
@@ -852,6 +867,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-regression':
         from .perf_regression_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'interaction-performance':
+        from .interaction_performance_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

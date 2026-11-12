@@ -150,8 +150,15 @@ class ModalHost(QFrame):
         on_closed=None,
         *,
         retain_content: bool = False,
+        bare: bool = False,
     ):
-        """Show the card and stable backdrop at their final state immediately."""
+        """Show the card and stable backdrop at their final state immediately.
+
+        ``bare`` (2026-11-12, model picker design B): the content draws its own
+        title and close button; the host hides its header bar, drops the body
+        margins and rounds the card more.
+        """
+        self._set_bare(bare)
         from ..design.native_surfaces import cover_native_video
         cover_native_video(self)
         self._click_ts = time.perf_counter() if GUI_PROFILE_ENABLED else None
@@ -273,6 +280,20 @@ class ModalHost(QFrame):
         except Exception:
             pass
         super().paintEvent(event)
+
+    def _set_bare(self, bare: bool) -> None:
+        bare = bool(bare)
+        if not hasattr(self, "_body_margins"):
+            self._body_margins = self.body_lay.contentsMargins()
+        self.header.setVisible(not bare)
+        if bare:
+            self.body_lay.setContentsMargins(0, 0, 0, 0)
+        else:
+            self.body_lay.setContentsMargins(self._body_margins)
+        if self.card.property("chrome") != ("bare" if bare else ""):
+            self.card.setProperty("chrome", "bare" if bare else "")
+            self.card.style().unpolish(self.card)
+            self.card.style().polish(self.card)
 
     def hide_content(self):
         # Card, content, and backdrop disappear together. No large-area effect

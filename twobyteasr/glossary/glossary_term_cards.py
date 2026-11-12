@@ -332,6 +332,12 @@ class TermCardView(QListView):
         self.setFlow(QListView.Flow.LeftToRight)
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
+        # Every card uses the same grid cell. Let Qt lay out only a bounded
+        # batch when a large model becomes visible, rather than all rows in
+        # setVisible() on the GUI thread.
+        self.setUniformItemSizes(True)
+        self.setLayoutMode(QListView.LayoutMode.Batched)
+        self.setBatchSize(64)
         self.setMovement(QListView.Movement.Static)
         self.setDragEnabled(False)
         self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)

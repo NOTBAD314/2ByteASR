@@ -34,7 +34,7 @@ def public_identity(endpoint):
     hints={k:endpoint.get(k) for k in ('vocabulary','vocabulary_id','vocabulary_model','filetrans_context')}
     # Keys added 2026-10-13 join the hash only when set, so in-flight jobs of
     # the existing Qwen-Audio-3.1 route keep their cache directory.
-    hints.update({k:endpoint[k] for k in ('filetrans_language','mosi_keyterms','mosi_diarize')
+    hints.update({k:endpoint[k] for k in ('filetrans_language','mosi_keyterms','mosi_diarize','filetrans_diarize')
                   if endpoint.get(k) is not None})
     if endpoint.get('asr_request_language'):
         hints['asr_request_language']=endpoint['asr_request_language']
@@ -233,7 +233,10 @@ def filetrans(audio, endpoint, cache_root, storage, *, check=lambda:None, progre
     from .qwen31_asr import filetrans_spec
     spec=filetrans_spec(endpoint.get('model'))
     model=spec.model
-    native=spec.diarization and endpoint.get('speaker_source') in {'native','filetrans'}
+    # 2026-11-12: Qwen Audio 3.1 from the official Qwen API asks for speakers
+    # only when the user turned them on (``filetrans_diarize``; absent = as before).
+    native=(spec.diarization and endpoint.get('speaker_source') in {'native','filetrans'}
+            and endpoint.get('filetrans_diarize') is not False)
     if not 0 < duration <= spec.max_hours*3600:
         raise ASRProtocolError(f'录音文件识别单个文件最长{spec.max_hours:g}小时（官方限制）；请先缩小识别范围。', 'input_limit')
     if '/api/v1/' not in str(endpoint.get('url') or ''):

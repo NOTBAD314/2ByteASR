@@ -33,9 +33,10 @@ class StudioModulePreloader(QObject):
     ready = Signal()
     failed = Signal(str)
 
-    def __init__(self, parent=None, *, importer=None, modules=None):
+    def __init__(self, parent=None, *, importer=None, modules=None, allowed=None):
         super().__init__(parent)
         self.importer = importer or importlib.import_module
+        self.allowed = allowed or (lambda: True)
         self.pending = deque(modules if modules is not None else ('twobyteasr.'+name for name in MODULES))
         self.completed = False
         self.timings = []
@@ -48,6 +49,9 @@ class StudioModulePreloader(QObject):
             self.timer.start(0)
 
     def _step(self):
+        if not self.allowed():
+            self.timer.start(250)
+            return
         while self.pending and sys.modules.get(self.pending[0]) is not None:
             module = sys.modules[self.pending[0]]
             if getattr(getattr(module,'__spec__',None),'_initializing',False):

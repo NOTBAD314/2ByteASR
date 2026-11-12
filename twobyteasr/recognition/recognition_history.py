@@ -816,13 +816,30 @@ _HISTORY_TOKEN_OVERRIDES = {
 
 
 def _ai_tone(t) -> str:
-    """The AI entries' colour: the theme's info role, else the accent."""
-    return getattr(t, "info", "") or t.accent
+    """The AI entries' colour (violet, as in the 2026-11-11 designs)."""
+    return "#4b3c9e" if getattr(t, "is_light", True) else "#b2a6f2"
+
+
+def _ai_soft(t) -> str:
+    from ..design.ui_theme import blend_hex
+    return blend_hex(t.surface_elevated, _ai_tone(t), 0.08 if getattr(t, "is_light", True) else 0.16)
+
+
+def _ai_edge(t) -> str:
+    from ..design.ui_theme import blend_hex
+    return blend_hex(t.surface_elevated, _ai_tone(t), 0.32)
 
 
 def history_redesign_qss(t) -> str:
     """2026-11-11 records design C and details design A, from theme tokens only."""
+    from ..design.typography import TITLE_FONT_STACK
+    from ..design.ui_theme import blend_hex
+    heavy = f"font-family: {TITLE_FONT_STACK}; font-weight: 800;"
+    tint = blend_hex(t.surface, t.text, 0.085 if t.is_light else 0.14)
+    tint_hover = blend_hex(t.surface, t.text, 0.14 if t.is_light else 0.2)
     ai = _ai_tone(t)
+    ai_soft, ai_edge = _ai_soft(t), _ai_edge(t)
+    on_ai = "#ffffff" if getattr(t, "is_light", True) else "#17131f"
     on_accent = getattr(t, "text_on_accent", "") or "#ffffff"
     return f"""
 QFrame#historyContent {{ background: transparent; border: 0; }}
@@ -833,16 +850,27 @@ QPushButton#historyViewButton {{ background: transparent; color: {t.text_seconda
     padding: 5px 13px; font-weight: 600; }}
 QPushButton#historyViewButton:hover {{ color: {t.text}; }}
 QPushButton#historyViewButton:checked {{ background: {t.text}; color: {t.app_background}; }}
-QPushButton#historyToolButton {{ background: {t.timeline}; color: {t.text}; border: 0; border-radius: 9px;
-    padding: 7px 11px; font-weight: 600; }}
-QPushButton#historyToolButton:hover {{ background: {t.selected}; }}
+QPushButton#historyViewButton, QPushButton#historyToolButton, QPushButton#historyRowButton,
+QPushButton#historyDetails, QPushButton#historySecondary, QPushButton#historyPrimary,
+QPushButton#historyAiButton, QPushButton#historyErrorCopy {{ {heavy} }}
+QLabel#historyTitle, QLabel#historyGroupTitle, QLabel#historyAttemptTime, QLabel#historyAttemptDuration,
+QLabel#historyAttemptMedia, QLabel#historyTileValue, QLabel#historyProblemName, QLabel#historyAiTitle,
+QLabel#historyDiagTitle, QLabel#historyDiagConclusionText, QLabel#historyDiagStepTitle, QLabel#historyDiagStrong,
+QLabel#historySectionTitle, QLabel#historyStepTitle, QLabel#historyCaption, QLabel#historyTileLabel,
+QLabel#historyErrorCaption, QLabel#historyStatusError, QLabel#historyStatusWarn, QLabel#historyStatusGood,
+QLabel#historyDiagConclusionCaption, QLabel#historyDiagConfidence {{ {heavy} }}
+QPushButton#historyToolButton {{ background: {tint}; color: {t.text}; border: 0; border-radius: 9px;
+    padding: 7px 12px; }}
+QPushButton#historyToolButton:hover {{ background: {tint_hover}; }}
 QFrame#historyGroup {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px; }}
 QFrame#historyGroup[flat="true"] {{ background: transparent; border: 0; }}
 QFrame#historyGroupHeader {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
 QWidget#historyGroupBody {{ background: transparent; }}
-QLabel#historyGroupTitle {{ color: {t.text}; font-size: 16px; font-weight: 700; }}
-QLabel#historyMediaBadge {{ background: {getattr(t, "log_background", "") or t.media}; color: {getattr(t, "log_text", "") or t.app_background}; border-radius: 8px;
-    font-size: 11px; font-weight: 700; }}
+QLabel#historyGroupTitle {{ color: {t.text}; font-size: 18px; font-weight: 700; }}
+QLabel#historySingleHint {{ color: {t.text_muted}; border: 1px dashed {t.border_strong}; border-radius: 14px;
+    padding: 14px 18px; font-size: 13px; }}
+QLabel#historyMediaBadge {{ background: {getattr(t, "log_background", "") or t.media}; color: {getattr(t, "log_text", "") or t.app_background}; border-radius: 10px;
+    font-size: 13px; font-weight: 800; }}
 QFrame#historyAttempt {{ background: transparent; border: 0; border-radius: 10px; }}
 QFrame#historyAttempt:hover {{ background: {t.panel}; }}
 QFrame#historyGroup[flat="true"] QFrame#historyAttempt {{ background: {t.surface}; border: 1px solid {t.border}; }}
@@ -851,12 +879,12 @@ QLabel#historyAttemptNumber {{ border-radius: 13px; font-size: 12px; font-weight
     background: {t.success_soft}; color: {t.success}; }}
 QLabel#historyAttemptNumber[tone="error"] {{ background: {t.danger_soft}; color: {t.danger}; }}
 QLabel#historyAttemptNumber[tone="warn"] {{ background: {t.warning_soft}; color: {t.warning}; }}
-QLabel#historyAttemptTime {{ color: {t.text}; font-weight: 600; }}
-QLabel#historyAttemptDuration {{ color: {t.text}; font-weight: 700; }}
+QLabel#historyAttemptTime {{ color: {t.text}; font-size: 14px; font-weight: 600; }}
+QLabel#historyAttemptDuration {{ color: {t.text}; font-size: 14px; font-weight: 700; }}
 QLabel#historyAttemptMedia {{ color: {t.text}; font-weight: 700; }}
-QPushButton#historyRowButton, QFrame#historyAttempt QPushButton#historyDetails {{ background: {t.timeline};
-    color: {t.text}; border: 0; border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 600; }}
-QPushButton#historyRowButton:hover, QFrame#historyAttempt QPushButton#historyDetails:hover {{ background: {t.selected}; }}
+QPushButton#historyRowButton, QFrame#historyAttempt QPushButton#historyDetails {{ background: {tint};
+    color: {t.text}; border: 0; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 600; }}
+QPushButton#historyRowButton:hover, QFrame#historyAttempt QPushButton#historyDetails:hover {{ background: {tint_hover}; }}
 QFrame#historyOverview {{ background: {t.panel}; border: 0; border-left: 1px solid {t.border}; }}
 QLabel#historyCaption {{ color: {t.text_muted}; font-size: 12px; font-weight: 700; }}
 QFrame#historyTile, QFrame#historyTileDanger, QFrame#historyProblemCard {{ background: {t.surface};
@@ -864,16 +892,19 @@ QFrame#historyTile, QFrame#historyTileDanger, QFrame#historyProblemCard {{ backg
 QFrame#historyTileDanger {{ background: {t.danger_soft}; border-color: {t.danger_soft}; }}
 QLabel#historyTileLabel {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; }}
 QFrame#historyTileDanger QLabel#historyTileLabel, QFrame#historyTileDanger QLabel#historyTileValue {{ color: {t.danger}; }}
-QLabel#historyTileValue {{ color: {t.text}; font-size: 22px; font-weight: 700; }}
-QLabel#historyProblemName {{ color: {t.text}; font-weight: 700; }}
+QLabel#historyTileValue {{ color: {t.text}; font-size: 24px; font-weight: 800; }}
+QLabel#historyProblemName {{ color: {t.text}; font-size: 13px; }}
 QFrame#historyProblemBar {{ background: {t.danger}; border: 0; border-radius: 3px; }}
-QFrame#historyAiCard {{ background: {t.surface}; border: 1px solid {ai}; border-radius: 14px; }}
-QLabel#historyAiTitle {{ color: {ai}; font-size: 15px; font-weight: 700; }}
-QPushButton#historyAiButton {{ background: {ai}; color: {on_accent}; border: 1px solid {ai}; border-radius: 10px;
+QFrame#historyAiCard {{ background: {ai_soft}; border: 1px solid {ai_edge}; border-radius: 14px; }}
+QLabel#historyAiTitle {{ color: {ai}; font-size: 16px; font-weight: 700; }}
+QLabel#historyAiFoot {{ color: {t.text_muted}; font-size: 11px; }}
+QPushButton#historyAiButton {{ background: {ai}; color: {on_ai}; border: 1px solid {ai}; border-radius: 10px;
     padding: 9px 14px; font-weight: 700; }}
-QPushButton#historyAiButton:hover {{ background: {t.accent_hover}; border-color: {t.accent_hover}; }}
+QPushButton#historyAiButton:hover {{ background: {ai_edge}; border-color: {ai_edge}; color: {ai}; }}
 QPushButton#historyAiButton:disabled {{ background: {t.disabled}; border-color: {t.disabled}; }}
-QFrame#historyDetailSide {{ background: {t.panel}; border: 0; border-radius: 14px; }}
+QFrame#historyDetailSide {{ background: {t.panel}; border: 0; border-radius: 16px; }}
+QLabel#historyDetailIcon {{ background: {t.danger}; border-radius: 13px; }}
+QLabel#historyStepTitle {{ color: {t.text}; font-weight: 600; }}
 QPushButton#historyCloseButton {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
     font-size: 20px; padding: 2px 10px; }}
 QPushButton#historyCloseButton:hover {{ background: {t.selected}; color: {t.text}; }}
@@ -884,28 +915,35 @@ QLabel#historyErrorChip {{ background: {t.surface}; color: {t.danger}; border-ra
     font-size: 11px; font-weight: 600; }}
 QPushButton#historyErrorCopy {{ background: {t.surface}; color: {t.danger}; border: 0; border-radius: 7px;
     padding: 3px 10px; font-size: 12px; font-weight: 600; }}
-QLabel#historyDiagTitle {{ color: {ai}; font-size: 16px; font-weight: 700; }}
+QLabel#historyDiagTitle {{ color: {ai}; font-size: 17px; font-weight: 800; }}
+QFrame#historyDetailSide QFrame#historyInfoSection {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyDetailSide QLabel#historySectionTitle {{ color: {t.text}; font-size: 14px; font-weight: 700; }}
+QLabel#historyDiagStepTitle {{ color: {t.text}; font-size: 15px; }}
+QLabel#historyDiagStepDetail {{ color: {t.text_muted}; font-size: 12px; }}
 QLabel#historyDiagSource {{ background: {t.timeline}; color: {t.text_secondary}; border-radius: 6px; padding: 2px 8px;
     font-size: 12px; font-weight: 600; }}
-QLabel#historyDiagSource[source="ai"] {{ background: {ai}; color: {on_accent}; }}
+QLabel#historyDiagSource[source="ai"] {{ background: {ai_soft}; color: {ai}; }}
 QFrame#historyDiagConclusion {{ background: {ai}; border: 0; border-radius: 16px; }}
-QLabel#historyDiagConclusionCaption {{ color: {on_accent}; font-size: 12px; font-weight: 700; }}
-QLabel#historyDiagConclusionText {{ color: {on_accent}; font-size: 19px; font-weight: 700; }}
-QLabel#historyDiagConfidence {{ color: {on_accent}; font-size: 12px; font-weight: 700; }}
+QLabel#historyDiagConclusionCaption {{ color: {on_ai}; font-size: 12px; font-weight: 700; }}
+QLabel#historyDiagConclusionText {{ color: {on_ai}; font-size: 22px; font-weight: 800; }}
+QLabel#historyDiagConfidence {{ color: {on_ai}; font-size: 12px; font-weight: 700; }}
 QFrame#historyDiagMeterTrack {{ background: rgba(255, 255, 255, 64); border: 0; border-radius: 3px; }}
-QFrame#historyDiagMeterFill {{ background: {on_accent}; border: 0; border-radius: 3px; }}
-QFrame#historyDiagCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyDiagMeterFill {{ background: {on_ai}; border: 0; border-radius: 3px; }}
+QFrame#historyDiagCard {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 12px; }}
 QFrame#historyDiagLogCard {{ background: transparent; border: 0; }}
 QLabel#historyDiagLog {{ background: {getattr(t, "log_background", "") or t.media}; color: {getattr(t, "log_text", "") or t.app_background}; border-radius: 10px; padding: 10px 12px;
     font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }}
-QLabel#historyDiagBody {{ color: {t.text}; }}
+QLabel#historyDiagBody {{ color: {t.text}; font-size: 13px; }}
 QLabel#historyDiagStrong {{ color: {t.text}; font-weight: 700; }}
-QFrame#historyDiagStep {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
-QFrame#historyDiagStep[first="true"] {{ border: 1px solid {ai}; }}
+QFrame#historyDiagStep {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 14px; }}
+QFrame#historyDiagStep[first="true"] {{ border: 2px solid {ai_edge}; background: {t.surface_elevated}; }}
+QFrame#historyDiagStep QPushButton#historyRowButton {{ background: {tint}; color: {t.text}; border: 0; border-radius: 9px;
+    padding: 8px 14px; font-size: 13px; }}
+QFrame#historyDiagStep QPushButton#historyAiButton {{ padding: 8px 14px; font-size: 13px; }}
 QLabel#historyDiagStepNumber {{ background: {t.timeline}; color: {ai}; border-radius: 14px; font-weight: 700; }}
 QLabel#historyDiagStepNumber[first="true"] {{ background: {ai}; color: {on_accent}; }}
-QFrame#historyDiagFallback {{ background: transparent; border: 1px dashed {t.border_strong}; border-radius: 12px; }}
-QFrame#historyDiagCta {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#historyDiagFallback {{ background: transparent; border: 1px dashed {ai_edge}; border-radius: 12px; }}
+QFrame#historyDiagCta {{ background: {ai_soft}; border: 1px solid {ai_edge}; border-radius: 12px; }}
 """
 
 
@@ -960,6 +998,21 @@ _RETRYABLE = {"failed", "interrupted", "partial", "cancelled", "needs_recovery"}
 _FAILED_LIKE = {"failed", "cancelled", "interrupted", "needs_recovery", "empty_result", "unknown"}
 
 
+def short_service_name(label: str) -> str:
+    """"DeepSeek API · deepseek-v4-flash" → "DeepSeek"."""
+    head = str(label or "").split(" · ")[0].strip()
+    for suffix in (" API", "API"):
+        if head.endswith(suffix) and len(head) > len(suffix):
+            head = head[: -len(suffix)].strip()
+    return head
+
+
+def _current_theme():
+    from ..design.theme_manager import theme_key
+    from ..design.ui_theme import theme_definition
+    return theme_definition(theme_key())
+
+
 def _status_object(status: str) -> str:
     if status == "failed":
         return "historyStatusError"
@@ -979,6 +1032,69 @@ def _chain_text(record) -> str:
     if cues:
         parts.append(f"{cues} " + ui_literal("条字幕", language))
     return " · ".join(parts)
+
+
+_WINDOWS_PATH = re.compile(r"[A-Za-z]:[\\/][^\s()（）:：;；,，]*")
+
+
+def _short_problem(text: str, limit: int = 120) -> str:
+    """A problem line without folder paths (they belong in the details)."""
+    value = _WINDOWS_PATH.sub("…", " ".join(str(text or "").split()))
+    value = re.sub(r"\(\s*…\s*\)|（\s*…\s*）", "", value).replace("  ", " ").strip()
+    return value[:limit] + ("…" if len(value) > limit else "")
+
+
+def _problem_headline(text: str) -> str:
+    """The part before the first colon (“模型运行时 main 不可用”), else the text."""
+    value = str(text or "")
+    for mark in ("：", ":"):
+        head = value.split(mark, 1)[0].strip()
+        if 4 <= len(head) < len(value):
+            return head
+    return value
+
+
+class _RoundBadge(QLabel):
+    """A filled circle with centred text; painted, so zoom or a later
+    application sheet can never square it off (2026-11-12, user)."""
+
+    def __init__(self, size: int = 28, parent=None):
+        super().__init__(parent)
+        self._diameter = size
+        self.setFixedSize(size, size)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def paintEvent(self, _event):
+        from PySide6.QtGui import QPainter
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+        t = theme_definition(theme_key())
+        tone = str(self.property("tone") or "good")
+        from ..design.ui_theme import blend_hex
+        strong = 0.2 if getattr(t, "is_light", True) else 0.3
+        fill, ink = {"error": (blend_hex(t.surface, t.danger, strong), t.danger),
+                     "warn": (blend_hex(t.surface, t.warning, strong), t.warning),
+                     "first": (getattr(t, "info", "") or t.accent, getattr(t, "text_on_accent", "") or "#ffffff"),
+                     "muted": (t.timeline, t.text_muted),
+                     "ai_first": (_ai_tone(t), "#ffffff" if getattr(t, "is_light", True) else "#17131f"),
+                     "ai": (blend_hex(t.surface, _ai_tone(t), 0.16), _ai_tone(t))
+                     }.get(tone, (blend_hex(t.surface, t.success, strong), t.success))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(self.width(), self.height())
+        rect = self.rect().adjusted((self.width() - side) // 2, (self.height() - side) // 2, 0, 0)
+        rect.setSize(QSize(side, side))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawEllipse(rect)
+        from ..design.typography import SOURCE_HAN_FAMILY_ALIASES
+        font = QFont(SOURCE_HAN_FAMILY_ALIASES[0])
+        font.setWeight(QFont.Weight.Black)
+        font.setPixelSize(max(10, int(side * 0.45)))
+        painter.setFont(font)
+        painter.setPen(QColor(ink))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+        painter.end()
 
 
 def _media_badge_text(name: str) -> str:
@@ -1042,14 +1158,12 @@ class HistoryCard(QFrame):
         self.setObjectName("historyAttempt")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 10, 8)
-        layout.setSpacing(14)
-        self.number = QLabel("")
+        layout.setContentsMargins(12, 11, 10, 11)
+        layout.setSpacing(16)
+        self.number = _RoundBadge(28)
         self.number.setObjectName("historyAttemptNumber")
         self.number.setProperty("tone", "error" if record.status in _FAILED_LIKE else
                                 ("warn" if record.status == "partial" else "good"))
-        self.number.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.number.setFixedSize(26, 26)
         self.number.hide()
         layout.addWidget(self.number, 0, Qt.AlignmentFlag.AlignVCenter)
         self.media_label = _ElideLabel(record.media_name, "historyAttemptMedia")
@@ -1126,7 +1240,7 @@ class HistoryGroup(QFrame):
         self.badge = QLabel("")
         self.badge.setObjectName("historyMediaBadge")
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.badge.setFixedSize(58, 40)
+        self.badge.setFixedSize(72, 50)
         head.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
         text = QVBoxLayout()
         text.setSpacing(3)
@@ -1196,7 +1310,7 @@ class HistoryGroup(QFrame):
             self.verdict.style().polish(self.verdict)
         meta = [str(tr("最近 {time}", time=latest.completed_at))]
         if latest.problems:
-            meta.append(" ".join(str(latest.problems[0]).split())[:160])
+            meta.append(_short_problem(latest.problems[0], 160))
         elif latest.media_seconds:
             meta.append(str(tr("素材时长 {duration}", duration=_duration_label(latest.media_seconds))))
         self.meta.set_full_text(" · ".join(meta))
@@ -1252,10 +1366,16 @@ class HistoryOverview(QFrame):
         ai = QVBoxLayout(self.ai_card)
         ai.setContentsMargins(16, 14, 16, 14)
         ai.setSpacing(8)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        spark = QLabel()
+        spark.setPixmap(qta.icon("fa5s.magic", color=_ai_tone(_current_theme())).pixmap(16, 16))
+        title_row.addWidget(spark)
         ai_title = QLabel()
         bind_text(ai_title, "让 AI 找原因")
         ai_title.setObjectName("historyAiTitle")
-        ai.addWidget(ai_title)
+        title_row.addWidget(ai_title, 1)
+        ai.addLayout(title_row)
         self.ai_note = QLabel()
         self.ai_note.setObjectName("historyMuted")
         self.ai_note.setWordWrap(True)
@@ -1263,8 +1383,13 @@ class HistoryOverview(QFrame):
         self.ai_button = QPushButton()
         self.ai_button.setObjectName("historyAiButton")
         self.ai_button.setIcon(qta.icon("fa5s.magic", color="white"))
+        self.ai_button.setMinimumHeight(40)
         self.ai_button.clicked.connect(self.analyse_requested)
         ai.addWidget(self.ai_button)
+        foot = QLabel()
+        bind_text(foot, "API Key 等敏感字段会先打码再发送")
+        foot.setObjectName("historyAiFoot")
+        ai.addWidget(foot)
         layout.addWidget(self.ai_card)
         layout.addStretch(1)
         self.footer = QLabel()
@@ -1314,7 +1439,7 @@ class HistoryOverview(QFrame):
                 widget.deleteLater()
             elif item.layout() is not None:
                 item.layout().deleteLater()
-        counts = Counter(" ".join(str(record.problems[0]).split())[:90] for record in records
+        counts = Counter(_short_problem(record.problems[0], 70) for record in records
                          if record.has_anomaly and record.problems)
         top = counts.most_common(3)
         if not top:
@@ -1331,9 +1456,8 @@ class HistoryOverview(QFrame):
             box.setSpacing(5)
             line = QHBoxLayout()
             line.setSpacing(8)
-            name = QLabel(text)
-            name.setObjectName("historyProblemName")
-            name.setWordWrap(True)
+            name = _ElideLabel(_problem_headline(text), "historyProblemName")
+            name.setToolTip(text)
             line.addWidget(name, 1)
             chip = QLabel(f"× {count}")
             chip.setObjectName("historyStatusError")
@@ -1352,7 +1476,7 @@ class HistoryOverview(QFrame):
             self.problem_rows.addWidget(row)
         self.ai_card.setVisible(bool(failed))
         if failed:
-            bind_text(self.ai_note, "把最近一次失败的日志、配置和环境交给你自己的 AI（{service}），得到原因和解决步骤。API Key 会先打码。",
+            bind_text(self.ai_note, "把最近一次失败的日志、配置和环境交给你自己的 AI（{service}），得到原因和解决步骤。",
                       service=ai_service or str(tr("你设置的 AI")))
             bind_text(self.ai_button, "分析最近一次失败")
 
@@ -1601,7 +1725,7 @@ class RecognitionHistoryDetail(QWidget):
     close_requested = Signal()
 
     def __init__(self, record: RecognitionRecord, parent=None, *, settings: dict | None = None,
-                 closable: bool = False):
+                 closable: bool = False, attempt: int = 0):
         super().__init__(parent)
         self.record = record
         self.setObjectName("historyDetail")
@@ -1619,7 +1743,14 @@ class RecognitionHistoryDetail(QWidget):
 
         # ── header: what, how it ended, the developer view one click away
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(14)
+        if troubled:
+            icon = QLabel()
+            icon.setObjectName("historyDetailIcon")
+            icon.setFixedSize(48, 48)
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon.setPixmap(qta.icon("fa5s.exclamation-triangle", color="white").pixmap(22, 22))
+            header.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
         title_row = QHBoxLayout()
@@ -1632,6 +1763,8 @@ class RecognitionHistoryDetail(QWidget):
         if record.outcome.review_issue_count:
             title_row.addWidget(_history_pill(tr("{count} 项待检查问题", count=record.outcome.review_issue_count),
                                               "historyReviewPill"), 0, Qt.AlignmentFlag.AlignVCenter)
+        if attempt > 1:
+            title_row.addWidget(_history_pill(str(tr("第 {count} 次尝试", count=attempt))), 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
         title_box.addLayout(title_row)
         facts = [str(tr("{time} · 本文件耗时 {duration}", time=record.completed_at,
@@ -1669,10 +1802,16 @@ class RecognitionHistoryDetail(QWidget):
         layout.addLayout(header)
 
         columns = QHBoxLayout()
-        columns.setSpacing(18)
-        main = QVBoxLayout()
+        columns.setSpacing(20)
+        # Fixed 1.65 : 1 split (details design A): neither column's content
+        # may claim the other's width.
+        main_host = QWidget()
+        main_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        main = QVBoxLayout(main_host)
+        main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(14)
         side_frame = QFrame()
+        side_frame.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         side_frame.setObjectName("historyDetailSide")
         side = QVBoxLayout(side_frame)
         side.setContentsMargins(16, 16, 16, 16)
@@ -1704,7 +1843,10 @@ class RecognitionHistoryDetail(QWidget):
             copy_error.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(record.problems)))
             error_head.addWidget(copy_error)
             error_box.addLayout(error_head)
-            message = QLabel("\n".join(f"• {item}" if len(record.problems) > 1 else str(item) for item in record.problems[:6]))
+            from .history_diagnosis_panel import breakable
+            message = QLabel(breakable("\n".join(f"• {item}" if len(record.problems) > 1 else str(item)
+                                                  for item in record.problems[:6])))
+            message.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             message.setObjectName("historyErrorText")
             message.setWordWrap(True)
             message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1734,6 +1876,7 @@ class RecognitionHistoryDetail(QWidget):
             self.resume_button = QPushButton()
             bind_text(self.resume_button, '继续处理' if record.status == 'interrupted' else '重试未完成部分')
             self.resume_button.setObjectName('historyPrimary')
+            self.resume_button.setMinimumHeight(44)
             self.resume_button.setIcon(qta.icon("fa5s.redo-alt", color="white"))
             self.resume_button.clicked.connect(lambda: self.resume_requested.emit(record))
             actions.addWidget(self.resume_button)
@@ -1746,10 +1889,20 @@ class RecognitionHistoryDetail(QWidget):
             actions.insertWidget(0, self.open_result_button)
         # 2026-10-23 (user): the full local check with every finding.
         self.diagnose_button = QPushButton()
-        bind_text(self.diagnose_button, "排查原因（全部检查项）" if troubled else "排查原因")
+        bind_text(self.diagnose_button, "排查原因")
+        bind_text(self.diagnose_button, "本地检查的全部检查项", property="toolTip")
         self.diagnose_button.setObjectName("historySecondary")
         self.diagnose_button.clicked.connect(lambda: self.diagnose_requested.emit(record))
-        actions.addWidget(self.diagnose_button)
+        secondary = QHBoxLayout()
+        secondary.setSpacing(8)
+        if troubled:
+            self.switch_model_button = QPushButton()
+            bind_text(self.switch_model_button, "换个模型重跑")
+            self.switch_model_button.setObjectName("historySecondary")
+            self.switch_model_button.clicked.connect(lambda: self.action_requested.emit("pick_primary"))
+            secondary.addWidget(self.switch_model_button, 1)
+        secondary.addWidget(self.diagnose_button, 1)
+        actions.addLayout(secondary)
         side.addLayout(actions)
 
         # ── stages
@@ -1792,14 +1945,12 @@ class RecognitionHistoryDetail(QWidget):
         self.stage_table._fit()
         stage_section = QVBoxLayout()
         stage_section.setSpacing(6)
-        stage_section.addWidget(_label_named("阶段", "historyCaption"))
-        if stages:
-            stage_section.addWidget(self.stage_table)
-        else:
+        if troubled:
             self.stage_table.hide()
-            empty = _label_named("这次任务还没有开始任何阶段。", "historyMuted")
-            empty.setWordWrap(True)
-            stage_section.addWidget(empty)
+            stage_section.addWidget(self._stage_steps(record, stages))
+        else:
+            stage_section.addWidget(_label_named("阶段", "historyCaption"))
+            stage_section.addWidget(self.stage_table)
 
         # ── processing result (rows that still say 待确认 add nothing to a failed task)
         outcome_section, outcome_box = _history_section("处理结果")
@@ -1934,7 +2085,7 @@ class RecognitionHistoryDetail(QWidget):
             side.addWidget(config)
         main.addStretch(1)
         side.addStretch(1)
-        columns.addLayout(main, 165)
+        columns.addWidget(main_host, 165)
         columns.addWidget(side_frame, 100)
         layout.addLayout(columns)
 
@@ -1966,6 +2117,64 @@ class RecognitionHistoryDetail(QWidget):
         self.raw_button.clicked.connect(self._toggle_raw)
         self.copy_button.clicked.connect(self._copy_raw)
         self.save_button.clicked.connect(self._save_raw)
+
+    def _stage_steps(self, record, stages) -> QFrame:
+        """Numbered steps (details design A). Without stage rows the steps are
+        the configured roles, the first one carrying the task's failure."""
+        frame = QFrame()
+        frame.setObjectName("historyInfoSection")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(14, 12, 14, 12)
+        box.setSpacing(10)
+        box.addWidget(_label_named("阶段", "historySectionTitle"))
+        labels = {"completed": ("完成", "historyStageStatusGood", "good"),
+                  "failed": ("失败", "historyStageStatusError", "error"),
+                  "interrupted": ("中断", "historyStageStatusWarn", "warn"),
+                  "cancelled": ("已取消", "historyStageStatusWarn", "warn"),
+                  "fallback": ("降级", "historyStageStatusWarn", "warn"),
+                  "skipped": ("跳过", "historyResourcePill", "muted"),
+                  "running": ("进行中", "historyResourcePill", "muted")}
+        rows = []
+        if stages:
+            for stage_value in stages:
+                stage = _dict(stage_value)
+                status = str(stage.get("status") or "").lower()
+                seconds = float(stage.get("elapsed_seconds") or 0)
+                rows.append((str(stage.get("label") or "阶段"), str(stage.get("resource") or "") or
+                             (_duration_label(seconds) if seconds else ""), status))
+        else:
+            models = _dict(_dict(record.payload.get("settings")).get("models"))
+            failed = record.status in _FAILED_LIKE
+            rows.append(("主力转写", _history_model_name("primary", record, models), "failed" if failed else "running"))
+            timeline = _history_model_name("timeline", record, models)
+            rows.append(("字幕时间轴", timeline, "skipped" if timeline in {"未启用", "未知"} else "pending"))
+            review = _history_model_name("review", record, models)
+            rows.append(("文字复核", review, "skipped" if review in {"未启用", "未知"} else "pending"))
+            if record.ai_model:
+                rows.append(("AI 校对", record.ai_model, "pending"))
+        for index, (title, detail, status) in enumerate(rows, 1):
+            text, object_name, tone = labels.get(status, ("未运行", "historyResourcePill", "muted"))
+            line = QHBoxLayout()
+            line.setSpacing(10)
+            badge = _RoundBadge(24)
+            badge.setText("!" if tone == "error" else ("✓" if tone == "good" else str(index)))
+            badge.setProperty("tone", tone)
+            line.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+            texts = QVBoxLayout()
+            texts.setSpacing(0)
+            name = QLabel()
+            bind_text(name, title)
+            name.setObjectName("historyDiagStrong" if tone == "error" else "historyStepTitle")
+            texts.addWidget(name)
+            if detail:
+                sub = QLabel(detail)
+                sub.setObjectName("historyMuted")
+                sub.setWordWrap(True)
+                texts.addWidget(sub)
+            line.addLayout(texts, 1)
+            line.addWidget(_history_pill(text, object_name), 0, Qt.AlignmentFlag.AlignTop)
+            box.addLayout(line)
+        return frame
 
     def _review_section(self, record):
         review_items = [
@@ -2103,8 +2312,9 @@ class RecognitionHistoryPage(QWidget):
     PAGE_SIZE = 20
 
     def __init__(self, report_root: Path, parent=None, *, extra_roots: tuple[Path, ...] | list[Path] = (),
-                 index_path: Path | None = None):
+                 index_path: Path | None = None, async_scan=False):
         super().__init__(parent)
+        self._async_scan = async_scan
         self.report_root = Path(report_root)
         self.extra_roots = [Path(root) for root in extra_roots if Path(root) != self.report_root]
         self.records: list[RecognitionSummary] = []
@@ -2127,7 +2337,8 @@ class RecognitionHistoryPage(QWidget):
         self._more_scheduled = False
         self._render_pending = False
         self._shown_once = False
-        self._built_limit = self.PAGE_SIZE
+        self._initial_page_size = 4 if async_scan else self.PAGE_SIZE
+        self._built_limit = self._initial_page_size
         self._notice = ""
         self._repairing = False
         self._save_timer = QTimer(self)
@@ -2284,6 +2495,12 @@ class RecognitionHistoryPage(QWidget):
         self.cards_layout.addWidget(self.empty)
         # Rows are built a page at a time as the list scrolls; search and the
         # record count always cover every record (data-level filter).
+        self.single_hint = QLabel()
+        self.single_hint.setObjectName("historySingleHint")
+        self.single_hint.setWordWrap(True)
+        bind_text(self.single_hint, "✓  没有其它素材的记录。完成的任务也会显示在这里，并可以直接打开字幕。")
+        self.single_hint.hide()
+        self.cards_layout.addWidget(self.single_hint)
         self.more_button = QPushButton()
         self.more_button.setObjectName("historySecondary")
         self.more_button.clicked.connect(self._show_more)
@@ -2306,7 +2523,12 @@ class RecognitionHistoryPage(QWidget):
         Only reports whose path / mtime / size changed are parsed: small ones
         at once within a short budget, the rest in a background thread.
         """
-        self._reload(inline_budget=_INLINE_PARSE_BUDGET_S)
+        if self._async_scan:
+            if any(job[0] == 'entry' for job in self._jobs):
+                self._generation += 1  # a later change owns the next listing
+            self._check_on_entry()
+        else:
+            self._reload(inline_budget=_INLINE_PARSE_BUDGET_S)
 
     def _reload(self, *, inline_budget: float = 0.0, force: bool = False) -> None:
         self._index.load()
@@ -2382,26 +2604,51 @@ class RecognitionHistoryPage(QWidget):
         inflight = set(self._inflight)
         roots = self._roots()
         signal = self._parsed
+        initial = not self._index._loaded
+        index_path = self._index.path
 
         def work():
             listing, errors, rows = [], [], []
+            initial_entries = None
             try:
+                if initial:
+                    index = RecognitionHistoryIndex(index_path)
+                    index.load()  # this worker owns its connection-free JSON index
+                    initial_entries = index.entries
+                    known.update({key: (row[0], row[1]) for key, row in index.entries.items()})
                 listing, errors = list_report_files(roots)
-                for path, mtime_ns, size in listing:
+                # Newest filesystem summaries first; the visible list keeps
+                # its existing completed-time sort as each batch arrives.
+                for path, mtime_ns, size in sorted(listing, key=lambda item: item[1], reverse=True):
                     key = str(path)
                     if known.get(key) == (mtime_ns, size) or (key, mtime_ns, size) in inflight:
                         continue
                     rows.append(parse_listed_report(path, mtime_ns, size))
+                    if self._async_scan and len(rows) >= 16:
+                        signal.emit(generation, {'job': job, 'rows': rows, 'final': False,
+                            'listing': listing, 'list_errors': errors, 'initial_entries': initial_entries})
+                        rows, initial_entries = [], None
             finally:
                 try:
                     signal.emit(generation, {"job": job, "rows": rows, "final": True,
-                                             "listing": listing, "list_errors": errors})
+                                             "listing": listing, "list_errors": errors,
+                                             "initial_entries": initial_entries})
                 except RuntimeError:
                     pass
 
         threading.Thread(target=work, daemon=True, name="history-entry-check").start()
 
     def _on_parsed(self, generation: int, payload) -> None:
+        if self._async_scan and generation != self._generation and not payload.get('save'):
+            if payload.get('final'):
+                self._jobs.discard(payload.get('job'))
+                for key in payload.get('pending', ()): self._inflight.discard(tuple(key))
+                QTimer.singleShot(0, self, self._check_on_entry)
+            return
+        initial_entries = payload.get('initial_entries')
+        if initial_entries is not None:
+            self._index.entries.update(initial_entries)
+            self._index._loaded = True
         for row in payload.get("rows", ()):
             self._store(row)
         if payload.get("final"):
@@ -2473,8 +2720,7 @@ class RecognitionHistoryPage(QWidget):
             and errors == self._errors
             and language == self._rendered_language
         ):
-            self._update_summary()
-            self._apply_filter()
+            self._refresh_overview()
             return
         present = {record.path: record for record in records}
         for path, card in list(self._cards_by_path.items()):
@@ -2571,7 +2817,7 @@ class RecognitionHistoryPage(QWidget):
         ).casefold()
 
     def _search_changed(self, _text=""):
-        self._built_limit = self.PAGE_SIZE
+        self._built_limit = self._initial_page_size
         self._apply_filter()
 
     def _apply_filter(self, _text=""):
@@ -2638,7 +2884,19 @@ class RecognitionHistoryPage(QWidget):
             bind_text(self.empty_note, translate('完成第一条字幕任务后，任务状态、模型组合和审核结果会出现在这里。', current_language()))
             self.empty_start.show()
         self.empty.setVisible(not display)
-        self.overview.update_records(self.records, self._ai_service())
+        hint = by_media and len(ordered) == 1 and not query and remaining <= 0
+        if self.single_hint.isHidden() == hint:
+            self.single_hint.setVisible(hint)
+        if hint and self.cards_layout.indexOf(self.single_hint) != len(ordered):
+            self.cards_layout.insertWidget(len(ordered), self.single_hint)
+        self._refresh_overview()
+
+    def _refresh_overview(self):
+        service = self._ai_service()
+        signature = (id(self.records), current_language(), service)
+        if signature != getattr(self, '_overview_signature', None):
+            self.overview.update_records(self.records, service)
+            self._overview_signature = signature
 
     def _settings(self) -> dict | None:
         window = self.window()
@@ -2655,7 +2913,8 @@ class RecognitionHistoryPage(QWidget):
             if text_ai_key_missing(settings, "polish"):
                 return ""
             identity = effective_ai_identity(settings, "polish")
-            return str(identity.get("model") or identity.get("label") or "")
+            return short_service_name(str(identity.get("label") or identity.get("service")
+                                          or identity.get("provider") or identity.get("model") or ""))
         except Exception:
             return ""
 
@@ -2681,13 +2940,15 @@ class RecognitionHistoryPage(QWidget):
         self._more_scheduled = False
         if len(self._display) <= self._built_limit:
             return
-        self._built_limit += self.PAGE_SIZE
+        self._built_limit += 8 if self._async_scan else self.PAGE_SIZE
         self._apply_filter()
 
     def _maybe_show_more(self, _value=None) -> None:
         if len(self._display) <= self._built_limit or not self.isVisible():
             return
         bar = self.scroll.verticalScrollBar()
+        if self._async_scan and bar.value() == 0:
+            return  # a first-page range change is not a user scroll request
         if bar.maximum() - bar.value() <= self.scroll.viewport().height() and not self._more_scheduled:
             self._more_scheduled = True
             QTimer.singleShot(0, self._show_more)
@@ -2756,7 +3017,7 @@ class RecognitionHistoryPage(QWidget):
         dialog = SpringDialog(self)
         language = current_language()
         bind_text(dialog, f"{translate('识别记录', language)}｜{record.media_name}", property='windowTitle')
-        dialog.resize(1160, 820)
+        dialog.resize(1180, 860)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(22, 18, 18, 16)
         scroll = QScrollArea()
@@ -2780,7 +3041,8 @@ class RecognitionHistoryPage(QWidget):
                 if isValid(placeholder):
                     placeholder.setText(tr("无法读取这份报告：{error}", error=error or ""))
                 return
-            detail = RecognitionHistoryDetail(full, settings=self._settings_copy(), closable=True)
+            detail = RecognitionHistoryDetail(full, settings=self._settings_copy(), closable=True,
+                                              attempt=self._attempt_number(record))
             installed.append(detail)
             detail.close_requested.connect(dialog.accept)
             detail.action_requested.connect(lambda action, selected=full: (dialog.accept(), QTimer.singleShot(
@@ -2850,6 +3112,14 @@ class RecognitionHistoryPage(QWidget):
         # Each opened report used to stay alive as a hidden child dialog of the
         # page (~150 widgets and the whole report text per opening).
         dialog.deleteLater()
+
+    def _attempt_number(self, record) -> int:
+        key = _group_key(record)
+        same = sorted((item for item in self.records if _group_key(item) == key), key=lambda item: item.completed_sort)
+        for index, item in enumerate(same, 1):
+            if item.path == record.path:
+                return index
+        return 0
 
     def _settings_copy(self) -> dict | None:
         import copy

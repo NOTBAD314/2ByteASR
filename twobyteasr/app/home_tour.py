@@ -490,6 +490,8 @@ class GuidedTour(QWidget):
         self._shake.valueChanged.connect(self._shake_step)
         self._shake.finished.connect(self._shake_done)
         self._shake_origin = None
+        self._shake_started = 0.0
+        self._last_impact = -1.0
         self._shake_strength = 0.0
         self._shake_direction = QPointF(0, -1)
         self._flash_timer = QTimer(self)
@@ -662,8 +664,9 @@ class GuidedTour(QWidget):
     SHAKE_SPEED = HIT_SPEED
     MAX_THROW = 3800.0
     MAX_FLIGHT_S = 14.0
-    SHAKE_MS = 340
-    FLASH_MS = 650
+    SHAKE_MS = 160
+    FLASH_MS = 180
+    IMPACT_INTERVAL_S = 0.18
 
     def _mascot_rect(self) -> QRectF:
         """The bunny's widget rectangle in overlay coordinates, docked or not."""
@@ -727,6 +730,7 @@ class GuidedTour(QWidget):
     def _mascot_press(self, event) -> bool:
         if self.bubble.mascot is None or self.mode != 'shown' or event.button() != Qt.MouseButton.LeftButton:
             return False
+        self._cancel_impact()  # a new grab owns the visual position immediately
         point = QPointF(event.globalPosition())
         caught = self._puck.isActive() and not self.bubble.docked   # caught in the air: held at once
         self._puck.stop()
@@ -792,8 +796,9 @@ class GuidedTour(QWidget):
 
     def _puck_step(self):
         mascot = self.bubble.mascot
-        if mascot is None or self.bubble.docked:
+        if mascot is None or self.bubble.docked or not self.isVisible() or not mascot.isVisible() or self.window_.isMinimized():
             self._puck.stop()
+            self._puck_last = time.perf_counter()
             return
         now = time.perf_counter()
         dt = min(0.04, max(0.001, now - self._puck_last))
@@ -827,7 +832,9 @@ class GuidedTour(QWidget):
         self._puck_v = v
         self._place_puck(at)
         squash = 0.0
-        for side, speed in hits:
+        # One physical integration may hit both axes in a corner. One feedback
+        # controller handles that impact; its visual offset never moves bounds.
+        for side, speed in sorted(hits, key=lambda hit: hit[1], reverse=True)[:1]:
             if speed < self.HIT_SPEED:
                 continue
             power = max(0.3, min(1.0, speed / 2200.0))
@@ -863,50 +870,46 @@ class GuidedTour(QWidget):
         return -0.25 * (1 - (0.5 - 0.5 * math.cos(k * math.pi)))
 
     def _shake_window(self, strength: float, direction: QPointF = QPointF(0, -1)):
-        """The window gives way a few pixels in the hit's direction and springs back (content when maximized)."""
+        """A bounded local nudge of the bunny, independent of window/layout coordinates."""
         from ..design.ui_motion import reduced_motion
-        if reduced_motion():
+        if reduced_motion() or not self.isVisible():
             return
+        now = time.perf_counter()
         running = self._shake.state() == QVariantAnimation.State.Running
-        self._shake_strength = max(strength, self._shake_strength if running else 0.0)
+        if running or now - self._last_impact < self.IMPACT_INTERVAL_S:
+            return  # merging must never extend the end time of a burst
+        self._last_impact = self._shake_started = now
+        self.window_._interaction_busy_until = now + .25
+        self._shake_strength = max(0.0, min(1.0, strength))
         self._shake_direction = QPointF(direction)
-        if self._shake_origin is None:
-            window = self.window_
-            if window.isMaximized() or window.isFullScreen():
-                layout = window.layout()
-                self._shake_origin = ('margins', layout.contentsMargins()) if layout is not None else None
-            else:
-                self._shake_origin = ('position', window.pos())
-        if self._shake_origin is None:
-            return
-        self._shake.stop()
         self._shake.start()
 
     def _shake_offset(self, value: float) -> QPoint:
-        amount = (1.5 + 2.5 * self._shake_strength) * self._kick(value)   # half of before (user)
+        amount = (1.5 + 1.5 * self._shake_strength) * self._kick(value)
         return QPoint(round(self._shake_direction.x() * amount), round(self._shake_direction.y() * amount))
 
     def _shake_step(self, value):
-        origin = self._shake_origin
-        if origin is None:
+        mascot = self.bubble.mascot
+        if mascot is None:
             return
-        offset = self._shake_offset(float(value))
-        if origin[0] == 'position':
-            self.window_.move(origin[1] + offset)
-        else:
-            margins = origin[1]
-            self.window_.layout().setContentsMargins(margins.left() + offset.x(), margins.top() + offset.y(),
-                                                     margins.right() - offset.x(), margins.bottom() - offset.y())
+        progress = max(0.0, (time.perf_counter() - self._shake_started) * 1000 / self.SHAKE_MS)
+        if progress >= 1.0:
+            self._shake.stop()
+            self._shake_done()
+            return
+        mascot.impact_offset = QPointF(self._shake_offset(progress))
+        mascot.update()
 
     def _shake_done(self):
-        origin, self._shake_origin = self._shake_origin, None
         self._shake_strength = 0.0
-        if origin is None:
-            return
-        if origin[0] == 'position':
-            self.window_.move(origin[1])
-        elif self.window_.layout() is not None:
-            self.window_.layout().setContentsMargins(origin[1])
+        if self.bubble.mascot is not None:
+            self.bubble.mascot.impact_offset = QPointF()
+            self.bubble.mascot.update()
+
+    def _cancel_impact(self):
+        self._shake.stop()
+        self._shake_done()
+        self._puck_last = time.perf_counter()
 
     def _edge_hit(self, side: str, power: float):
         """An edge was hit: it glows where the bunny touched it and the window shivers that way."""
@@ -1667,12 +1670,11 @@ class GuidedTour(QWidget):
         self._poller.start()
 
     def _page_changed(self, _index):
+        self._cancel_impact()  # navigation takes priority over the previous hit
         if self.mode in ('shown', 'pending', 'away'):
             self._follow_target()
 
     def _follow_target(self):
-        if self._shake.state() == QVariantAnimation.State.Running:
-            return   # the window is shivering: its parts move a few pixels; nothing to follow
         step = self._step()
         if step is None or self.mode in ('idle', 'wait', 'glide', 'closed'):
             return
@@ -1819,7 +1821,8 @@ class GuidedTour(QWidget):
             region = region.united(QRegion(self.chat.geometry().adjusted(-12, -12, 12, 12)))
         if self.bubble.mascot is not None and not self.bubble.docked:
             region = region.united(QRegion(self._mascot_rect().toAlignedRect().adjusted(-2, -2, 2, 2)))
-        self.setMask(region)
+        if region != self.mask():
+            self.setMask(region)
 
     def _sync_geometry(self):
         if self.floating:
@@ -2019,6 +2022,11 @@ class GuidedTour(QWidget):
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
         kind = event.type()
+        if watched is self and kind == QEvent.Type.Hide:
+            self._cancel_impact()
+            self._puck.stop()
+            self._flash_timer.stop()
+            self._flash = None
         mascot = self.bubble.mascot
         if mascot is not None and watched is mascot:
             if kind == QEvent.Type.MouseButtonPress:
@@ -2039,6 +2047,13 @@ class GuidedTour(QWidget):
                 pass
             return False
         if watched is self.window_:
+            if kind in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.WindowStateChange,
+                        QEvent.Type.Hide, QEvent.Type.ScreenChangeInternal):
+                self._cancel_impact()
+            if kind == QEvent.Type.Hide or (kind == QEvent.Type.WindowStateChange and self.window_.isMinimized()):
+                self._puck.stop()
+                self._flash_timer.stop()
+                self._flash = None
             if kind == QEvent.Type.Resize:
                 self._relayout()
             elif kind == QEvent.Type.Move and self.floating:
