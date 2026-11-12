@@ -586,6 +586,9 @@ def normalize_asr_supports(alternates):
 
 
 def correction_is_safe(original, corrected, alternates=()):
+    from .machine_text_policy import machine_text_allowed
+    if not machine_text_allowed(original, corrected):
+        return False, '保留原文代称与口语表达'
     original_content = content_only(original)
     corrected_content = content_only(corrected)
     alternate_contents = normalize_asr_supports(alternates)
@@ -902,9 +905,28 @@ def apply_correction_edits(
             continue
         start, end = span
         candidate_preview = clean_subtitle_text(text[:start] + target + text[end:])
+        from .machine_text_policy import machine_text_allowed
+        if not machine_text_allowed(text, candidate_preview):
+            reject('protected_pronoun_or_colloquial_deletion')
+            continue
         from .language_rules import active_task_language
         from .correction_risk import SPACED_LANGUAGES, assess_patch
         language = active_task_language()
+        if language == 'ja':
+            from .japanese_correction import assess_patch as assess_japanese_patch
+            disposition,reason=assess_japanese_patch(source,target,independent_sources,contextual_term_candidates)
+            if disposition=='keep':
+                if decisions is not None:
+                    decisions.append({**edit,'accepted':False,'state':'completed_no_change','rule_id':reason})
+            elif disposition=='accept':
+                text=candidate_preview
+                applied.append({**edit,'from':source,'to':target,'actual_span':[start,end],
+                    'rule_id':reason,'acoustic_verified':False,
+                    'actual_independent_exact_support':count_independent_asr_supports(content_only(target),vote_sources)})
+            else:
+                reject(reason, actual_independent_families=sorted({family for family,value in independent_sources
+                    if target in value}), acoustic_verified=False)
+            continue
         if language in SPACED_LANGUAGES:
             from ..recognition.run_context import get_runtime_context
             context = get_runtime_context()

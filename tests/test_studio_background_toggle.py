@@ -163,11 +163,13 @@ def test_style_tab_labels_controls_and_checkboxes_share_one_grid(tmp_path, monke
                 page.style_shadow_swatch, page.style_glow_swatch]
     starts = {x(item) for item in swatches + [page.style_font, page.style_font_size,
                                                page.style_scope, page.style_preset,
-                                               page.style_apply_geometry, page.style_outline2,
+                                               page.style_apply_mode, page.style_outline2,
                                                page.style_alignment, page.style_position_x]}
     assert len(starts) == 1, starts
     # Switches (background, shadow, glow) sit in the same trailing slot.
-    assert x(page.style_shadow_switch) == x(page.style_glow) == x(page.style_background)
+    # 2026-11-12: the shadow row has no switch (opacity 0% turns it off).
+    assert page.style_shadow_switch.isHidden()
+    assert x(page.style_glow) == x(page.style_background)
     assert all(label.objectName() == "stylePropertyRowTitle" for label in labels)
     checks = [box for box in page.findChildren(QCheckBox)
               if box.isVisibleTo(page) and box.text() and page.context_drawer.isAncestorOf(box)]
@@ -232,15 +234,43 @@ def test_grid_holds_when_the_tool_panel_is_wider(tmp_path, monkeypatch):
     _finish(page)
 
 
-def test_appearance_rows_are_square_swatches_without_captions(tmp_path, monkeypatch):
+def test_appearance_rows_are_colour_wells_without_captions(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QLabel
 
     app, page = _page(tmp_path, monkeypatch)
-    _shown_style_tab(page, app)
-    for name in ("style_fill_swatch", "style_outline_swatch", "style_back_swatch",
-                 "style_shadow_swatch", "style_glow_swatch"):
-        swatch = getattr(page, name)
-        assert abs(swatch.width() - swatch.height()) <= 2, (name, swatch.size())
+    x = _shown_style_tab(page, app)
+    # 2026-11-11 (user): the rows are wide wells filled with their colour and
+    # naming it. 2026-11-12: 阴影 too; its opacity and distance live in its
+    # settings, not as inline text.
+    wells = [getattr(page, name) for name in ("style_fill_swatch", "style_outline_swatch",
+                                               "style_back_swatch", "style_shadow_swatch", "style_glow_swatch")]
+    for well in wells:
+        assert well.width() >= 2 * well.height(), well.size()
+    assert not page._appearance_rows["shadow"].inline_summary.isVisible()
+    page._set_style_color(page.style_outline_color, "#FF112233")
+    app.processEvents()
+    assert page.style_outline_button.value_text() == "#112233"
+    assert page.style_outline_button.value_ink().lightness() > 200  # light text on a dark colour
+    page._set_style_color(page.style_outline_color, "#FFFFEE88")
+    assert page.style_outline_button.value_ink().lightness() < 80
+    # Every inline row keeps the same 更多 slot, so the rows end together.
+    rows = page._appearance_rows
+    assert len({x(row.chevron) for row in rows.values()}) == 1
+    assert {row.chevron.width() for row in rows.values()} == {rows["fill"].chevron.width()}
+    # The last control of every row ends on one line: a switch or the sliders.
+    def end(row):
+        last = row.trailing if not row.trailing.isHidden() else row.chevron
+        return last.mapTo(row, last.rect().topRight()).x()
+    assert len({end(row) for row in rows.values()}) == 1
+    assert rows["fill"].chevron.text() == rows["shadow"].chevron.text()  # the same word, no pencil
+    # 套用预设: two buttons, one of them always on.
+    assert page.style_apply_style_only.isChecked() and not page.style_apply_geometry.isChecked()
+    page.style_apply_geometry.click()
+    assert page.style_apply_geometry.isChecked() and not page.style_apply_style_only.isChecked()
+    page.style_apply_style_only.click()
+    assert page.style_apply_style_only.isChecked() and not page.style_apply_geometry.isChecked()
+    page.style_apply_style_only.click()
+    assert page.style_apply_style_only.isChecked()
     texts = {label.text() for row in page._appearance_rows.values() for label in row.findChildren(QLabel)
              if label.isVisibleTo(row)}
     assert not texts & {"宽度", "半径", "方向", "透明"}
@@ -266,7 +296,9 @@ def test_shadow_editor_is_the_disc_beside_a_two_by_two_grid(tmp_path, monkeypatc
     _finish(page)
 
 
-def test_active_rows_fade_their_color_from_the_right(tmp_path, monkeypatch):
+def test_active_rows_show_their_color_in_the_well_without_a_row_fade(tmp_path, monkeypatch):
+    # 2026-11-12 (user): the colour lives in the row's well; the right-edge
+    # fade behind the controls (2026-10-18) read as a grey band and is gone.
     app, page = _page(tmp_path, monkeypatch)
     _shown_style_tab(page, app)
     rows = page._appearance_rows
@@ -278,7 +310,10 @@ def test_active_rows_fade_their_color_from_the_right(tmp_path, monkeypatch):
     image = rows["background"].grab().toImage()
     right = image.pixelColor(image.width() - 3, image.height() // 2)
     left = image.pixelColor(3, image.height() // 2)
-    assert right.red() > left.red() + 10
+    assert abs(right.red() - left.red()) <= 6 and abs(right.green() - left.green()) <= 6
+    well = page.style_back_swatch.grab().toImage()
+    middle = well.pixelColor(well.width() // 2, 4)
+    assert middle.red() > 200 and middle.green() < 60
     page.style_background.click()
     app.processEvents()
     assert not rows["background"]._tint_colors

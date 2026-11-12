@@ -169,7 +169,7 @@ def test_normal_batch_is_one_remote_request(monkeypatch):
     assert "".join(c.text for c in result)==text
 
 
-def test_bad_sample_only_retries_small_local_windows_and_keeps_safe_fallback(monkeypatch):
+def test_locally_resolved_bad_sample_does_not_spend_correction_budget(monkeypatch):
     f,rows=sample()
     def response(body,kwargs):
         if body.get("failed_constraints"):
@@ -177,7 +177,7 @@ def test_bad_sample_only_retries_small_local_windows_and_keeps_safe_fallback(mon
         return json.dumps({"boundaries":f["model_boundaries"]})
     snapshot,calls=provider(monkeypatch,response)
     result=grouping.call_grouping_api(rows,provider_snapshot=snapshot,firered_tokens=f["acoustic_tokens"])
-    assert 1 < len(calls) <= 3
+    assert len(calls) == 1
     assert all(len(body["source_text"]) <= 224 for body,kw in calls[1:])
     assert sum(kw["max_tokens"] for body,kw in calls[1:])<=4096
     assert all(kw["timeout"]<=6 for body,kw in calls[1:])
@@ -212,15 +212,16 @@ def test_equal_quality_AI_correction_retains_the_local_baseline(monkeypatch):
     assert [core.display_length(c.text) for c in result] == [b-a for a,b in zip([0,*local],local)]
     assert "".join(c.text for c in result)==f["source_text"]
     retries=[e for e in events if e['event']=='grouping_quality_retry']
-    assert retries and all(not e['improved'] for e in retries)
+    assert not retries and len(calls) == 1
     assert all(e['outcome'] in {'unchanged','rejected'} for e in retries)
     assert all(not e['accepted'] or e['outcome']=='unchanged' for e in retries)
 
 
 def test_local_correction_input_budget_is_distinct_and_never_dispatched(monkeypatch):
     from twobyteasr.providers import provider_input_budget as budget
-    f,rows=sample()
-    snapshot,calls=provider(monkeypatch,json.dumps({"boundaries":f["model_boundaries"]}))
+    text='SuperLongPlayerIdentifier'
+    rows=[core.SpeechSegment(1,0,3,text,.9,[],speaker='A')]
+    snapshot,calls=provider(monkeypatch,json.dumps({"boundaries":[len(text)]}))
     original=budget.prepare_input
     def prepare(messages,**kwargs):
         if json.loads(messages[1]["content"]).get("failed_constraints"):
@@ -229,11 +230,11 @@ def test_local_correction_input_budget_is_distinct_and_never_dispatched(monkeypa
     monkeypatch.setattr(budget,"prepare_input",prepare)
     events=[]
     monkeypatch.setattr(grouping,"record_run_event",lambda name,**data:events.append(dict(event=name,**data)))
-    result=grouping.call_grouping_api(rows,provider_snapshot=snapshot,firered_tokens=f["acoustic_tokens"])
+    result=grouping.call_grouping_api(rows,provider_snapshot=snapshot)
     attempts=[e for e in events if e["event"]=="grouping_quality_retry"]
     assert len(calls)==1 and attempts
     assert all(e["reason"]=="input_budget_conflict" and not e["request_dispatched"] for e in attempts)
-    assert result.validated and "".join(c.text for c in result)==f["source_text"]
+    assert not result.validated and "".join(c.text for c in result)==text
 
 
 def test_true_oversized_single_source_still_reaches_multiple_ai_requests(monkeypatch):

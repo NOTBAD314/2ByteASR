@@ -141,14 +141,35 @@ def test_static_visual_graph_does_not_force_continuous_animation(app):
 def test_active_set_half_open_overlap_empty_hidden_and_authored_order():
     from twobyteasr.rendering.caption_scene import active_cues
     cues=[StudioCue('a',0,100,'A','S0'),StudioCue('b',50,150,'B','S1'),StudioCue('c',200,250,'C','S2')]
-    page=SimpleNamespace(project=SimpleNamespace(cues=cues),session=SimpleNamespace(runtime=None),
+    page=SimpleNamespace(project=SimpleNamespace(cues=cues,speakers=[],studio_state={},generation_metadata={}),session=SimpleNamespace(runtime=None),
         timeline=SimpleNamespace(hidden_speakers=set(),_speaker_ids=['S1','EMPTY','S0','S2']),_subtitle_track_visibility={})
     assert [c.id for c in active_cues(page,49)]==['a']
     assert [c.id for c in active_cues(page,50)]==['a','b']  # top row paints last
     assert [c.id for c in active_cues(page,100)]==['b']
     assert not active_cues(page,150)
     assert [c.id for c in active_cues(page,200)]==['c']
-    page.timeline.hidden_speakers.add('S0')
+    page.project.studio_state['subtitle_track_visibility']={'S0':False}
     assert [c.id for c in active_cues(page,75)]==['b']
-    page._subtitle_track_visibility['S1']=False
+    page.project.studio_state['subtitle_track_visibility']['S1']=False
     assert not active_cues(page,75)
+
+
+def test_translation_companion_reads_its_draft_and_keeps_own_timing(app):
+    from dataclasses import replace
+    base=prepared(1)[0][1]
+    translated=replace(base,snapshot=replace(base.snapshot,cue_id='cue-0#tr',text='Saved translation',end_ms=4000))
+    translated=replace(translated,snapshot_hash=translated.snapshot.stable_hash())
+    lookup={'cue-0':base,'cue-0#tr':translated}
+    project=SimpleNamespace(studio_state={'bilingual':{'mode':'bilingual'}},
+        generation_metadata={'translations':{'cue-0':'Saved translation'}},style_recipes={})
+    page=SimpleNamespace(project=project,_prepared_caption=lambda key:lookup.get(key),
+        _live_edit_text_overrides={'cue-0#tr':'Draft translation'},_live_transform_overrides={},
+        _caption_transform_preview={},_revision_store=SimpleNamespace(render=object()))
+    owner=SimpleNamespace(page=page,_instance_layout=SimpleNamespace(for_cues=lambda *args:SimpleNamespace(offsets={},warnings=())))
+    owner.prepare=lambda cue:CaptionScene.prepare(owner,cue)
+    cue=StudioCue('cue-0',0,2000,'TRACK 1')
+    values=dict(CaptionScene.scene_items(owner,[cue]))
+    assert values['cue-0'].snapshot.text=='TRACK 1'
+    assert values['cue-0#tr'].snapshot.text=='Draft translation'
+    assert values['cue-0#tr'].snapshot.end_ms==4000
+    assert translated.snapshot.text=='Saved translation'

@@ -430,6 +430,13 @@ def statuses(project, *, target: str | None = None) -> dict[str, str]:
     count('status_cues_scanned', len(project.cues))
     count('status_records_observed', len(records))
     result = {cue.id: status_of(records.get(cue.id), cue.text, target=target) for cue in project.cues}
+    dependent = {key:record for key,record in records.items() if record.get('source_context_identity')
+                 and result.get(key) in {DONE,MANUAL}}
+    if dependent:
+        source = translation_context_source(project)
+        for cue_id,record in dependent.items():
+            if context_identity(source,cue_id,int(record.get('source_context_cues',3))) != record['source_context_identity']:
+                result[cue_id] = NEEDS_UPDATE
     from ..glossary.translation_terms import rule_version, freeze, policy_of
     meta = getattr(project, 'generation_metadata', None) or {}
     if records and (_has_term_configuration(meta) or any(r.get('terminology_version') for r in records.values())):
@@ -919,7 +926,9 @@ def set_manual(project, cue_id: str, text: str, *, target: str | None = None) ->
         _rebuild_view(project)
         return before, snapshot(project)
     records[cue_id] = _record(value, cue.text, origin=ORIGIN_MANUAL, target=container_target_value(container),
-                              previous=_pushed_previous(old), cleared=True if not value else None)
+                              previous=_pushed_previous(old), cleared=True if not value else None,
+                              source_context_identity=context_identity(translation_context_source(project),cue_id,3),
+                              source_context_cues=3,source_context_basis='manual_edit_revision')
     version = _manual_term_version(translation_source(project) if _has_term_configuration(_metadata(project)) else None,
                                    cue_id, container_target_value(container))
     if version: records[cue_id]['terminology_version'] = version
@@ -948,6 +957,9 @@ def manual_batch_state(project, values, *, source_values=None):
         term_source = replace(term_source, cues=tuple(replace(cue, text=source_values.get(cue.id, cue.text)) for cue in term_source.cues))
     from ..glossary.translation_terms import freeze
     term_policy = freeze(term_source.terminology) if term_source is not None else None
+    context_source=translation_context_source(project)
+    if source_values:
+        context_source=replace(context_source,cues=tuple(replace(c,text=source_values.get(c.id,c.text)) for c in context_source.cues))
     for cue_id, (text, language) in values.items():
         cue = cues.get(cue_id)
         old = records.get(cue_id)
@@ -958,7 +970,9 @@ def manual_batch_state(project, values, *, source_values=None):
         updated = dict(old or {})
         source_text = (source_values or {}).get(cue_id, cue.text)
         updated.update(_record(value, source_text, origin=ORIGIN_MANUAL, target=expected,
-                               previous=_pushed_previous(old), cleared=True if not value else None))
+                               previous=_pushed_previous(old), cleared=True if not value else None,
+                               source_context_identity=context_identity(context_source,cue_id,3),
+                               source_context_cues=3,source_context_basis='manual_edit_revision'))
         if value:
             updated.pop("cleared", None)
         updated.pop("last_error", None)
@@ -1158,6 +1172,7 @@ class TranslationSource:
     target_at_start: str | None = None
     terminology: dict = field(default_factory=dict)
     inline_pairs: tuple = ()
+    source_locale: str = ""
 
     def cue(self, cue_id: str) -> SourceCue | None:
         return self._index().get(cue_id)
@@ -1207,6 +1222,8 @@ def translation_source(project) -> TranslationSource:
     from ..glossary.translation_terms import policy_of
     term_policy = policy_of(project)
     language = _translation_language(project, term_policy)
+    from .segmentation_profiles import project_language_tag
+    source_locale=project_language_tag(project)
     eligible = _source_cue_ids(project, language)
     ordered = [cue for cue in sorted(project.cues, key=lambda cue: (cue.start_ms, cue.end_ms, cue.id))
                if cue.id in eligible]
@@ -1226,7 +1243,37 @@ def translation_source(project) -> TranslationSource:
                              content_revisions=revisions, revisions=dict(translation_revisions(project)),
                              target_at_start=container_target(project),
                              terminology=term_policy,
+                             source_locale=source_locale,
                              inline_pairs=normalize_glossary(meta.get('translation_glossary', ())))
+
+
+def translation_context_source(project):
+    """Small chronological source view; no record/history deep copy."""
+    from .segmentation_profiles import project_language_tag
+    language=_translation_language(project);eligible=_source_cue_ids(project,language)
+    speakers={s.id:s.name for s in project.speakers}
+    ordered=sorted((c for c in project.cues if c.id in eligible),key=lambda c:(c.start_ms,c.end_ms,c.id))
+    cues=tuple(SourceCue(c.id,c.text,c.start_ms,c.end_ms,c.speaker_id,speakers.get(c.speaker_id,''),i)
+               for i,c in enumerate(ordered))
+    return TranslationSource(cues,{}, {}, language=language,source_locale=project_language_tag(project))
+
+
+def prepare_context_dependencies(project):
+    """Freeze a first observed context for old records before editing starts.
+
+    It is explicitly not a reconstruction of the original HTTP request. New
+    AI writes keep their actual request identity instead. Existing text,
+    source version, manual origin and history remain unchanged.
+    """
+    records=records_of(project)
+    missing=[key for key,record in records.items() if record.get('text') and not record.get('source_context_identity')]
+    if not missing:return
+    source=translation_context_source(project);container=_ensure_container(project)
+    for key in missing:
+        cue=source.cue(key);record=container['records'].get(key)
+        if cue is None or record is None or record.get('source_sha')!=source_sha(cue.text):continue
+        container['records'][key]=dict(record,source_context_identity=context_identity(source,key,3),
+            source_context_cues=3,source_context_basis='first_observed_project_revision')
 
 
 def translation_text_source(project) -> TranslationSource:
@@ -1466,6 +1513,8 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
         speaker = names.get(line.speaker_id) or line.speaker
         if speaker:
             row["speaker"] = speaker
+        if line.speaker_id:
+            row["speaker_id"]=line.speaker_id
         if line.gap_before:
             row["gap_before"] = True
         if not line.translate and line.translation:
@@ -1532,6 +1581,9 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
         'Never resegment or retime the source, pair by array position, or truncate meaning to meet a line width. '
         f'Target display wrapping uses {target_profile.unit}, at most {target_profile.lines} lines of {target_profile.line_max:g} units; '
         'the application handles display wrapping separately from timed-cue segmentation.')
+    system += ('\nPreserve speaker identity, referents, negation, intention, actions, tone and established names. '
+               'Context lines are read-only evidence for understanding; never copy their extra facts into an output line. '
+               'Do not reinterpret a name or intentional self-correction as filler or silently remove a meaningful repetition.')
     if target in ('pt-BR','pt-PT'):system+='\nUse the selected Portuguese locale '+target+' without changing source spelling.'
     return [
         {"role": "system", "content": system},
@@ -1872,12 +1924,20 @@ def context_texts(source: TranslationSource, cue_id: str, context_cues: int = 3)
     return [item.text for item in before] + ["␞"] + [item.text for item in after]
 
 
-def _cache_extra(source: TranslationSource, cue_id: str, game_context: str) -> str:
+def context_identity(source: TranslationSource,cue_id: str,context_cues: int=3):
+    cue=source.cue(cue_id)
+    if cue is None:return ''
+    window=source.cues[max(0,cue.index-context_cues):cue.index+context_cues+1]
+    return _digest({'version':'translation-context-v2-speakers-locale','source_language':source.language,
+        'source_locale':getattr(source,'source_locale',''),
+        'lines':[(c.id,c.text,c.speaker_id,c.speaker_name,c.start_ms,c.end_ms) for c in window]})
+
+
+def _cache_extra(source: TranslationSource, cue_id: str, game_context: str, context_cues: int=3) -> str:
     references = [[item.get("source_text", ""), item.get("translation", "")]
                   for item in source.references.get(cue_id, ())]
-    if not references and not str(game_context or "").strip():
-        return ""
-    return _digest({"game_context": str(game_context or "").strip(), "reference": references})
+    return _digest({"game_context": str(game_context or "").strip(), "reference": references,
+                    "context_identity":context_identity(source,cue_id,context_cues)})
 
 
 def cache_lookup(cache: Mapping | None, key: str) -> str:
@@ -1937,6 +1997,8 @@ class TranslationResult:
     revisions: dict[str, int] = field(default_factory=dict)
     baseline_records: dict | None = None
     source_bounds: dict[str, tuple] = field(default_factory=dict)
+    context_identities: dict[str,str] = field(default_factory=dict)
+    context_cues: int = 3
     target_at_start: str | None = None
     discarded: dict[str, str] = field(default_factory=dict)
     diagnostic: Any = field(default=None, repr=False)
@@ -2059,6 +2121,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     result.revisions = dict(source.revisions)
     result.baseline_records = _json_copy(dict(source.records))
     result.source_bounds = {cue.id: (cue.start_ms, cue.end_ms, cue.speaker_id) for cue in source.cues}
+    result.context_cues=context_cues
+    result.context_identities={cue_id:context_identity(source,cue_id,context_cues) for cue_id in requested}
     result.target_at_start = source.target_at_start
     protected = [cue_id for cue_id in requested
                  if _protected(source.records.get(cue_id), overwrite_manual, overwrite_legacy)]
@@ -2130,7 +2194,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         term_context = result.sources[cue_id]
         result.term_versions[cue_id] = rule_version(terminology, pairs, source_language, target, term_context)
         key_inputs=dict(target=target,model=model,provider=provider_id,glossary_digest=result.term_versions[cue_id],
-                        prompt_version=prompt_version,extra=_digest([_cache_extra(source,cue_id,game_context),request_policy]))
+                        prompt_version=prompt_version,extra=_digest([_cache_extra(source,cue_id,game_context,context_cues),request_policy]))
         keys[cue_id] = cache_key(result.sources[cue_id],window,**key_inputs)
         previous=source.records.get(cue_id,{})
         rejected=previous.get('rejected_response') or {}
@@ -2364,7 +2428,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 # Applying a result (one undo step)
 
 
-def _discard_stale(project, result):
+def _discard_stale(project, result, *, current_source=None):
     """A response owns one project instance and one revision of each cue.
 
     Selection changes are harmless. Edit/undo/delete/merge-and-undo are not:
@@ -2377,6 +2441,7 @@ def _discard_stale(project, result):
                      or (result.project_instance and result.project_instance != id(project)))
     wrong_language = (result.source_language_at_start is not None
                       and result.source_language_at_start != _translation_language(project))
+    current_source=(current_source or translation_source(project)) if result.context_identities else None
     for cue_id in set(result.translations) | set(result.suggestions) | set(result.failed):
         item = result.translations.get(cue_id) or result.suggestions.get(cue_id)
         source = item.source_text if item is not None else result.sources.get(cue_id, '')
@@ -2384,7 +2449,8 @@ def _discard_stale(project, result):
         reason = ('project_changed' if wrong_project else 'source_language_changed' if wrong_language else 'cue_removed' if cue is None else
                   'source_changed' if source_sha(cue.text) != source_sha(source) else
                   'revision_changed' if result.project_instance and
-                  revisions.get(cue_id, 0) != result.content_revisions.get(cue_id, 0) else '')
+                  revisions.get(cue_id, 0) != result.content_revisions.get(cue_id, 0) else
+                  'context_changed' if current_source is not None and result.context_identities.get(cue_id)!=context_identity(current_source,cue_id,result.context_cues) else '')
         if reason:
             result.discarded[cue_id] = reason
             result.translations.pop(cue_id, None)
@@ -2422,10 +2488,10 @@ def _discard_translation_edits(project, result):
             result.failed.pop(cue_id, None)
 
 
-def _discard_terminology_changes(project, result):
+def _discard_terminology_changes(project, result, *, current_source=None):
     if result.terms_bound:
         from ..glossary.translation_terms import rule_version, freeze
-        current_source = translation_source(project)
+        current_source = current_source or translation_source(project)
         current_policy = freeze(current_source.terminology)
         current_pairs = current_source.inline_pairs
         if result.inline_pairs_at_start is not None and current_pairs == result.inline_pairs_at_start:
@@ -2448,8 +2514,9 @@ def apply_translation_result(project, result: TranslationResult, *, commit=True)
     a cue that still has a current translation keeps it (``last_error`` only).
     """
     before = snapshot(project)
-    _discard_terminology_changes(project, result)
-    _discard_stale(project, result)
+    current_source=translation_source(project) if result.terms_bound or result.context_identities else None
+    _discard_terminology_changes(project, result,current_source=current_source)
+    _discard_stale(project, result,current_source=current_source)
     _discard_translation_edits(project, result)
     if result.discarded and not (result.translations or result.failed):
         if result.diagnostic is not None:
@@ -2477,7 +2544,9 @@ def apply_translation_result(project, result: TranslationResult, *, commit=True)
             result.translations.pop(cue_id)
             continue
         records[cue_id] = _record(item.text, item.source_text, origin=ORIGIN_AI, context_sha=item.context_sha,
-                                  previous=_pushed_previous(old), **meta_common)
+                                  previous=_pushed_previous(old),
+                                  source_context_identity=result.context_identities.get(cue_id,''),
+                                  source_context_cues=result.context_cues,source_context_basis='request_snapshot', **meta_common)
         if result.terms_bound:
             records[cue_id]['terminology_version'] = result.term_versions.get(cue_id, '')
             if result.terminology_warnings.get(cue_id):
@@ -2526,8 +2595,9 @@ def accept_suggestions(project, result: TranslationResult, cue_ids: Iterable[str
     """
     chosen = None if cue_ids is None else {str(item) for item in cue_ids}
     before = snapshot(project)
-    _discard_terminology_changes(project, result)
-    _discard_stale(project, result)
+    current_source=translation_source(project) if result.terms_bound or result.context_identities else None
+    _discard_terminology_changes(project, result,current_source=current_source)
+    _discard_stale(project, result,current_source=current_source)
     _discard_translation_edits(project, result)
     container = _ensure_container(project)
     records = container["records"]
@@ -2542,7 +2612,9 @@ def accept_suggestions(project, result: TranslationResult, cue_ids: Iterable[str
             continue
         old = records.get(cue_id)
         records[cue_id] = _record(item.text, item.source_text, origin=ORIGIN_MANUAL, context_sha=item.context_sha,
-                                  previous=_pushed_previous(old), **meta_common)
+                                  previous=_pushed_previous(old),
+                                  source_context_identity=result.context_identities.get(cue_id,''),
+                                  source_context_cues=result.context_cues,source_context_basis='request_snapshot', **meta_common)
         if result.terms_bound:
             records[cue_id]['terminology_version'] = result.term_versions.get(cue_id, '')
         mark_manual_intent(project, cue_id)

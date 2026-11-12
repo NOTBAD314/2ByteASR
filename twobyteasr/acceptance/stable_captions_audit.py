@@ -168,7 +168,9 @@ def run(output, window=None):
         seed_qc(p);page.cue_model.refresh();page._refresh_cue_list_summary()
         page.cue_search.setText('是的');pump(.05)
         page._refresh_cue_list_summary()
-        check('whole-project count ignores search', '3' in page.confirm_all_reviews_button.text())
+        # 2026-11-12: the count moved from the button to the strip's note.
+        check('whole-project count ignores search', page.confirm_all_reviews_button.property('pendingCount') == 3
+              and '3' in page.confirm_all_reviews_note.text())
         original=deepcopy(p.to_dict());steps=page.undo_stack.count()
         _capture(win,output/'07-before-bulk.png')
         begin=time.perf_counter();QTest.mouseClick(page.confirm_all_reviews_button,Qt.LeftButton);pump(.05)

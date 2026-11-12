@@ -50,7 +50,7 @@ def _project_to_input(project, state, start, end):
                        (original.timeline_in_ms+(d-original.source_in_ms)*scale-offset)/1000)
 
 
-def project_ranges(project):
+def project_ranges(project, *, include_timing=False):
     from ..timeline.studio_edit_sequence import sequence_of
     if project is None:
         return []
@@ -59,7 +59,13 @@ def project_ranges(project):
     offset = state.get('input_offset_ms', 0)
     version = audio_version(project, state) if state.get('gaps') else ''
     decisions = state.get('decisions') or {}
-    for gap in pending(state):
+    gaps=list(pending(state))
+    if include_timing:
+        gaps.extend(dict(gap,status='timing_confirmation',classification='timing_confirmation',
+                         reason='text_retained_timing_contracted')
+                    for gap in state.get('gaps',[]) if gap.get('status')=='excluded'
+                    and gap.get('text_reconciliation',{}).get('reason')=='text_retained_timing_contracted')
+    for gap in gaps:
         if any(d.get('status') == 'non_speech' and d.get('audio_version') == version
                and float(d.get('start', gap['start'])) <= gap['start']
                and float(d.get('end', gap['end'])) >= gap['end']

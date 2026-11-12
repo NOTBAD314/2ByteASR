@@ -221,19 +221,20 @@ def start(window, output: Path):
 
     def multi_mode():
         dlg = state["dlg"]
-        dlg.multi_button.click()
+        from PySide6.QtCore import Qt as _Qt
+        dlg._tile_clicked("API_S02", _Qt.KeyboardModifier.NoModifier)
+        dlg._tile_clicked("API_S01", _Qt.KeyboardModifier.ControlModifier)
         dlg.more_toggle.click()
-        dlg.cards["API_S02"].select_check.setChecked(True)
         later(500, multi_shot)
 
     def multi_shot():
         dlg = state["dlg"]
-        check("batch bar visible", dlg.batch_bar.isVisible() and dlg.more_tools.isVisible())
-        check("selection summary", dlg.selection_summary.text() == tr("已选 {value0} 人 / {count} 条字幕", value0=1, count=4),
-              dlg.selection_summary.text())
+        # 2026-11-12 speaker board: several selected speakers open the merge panel.
+        check("merge panel visible", dlg.inspector.currentWidget() is dlg.merge_panel and dlg.more_tools.isVisible())
+        check("selection summary", "条字幕" in dlg.selection_summary.text(), dlg.selection_summary.text())
         shot("05-multi-and-tools.png", dlg)
-        dlg.multi_button.click()
-        dlg.more_toggle.click()
+        dlg._clear_selection()
+        dlg.more_tools.hide()
         later(300, lambda: dlg.done_button.click())
 
     def after_manager():

@@ -354,15 +354,17 @@ def _display_text_cues(project: SubtitleProject):
     from ..caption_style.speaker_names import display_text_cues
     settings = settings_from_state(project.studio_state)
     if settings.mode == "original":
-        return display_text_cues(project, view)
+        from ..caption_style.subtitle_visibility import layer_visible
+        return display_text_cues(project, [c for c in view if layer_visible(project,c,'original')])
     translations = {key: dict(info, text=style_translation(info.get("text", ""),
                     project_mode(project), math=math_enabled(project), protected_terms=protected_terms_of(project)))
                     for key, info in translation_view(project).items()}
     result, missing, _ = layer_cues(view, translations, settings.mode,
-                                   translation_first=settings.order == "translation_first")
+                                   translation_first=settings.order == "translation_first",project=project)
     if settings.mode == "translation":
         missing_ids = set(missing)
-        result.extend(c for c in view if c.id in missing_ids)
+        from ..caption_style.subtitle_visibility import layer_visible
+        result.extend(c for c in view if c.id in missing_ids and layer_visible(project,c,'original'))
     return display_text_cues(project, sorted(result, key=lambda c: (c.start_ms, c.end_ms, c.id)))
 
 
@@ -670,6 +672,7 @@ def layer_cues(
     layer: str,
     *,
     translation_first: bool = True,
+    project=None,
 ) -> tuple[list[StudioCue], tuple[str, ...], tuple[str, ...]]:
     """Cue copies carrying one language layer's text.
 
@@ -690,7 +693,12 @@ def layer_cues(
                 missing.append(cue.id)
             elif info.get("status") == "needs_update":
                 stale.append(cue.id)
+        if project is not None:
+            from ..caption_style.subtitle_visibility import layer_visible
+            if not layer_visible(project,cue,'original'):original=''
+            if not layer_visible(project,cue,'translation'):translated=''
         if layer == "original":
+            if not original:continue
             text = original
         elif layer == "translation":
             if not translated.strip():
@@ -699,6 +707,7 @@ def layer_cues(
         else:
             parts = [translated, original] if translation_first else [original, translated]
             text = "\n".join(part for part in parts if part)
+            if not text:continue
         copied = copy.copy(cue)
         copied.text = text
         result.append(copied)
@@ -785,7 +794,8 @@ def export_language_layers(
     base = output_basename(stem or "subtitles")
     target_dir = Path(directory).resolve()
     export_id = uuid.uuid4().hex
-    visible_cues = project.visible_cues()
+    from ..subtitle_rules.display_continuity import visible_display_cues
+    visible_cues = visible_display_cues(project,mode='bilingual')
     scopes: list[tuple[str, SubtitleProject, str]] = []
     if speaker_mode in {"combined", "both"}:
         scopes.append(("", _project_for_cues(project, visible_cues), base))
@@ -827,7 +837,7 @@ def export_language_layers(
                     format_name = "json"
                 else:
                     expected.cues, missing, stale = layer_cues(
-                        view, translations, layer, translation_first=translation_first)
+                        view, translations, layer, translation_first=translation_first,project=scoped_project)
                     from ..caption_style.speaker_names import display_text_cues
                     expected.cues = display_text_cues(scoped_project, expected.cues)
                     format_name = "srt"
@@ -891,14 +901,15 @@ class PlannedSubtitleFile:
     status: str = "new"
 
 
-def _planned_scope_stems(project: SubtitleProject, stem: str, speaker_mode: str) -> list[tuple[str, str]]:
+def _planned_scope_stems(project: SubtitleProject, stem: str, speaker_mode: str, *, all_language_layers=False) -> list[tuple[str, str]]:
     """Same scopes and per-speaker names as the two export functions."""
-    visible_cues = project.visible_cues()
+    from ..subtitle_rules.display_continuity import visible_display_cues
+    visible_cues = visible_display_cues(project,mode='bilingual') if all_language_layers else project.visible_cues()
     scopes: list[tuple[str, str]] = []
     if speaker_mode in {"combined", "both"}:
         scopes.append(("", stem))
     if speaker_mode in {"per_speaker", "both"}:
-        mapping = {speaker.id: speaker.name for speaker in project.speakers}
+        mapping = {speaker.id: str(speaker.name or "").strip() or speaker.id for speaker in project.speakers}
         used_names: set[str] = set()
         for speaker_id in dict.fromkeys(cue.speaker_id for cue in visible_cues):
             label = _speaker_filename(mapping.get(speaker_id, speaker_id))
@@ -935,6 +946,7 @@ def planned_subtitle_files(
     planned: list[PlannedSubtitleFile] = []
     layers = tuple(dict.fromkeys(layer for layer in layers if layer in LANGUAGE_LAYERS))
     if layers and "srt" in formats:
+        layer_scopes=_planned_scope_stems(project,output_basename(base_name or "subtitles"),options.speaker_mode,all_language_layers=True)
         from ..subtitle_rules.language_rules import project_language
         from ..subtitle_rules.subtitle_translation import container_target
         layer_list = layers + (("json",) if "json" in formats else ())
@@ -945,10 +957,10 @@ def planned_subtitle_files(
         counter = 1
         while target_dir is not None and any(
                 path.exists() or sidecar_path(path).exists()
-                for sid, scope_stem in scopes for layer in layer_list
+                for sid, scope_stem in layer_scopes for layer in layer_list
                 for path in [target_dir / _layer_filename(scope_stem, layer, source_suffix(sid), translation_suffix, counter)]):
             counter += 1
-        for speaker_id, scope_stem in scopes:
+        for speaker_id, scope_stem in layer_scopes:
             for layer in layer_list:
                 planned.append(PlannedSubtitleFile(
                     _layer_filename(scope_stem, layer, source_suffix(speaker_id), translation_suffix, counter),

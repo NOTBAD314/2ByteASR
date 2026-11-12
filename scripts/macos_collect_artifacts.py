@@ -16,7 +16,7 @@ def selected_files(root: Path) -> list[Path]:
             if path.is_file():selected.append(path)
         for path in (root/folder/'runtime-evidence').glob('*'):
             if path.is_file() and path.suffix in {'.log', '.json', '.jsonl'}:selected.append(path)
-    for folder in ("stable-captions","chinese-complete-expression","caret-split","regressions","media","media/formula-sources","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
+    for folder in ("speaker-board","timeline-cue-pill","stable-captions","chinese-complete-expression","caret-split","regressions","media","media/formula-sources","media/tesseract-compat","cpu-wheelhouse","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model

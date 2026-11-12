@@ -43,7 +43,15 @@ def motion_duration(token_ms: int) -> int:
 
 
 def settle_layout(root: QWidget, *, invalidate: bool = False) -> None:
+    for _step in settle_layout_steps(root, invalidate=invalidate):
+        pass
+
+
+def settle_layout_steps(root: QWidget, *, invalidate: bool = False):
     """Drain geometry work only. Never run timers, input, network or paint."""
+    from .gui_slices import GuiSlice
+    from shiboken6 import isValid
+    budget = GuiSlice()
     root.ensurePolished()
     # Hidden pages can contain thousands of controls. They do not participate
     # in this transition's geometry and will settle naturally when shown.
@@ -54,7 +62,10 @@ def settle_layout(root: QWidget, *, invalidate: bool = False) -> None:
     layout_request = QEvent.Type.LayoutRequest
     stack = [root]
     while stack:
+        yield from budget.checkpoint()
         widget = stack.pop()
+        if not isValid(widget):
+            continue
         if widget.layout() is not None:
             if invalidate:
                 # A hidden ancestor defers resize events. Cached nested

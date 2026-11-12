@@ -2,6 +2,7 @@
 
 
 def adoption_text(text, issues):
+    original = text
     spans = []
     for issue in issues:
         a, b = issue["span"]
@@ -13,4 +14,7 @@ def adoption_text(text, issues):
     for issue in sorted(issues, key=lambda i: i["span"], reverse=True):
         a, b = issue["span"]
         text = text[:a] + issue["replacement"] + text[b:]
+    from ..subtitle_rules.machine_text_policy import machine_text_allowed
+    if not machine_text_allowed(original,text):
+        raise ValueError('机器建议不得删除原文代称与口语表达')
     return text

@@ -62,6 +62,9 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         for key in ('segments','pending_rows','failed_cues','request_errors','terminology_conflicts'):
             receipt[key] = [*receipt.get(key, ()), *result.receipt.get(key, ())]
     receipt['text_targets'] = [{'key': entry.key, **entry.target.to_dict(), 'baseline': entry.text} for entry in entries]
+    receipt['run_state'] = ('not_run' if not use_ai else 'partial' if receipt.get('fallback_cues') and receipt.get('successful_cues')
+                            else 'failed' if receipt.get('request_errors') or receipt.get('fallback_cues')
+                            else 'completed')
     receipt['empty_state'] = ('request_failed' if receipt.get('request_errors') else
                               'needs_confirmation' if receipt.get('confirmation_changes') else
                               'changes_ready' if any(result.hits for result in results) else receipt.get('empty_state', 'no_changes'))
@@ -214,6 +217,7 @@ def _preview_original_glossary_correction(project, cue_ids, snapshot, settings, 
                     token.raise_if_cancelled()
                     receipt['request_errors'].append(str(exc))
                     receipt['fallback_cues'] += len(batch)
+                    receipt['failed_cues'].extend({'cue_id':cues[s.segment_id-1].id,'reason':str(exc)} for s in batch)
                     continue
                 proposed.update(result)
                 receipt["successful_cues"] += len(getattr(result,"succeeded",set(result)))

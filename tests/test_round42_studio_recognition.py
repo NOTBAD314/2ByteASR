@@ -327,7 +327,7 @@ def test_recognition_sheet_translation_needs_a_connected_ai(monkeypatch, tmp_pat
 # ---------------------------------------------------------------- 后台化
 
 
-def test_recognition_dispatch_closes_sheet_and_starts_chip(monkeypatch, tmp_path):
+def test_recognition_dispatch_closes_sheet_and_starts_task_progress(monkeypatch, tmp_path):
     page = _page(monkeypatch, tmp_path)
     controls = _open_sheet(page, tmp_path)
     emitted = []
@@ -342,11 +342,11 @@ def test_recognition_dispatch_closes_sheet_and_starts_chip(monkeypatch, tmp_path
     controls["confirm"].findChild(QPushButton).click()
     _app().processEvents()
     assert emitted and emitted[0][0] == "start_final"
-    # 状态进左侧字幕列表芯片：可见、运行中、取消按钮可见。
+    # Progress stays in the existing task surface; the caption status row is gone.
     assert page._recognition_running is True
-    assert page.recognition_chip.isVisibleTo(page.recognition_chip.parentWidget())
-    assert page.recognition_chip_label.text().startswith("识别中")
-    assert page.recognition_cancel_button.isVisibleTo(page.recognition_chip)
+    assert not hasattr(page,'recognition_chip')
+    assert page._recognition_subtitle_task.ended is None
+    assert page._recognition_subtitle_task.cancel_action is not None
     options = page.recognition_request_options()
     assert options["purpose"] == "final"
     assert options["enabled_glossary_ids"] == []
@@ -354,14 +354,15 @@ def test_recognition_dispatch_closes_sheet_and_starts_chip(monkeypatch, tmp_path
     page.close_page()
 
 
-def test_recognition_fail_shows_reason_on_chip(monkeypatch, tmp_path):
+def test_recognition_early_failure_keeps_reason_in_task_progress(monkeypatch, tmp_path):
     page = _page(monkeypatch, tmp_path)
     _open_sheet(page, tmp_path)
     page._recognition_running = True
     page.fail_recognition_runtime("API Key 未配置")
     assert page._recognition_running is False
-    assert page.recognition_chip_label.text() == "识别未完成 · API Key 未配置"
-    assert not page.recognition_cancel_button.isVisibleTo(page.recognition_chip)
+    assert page._recognition_status_sticky == "识别未完成 · API Key 未配置"
+    assert page._recognition_subtitle_task.rows['source']['error']=='API Key 未配置'
+    assert not hasattr(page,'recognition_chip')
     page.close_page()
 
 
@@ -449,7 +450,7 @@ def test_studio_recognition_start_failure_lands_on_chip(monkeypatch, tmp_path):
         assert win.qwen_asr_api_provider.currentData() == "mosi_moss_pro"
         assert guides == ["mosi_moss_pro"]
         assert (
-            win.studio_page.recognition_chip_label.text()
+            win.studio_page._recognition_status_sticky
             == "识别未完成 · 识别后端未保存：请填写 ASR API Key"
         )
         assert win.studio_page._recognition_running is False
@@ -499,8 +500,8 @@ def test_recognition_detail_and_cancel_signals(monkeypatch, tmp_path):
     assert detail_calls and cancel_calls
     # 取消请求发出后：可见反馈（正在安全取消）+取消按钮隐藏防重复点击。
     page.set_recognition_cancelling()
-    assert "正在安全取消" in page.recognition_chip_label.text()
-    assert not page.recognition_cancel_button.isVisibleTo(page.recognition_chip)
+    assert '正在安全取消' in page._recognition_subtitle_task.rows['source']['phase']
+    assert not hasattr(page,'recognition_chip')
     assert not page.recognition_zero_cancel.isVisibleTo(page.recognition_zero_card)
     page.close_page()
 

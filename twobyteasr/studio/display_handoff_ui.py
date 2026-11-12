@@ -9,7 +9,10 @@ from ..subtitle_rules.display_timing import project_display_tail_plan
 
 
 def _cue_signature(project):
-    return {c.id: (c.start_ms, c.end_ms, c.speaker_id, c.text, tuple(c.evidence_refs))
+    instances=project.studio_state.get('caption_timeline',{}).get('instances',{})
+    return {c.id: (c.start_ms, c.end_ms, c.speaker_id, c.text, tuple(c.evidence_refs),repr(c.transform),
+                   tuple(instances.get(c.id,{}).get(key) for key in
+                         ('protected_start','protected_end','manual_timing','source_start_ms','source_end_ms','source_path')))
             for c in project.cues}
 
 
@@ -24,7 +27,7 @@ class DisplayHandoffPreview(QDialog):
         self.setWindowTitle('预览说话人交接边界')
         self.resize(820, 460)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('优先按实测字词时间收口说话结束后的拖尾；没有字词时间时参考句子来源。真正重叠或证据不足的字幕保留。\n'
+        layout.addWidget(QLabel('在阅读预算内优先顺接短交接，显示决定与声学事实分别记录；可靠字时的显示补偿单独处理。\n'
                                '应用只改变表中列出的结束时间；字幕文字、说话人、位置和动效保持原样，可一次撤销。'))
         self.table = QTableWidget(0, 5, self)
         self.table.setHorizontalHeaderLabels(['字幕', '文字', '原结束时间', '预览结束时间', '依据'])
@@ -36,14 +39,17 @@ class DisplayHandoffPreview(QDialog):
                 continue
             row = self.table.rowCount()
             self.table.insertRow(row)
+            decisions=[p for p in self.audit['pairs_before'] if p['left']==cue.id]
+            editorial=any(p['classification']=='editorial_handoff' for p in decisions)
+            reason='编辑显示顺接；原始发声证据不变' if editorial else '按可用字时或来源收口显示拖尾'
             for col, value in enumerate((cue.id, cue.text, f'{cue.end_ms / 1000:.3f}s',
-                                        f'{self.ends[cue.id] / 1000:.3f}s', '发音已分开；收口拖尾并保留末字')):
+                                        f'{self.ends[cue.id] / 1000:.3f}s', reason)):
                 item = QTableWidgetItem(str(value))
                 item.setToolTip(str(value))
                 self.table.setItem(row, col, item)
         layout.addWidget(self.table)
         counts = self.audit['counts']
-        layout.addWidget(QLabel(f"可收口 {len(self.ends)} 条；来源重叠待检查 {counts['source_overlap_unverified']} 对；"
+        layout.addWidget(QLabel(f"可收口 {len(self.ends)} 条；来源重叠说明 {counts['source_overlap_unverified']} 对；"
                                f"证据不足 {counts['uncertain']} 对；独立重叠保留 {counts['acoustic']} 对。"))
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel, self)
         self.apply_button = buttons.addButton('应用结束时间（可撤销）', QDialogButtonBox.AcceptRole)
@@ -68,19 +74,47 @@ class DisplayHandoffPreview(QDialog):
 
 def bridge_short_gaps(page):
     """Close every caption gap of 0.5 s or less in one undo step (2026-10-10)."""
-    from ..subtitle_rules.display_timing import SHORT_GAP_BRIDGE_MS, short_gap_bridges
+    from ..subtitle_rules.display_continuity import project_handoff_plan
     from ..i18n import tr
     project = page.project
     if project is None:
         return 0
-    ends = short_gap_bridges([(c.id, c.speaker_id or '', c.start_ms, c.end_ms) for c in project.cues],
-                             SHORT_GAP_BRIDGE_MS)
+    selected = getattr(page,'selected_cue_ids',lambda:[])()
+    # One selected row is the editor focus. An explicit multi-selection owns
+    # a range; ordinary focused playback retains the whole-project action.
+    if len(selected)<2:
+        selected=[]
+    before = _cue_signature(project)
+    audit=[]
+    progress_dialog = None
+    from PySide6.QtWidgets import QWidget, QProgressDialog, QApplication
+    if isinstance(page,QWidget) and len(project.cues)>1000:
+        progress_dialog=QProgressDialog('正在计算字幕显示衔接','取消',0,len(project.cues),page)
+        progress_dialog.setMinimumDuration(200)
+    def progress(done,total):
+        if progress_dialog is not None:
+            progress_dialog.setValue(done)
+            QApplication.processEvents()
+            return not progress_dialog.wasCanceled()
+        return True
+    try:
+        ends = project_handoff_plan(project,selected,progress=progress,audit=audit)
+    finally:
+        if progress_dialog is not None:
+            progress_dialog.close()
+    if ends is None or project is not page.project or _cue_signature(project)!=before:
+        page._show_studio_hint('字幕衔接已取消，或工程在计算期间发生变化')
+        return 0
+    page._last_display_handoff_audit=audit
     if not ends:
-        page._show_studio_hint(tr('没有 0.5 秒以内的字幕间隙需要衔接'))
+        protected={row['cue_id'] for row in audit if row['reason']=='manual_or_source_boundary'}
+        limited={row['cue_id'] for row in audit if row['reason']=='maximum_display_duration'}
+        page._show_studio_hint(f'没有可自动衔接的微缝。保留 {len(protected)} 处人工或来源边界，'
+                              f'{len(limited)} 处最长显示时长约束。')
         return 0
     from ..timeline.studio_commands import BridgeShortGapsCommand
-    page.undo_stack.push(BridgeShortGapsCommand(project, ends, page._changed))
-    page._show_studio_hint(tr('已衔接 {count} 处 0.5 秒以内的字幕间隙（Ctrl+Z 可撤销）', count=len(ends)))
+    page.undo_stack.push(BridgeShortGapsCommand(project, ends, page._changed,audit=audit))
+    page._show_studio_hint(tr('已衔接 {count} 处字幕显示间隙（Ctrl+Z 可撤销）', count=len(ends)))
     return len(ends)
 
 

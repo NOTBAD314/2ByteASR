@@ -6,7 +6,9 @@ import json
 import math
 import re
 import os
+import platform
 from pathlib import Path
+import sys
 import time
 import uuid
 import zipfile
@@ -101,12 +103,30 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             raise TimeoutError('diagnostic collection deadline exceeded')
     checkpoint()
     missing=[]; sessions=[]; events=[]; losses=Counter(); consumed=0; cutoff=None
-    sanitizer=instance.sanitizer if instance else Sanitizer((root/".alias-key").read_bytes() if (root/".alias-key").is_file() else None)
-    snapshot=instance.snapshot() if instance and instance.root.resolve()==root.resolve() else None
+    try:
+        sanitizer=instance.sanitizer if instance else Sanitizer((root/".alias-key").read_bytes() if (root/".alias-key").is_file() else None)
+    except OSError as exc:
+        missing.append(dict(stage='alias_key',reason=type(exc).__name__))
+        sanitizer=Sanitizer()
+    snapshot=None
+    try:
+        if instance and instance.root.resolve()==root.resolve():snapshot=instance.snapshot()
+    except Exception as exc:
+        missing.append(dict(stage='session_snapshot',reason=type(exc).__name__))
     if snapshot:
         cutoff=snapshot["cutoff"]
         if snapshot.get("write_error"): missing.append(dict(reason="writer_error",error=snapshot["write_error"]))
-    directories=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and (p/"session.json").is_file()),key=lambda p:p.stat().st_mtime,reverse=True) if root.exists() else []
+    directories=[]
+    try:
+        for p in root.iterdir():
+            checkpoint()
+            try:
+                if p.is_dir() and not p.is_symlink():
+                    if (p/'session.json').is_file():directories.append((p.stat().st_mtime,p))
+                    else:missing.append(dict(session=p.name,reason='missing_session_metadata'))
+            except OSError as exc:missing.append(dict(session=p.name,reason=type(exc).__name__))
+    except OSError as exc:missing.append(dict(stage='session_listing',reason=type(exc).__name__))
+    directories=[p for _mtime,p in sorted(directories,key=lambda item:item[0],reverse=True)]
     for directory in directories:
         checkpoint()
         if consumed >= MAX_EXPORT_BYTES:
@@ -116,7 +136,10 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             meta=json.loads(files.get("session.json",b"{}"))
             if not isinstance(meta,dict) or not meta:
                 missing.append(dict(session=directory.name,reason="missing_session_metadata"));continue
-            if meta.get("status")=="running" and not _alive(meta): meta["status"]="previous_not_cleanly_ended"
+            if meta.get('session_id') is not None and not isinstance(meta['session_id'],str):
+                raise ValueError('invalid_session_id')
+            current=instance is not None and directory==instance.directory and meta.get('session_id')==instance.session_id
+            if meta.get("status")=="running" and not current and not _alive(meta): meta["status"]="previous_not_cleanly_ended"
             meta["directory"]=directory.name
             sessions.append(sanitizer.clean(meta))
             for name,data in files.items():
@@ -140,6 +163,11 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
                         clean["event_name"]=sanitizer.string(row["event_name"])
                         for key,default in (('level','INFO'),('result','observed'),('time',meta.get('started_at') or now())):
                             clean.setdefault(key,default)
+                            if not isinstance(clean[key],str):raise ValueError('invalid_event_field')
+                        for key in ('session_id','task_id','project_id'):
+                            if clean.get(key) is not None and not isinstance(clean[key],str):
+                                raise ValueError('invalid_event_identity')
+                        json.dumps(clean,allow_nan=False)
                         events.append(clean)
                     except (ValueError,TypeError,UnicodeError):
                         missing.append(dict(session=directory.name,file=name,line=index+1,reason="invalid_or_partial_line"))
@@ -147,7 +175,7 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
                 if isinstance(value,(int,float)) and math.isfinite(value) and value>=0:losses[key]+=value
                 else:missing.append(dict(session=directory.name,reason='invalid_loss_counter',field=str(key)[:80]))
             if isinstance(meta.get('dropped'),(int,float)) and math.isfinite(meta['dropped']) and meta['dropped']>0:losses['legacy_dropped']+=meta['dropped']
-        except (OSError,ValueError) as exc:
+        except (OSError,ValueError,TypeError,UnicodeError) as exc:
             missing.append(dict(session=directory.name,reason=type(exc).__name__))
     events.sort(key=_event_order)
     newest=sessions[0].get("session_id",sessions[0].get("directory")) if sessions else None
@@ -192,6 +220,28 @@ SCOPE_LABELS = {"recent": "最近 15 分钟（含相关操作）", "session": "�
                 "previous": "上次没有正常结束的运行", "range": "指定时间范围"}
 
 
+def _report_build(data):
+    """Read process receipts or bundled metadata; never run source Git scans.
+
+    A bare/minimum recorder may not have an initialized build receipt. Export
+    and its viewer must still work without invoking development-time probes.
+    """
+    root=Path(__file__).resolve().parents[2]
+    payload={}
+    for name in ('2byteasr_version.json','2byteasr_build.json'):
+        try:
+            value=json.loads((root/name).read_text('utf-8-sig'))
+            if isinstance(value,dict):payload.update(value)
+        except (OSError,ValueError,UnicodeError):pass
+    session=next((s for s in data.get('sessions',[]) if isinstance(s.get('build'),dict) and s['build']),{})
+    receipt=session.get('build',{})
+    aliases={'app_version':'version','git_sha':'commit','build_channel':'channel',
+             'source_sha256':'source_sha256','source_file_count':'source_file_count','build_time':'build_time'}
+    result={key:receipt.get(alias) or payload.get(key) or payload.get(alias) or 'unknown'
+            for key,alias in aliases.items()}
+    return result
+
+
 def summary(data, report_id, description="", report=None):
     """README.txt and the copied text: conclusion, starting step, then the trail."""
     from ..i18n import tr
@@ -200,6 +250,11 @@ def summary(data, report_id, description="", report=None):
     sessions = data.get("sessions") or []
     session = next((s for s in sessions if isinstance(s.get("build"), dict)), sessions[0] if sessions else {})
     build = session.get("build") if isinstance(session.get("build"), dict) else {}
+    if not build:
+        identity=_report_build(data)
+        build=dict(version=identity['app_version'],channel=identity['build_channel'],
+                   commit=identity['git_sha'],source_sha256=identity['source_sha256'])
+        session=dict(session,frozen=bool(getattr(sys,'frozen',False)))
     version = str(tr("版本：{version} · {channel} · commit {commit} · 来源指纹 {fingerprint} · {mode}",
                      version=build.get("version") or "?", channel=build.get("channel") or "?",
                      commit=str(build.get("commit") or "?")[:12], fingerprint=str(build.get("source_sha256") or "?")[:16],
@@ -221,10 +276,12 @@ def summary(data, report_id, description="", report=None):
 def export_report(target, *, root, instance=None, scope="recent", start=None, end=None,
                   description="", report=None, content=None, settings=None):
     data=collect(root,instance=instance,scope=scope,start=start,end=end,report=report)
-    if not data["events"] and not report:
-        raise ValueError("所選範圍沒有可用事件，請改選本次會話或重試；未產生空診斷包")
     sanitizer=data.pop("sanitizer")
     report_id=(report or {}).get("report_id") or "report-"+uuid.uuid4().hex[:16]
+    report=dict(report or {},report_id=report_id)
+    report.setdefault('marked_at',now())
+    settings=dict(settings) if isinstance(settings,dict) else {}
+    data['missing'].extend(settings.pop('_missing',[]) or [])
     if not data['events']:
         data['missing'].append(dict(stage='collection',reason='no_events_in_selected_range'))
         data['events']=[dict(time=now(),event_name='diagnostics.range_empty',level='WARN',
@@ -249,6 +306,10 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
             data['losses']['export_events_omitted_by_budget']=data['losses'].get('export_events_omitted_by_budget',0)+1
             continue
         retained.append(row);event_bytes+=len(raw)
+    if not retained:
+        data['missing'].append(dict(stage='serialization',reason='no_serializable_events'))
+        retained=[dict(time=now(),event_name='diagnostics.records_unavailable',level='WARN',result='partial',
+                       message='事件资料不足；保留回报标记、应用环境与缺失说明。',report_id=report_id)]
     retained.sort(key=_event_order)
     encoded=[(json.dumps(row,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n').encode('utf8') for row in retained]
     readable_parts=[]; readable_bytes=0
@@ -264,12 +325,21 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
     environment_events=[r for r in data['events'] if r.get('event_name') in {'host','qt','screens','graphics','media','modules','player.modules'}]
     if len(environment_events)>64 or len(data['sessions'])>64:
         data['missing'].append(dict(stage='environment',reason='environment_records_limited_to_latest_64'))
+    # Always provide application-level identity, even without logs or Studio.
+    environment=dict(build=_report_build(data),system=platform.system(),
+                     system_release=platform.release(),machine=platform.machine(),
+                     python=sys.version.split()[0],frozen=bool(getattr(sys,'frozen',False)))
+    try:
+        clean_settings=sanitizer.clean(settings)
+        json.dumps(clean_settings,allow_nan=False)
+    except Exception as exc:
+        clean_settings={}
+        data['missing'].append(dict(stage='settings_serialization',reason=type(exc).__name__))
     files={"README.txt":note.encode("utf8"),
            "events.jsonl":b''.join(encoded),
            "readable.log":b''.join(readable_parts),
-           "environment.json":json.dumps(dict(sessions=data["sessions"][:64],settings=sanitizer.clean(settings or {}),
+           "environment.json":json.dumps(dict(application=environment,sessions=data["sessions"][:64],settings=clean_settings,
                environment_events=environment_events[-64:]),ensure_ascii=False,indent=2).encode("utf8")}
-    import sys
     if sys.platform == 'darwin':
         from ..system.macos_compatibility import host_diagnostics
         files['macos-compatibility.json'] = json.dumps(sanitizer.clean(host_diagnostics()),ensure_ascii=False,indent=2).encode('utf8')
@@ -283,17 +353,25 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
                 pass
     if content:
         # Only explicitly previewed/selected rows. Never read the project file here.
-        selected=[{k:sanitizer.string(v) if isinstance(v,str) else sanitizer.clean(v,k) for k,v in row.items() if k in {"subtitle_id","text","translation","start_ms","end_ms"}} for row in content[:50]]
+        selected=[]
+        for row in content[:50]:
+            try:
+                clean={k:sanitizer.string(v) if isinstance(v,str) else sanitizer.clean(v,k) for k,v in row.items() if k in {"subtitle_id","text","translation","start_ms","end_ms"}}
+                json.dumps(clean,allow_nan=False)
+                selected.append(clean)
+            except (TypeError,ValueError,AttributeError,UnicodeError):
+                data['missing'].append(dict(stage='selected_content',reason='invalid_selected_record'))
         raw=json.dumps(selected,ensure_ascii=False,indent=2).encode("utf8")
         if len(raw)>MAX_ATTACHMENT_BYTES:data['missing'].append(dict(stage='attachment',reason='selected_content_exceeds_256KiB'))
         else:files["selected-content.json"]=raw
     capture=getattr(instance,'playback_capture',None) if instance is not None else None
     if capture:
-        raw=json.dumps(sanitizer.clean(capture),ensure_ascii=False,indent=2).encode('utf8')
-        if len(raw)<=4*1024*1024:
-            files['playback-diagnostic.json']=raw
-        else:
-            data['missing'].append(dict(reason='playback_capture_exceeds_4MiB'))
+        try:
+            raw=json.dumps(sanitizer.clean(capture),ensure_ascii=False,indent=2,allow_nan=False).encode('utf8')
+            if len(raw)<=4*1024*1024:files['playback-diagnostic.json']=raw
+            else:data['missing'].append(dict(reason='playback_capture_exceeds_4MiB'))
+        except (TypeError,ValueError,UnicodeError) as exc:
+            data['missing'].append(dict(stage='playback_capture',reason=type(exc).__name__))
     # Only explicitly referenced jobs from this live recorder. Keep technical
     # manifests; never copy raw renderer props, subtitle text or process output.
     if instance is not None and Path(root).resolve()==instance.root.resolve():
@@ -368,7 +446,7 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
                   files=[dict(name=k,bytes=len(v)) for k,v in files.items()])
     files["manifest.json"]=json.dumps(manifest,ensure_ascii=False,indent=2).encode("utf8")
     if sum(map(len,files.values()))>MAX_EXPORT_BYTES:raise ValueError("診斷內容超過 32 MiB，請縮小時間範圍")
-    target=Path(target)
+    target=Path(target).absolute()
     temp=target.with_name(target.name+"."+uuid.uuid4().hex[:8]+".tmp")
     phase='zip_packaging'
     try:
@@ -376,8 +454,20 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
             for name,value in files.items():z.writestr(name,value)
         phase='zip_verification'
         with zipfile.ZipFile(temp) as z:
-            if z.testzip() is not None or "events.jsonl" not in z.namelist():raise OSError("ZIP verification failed")
+            required={'README.txt','manifest.json','environment.json','events.jsonl'}
+            if z.testzip() is not None or not required.issubset(z.namelist()):raise OSError("ZIP verification failed")
+            checked=json.loads(z.read('manifest.json'))
+            checked_environment=json.loads(z.read('environment.json'))
+            checked_events=[json.loads(line) for line in z.read('events.jsonl').splitlines() if line.strip()]
+            if (checked.get('report_id')!=report_id or not checked_environment.get('application')
+                    or not z.read('README.txt').strip() or not checked_events
+                    or len(checked_events)!=len(retained)):
+                raise ValueError('Diagnostic ZIP content verification failed')
+            for item in checked['files']:
+                if z.getinfo(item['name']).file_size!=item['bytes']:
+                    raise ValueError('Diagnostic ZIP manifest size mismatch')
         phase='atomic_publication'
+        written_bytes=temp.stat().st_size
         os.replace(temp,target)
     except Exception as exc:
         try:exc.diagnostic_stage=phase
@@ -386,7 +476,7 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
     finally:
         try:temp.unlink(missing_ok=True)
         except OSError:pass
-    return dict(report_id=report_id,status=manifest["status"],files=len(files),bytes=target.stat().st_size,summary=note,target=str(target))
+    return dict(report_id=report_id,status=manifest["status"],files=len(files),bytes=written_bytes,summary=note,target=str(target))
 
 
 def export_failure_details(exc):
@@ -396,7 +486,8 @@ def export_failure_details(exc):
     frames=[frame for item in chain.get('chain',[]) for frame in item.get('frames',[])]
     stage='collection' if any(f.get('function') in {'collect','snapshot','_session_files'} for f in frames) else 'export'
     stage=getattr(exc,'diagnostic_stage',stage)
-    if any(f.get('function') in {'writestr','_open_to_write','replace'} for f in frames):stage='write_or_package'
+    if not getattr(exc,'diagnostic_stage',None) and any(f.get('function') in {'writestr','_open_to_write','replace'} for f in frames):stage='write_or_package'
     reason='no_events' if isinstance(exc,ValueError) and '沒有可用事件' in str(exc) else type(exc).__name__
+    details=dict(stage=stage,reason_code=reason,errno=getattr(exc,'errno',None),winerror=getattr(exc,'winerror',None),exception=chain)
     return dict(error=type(exc).__name__,stage=stage,reason_code=reason,
-                details=json.dumps(dict(stage=stage,reason_code=reason,exception=chain),ensure_ascii=False,indent=2))
+                details=json.dumps(details,ensure_ascii=False,indent=2))

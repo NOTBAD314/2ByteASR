@@ -17,9 +17,10 @@ from .studio_qc import QCConfig, QCResult, QCSeverity, ReadabilityRule
 from .review_suggestions import model_suggestions, ReviewSuggestion, SuggestionOption, GLOSSARY, MAX_MARKS
 from .review_evidence_policy import evidence_only_reason
 
-ISSUE_RULE_VERSION = 3
+ISSUE_RULE_VERSION = 6
 DECISIONS = "current_issue_decisions"
 LEGACY_INPUTS = 'current_issue_legacy_inputs'
+LEGACY_SCOPES = 'current_issue_legacy_scopes'
 _EMPTY_DECISIONS = MappingProxyType({})
 _EMPTY_QC = QCResult({})
 
@@ -50,6 +51,24 @@ def suggestion_handled(target, row, text, decisions):
             and all(option.text in patch.get('options',()) for option in row.options))
 
 
+def unhandled_suggestion(project,cue_id,layer,row):
+    """A current whole-issue keep also suppresses the same convenience mark."""
+    if row.kind=='pronoun':return row
+    handled=set()
+    for issue in current_issue_view(project).diagnostics.get(str(cue_id),()):
+        if issue.layer!=layer or issue.disposition!='handled':continue
+        decision=project.studio_state.get(DECISIONS,{}).get(issue.issue_id,{})
+        if (decision.get('status') not in {'resolved','ignored'}
+                or decision.get('input_version')!=issue.input_version
+                or decision.get('evidence_version')!=issue.evidence_version):
+            continue  # a legacy whole-caption label is not a veto on new local evidence
+        for prior in issue.suggestions:
+            if (prior.start,prior.end,prior.original)==(row.start,row.end,row.original):
+                handled.update(option.text for option in prior.options)
+    options=tuple(option for option in row.options if option.text not in handled)
+    return replace(row,options=options) if options else None
+
+
 def legacy_review_inputs(project):
     snapshot=getattr(project,'_legacy_review_inputs',None)
     if snapshot is None:
@@ -68,6 +87,51 @@ def reviewed_version(project, cue):
     from .subtitle_translation import container_target
     return digest([cue.text, cue.start_ms, cue.end_ms, cue.speaker_id,
                    container_target(project), project.generation_metadata.get('translations', {}).get(cue.id, '')])
+
+
+def legacy_scope(project,cue):
+    """Freeze the evidence clock missing from older confirmation fingerprints."""
+    refs=[]
+    for ref in cue.evidence_refs:
+        row=project.asr_evidence.get(ref,{})
+        arbitration=row.get('caption_arbitration') or {}
+        refs.append((ref,row.get('start_ms'),row.get('end_ms'),row.get('speaker_id'),
+            row.get('words'),row.get('source_coverage'),arbitration.get('source_coverage'),
+            arbitration.get('acoustic_words'),arbitration.get('word_timing')))
+    return digest([cue.text,cue.start_ms,cue.end_ms,cue.speaker_id,refs])
+
+
+def prepare_legacy_scopes(project):
+    if project.studio_state.get(DECISIONS) and LEGACY_SCOPES not in project.studio_state:
+        project.studio_state[LEGACY_SCOPES]={c.id:legacy_scope(project,c) for c in project.cues}
+
+
+def legacy_asr_decision(project,cue,layer,language,decisions):
+    """Honor an existing human decision when a rule is narrowed or renamed.
+
+    No new human action or timestamp is created. The baseline is captured at
+    open before editorial time changes; later effective evidence changes fail
+    this compatibility gate and use the current rule's normal fingerprint.
+    """
+    scopes=project.studio_state.get(LEGACY_SCOPES,{})
+    if cue.id not in scopes or scopes[cue.id]!=legacy_scope(project,cue):
+        return False
+    from .studio_qc import model_evidence,QCEvidence,_compact,normalize_spoken_text
+    evidence=model_evidence(project,cue)
+    distinct={_compact(cue.text):QCEvidence('Current',cue.text,'project')}
+    for item in evidence:
+        if item.text and not item.context_only and normalize_spoken_text(item.text)!=normalize_spoken_text(cue.text):
+            distinct.setdefault(_compact(item.text),item)
+    vectors=(('model_disagreement','asr_evidence',tuple(distinct.values())),
+             ('local_model_correction','asr_local_candidate',tuple(e for e in evidence if not e.context_only)))
+    for kind,source,items in vectors:
+        key=digest([project.project_id,cue.id,cue.speaker_id,layer,language,kind,source,()])
+        decision=decisions.get(key,{})
+        if (decision.get('status') in {'resolved','ignored'}
+                and decision.get('input_version')==digest([cue.text])
+                and decision.get('evidence_version')==digest([(e.label,e.source,e.text,e.context_only) for e in items])):
+            return True
+    return False
 
 
 def pending_review_changes(project):
@@ -167,6 +231,22 @@ class CurrentIssueView:
     def counts(self):
         counts = Counter(self.levels.values())
         return {"priority": counts["suggested"], "critical": counts["high"]}
+
+    def totals(self):
+        active=[r for r in self.records if r.disposition=='actionable']
+        return dict(cues=len({r.cue_id for r in active}),issues=len(active))
+
+    def candidate_groups(self):
+        groups=defaultdict(list)
+        for row in self.records:
+            if row.disposition!='actionable':
+                continue
+            for suggestion in row.suggestions:
+                if len(suggestion.original)<2:
+                    continue
+                key=(row.language,suggestion.original,tuple(o.text for o in suggestion.options))
+                groups[key].append((row,suggestion))
+        return tuple(tuple(rows) for rows in groups.values() if len({row.cue_id for row,_ in rows})>1)
 
     def statistics(self):
         groups = defaultdict(list)
@@ -273,6 +353,7 @@ def current_issue_view(project):
             for key in changed:part.pop(key, None)
     phase = 0
     seen = set()
+    content_tasks = {}
     row_cache = getattr(project, '_current_issue_row_cache', {})
     next_rows_cache = ({key: value for key, value in row_cache.items() if key[0] not in changed}
                        if changed is not None else {})
@@ -286,7 +367,8 @@ def current_issue_view(project):
         previous_input = (previous.text, previous.start_ms, previous.end_ms, previous.speaker_id) if previous else None
         stamp = (policy, text, cue.start_ms, cue.end_ms, cue.speaker_id, language, role, previous_input,
                  project.studio_state.get('review_confirmations', {}).get(cue.id),
-                 project.studio_state.get('manual_caption_text', {}).get(cue.id),legacy.get(cue.id))
+                 project.studio_state.get('manual_caption_text', {}).get(cue.id),legacy.get(cue.id),
+                 legacy_scope(project,cue) if cue.id in project.studio_state.get(LEGACY_SCOPES,{}) else None)
         location=(issue.fix_metadata.get('surface'),issue.fix_metadata.get('canonical')) if issue.category.value=='terminology' else ()
         cache_key = (cue.id, layer, issue.issue_type, issue.source,location)
         saved = row_cache.get(cache_key)
@@ -313,7 +395,9 @@ def current_issue_view(project):
             other = cues[issue.fix_metadata["previous_cue_id"]]
             dependencies.extend([other.id, other.text, other.start_ms, other.end_ms, other.speaker_id])
         version = digest(dependencies)
-        evidence_version = digest([(e.label, e.source, e.text, e.context_only) for e in issue.evidence])
+        evidence_inputs=[(e.label,e.source,e.text,e.context_only) for e in issue.evidence]
+        evidence_version = digest([evidence_inputs,issue.fix_metadata['evidence_scope']]
+            if issue.fix_metadata.get('evidence_scope') else evidence_inputs)
         evaluated_text = text
         if issue.issue_type in {'abnormal_punctuation', 'duplicate_punctuation'}:
             from .punctuation_style import style_text, style_translation, project_mode, math_enabled, protected_terms_of
@@ -330,6 +414,9 @@ def current_issue_view(project):
         if (decision.get("input_version") == version and decision.get("status") in {"ignored", "resolved"}
                 and decision.get('evidence_version', evidence_version) == evidence_version):
             level, disposition = "confident", "handled"
+        elif (issue.issue_type in {'model_disagreement','local_model_correction'}
+                and legacy_asr_decision(project,cue,layer,language,decisions)):
+            level,disposition='confident','handled'
         # Legacy human confirmations are accepted only for the exact text they
         # confirmed; mere pending/done labels are not issue decisions.
         elif (layer == "original" and issue.category.value in {'asr','text','terminology'}
@@ -338,6 +425,13 @@ def current_issue_view(project):
             level, disposition = "confident", "handled"
         candidates = [(e.text, (e.label,)) for e in issue.evidence
                       if e.text and not e.context_only and e.label not in {"Current","词库"} and e.text != text]
+        if issue.issue_type in {'model_disagreement','local_model_correction','suspected_word'}:
+            from .studio_qc import model_evidence, normalize_spoken_text
+            eligible = {normalize_spoken_text(e.text) for e in model_evidence(project,cue) if not e.context_only}
+            accepted = [c for c in candidates if normalize_spoken_text(c[0]) in eligible]
+            if candidates and not accepted:
+                level, disposition = 'confident', 'invalidated_machine_suggestion'
+            candidates = accepted
         # Incomplete time coverage does not justify deleting an unsupported
         # suffix. It offers listening / boundary adjustment, not a text patch.
         suggestions = tuple(model_suggestions(text, candidates)) if issue.category.value in {"asr", "terminology"} and issue.issue_type != 'current_projection_difference' else ()
@@ -345,6 +439,13 @@ def current_issue_view(project):
         if issue.issue_type=='terminology_mismatch' and surface and canonical:
             suggestions=tuple(ReviewSuggestion(m.start(),m.end(),m.group(),(SuggestionOption(str(canonical)),),GLOSSARY)
                 for m in list(re.finditer(re.escape(str(surface)),text))[:MAX_MARKS])
+        from ..recognition.asr_source_evidence import annotate_suggestions
+        unvalidated_suggestions = suggestions
+        suggestions = annotate_suggestions(project,cue,suggestions)
+        if (unvalidated_suggestions and not suggestions
+                and all(r.kind=='model' for r in unvalidated_suggestions)
+                and issue.issue_type in {'model_disagreement','local_model_correction'}):
+            level,disposition='confident','invalidated_machine_suggestion'
         target = dict(project_id=project.project_id, cue_id=cue.id, track_id=cue.speaker_id,
                       layer=layer, language=language, role=role)
         decision_keys = (key,) + tuple(k for r in suggestions for k in
@@ -367,6 +468,19 @@ def current_issue_view(project):
             if complete:
                 level, disposition = 'confident', 'handled'
         suggestions = visible_suggestions
+        if candidates and not suggestions and issue.issue_type in {'model_disagreement','local_model_correction'}:
+            from .machine_text_policy import protected_deletions
+            if all(protected_deletions(text, value) for value,_ in candidates):
+                level, disposition = 'confident', 'invalidated_machine_suggestion'
+        if disposition=='actionable' and issue.category.value in {'asr','terminology'}:
+            # Identical local decisions from ASR and terminology are one task;
+            # retain every raw rule and its evidence in the diagnostic view.
+            signature=(cue.id,layer,tuple(sorted((r.start,r.end,r.original,
+                tuple(sorted(o.text for o in r.options))) for r in suggestions)))
+            if suggestions and signature in content_tasks:
+                level,disposition='confident','duplicate'
+            elif suggestions:
+                content_tasks[signature]=key
         detail = issue.description
         if suggestions:
             detail += ' '+ '；'.join(f'位置 {r.start}–{r.end}「{r.original or "∅"}」→「{" / ".join(o.text or "∅" for o in r.options)}」' for r in suggestions)
@@ -461,7 +575,7 @@ def _decision_version(project):
     # Cue, language/model and sequence inputs are guarded by qc_revision.
     # Review decisions are save-only and may change while that job runs.
     return digest({key: project.studio_state.get(key, {}) for key in
-                   (DECISIONS, 'review_confirmations', 'manual_caption_text', LEGACY_INPUTS)})
+                   (DECISIONS, 'review_confirmations', 'manual_caption_text', LEGACY_INPUTS,LEGACY_SCOPES)})
 
 
 def issue_policy_version(project):

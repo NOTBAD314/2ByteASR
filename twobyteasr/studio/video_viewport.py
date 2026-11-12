@@ -4,6 +4,7 @@ Windows can scale the last GPU buffer before mpv presents its next frame.
 A picture-shaped child keeps that intermediate frame in proportion too.
 """
 import math
+import sys
 
 from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtWidgets import QWidget
@@ -25,6 +26,12 @@ class VideoViewportHost(QWidget):
         self.setObjectName("studioVideoOverlayHost")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("QWidget#studioVideoOverlayHost { background: #000; }")
+        if sys.platform == 'win32':
+            # One native parent owns the clip at the current container size.
+            # The canvas intentionally has DontCreateNativeAncestors, so an
+            # alien host left its foreign child clipped only by the main HWND.
+            self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self._video_canvas = None
         self._video_aspect = 16 / 9
 

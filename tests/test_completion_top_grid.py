@@ -32,7 +32,8 @@ def test_top_alignment_todo_section_and_fold_growth():
     APP.processEvents()
     viewport = page.viewport()
     assert shell.result_summary_card.mapTo(viewport, QPoint()).y() == 28
-    assert shell.result_action_grid.columns == 3
+    # 2026-11-11 (design A): four main action cards, AI proofreading first.
+    assert shell.result_action_grid.columns == 4
     cards = shell.result_action_grid.cards
     assert max(card.width() for card in cards)-min(card.width() for card in cards) <= 1
     # 2026-10-30 (design B): the 52px operation bar sits between the summary and the
@@ -41,16 +42,32 @@ def test_top_alignment_todo_section_and_fold_growth():
     assert shell.result_action_grid.secondary_actions == ()
     todo = shell.result_todo
     summary_bottom = shell.result_summary_card.mapTo(viewport, QPoint()).y() + shell.result_summary_card.height()
-    assert summary_bottom < todo.mapTo(viewport, QPoint()).y() < cards[0].mapTo(viewport, QPoint()).y()
+    # The slim strip (review, retry, 更多操作) sits under the cards.
+    assert summary_bottom < cards[0].mapTo(viewport, QPoint()).y() < todo.mapTo(viewport, QPoint()).y()
     assert shell.repolish_current_glossary_button is todo.ai_card.action
-    assert todo.ai_card.isVisible() and todo.ai_card.badge.isVisible()
+    assert cards[0] is shell.result_ai_card and cards[0].badge_text == '新'
+    assert not todo.ai_card.isVisible()
     assert not todo.review_card.isVisible() and not todo.retry_card.isVisible()
-    assert todo.height() >= todo.ai_card.height() + 6
+    assert todo.slim and todo.height() <= 44 and todo.idle_note.isVisible()
+    # The card stands for the AI button: same enabled state, same click.
+    clicks = []
+    shell.repolish_current_glossary_button.clicked.connect(lambda: clicks.append(1))
+    shell.repolish_current_glossary_button.setEnabled(False); APP.processEvents()
+    assert not cards[0].isEnabled()
+    shell.repolish_current_glossary_button.setEnabled(True); APP.processEvents()
+    assert cards[0].isEnabled()
+    cards[0].click()
+    assert len(clicks) >= 1
+    todo.set_ai(enabled=True, unfinished=3); APP.processEvents()
+    assert '3' in cards[0].shown_description()
+    todo.set_rejected(14, 'a → b'); APP.processEvents()
+    assert todo.review_card.isVisible() and any('14' in text for text in todo.review_card.chip_texts())
+    todo.set_rejected(0); todo.set_ai(enabled=True); APP.processEvents()
     assert shell.result_more_button.parentWidget() is todo
     # Both summaries start open and have the same natural height.
     files, log = shell.result_files_panel, shell.result_log_panel
     assert shell.result_folds.columns == 2 and abs(files.y()-log.y()) <= 1 and files.x() < log.x()
-    assert files.mapTo(viewport, QPoint()).y() > cards[0].mapTo(viewport, QPoint()).y()
+    assert files.mapTo(viewport, QPoint()).y() > todo.mapTo(viewport, QPoint()).y()
     assert shell.result_files_toggle.isChecked() and shell.result_log_toggle.isChecked()
     assert files.mode == 'summary' and log.mode == 'summary'
     assert files.height() == log.height()
@@ -72,7 +89,7 @@ def test_preview_fills_viewport_and_absorbs_resize_fold_and_task_changes():
     preview.set_rows(rows, len(rows))
     shell.result_files_panel.set_summary_lines(['素材', '字幕', '场景', '词库'])
     shell.result_log_panel.set_summary_lines(['完成', '检查', '记录', '提示', '待检查'])
-    page.resize(1460, 940); page.show()
+    page.resize(1460, 1040); page.show()
 
     def settle():
         for _ in range(8):
@@ -87,7 +104,7 @@ def test_preview_fills_viewport_and_absorbs_resize_fold_and_task_changes():
 
     settle(); assert_bottom()
     first_height = preview.list.height()
-    page.resize(1460, 1300); settle(); assert_bottom()
+    page.resize(1460, 1400); settle(); assert_bottom()
     assert abs(preview.list.height() - first_height - 360) <= 1
     before = preview.list.height()
     for panel in (shell.result_files_panel, shell.result_log_panel):
@@ -135,16 +152,20 @@ def test_readable_fonts_and_short_window_keeps_card_sizes(language, monkeypatch)
         assert QFontMetrics(card.description_font()).boundingRect(description, flags,
             translate(card.description, language)).height() <= description.height()
         assert all(card.rect().contains(rect) for rect in (icon, title, description))
-        # Icon chip + text group is centered in the card, icon and text block
-        # each vertically centered.
-        group_right = max(title.right(), description.right())
-        assert abs((icon.left()+group_right)/2-card.rect().center().x()) <= 2
-        assert abs(icon.center().y()-card.rect().center().y()) <= 1
-        assert abs((title.top()+description.bottom())/2-card.rect().center().y()) <= 1
+        # 2026-11-11: icon, title, description, then the action pill, top to
+        # bottom from one left edge; nothing overlaps.
+        action = card.action_rect().toRect()
+        assert card.rect().contains(action) and action.height() >= 36
+        assert icon.left() == title.left() == description.left() == action.left()
+        assert icon.bottom() < title.top() and title.bottom() < description.top() and description.bottom() < action.top()
+        assert QFontMetrics(card.action_font()).horizontalAdvance(card.shown_action()) <= action.width() - 16
     assert all(44 <= header.height() <= 52 for header in (shell.result_files_toggle, shell.result_log_toggle))
     page.resize(1440, 400)
     APP.processEvents()
-    assert [card.height() for card in cards] == heights
+    # A short window never shrinks the cards to fit; the scrollbar it brings
+    # narrows them a little, which may only wrap a title onto another line.
+    after = [card.height() for card in cards]
+    assert len(set(after)) == 1 and after[0] >= heights[0]
     assert page.verticalScrollBar().maximum() > 0
     assert page.horizontalScrollBar().maximum() == 0
     page.close(); page.deleteLater(); shell.deleteLater(); APP.processEvents()
@@ -158,7 +179,7 @@ def test_common_desktop_width_uses_85_to_90_percent_of_viewport(width):
     APP.processEvents()
     ratio = shell.result_content.width() / page.viewport().width()
     assert .85 <= ratio <= .90
-    assert shell.result_action_grid.columns == 3
+    assert shell.result_action_grid.columns == 4
     page.close(); page.deleteLater(); shell.deleteLater(); APP.processEvents()
 
 
@@ -199,8 +220,14 @@ def test_actual_navigation_gap_uses_parent_chain_and_leaves_other_pages_padding_
 
 def test_narrow_page_stacks_all_operations_and_scrolls_without_horizontal_overflow():
     shell, page = completion_page()
+    # Four cards fold to two pairs first, then to a stack.
     page.resize(580, 420)
     page.show()
+    APP.processEvents()
+    assert shell.result_action_grid.columns == 2
+    pairs = shell.result_action_grid.cards
+    assert pairs[0].y() == pairs[1].y() < pairs[2].y() == pairs[3].y() and pairs[1].geometry().right() <= shell.result_action_grid.width()
+    page.resize(460, 420)
     APP.processEvents()
     assert shell.result_action_grid.columns == 1
     assert page.verticalScrollBar().maximum() > 0

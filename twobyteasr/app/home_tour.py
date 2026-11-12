@@ -53,11 +53,19 @@ the overlay (a QGraphicsOpacityEffect re-rendered all its widgets on every
 frame); only an interactive step's ring pulses, twice. While a page answers a
 click (the workbench takes seconds to open) the shade stays and lets clicks
 through; hiding it made the whole window flash bright and dark again.
+
+2026-11-11 (user): 兔白, the user's own PNGTuber bunny, stands beside the
+card (``TourBubble``) on the side away from the outline. The words are typed
+one by one while it babbles (``tour_mascot``); a click on the words shows
+them at once. ``==marked==`` words stand out on a bright marker. A click on
+the bunny makes it hop and say something friendly in a small balloon. Its
+voice can be switched off in the bubble.
 """
 from __future__ import annotations
 
 import math
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -68,6 +76,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushB
                                QScrollArea, QVBoxLayout, QWidget)
 
 from ..i18n import bind_text, tr
+from .tour_mascot import GREETING, MascotVoice, Typewriter, marked_html, marker_colors, next_chat_line, speaking_ms
 
 
 @dataclass
@@ -121,9 +130,8 @@ def tutorial_anim_path(name: str, light: bool, still: bool = False):
 class TourAnim(QWidget):
     """The gesture animation in the bubble.
 
-    2026-10-21: scenes in ``tour_motion`` are drawn here in the theme's own
-    colours (about 30 frames a second is plenty for their calm motion); other
-    names are still animated WebP files drawn crisp on HiDPI.
+    Original WebP gestures take precedence. Program-drawn scenes remain for
+    newer steps without an original asset, and as a resource-error fallback.
     """
 
     SIZE = QSize(440, 187)
@@ -141,6 +149,8 @@ class TourAnim(QWidget):
         self._ticker.setInterval(self.FRAME_MS)
         self._ticker.timeout.connect(self.update)
         self.name = ''
+        self.source = ''
+        self.resource_error = ''
 
     def load(self, name: str, light: bool) -> bool:
         """Prepare ``name`` without playing it yet."""
@@ -149,6 +159,27 @@ class TourAnim(QWidget):
         if not name:
             return False
         from ..design.ui_motion import reduced_motion
+        # The language selector was renamed when the cloud-first tour grew.
+        asset_name = {'spoken': 'language'}.get(name, name)
+        path = tutorial_anim_path(asset_name, light, still=reduced_motion())
+        if path is not None:
+            if reduced_motion():
+                self._still = QImage(str(path))
+                if not self._still.isNull():
+                    self.source = 'original-still'
+                    self.update()
+                    return True
+            else:
+                movie = QMovie(str(path), parent=self)
+                movie.setCacheMode(QMovie.CacheMode.CacheNone)
+                if movie.isValid() and movie.jumpToFrame(0):
+                    movie.frameChanged.connect(self.update)
+                    self._movie = movie
+                    self.source = 'original-webp'
+                    self.update()
+                    return True
+                movie.deleteLater()
+            self.resource_error = str(path.name)
         from .tour_motion import SCENES, Look, refresh_keys
         scene = SCENES.get(name)
         if scene is not None:
@@ -157,32 +188,17 @@ class TourAnim(QWidget):
             from ..design.ui_theme import theme_definition
             self._scene = scene
             self._look = Look(theme_definition(theme_key()))
+            self.source = 'program-scene'
             self.update()
             return True
-        if reduced_motion():
-            path = tutorial_anim_path(name, light, still=True)
-            if path is None:
-                return False
-            self._still = QImage(str(path))
-            self.update()
-            return not self._still.isNull()
-        path = tutorial_anim_path(name, light)
-        if path is None:
-            return False
-        movie = QMovie(str(path), parent=self)
-        movie.setCacheMode(QMovie.CacheMode.CacheNone)
-        movie.frameChanged.connect(lambda _frame: self.update())
-        self._movie = movie
-        if not movie.isValid():
-            self.stop()
-            return False
-        movie.jumpToFrame(0)
-        return True
+        return False
 
     def start(self):
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion():
+            return
         if self._scene is not None:
-            from ..design.ui_motion import reduced_motion
-            if not reduced_motion() and not self._ticker.isActive():
+            if not self._ticker.isActive():
                 self._clock.restart()
                 self._ticker.start()
             return
@@ -197,11 +213,21 @@ class TourAnim(QWidget):
     def stop(self):
         self._ticker.stop()
         self._scene = None
+        self._look = None
+        self.source = ''
+        self.resource_error = ''
         if self._movie is not None:
             self._movie.stop()
+            self._movie.frameChanged.disconnect()
             self._movie.deleteLater()
         self._movie = None
         self._still = None
+
+    def hideEvent(self, event):  # noqa: N802
+        self._ticker.stop()
+        if self._movie is not None:
+            self._movie.setPaused(True)
+        super().hideEvent(event)
 
     def paintEvent(self, _event):  # noqa: N802 - Qt override
         if self._scene is not None:
@@ -217,7 +243,11 @@ class TourAnim(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawImage(QRectF(self.rect()), image)
+        size = QSizeF(image.size())
+        size.scale(QSizeF(self.size()), Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRectF((self.width()-size.width())/2, (self.height()-size.height())/2,
+                        size.width(), size.height())
+        painter.drawImage(target, image)
         painter.end()
 
 
@@ -241,6 +271,87 @@ def _text_height(label: QLabel, width: int) -> int:
 
 def _close(a: QRectF, b: QRectF, tolerance: float = 2.0) -> bool:
     return not a.isNull() and not b.isNull() and all(abs(x - y) <= tolerance for x, y in zip(a.getRect(), b.getRect()))
+
+
+class TourBubble(QWidget):
+    """The bubble (2026-11-11): 兔白 standing at the card's lower corner, on the side away from the outline.
+
+    ``card`` holds the words and buttons; the bunny overlaps its edge a little.
+    Without the bunny's pictures the bubble is just the card."""
+
+    TUCK = 16                                            # the bunny's side tucked behind the card edge
+    HEIGHTS = {'full': 168, 'compact': 140, 'mini': 112}
+
+    @property
+    def overlap(self) -> int:
+        """Its transparent side margin (room for the swing) plus a little of the bunny over the card."""
+        return (self.mascot.pad_x + self.TUCK) if self.mascot is not None else 0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('tourBubble')
+        self.card = QFrame(self)
+        self.card.setObjectName('tourCard')
+        self.side = 'left'
+        self.mascot = None
+        self.docked = True                               # False while the bunny is out on its own
+        try:
+            from ..design.bunny_mascot import BunnyMascot
+            mascot = BunnyMascot(self, height=self.HEIGHTS['full'])
+        except Exception:  # noqa: BLE001 - no pictures: the card alone
+            mascot = None
+        if mascot is not None and mascot.available:
+            mascot.setObjectName('tourMascot')
+            mascot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            mascot.setCursor(Qt.CursorShape.OpenHandCursor)   # 2026-11-11: drag it, or click it
+            mascot._timer.setInterval(33)   # calm enough; the overlay is a large translucent window
+            self.mascot = mascot
+        elif mascot is not None:
+            mascot.deleteLater()
+
+    def set_size_key(self, key: str) -> None:
+        if self.mascot is not None:
+            from . import ui_zoom
+            self.mascot.set_mascot_height(ui_zoom.px(self.HEIGHTS.get(key, self.HEIGHTS['full'])))
+        self._arrange()
+
+    def set_side(self, side: str) -> None:
+        self.side = 'right' if side == 'right' else 'left'
+        self._arrange()
+
+    def fit(self, size: QSize) -> None:
+        """Resize and lay out now (a hidden widget gets its resize event only when shown)."""
+        self.resize(size)
+        self._arrange()
+
+    def sizeHint(self):  # noqa: N802 - Qt override
+        card = self.card.sizeHint()
+        if self.mascot is None:
+            return card
+        bunny = self.mascot.size()
+        return QSize(card.width() + bunny.width() - self.overlap, max(card.height(), bunny.height()))
+
+    def card_rect(self) -> QRect:
+        """Where the card is inside the bubble (it stands on the bubble's bottom edge)."""
+        if self.mascot is None:
+            return QRect(QPoint(0, 0), self.size())
+        bunny = self.mascot.size()
+        width = max(1, self.width() - bunny.width() + self.overlap)
+        height = min(self.height(), self.card.sizeHint().height())
+        x = bunny.width() - self.overlap if self.side == 'left' else 0
+        return QRect(x, self.height() - height, width, height)
+
+    def _arrange(self) -> None:
+        self.card.setGeometry(self.card_rect())
+        if self.mascot is not None and self.docked:
+            bunny = self.mascot.size()
+            x = 0 if self.side == 'left' else self.width() - bunny.width()
+            self.mascot.move(x, self.height() - bunny.height())
+            self.mascot.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._arrange()
 
 
 class GuidedTour(QWidget):
@@ -342,7 +453,53 @@ class GuidedTour(QWidget):
         self._modal_running = 0                          # actions opening a window that have not returned yet
         self._shown_target = None                        # the widget the shown step outlines (its Hide is watched)
         self._settle = None                              # (check, since ms): the last step's page is still changing
+        # 2026-11-11: 兔白 types the words while it babbles; a click on it gives a chat line.
+        self._colors = marker_colors(self.theme)
+        self._text_source = ''
+        self._note_source = ''
+        self.voice = MascotVoice(self)
+        self._typer = Typewriter(self)
+        self._typer.spoke.connect(self._spoke)
+        self._typer.finished.connect(self._typing_done)
+        self._chat_typer = Typewriter(self)
+        self._chat_typer.spoke.connect(self._spoke)
+        self._chat_hide = QTimer(self)
+        self._chat_hide.setSingleShot(True)
+        self._chat_hide.timeout.connect(self._hide_chat)
+        self._chat_line = ''
+        self._chat_recent = []                           # the last few chat lines (no quick repeats)
+        # 2026-11-11 (user): 兔白 is picked up by the mouse and follows it; let go and it is thrown:
+        # it falls, bounces off the window's edges and the menu bar and rolls to a stop, flat (no
+        # spin), like the dice in the user's Open Design project. Hitting the menu bar makes the
+        # bar jump and glow where it was hit; a hard hit on another edge nudges the window that way.
+        self._drag = None                                # press point, grab offset, whether it moved
+        self._grab_target = None                         # where the pointer holds it (overlay coordinates)
+        self._grab_history = []                          # (time, position) of the last moments held
+        self._puck_v = QPointF()
+        self._puck_pos = QPointF()
+        self._puck_last = 0.0
+        self._puck_started = 0.0
+        self._puck = QTimer(self)
+        self._puck.setTimerType(Qt.TimerType.PreciseTimer)
+        self._puck.setInterval(16)
+        self._puck.timeout.connect(self._puck_step)
+        self._shake = QVariantAnimation(self)
+        self._shake.setStartValue(0.0)
+        self._shake.setEndValue(1.0)
+        self._shake.setDuration(self.SHAKE_MS)
+        self._shake.valueChanged.connect(self._shake_step)
+        self._shake.finished.connect(self._shake_done)
+        self._shake_origin = None
+        self._shake_strength = 0.0
+        self._shake_direction = QPointF(0, -1)
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setInterval(16)
+        self._flash_timer.timeout.connect(self._flash_tick)
+        self._flash = None                               # (x, y, power, started, side) of an edge hit
+        self._greeted = False
+        self._typed_for = None                           # the step whose words have been typed
         self._build_bubble()
+        self._build_chat()
         self._build_chip()
         self._sync_geometry()
         # The main window's moves and sizes, and the keys (the overlay never takes the focus).
@@ -355,18 +512,19 @@ class GuidedTour(QWidget):
     def _build_bubble(self):
         t = self.theme
         accent = QColor(t.accent)
-        self.bubble = QFrame(self)
-        self.bubble.setObjectName('tourBubble')
+        self.bubble = TourBubble(self)
         self.bubble.setStyleSheet(
-            f"QFrame#tourBubble {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 20px; }}"
+            f"QFrame#tourCard {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 22px; }}"
             f"QLabel#tourCount {{ color: {t.accent}; background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16);"
             f" border-radius: 10px; padding: 2px 10px; font-size: 12px; font-weight: 700; }}"
             f"QLabel#tourText {{ color: {t.text}; font-size: 16px; }}"
             f"QLabel#tourNote {{ color: {t.text_secondary}; font-size: 13px; }}"
             f"QPushButton#tourSkip {{ background: transparent; border: 0; color: {t.text_muted}; padding: 4px 6px; }}"
-            f"QPushButton#tourSkip:hover {{ color: {t.text}; }}")
+            f"QPushButton#tourSkip:hover {{ color: {t.text}; }}"
+            f"QPushButton#tourVoice {{ background: transparent; border: 0; border-radius: 12px; padding: 3px; }}"
+            f"QPushButton#tourVoice:hover {{ background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16); }}")
         self.bubble.hide()
-        layout = QVBoxLayout(self.bubble)
+        layout = QVBoxLayout(self.bubble.card)
         layout.setContentsMargins(18, 14, 18, 16)
         layout.setSpacing(12)
         top = QHBoxLayout()
@@ -374,6 +532,16 @@ class GuidedTour(QWidget):
         self.count.setObjectName('tourCount')
         top.addWidget(self.count)
         top.addStretch(1)
+        self.voice_button = QPushButton()
+        self.voice_button.setObjectName('tourVoice')
+        self.voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.voice_button.setIconSize(QSize(16, 16))
+        self.voice_button.clicked.connect(self._toggle_voice)
+        self._sync_voice_button()
+        top.addWidget(self.voice_button)
+        if self.bubble.mascot is None:   # (in its layout first: a parentless setVisible(True) opens a window)
+            self.voice_button.hide()
         self.skip = QPushButton()
         bind_text(self.skip, '跳过教学')
         self.skip.setObjectName('tourSkip')
@@ -446,6 +614,417 @@ class GuidedTour(QWidget):
         row.addWidget(self.chip_end)
         self.chip.hide()
 
+    # ------------------------------------------------------------ 兔白 (2026-11-11)
+    def _build_chat(self):
+        """The small balloon over the bunny's head for its chat lines."""
+        t = self.theme
+        self.chat = QLabel(self)
+        self.chat.setObjectName('tourChat')
+        self.chat.setTextFormat(Qt.TextFormat.RichText)
+        self.chat.setWordWrap(True)
+        self.chat.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chat.setStyleSheet(
+            f"QLabel#tourChat {{ background: {t.surface_elevated}; color: {t.text}; border: 2px solid {t.accent};"
+            f" border-radius: 16px; padding: 8px 14px; font-size: 14px; font-weight: 600; }}")
+        self.chat.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.chat.hide()
+
+    def _sync_voice_button(self):
+        from ..design.themed_icons import themed_icon
+        on = self.voice.enabled
+        self.voice_button.setIcon(themed_icon('fa5s.volume-up' if on else 'fa5s.volume-mute', 'accent' if on else 'muted'))
+        bind_text(self.voice_button, '兔白的声音：开（点一下关掉）' if on else '兔白的声音：关（点一下打开）',
+                  property='toolTip')
+
+    def _toggle_voice(self):
+        self.voice.set_enabled(not self.voice.enabled)
+        if not self.voice.enabled:
+            self.voice.close()
+        self._sync_voice_button()
+
+    def _spoke(self, char: str):
+        if self.voice.say(char) and self.bubble.mascot is not None:
+            self.bubble.mascot.open_mouth(0.075)
+
+    def _typing_done(self):
+        if not self._greeted and self.mode == 'shown' and self.bubble.mascot is not None:
+            self._greeted = True
+            QTimer.singleShot(250, lambda: self.mode == 'shown' and self._show_chat(GREETING))
+
+    # ------------------------------------------------------------ 兔白 picked up and thrown (2026-11-11)
+    # 2026-11-11 round 2 (user): like the DVD logo - no gravity; it bounces off all four window
+    # edges, each hit glows there and the window shivers, and it slowly runs out of speed.
+    FOLLOW = 26.0                                        # 1/s: how tightly it follows the pointer while held
+    RESTITUTION = 0.88                                   # speed kept after an edge
+    DRAG = 0.32                                          # 1/s: how slowly it loses speed between edges
+    STOP_DRAG = 3.0                                      # 1/s once it is slow: it eases to a stop
+    HIT_SPEED = 240.0                                    # px/s into an edge that gives feedback
+    SHAKE_SPEED = HIT_SPEED
+    MAX_THROW = 3800.0
+    MAX_FLIGHT_S = 14.0
+    SHAKE_MS = 340
+    FLASH_MS = 650
+
+    def _mascot_rect(self) -> QRectF:
+        """The bunny's widget rectangle in overlay coordinates, docked or not."""
+        rect = QRectF(self.bubble.mascot.geometry())
+        return rect.translated(QPointF(self.bubble.pos())) if self.bubble.docked else rect
+
+    def _undock_mascot(self):
+        """Out of the bubble onto the overlay, keeping the pointer's hold (reparenting drops the grab)."""
+        mascot = self.bubble.mascot
+        if not self.bubble.docked:
+            return
+        at = self._mascot_rect().topLeft()
+        self.bubble.docked = False
+        mascot.setParent(self)
+        mascot.move(at.toPoint())
+        mascot.show()
+        mascot.raise_()
+        self._puck_pos = QPointF(at)
+
+    def _dock_mascot(self):
+        """Back beside the card (the step changes, the tutorial closes)."""
+        self._puck.stop()
+        mascot = self.bubble.mascot
+        if self._drag is not None and mascot is not None:
+            mascot.releaseMouse()
+        self._drag = None
+        self._grab_target = None
+        if mascot is None or self.bubble.docked:
+            return
+        mascot.stretch = 0.0
+        mascot.setParent(self.bubble)
+        self.bubble.docked = True
+        self.bubble._arrange()
+        mascot.show()
+        mascot.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._apply_mask()
+        self.update()
+
+    def _puck_limits(self) -> QRectF:
+        """Where the widget's top-left may go: the drawn bunny (not its transparent margins) stays inside."""
+        mascot = self.bubble.mascot
+        bottom = round(mascot.mascot_height * 0.06)
+        m = 4
+        top = m - mascot.pad_top                         # the window's top edge (no menu bar involved)
+        return QRectF(m - mascot.pad_x, top,
+                      self.width() - mascot.width() + 2 * mascot.pad_x - 2 * m,
+                      self.height() - mascot.height() + bottom - m - top)
+
+    def _place_puck(self, at: QPointF):
+        mascot = self.bubble.mascot
+        old = self._mascot_rect()
+        limits = self._puck_limits()
+        at = QPointF(max(limits.left(), min(at.x(), limits.right())), max(limits.top(), min(at.y(), limits.bottom())))
+        self._puck_pos = at
+        mascot.move(at.toPoint())
+        if self.chat.isVisible():
+            self._place_chat()
+        self._apply_mask()
+        self.update(old.united(self._mascot_rect()).adjusted(-12, -12, 12, 24).toAlignedRect())
+
+    def _mascot_press(self, event) -> bool:
+        if self.bubble.mascot is None or self.mode != 'shown' or event.button() != Qt.MouseButton.LeftButton:
+            return False
+        point = QPointF(event.globalPosition())
+        caught = self._puck.isActive() and not self.bubble.docked   # caught in the air: held at once
+        self._puck.stop()
+        self._drag = dict(start=point, grab=QPointF(event.position()), moved=caught)
+        if caught:
+            self._start_hold(point)
+        return True
+
+    def _start_hold(self, point: QPointF):
+        mascot = self.bubble.mascot
+        if self._typer.running:
+            self._typer.finish()   # picked up: the words are all there at once, no babble while it flies
+        self._chat_typer.stop()
+        self._undock_mascot()
+        mascot.grabMouse()                                # the press's hold, kept across the reparenting
+        mascot.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self._grab_history = [(time.perf_counter(), QPointF(self._puck_pos))]
+        self._grab_target = QPointF(self.mapFromGlobal(point.toPoint())) - self._drag['grab']
+        self._puck_v = QPointF()
+        self._puck_last = time.perf_counter()
+        self._puck.start()
+
+    def _mascot_move(self, event) -> bool:
+        drag = self._drag
+        if drag is None:
+            return False
+        point = QPointF(event.globalPosition())
+        if not drag['moved']:
+            delta = point - drag['start']
+            if abs(delta.x()) + abs(delta.y()) < 4:
+                return True
+            drag['moved'] = True
+            self._start_hold(point)
+        self._grab_target = QPointF(self.mapFromGlobal(point.toPoint())) - drag['grab']
+        return True
+
+    def _mascot_release(self, event) -> bool:
+        drag, self._drag = self._drag, None
+        if drag is None:
+            return False
+        mascot = self.bubble.mascot
+        if not drag['moved']:
+            self._mascot_clicked()
+            return True
+        mascot.releaseMouse()
+        mascot.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._grab_target = None
+        now = time.perf_counter()
+        recent = [(t, p) for t, p in self._grab_history if now - t <= 0.09] or self._grab_history[-1:]
+        (t0, p0), (t1, p1) = recent[0], self._grab_history[-1]
+        velocity = (p1 - p0) / max(t1 - t0, 0.012) if now - t1 < 0.12 else QPointF()
+        speed = (velocity.x() ** 2 + velocity.y() ** 2) ** 0.5
+        if speed > self.MAX_THROW:
+            velocity *= self.MAX_THROW / speed
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion():
+            velocity = QPointF()
+        self._puck_v = velocity
+        self._puck_started = now
+        self._puck_last = now
+        self._puck.start()
+        return True
+
+    def _puck_step(self):
+        mascot = self.bubble.mascot
+        if mascot is None or self.bubble.docked:
+            self._puck.stop()
+            return
+        now = time.perf_counter()
+        dt = min(0.04, max(0.001, now - self._puck_last))
+        self._puck_last = now
+        limits = self._puck_limits()
+        if self._grab_target is not None:
+            previous = QPointF(self._puck_pos)
+            follow = 1 - math.exp(-dt * self.FOLLOW)
+            self._place_puck(previous + (self._grab_target - previous) * follow)
+            self._puck_v = (self._puck_pos - previous) / dt
+            self._grab_history = [(t, p) for t, p in self._grab_history if now - t < 0.14] + [(now, QPointF(self._puck_pos))]
+            speed = (self._puck_v.x() ** 2 + self._puck_v.y() ** 2) ** 0.5
+            self._relax_stretch(mascot, 0.1 + min(0.08, speed / 20000), dt)   # held up: a little taller
+            return
+        steps = max(1, math.ceil(dt / 0.008))
+        h = dt / steps
+        v, at = QPointF(self._puck_v), QPointF(self._puck_pos)
+        hits = []
+        for _ in range(steps):
+            speed = (v.x() ** 2 + v.y() ** 2) ** 0.5
+            v *= math.exp(-(self.DRAG if speed > 160 else self.STOP_DRAG) * h)
+            at += v * h
+            if at.x() < limits.left() or at.x() > limits.right():
+                hits.append(('left' if at.x() < limits.left() else 'right', abs(v.x())))
+                at.setX(max(limits.left(), min(at.x(), limits.right())))
+                v.setX(-v.x() * self.RESTITUTION)
+            if at.y() < limits.top() or at.y() > limits.bottom():
+                hits.append(('top' if at.y() < limits.top() else 'bottom', abs(v.y())))
+                at.setY(max(limits.top(), min(at.y(), limits.bottom())))
+                v.setY(-v.y() * self.RESTITUTION)
+        self._puck_v = v
+        self._place_puck(at)
+        squash = 0.0
+        for side, speed in hits:
+            if speed < self.HIT_SPEED:
+                continue
+            power = max(0.3, min(1.0, speed / 2200.0))
+            squash = min(squash, -0.22 * power) if side in ('top', 'bottom') else max(squash, 0.15 * power)
+            self._edge_hit(side, power)
+        if squash:
+            mascot.stretch = squash
+        self._relax_stretch(mascot, 0.0, dt)
+        speed = (v.x() ** 2 + v.y() ** 2) ** 0.5
+        if speed < 8 or now - self._puck_started > self.MAX_FLIGHT_S:
+            self._puck_v = QPointF()
+            mascot.stretch = 0.0
+            mascot.update()
+            self._puck.stop()
+
+    @staticmethod
+    def _relax_stretch(mascot, target: float, dt: float):
+        mascot.stretch += (target - mascot.stretch) * (1 - math.exp(-dt * 14))
+        if abs(mascot.stretch) < 0.002 and not target:
+            mascot.stretch = 0.0
+        mascot.update()
+
+    @staticmethod
+    def _kick(value: float) -> float:
+        """The dice's menu-bar keyframes: out to 1 at 22 %, a small rebound at 60 %, home at 100 %."""
+        if value < 0.22:
+            k = value / 0.22
+            return math.sin(k * math.pi / 2)
+        if value < 0.6:
+            k = (value - 0.22) / 0.38
+            return 1 - 1.25 * (0.5 - 0.5 * math.cos(k * math.pi))
+        k = (value - 0.6) / 0.4
+        return -0.25 * (1 - (0.5 - 0.5 * math.cos(k * math.pi)))
+
+    def _shake_window(self, strength: float, direction: QPointF = QPointF(0, -1)):
+        """The window gives way a few pixels in the hit's direction and springs back (content when maximized)."""
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion():
+            return
+        running = self._shake.state() == QVariantAnimation.State.Running
+        self._shake_strength = max(strength, self._shake_strength if running else 0.0)
+        self._shake_direction = QPointF(direction)
+        if self._shake_origin is None:
+            window = self.window_
+            if window.isMaximized() or window.isFullScreen():
+                layout = window.layout()
+                self._shake_origin = ('margins', layout.contentsMargins()) if layout is not None else None
+            else:
+                self._shake_origin = ('position', window.pos())
+        if self._shake_origin is None:
+            return
+        self._shake.stop()
+        self._shake.start()
+
+    def _shake_offset(self, value: float) -> QPoint:
+        amount = (1.5 + 2.5 * self._shake_strength) * self._kick(value)   # half of before (user)
+        return QPoint(round(self._shake_direction.x() * amount), round(self._shake_direction.y() * amount))
+
+    def _shake_step(self, value):
+        origin = self._shake_origin
+        if origin is None:
+            return
+        offset = self._shake_offset(float(value))
+        if origin[0] == 'position':
+            self.window_.move(origin[1] + offset)
+        else:
+            margins = origin[1]
+            self.window_.layout().setContentsMargins(margins.left() + offset.x(), margins.top() + offset.y(),
+                                                     margins.right() - offset.x(), margins.bottom() - offset.y())
+
+    def _shake_done(self):
+        origin, self._shake_origin = self._shake_origin, None
+        self._shake_strength = 0.0
+        if origin is None:
+            return
+        if origin[0] == 'position':
+            self.window_.move(origin[1])
+        elif self.window_.layout() is not None:
+            self.window_.layout().setContentsMargins(origin[1])
+
+    def _edge_hit(self, side: str, power: float):
+        """An edge was hit: it glows where the bunny touched it and the window shivers that way."""
+        rect = self._mascot_rect()
+        mascot = self.bubble.mascot
+        if side in ('top', 'bottom'):
+            x = rect.center().x()
+            y = 0.0 if side == 'top' else float(self.height())
+        else:
+            x = 0.0 if side == 'left' else float(self.width())
+            y = rect.top() + mascot.pad_top + (rect.height() - mascot.pad_top) / 2
+        self._flash = (float(x), float(y), float(power), time.perf_counter(), side)
+        if not self._flash_timer.isActive():
+            self._flash_timer.start()
+        self._shake_window(power, {'left': QPointF(-1, 0), 'right': QPointF(1, 0),
+                                   'top': QPointF(0, -1), 'bottom': QPointF(0, 1)}[side])
+
+    def _flash_tick(self):
+        flash = self._flash
+        if flash is None or (time.perf_counter() - flash[3]) * 1000 > self.FLASH_MS:
+            self._flash = None
+            self._flash_timer.stop()
+            self.update()
+            return
+        self.update(QRect(round(flash[0] - 150), round(flash[1] - 150), 300, 300))
+
+    def _paint_flash(self, painter):
+        flash = self._flash
+        if flash is None:
+            return
+        x, y, power, started, side = flash
+        k = (time.perf_counter() - started) * 1000 / self.FLASH_MS
+        if k >= 1:
+            return
+        from PySide6.QtGui import QRadialGradient
+        glow = QColor(self.theme.accent)
+        gradient = QRadialGradient(QPointF(x, y), 130)
+        glow.setAlphaF(max(0.0, min(1.0, 0.9 * power * (1 - k))))
+        gradient.setColorAt(0.0, glow)
+        glow.setAlphaF(0.0)
+        gradient.setColorAt(0.72, glow)
+        painter.save()
+        painter.translate(x, y)
+        painter.scale(1.0, 50 / 130) if side in ('top', 'bottom') else painter.scale(50 / 130, 1.0)
+        painter.translate(-x, -y)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(gradient)
+        painter.drawEllipse(QPointF(x, y), 130, 130)
+        painter.restore()
+
+    def _mascot_clicked(self):
+        mascot = self.bubble.mascot
+        if mascot is None or self.mode != 'shown':
+            return
+        mascot.hop()
+        self._chat_line = next_chat_line(self._chat_line, self._chat_recent)
+        self._chat_recent = (self._chat_recent + [self._chat_line])[-6:]
+        self._show_chat(self._chat_line)
+
+    def _show_chat(self, line: str):
+        from . import ui_zoom
+        mascot = self.bubble.mascot
+        if mascot is None or not self.bubble.isVisible():
+            return
+        text = str(tr(line))
+        self.chat.ensurePolished()
+        self.chat.setText(marked_html(text, self._colors))
+        self.chat.setFixedWidth(min(ui_zoom.px(230), max(ui_zoom.px(120), self.chat.fontMetrics().horizontalAdvance(text)
+                                                            + ui_zoom.px(36))))
+        self.chat.setFixedHeight(_text_height(self.chat, self.chat.width() - ui_zoom.px(32)) + ui_zoom.px(18))
+        self._place_chat()
+        self.chat.show()
+        self.chat.raise_()
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion():
+            self._spoke(text[:1])
+        else:
+            self._chat_typer.prepare([(self.chat, text)], self._colors)
+            self._chat_typer.start()
+        self._chat_hide.start(speaking_ms(text) + 2400 + 40 * len(text))   # typed, then time to read it
+        self._apply_mask()
+        self.update()
+
+    def _chat_box(self) -> QRectF:
+        return QRectF(self.chat.geometry()) if self.chat.isVisible() else QRectF()
+
+    def _place_chat(self):
+        """Beside the bunny's head on its outer side (never over the card's words); else over or under the bubble."""
+        mascot = self.bubble.mascot
+        head = self._mascot_rect()
+        box = QRectF(self.bubble.geometry())
+        w, h = self.chat.width(), self.chat.height()
+        m = self.MARGIN
+        if not self.bubble.docked:   # out on its own: over its head, else under its feet
+            x = max(m, min(head.center().x() - w / 2, self.width() - w - m))
+            y = head.top() + mascot.pad_top - h - 8
+            if y < m:
+                y = min(self.height() - h - m, head.bottom() + 4)
+            self.chat.move(round(x), round(y))
+            return
+        y = max(m, min(head.top() + mascot.pad_top - h * 0.25, self.height() - h - m))
+        x = head.left() + mascot.pad_x - w - 6 if self.bubble.side == 'left' else head.right() - mascot.pad_x + 6
+        if not (m <= x <= self.width() - w - m):
+            x = max(m, min(head.center().x() - w / 2, self.width() - w - m))
+            y = box.top() - h - 12
+            if y < m:
+                y = min(self.height() - h - m, box.bottom() + 12)
+        self.chat.move(round(x), round(y))
+
+    def _hide_chat(self):
+        self._chat_typer.stop()
+        self._chat_hide.stop()
+        if self.chat.isVisible():
+            dirty = self.chat.geometry().adjusted(-12, -12, 12, 24)
+            self.chat.hide()
+            self._apply_mask()
+            self.update(dirty)
+
     def _fill_buttons(self, step: TourStep):
         from ..design.presentation import button_role
         while self.buttons.count():
@@ -497,11 +1076,15 @@ class GuidedTour(QWidget):
             self._resume(navigate=False)
 
     def _prepare_bubble(self, step: TourStep):
-        from .onboarding import emphasis_html
+        self._typer.stop()
+        if self._typed_for != self.index:   # 2026-11-11: the same step placed again is not typed (spoken) again
+            self._typed_for = None
         text = step.text() if callable(step.text) else step.text
-        self.text.setText(emphasis_html(str(tr(text)), self.theme.accent))
+        self._text_source = str(tr(text))
+        self.text.setText(marked_html(self._text_source, self._colors))
         note = step.note() if callable(step.note) else step.note
-        self.note.setText(emphasis_html(str(tr(note)), self.theme.accent) if note else '')
+        self._note_source = str(tr(note)) if note else ''
+        self.note.setText(marked_html(self._note_source, self._colors) if note else '')
         self.note.setVisible(bool(note))
         self.count.setText(self._progress_text(step))
         name = step.anim() if callable(step.anim) else step.anim
@@ -540,13 +1123,14 @@ class GuidedTour(QWidget):
             self.note.setFixedHeight(_text_height(self.note, width))
         self.anim.setFixedSize(width, round(width * TourAnim.SIZE.height() / TourAnim.SIZE.width()))
         self.anim.setVisible(self._has_anim and key != 'mini')
+        self.bubble.set_size_key(key)
 
     def _measure(self) -> QSize:
         # New action buttons get their style only when polished; measure after that, or the
         # bubble comes out a button-height short and the last text line hides behind them.
         for child in self.bubble.findChildren(QWidget):
             child.ensurePolished()
-        self.bubble.layout().activate()
+        self.bubble.card.layout().activate()
         return self.bubble.sizeHint()
 
     # ------------------------------------------------------------ steps
@@ -555,6 +1139,8 @@ class GuidedTour(QWidget):
         self.show()
         self.raise_()
         self._follow.start()
+        if self.bubble.mascot is not None:
+            QTimer.singleShot(0, self.voice.warm_up)   # while the outline glides to the first step
         self.go(0)
 
     def _step(self) -> TourStep | None:
@@ -646,6 +1232,8 @@ class GuidedTour(QWidget):
     SETTLE_MS = 3000                                     # never wait longer than this for a page to hold still
 
     def go(self, index: int, *, step: int = 1):
+        if index != self.index:
+            self._dock_mascot()   # a new step: 兔白 is back beside the card
         self._poller.stop()
         self._advancing = False
         leaving = self._step()
@@ -833,7 +1421,7 @@ class GuidedTour(QWidget):
         try:
             for child in self.bubble.findChildren(QWidget):
                 child.ensurePolished()
-            self.bubble.layout().activate()
+            self.bubble.card.layout().activate()
             ratio = self.bubble.devicePixelRatioF()
             picture = QPixmap(QSize(math.ceil(self.bubble.width() * ratio), math.ceil(self.bubble.height() * ratio)))
             if picture.isNull():
@@ -859,6 +1447,7 @@ class GuidedTour(QWidget):
         self._shown_target = target[0] if isinstance(target, tuple) else target
         self.bubble.setGraphicsEffect(None)
         self.bubble.move(self._final_pos + self._slide)
+        self._begin_typing()
         # 2026-10-22: the fade-in draws one picture of the bubble; a QGraphicsOpacityEffect rendered
         # all its widgets (rich text, the animation) off screen again on every frame.
         self._reveal_pixmap = self._bubble_picture() if animate else None
@@ -869,6 +1458,7 @@ class GuidedTour(QWidget):
             self.bubble.raise_()
             if self._size_key != 'mini':
                 self.anim.start()
+            self._typer.start()
         else:
             self.reveal = 0.0
         if not self.floating:
@@ -938,10 +1528,23 @@ class GuidedTour(QWidget):
             self.bubble.raise_()
             if self._size_key != 'mini':
                 self.anim.start()
+            self._typer.start()
         self._apply_mask()
         self.update(self._bubble_dirty())
 
+    def _begin_typing(self):
+        """The words wait, blank, until the bubble is there; then 兔白 types them (not with reduced motion)."""
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion() or self._typed_for == self.index:   # shown again in place (a resize): no retyping
+            self._typer.finish()
+            self._typer.stop()
+            return
+        self._typed_for = self.index
+        self._typer.prepare([(self.text, self._text_source), (self.note, self._note_source)], self._colors)
+
     def _hide_bubble(self):
+        self._typer.stop()
+        self._hide_chat()
         self._reveal.stop()
         self._carry.stop()
         self._carry_path = None
@@ -1068,6 +1671,8 @@ class GuidedTour(QWidget):
             self._follow_target()
 
     def _follow_target(self):
+        if self._shake.state() == QVariantAnimation.State.Running:
+            return   # the window is shivering: its parts move a few pixels; nothing to follow
         step = self._step()
         if step is None or self.mode in ('idle', 'wait', 'glide', 'closed'):
             return
@@ -1158,6 +1763,8 @@ class GuidedTour(QWidget):
         dirty = self._bubble_dirty()
         self._final_pos = QPoint(round(start.x() + (end.x() - start.x()) * v), round(start.y() + (end.y() - start.y()) * v))
         self.bubble.move(self._final_pos)
+        if self.chat.isVisible():
+            self._place_chat()
         if pointer is not None:
             self.pointer = tuple(point + delta * v for point in pointer)
         self._set_hole(hole)
@@ -1208,6 +1815,10 @@ class GuidedTour(QWidget):
         region = QRegion(self.rect()).subtracted(QRegion(self.hole.toAlignedRect()))
         if self.bubble.isVisible() or self._reveal_pixmap is not None:
             region = region.united(QRegion(self.bubble.geometry().adjusted(-2, -2, 2, 2)))
+        if self.chat.isVisible():
+            region = region.united(QRegion(self.chat.geometry().adjusted(-12, -12, 12, 12)))
+        if self.bubble.mascot is not None and not self.bubble.docked:
+            region = region.united(QRegion(self._mascot_rect().toAlignedRect().adjusted(-2, -2, 2, 2)))
         self.setMask(region)
 
     def _sync_geometry(self):
@@ -1227,6 +1838,8 @@ class GuidedTour(QWidget):
             self._placement = self._place(rect)
             self._set_hole(rect)
             self._show_bubble(animate=False)
+            if self.chat.isVisible():
+                self._place_chat()
         elif self.mode == 'glide':
             self._glide.stop()
             self._set_mode('wait')
@@ -1280,10 +1893,11 @@ class GuidedTour(QWidget):
     def _place(self, hole: QRectF):
         """The bubble's size and spot for this outline: the free spot nearest to it (rect, pointer, side)."""
         width, height = self.width(), self.height()
+        self.bubble.set_side('left')
         if hole.isNull():   # a centred card
             self._set_size('full')
             size = self._measure()
-            self.bubble.resize(size)
+            self.bubble.fit(size)
             rect = QRectF((width - size.width()) / 2, (height - size.height()) / 2, size.width(), size.height())
             return rect, None, ''
         wide = hole.width() > width * 0.5
@@ -1307,12 +1921,15 @@ class GuidedTour(QWidget):
             m = self.MARGIN
             x = max(m, min(hole.center().x() - w / 2, width - w - m))
             y = max(m, min(hole.bottom() - h - self.GAP, height - h - m))
-            self.bubble.resize(size)
+            self.bubble.fit(size)
             return QRectF(x, y, w, h), None, ''
         _score, key, side, rect = best
         self._set_size(key)
-        self.bubble.resize(self._measure())
-        return rect, self._pointer_for(side, rect, hole), side
+        # 2026-11-11: 兔白 stands on the side away from the outline; the pointer leaves the card.
+        self.bubble.set_side('right' if side == 'right' else 'left')
+        self.bubble.fit(self._measure())
+        card = QRectF(self.bubble.card_rect()).translated(rect.topLeft())
+        return rect, self._pointer_for(side, card, hole), side
 
     def _pointer_for(self, side: str, rect: QRectF, hole: QRectF):
         """A short pointer from the bubble's edge to the outline (none when they do not face each other)."""
@@ -1368,6 +1985,16 @@ class GuidedTour(QWidget):
         self._poller.stop()
         self._follow.stop()
         self.anim.stop()
+        self._typer.stop()
+        self._hide_chat()
+        self._dock_mascot()
+        self._flash_timer.stop()
+        for animation, finish in ((self._shake, self._shake_done),):
+            if animation.state() == QVariantAnimation.State.Running:
+                animation.stop()
+                finish()
+        self._flash = None
+        self.voice.close()
         self.clearMask()
         app = QApplication.instance()
         if app is not None:
@@ -1392,6 +2019,18 @@ class GuidedTour(QWidget):
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
         kind = event.type()
+        mascot = self.bubble.mascot
+        if mascot is not None and watched is mascot:
+            if kind == QEvent.Type.MouseButtonPress:
+                return self._mascot_press(event)
+            if kind == QEvent.Type.MouseMove:
+                return self._mascot_move(event)
+            if kind == QEvent.Type.MouseButtonRelease:
+                return self._mascot_release(event)
+        if kind == QEvent.Type.MouseButtonPress and self.mode == 'shown':
+            if watched in (self.text, self.note) and self._typer.running:
+                self._typer.finish()   # a click on the words: all of them at once
+                return True
         if kind == QEvent.Type.Hide and watched is not None and watched is self._shown_target and self.mode == 'shown':
             # 2026-10-24: the outlined editor closed (Enter): outline and bubble go now, not a tick later.
             try:
@@ -1471,11 +2110,17 @@ class GuidedTour(QWidget):
         picture = self._reveal_pixmap
         if (self.bubble.isVisible() or picture is not None) and self.reveal > 0.01:
             box = QRectF(self.bubble.geometry())
+            card = QRectF(self.bubble.card_rect()).translated(box.topLeft())
             painter.setPen(Qt.PenStyle.NoPen)
-            for spread, alpha in ((22, 22), (14, 30), (7, 40)):   # soft shadow under the bubble
+            for spread, alpha in ((22, 22), (14, 30), (7, 40)):   # soft shadow under the card
                 painter.setBrush(QColor(0, 0, 0, int(alpha * self.reveal)))
-                painter.drawRoundedRect(box.adjusted(-spread / 2, -spread / 2 + 8, spread / 2, spread / 2 + 10),
-                                        20 + spread / 2, 20 + spread / 2)
+                painter.drawRoundedRect(card.adjusted(-spread / 2, -spread / 2 + 8, spread / 2, spread / 2 + 10),
+                                        22 + spread / 2, 22 + spread / 2)
+            if self.bubble.mascot is not None and self.bubble.docked:   # 兔白 stands on a soft round shadow
+                feet = QRectF(self.bubble.mascot.geometry()).translated(box.topLeft())
+                painter.setBrush(QColor(0, 0, 0, int(46 * self.reveal)))
+                painter.drawEllipse(QRectF(feet.center().x() - feet.width() * 0.3, feet.bottom() - 9,
+                                           feet.width() * 0.6, 12))
             if picture is not None:   # fading in: the overlay draws the bubble's picture
                 painter.setOpacity(self.reveal)
                 painter.drawPixmap(box.topLeft(), picture)
@@ -1486,6 +2131,23 @@ class GuidedTour(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(tip)
                 painter.drawPolygon(QPolygonF(list(self.pointer)))
+        self._paint_flash(painter)
+        if self.chat.isVisible() and self.bubble.mascot is not None:   # the chat balloon's little tail
+            balloon = QRectF(self.chat.geometry())
+            head = self._mascot_rect()
+            y = max(balloon.top() + 12, min(head.top() + head.height() * 0.4, balloon.bottom() - 12))
+            x = max(balloon.left() + 22, min(head.center().x(), balloon.right() - 22))
+            if balloon.right() <= head.center().x() - 10:      # beside, on its left
+                tail = [QPointF(balloon.right() - 1, y - 7), QPointF(balloon.right() - 1, y + 7), QPointF(balloon.right() + 9, y + 2)]
+            elif balloon.left() >= head.center().x() + 10:     # beside, on its right
+                tail = [QPointF(balloon.left() + 1, y - 7), QPointF(balloon.left() + 1, y + 7), QPointF(balloon.left() - 9, y + 2)]
+            elif balloon.bottom() < head.center().y():         # over it
+                tail = [QPointF(x - 8, balloon.bottom() - 1), QPointF(x + 8, balloon.bottom() - 1), QPointF(x + 2, balloon.bottom() + 10)]
+            else:                                              # under the bubble
+                tail = [QPointF(x - 8, balloon.top() + 1), QPointF(x + 8, balloon.top() + 1), QPointF(x + 2, balloon.top() - 10)]
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(accent)
+            painter.drawPolygon(QPolygonF(tail))
         painter.end()
 
 
@@ -1912,6 +2574,8 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         name = PLANS[key_].title if key_ in PLANS else ''
         if just_chosen and name:
             return tr('刚才选好了「{value0}」· {value1}；想换就点「比较两种方案」', value0=tr(name), value1=spoken_name())
+        if just_chosen:   # 2026-11-11: the comparison came first and the saved roles are a custom mix
+            return '现在用的是你自己搭配的模型；想换就点「比较两种方案」'
         return ('马上会弹出比较：云端不挑电脑，本机免费不上传' if not name
                 else tr('现在用的是「{value0}」；马上会弹出两种方案的比较', value0=tr(name)))
 
@@ -1927,6 +2591,12 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
             if timeline in ('qwen_aligner', 'mlx_qwen_aligner'):
                 return '用 **Qwen3 对齐** 对准每个字，不用 NVIDIA 显卡'
         return '字幕跟着说话一起出来，不会早一截或晚一截'
+
+    def timeline_anim():
+        from ..recognition.recognition_plans import chinese_or_auto
+        if saved_models().get('firered_asr_backend') == 'off':return 'timeline_mg'
+        return ('firered' if chinese_or_auto(spoken_code())
+                and saved_models().get('firered_asr_backend') == 'local' else 'ctc')
 
     def spoken_note():
         if spoken_code() == 'auto':
@@ -2004,81 +2674,83 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     home_steps = [
         # User 10-24: the plan - cloud or local - is the very first step, with the language the
         # videos mainly speak (it decides the subtitle-time model); the welcome card is gone.
-        TourStep('① 先选**识别方案**和视频的**主要语言**', get('recognition_plan'), [choose], note=plan_note,
+        TourStep('① 先选==识别方案==和视频的==主要语言==', get('recognition_plan'), [choose], note=plan_note,
                  anim='plan_compare', page=home, auto=None if just_chosen else choose,
                  enter=w._tutorial_prepare_demo),
-        TourStep('② 把视频拖到这里；现在**点一下**放入演示视频', get('media_frame'),
+        TourStep('② 把视频==拖进这个框==；现在**点一下**放入演示视频', get('media_frame'),
                  [TourAction('放入演示视频', add_demo, advance=True)], show_next=False, ready=on_home,
                  note='用自带的演示视频，不上传、不花钱，约 6 分钟', settle=demo_settled,
                  anim='drop', click=TourAction('', add_demo, advance=True), page=home),
-        TourStep('③ **主力转写**把说话变成文字。**点这张卡**，注册 MOSS Pro', role_card('primary'),
+        TourStep('③ **主力转写**把说话变成文字：==点这张卡==注册 MOSS Pro', role_card('primary'),
                  [TourAction('注册 MOSS Pro', open_moss_guide, advance=True, modal=True),
                   TourAction('先跳过', lambda: None, advance=True)],
-                 note='注册、每天签到都送免费额度，拿到 Key 贴进去就行',
+                 note='注册、每天签到都送==免费额度==，拿到 Key 贴进去就行',
                  show_next=False, anim='moss_signup', page=home, optional=True,
                  ready=lambda: moss_pro_chosen() and not moss_key_saved(),
                  click=TourAction('', open_moss_guide, advance=True, modal=True)),
-        TourStep('③ **主力转写**把说话变成文字：MOSS Pro 已经设置好了', role_card('primary'),
+        TourStep('③ **主力转写**把说话变成文字：MOSS Pro ==已经设置好了==', role_card('primary'),
                  note='点这张卡可以换成别的模型', anim='moss_signup', page=home, optional=True,
                  ready=lambda: moss_pro_chosen() and moss_key_saved()),
-        TourStep('③ **主力转写**在这台电脑上把说话变成文字', role_card('primary'),
+        TourStep('③ **主力转写**在==这台电脑上==把说话变成文字', role_card('primary'),
                  note=lambda: downloads_note() or '点这张卡可以换模型', anim='plan_ok', page=home, optional=True,
                  ready=lambda: not moss_pro_chosen()),
-        TourStep('④ **字幕时间轴**：让每句字幕出现、消失的时间更准', role_card('timeline'),
-                 note=timeline_note, anim='timeline_mg', page=home),
+        TourStep('④ **字幕时间轴**：让每句字幕==出现、消失得刚刚好==', role_card('timeline'),
+                 note=timeline_note, anim=timeline_anim, page=home),
         # User 10-22: AI 断句, translation and 术语库校对 all need the key; open the real settings.
-        TourStep('⑤ **AI 智能断句**要先填 **API Key**', get('home_process_card'),
+        TourStep('⑤ **AI 智能断句**要先填 ==API Key==', get('home_process_card'),
                  [open_ai, TourAction('API Key 是什么？', explain_key), TourAction('先不设置', lambda: None, goto='after_ai')],
-                 note='AI 断句、翻译字幕、术语库校对都靠它，推荐 **DeepSeek**。没连接的话，这三样都用不了',
+                 note='AI 断句、翻译字幕、术语库校对都靠它，推荐 **DeepSeek**。==没连接的话，这三样都用不了==',
                  show_next=False, anim='ai_lock', page=home, optional=True, ready=lambda: not ai_ready(),
                  click=TourAction('', open_ai_settings, advance=True)),
-        TourStep('⑤ **AI 智能断句**已经连好了', get('home_process_card'),
+        TourStep('⑤ **AI 智能断句**==已经连好了==', get('home_process_card'),
                  [TourAction('打开 AI 设置看看', open_ai_settings, advance=True)],
                  note='AI 断句、翻译字幕、术语库校对都能用了', anim='ai_lock', page=home, optional=True, ready=ai_ready),
         # ---- inside AI 设置 (the tutorial stays above that window)
-        TourStep('这是 **AI 设置**。「服务」选 **DeepSeek**（推荐）', editor_part('service'),
+        TourStep('这是 **AI 设置**：「服务」选 ==DeepSeek==（推荐）', editor_part('service'),
                  [TourAction('帮我选 DeepSeek', pick_deepseek)], note=editor_note,
                  host=ai_dialog, optional=True, anim='ai_lock'),
-        TourStep('还没有 Key？点「**申请教程**」', editor_part('guide_button'),
+        TourStep('还没有 Key？点「==申请教程==」', editor_part('guide_button'),
                  [TourAction('打开申请教程', open_provider_guide, modal=True, advance=True)],
                  note='一步步带你注册、充值、复制 Key；看完回到这里贴上',
                  host=ai_dialog, optional=True, anim='key_get'),
-        TourStep('把 **API Key** 贴到这里', editor_part('key_row_host'),
+        TourStep('把 **API Key** ==贴到这里==', editor_part('key_row_host'),
                  note='Key 只存在这台电脑上，加密保存', host=ai_dialog, optional=True, interactive=True,
                  focus=editor_part('key'), anim='apikey'),
-        TourStep('点**测试连接**，看到“连接正常”就好了', editor_part('test_button'),
+        TourStep('点**测试连接**，看到==“连接正常”==就好啦', editor_part('test_button'),
                  [TourAction('帮我点', test_ai)], note='连不上的话，看看 Key 有没有贴全、余额够不够',
                  host=ai_dialog, optional=True, interactive=True, done=ai_tested, anim='apikey'),
-        TourStep('要开启 AI 吗？点「**保存设置**」就开启', get('ai_dialog_save_button'),
+        TourStep('要开启 AI 吗？点「==保存设置==」就开启', get('ai_dialog_save_button'),
                  [TourAction('保存并开启', save_ai, big=True), TourAction('先不开', close_ai)],
                  note='开启后能用 AI 断句、字幕翻译和术语库校对（要测试连接通过）。不开的话这三样都用不了，首页会变灰；'
                       '以后随时可以在首页的 AI 卡片上再设置',
                  host=ai_dialog, optional=True, show_next=False, anim='ai_lock'),
         # ---- content, glossary, languages
-        TourStep('⑥ 填**游戏名**，人名和术语会写对（可以不填）', get('content_choice_panel'), anim='glossary', page=home,
+        TourStep('⑥ 填==游戏名==，人名和术语会写对（可以不填）', get('content_choice_panel'), anim='glossary', page=home,
                  name='after_ai'),
-        TourStep('⑦ **术语库校对**：照词库改对专名和错词', get('batch_glossary_card'),
+        TourStep('⑦ **术语库校对**：照词库==改对专名和错词==', get('batch_glossary_card'),
                  note=lambda: ('右边的「联网补充核验」会再上网查一遍（可选）' if ai_ready()
                                else '要先连接 AI（填 API Key 并测试连接）才能用，现在是灰的'),
                  anim='glossary', page=home),
         # 2026-10-24: chosen with the plan in ①; here it is shown where to change it per video.
-        TourStep('⑧ 视频里说的是什么话，就选什么', field('spoken_language_field', 'recognition_language'),
+        TourStep('⑧ 视频里==说的是什么话==，就选什么', field('spoken_language_field', 'recognition_language'),
                  note=spoken_note, anim='spoken', page=home),
-        TourStep('⑨ 要翻译就在「字幕显示」选“原文 + 翻译”', field('subtitle_output_fields', 'subtitle_output'),
+        TourStep('⑨ 要翻译就在「字幕显示」选==“原文 + 翻译”==', field('subtitle_output_fields', 'subtitle_output'),
                  note=lambda: ('翻译也是 AI 做的，会用上面的 API Key' if ai_ready()
                                else '没连接 AI 时只能选“只显示原文”，翻译是灰的'),
                  anim='subtitle_lang', page=home),
-        TourStep('⑩ 点这里开始；现在**点一下**看演示结果', get('start_button'),
+        TourStep('⑩ 点这里开始；现在**点一下**看==演示结果==', get('start_button'),
                  [TourAction('看演示结果', w._tutorial_demo_completion, advance=True)], show_next=False, anim='start',
                  click=TourAction('', w._tutorial_demo_completion, advance=True), page=home),
-        TourStep('做好了！字幕已经生成，下面可以先看一眼', field('result_summary_card', 'result_title'), ready=on_completion,
+        TourStep('做好啦！字幕==已经生成==，下面先看一眼吧', field('result_summary_card', 'result_title'), ready=on_completion,
                  page=to_completion),
-        TourStep('点这里导出字幕文件（SRT、ASS、TXT）', get('export_result_button'),
+        TourStep('点这里==导出字幕文件==（SRT、ASS、TXT）', get('export_result_button'),
                  ready=on_completion, anim='export', page=to_completion),
     ]
     later_steps = [
         # ---- result page: find wrong names and terms
-        TourStep('接着学改字幕：点这里，一次找出写错的人名和术语', get('repolish_current_glossary_button'),
+        # 2026-11-11: the entry on the page is the AI card; it clicks the
+        # same button the 「帮我做」 action does.
+        TourStep('接着学改字幕：点这里，==一次找出==写错的人名和术语', get('result_ai_card'),
                  [TourAction('帮我做', lambda: w.repolish_current_glossary_button.click())], show_next=False,
                  interactive=True, done=on_proofread, ready=on_completion, page=to_completion),
         # ---- proofreading, step by step
@@ -2089,7 +2761,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         TourStep('点 AI 校对，找出词库外的错字（教学里不联网、不收费）', proofread_part('ai_button'),
                  [TourAction('帮我做', lambda: proofread().ai_button.click())], show_next=False, interactive=True,
                  done=ai_shown, ready=lambda: on_proofread() and not busy(), anim='gl_ai'),
-        TourStep('红字是错字，点下面的建议改正（至东 → 至冬）。按 **Ctrl+Z** 撤销', fix_target,
+        TourStep('==红字是错字==，点下面的建议改正（至东 → 至冬）。按 **Ctrl+Z** 撤销', fix_target,
                  [TourAction('帮我做', fix_it)], show_next=False, interactive=True, done=fixed,
                  ready=lambda: on_proofread() and not busy(), anim='gl_fix'),
         TourStep('其余建议也可以逐条点，或一次采用全部', proofread_part('select_all'),
@@ -2098,13 +2770,13 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  [TourAction('帮我做', lambda: proofread().back_button.click())], show_next=False, interactive=True,
                  done=on_completion, ready=on_proofread, anim='gl_back'),
         # ---- result page again
-        TourStep('点这里打开字幕工作台：逐条修改、审核、调时间、压制', get('open_studio_result_button'),
+        TourStep('点这里打开==字幕工作台==：逐条修改、审核、调时间、压制', get('open_studio_result_button'),
                  [TourAction('帮我做', lambda: w.open_studio_result_button.click())], show_next=False, interactive=True,
                  done=studio_ready, ready=on_completion, anim='studio_open', page=to_completion),
     ]
     studio_steps = [
         # ---- workbench (each step first stops the player: nothing moves under the outline)
-        TourStep('**双击**字幕修改文字，或按 **E** 改播放头处那条', block_target,
+        TourStep('==双击==字幕修改文字，或按 **E** 改播放头处那条', block_target,
                  [TourAction('帮我做', open_editor)], show_next=False, interactive=True, enter=quiet(),
                  done=lambda: editor() is not None, ready=studio_ready, focus=studio_keys, anim='edit', page=to_studio),
         TourStep('按 **Enter** 保存，**Esc** 取消', editor,
@@ -2161,7 +2833,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  anim='export', enter=quiet(), page=to_studio),
         TourStep('压制成片：把字幕烧进视频', studio_part('studio_render_button'), ready=studio_ready,
                  anim='burn', enter=quiet(), page=to_studio),
-        TourStep('全部学会了！现在放入你自己的视频开始吧', next_label='回到首页', note=downloads_note),
+        TourStep('全部学会啦！现在==放入你自己的视频==开始吧', next_label='回到首页', note=downloads_note),
     ]
     for step in home_steps:
         step.chapter = '做字幕'

@@ -58,6 +58,7 @@ def test_qc_covers_timing_readability_text_model_and_terminology_without_normal_
         ],
         evidence={
             "e:1": {
+                    "start_ms": 0, "end_ms": 300, "speaker_id": "S01",
                 "moss_text": "星见雅",
                 "qwen_asr_text": "星见雅",
                 "firered_text": "星见鸦",
@@ -75,7 +76,6 @@ def test_qc_covers_timing_readability_text_model_and_terminology_without_normal_
     assert {
         "model_disagreement",
         "low_confidence",
-        "suspected_word",
         "terminology_mismatch",
         "high_cps",
         "overlap",

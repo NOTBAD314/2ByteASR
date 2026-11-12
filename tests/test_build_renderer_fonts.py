@@ -31,3 +31,28 @@ def test_all_web_font_faces_are_in_contract():
 def test_font_contract_is_distributed():
     root=Path(__file__).resolve().parents[1]
     assert "datas.append((str(ROOT / 'packaging/renderer_fonts.json'), 'packaging'))" in (root/'packaging/2byteasr_main.spec').read_text('utf8')
+
+
+def test_public_renderer_tone_survives_media_filter_without_user_recordings():
+    assert module.release_input_allowed(Path('renderer/node_modules/@remotion/studio-server/web/beep.wav'))
+    for relative in ('renderer/user-recording.wav', 'assets/beep.wav', 'models/private.pt', 'secrets.json'):
+        assert not module.release_input_allowed(Path(relative))
+
+
+def test_public_renderer_tone_requires_exact_bytes(tmp_path):
+    import shutil
+    root=Path(__file__).resolve().parents[1]
+    relative=next(iter(module.PUBLIC_RENDERER_AUDIO));target=tmp_path/relative
+    target.parent.mkdir(parents=True);shutil.copy2(root/relative,target)
+    module.validate_renderer_audio(tmp_path)
+    target.write_bytes(b'private recording')
+    with pytest.raises(ValueError,match='checksum mismatch'):module.validate_renderer_audio(tmp_path)
+    target.unlink()
+    with pytest.raises(ValueError,match='missing'):module.validate_renderer_audio(tmp_path)
+
+
+def test_payload_scanner_uses_the_same_public_audio_pin():
+    root=Path(__file__).resolve().parents[1]
+    spec=importlib.util.spec_from_file_location('payload_media_preflight',root/'scripts/check_release_payload.py')
+    scanner=importlib.util.module_from_spec(spec);spec.loader.exec_module(scanner)
+    assert scanner.PUBLIC_RENDERER_AUDIO==module.PUBLIC_RENDERER_AUDIO

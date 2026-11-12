@@ -233,6 +233,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     # The visible length or the project length changed (the toolbar zoom slider follows it).
     view_changed = Signal()
     cue_selected = Signal(str)
+    cue_navigation_requested = Signal(str)
     seek_requested = Signal(float)
     scrub_finished = Signal(float)
     scrub_cancelled = Signal()
@@ -744,7 +745,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             from ..recognition.speaker_roles import group_members, state_of
             present = set(self._speaker_ids)
             members = tuple(key for key in self._speaker_ids if key in set(group_members(self.project)) and key in present)
-            expanded = bool(state_of(self.project).get("expanded"))
+            # Old releases expanded on selection. Only this view session's
+            # explicit group action is a preference, never that saved flag.
+            expanded = self._group_expanded if getattr(self, '_group_view_project', None) is self.project else False
+            self._group_view_project = self.project
         self._group_members = members if len(members) >= 2 else ()
         self._group_expanded = expanded
         lanes: dict[str, int] = {}
@@ -758,9 +762,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 ends.append(cue.end_ms)
             else:
                 ends[lane] = cue.end_ms
-            lanes[cue.id] = min(lane, self.GROUP_LANE_MAX - 1)
+            lanes[cue.id] = lane
         self._group_lane_by_cue = lanes
-        self._group_lane_count = max(1, min(self.GROUP_LANE_MAX, len(ends)))
+        self._group_lane_count = max(1, len(ends))
 
     def _group_collapsed(self) -> bool:
         return bool(self._group_members) and not self._group_expanded
@@ -787,7 +791,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 rows.append(("group_header", GROUP_KEY, self.GROUP_HEADER_HEIGHT))
                 rows += [("speaker", key, height) for key in self._group_members]
             else:
-                rows.append(("group", GROUP_KEY, self._group_row_height(height)))
+                rows.append(("group_header", GROUP_KEY, self.GROUP_HEADER_HEIGHT))
         rows += [("speaker", key, height) for key in self._speaker_ids if key not in members]
         return rows
 
@@ -800,7 +804,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         others = len(self._speaker_ids) - len(self._group_members)
         if self._group_expanded:
             return max(1, len(self._speaker_ids)), self.GROUP_HEADER_HEIGHT
-        return max(1, others + self._group_lane_count), 0
+        return max(1, others), self.GROUP_HEADER_HEIGHT
 
     def _cue_band(self, cue, track: QRectF) -> QRectF:
         """The part of ``track`` a line is drawn in: the whole row, or its
@@ -1429,13 +1433,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     def _sync_scrollbars(self) -> None:
         duration = self._duration_ms()
         maximum = self._scroll_maximum()
-        self.visible_start_ms = min(maximum, max(0, self.visible_start_ms))
+        minimum = self._scroll_minimum()
+        self.visible_start_ms = min(maximum, max(minimum, self.visible_start_ms))
         self.horizontal_scrollbar.blockSignals(True)
-        self.horizontal_scrollbar.setRange(0, maximum)
+        self.horizontal_scrollbar.setRange(minimum, maximum)
         self.horizontal_scrollbar.setPageStep(min(duration, self.visible_duration_ms))
         self.horizontal_scrollbar.setSingleStep(max(50, self.visible_duration_ms // 20))
         self.horizontal_scrollbar.setValue(min(maximum, self.visible_start_ms))
-        self.horizontal_scrollbar.setVisible(maximum > 0)
+        self.horizontal_scrollbar.setVisible(maximum > minimum)
         self.horizontal_scrollbar.blockSignals(False)
         view = (duration, self.visible_start_ms, self.visible_duration_ms,
                 self.width(), self.vertical_scrollbar.width())
@@ -1473,10 +1478,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.update()
 
     def set_visible_window(self, start_ms: int, duration_ms: int) -> None:
+        self._locate_follow_center = False
         duration = self._duration_ms()
         visible_duration = min(max(1000, int(duration_ms)), max(18_000_000, duration * 2))
         maximum = self._scroll_maximum(visible_duration)
-        visible_start = min(maximum, max(0, int(start_ms)))
+        visible_start = min(maximum, max(self._scroll_minimum(visible_duration), int(start_ms)))
         changed = (
             visible_duration != self.visible_duration_ms
             or visible_start != self.visible_start_ms
@@ -1507,12 +1513,51 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.set_visible_window(target, self.visible_duration_ms)
         return True
 
-    def _viewport_manipulated(self) -> bool:
+    def set_center_playhead_mode(self, enabled):
+        self.center_playhead_mode = bool(enabled)
+        self._sync_scrollbars()
+        self.update()
+
+    def locate_subtitle_start(self, milliseconds):
+        """One horizontal transaction over the real drawable content width.
+
+        Time/x conversion reads _content_right() at paint/hit time, so resizing
+        or DPI/panel changes do not require a guessed pixel scale. No row,
+        vertical scrollbar or document geometry is touched here.
+        """
+        target = self._bounded_time_ms(milliseconds)
+        self.center_playhead_mode = False
+        self._manual_view_hold = True
+        self._follow_suspended_until = 0
+        left = min(max(0, self._duration_ms() - 15000), max(0, target - 7500))
+        self.set_visible_window(left, 15000)
+        self._locate_follow_center = True
+
+    def center_playhead(self, milliseconds, *, force=False):
+        # Ignore a past manual-browse timeout on an explicit navigation, but
+        # never change geometry under a live pointer/editor transaction.
+        if self._pointer_owns_view():
+            return False
+        if not force and (self._manual_view_hold if hasattr(self, '_manual_view_hold') else False):
+            return False
+        if not force and perf_counter() < getattr(self, '_follow_suspended_until', 0):
+            return False
+        if force:
+            self._manual_view_hold = False
+            self._follow_suspended_until = 0
+        return self._follow_scroll(self._bounded_time_ms(milliseconds) - round(self.visible_duration_ms / 2))
+
+    def _pointer_owns_view(self):
+        editor = getattr(self, '_inline_editor', None)
         return bool(getattr(self, '_scrub_drag', False) or getattr(self, '_pan_drag', None)
+            or getattr(self, '_marquee_origin', None) is not None
             or any(getattr(self, attr, None) for attr in ('_drag', '_clip_drag', '_segment_drag',
-                '_track_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag', '_range_drag'))
+                '_track_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag', '_range_drag', '_group_drag'))
             or self.horizontal_scrollbar.isSliderDown()
-            or perf_counter() < getattr(self, '_follow_suspended_until', 0))
+            or editor is not None and editor.isVisible())
+
+    def _viewport_manipulated(self) -> bool:
+        return self._pointer_owns_view() or perf_counter() < getattr(self, '_follow_suspended_until', 0)
 
     def page_playhead(self, milliseconds: int) -> bool:
         """Reveal only on overflow, anchored to the actual content left edge."""
@@ -1538,8 +1583,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         """
         if self._viewport_manipulated():
             return False
-        anchor = round(self.visible_duration_ms * 0.35)
+        located = getattr(self, '_locate_follow_center', False)
+        anchor = round(self.visible_duration_ms * (0.5 if located else 0.35))
         target_left = int(milliseconds) - anchor
+        if located:
+            target_left = min(max(0,self._duration_ms()-self.visible_duration_ms), max(0,target_left))
         # 0.4% was ~5 pixels on a typical viewport, not a subpixel. It caused
         # seconds of stalled scrolling when zoomed out. Let Qt coalesce paints.
         if target_left == self.visible_start_ms:
@@ -1559,7 +1607,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         """
         duration = self._duration_ms()
         maximum = self._scroll_maximum()
-        start = min(maximum, max(0, int(start_ms)))
+        start = min(maximum, max(self._scroll_minimum(), int(start_ms)))
         self._follow_active_until = perf_counter() + 0.5
         if start == self.visible_start_ms:
             return False
@@ -1768,7 +1816,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return None
         return cache
 
-    def refresh_media_graph(self) -> None:
+    def refresh_media_graph(self, *, unchanged_caption_token=None) -> None:
         self._clear_razor_preview()
         if self.project and not any(
             track.id == self.selected_video_track_id for track in self.project.video_tracks
@@ -1778,8 +1826,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         canonical = bool(self.project and self.project.render_settings.get('_cue_domain') == 'timeline')
         token = ((id(self.project.cues), state_for(self.project).language_source_revision)
                  if self.project else None)
-        if canonical and token == getattr(self, '_indexed_caption_token', None):
+        indexed = getattr(self, '_indexed_caption_token', None)
+        media_only = (unchanged_caption_token is not None and indexed == unchanged_caption_token
+                      and token is not None and token[0] == unchanged_caption_token[0])
+        if canonical and (token == indexed or media_only):
             self._project_duration_ms=timeline_duration_ms(self.project)
+            self._indexed_caption_token = token
         else:
             self._rebuild_cue_index()
         self._sync_track_minimum_height()
@@ -1866,6 +1918,22 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         ]
         self.invalidate_ranges(ranges, changed_ids)
 
+    def reveal_cue(self, cue_id: str) -> None:
+        """Expose the actual owner row without changing content or visibility."""
+        cue = self._timeline_cue_by_id.get(str(cue_id))
+        if cue is None:
+            return
+        if cue.speaker_id in self._group_members and not self._group_expanded:
+            return  # selection, E and review navigation never expand the group
+        rect = self._track_layout()[0].get(cue.speaker_id)
+        if rect is None:
+            return
+        viewport = self._track_viewport()
+        delta = (rect.top()-viewport.top() if rect.top() < viewport.top() else
+                 rect.bottom()-viewport.bottom() if rect.bottom() > viewport.bottom() else 0)
+        if delta:
+            self.vertical_scrollbar.setValue(self.vertical_scrollbar.value()+round(delta))
+
     @measured('timeline_activity')
     def set_active_cues(self, cue_ids: Iterable[str]) -> None:
         """Invalidate old/new playback markers without evicting the base raster."""
@@ -1879,7 +1947,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     def _active_cue_rect(self, cue_id: str) -> QRectF:
         cue = self._timeline_cue_by_id.get(cue_id)
-        if cue is None or cue.speaker_id in self.hidden_speakers:
+        if cue is None or not self._subtitle_cue_visible(cue):
             return QRectF()
         tracks, _, _ = self._track_layout()
         track = tracks.get(cue.speaker_id)
@@ -2088,7 +2156,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return []
         # Half-open time intervals avoid binding a shared edge to two cues.
         time_ms = self._x_to_time(point.x())
-        return [cue for cue in self.visible_cues() if cue.start_ms <= time_ms < cue.end_ms]
+        return [cue for cue in self.visible_cues() if cue.start_ms <= time_ms < cue.end_ms
+                and self._subtitle_cue_visible(cue, 'translation')]
+
+    def _subtitle_cue_visible(self, cue, layer='original'):
+        from ..caption_style.subtitle_visibility import layer_visible
+        return (layer != 'original' or cue.speaker_id not in self.hidden_speakers) and layer_visible(self.project, cue, layer)
 
     def _resolve_translation_at(self, point, *, choose=False):
         candidates = self._translation_candidates_at(point)
@@ -2098,9 +2171,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return selected
         if len(candidates) == 1:
             return candidates[0]
-        if choose:
+        if choose and candidates:
             from .studio_translation_edit import choose_cue
-            return choose_cue(self, candidates if candidates else None)
+            return choose_cue(self, candidates)
         return None
 
     def select_translation(self, cue_id, *, extend=False, toggle=False, notify=True):
@@ -2143,6 +2216,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         edge_hits = []
         bodies = []
         for cue in ordered:
+            if not self._subtitle_cue_visible(cue):
+                continue
             track = speaker_rects.get(cue.speaker_id)
             if not track or not track.contains(point):
                 continue
@@ -2196,6 +2271,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         """
         value = int(milliseconds)
         cues = [cue for cue in self._cues_by_start if not speaker_id or cue.speaker_id == speaker_id]
+        cues = [cue for cue in cues if self._subtitle_cue_visible(cue, self.active_subtitle_layer)]
         for cue in cues:
             if cue.start_ms <= value < cue.end_ms:
                 return cue
@@ -2212,7 +2288,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         value = self._x_to_time(x)
         found = None
         for cue in self._cues_intersecting(value, value + 1):
-            if cue.speaker_id == speaker_id and cue.start_ms <= value < cue.end_ms:
+            if cue.speaker_id == speaker_id and cue.start_ms <= value < cue.end_ms and self._subtitle_cue_visible(cue):
                 if found is None or cue.id == self.selected_id:
                     found = cue
         return self._timeline_cue_by_id.get(found.id, found) if found is not None else None
@@ -2652,6 +2728,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         dirty: QRect,
     ) -> None:
         """Repaint video-lane headers intersecting ``dirty`` (header-column fast path)."""
+        from ..timeline.studio_clip_edit import video_track_locked
 
         if self.project is None:
             return
@@ -2675,9 +2752,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 enabled=track.enabled if track is not None else True,
                 muted=track.muted if track is not None else False,
                 locked=(
-                    sequence.video_track_locked
-                    if is_primary
-                    else (track.locked if track is not None else False)
+                    video_track_locked(self.project, track)
+                    if track is not None else False
                 ),
                 hovered_action=(
                     self._hover_header_action[1]
@@ -3376,12 +3452,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         project like track visibility; not an undo step)."""
         from ..recognition.speaker_roles import KEY
         state = self.project.studio_state.get(KEY) if self.project is not None else None
-        if not isinstance(state, dict) or bool(state.get("expanded")) == bool(expanded):
+        if not isinstance(state, dict) or self._group_expanded == bool(expanded):
             return
         state["expanded"] = bool(expanded)
         # Expansion changes row geometry, not subtitle identity, time or
         # content. Keep the interval index, dense spans and text layouts.
         self._group_expanded = bool(expanded)
+        self._group_view_project = self.project
         self._sync_track_minimum_height()
         self._sync_scrollbars()
         self.update()
@@ -3394,24 +3471,22 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         members = list(self._group_members)
         hidden, locked = self._group_header_state()
         if action == 'visibility':
-            for key in members:
-                if (key in self.hidden_speakers) == (not hidden):
-                    continue
-                (self.hidden_speakers.discard if hidden else self.hidden_speakers.add)(key)
-                self.subtitle_visibility_changed.emit(key, hidden)
+            from ..recognition.speaker_roles import GROUP_KEY
+            self.subtitle_visibility_changed.emit(GROUP_KEY, hidden)
         elif action == 'lock':
             (self.locked_speakers.difference_update if locked else self.locked_speakers.update)(members)
             if self.project:
                 self.project.studio_state["locked_speakers"] = sorted(self.locked_speakers)
             self.subtitle_lock_changed.emit()
-        else:
+        elif action == 'more':
             self.set_group_expanded(not self._group_expanded)
         self.update()
 
     def _group_header_state(self) -> tuple[bool, bool]:
         """(every member hidden, every member locked) for the group's buttons."""
         members = self._group_members
-        return (bool(members) and all(key in self.hidden_speakers for key in members),
+        from ..recognition.speaker_roles import GROUP_KEY
+        return (not self.project.studio_state.get('subtitle_track_visibility', {}).get(GROUP_KEY, True),
                 bool(members) and all(key in self.locked_speakers for key in members))
 
     def _paint_subtitle_header_buttons(self, painter, palette, kind, key, rect) -> None:
@@ -3669,10 +3744,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
         content_width = max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
         major_ms, minor_ms = adaptive_timeline_ticks(self.visible_duration_ms, content_width)
-        first_tick = (self.visible_start_ms // minor_ms) * minor_ms
+        first_tick = max(0, (self.visible_start_ms // minor_ms) * minor_ms)
         tick = first_tick
         last_label_right = -10_000
-        while tick <= self.visible_start_ms + self.visible_duration_ms:
+        while tick <= min(self._duration_ms(), self.visible_start_ms + self.visible_duration_ms):
             x = self._time_to_x(tick)
             is_major = tick % major_ms == 0
             if is_major:
@@ -3859,7 +3934,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 name_font.setBold(False)
                 painter.setFont(name_font)
                 self._paint_subtitle_header_buttons(painter, palette, "speaker", speaker_id, rect)
-            if speaker_id in self.hidden_speakers:
+            if speaker_id in self.hidden_speakers or (self.project and not
+                    self.project.studio_state.get('subtitle_track_visibility', {}).get('speaker:'+speaker_id, True)) or (self.project and
+                    not self.project.studio_state.get('subtitle_track_visibility', {}).get('@secondary', True)
+                    and speaker_id in self._group_members):
                 continue
             if dense_cue_overview:
                 painter.setPen(QPen(
@@ -4018,15 +4096,20 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             translation_font.setBold(True)
             painter.setFont(translation_font)
             painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, str(tr("翻译")))
+            from ..caption_style.subtitle_visibility import translation_key
+            key=translation_key(self.project)
+            hidden=not self.project.studio_state.get('subtitle_track_visibility',{}).get(key,True)
+            paint_button(painter,palette,'subtitle','visibility',translation_rect,
+                         'fa5s.eye-slash' if hidden else 'fa5s.eye',active=hidden)
             translation_font.setBold(False)
             painter.setFont(translation_font)
             if isinstance(translations, dict):
-                translation_cues = visible_cues
+                translation_cues = [cue for cue in visible_cues if self._subtitle_cue_visible(cue, 'translation')]
                 if dense_cue_overview:
                     # At six-hour scale text is subpixel. Union pixel spans;
                     # exact intervals and hit testing remain unchanged.
                     spans = {False: [], True: []}
-                    for cue in visible_cues:
+                    for cue in translation_cues:
                         if not translations.get(cue.id) and cue.id != self.selected_id:
                             continue
                         selected = self.active_subtitle_layer == 'translation' and cue.id in self.translation_selected_ids
@@ -4383,6 +4466,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 if cue.end_ms > self.visible_start_ms and cue.start_ms < end:
                     cues.append(cue)
         for cue in cues:
+            if not self._subtitle_cue_visible(cue):
+                continue
             row = rows.get(cue.speaker_id)
             if row is not None and cue.speaker_id not in self.locked_speakers:
                 row = self._cue_band(cue, row)
@@ -4520,6 +4605,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.restore()
 
     def mousePressEvent(self, event: QMouseEvent):
+        self._click_navigation = None
         self._thumbnails.note_activity()
         self._selection_before_press = self.clip_selection()
         self.selected_gap = None
@@ -4531,6 +4617,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         translation_track = self._track_layout()[1] if self.project else None
         if (event.button() == Qt.LeftButton and translation_track is not None
                 and translation_track.contains(point) and self._track_viewport().contains(point)):
+            if point.x() < self.TRACK_HEADER_WIDTH and action_at('subtitle',point.x(),point.y(),translation_track)=='visibility':
+                from ..caption_style.subtitle_visibility import translation_key
+                key=translation_key(self.project)
+                visible=not self.project.studio_state.get('subtitle_track_visibility',{}).get(key,True)
+                self.subtitle_visibility_changed.emit(key,visible)
+                event.accept()
+                return
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             cue = self._resolve_translation_at(point)
             modifiers = event.modifiers()
@@ -4538,6 +4631,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                                     extend=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
                                         or bool(cue and modifiers & Qt.AltModifier and cue.id in self.translation_selected_ids),
                                     toggle=bool(modifiers & Qt.ControlModifier))
+            if cue and modifiers == Qt.NoModifier and self.tool_mode == 'selection':
+                self._click_navigation = (self.project, cue.id, 'translation', QPointF(event.position()), False)
             if cue and modifiers & Qt.AltModifier:
                 self._begin_group_drag(event)
             event.accept()
@@ -4799,7 +4894,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     return
             self.video_clip_selected.emit(track_id, clip.id)
             track = next(t for t in self.project.video_tracks if t.id == track_id)
-            if track.locked or (track_id == primary_id and sequence.video_track_locked):
+            from ..timeline.studio_clip_edit import video_track_locked
+            if video_track_locked(self.project, track):
                 self.edit_blocked.emit(f'{track_id} 轨道已锁定，请先解锁')
                 self.update()
                 return
@@ -4883,6 +4979,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             drag_ids = set(self.selected_ids)
             self.explicit_subtitle_id = cue.id
             self.cue_selected.emit(cue.id)
+            if modifiers == Qt.NoModifier and self.tool_mode == 'selection':
+                self._click_navigation = (self.project, cue.id, 'original', QPointF(event.position()), False)
             if self.tool_mode == "razor" and mode != "translation":
                 # Press commits what the hover shows; press-and-slide moves the
                 # cut inside this subtitle track; release commits the split.
@@ -5015,6 +5113,24 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mouseDoubleClickEvent(event)
         point = event.position().toPoint()
+        clicked = getattr(self, '_last_navigation_click', None)
+        if (getattr(self, 'center_playhead_mode', False) and clicked is not None
+                and clicked[0] is self.project
+                and (event.position() - clicked[3]).manhattanLength() < QApplication.startDragDistance()
+                and (perf_counter() - clicked[4]) * 1000 <= QApplication.doubleClickInterval()):
+            cue = self._timeline_cue_by_id.get(clicked[1])
+            if cue is not None:
+                # The first click has scrolled the block out from under the
+                # pointer. Qt's second click still belongs to that same object.
+                translation = clicked[2] == 'translation'
+                if translation:
+                    self.select_translation(cue.id)
+                else:
+                    self.selected_id = cue.id
+                    self.cue_selected.emit(cue.id)
+                self._open_inline_editor(cue, translation, self.project.generation_metadata.get('translations', {}).get(cue.id, '') if translation else cue.text)
+                event.accept()
+                return
         translation_track = self._track_layout()[1] if self.project else None
         if (translation_track is not None and translation_track.contains(point)
                 and point.x() >= self.TRACK_HEADER_WIDTH and self._track_viewport().contains(point)):
@@ -5244,6 +5360,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     @measured('mouse_move')
     def mouseMoveEvent(self, event: QMouseEvent):
+        click = getattr(self, '_click_navigation', None)
+        if click is not None and (event.position() - click[3]).manhattanLength() >= QApplication.startDragDistance():
+            self._click_navigation = (*click[:4], True)
         if self._range_move(event.position(), event.modifiers()):
             event.accept()
             return
@@ -5761,6 +5880,19 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     @measured('mouse_release')
     def mouseReleaseEvent(self, event: QMouseEvent):
+        click, self._click_navigation = getattr(self, '_click_navigation', None), None
+        changed = bool(self._drag and any(value != self._drag_originals[key]
+                       for key, value in self._timing_preview.items()))
+        self._release_pointer(event)
+        if (click is not None and event.button() == Qt.LeftButton
+                and not click[4] and not changed and click[0] is self.project
+                and (event.position() - click[3]).manhattanLength() < QApplication.startDragDistance()
+                and click[1] == self.selected_id and click[2] == self.active_subtitle_layer
+                and not self._pointer_owns_view()):
+            self._last_navigation_click = (*click[:4], perf_counter())
+            self.cue_navigation_requested.emit(click[1])
+
+    def _release_pointer(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton and self._range_release():
             event.accept()
             return

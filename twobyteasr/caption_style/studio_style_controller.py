@@ -252,27 +252,34 @@ class StudioStyleController:
                 return done.value
 
     def _style_panel_steps(self):
+        from ..design.gui_slices import GuiSlice, GUI_YIELD
+        _gui_slice = GuiSlice()
         page = self.page
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 8, 10, 12)
+        yield from _gui_slice.checkpoint()
         layout.setSpacing(6)
         page._updating_style_ui = False
         page._style_debounce_timer = page._new_style_timer()
         page._style_debounce_timer.setSingleShot(True)
+        yield from _gui_slice.checkpoint()
         page._style_debounce_timer.setInterval(180)
         page._style_debounce_timer.timeout.connect(page._commit_style_now)
 
         panel_header = QFrame()
         panel_header.setObjectName("stylePanelHeader")
+        yield from _gui_slice.checkpoint()
         panel_header_layout = QVBoxLayout(panel_header)
         panel_header_layout.setContentsMargins(4, 5, 4, 7)
         panel_header_layout.setSpacing(1)
         panel_header_title = QLabel("字幕样式")
+        yield from _gui_slice.checkpoint()
         panel_header_title.setObjectName("stylePanelHeaderTitle")
         panel_header_meta = QLabel("自动预览 · 默认应用到当前字幕")
         panel_header_meta.setObjectName("stylePanelHeaderMeta")
         panel_header_layout.addWidget(panel_header_title)
+        yield from _gui_slice.checkpoint()
         panel_header_layout.addWidget(panel_header_meta)
         panel_header.hide()
 
@@ -309,40 +316,78 @@ class StudioStyleController:
             return row
 
         scope_card = QFrame()
+        yield from _gui_slice.checkpoint()
         scope_card.setObjectName("styleScopeBar")
+        # 2026-11-12 (user, design A): 应用到, 预设 and 套用时 share one card.
+        scope_card.setProperty("softCard", True)
         scope_layout = QVBoxLayout(scope_card)
-        scope_layout.setContentsMargins(6, 0, 6, 0)
-        scope_layout.setSpacing(4)
+        scope_layout.setContentsMargins(6, 8, 6, 8)
+        scope_layout.setSpacing(8)
+        yield from _gui_slice.checkpoint()
         scope_row = QHBoxLayout()
         scope_row.setContentsMargins(0, 0, 0, 0)
         scope_row.setSpacing(STYLE_LABEL_GAP)
         scope_caption = outer_label("应用到")
+        yield from _gui_slice.checkpoint()
         scope_row.addWidget(scope_caption)
         page.style_scope = page._new_style_scope_selector()
         page.style_scope.addItem("当前字幕", "current")
         page.style_scope.addItem("已选择字幕", "selected")
+        yield from _gui_slice.checkpoint()
         page.style_scope.addItem("当前说话人", "speaker")
         page.style_scope.addItem("全部字幕", "all")
         page.style_scope.set_single_row({"current": "当前", "selected": "已选", "speaker": "说话人", "all": "全部"})
         page.style_scope.setCurrentIndex(max(0, page.style_scope.findData("selected")))
+        yield from _gui_slice.checkpoint()
         bind_text(page.style_scope, '选择后，后续样式调整会自动作用于该范围', property='toolTip')
         scope_row.addWidget(page.style_scope, 1)
         scope_layout.addLayout(scope_row)
-        page.style_apply_geometry = QCheckBox("套用预设时包含位置与缩放")
-        page.style_apply_geometry.setObjectName("styleInlineCheck")
+        # 2026-11-11 (user): the lone checkbox became two buttons that say
+        # what applying a preset does. ``style_apply_geometry`` stays the
+        # checkable control the rest of the page reads and toggles.
+        page.style_apply_mode = QFrame()
+        page.style_apply_mode.setObjectName("styleApplyMode")
+        apply_row = QHBoxLayout(page.style_apply_mode)
+        apply_row.setContentsMargins(0, 0, 0, 0)
+        apply_row.setSpacing(4)
+        page.style_apply_style_only = QPushButton("只套样式")
+        page.style_apply_geometry = QPushButton("连位置与缩放")
+        for option in (page.style_apply_style_only, page.style_apply_geometry):
+            option.setObjectName("styleApplyOption")
+            option.setCheckable(True)
+            option.setCursor(Qt.CursorShape.PointingHandCursor)
+            option.setFixedHeight(STYLE_FIELD_HEIGHT - 6)
+            option.setMinimumWidth(0)
+            option.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            apply_row.addWidget(option, 1)
+        page.style_apply_style_only.setChecked(True)
+        yield from _gui_slice.checkpoint()
         page.style_apply_geometry.setChecked(False)
-        bind_text(page.style_apply_geometry, '勾选当次补应用本次预设保存的位置与缩放；关闭后保留每条字幕已有变换。', property='toolTip')
+        bind_text(page.style_apply_style_only, '套用预设时保留每条字幕已有的位置与缩放。', property='toolTip')
+        bind_text(page.style_apply_geometry, '套用预设时一并应用预设保存的位置与缩放。', property='toolTip')
+        page.style_apply_geometry.toggled.connect(lambda checked: page.style_apply_style_only.setChecked(not checked))
+        page.style_apply_style_only.clicked.connect(
+            lambda _checked=False: (page.style_apply_geometry.setChecked(False),
+                                    page.style_apply_style_only.setChecked(True)))
         page.style_apply_geometry.toggled.connect(self._preset_geometry_changed)
-        # Under the scope chips it qualifies (control column).
-        scope_layout.addLayout(in_control_column(page.style_apply_geometry, extra=STYLE_ROW_INSET))
+        yield from _gui_slice.checkpoint()
+        apply_line = QHBoxLayout()
+        apply_line.setContentsMargins(0, 0, 0, 0)
+        apply_line.setSpacing(STYLE_LABEL_GAP)
+        apply_line.addWidget(outer_label("套用时"))
+        apply_line.addWidget(page.style_apply_mode, 1)
+        scope_layout.addLayout(apply_line)
+        page._style_scope_layout = scope_layout
         layout.addWidget(scope_card)
 
         page.style_preview = page._new_style_preview()
         page.style_preview.setObjectName("stylePreview")
+        yield from _gui_slice.checkpoint()
         page.style_preview.setMinimumHeight(54)
         page.style_preview.setMaximumHeight(60)
         page.style_preview.enable_sample_toggle()
         layout.addWidget(page.style_preview)
+        yield from _gui_slice.checkpoint()
         # 2026-10-18 (user): the video layer already shows the caption; the
         # sample only pushed 外观 down. Kept (hidden) because the motion
         # preview copies its shadow / glow state.
@@ -351,14 +396,17 @@ class StudioStyleController:
         yield '字幕预览'
         advanced_card, advanced_layout = page._style_section("复杂视觉效果")
         advanced_top = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         page.advanced_style_badge = QLabel("高保真")
         page.advanced_style_badge.setStyleSheet("background:#e8e1f2;color:#5f4b7e;border:1px solid #cbbdde;border-radius:9px;padding:2px 8px;font-weight:750")
         page.advanced_style_status = QLabel()
         page.advanced_style_status.setObjectName("cardMeta")
+        yield from _gui_slice.checkpoint()
         advanced_top.addWidget(page.advanced_style_badge)
         advanced_top.addWidget(page.advanced_style_status, 1)
         advanced_layout.addLayout(advanced_top)
         gallery = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         gallery.setSpacing(4)
         for label, prompt in (
             ("Cyberpunk", "赛博朋克 Cyberpunk HUD 多层描边 glow glitch"),
@@ -371,22 +419,27 @@ class StudioStyleController:
             gallery.addWidget(button, 1)
         advanced_layout.addLayout(gallery)
         page.advanced_saved_host = QWidget()
+        yield from _gui_slice.checkpoint()
         page.advanced_saved_layout = QHBoxLayout(page.advanced_saved_host)
         page.advanced_saved_layout.setContentsMargins(0, 0, 0, 0)
         page.advanced_saved_layout.setSpacing(4)
         advanced_layout.addWidget(page.advanced_saved_host)
+        yield from _gui_slice.checkpoint()
         page.advanced_style_chips = QLabel("多层 Stroke · Glow · Motion")
         page.advanced_style_chips.setObjectName("cardMeta")
         advanced_layout.addWidget(page.advanced_style_chips)
         page.advanced_preview_image = QLabel("选择高级样式生成低成本缓存预览")
+        yield from _gui_slice.checkpoint()
         page.advanced_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page.advanced_preview_image.setMinimumHeight(72)
         page.advanced_preview_image.setMaximumHeight(96)
         page.advanced_preview_image.setStyleSheet("background:#30332f;color:#f1eee6;border:1px solid #555b55;border-radius:7px")
+        yield from _gui_slice.checkpoint()
         advanced_layout.addWidget(page.advanced_preview_image)
         preview_controls = QHBoxLayout()
         preview_controls.addWidget(QLabel("预览质量"))
         page.advanced_preview_quality = StudioComboBox()
+        yield from _gui_slice.checkpoint()
         for label, value in (
             ("自动", "auto"),
             ("草稿 · 主体 640", "draft"),
@@ -397,26 +450,32 @@ class StudioStyleController:
         bind_text(page.advanced_preview_quality, '仅影响预览。Noita 草稿关闭火星和细纹，标准保留核心炼金层，完整显示全部；采用后后台生成透明缓存，准备好后播放自动使用。文字/样式/时间/位置变化会重新生成，原 HTML 和最终导出保留完整效果。', property='toolTip')
         page.advanced_preview_quality.currentIndexChanged.connect(page._advanced_preview_quality_changed)
         preview_controls.addWidget(page.advanced_preview_quality, 1)
+        yield from _gui_slice.checkpoint()
         replay_advanced = QPushButton("▶ 重播效果")
         replay_advanced.clicked.connect(page._replay_advanced_preview)
         preview_controls.addWidget(replay_advanced)
         advanced_layout.addLayout(preview_controls)
+        yield from _gui_slice.checkpoint()
         font_row = QHBoxLayout()
         page.advanced_font_status = QLabel("优先使用 Windows 已安装字体")
         page.advanced_font_status.setObjectName("cardMeta")
         font_row.addWidget(page.advanced_font_status, 1)
+        yield from _gui_slice.checkpoint()
         advanced_layout.addLayout(font_row)
         advanced_actions = QHBoxLayout()
         page.ai_style_entry = QPushButton("AI 设计字幕样式")
         page.ai_style_entry.setObjectName("studioPrimary")
+        yield from _gui_slice.checkpoint()
         bind_text(page.ai_style_entry, '打开 AI 设计，用一句话生成视觉与动效方案', property='toolTip')
         page.ai_style_entry.clicked.connect(page._open_ai_design_from_style)
         advanced_actions.addWidget(page.ai_style_entry)
         page.clear_advanced_button = QPushButton("移除高级样式")
+        yield from _gui_slice.checkpoint()
         page.clear_advanced_button.setObjectName("studioButton")
         bind_text(page.clear_advanced_button, '去掉复杂视觉与动效，恢复普通字幕预览', property='toolTip')
         page.clear_advanced_button.clicked.connect(page._clear_advanced_style)
         advanced_actions.addWidget(page.clear_advanced_button)
+        yield from _gui_slice.checkpoint()
         advanced_layout.addLayout(advanced_actions)
         # ---- 特效字幕调整（十六轮用户指定；二十七轮重排）--------------------
         # AI 特效字幕的外观不走实时改值：这里选的字体/字号/颜色会汇总成
@@ -431,64 +490,77 @@ class StudioStyleController:
         yield '高级字幕样式'
         web_card, web_layout = page._style_section("AI 特效字幕调整")
         page.web_adjust_identity = QLabel("当前特效：—")
+        yield from _gui_slice.checkpoint()
         page.web_adjust_identity.setObjectName("cardMeta")
         page.web_adjust_identity.setWordWrap(True)
         web_layout.addWidget(page.web_adjust_identity)
         page.web_adjust_workshop = QPushButton("打开 AI 字幕工坊…（对话式精修）")
+        yield from _gui_slice.checkpoint()
         page.web_adjust_workshop.setObjectName("studioButton")
         page.web_adjust_workshop.setMinimumHeight(38)
         bind_text(page.web_adjust_workshop, '预览当前字幕的真实特效动画，用自然语言和 AI 对话式修改；也可双击视频画面直接进入', property='toolTip')
         page.web_adjust_workshop.clicked.connect(page._open_web_theme_workshop)
+        yield from _gui_slice.checkpoint()
         web_layout.addWidget(page.web_adjust_workshop)
         # 二十八轮（用户反馈）：输入框更大更明显——多行输入+通栏发送按钮；
         # 整卡纵向 Expanding+尾部 stretch，卡片刚好占满工具面板高度。
         web_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         page.web_adjust_extra = _PromptEdit()
         bind_text(page.web_adjust_extra, '对 AI 说：要改什么？\n例如：主色改成枪灰、背景更透明、入场更快', property='placeholderText')
+        yield from _gui_slice.checkpoint()
         page.web_adjust_extra.setMinimumHeight(72)
         page.web_adjust_extra.setMaximumHeight(150)
         page.web_adjust_extra.setTabChangesFocus(True)
         page.web_adjust_extra.textChanged.connect(
             lambda: page._assemble_web_adjust_opinion()
         )
+        yield from _gui_slice.checkpoint()
         web_layout.addWidget(page.web_adjust_extra)
         page.web_adjust_send = QPushButton("发送修改给 AI")
         # 二十八轮（agy 二审）：发送=唯一橙色主按钮——它与大输入框是一个
         # 操作单元；工坊降为次级（仍在首位、通栏、够醒目）。
         page.web_adjust_send.setObjectName("studioPrimary")
         page.web_adjust_send.setMinimumHeight(36)
+        yield from _gui_slice.checkpoint()
         page.web_adjust_send.clicked.connect(page._send_web_adjust_request)
         web_layout.addWidget(page.web_adjust_send)
         # 操作闭环（范围/套用/恢复）紧跟发送——意见回显只是反馈文案，
         # 放到所有控件之后，保证折叠区内之上全部可见（agy 二审：截断）。
         web_row2 = QHBoxLayout()
         page.web_adjust_scope = QComboBox()
+        yield from _gui_slice.checkpoint()
         bind_text(page.web_adjust_scope, '决定「发送修改」让 AI 重绘哪些字幕，以及「套用此特效到范围」的作用对象；范围里没有特效主题的字幕不会被改动', property='toolTip')
         page.web_adjust_scope.addItem("仅当前特效字幕", "current")
         page.web_adjust_scope.addItem("该说话人的特效字幕", "speaker")
         page.web_adjust_scope.addItem("全部特效字幕", "all")
+        yield from _gui_slice.checkpoint()
         web_row2.addWidget(page._style_field("修改范围", page.web_adjust_scope), 2)
         page.web_adjust_apply_all = QPushButton("套用此特效到范围")
         page.web_adjust_apply_all.setObjectName("studioButton")
         bind_text(page.web_adjust_apply_all, '把当前这条特效字幕的主题应用到修改范围内的全部字幕', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.web_adjust_apply_all.clicked.connect(page._apply_web_theme_to_scope)
         web_row2.addWidget(page.web_adjust_apply_all, 1)
         web_layout.addLayout(web_row2)
         page.web_adjust_restore = QPushButton("恢复普通字幕样式")
+        yield from _gui_slice.checkpoint()
         page.web_adjust_restore.setObjectName("studioButton")
         bind_text(page.web_adjust_restore, '去掉特效字幕主题，恢复为普通字幕（随时可再从 AI 面板重新生成）', property='toolTip')
         page.web_adjust_restore.clicked.connect(page._clear_advanced_style)
         web_layout.addWidget(page.web_adjust_restore)
+        yield from _gui_slice.checkpoint()
         page.web_adjust_opinion = QLabel("")
         page.web_adjust_opinion.setObjectName("contextMeta")
         page.web_adjust_opinion.setWordWrap(True)
         web_layout.addWidget(page.web_adjust_opinion)
+        yield from _gui_slice.checkpoint()
         # 折叠的参数快速调整（默认收起——主路径是上面的自然语言修改；
         # 放在卡片末尾，展开也不影响上方的操作闭环）。
         page.web_adjust_quick_toggle = QPushButton("▸ 快速调整：字体 / 字号 / 颜色")
         page.web_adjust_quick_toggle.setObjectName("studioButton")
         page.web_adjust_quick_toggle.setCheckable(True)
         page.web_adjust_quick_host = QWidget()
+        yield from _gui_slice.checkpoint()
         quick_layout = QVBoxLayout(page.web_adjust_quick_host)
         quick_layout.setContentsMargins(0, 4, 0, 0)
         quick_layout.setSpacing(6)
@@ -501,23 +573,27 @@ class StudioStyleController:
         web_layout.addWidget(page.web_adjust_quick_toggle)
         web_row1 = QHBoxLayout()
         page.web_adjust_font = LazyFontComboBox()
+        yield from _gui_slice.checkpoint()
         page.web_adjust_font.setEditable(True)
         page.web_adjust_font.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         bind_text(page.web_adjust_font, '目标字体（发给 AI，不直接生效）', property='toolTip')
         page.web_adjust_font.currentTextChanged.connect(
             lambda _text: page._assemble_web_adjust_opinion()
         )
+        yield from _gui_slice.checkpoint()
         # 字体名列给两倍伸缩（长字体名不被压缩截断），字号/颜色固定窄列。
         web_row1.addWidget(page._style_field("目标字体", page.web_adjust_font), 2)
         page._web_adjust_color_value = "#FFFFFF"
         page.web_adjust_size = QSpinBox()
         page.web_adjust_size.setRange(20, 160)
+        yield from _gui_slice.checkpoint()
         page.web_adjust_size.setValue(58)
         bind_text(page.web_adjust_size, '目标字号（发给 AI，不直接生效）', property='toolTip')
         page.web_adjust_size.valueChanged.connect(
             lambda _value: page._assemble_web_adjust_opinion()
         )
         web_row1.addWidget(page._style_field("目标字号", page.web_adjust_size), 1)
+        yield from _gui_slice.checkpoint()
         page.web_adjust_color = QPushButton("文字颜色 #FFFFFF")
         page.web_adjust_color.setObjectName("studioButton")
 
@@ -533,6 +609,7 @@ class StudioStyleController:
                     page._assemble_web_adjust_opinion()
 
         page.web_adjust_color.clicked.connect(_pick_web_color)
+        yield from _gui_slice.checkpoint()
         web_row1.addWidget(page._style_field("颜色", page.web_adjust_color), 1)
         quick_layout.addLayout(web_row1)
         web_hint = QLabel(
@@ -540,29 +617,35 @@ class StudioStyleController:
             "也可直接在上方输入自然语言。"
         )
         web_hint.setObjectName("contextMeta")
+        yield from _gui_slice.checkpoint()
         web_hint.setWordWrap(True)
         quick_layout.addWidget(web_hint)
         page.web_adjust_quick_host.hide()
         web_layout.addWidget(page.web_adjust_quick_host)
+        yield from _gui_slice.checkpoint()
         # 二十八轮：尾部弹性——卡片纵向占满面板，余量收在折叠区下方而不是
         # 面板底部留白。
         web_layout.addStretch(1)
         web_card.hide()
         page.web_adjust_host = web_card
         layout.addWidget(advanced_card)
+        yield from _gui_slice.checkpoint()
         advanced_card.hide()
         layout.addWidget(web_card)
         page._update_advanced_style_status({})
         page._refresh_saved_ai_styles()
+        yield from _gui_slice.checkpoint()
 
         yield '特效调整'
         preset_card = QFrame()
         preset_card.setObjectName("styleInlineSection")
         preset_layout = QVBoxLayout(preset_card)
+        yield from _gui_slice.checkpoint()
         preset_layout.setContentsMargins(6, 2, 6, 2)
         preset_layout.setSpacing(5)
         page.style_preset = ElidedComboBox()
         bind_text(page.style_preset, '选择或管理字幕样式预设', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page._refresh_style_presets()
         page.style_preset.currentIndexChanged.connect(page._load_style_inspector)
         # EVERY user-driven index change applies the preset (popup click,
@@ -572,20 +655,24 @@ class StudioStyleController:
         # click applies exactly once.
         page.style_preset.activated.connect(page._preset_activated)
         preset_row = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         preset_row.setSpacing(STYLE_LABEL_GAP)
         # The preset keeps the flexible width; the language picker is compact.
         page.style_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         page.style_preset.setMinimumContentsLength(6)
         grid_width(page.style_preset, 110)
+        yield from _gui_slice.checkpoint()
         # Preset and property fields share the same control-column origin.
         preset_caption = outer_label('预设')
         preset_row.addWidget(preset_caption)
         preset_row.addWidget(page.style_preset, 1)
         preset_more = QToolButton()
+        yield from _gui_slice.checkpoint()
         preset_more.setObjectName("studioTool")
         preset_more.setText("…")
         grid_width(preset_more,STYLE_FIELD_HEIGHT)
         preset_more.setFixedWidth(STYLE_FIELD_HEIGHT)
+        yield from _gui_slice.checkpoint()
         preset_more.setStyleSheet('QToolButton { padding:0; min-width:30px; max-width:30px; } QToolButton::menu-indicator { image:none; width:0; height:0; }')
         bind_text(preset_more, '管理样式预设', property='toolTip')
         preset_menu = create_studio_menu(preset_more)
@@ -599,20 +686,26 @@ class StudioStyleController:
             ("恢复双语自动排列", self._restore_automatic_bilingual_layout),
         ):
             preset_menu.addAction(caption, slot)
+        yield from _gui_slice.checkpoint()
         preset_more.setMenu(preset_menu)
         preset_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         page.style_layer = CompactLayerComboBox()
         page.style_layer.setObjectName('styleLanguageLayer')
+        yield from _gui_slice.checkpoint()
         for value,title in LAYER_TITLES.items():
             page.style_layer.addItem(tr(title),value)
             page.style_layer.setItemData(page.style_layer.count()-1,Qt.AlignmentFlag.AlignCenter,Qt.ItemDataRole.TextAlignmentRole)
         grid_width(page.style_layer,0)
         page.style_layer.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
         bind_text(page.style_layer,'选择要编辑的语言层',property='toolTip')
+        yield from _gui_slice.checkpoint()
         preset_row.addWidget(page.style_layer)
         preset_row.addWidget(preset_more, 0, Qt.AlignmentFlag.AlignVCenter)
-        preset_layout.addLayout(preset_row)
+        # The preset row sits between 应用到 and 套用时 in the top card.
+        page._style_scope_layout.insertLayout(1, preset_row)
+        preset_card.hide()
         layout.addWidget(preset_card)
+        yield from _gui_slice.checkpoint()
 
         yield '样式预设'
         typography_card, typography_layout = page._style_section("文字")
@@ -620,44 +713,54 @@ class StudioStyleController:
         # line up with 外观 (填充…发光).
         typography_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
         page.style_font = page._new_lazy_font_combo()
+        yield from _gui_slice.checkpoint()
         page.style_font.setEditable(True)
         page.style_font.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         page.style_font.fontPicked.connect(lambda _family, _weight: page._style_control_changed("font_family"))
         font_row = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         font_row.setSpacing(STYLE_LABEL_GAP)
         font_caption = section_label("字体")
         font_row.addWidget(font_caption)
         # prepare_controls() would cap the combo at 360 px; a wider panel then
         # centred label + combo and broke the label column.
         grid_width(page.style_font, 120)
+        yield from _gui_slice.checkpoint()
         font_row.addWidget(page.style_font, 1)
         typography_layout.addLayout(font_row)
         page.style_font_warning = QLabel()
         page.style_font_warning.setWordWrap(True)
+        yield from _gui_slice.checkpoint()
         page.style_font_warning.setObjectName("cardMeta")
         page.style_font_warning.hide()
         typography_layout.addWidget(page.style_font_warning)
         text_grid = QGridLayout()
+        yield from _gui_slice.checkpoint()
         text_grid.setContentsMargins(0, 0, 0, 0)
         text_grid.setHorizontalSpacing(STYLE_LABEL_GAP)
         page.style_font_size = ScrubSpinBox()
         page.style_font_size.setRange(8, 500)
+        yield from _gui_slice.checkpoint()
         page.style_spacing = ScrubSpinBox()
         page.style_spacing.setRange(-100, 200)
         size_caption = section_label("字号")
         spacing_caption = QLabel("字距")
+        yield from _gui_slice.checkpoint()
         spacing_caption.setObjectName("styleInlineLabel")
         grid_width(page.style_font_size, 58)
         grid_width(page.style_spacing, 58)
         text_grid.addWidget(size_caption, 0, 0)
+        yield from _gui_slice.checkpoint()
         text_grid.addWidget(page.style_font_size, 0, 1)
         text_grid.addWidget(spacing_caption, 0, 2)
         text_grid.addWidget(page.style_spacing, 0, 3)
         text_grid.setColumnStretch(1, 1)
+        yield from _gui_slice.checkpoint()
         text_grid.setColumnStretch(3, 1)
         page.style_bold = QToolButton()
         page.style_italic = QToolButton()
         page.style_underline = QToolButton()
+        yield from _gui_slice.checkpoint()
         for control, text_value, tip in (
             (page.style_bold, "B", "粗体"),
             (page.style_italic, "I", "斜体"),
@@ -667,29 +770,40 @@ class StudioStyleController:
             control.setText(text_value)
             control.setToolTip(tip)
             control.setCheckable(True)
-            control.setStyleSheet('QToolButton { min-width:32px; max-width:32px; min-height:30px; max-height:30px; padding:0; }')
+            control.setStyleSheet('QToolButton { min-width:0; max-width:16777215px; min-height:32px; max-height:32px; padding:0; }')
+            control.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            control.setMinimumWidth(0)
         emphasis_host = QWidget()
         emphasis_row = QHBoxLayout(emphasis_host)
         emphasis_row.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         emphasis_row.setSpacing(8)
         emphasis_row.addWidget(page.style_bold)
         emphasis_row.addWidget(page.style_italic)
         emphasis_row.addWidget(page.style_underline)
+        yield from _gui_slice.checkpoint()
         # 2026-11-10 (user): the $…$ formula switch moved here from 「标点」.
         math_button = QToolButton()
         math_button.setObjectName("styleEmphasis")
         math_button.setText("∑")
         math_button.setCheckable(True)
+        yield from _gui_slice.checkpoint()
         math_button.setToolTip(tr('数学公式：字幕里用 $…$ 写的公式（LaTeX）在画面和所有导出里显示成 x²、∫₀¹ 这样的符号；文稿不变'))
-        math_button.setStyleSheet('QToolButton { min-width:32px; max-width:32px; min-height:30px; max-height:30px; padding:0; }')
+        math_button.setStyleSheet('QToolButton { min-width:0; max-width:16777215px; min-height:32px; max-height:32px; padding:0; }')
+        math_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        math_button.setMinimumWidth(0)
         emphasis_row.addWidget(math_button)
         from ..studio.studio_punctuation import bind_math_button
+        yield from _gui_slice.checkpoint()
         bind_math_button(page, math_button)
-        emphasis_host.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
+        emphasis_host.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        emphasis_row.setSpacing(6)
         # A full row of numeric fields plus three toggles cannot fit the
-        # narrow inspector. Keep all click targets intact on a second row.
+        # narrow inspector. Keep all click targets intact on a second row;
+        # 2026-11-12 (user, design A): the four fill the row's width.
         text_grid.addWidget(section_label('字形'),1,0)
-        text_grid.addWidget(emphasis_host,1,1,1,3,Qt.AlignmentFlag.AlignLeft)
+        text_grid.addWidget(emphasis_host,1,1,1,3)
+        yield from _gui_slice.checkpoint()
         text_grid.setVerticalSpacing(8)
         typography_layout.addLayout(text_grid)
         layout.addWidget(typography_card)
@@ -699,6 +813,7 @@ class StudioStyleController:
         page.style_fill_color = page._new_style_color_edit()
         page.style_outline_color = page._new_style_color_edit()
         page.style_back_color = page._new_style_color_edit()
+        yield from _gui_slice.checkpoint()
         for editor, placeholder in (
             (page.style_fill_color, "#FFFFFF"),
             (page.style_outline_color, "#000000"),
@@ -709,45 +824,59 @@ class StudioStyleController:
         page.style_fill_swatch = page._style_color_control(page.style_fill_color)
         page.style_outline_swatch = page._style_color_control(page.style_outline_color)
         page.style_back_swatch = page._style_color_control(page.style_back_color)
+        yield from _gui_slice.checkpoint()
         page._fill_spec = FillSpec.solid("#FFFFFFFF")
         page.style_outline_width = ScrubDoubleSpinBox()
         page.style_outline_width.setRange(0.0, 20.0)
         page.style_outline_width.setDecimals(1)
+        yield from _gui_slice.checkpoint()
         page.style_outline_width.setSingleStep(0.1)
         page.style_shadow = ScrubDoubleSpinBox()
         page.style_shadow.setRange(0.0, 20.0)
         page.style_shadow.setDecimals(1)
+        yield from _gui_slice.checkpoint()
         page.style_shadow.setSingleStep(0.1)
         page.style_shadow_opacity = ScrubDoubleSpinBox(); page.style_shadow_opacity.setRange(0, 100); page.style_shadow_opacity.setDecimals(0); page.style_shadow_opacity.setValue(45)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_offset_x = ScrubDoubleSpinBox(); page.style_shadow_offset_x.setRange(-100, 100); page.style_shadow_offset_x.setDecimals(2); page.style_shadow_offset_x.setValue(4)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_offset_y = ScrubDoubleSpinBox(); page.style_shadow_offset_y.setRange(-100, 100); page.style_shadow_offset_y.setDecimals(2); page.style_shadow_offset_y.setValue(4)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_blur = ScrubDoubleSpinBox(); page.style_shadow_blur.setRange(0, 40); page.style_shadow_blur.setDecimals(0); page.style_shadow_blur.setValue(8)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_spread = ScrubDoubleSpinBox(); page.style_shadow_spread.setRange(0, 20); page.style_shadow_spread.setDecimals(0); page.style_shadow_spread.setValue(0)
+        yield from _gui_slice.checkpoint()
         # 2026-10-18 (user): background is switched on/off like shadow and glow
         # (was a 透明 button); the switch is the background checkbox itself.
         page.style_background = QCheckBox()
         page.style_background.setObjectName("styleSwitch")
         page.style_fill_button = page.style_fill_swatch.findChild(page._style_color_button_type())
+        yield from _gui_slice.checkpoint()
         page.style_outline_button = page.style_outline_swatch.findChild(page._style_color_button_type())
         page.style_back_button = page.style_back_swatch.findChild(page._style_color_button_type())
         page.style_shadow_color = page._new_style_color_edit()
         page.style_shadow_color.setReadOnly(True)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_color.setText("#FF000000")
         page.style_shadow_swatch = page._style_color_control(page.style_shadow_color)
         page.style_shadow_button = page.style_shadow_swatch.findChild(page._style_color_button_type())
         bind_text(page.style_background, '开启或关闭字幕背景框；点选背景色也会开启', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.style_glow = QCheckBox("发光")
         bind_text(page.style_glow, '在文字边缘增加柔和光晕，提高高亮和霓虹效果。', property='toolTip')
         page.style_glow_color = page._new_style_color_edit()
         page.style_glow_color.setReadOnly(True)
+        yield from _gui_slice.checkpoint()
         page.style_glow_color.setText("#FF0000")
         page.style_glow_color.setPlaceholderText("#FF0000")
         page.style_glow_swatch = page._style_color_control(page.style_glow_color)
         page.style_glow_button = page.style_glow_swatch.findChild(page._style_color_button_type())
+        yield from _gui_slice.checkpoint()
         page.style_glow_strength = ScrubDoubleSpinBox()
         page.style_glow_strength.setRange(0.0, 20.0)
         page.style_glow_strength.setDecimals(1)
         page.style_glow_strength.setSingleStep(0.1)
+        yield from _gui_slice.checkpoint()
         page.style_glow_strength.setValue(5.0)
 
         # Five scannable property rows; complex editors expand on click.
@@ -761,52 +890,83 @@ class StudioStyleController:
             host.setFixedSize(swatch_width, swatch_width)
             return host
 
+        def colour_well(row, host):
+            # 2026-11-11 (user): the box is filled with the colour it holds
+            # and takes the row's spare width; the value is written on it.
+            host.setFixedHeight(swatch_width)
+            host.setMinimumWidth(swatch_width)
+            host.setMaximumWidth(16777215)
+            host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            row.inline_layout().addWidget(host, 1)
+            row.stretch_inline()
+            return host
+
+        def well_number(field):
+            # The number beside a well keeps a fixed width, so the spare
+            # width goes to the colour and not to an empty number box.
+            field.spin.setMinimumWidth(0)
+            # The unit sits inside the box: a separate 「px」 label was cut off.
+            field.spin.setSuffix(" px")
+            field.setFixedWidth(68)
+            return field
+
         fill_row = StylePropertyRow("填充", on_activate=page._open_fill_editor)
         fill_row.set_inline(True, summary=True, expandable=False)
-        fill_row.inline_layout().addWidget(inline_swatch(page.style_fill_swatch))
+        colour_well(fill_row, page.style_fill_swatch)
         appearance_layout.addWidget(fill_row)
+        yield from _gui_slice.checkpoint()
 
         outline_row = StylePropertyRow("描边")
         outline_row.set_inline(True, summary=False, expandable=True)
         outline_stack = QVBoxLayout()
         outline_stack.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         outline_stack.setSpacing(8)
         page.style_outline_swatch.setMinimumHeight(28)
         page.style_outline_width.setMinimumHeight(28)
-        page.style_outline_width.setMinimumWidth(64)
-        outline_row.inline_layout().addWidget(inline_swatch(page.style_outline_swatch))
+        page.style_outline_width.setMinimumWidth(0)
+        colour_well(outline_row, page.style_outline_swatch)
+        yield from _gui_slice.checkpoint()
         # No 宽度 caption: next to the stroke swatch the number is obviously its width.
         bind_text(page.style_outline_width, '描边宽度', property='toolTip')
-        outline_row.inline_layout().addWidget(CompactNumericField(page.style_outline_width, unit="px"))
+        outline_row.inline_layout().addWidget(well_number(CompactNumericField(page.style_outline_width)))
         layer2 = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         layer2.setSpacing(8)
         page.style_outline2 = QCheckBox("第二层")
         page.style_outline2.setObjectName("styleInlineCheck")
         bind_text(page.style_outline2, '在第一层之上再叠一层描边（例如黑边外套白边）；预览与 Remotion 渲染保持一致', property='toolTip')
+        yield from _gui_slice.checkpoint()
         page.style_outline2.setMinimumHeight(28)
         page.style_outline2_color = page._new_style_color_edit()
         page.style_outline2_color.setReadOnly(True)
         page.style_outline2_color.setPlaceholderText("#FFFFFF")
+        yield from _gui_slice.checkpoint()
         page.style_outline2_swatch = page._style_color_control(page.style_outline2_color)
         page.style_outline2_button = page.style_outline2_swatch.findChild(page._style_color_button_type())
         page.style_outline2_width = ScrubDoubleSpinBox()
         page.style_outline2_width.setRange(0.0, 20.0)
+        yield from _gui_slice.checkpoint()
         page.style_outline2_width.setDecimals(1)
         page.style_outline2_width.setSingleStep(0.1)
         page.style_outline2_swatch.setMinimumHeight(28)
         page.style_outline2_width.setMinimumHeight(28)
+        yield from _gui_slice.checkpoint()
         page.style_outline2_width.setMinimumWidth(64)
         layer2.addWidget(page.style_outline2)
         outline_stack.addLayout(layer2)
         page.style_outline2_fields = QWidget()
+        yield from _gui_slice.checkpoint()
         layer2_fields = QHBoxLayout(page.style_outline2_fields)
         layer2_fields.setContentsMargins(0, 0, 0, 0)
         layer2_fields.setSpacing(8)
         layer2_fields.addWidget(inline_swatch(page.style_outline2_swatch))
+        yield from _gui_slice.checkpoint()
         layer2_fields.addWidget(CompactNumericField(page.style_outline2_width, unit="px"))
         outline_stack.addWidget(page.style_outline2_fields)
         page.style_outline2_fields.hide()
         outline_row.content_layout().addLayout(outline_stack)
+        yield from _gui_slice.checkpoint()
         for button in (page.style_outline_button, page.style_outline2_button):
             if button is not None:
                 button.setMinimumHeight(28)
@@ -815,33 +975,42 @@ class StudioStyleController:
 
         background_row = StylePropertyRow("背景")
         background_row.set_inline(True, summary=False, expandable=False)
+        yield from _gui_slice.checkpoint()
         background_editor = background_row.inline_layout()
-        background_editor.addWidget(inline_swatch(page.style_back_swatch))
+        colour_well(background_row, page.style_back_swatch)
         background_row.set_trailing(page.style_background)
         page.style_background.toggled.connect(lambda _checked: _background_switched(page))
+        yield from _gui_slice.checkpoint()
         appearance_layout.addWidget(background_row)
 
         shadow_row = StylePropertyRow("阴影")
-        shadow_row.set_inline(True, summary=True, expandable=True)
+        # 2026-11-12 (user): no inline 「不透明度 · 距离」 text; those are in
+        # the row's settings, and the row lines up with the others.
+        shadow_row.set_inline(True, summary=False, expandable=True)
         page.style_shadow.hide()
+        yield from _gui_slice.checkpoint()
         page.style_shadow_offset_x.hide()
         page.style_shadow_offset_y.hide()
         page.style_shadow_angle = AngleDisc()
         page.style_shadow_angle.scrubStarted.connect(page._begin_style_scrub)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_angle.scrubFinished.connect(page._finish_style_scrub)
         page.style_shadow_angle_value = ScrubDoubleSpinBox()
         page.style_shadow_angle_value.setRange(0, 359)
         page.style_shadow_angle_value.setDecimals(0)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_angle_value.setValue(45)
         page.style_shadow_angle_value.valueChanged.connect(page.style_shadow_angle.setAngle)
         def sync_angle_number(angle):
             blocker = QSignalBlocker(page.style_shadow_angle_value)
             page.style_shadow_angle_value.setValue(angle % 360)
         page.style_shadow_angle.angleChanged.connect(sync_angle_number)
+        yield from _gui_slice.checkpoint()
         page.style_shadow_distance = ScrubDoubleSpinBox()
         page.style_shadow_distance.setRange(0, 140)
         page.style_shadow_distance.setDecimals(0)
         page.style_shadow_distance.setValue(6)
+        yield from _gui_slice.checkpoint()
         page._shadow_polar_syncing = False
 
         def _sync_offsets_from_polar(_page=page) -> None:
@@ -872,16 +1041,19 @@ class StudioStyleController:
                 _page._shadow_polar_syncing = False
 
         page._sync_shadow_polar_from_offsets = _sync_polar_from_offsets
+        yield from _gui_slice.checkpoint()
         page.style_shadow_angle.angleChanged.connect(lambda *_args: _sync_offsets_from_polar())
         page.style_shadow_distance.valueChanged.connect(lambda *_args: _sync_offsets_from_polar())
         page.style_shadow_offset_x.valueChanged.connect(lambda *_args: _sync_polar_from_offsets())
         page.style_shadow_offset_y.valueChanged.connect(lambda *_args: _sync_polar_from_offsets())
+        yield from _gui_slice.checkpoint()
         # On/off maps onto opacity (0 = no shadow, as the summary already
         # reads it); the last opacity comes back when switched on again.
         page.style_shadow_switch = QCheckBox()
         page.style_shadow_switch.setObjectName("styleSwitch")
         bind_text(page.style_shadow_switch, '开启或关闭阴影', property='toolTip')
         page._shadow_last_opacity = 45.0
+        yield from _gui_slice.checkpoint()
 
         def shadow_enabled(_page=page) -> bool:
             return _page.style_shadow_opacity.value() > 0 and (
@@ -905,18 +1077,24 @@ class StudioStyleController:
                 _page.style_shadow_opacity.setValue(0)
 
         page.style_shadow_switch.toggled.connect(toggle_shadow)
+        yield from _gui_slice.checkpoint()
         page._sync_shadow_switch = sync_shadow_switch
-        # Switches share the rows' trailing slot so every swatch lines up.
-        shadow_row.set_trailing(page.style_shadow_switch)
-        shadow_row.inline_layout().addWidget(inline_swatch(page.style_shadow_swatch))
+        # 2026-11-12 (user): no switch on the shadow row; opacity 0% in its
+        # settings turns it off. The hidden switch keeps following the
+        # values for the code that reads it.
+        page.style_shadow_switch.setParent(shadow_row.content)
+        page.style_shadow_switch.hide()
+        colour_well(shadow_row, page.style_shadow_swatch)
         # 2026-10-18 (user): the disc shows and sets the direction itself (its
         # centre reads the angle), so no 方向 box; distance / opacity / blur /
         # spread sit in a 2 x 2 grid beside the disc, as tall as the disc.
         page.style_shadow_angle_value.setParent(shadow_row.content)  # kept for sync, never top-level
+        yield from _gui_slice.checkpoint()
         page.style_shadow_angle_value.hide()
         page.style_shadow_angle.setFixedSize(112, 112)
         shadow_grid = QGridLayout()
         shadow_grid.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         shadow_grid.setHorizontalSpacing(10)
         shadow_grid.setVerticalSpacing(8)
         shadow_grid.addWidget(page.style_shadow_angle, 0, 0, 2, 1, Qt.AlignmentFlag.AlignVCenter)
@@ -928,20 +1106,24 @@ class StudioStyleController:
         )):
             grid_width(control, 44)
             shadow_grid.addWidget(CompactNumericField(control, label=label, unit=unit), index // 2, 1 + index % 2)
+        yield from _gui_slice.checkpoint()
         shadow_grid.setColumnStretch(1, 1)
         shadow_grid.setColumnStretch(2, 1)
         shadow_row.content_layout().addLayout(shadow_grid)
         appearance_layout.addWidget(shadow_row)
+        yield from _gui_slice.checkpoint()
 
         glow_row = StylePropertyRow("发光")
         glow_row.set_inline(True, summary=False, expandable=False)
         page.style_glow.setObjectName("styleSwitch")
         page.style_glow.setText("")
+        yield from _gui_slice.checkpoint()
         glow_row.set_trailing(page.style_glow)
-        glow_row.inline_layout().addWidget(inline_swatch(page.style_glow_swatch))
+        colour_well(glow_row, page.style_glow_swatch)
         # No 半径 caption (2026-10-18): next to the glow swatch it reads as the radius.
         bind_text(page.style_glow_strength, '发光半径', property='toolTip')
-        glow_row.inline_layout().addWidget(CompactNumericField(page.style_glow_strength, unit="px"))
+        glow_row.inline_layout().addWidget(well_number(CompactNumericField(page.style_glow_strength)))
+        yield from _gui_slice.checkpoint()
         appearance_layout.addWidget(glow_row)
 
         page._appearance_rows = {
@@ -952,6 +1134,7 @@ class StudioStyleController:
         for row in exclusive:
             row.set_exclusive_group(exclusive)
             label_column.add_row(row)
+        yield from _gui_slice.checkpoint()
         page.style_outline2.toggled.connect(
             lambda checked, _page=page: _page.style_outline2_fields.setVisible(bool(checked))
         )
@@ -973,6 +1156,7 @@ class StudioStyleController:
             (page.style_glow_strength, "valueChanged"),
         ):
             getattr(control, signal).connect(lambda *_args, _page=page: _refresh_appearance_summaries(_page))
+        yield from _gui_slice.checkpoint()
         page.style_shadow.valueChanged.connect(
             lambda value, _page=page: _page.style_shadow_button.setEnabled(float(value) > 0)
         )
@@ -980,34 +1164,42 @@ class StudioStyleController:
         layout.addWidget(appearance_card)
 
         from .motion_inspector_ui import MotionPanel
+        yield from _gui_slice.checkpoint()
         page.motion_panel = MotionPanel()
         effect_card = page.motion_panel
         effect_layout = QVBoxLayout(effect_card)
         effect_layout.setContentsMargins(10, 8, 10, 12)
+        yield from _gui_slice.checkpoint()
         effect_layout.setSpacing(8)
         page.motion_preview = page._new_style_preview()
         page.motion_preview.setObjectName("motionPreview")
         page.motion_preview.setMinimumHeight(68)
+        yield from _gui_slice.checkpoint()
         page.motion_preview.setMaximumHeight(74)
         effect_layout.addWidget(page.motion_preview)
         page.graph_motion_summary = QLabel()
         page.graph_motion_summary.setObjectName("cardMeta")
+        yield from _gui_slice.checkpoint()
         page.graph_motion_summary.setWordWrap(True)
         page.graph_motion_summary.hide()
         effect_layout.addWidget(page.graph_motion_summary)
         page.motion_replay_button = replay_motion = QPushButton("播放本条")
+        yield from _gui_slice.checkpoint()
         replay_motion.setObjectName("studioButton")
         replay_motion.setIcon(page._style_icon("fa5s.redo-alt"))
         replay_motion.clicked.connect(lambda: page._replay_motion())
         page.motion_library_button = QPushButton("动效预设库…")
+        yield from _gui_slice.checkpoint()
         page.motion_library_button.setObjectName("studioButton")
         page.motion_library_button.setIcon(page._style_icon("fa5s.play-circle"))
         page.motion_library_button.clicked.connect(page._open_motion_browser)
         motion_actions = QHBoxLayout()
+        yield from _gui_slice.checkpoint()
         motion_actions.setSpacing(6)
         motion_actions.addWidget(replay_motion, 1)
         motion_actions.addWidget(page.motion_library_button, 1)
         effect_layout.addLayout(motion_actions)
+        yield from _gui_slice.checkpoint()
 
         page.motion_preset = StudioComboBox()
         for label, preset_id in (
@@ -1040,6 +1232,7 @@ class StudioStyleController:
             ("兼容 · 缩放", "scale"),
         ):
             page.effect_preset.addItem(label, effect_id)
+        yield from _gui_slice.checkpoint()
         # Old effects remain addressable for existing projects without
         # crowding the P25 picker for new users.
         for legacy_id in ("fade", "pop", "slide", "scale"):
@@ -1056,67 +1249,82 @@ class StudioStyleController:
             ("兼容 · 淡出", "fade"),
         ):
             page.effect_exit.addItem(label, effect_type)
+        yield from _gui_slice.checkpoint()
         legacy_exit_index = page.effect_exit.findData("fade")
         if legacy_exit_index >= 0:
             page.effect_exit.view().setRowHidden(legacy_exit_index, True)
         page.effect_duration = ScrubSpinBox()
         page.effect_duration.setRange(1, 4000)
+        yield from _gui_slice.checkpoint()
         page.effect_duration.setValue(180)
         page.effect_duration.setSuffix(" ms")
         page.effect_out_duration = ScrubSpinBox()
         page.effect_out_duration.setRange(1, 4000)
+        yield from _gui_slice.checkpoint()
         page.effect_out_duration.setValue(140)
         page.effect_out_duration.setSuffix(" ms")
         page.effect_loop = StudioComboBox()
         for label, value in (("无", "none"), ("呼吸", "loop_breathe"), ("漂浮", "loop_float"), ("摇曳", "loop_sway")):
             page.effect_loop.addItem(label, value)
+        yield from _gui_slice.checkpoint()
         page.effect_loop_duration = ScrubSpinBox()
         page.effect_loop_duration.setRange(120, 4000)
         page.effect_loop_duration.setValue(1200)
         page.effect_strength = StudioComboBox()
+        yield from _gui_slice.checkpoint()
         for label, value in (("轻微", "low"), ("标准", "medium"), ("强烈", "high")):
             page.effect_strength.addItem(label, value)
         page.effect_strength.setCurrentIndex(page.effect_strength.findData("medium"))
         page.effect_curve = StudioComboBox()
         for label, value in (("柔和", "soft"), ("平滑", "smooth"), ("利落", "snappy")):
             page.effect_curve.addItem(label, value)
+        yield from _gui_slice.checkpoint()
         effect_grid = QGridLayout()
         effect_grid.setContentsMargins(0, 0, 0, 0)
         effect_grid.setHorizontalSpacing(7)
         effect_grid.setVerticalSpacing(5)
+        yield from _gui_slice.checkpoint()
         page.motion_preset.hide()
         effect_grid.addWidget(page._style_field("入场", page.effect_preset), 1, 0)
         effect_grid.addWidget(page._style_field("出场", page.effect_exit), 1, 1)
         effect_grid.addWidget(page._style_field("强度", page.effect_strength), 2, 0)
+        yield from _gui_slice.checkpoint()
         effect_grid.addWidget(page._style_field("持续时间", page.effect_duration), 2, 1)
         effect_layout.addLayout(effect_grid)
 
         page.motion_advanced_button = QToolButton()
         page.motion_advanced_button.setObjectName("styleSectionHeader")
+        yield from _gui_slice.checkpoint()
         bind_text(page.motion_advanced_button, '›  高级设置')
         page.motion_advanced_button.setCheckable(True)
         effect_layout.addWidget(page.motion_advanced_button)
         page.motion_advanced = QWidget()
+        yield from _gui_slice.checkpoint()
         advanced_grid = QGridLayout(page.motion_advanced)
         advanced_grid.setContentsMargins(0, 0, 0, 0)
         advanced_grid.setHorizontalSpacing(7)
         advanced_grid.setVerticalSpacing(5)
+        yield from _gui_slice.checkpoint()
         page.effect_delay = ScrubSpinBox()
         page.effect_delay.setRange(0, 2000)
         page.effect_delay.setSuffix(" ms")
         page.effect_scale = ScrubSpinBox()
+        yield from _gui_slice.checkpoint()
         page.effect_scale.setRange(10, 400)
         page.effect_offset_x = ScrubSpinBox()
         page.effect_offset_x.setRange(-1000, 1000)
         page.effect_offset_y = ScrubSpinBox()
+        yield from _gui_slice.checkpoint()
         page.effect_offset_y.setRange(-1000, 1000)
         page.effect_blur = ScrubDoubleSpinBox()
         page.effect_blur.setRange(0, 30)
         page.effect_blur.setDecimals(1)
+        yield from _gui_slice.checkpoint()
         page.effect_overshoot = ScrubSpinBox()
         page.effect_overshoot.setRange(10, 400)
         page.effect_accel = ScrubDoubleSpinBox()
         page.effect_accel.setRange(0.1, 5.0)
+        yield from _gui_slice.checkpoint()
         page.effect_accel.setDecimals(2)
         page.effect_accel.setValue(EASING_PRESETS["soft"])
         for row, (label, control) in enumerate((
@@ -1128,12 +1336,14 @@ class StudioStyleController:
         )):
             advanced_grid.addWidget(page._style_field(label, control), row // 2, row % 2)
         page.motion_advanced.hide()
+        yield from _gui_slice.checkpoint()
         page.motion_advanced_button.toggled.connect(page._toggle_motion_advanced)
         effect_layout.addWidget(page.motion_advanced)
         # Keep controller fields for project hydration / custom presets, while
         # the dedicated inspector owns the visible stage cards and timing UI.
         page.motion_legacy = QWidget(effect_card)
         legacy_layout = QVBoxLayout(page.motion_legacy)
+        yield from _gui_slice.checkpoint()
         while effect_layout.count():
             item = effect_layout.takeAt(0)
             if item.widget(): legacy_layout.addWidget(item.widget())
@@ -1142,16 +1352,19 @@ class StudioStyleController:
             legacy_layout.addWidget(control)
         page.motion_legacy.hide()
         from .motion_controls_ui import MotionWorkflow
+        yield from _gui_slice.checkpoint()
         self._motion_workflow = MotionWorkflow(self, effect_layout)
         page.motion_preview.hide()
         # Existing shortcuts continue to open the dedicated tool page.
         page.motion_jump_button = QPushButton(tr('打开动效'))
         page.motion_jump_button.setParent(panel)
+        yield from _gui_slice.checkpoint()
         page.motion_jump_button.hide()
         page.motion_jump_button.clicked.connect(lambda: page.context_drawer.setCurrentIndex(page.motion_tab_index))
 
         yield '字幕动效'
         position_card, position_layout = page._style_section("高级位置与对齐", expanded=False)
+        yield from _gui_slice.checkpoint()
         # 2026-10-24 (user): the per-caption 位置与变换 (原文 / 译文 position,
         # scale, rotation, anchor) lives on the 视频 tab, where clips move;
         # 应用到 leads this tab again.
@@ -1165,40 +1378,49 @@ class StudioStyleController:
         page.style_anchor_buttons = {}
         # Same label column as 文字 / 外观 (was captions stacked above).
         position_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
+        yield from _gui_slice.checkpoint()
         alignment_row = QHBoxLayout()
         alignment_row.setSpacing(STYLE_LABEL_GAP)
         alignment_row.addWidget(section_label("对齐"))
         grid_width(page.style_alignment, 120)
+        yield from _gui_slice.checkpoint()
         alignment_row.addWidget(page.style_alignment, 1)
         position_layout.addLayout(alignment_row)
         position_grid = QGridLayout()
         position_grid.setContentsMargins(0, 0, 0, 0)
+        yield from _gui_slice.checkpoint()
         position_grid.setHorizontalSpacing(STYLE_LABEL_GAP)
         page.style_position_x = ScrubSpinBox()
         page.style_position_y = ScrubSpinBox()
         for control in (page.style_position_x, page.style_position_y):
             control.setRange(0, 16384)
             grid_width(control, 58)
+        yield from _gui_slice.checkpoint()
         position_y_caption = QLabel("Y")
         position_y_caption.setObjectName("styleInlineLabel")
         position_grid.addWidget(section_label("X"), 0, 0)
         position_grid.addWidget(page.style_position_x, 0, 1)
+        yield from _gui_slice.checkpoint()
         position_grid.addWidget(position_y_caption, 0, 2)
         position_grid.addWidget(page.style_position_y, 0, 3)
         position_grid.setColumnStretch(1, 1)
         position_grid.setColumnStretch(3, 1)
+        yield from _gui_slice.checkpoint()
         position_layout.addLayout(position_grid)
         page.position_edit_button = QPushButton("在画面中拖动字幕")
         page.position_edit_button.setObjectName("studioButton")
         page.position_edit_button.setCheckable(True)
+        yield from _gui_slice.checkpoint()
         page.position_edit_button.setChecked(True)
         page.position_edit_button.setIcon(page._style_icon("fa5s.arrows-alt"))
         page.position_edit_button.toggled.connect(page._toggle_position_edit)
         position_layout.addLayout(in_control_column(page.position_edit_button))
+        yield from _gui_slice.checkpoint()
         margin_row = QGridLayout()
         margin_row.setContentsMargins(0, 0, 0, 0)
         margin_row.setHorizontalSpacing(5)
         margin_row.setVerticalSpacing(5)
+        yield from _gui_slice.checkpoint()
         page.style_margin_l = ScrubSpinBox()
         page.style_margin_r = ScrubSpinBox()
         page.style_margin_v = ScrubSpinBox()
@@ -1212,39 +1434,48 @@ class StudioStyleController:
             control.setSuffix(" px")
             grid_width(control, 58)
             margin_row.addWidget(control, index // 2, index % 2)
+        yield from _gui_slice.checkpoint()
         margin_row.setColumnStretch(0, 1)
         margin_row.setColumnStretch(1, 1)
         margin_host = QWidget()
         margin_host.setLayout(margin_row)
+        yield from _gui_slice.checkpoint()
         position_layout.addLayout(in_control_column(margin_host))
         layout.addWidget(position_card)
 
         yield '字幕位置'
         current_card, current_layout = page._style_section("当前字幕", expanded=False)
+        yield from _gui_slice.checkpoint()
         current_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
         page.current_cue_section_button = current_card.findChild(QToolButton, "styleSectionHeader")
         page.cue_text.setMinimumHeight(42)
         page.cue_text.setMaximumHeight(64)
+        yield from _gui_slice.checkpoint()
         page.translation_text.setMinimumHeight(42)
         page.translation_text.setMaximumHeight(58)
         page.current_text_layer_label = QLabel(tr("当前操作：原文"))
         current_layout.addWidget(page.current_text_layer_label)
+        yield from _gui_slice.checkpoint()
         from ..studio.caption_text_tools import CaptionTextTools
         page.original_text_tools = CaptionTextTools(page, page.cue_text, 'original')
         page.translation_text_tools = CaptionTextTools(page, page.translation_text, 'translation')
         current_layout.addWidget(QLabel(tr("原文")))
+        yield from _gui_slice.checkpoint()
         current_layout.addWidget(page.original_text_tools)
         current_layout.addWidget(page.cue_text)
         current_layout.addWidget(QLabel(tr("译文")))
         current_layout.addWidget(page.translation_text_tools)
+        yield from _gui_slice.checkpoint()
         current_layout.addWidget(page.translation_text)
         page.translation_style_button = QPushButton(tr("译文显示样式…"))
         from ..studio.studio_bilingual import open_style_dialog
         page.translation_style_button.clicked.connect(lambda: open_style_dialog(page))
+        yield from _gui_slice.checkpoint()
         page.translation_style_button.hide()
         current_layout.addWidget(page.translation_style_button)
         current_layout.addWidget(page.editor_metadata)
         layout.addWidget(current_card)
+        yield from _gui_slice.checkpoint()
         # 二十七轮：原生参数分区宿主登记——当前 cue 是 AI 特效字幕时整组
         # 隐藏（_update_web_adjust_visibility 反转可见性），面板只留 AI 调整卡。
         page.style_native_hosts = [
@@ -1275,6 +1506,7 @@ class StudioStyleController:
             control.lineEdit().textEdited.connect(lambda _text, fields=fields: page._queue_style_commit(*fields))
             control.scrubStarted.connect(page._begin_style_scrub)
             control.scrubFinished.connect(page._finish_style_scrub)
+        yield from _gui_slice.checkpoint()
         # The edit contains a search query while browsing. Only fontPicked
         # above commits a family; search/focus changes must not create a draft.
         for name, fields in (("bold", ("bold",)), ("italic", ("italic",)), ("underline", ("underline",)),
@@ -1284,14 +1516,29 @@ class StudioStyleController:
         page.style_outline2.toggled.connect(page._sync_outline2_controls)
         page.style_alignment.currentIndexChanged.connect(page._sync_style_anchor)
         page.style_alignment.currentIndexChanged.connect(lambda _index: page._style_control_changed("alignment"))
+        yield from _gui_slice.checkpoint()
         page.effect_preset.currentIndexChanged.connect(page._effect_changed)
         page.motion_preset.currentIndexChanged.connect(page._motion_preset_changed)
         page.effect_exit.currentIndexChanged.connect(page._motion_control_changed)
         page.effect_strength.currentIndexChanged.connect(page._motion_control_changed)
+        yield from _gui_slice.checkpoint()
         page.effect_curve.currentIndexChanged.connect(page._motion_curve_changed)
-        page.style_scope_summary = QLabel()
-        preset_layout.addWidget(page.style_scope_summary)
+        from ..design.elided_label import ElidedLabel
+        page.style_scope_summary = ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=0)
+        page.style_scope_summary.setObjectName("styleScopeSummary")
+        header = getattr(page, "context_header", None)
+        if header is not None:
+            # 2026-11-12 (user, design A): 「已选 1 条 · 原文」 beside the panel title.
+            header.insertWidget(1, page.style_scope_summary, 1)
+            drawer = page.context_drawer
+            def follow_tab(_index=None):
+                page.style_scope_summary.setVisible(drawer.currentIndex() == 1)
+            drawer.currentChanged.connect(follow_tab)
+            follow_tab()
+        else:
+            preset_layout.addWidget(page.style_scope_summary)
         page.style_layer.currentIndexChanged.connect(lambda index: self._layer_changed(index))
+        yield from _gui_slice.checkpoint()
         page.style_scope.currentIndexChanged.connect(page._scope_changed)
         page.style_scope.activated.connect(self._scope_activated)
         for compact_control in (
@@ -1307,6 +1554,7 @@ class StudioStyleController:
         ):
             compact_control.setFixedHeight(STYLE_FIELD_HEIGHT)
         page.style_scope.setFixedHeight(STYLE_FIELD_HEIGHT - 6)
+        yield from _gui_slice.checkpoint()
         page._style_single_shot(0, page._load_style_inspector)
         return panel
 
@@ -2116,6 +2364,8 @@ class StudioStyleController:
             enabled = True
             if hasattr(page, "style_back_button") and button is page.style_back_button:
                 enabled = bool(getattr(page, "style_background", None) and page.style_background.isChecked())
+            elif getattr(page, "style_glow_button", None) is not None and button is page.style_glow_button:
+                enabled = bool(getattr(page, "style_glow", None) and page.style_glow.isChecked())
             button.set_color_value(value, label, enabled=enabled)
             targets = {'outline':'outline', 'outline2':'outline2', 'shadow':'shadow', 'glow':'glow'}
             target = 'background' if button is getattr(page, 'style_back_button', None) else None
@@ -2917,9 +3167,8 @@ class StudioStyleController:
             return
         if page._updating_style_ui:
             return
-        if self.session.project is not None and self._color_editor is None and not self._color_editor_warm_scheduled:
-            self._color_editor_warm_scheduled = True
-            QTimer.singleShot(0, self._warm_color_editor)
+        # The shared picker is created on explicit color editing. Rendering
+        # the hidden dialog here interrupted otherwise asynchronous loading.
         self._current_application()
         if getattr(page,'_style_application_busy',False) and self._application is not None:
             from ..studio.presentation_scope import capture_scope,describe_scope

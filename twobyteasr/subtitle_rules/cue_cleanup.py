@@ -1,4 +1,4 @@
-﻿"""Post-grouping cleanup for dangling, short, and repeated subtitle cues."""
+"""Post-grouping cleanup for dangling, short, and repeated subtitle cues."""
 
 import re
 
@@ -534,6 +534,8 @@ def _join_japanese_cues(cues, *, max_chars, max_seconds, sentences):
             joinable = (
                 (left.speaker or "S00") == (right.speaker or "S00")
                 and not left.timing_locked and not right.timing_locked
+                and not any(getattr(c, 'grouping_origin', '') in {'ai_accepted','ai_targeted_correction'}
+                            and getattr(c, 'grouping_boundary_receipt', {}) for c in (left, right))
                 and -0.20 <= gap <= JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS + _FRAME_TOLERANCE_SECONDS
                 and display_length(left.text + right.text) <= max_chars
                 and right.end - left.start <= max_seconds + 0.05
@@ -552,6 +554,14 @@ def _join_japanese_cues(cues, *, max_chars, max_seconds, sentences):
         left, right = rows[seam], rows[seam + 1]
         separator = " " if strong and not re.search(r"[\s！？!?]$", left.text) else ""
         merged.append(f"{left.text}|{right.text}")
+        import copy
+        # A legal join owns both parent spans, even when the short response
+        # came from another ASR segment. Keep their exact character offsets.
+        left.source_spans = copy.deepcopy(getattr(left, 'source_spans', [])) + copy.deepcopy(getattr(right, 'source_spans', []))
+        left.grouping_origin = 'local_japanese_join'
+        left.grouping_boundary_receipt = dict(origin='local_japanese_join',
+            parents=[copy.deepcopy(getattr(c, 'grouping_boundary_receipt', {})) for c in (left, right)],
+            parent_cue_ids=[left.cue_id, right.cue_id])
         left.text = clean_subtitle_text(f"{left.text}{separator}{right.text}")
         left.start = min(left.start, right.start)
         left.end = max(left.end, right.end)

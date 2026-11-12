@@ -217,6 +217,8 @@ def test_only_workflow_recommended_models_get_recommendation_badge():
         "moss",
         "firered",
         "qwen_local",
+        "qwen_aligner",
+        "mlx_qwen_aligner",
     }
     card = ModelCard(next(item for item in MODELS if item.key == "moss"))
     assert card.property("recommended") is True

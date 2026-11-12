@@ -82,6 +82,14 @@ def manager():
     APP.processEvents()
 
 
+def open_card(manager, key):
+    """A click on the speaker's chip shows its card on the right."""
+    from PySide6.QtCore import Qt
+    manager._tile_clicked(key, Qt.KeyboardModifier.NoModifier)
+    APP.processEvents()
+    return manager.cards[key]
+
+
 def speaker_ids(manager):
     return [speaker.id for speaker in manager.page.project.speakers]
 
@@ -90,12 +98,15 @@ def test_pending_cards_show_banner_role_buttons_and_representative_line(manager)
     assert list(manager.cards) == ["API_S01", "API_S02", "API_S03"]
     assert manager.banner.isVisible()
     assert "3 个待确认" in manager.banner_text.text()
-    card = manager.cards["API_S01"]
+    assert manager.inspector.currentWidget() is manager.empty_page
+    card = open_card(manager, "API_S01")
+    assert manager.inspector.currentWidget() is card
     assert card.pill.isVisible() and card.pill.text() == "待确认"
     assert card.roles.isVisible() and card.roles.role() == ""
     assert card.excerpt_label.full_text() == "这个Boss第二阶段会跳"
     assert card.meta_label.text() == "2 条字幕 · 5 秒"
-    assert not manager.more_tools.isVisible() and not manager.batch_bar.isVisible()
+    assert not manager.more_tools.isVisible()
+    assert {key: manager._box_index[key] for key in manager.cards} == dict.fromkeys(manager.cards, "main")
 
 
 def test_role_click_applies_at_once_and_one_undo_restores(manager):
@@ -120,7 +131,7 @@ def test_ignore_keeps_card_and_main_restores_as_host(manager):
     card = manager.cards["API_S03"]
     assert "API_S03" not in speaker_ids(manager)
     assert '2 条字幕保留' in card.status_label.text()
-    manager.role_filter.setCurrentIndex(1)
+    assert manager._box_index["API_S03"] == "ignore"
     manager.cards["API_S03"].roles.buttons["main"].click()
     APP.processEvents()
     restored = next(s for s in manager.page.project.speakers if s.id == "API_S03")
@@ -162,17 +173,20 @@ def test_host_visibility_and_colour_are_one_click_and_undoable(manager):
 
 
 def test_multi_select_batch_background_and_delete_needs_confirmation(manager, monkeypatch):
-    manager.multi_button.setChecked(True)
-    assert manager.batch_bar.isVisible() and manager.cards["API_S01"].select_check.isVisible()
-    manager.cards["API_S03"].select_check.setChecked(True)
-    assert manager.selection_summary.text() == "已选 1 人 / 2 条字幕"
+    from PySide6.QtCore import Qt
+    manager._tile_clicked("API_S03", Qt.KeyboardModifier.NoModifier)
+    manager._tile_clicked("API_S02", Qt.KeyboardModifier.ControlModifier)
+    assert manager.inspector.currentWidget() is manager.merge_panel
+    assert manager.selection_summary.text() == "4 条字幕，共 5 秒"
     asked = []
     monkeypatch.setattr(studio_speaker_manager, "studio_message_box",
                         lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.StandardButton.No)
     manager.delete_captions_button.click()
     assert asked == ["删除人物及字幕"] and "API_S03" in speaker_ids(manager)
     manager.batch_buttons["background"].click()
-    assert speaker_ids(manager) == ["API_S01", "API_S02", "GAME_BACKGROUND"]
+    assert speaker_ids(manager) == ["API_S01", "GAME_BACKGROUND"]
+    assert manager.page.undo_stack.count() == 1
+    assert {manager._box_index[key] for key in ("API_S02", "API_S03", "GAME_BACKGROUND")} == {"game"}
 
 
 def test_preview_seeks_to_representative_and_second_click_stops(manager):
@@ -207,7 +221,7 @@ def test_legacy_cache_folder_stages_roles_until_rebuild(tmp_path):
     page = _page(project)
     dialog = SpeakerManagerDialog(page)
     dialog.show()
-    assert "MOSS" in dialog.candidate_note.text() and not dialog.cards["S01"].roles.isVisible()
+    assert "MOSS" in dialog.candidate_note.text() and not open_card(dialog, "S01").roles.isVisible()
     dialog._load_snapshot(cache)
     dialog.refresh()
     assert dialog.rebuild_button.isVisible() and list(dialog.cards) == ["S01", "S02"]

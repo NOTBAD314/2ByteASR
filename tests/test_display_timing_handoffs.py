@@ -15,7 +15,8 @@ def test_half_open_handoff_does_not_bridge_past_another_speaker():
 
 def test_existing_overlap_can_keep_a_same_speaker_short_gap_bridge():
     rows=[('previous','A',0,100),('overlap','B',50,600),('next','A',500,900)]
-    assert short_gap_bridges(rows,500)=={'previous':500}
+    assert short_gap_bridges(rows,500)=={}
+    assert short_gap_bridges(rows,500,continuous={('previous','next')})=={'previous':500}
 
 
 def test_full_track_blank_still_closes_at_the_next_speaker():

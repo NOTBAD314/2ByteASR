@@ -25,6 +25,21 @@ _COPY = {
     ' · {count} 个有效词条': (' · {count} effective terms', ' · 有効用語 {count} 件'),
     '未记录启用词库': ('Enabled glossaries unrecorded', '有効な用語集の記録なし'),
     '素材：{name} · {duration}': ('Media: {name} · {duration}', '素材：{name} · {duration}'),
+    '{count} 条字幕': ('{count} subtitles', '字幕 {count} 件'),
+    '{value} 秒': ('{value}s', '{value} 秒'),
+    '{count} 处': ('{count}', '{count} 件'),
+    '{count} 人': ('{count}', '{count} 人'),
+    '有效音频': ('Audio processed', '処理音声'),
+    '有效词条': ('Effective terms', '有効用語'),
+    'AI 采纳修改': ('AI edits applied', 'AI修正の採用'),
+    '说话人': ('Speakers', '話者'),
+    '场景': ('Context', '内容'),
+    '词库': ('Glossaries', '用語集'),
+    '素材': ('Media', '素材'),
+    '工程': ('Project', 'プロジェクト'),
+    '字幕': ('Subtitles', '字幕'),
+    'AI 提出 {proposed} · 采纳 {accepted} · 拒绝 {rejected}': ('AI proposed {proposed} · applied {accepted} · rejected {rejected}', 'AI提案 {proposed} · 採用 {accepted} · 却下 {rejected}'),
+    '名称规范化 {count} 处': ('{count} names normalized', '名称統一 {count} 件'),
     '{count} 条字幕 · {saved}': ('{count} subtitles · {saved}', '字幕 {count} 件 · {saved}'),
     '识别产出 {count} 条字幕 · 工程当前 {current} 条 · {saved}': ('{count} subtitles recognized · {current} in the project now · {saved}', '認識時 {count} 件 · 現在のプロジェクト {current} 件 · {saved}'),
     '工程：{path}': ('Project: {path}', 'プロジェクト：{path}'),
@@ -62,6 +77,13 @@ class CompletionSummary:
     ai_proposed: int | None
     ai_accepted: int | None
     ai_rejected: int | None
+    # Painted summary bodies (2026-11-11): the same facts as the lines above,
+    # as short labelled values. Unknown values are left out, never guessed.
+    tiles: tuple = ()      # ((value, caption), ...)
+    facts: tuple = ()      # ((key, value), ...)
+    timings: tuple = ()    # ((name, fraction, value text, 'local'|'ai', finished), ...)
+    chips: tuple = ()      # ((text, ''|'ai'|'warning'), ...)
+    rejected_reason: str = ''
 
 
 def _dict(value):
@@ -80,7 +102,7 @@ def _count(value):
 
 
 def completion_summary(report, outcome, *, media_path='', project_path='', project_loaded=False,
-                       project_error='', language='zh', project_cues=None, save_state=''):
+                       project_error='', language='zh', project_cues=None, save_state='', speakers=None):
     """Use this task's immutable report and caller-verified delivery only.
 
     Missing counters stay unknown. A saved project and a completed request are
@@ -121,6 +143,9 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
     saved = translate('字幕工程已保存并载入', language) if project_loaded else line('工程无法载入：{reason}', reason=project_error) if project_error else translate('工程保存状态待确认', language)
     if outcome.core_status == 'needs_recovery' and project_loaded:
         saved = translate('诊断与候选已保存；尚无可用字幕', language)
+    # 2026-11-11 (user): a project that saved and loaded normally is not
+    # news; only the states that need attention are written out.
+    saved_is_routine = bool(project_loaded) and outcome.core_status != 'needs_recovery' and not save_state
     if save_state:
         saved = translate('最新修改正在保存' if save_state == 'pending' else '最新修改保存失败，仍保留在内存中', language)
     resolved = _dict(profile.get('resolved_context')) or _dict(settings.get('resolved_content_context'))
@@ -139,11 +164,13 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
                   (line('识别产出 {count} 条字幕 · 工程当前 {current} 条 · {saved}', count=outcome.final_cues,
                         current=project_cues, saved=saved)
                    if project_cues is not None and project_cues != outcome.final_cues else
+                   line('{count} 条字幕', count=outcome.final_cues) if saved_is_routine else
                    line('{count} 条字幕 · {saved}', count=outcome.final_cues, saved=saved)),
                   scene + ' · ' + glossary,
                   line('工程：{path}', path=project_path) if project_path else translate('工程位置未记录；可在更多操作中恢复已有结果', language))
 
     warnings = []
+    rejected_line = rejected_reason = ''
     gaps = _count(context.get('unresolved_recall_gaps'))
     if gaps and context.get('recall_gaps_are_errors'):
         gap_cues = _count(context.get('recall_gap_cues'))
@@ -157,8 +184,10 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
                 target_word = str(edit.get('to') or edit.get('target') or edit.get('replacement') or edit.get('new_text') or '')
                 reason = str(edit.get('rule_id') or edit.get('reason') or '')
                 reasons.append((source_word + ' → ' + target_word + (' · ' + reason if reason else '')).strip(' →'))
-        warnings.append(line('AI建议被保护规则拒绝 {count} 处{reason}', count=rejected,
-                             reason='：' + reasons[0] if reasons and reasons[0] else ''))
+        rejected_reason = reasons[0] if reasons and reasons[0] else ''
+        rejected_line = line('AI建议被保护规则拒绝 {count} 处{reason}', count=rejected,
+                             reason='：' + rejected_reason if rejected_reason else '')
+        warnings.append(rejected_line)
     if project_error:
         warnings.insert(0, line('工程无法载入：{reason}', reason=project_error))
     if outcome.polish_status not in {'completed', 'disabled'}:
@@ -168,11 +197,14 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
     if not warnings and outcome.review_issue_count:
         warnings.append(line('待审核：{count} 项；执行完成不等于质量检查通过', count=outcome.review_issue_count))
     warnings = list(dict.fromkeys(warnings))
+    # The rejected edits are counted with the review items on the page.
+    chip_warnings = [text for text in warnings if text != rejected_line]
     if len(warnings) > 2:
         warnings = [warnings[0], '；'.join(warnings[1:])]
 
     stages = _rows(report.get('stages'))
-    def stage(parts, short_name):
+    measured = []  # [name, seconds or None, value text, kind, finished]
+    def stage(parts, short_name, kind='local'):
         found = next((row for row in reversed(stages) if any(part in str(row.get('label') or '').lower() for part in parts)
                       and '筛选' not in str(row.get('label') or '')), None)
         if not found:
@@ -180,10 +212,19 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
         elapsed = found.get('elapsed_seconds')
         state = str(found.get('status') or 'unknown')
         status = translate({'completed': '完成', 'failed': '失败', 'cancelled': '取消', 'skipped': '未执行'}.get(state, '状态待确认'), language)
-        return short_name + ' ' + (f'{float(elapsed):.3f}s ' if isinstance(elapsed, (int, float)) else '') + status
+        timed = isinstance(elapsed, (int, float))
+        took = line('{value} 秒', value=f'{float(elapsed):.1f}') if timed else ''
+        measured.append([short_name, float(elapsed) if timed else None,
+                         took if state == 'completed' and timed else (took + ' ' if took else '') + status,
+                         kind, state == 'completed'])
+        # 2026-11-11 (user): a finished stage shows its time alone, to one
+        # decimal; only a stage that did not finish names its state.
+        if state == 'completed' and isinstance(elapsed, (int, float)):
+            return f'{short_name} {float(elapsed):.1f}s'
+        return short_name + ' ' + (f'{float(elapsed):.1f}s ' if isinstance(elapsed, (int, float)) else '') + status
     local_stages = [stage(parts, name) for parts, name in ((('moss',), 'MOSS'), (('fireredasr2-aed',), 'FireRed'), (('qwen3-asr',), 'Qwen3'))]
-    remote_stages = [stage(('文字校对', '文本校对', '文字校准', '受限校对', 'polish'), translate('AI校对', language)),
-                     stage(('断句', 'group'), translate('AI断句', language))]
+    remote_stages = [stage(('文字校对', '文本校对', '文字校准', '受限校对', 'polish'), translate('AI校对', language), 'ai'),
+                     stage(('断句', 'group'), translate('AI断句', language), 'ai')]
     timing_lines = []
     if any(local_stages):
         timing_lines.append(' · '.join(value for value in local_stages if value))
@@ -202,4 +243,35 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
     quality_line = line('待审核 {count} 项 · {search}', count=outcome.review_issue_count,
                         search=translate(outcome.search_label, language))
     logs = tuple((warnings + timing_lines + [counts_line, quality_line])[:6])
-    return CompletionSummary(tuple(task_lines), logs, local_count, proposed, accepted, rejected)
+
+    tiles = []
+    if isinstance(seconds, (int, float)):
+        tiles.append((line('{value} 秒', value=f'{float(seconds):.1f}'), translate('有效音频', language)))
+    if terms is not None:
+        tiles.append((str(terms), translate('有效词条', language)))
+    if accepted is not None:
+        tiles.append((line('{count} 处', count=accepted), translate('AI 采纳修改', language)))
+    if _count(speakers):
+        tiles.append((line('{count} 人', count=_count(speakers)), translate('说话人', language)))
+    facts = []
+    if not saved_is_routine or (project_cues is not None and project_cues != outcome.final_cues):
+        facts.append((translate('字幕', language), task_lines[1]))
+    facts.append((translate('场景', language), scene.split('：', 1)[-1] if domain else scene))
+    facts.append((translate('词库', language), versions + (line(' · {count} 个有效词条', count=terms) if terms is not None else '')))
+    if name:
+        facts.append((translate('素材', language), name))
+    facts.append((translate('工程', language), str(project_path) if project_path else task_lines[3]))
+    longest = max((row[1] for row in measured if row[1] is not None), default=0.0)
+    timings = tuple((row[0], (row[1] / longest if longest > 0 else 0.0) if row[1] is not None else None,
+                     row[2], row[3], row[4]) for row in measured)
+    chips = [(text, 'warning') for text in chip_warnings]
+    if any(value is not None for value in (proposed, accepted, rejected)):
+        chips.append((line('AI 提出 {proposed} · 采纳 {accepted} · 拒绝 {rejected}',
+                           proposed=proposed if proposed is not None else unknown,
+                           accepted=accepted if accepted is not None else unknown,
+                           rejected=rejected if rejected is not None else unknown), 'ai'))
+    if local_count is not None:
+        chips.append((line('名称规范化 {count} 处', count=local_count), ''))
+    chips.append((translate(outcome.search_label, language), ''))
+    return CompletionSummary(tuple(task_lines), logs, local_count, proposed, accepted, rejected,
+                             tuple(tiles), tuple(facts), timings, tuple(chips), rejected_reason)

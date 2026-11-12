@@ -357,8 +357,8 @@ def test_readiness_failure_is_visible_and_keeps_pending(tmp_path):
         assert events and events[-1].get("error") == "boom"
         # 挂起重载保留：Studio 下次进入自动重试
         assert page._pending_recognition_reload == str(target)
-        chip = page.recognition_chip_label.text()
-        assert "自动重载" in chip
+        assert "自动重载" in page._recognition_status_sticky
+        assert '自动重载' in page._recognition_subtitle_task.rows['source']['error']
         gate.cancel()
         page._pending_recognition_reload = ""
     finally:

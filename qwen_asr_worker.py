@@ -84,6 +84,7 @@ def main() -> None:
     load_ms = (time.perf_counter() - load_started) * 1000.0
     _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
     generated = []
+    from twobyteasr.recognition.qwen_generation import generation_measure, retry_token_budget
     if policy.get('generation_evidence'):
         original_generate = model.model.generate
         def measured_generate(*a, **kw):
@@ -91,12 +92,9 @@ def main() -> None:
             sequences = getattr(value, 'sequences', value)
             prefix = int(kw['input_ids'].shape[-1])
             eos = model.model.generation_config.eos_token_id
-            eos = set(eos if isinstance(eos, (list, tuple)) else [eos])
             for ids in sequences[:, prefix:].detach().cpu().tolist():
-                stop = next((i for i, token in enumerate(ids) if token in eos), None)
-                generated.append(dict(output_tokens=stop + 1 if stop is not None else len(ids),
-                                      eos_observed=stop is not None,
-                                      token_limit_reached=stop is None and len(ids) >= max_new_tokens))
+                generated.append(generation_measure(ids, eos_ids=eos,
+                    limit=int(kw.get('max_new_tokens', model.max_new_tokens)), input_tokens=prefix))
             return value
         model.model.generate = measured_generate
     try:
@@ -124,6 +122,28 @@ def main() -> None:
             if policy.get('generation_evidence') and len(measures) != len(batch):
                 raise RuntimeError('Qwen generation evidence/window mapping mismatch')
             for row_index, (job, value) in enumerate(zip(batch, values)):
+                measure = measures[row_index] if measures else None
+                if measure and measure['token_limit_reached']:
+                    previous = dict(measure, text=str(getattr(value,'text','') or ''))
+                    budget = retry_token_budget(job['end']-job['start'], measure['max_new_tokens'])
+                    if budget > measure['max_new_tokens']:
+                        if policy.get('cancel_file') and Path(policy['cancel_file']).exists():
+                            raise RuntimeError('Qwen recognition cancelled before local retry')
+                        # Re-run this exact PCM once, no context change, no
+                        # concatenation of a truncated prefix with its retry.
+                        before = len(generated)
+                        model.max_new_tokens = budget
+                        try:
+                            value = model.transcribe(audio=[audio[row_index]],
+                                context=[str(job.get('context') or '')],
+                                language=[job.get('language',language)], return_time_stamps=False)[0]
+                        finally:
+                            model.max_new_tokens = max_new_tokens
+                        if len(generated) != before+1:
+                            raise RuntimeError('Qwen retry generation/window mapping mismatch')
+                        measure = dict(generated[-1], retry_count=1, initial=previous)
+                    else:
+                        measure = dict(measure, retry_count=0)
                 text = str(getattr(value, "text", "") or "").strip()
                 try:
                     confidence = float(getattr(value, "confidence", 0.0)) if text else 0.0
@@ -135,7 +155,9 @@ def main() -> None:
                     "samples": job["samples"], "pcm_sha256": job["pcm_sha256"],
                     "context_sha256": hashlib.sha256(str(job.get("context") or "").encode("utf8")).hexdigest(),
                     "request_language": job.get('language', language),
-                    **({'generation': measures[row_index]} if measures else {})})
+                    **({'generation':dict(measure, input_seconds=job['samples']/sample_rate,
+                         actual_language=str(getattr(value,'language','') or ''),
+                         coverage=[job['start'],job['end']])} if measure else {})})
             if policy.get('checkpoint'):
                 _atomic_write(Path(args.output).with_suffix('.partial.json'),
                               {'results': results, 'policy': policy, 'complete': False})

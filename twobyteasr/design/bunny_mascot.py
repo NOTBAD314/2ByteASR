@@ -17,7 +17,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QWidget
 
@@ -56,6 +56,7 @@ def load_rig():
     return rig, images
 
 
+@lru_cache(maxsize=8)
 def bunny_face_pixmap(size: int, ratio: float = 1.0) -> QPixmap:
     """A round crop of the bunny's face (progress knobs, small badges)."""
     side = max(1, round(size * ratio))
@@ -88,12 +89,18 @@ class BunnyMascot(QWidget):
         self.motion = motion
         self.mood = 'idle'
         self._talk_until = 0.0
+        self._open_until = 0.0
+        self._hop_from = -1.0
+        self.stretch = 0.0               # >0 taller and thinner, <0 squashed (the tutorial's puck)
         self._started = time.perf_counter()
         self._next_blink = self._started + 1.2
         self._blink_until = 0.0
         self._scaled = None
         self._scale_key = None
-        self.rig = load_rig()
+        from .mascot_assets import provider
+        self._assets = provider()
+        self._assets.ready.connect(self._assets_ready)
+        self.rig = (self._assets.rig, {}) if self._assets.rig else None
         self.trim = (self.rig[0]['trim'] if self.rig else [0, 0, 1, 1])
         self.set_mascot_height(height)
         self._timer = QTimer(self)
@@ -121,6 +128,16 @@ class BunnyMascot(QWidget):
         self._talk_until = time.perf_counter() + seconds
         self.update()
 
+    def open_mouth(self, seconds: float = 0.08) -> None:
+        """One syllable (2026-11-11, the tutorial's babble): the mouth opens now, not on the next flap."""
+        self._open_until = time.perf_counter() + seconds
+        self.update()
+
+    def hop(self) -> None:
+        """One small jump (a click on the tutorial bunny)."""
+        self._hop_from = time.perf_counter()
+        self.update()
+
     def set_mood(self, mood: str) -> None:
         if mood != self.mood:
             self.mood = mood
@@ -137,32 +154,20 @@ class BunnyMascot(QWidget):
 
     # ------------------------------------------------------------- painting
     def _layers(self):
-        """Layers pre-scaled once per size and device pixel ratio."""
+        """Demand shared, background-prepared layers for this size and DPI."""
         ratio = self.devicePixelRatioF()
-        key = (self.scale, ratio)
-        if self._scale_key != key:
-            rig, images = self.rig
-            factor = self.scale * ratio
-            scaled = {}
-            offsets = {}
-            for name, pixmap in images.items():
-                item = pixmap.scaled(round(pixmap.width() * factor), round(pixmap.height() * factor),
-                                     Qt.AspectRatioMode.IgnoreAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation)
-                bounds=rig.get('_alpha_bounds',{}).get(name)
-                offset=QPointF()
-                if bounds:
-                    sx,sy=item.width()/pixmap.width(),item.height()/pixmap.height()
-                    left=max(0,math.floor(bounds[0]*sx)-4);top=max(0,math.floor(bounds[1]*sy)-4)
-                    right=min(item.width(),math.ceil(bounds[2]*sx)+4);bottom=min(item.height(),math.ceil(bounds[3]*sy)+4)
-                    item=item.copy(QRect(left,top,max(1,right-left),max(1,bottom-top)))
-                    offset=QPointF(left/ratio,top/ratio)
-                item.setDevicePixelRatio(ratio)
-                scaled[name] = item
-                offsets[name]=offset
-            self._scaled_offsets=offsets
-            self._scaled, self._scale_key = scaled, key
+        key = self._assets.request(self.mascot_height, ratio)
+        cached = self._assets.cache.get(key)
+        if cached is not None and self._scale_key != key:
+            self._scaled, offsets, _size = cached
+            self._scaled_offsets = {name: QPointF(*offset) for name, offset in offsets.items()}
+            self._scale_key = key
         return self._scaled
+
+    @Slot(object)
+    def _assets_ready(self, key):
+        if key == (self.mascot_height, self.devicePixelRatioF()):
+            self.update()
 
     def _eyes_closed(self, now):
         if self.mood == 'sad':
@@ -173,13 +178,25 @@ class BunnyMascot(QWidget):
         return now < self._blink_until and not self.reduced_motion
 
     def _mouth_open(self, now):
-        return now < self._talk_until and int(now / 0.11) % 2 == 0
+        return now < self._open_until or (now < self._talk_until and int(now / 0.11) % 2 == 0)
+
+    HOP_S = 0.42
+
+    def _hop_lift(self, now):
+        k = (now - self._hop_from) / self.HOP_S
+        return math.sin(math.pi * k) if 0.0 <= k < 1.0 and not self.reduced_motion else 0.0
 
     def paintEvent(self, _event):
         if not self.available:
             return
         rig, _images = self.rig
         layers = self._layers()
+        if layers is None:
+            painter = QPainter(self)
+            face = bunny_face_pixmap(self.mascot_height, self.devicePixelRatioF())
+            painter.drawPixmap(QPointF(self.pad_x, self.pad_top), face)
+            painter.end()
+            return
         now = time.perf_counter()
         t = 0.0 if self.reduced_motion else now - self._started
         s = self.scale
@@ -188,7 +205,14 @@ class BunnyMascot(QWidget):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         # Canvas origin so the trimmed bunny sits at (pad_x, pad_top).
         painter.translate(self.pad_x - self.trim[0] * s, self.pad_top - self.trim[1] * s)
+        lift = self._hop_lift(now)
+        if lift:
+            painter.translate(0, -lift * 70 * s)
         feet = QPointF(455 * s, 650 * s)
+        if self.stretch:   # 2026-11-11: picked up it stretches, landing it squashes (about its feet)
+            painter.translate(feet)
+            painter.scale(1 - 0.5 * self.stretch, 1 + self.stretch)
+            painter.translate(-feet)
         ring = QPointF(rig['ring'][0] * s, rig['ring'][1] * s)
         if self.mood == 'sad':
             self._rotate(painter, feet, -9)

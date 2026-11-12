@@ -112,13 +112,19 @@ class LanguageBadgeRow(QWidget):
     the card layout (no resize feedback).
     """
 
-    def __init__(self, parent=None, *, short: bool = False, caption: bool = False):
+    def __init__(self, parent=None, *, short: bool = False, caption: bool = False, grid_columns: int = 0):
         super().__init__(parent)
         self.setObjectName("languageBadgeRow")
         self.short = bool(short)
+        # grid_columns > 0 (model list column, 2026-11-11): the badges wrap
+        # into rows of that many, full names, no caption.
+        self.grid_columns = max(0, int(grid_columns))
         self._compact = False
         self._fit_pending = False
         self._support = None
+        if self.grid_columns:
+            self._build_grid()
+            return
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3 if self.short else 4)
@@ -138,6 +144,31 @@ class LanguageBadgeRow(QWidget):
         self.more.hide()
         layout.addWidget(self.more)
         layout.addStretch(1)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.set_support(None)
+        self.refresh_theme_palette()
+
+    def _build_grid(self) -> None:
+        from PySide6.QtWidgets import QGridLayout
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(4)
+        layout.setVerticalSpacing(4)
+        self.caption = None
+        self.badges = {}
+        position = 0
+        for code in BADGE_LANGUAGES:
+            badge = self._badge()
+            self.badges[code] = badge
+            layout.addWidget(badge, position // self.grid_columns, position % self.grid_columns)
+            position += 1
+        self.more = self._badge()
+        self.more.setProperty("tier", "more")
+        self.more.hide()
+        layout.addWidget(self.more, position // self.grid_columns, position % self.grid_columns,
+                         1, self.grid_columns - position % self.grid_columns,
+                         Qt.AlignmentFlag.AlignLeft)
+        layout.setColumnStretch(self.grid_columns, 1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.set_support(None)
         self.refresh_theme_palette()
@@ -170,7 +201,7 @@ class LanguageBadgeRow(QWidget):
         language = current_language()
         support = self._support or {}
         summary = support.get("summary") or ""
-        if not self.short and self.isVisible():
+        if not self.short and not self.grid_columns and self.isVisible():
             self._compact = self.width() < self.full_names_width()
         short = self.short or self._compact
         for code, badge in self.badges.items():
@@ -210,15 +241,15 @@ class LanguageBadgeRow(QWidget):
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
-        return hint if self.short else QSize(self.full_names_width(), hint.height())
+        return hint if self.short or self.grid_columns else QSize(self.full_names_width(), hint.height())
 
     def minimumSizeHint(self) -> QSize:
         hint = super().minimumSizeHint()
-        return hint if self.short else QSize(self.full_names_width(), hint.height())
+        return hint if self.short or self.grid_columns else QSize(self.full_names_width(), hint.height())
 
     def _schedule_fit(self) -> None:
         # Outside the layout pass that resized the row.
-        if not self.short and not self._fit_pending:
+        if not self.short and not self.grid_columns and not self._fit_pending:
             self._fit_pending = True
             QTimer.singleShot(0, self._fit_names)
 
