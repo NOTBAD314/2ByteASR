@@ -44,8 +44,14 @@ def edit(manager, key):
     return manager.cards[key].name_edit
 
 
+def open_card(manager, key):
+    """A click on the speaker's chip shows its card on the right."""
+    manager._tile_clicked(key, Qt.KeyboardModifier.NoModifier)
+    APP.processEvents()
+    return manager.cards[key]
+
+
 def test_enter_commits_one_identity_and_one_undo_without_resetting_checks(manager, tmp_path):
-    manager.multi_button.setChecked(True)
     manager._select_visible('all')
     original_ids = [speaker.id for speaker in manager.page.project.speakers]
     edit(manager, 'S00').setFocus()
@@ -68,17 +74,15 @@ def test_enter_commits_one_identity_and_one_undo_without_resetting_checks(manage
     assert manager._selected_ids() == set(original_ids)
 
 
-def test_moving_to_another_card_submits_previous_name_and_keeps_checks(manager):
-    manager.multi_button.setChecked(True)
-    manager.cards['S00'].select_check.setChecked(True)
-    manager.cards['S02'].select_check.setChecked(True)
+def test_moving_to_another_card_submits_previous_name(manager):
+    open_card(manager, 'S00')
     edit(manager, 'S00').setFocus()
     edit(manager, 'S00').setText('中文名字')
+    open_card(manager, 'S01')
     edit(manager, 'S01').setFocus()
     APP.processEvents()
     assert names(manager)['S00'] == '中文名字'
     assert edit(manager, 'S01').text() == '第二人'
-    assert manager._selected_ids() == {'S00', 'S02'}
     assert manager.page.undo_stack.count() == 1
     edit(manager, 'S01').setText('另一个名字')
     manager.done(1)
@@ -88,6 +92,7 @@ def test_moving_to_another_card_submits_previous_name_and_keeps_checks(manager):
 
 
 def test_focus_out_commits_valid_text_and_empty_name_keeps_draft_and_previous_value(manager):
+    open_card(manager, 'S00')
     edit(manager, 'S00').setFocus()
     edit(manager, 'S00').setText('失焦保存')
     manager.done_button.setFocus()
@@ -95,13 +100,13 @@ def test_focus_out_commits_valid_text_and_empty_name_keeps_draft_and_previous_va
     assert names(manager)['S00'] == '失焦保存'
     edit(manager, 'S00').setFocus()
     edit(manager, 'S00').setText('  ')
-    edit(manager, 'S01').setFocus()
+    manager.done_button.setFocus()
     APP.processEvents()
     assert names(manager)['S00'] == '失焦保存'
     assert edit(manager, 'S00').text() == '  '
     assert manager.cards['S00'].name_error.isVisible()
     manager.done(1)
-    assert manager.isVisible()
+    assert manager.isVisible() and manager.inspector.currentWidget() is manager.cards['S00']
     assert manager.page.undo_stack.count() == 1
 
 
@@ -126,11 +131,10 @@ def test_ime_preedit_never_becomes_name_and_committed_chinese_is_saved(manager):
 
 
 def test_filter_refresh_and_colour_changes_preserve_checks_and_active_draft(manager):
-    manager.multi_button.setChecked(True)
     manager._select_visible('all')
     edit(manager, 'S00').setText('保留草稿')
     manager.speaker_filter.setText('第二人')
-    assert manager.cards['S00'].isHidden() and not manager.cards['S01'].isHidden()
+    assert manager.tiles['S00'].isHidden() and not manager.tiles['S01'].isHidden()
     assert manager._selected_ids() == {'S00', 'S01', 'S02'}
     manager.refresh()
     assert edit(manager, 'S00').text() == '保留草稿'

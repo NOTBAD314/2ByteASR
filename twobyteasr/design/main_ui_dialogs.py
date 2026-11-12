@@ -160,6 +160,7 @@ class SpringDialog(QDialog):
 
     def __init__(self, parent=None, *, backdrop=True):
         super().__init__(parent)
+        self._owns_theme_sheet = True
         self._use_backdrop = bool(backdrop)
         self._modal_backdrop = None
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -212,6 +213,8 @@ class SpringDialog(QDialog):
 
     def refresh_theme_palette(self) -> None:
         applied_theme_key = theme_key()
+        if getattr(self, '_applied_theme_key', None) == applied_theme_key:
+            return
         theme = theme_definition(applied_theme_key)
         self._theme_fill = theme.surface
         palette = self.palette()
@@ -223,7 +226,11 @@ class SpringDialog(QDialog):
         palette.setColor(QPalette.ColorRole.ButtonText, QColor(theme.text))
         palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.text_muted))
         self.setPalette(palette)
-        self.setStyleSheet(retheme_qss(APP_QSS, theme) + build_secondary_surface_qss(theme))
+        if getattr(self, '_theme_scope_owner', False):
+            from .theme_scopes import refresh
+            refresh(self)
+        else:
+            self.setStyleSheet(retheme_qss(APP_QSS, theme) + build_secondary_surface_qss(theme))
         if self._modal_backdrop is not None:
             self._modal_backdrop.setStyleSheet(
                 f"background: {theme.media}; border: 0;"

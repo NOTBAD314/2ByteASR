@@ -23,6 +23,15 @@ class StudioComponentTokens:
 
 def build_studio_component_qss(theme, tokens: StudioComponentTokens | None = None) -> str:
     t = tokens or StudioComponentTokens()
+    from .ui_theme import blend_hex, contrast_ratio
+    track = blend_hex(theme.panel, theme.text, 0.09)
+    # Fields inside the style cards: near white on light themes, a lifted
+    # tone on dark ones; always with a fine edge (2026-11-12, user).
+    field_white = blend_hex(theme.surface_elevated, "#ffffff", 0.65) if theme.is_light else blend_hex(theme.panel, theme.text, 0.10)
+    field_edge = blend_hex(theme.surface_elevated, theme.text, 0.16)
+    bulk_edge = blend_hex(theme.warning_soft, theme.warning, 0.4)
+    bulk_ink = max((theme.surface, theme.text, "#ffffff", "#1d1b18"), key=lambda ink: contrast_ratio(ink, theme.warning))
+    bulk_hover = blend_hex(theme.warning, theme.text, 0.14)
     return f"""
 /* Timeline geometry belongs to this bar, independently of dialog controls. */
 QWidget#studioTimelineCommandBar QToolButton#studioTool {{
@@ -157,22 +166,61 @@ QWidget#studioTimelineCommandBar QPushButton#studioButton {{
 }}
 QWidget#studioTimelineCommandBar QPushButton#studioButton:hover {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border_strong}; }}
 QWidget#studioTimelineCommandBar QPushButton#studioButton:checked {{ background: {theme.accent_tint}; color: {theme.text}; border-color: {theme.accent}; }}
+/* 2026-11-11 (user's design A): the three filters are one segmented track;
+   全部标记已检查 is a one-line strip; 上一条 / 下一条 are one pill stepper. */
+QFrame#cueFilterTrack {{ background: {track}; border: 0; border-radius: 12px; }}
 QPushButton#filterChip {{
-    background: transparent; color: {theme.text_secondary}; border: 1px solid {theme.border};
-    border-radius: {t.control_radius}px; min-height: 32px; padding: 0 10px;
+    background: transparent; color: {theme.text_secondary}; border: 1px solid transparent;
+    border-radius: 9px; min-height: 30px; padding: 0 8px;
     font-family: {UI_FONT_STACK}; font-size: {t.label_size}px; font-weight: 500;
 }}
-QPushButton#filterChip:hover {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border_strong}; }}
-QPushButton#filterChip:checked {{ background: {theme.surface_elevated}; color: {theme.text}; border-color: {theme.text_muted}; font-weight: 600; }}
+QPushButton#filterChip:hover {{ background: {theme.selected}; color: {theme.text}; }}
+QPushButton#filterChip:checked {{ background: {theme.surface_elevated}; color: {theme.text}; border-color: {theme.border_strong}; font-weight: 700; }}
 QPushButton#filterChip:focus {{ border-color: {theme.focus}; }}
 QPushButton#reviewEntryButton {{
-    background: {theme.accent_tint}; color: {theme.accent_text}; border: 1px solid transparent;
-    border-radius: {t.control_radius}px; min-height: 32px; padding: 0 10px;
-    font-family: {UI_FONT_STACK}; font-size: {t.label_size}px; font-weight: 600;
+    background: {theme.accent}; color: {theme.text_on_accent}; border: 1px solid transparent;
+    border-radius: 12px; min-height: 32px; padding: 0 14px;
+    font-family: {UI_FONT_STACK}; font-size: {t.label_size}px; font-weight: 700;
 }}
-QPushButton#reviewEntryButton:hover {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
+QPushButton#reviewEntryButton:hover {{ background: {theme.accent_hover}; color: {theme.text_on_accent}; }}
 QPushButton#reviewEntryButton:pressed {{ background: {theme.accent_pressed}; color: {theme.text_on_accent}; }}
 QPushButton#reviewEntryButton:focus {{ border-color: {theme.focus}; }}
+QFrame#bulkReviewStrip {{ background: {theme.warning_soft}; border: 1px solid {bulk_edge}; border-radius: 12px; }}
+QLabel#bulkReviewDot {{ background: {theme.warning}; border-radius: 4px; }}
+QLabel#bulkReviewNote {{ background: transparent; color: {theme.text_secondary}; font-size: {t.caption_size}px; }}
+QPushButton#bulkReviewButton {{
+    background: {theme.warning}; color: {bulk_ink}; border: 0; border-radius: 8px;
+    min-height: 26px; padding: 0 10px; font-size: {t.caption_size}px; font-weight: 700;
+}}
+QPushButton#bulkReviewButton:hover {{ background: {bulk_hover}; }}
+QFrame#cueStepper {{ background: {theme.surface_elevated}; border: 1px solid {theme.border_strong}; border-radius: 19px; }}
+QPushButton#cueStepPrevious, QPushButton#cueStepNext {{
+    border: 0; border-radius: 15px; min-width: 40px; max-width: 40px; min-height: 30px; max-height: 30px;
+    padding: 0 0 3px 0; font-size: 20px; font-weight: 700;
+}}
+QPushButton#cueStepPrevious {{ background: {theme.accent_tint}; color: {theme.accent_text}; }}
+QPushButton#cueStepNext {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
+QPushButton#cueStepPrevious:hover {{ background: {theme.selected}; }}
+QPushButton#cueStepNext:hover {{ background: {theme.accent_hover}; }}
+QPushButton#cueStepPrevious:pressed, QPushButton#cueStepNext:pressed {{ background: {theme.accent_pressed}; color: {theme.text_on_accent}; }}
+/* 2026-11-12 (user, design A): a bordered square filter button beside the
+   search box. */
+QFrame#cueListPanel QToolButton#cueFilterButton {{ background: {theme.surface_elevated}; border: 1px solid {theme.border_strong};
+    border-radius: 9px; min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; }}
+QFrame#cueListPanel QToolButton#cueFilterButton:hover {{ border-color: {theme.accent}; }}
+/* 2026-11-12 (user): the rows are cards already; the list has no box of its own. */
+QFrame#cueListPanel QTableView#cueTable {{ background: transparent; border: 0; }}
+QFrame#cueListPanel QLineEdit#cueSearch {{ background: {theme.surface_elevated}; border: 1px solid {theme.border_strong};
+    border-radius: 10px; min-height: 32px; padding: 0 6px 0 2px; }}
+QFrame#cueListPanel QLineEdit#cueSearch:focus {{ border-color: {theme.accent}; }}
+/* 2026-11-12: the position sits inside the pill, between the arrows; it is
+   still a number box (type and press Enter to jump). */
+QFrame#cueStepper QSpinBox#cueStepPosition, QFrame#cueStepper QSpinBox#cueStepPosition:hover {{
+    background: transparent; color: {theme.text}; border: 1px solid transparent; border-radius: 8px;
+    padding: 0 2px; min-height: 26px; max-height: 26px; font-size: {t.label_size}px; font-weight: 700;
+}}
+QFrame#cueStepper QSpinBox#cueStepPosition:focus {{ background: {theme.input_surface}; border-color: {theme.accent}; }}
+QFrame#cueStepper QLabel#cueStepTotal {{ background: transparent; color: {theme.text_muted}; font-size: {t.label_size}px; }}
 /* 2026-11-10 (user): 「AI 工具」 and 「任务进度」 were unstyled square tool
    buttons. Both are soft pills in the theme accent family. */
 QToolButton#cueAiButton {{
@@ -258,8 +306,22 @@ QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] QToolButton#rang
     background: {theme.selected}; border-color: transparent; }}
 QWidget#studioTimelineCommandBar QWidget[commandGroup="view"] QToolButton#studioTool,
 QWidget#studioTimelineCommandBar QWidget[commandGroup="output"] QToolButton#studioTool,
-QWidget#studioTimelineCommandBar QWidget[commandGroup="editing"] QToolButton#studioTool {{
+QWidget#studioTimelineCommandBar QWidget[commandGroup="editing"] QToolButton#studioTool,
+QWidget#studioTimelineCommandBar QWidget[commandGroup="cue"] QToolButton#studioTool,
+QWidget#studioTimelineCommandBar QWidget[commandGroup="navigation"] QToolButton#studioTool {{
     min-height: 32px; max-height: 32px; }}
+/* 2026-11-12 (user, draft B split in two): the 当前字幕 pill (number, ripple
+   merges, delete) left of the transport; locate / start / end to its right. */
+QWidget#studioTimelineCommandBar QWidget[commandGroup="cue"],
+QWidget#studioTimelineCommandBar QWidget[commandGroup="navigation"] {{
+    background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 12px; }}
+QWidget#studioTimelineCommandBar QWidget[commandGroup="cue"] QToolButton#studioTool[danger="true"]:hover {{
+    background: {theme.danger_soft}; }}
+QLabel#timelineCueBadge {{
+    background: {theme.accent_tint}; color: {theme.accent_text}; border: 0; border-radius: 7px;
+    min-width: 34px; max-width: 34px; min-height: 24px; max-height: 24px; padding: 0;
+    font-family: {MONO_FONT_STACK}; font-size: {t.caption_size}px; font-weight: 700; }}
+QLabel#timelineCueBadge[empty="true"] {{ background: {theme.selected}; color: {theme.text_muted}; }}
 QSlider#timelineZoomSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {theme.border_strong}; }}
 QSlider#timelineZoomSlider::sub-page:horizontal {{ height: 4px; border-radius: 2px; background: {theme.text_muted}; }}
 QSlider#timelineZoomSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -5px 0; border-radius: 7px;
@@ -318,6 +380,37 @@ QFrame#styleScopeBar QRadioButton#scopeOption::indicator {{ width: 0; height: 0;
 QFrame#styleScopeBar QRadioButton#scopeOption:hover {{ border-color: {theme.border_strong}; color: {theme.text}; }}
 QFrame#styleScopeBar QRadioButton#scopeOption:checked {{ background: {theme.accent_tint}; color: {theme.accent_text};
     border-color: {theme.accent}; font-weight: 700; }}
+QFrame#styleApplyMode {{ background: transparent; border: 0; }}
+QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption {{ color: {theme.text_secondary}; background: {theme.surface};
+    border: 1px solid {theme.border}; border-radius: 9px; padding: 0 6px; font-size: 12px; font-weight: 500; }}
+QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:hover {{ border-color: {theme.border_strong}; color: {theme.text}; }}
+QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:checked {{ background: {theme.accent}; color: {theme.text_on_accent};
+    border-color: {theme.accent}; font-weight: 700; }}
+QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:checked:hover {{ background: {theme.accent_hover}; color: {theme.text_on_accent}; }}
+QLabel#stylePropertyRowChevron[slot="true"] {{ background: {theme.surface}; color: {theme.accent_text};
+    border: 1px solid {theme.border}; border-radius: 9px; padding: 0; }}
+QLabel#stylePropertyRowChevron[slot="true"][open="true"] {{ background: {theme.accent_tint}; border-color: {theme.accent}; }}
+QLabel#styleScopeSummary {{ background: transparent; color: {theme.text_muted}; font-size: 12px; padding-left: 8px; }}
+/* 2026-11-12 (user, design A): inside the style cards the fields are white
+   boxes with a fine border (the soft fill read as grey), and the chosen
+   B / I / U is the theme accent. Two ids beat the soft card rules. */
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QComboBox, QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QComboBox,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QLineEdit, QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QLineEdit,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QAbstractSpinBox {{
+    background: {field_white}; border: 1px solid {field_edge}; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QComboBox:hover, QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QComboBox:hover,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QLineEdit:hover, QFrame#contextPanel QFrame#styleSection[softCard="true"] QAbstractSpinBox:hover {{
+    background: {field_white}; border-color: {theme.border_strong}; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QComboBox:focus, QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QComboBox:focus,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QLineEdit:focus, QFrame#contextPanel QFrame#styleSection[softCard="true"] QAbstractSpinBox:focus {{
+    border-color: {theme.accent}; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QComboBox QLineEdit {{ border: 0; background: transparent; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QToolButton#styleEmphasis {{ background: {field_white}; border: 1px solid {field_edge}; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QToolButton#styleEmphasis:hover {{ border-color: {theme.accent}; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QToolButton#styleEmphasis:checked {{
+    background: {theme.accent}; color: {theme.text_on_accent}; border-color: {theme.accent}; }}
+QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QRadioButton#scopeOption {{ background: {field_white}; border: 1px solid {field_edge}; }}
+QFrame#contextPanel QFrame#styleScopeBar[softCard="true"] QRadioButton#scopeOption:checked {{ background: {theme.accent}; color: {theme.text_on_accent}; border-color: {theme.accent}; }}
 QCheckBox#styleSwitch {{ background: transparent; spacing: 0; }}
 QCheckBox#styleSwitch::indicator {{ width: 30px; height: 16px; border-radius: 8px; border: 1px solid {theme.border_strong};
     background: {theme.input_surface}; }}

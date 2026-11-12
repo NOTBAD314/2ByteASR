@@ -1,7 +1,7 @@
 """The loading mascot keeps its authored motion while dropping invisible pixels."""
 import numpy as np
 import pytest
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint,QPointF,Qt
 from PySide6.QtGui import QImage,QPainter
 from PySide6.QtWidgets import QApplication
 
@@ -11,8 +11,26 @@ def test_cropped_layers_match_uncropped_frame(monkeypatch,ratio,moment):
     from twobyteasr.design import bunny_mascot as module
     app=QApplication.instance() or QApplication([])
     original=module.BunnyMascot(height=270);cropped=module.BunnyMascot(height=270)
-    assert cropped.rig and cropped.rig[0].get('_alpha_bounds')
-    rig,images=original.rig;original.rig=(dict(rig,_alpha_bounds={}),images)
+    assert cropped.rig
+    original.rig = module.load_rig()
+    # Independent reference: the original untrimmed full PNG layers, scaled
+    # synchronously only in this pixel regression. Production uses worker QImages.
+    def reference_layers():
+        factor = original.scale * ratio
+        original._scaled = {name: image.scaled(round(image.width()*factor),round(image.height()*factor),
+            Qt.AspectRatioMode.IgnoreAspectRatio,Qt.TransformationMode.SmoothTransformation)
+            for name,image in original.rig[1].items()}
+        for image in original._scaled.values():image.setDevicePixelRatio(ratio)
+        original._scaled_offsets = {name:QPointF() for name in original._scaled}
+        return original._scaled
+    original._layers = reference_layers
+    import time
+    from PySide6.QtTest import QTest
+    key = cropped._assets.request(270,ratio)
+    deadline = time.monotonic()+5
+    while key not in cropped._assets.cache and time.monotonic()<deadline:
+        time.sleep(.005);QTest.qWait(5)
+    assert key in cropped._assets.cache
     monkeypatch.setattr(module.time,'perf_counter',lambda:moment)
     def capture(widget):
         widget.devicePixelRatioF=lambda:ratio

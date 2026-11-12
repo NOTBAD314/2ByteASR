@@ -644,6 +644,24 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         self.state._playback_plan = None
 
     def _validate_and_commit(self) -> StateDelta:
+        visibility=(tuple((s.id,s.hidden) for s in self.project.speakers),
+            tuple(sorted(self.project.studio_state.get('subtitle_track_visibility',{}).items())))
+        old_visibility=getattr(self.project,'_editorial_visibility_signature',visibility)
+        self.project._editorial_visibility_signature=visibility
+        if (self.action_id != 'caption_editor_preview'
+                and self.project.generation_metadata.get('display_overlap_audit',{}).get('status') != 'user_undone'
+                and (self.dirty & (DirtyDomain.CUE_CONTENT|DirtyDomain.CUE_TIMING|DirtyDomain.CUE_MODEL)
+                     or visibility!=old_visibility)):
+            from ..subtitle_rules.display_timing import reconcile_editorial_handoffs
+            changed=reconcile_editorial_handoffs(self.project,
+                () if visibility!=old_visibility else self.affected_cue_ids,self.state.cue_by_id,apply=False)
+            if changed:
+                self.mark_dirty(DirtyDomain.CUE_TIMING|DirtyDomain.TRANSFORM|DirtyDomain.QC|
+                    DirtyDomain.AUTOSAVE|DirtyDomain.NATIVE_SUBTITLE|DirtyDomain.ADVANCED_PREVIEW,
+                    cue_ids=changed)
+                for cue in self.project.cues:
+                    if cue.id in changed:
+                        cue.end_ms,cue.transform=changed[cue.id]
         if self.dirty & SEQUENCE_DOMAINS:
             from ..timeline.studio_edit_sequence import runtime_of
 

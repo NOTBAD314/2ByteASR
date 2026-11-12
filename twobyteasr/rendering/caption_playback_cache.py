@@ -594,7 +594,7 @@ class PlaybackCaptionCache(QObject):
                 from ..caption_style.bilingual_layout import companion_id
                 present = {cue.id for cue in project.cues}
                 ids = tuple(dict.fromkeys(item for cue_id in ids for item in (
-                    (cue_id, companion_id(cue_id)) if companion_id(cue_id) in present else (cue_id,))))
+                    (cue_id, companion_id(cue_id)) if companion_id(cue_id) in present else (cue_id,)) if item in present))
                 for cue_id in ids:
                     with self._lock:
                         if superseded(): break

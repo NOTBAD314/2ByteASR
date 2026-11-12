@@ -13,8 +13,8 @@ def layer_is_shown(page, cue, language="original"):
     milliseconds = sample() if callable(sample) else page.timeline.playhead_ms
     if not cue.start_ms <= milliseconds < cue.end_ms:
         return False
-    if (cue.speaker_id in getattr(page.timeline, "hidden_speakers", ())
-            or not getattr(page, "_subtitle_track_visibility", {}).get(cue.speaker_id, True)):
+    from ..caption_style.subtitle_visibility import layer_visible
+    if not layer_visible(project,cue,language):
         return False
     mode = settings_from_state(project.studio_state).mode
     if language == "translation":

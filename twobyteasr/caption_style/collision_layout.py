@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from threading import RLock
 
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QColor, QGuiApplication, QTransform
+from PySide6.QtGui import QColor, QTransform
 
 
 @dataclass(frozen=True)
@@ -35,17 +35,16 @@ def visual_bounds(snapshot):
         if key in _bounds_cache:
             _bounds_cache.move_to_end(key)
             return QRectF(_bounds_cache[key])
-    from ..rendering.advanced_live_renderer import caption_ink_layout, _expanded_bounds
-    if QGuiApplication.instance() is not None:
-        ink = caption_ink_layout(snapshot)[6]
-    else:
-        # Headless ASS/text consumers must not construct a QFont without Qt.
-        from .resolved_caption_style import visible_glyph_size
-        style = snapshot.resolved_caption.style
-        w, h = visible_glyph_size(snapshot.text, style.font_family, style.bold,
-            style.font_size, style.spacing, style.font_weight, style.font_style_name,
-            style.font_file, style.font_face_index)
-        ink = QRectF(-w*snapshot.anchor_x, -h*snapshot.anchor_y, w, h)
+    from ..rendering.advanced_live_renderer import _expanded_bounds
+    from .resolved_caption_style import visible_glyph_size
+    # Canonical face ink is identical in the GUI, ASS worker and export.
+    # Qt font fallback/raster hinting must not select a different slot plan.
+    style = snapshot.resolved_caption.style
+    w, h = visible_glyph_size(snapshot.text, style.font_family, style.bold,
+        style.font_size, style.spacing, style.font_weight, style.font_style_name,
+        style.font_file, style.font_face_index,
+        float((snapshot.style_recipe.get('layout') or {}).get('lineHeightPx') or 0))
+    ink = QRectF(-w*snapshot.anchor_x, -h*snapshot.anchor_y, w, h)
     stroke = 0.
     for layer in snapshot.strokes:
         width = float(layer.get('width', 0) or 0)
@@ -140,7 +139,8 @@ def solve_layout(snapshots, *, enabled=True, bounds_for=None, fixed_offsets=None
     if not snapshots:
         return CollisionLayout({})
     if len(snapshots) == 1:
-        return CollisionLayout({snapshots[0].cue_id: 0.})
+        key=snapshots[0].cue_id
+        return CollisionLayout({key:(fixed_offsets or {}).get(key,0.)})
     gap = 8.*snapshots[0].playres_y/1080.
     # Translation companions move with their original, never against it.
     from .bilingual_layout import is_companion
@@ -239,90 +239,84 @@ def layout_schedule(snapshots, *, enabled=True, bounds_for=None):
 
 
 def instance_layout(snapshots, *, enabled=True, bounds_for=None):
-    snapshots = tuple(snapshots)
-    offsets, warnings = {}, []
-    events = {}
-    for s in snapshots:
-        events.setdefault(s.start_ms, [[], []])[1].append(s)
-        events.setdefault(s.end_ms, [[], []])[0].append(s)
-    active = {}
-    for at in sorted(events):
-        ending, starting = events[at]
-        for s in ending:
-            active.pop(s.cue_id, None)
-        if starting:
-            layout = solve_layout([*active.values(), *starting], enabled=enabled,
-                bounds_for=bounds_for, fixed_offsets={key: offsets.get(key, 0.) for key in active})
-            offsets.update((s.cue_id, layout.offsets.get(s.cue_id, 0.)) for s in starting)
-            warnings.extend(layout.warnings)
-            active.update((s.cue_id, s) for s in starting)
-    return CollisionLayout(offsets, tuple(dict.fromkeys(warnings)))
+    from .continuity_layout import ContinuityLayout
+    from .bilingual_layout import is_companion
+    snapshots=tuple(snapshots)
+    groups={}
+    for snapshot in snapshots:
+        key=snapshot.cue_id[:-3] if is_companion(snapshot.cue_id) else snapshot.cue_id
+        groups.setdefault(key,[]).append(snapshot)
+    rows=[next((s for s in values if s.cue_id==key),values[0]) for key,values in groups.items()]
+    planner=ContinuityLayout(rows,lambda row:groups[row.cue_id[:-3] if is_companion(row.cue_id) else row.cue_id],bounds_for=bounds_for,enabled=enabled)
+    planner.advance(max((s.start_ms for s in snapshots),default=-1))
+    return CollisionLayout(dict(planner.offsets),tuple(dict.fromkeys(planner.warnings)))
+
+
+def component_index_key(project, revision):
+    return (project.project_id, revision.mapping_revision, revision.visual_revision,
+            tuple(sorted(project.studio_state.get('subtitle_track_visibility', {}).items())),
+            tuple(s.id for s in project.speakers if getattr(s, 'hidden', False)))
+
+
+def prepare_component_index(project, revision):
+    """Pure document work: no fonts, QPixmap, QWidget or live planner."""
+    from .continuity_layout import continuity_components
+    from ..subtitle_rules.display_continuity import layout_cues
+    from ..projects.studio_runtime_state import state_for
+    rows = layout_cues(project, visible_subtitle_cues(project, state_for(project)._view_cues))
+    components = {c.id: cluster for cluster in continuity_components(rows) for c in cluster}
+    project._prepared_collision_components = (component_index_key(project, revision), components)
+    return components
 
 
 class ProjectCollisionLayout:
-    """Revision-indexed components, measured lazily once per overlap component."""
+    """Revision-indexed, lazy components shared with the export planner."""
     def __init__(self):
-        self.key = None
-        self.components = {}
-        self.layouts = {}
+        self.key=None
+        self.components={}
+        self.layouts={}
 
-    def for_cues(self, project, cues, revision):
-        cues = tuple(cues)
-        if not project.studio_state.get('auto_subtitle_stacking', True):
-            return CollisionLayout({})
-        key = (revision.mapping_revision, revision.visual_revision,
-               project.studio_state.get('auto_subtitle_stacking', True),
-               tuple(sorted(project.studio_state.get('subtitle_track_visibility', {}).items())),
-               tuple(s.id for s in project.speakers if getattr(s, 'hidden', False)))
-        if key != self.key:
-            from ..projects.studio_runtime_state import state_for
-            from .subtitle_stacking import _cluster_overlaps
-            rows = visible_subtitle_cues(project, state_for(project)._view_cues)
-            self.components = {c.id: cluster for cluster in _cluster_overlaps(rows) for c in cluster}
-            self.layouts = {}
-            self.key = key
-        offsets, warnings = {}, []
-        from .bilingual_layout import project_display_cues, companion_id
+    def for_cues(self,project,cues,revision):
+        from .continuity_layout import ContinuityLayout,continuity_components
+        from .bilingual_layout import project_display_cues,companion_id
         from .visual_snapshot import build_visual_cue_snapshot
+        from ..projects.studio_runtime_state import state_for
         from copy import copy
         from types import SimpleNamespace
-        import heapq
-        target = max((c.start_ms for c in cues), default=-1)
+        cues=tuple(cues)
+        if not project.studio_state.get('auto_subtitle_stacking',True):
+            return CollisionLayout({})
+        key=component_index_key(project, revision)
+        if key!=self.key:
+            prepared = getattr(project, '_prepared_collision_components', None)
+            self.components = prepared[1] if prepared is not None and prepared[0] == key else prepare_component_index(project, revision)
+            self.layouts={}
+            self.key=key
+        def snapshots_for(cue):
+            local=copy(project)
+            local.cues=project_display_cues(project,[cue])
+            local._studio_state_runtime=SimpleNamespace(cue_by_id={c.id:c for c in local.cues})
+            return [build_visual_cue_snapshot(local,c.id) for c in local.cues]
+        offsets,warnings={},[]
+        target=max((c.start_ms for c in cues),default=-1)
         for cue in cues:
-            cluster = self.components.get(cue.id)
+            cluster=self.components.get(cue.id)
             if cluster is None:
-                offsets[cue.id] = 0.
+                offsets[cue.id]=0.
                 continue
-            component = cluster[0].id
+            if len(cluster)==1:
+                offsets[cue.id]=0.
+                continue
+            component=cluster[0].id
             if component not in self.layouts:
-                self.layouts[component] = dict(cursor=0, active={}, offsets={}, endings=[], warnings=[])
-            state = self.layouts[component]
-            while state['cursor'] < len(cluster) and cluster[state['cursor']].start_ms <= target:
-                at = cluster[state['cursor']].start_ms
-                while state['endings'] and state['endings'][0][0] <= at:
-                    _, key = heapq.heappop(state['endings'])
-                    state['active'].pop(key, None)
-                stop = state['cursor'] + 1
-                while stop < len(cluster) and cluster[stop].start_ms == at:
-                    stop += 1
-                local = copy(project)
-                local.cues = project_display_cues(project, cluster[state['cursor']:stop])
-                local._studio_state_runtime = SimpleNamespace(cue_by_id={c.id: c for c in local.cues})
-                snapshots = [build_visual_cue_snapshot(local, c.id) for c in local.cues]
-                layout = solve_layout([*state['active'].values(), *snapshots],
-                    enabled=project.studio_state.get('auto_subtitle_stacking', True),
-                    fixed_offsets={key: state['offsets'][key] for key in state['active']})
-                for snapshot in snapshots:
-                    state['active'][snapshot.cue_id] = snapshot
-                    state['offsets'][snapshot.cue_id] = layout.offsets.get(snapshot.cue_id, 0.)
-                    heapq.heappush(state['endings'], (snapshot.end_ms, snapshot.cue_id))
-                state['warnings'].extend(layout.warnings)
-                state['cursor'] = stop
-            for key in (cue.id, companion_id(cue.id)):
-                if key in state['offsets']:
-                    offsets[key] = state['offsets'][key]
-            warnings.extend(state['warnings'])
-        return CollisionLayout(offsets, tuple(dict.fromkeys(warnings)))
+                self.layouts[component]=ContinuityLayout(cluster,snapshots_for)
+            planner=self.layouts[component]
+            planner.advance(target)
+            for identity in (cue.id,companion_id(cue.id)):
+                if identity in planner.offsets:
+                    offsets[identity]=planner.offsets[identity]
+            warnings.extend(planner.warnings)
+        return CollisionLayout(offsets,tuple(dict.fromkeys(warnings)))
 
 
 def project_layout_schedule(project, cues=None):
@@ -334,13 +328,17 @@ def project_layout_schedule(project, cues=None):
     if cues is None:
         from .bilingual_layout import project_display_cues
         cues = project.cues if getattr(project, '_caption_display_materialized', False) else project_display_cues(project)
-    local.cues = visible_subtitle_cues(project, cues)
+    from ..subtitle_rules.display_continuity import layout_cues
+    local.cues = layout_cues(project,visible_subtitle_cues(project, cues))
+    inherited=getattr(project,'_subtitle_layout_schedule',None)
+    if inherited is not None and all(c.id in inherited for c in local.cues):
+        return {c.id:inherited[c.id] for c in local.cues}
     local._studio_state_runtime = SimpleNamespace(cue_by_id={c.id: c for c in local.cues})
     result = {c.id: [(c.start_ms, c.end_ms, 0.)] for c in local.cues}
     if not project.studio_state.get('auto_subtitle_stacking', True):
         return result
-    from .subtitle_stacking import _cluster_overlaps
-    for cluster in _cluster_overlaps(local.cues):
+    from .continuity_layout import continuity_components
+    for cluster in continuity_components(local.cues):
         snapshots = [build_visual_cue_snapshot(local, c.id) for c in cluster]
         result.update(layout_schedule(snapshots))
     return result
@@ -348,6 +346,5 @@ def project_layout_schedule(project, cues=None):
 
 def visible_subtitle_cues(project, cues=None):
     """The subtitle eye is visibility; audio mute never hides caption ink."""
-    hidden = {s.id for s in project.speakers if getattr(s, 'hidden', False)}
-    hidden.update(key for key, shown in project.studio_state.get('subtitle_track_visibility', {}).items() if not shown)
-    return [c for c in (project.cues if cues is None else cues) if c.speaker_id not in hidden]
+    from ..subtitle_rules.display_continuity import visible_display_cues
+    return visible_display_cues(project,cues)

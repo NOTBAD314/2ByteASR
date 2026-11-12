@@ -120,7 +120,7 @@ def test_raw_unicode_repetition_and_long_atom_conflict():
         assert measure(text, 'zh') == len(core.content_exact(text))
 
 
-def test_studio_reselect_recovers_fragmented_range_even_when_model_keeps(monkeypatch):
+def test_studio_reselect_freezes_valid_model_keep(monkeypatch):
     from twobyteasr.projects.studio_project import StudioCue, SubtitleProject, StudioMedia
     from twobyteasr.subtitle_rules.sentence_refine import refine_cues_with_llm
     from twobyteasr.subtitle_rules.sentence_refine_ranges import build_range_replacement
@@ -140,13 +140,12 @@ def test_studio_reselect_recovers_fragmented_range_even_when_model_keeps(monkeyp
     unit = result.ranges[0]
     action = result.actions[0]
     output = build_range_replacement(unit, action, project, {'a', 'b'})
-    assert [c.text for c in output] == ['我们先走到前面然后看一下情况']
-    assert (output[0].start_ms, output[0].end_ms) == (1000, 3200)
+    assert output == [] and action.action == 'keep'
     cues[0].text, cues[1].text = '我们先过去', '然后看下情况'
     result = refine_cues_with_llm(cues, project=project, runtime_settings={'models': {'group_model': 'stub'}}, boundary_only=True)
     assert len(result.ranges) == 1
     output = build_range_replacement(result.ranges[0], result.actions[0], project, {'a', 'b'})
-    assert [c.text for c in output] == ['我们先过去然后看下情况']
+    assert output == [] and result.actions[0].action == 'keep'
 
 
 def test_studio_merge_translation_receipts_undo_save_and_export(tmp_path):
@@ -242,7 +241,7 @@ def test_full_grouping_entry_stub_and_failed_ai_follow_same_policy(monkeypatch, 
     snapshot = resolve_provider_snapshot({'models': {'ai_service': 'custom', 'provider_profiles': {
         'custom': {'base_url': 'http://127.0.0.1:1/v1', 'model': 'offline-fixture'}}}})
     cues = grouping.group_subtitles(rows, use_ai=True, firered_tokens=tokens, provider_snapshot=snapshot)
-    assert [cue.text for cue in cues] == ['我们先走到前面然后看一下情况']
+    assert [cue.text for cue in cues] == ['我们先走到前面', '然后看一下情况']
 
 
 def test_non_chinese_profiles_and_exact_custom_guidance():
@@ -293,7 +292,7 @@ def test_studio_api_failure_uses_same_local_policy_without_extra_requests(monkey
     result = refine_cues_with_llm(cues, project=project, runtime_settings={'models': {'group_model': 'stub'}},
                                  boundary_only=True, max_attempts=1)
     assert len(calls) == 1 and result.llm_status == 'completed'
-    assert result.actions[0].action == 'split' and not result.actions[0].split_after_chars
+    assert result.actions[0].action == 'keep'
     assert next(iter(result.results.values()))['local_fallback']
 
 

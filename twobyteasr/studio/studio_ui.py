@@ -165,6 +165,7 @@ from .studio_canvas_edit import StudioCanvasEditMixin
 from .studio_edit_assembly import StudioEditAssemblyMixin
 from .studio_media_flow import StudioMediaFlowMixin
 from .studio_playback_flow import StudioPlaybackFlowMixin
+from .subtitle_navigation import StudioSubtitleNavigationMixin
 from .studio_project_flow import StudioProjectFlowMixin
 from ..caption_style.studio_style_panel import StudioStylePanelMixin
 from .studio_video_flow import StudioVideoFlowMixin
@@ -222,6 +223,7 @@ class SubtitleStudioPage(
     StudioEditAssemblyMixin,
     StudioAssFlowMixin,
     StudioPlaybackFlowMixin,
+    StudioSubtitleNavigationMixin,
     StudioAIFlowMixin,
     StudioAdvancedFlowMixin,
     QWidget,
@@ -566,7 +568,10 @@ class SubtitleStudioPage(
             or not bool(getattr(getattr(self, 'video', None), '_paused', True))))
         self.destroyed.connect(self._project_heap.close)
         self.setObjectName("subtitleStudio")
-        self.setStyleSheet(build_studio_qss())
+        # Construction placeholder; the complete native Qt window sheet is
+        # installed before display, retaining parent and inline style rules.
+        from ..design.theme_scopes import SHELL_QSS
+        self.setStyleSheet(SHELL_QSS)
         self.session = StudioSession()
         self.project_controller = StudioProjectController(self, self.session)
         self.cue_controller = StudioCueController(self, self.session)
@@ -847,9 +852,11 @@ class SubtitleStudioPage(
         try:
             with phase('studio.construct.section'):
                 stage = next(self._workspace_steps)
-            self._workspace_build_profile.append(dict(completed=stage, ms=round((perf_counter()-started)*1000, 3)))
-            self.workspace_build_progress.emit(stage)
-            self._workspace_build_timer.start(0)
+            from ..design.gui_slices import GUI_YIELD
+            self._workspace_build_profile.append(dict(completed=stage if stage is not GUI_YIELD else 'GUI slice', ms=round((perf_counter()-started)*1000, 3)))
+            if stage is not GUI_YIELD:
+                self.workspace_build_progress.emit(stage)
+            self._workspace_build_timer.start(1)
         except StopIteration:
             try:
                 self._finish_workspace_initialization()
@@ -1261,6 +1268,10 @@ class SubtitleStudioPage(
         # 2026-10-17: jump, zoom, nudge, export, panels... (one module, same registry).
         from .studio_shortcut_actions import extra_command_callbacks
         self._command_callbacks.update(extra_command_callbacks(self))
+        card = getattr(self, 'subtitle_edit_card', None)
+        if card is not None:
+            card.setProperty('navigationKey', self._shortcut_key_text('jump_cue_boundary'))
+            card.update_hint()
         if getattr(self,'_new_shortcut_conflicts',None):
             bind_text(self.save_state,'新增快捷键与已有自定义绑定冲突，已保留原绑定；请在快捷键设置中改绑')
         from . import shortcut_registry
@@ -1429,6 +1440,8 @@ class SubtitleStudioPage(
                 and event_type in {QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.DevicePixelRatioChange}
                 and watched in {self, self.window(), getattr(self, 'video_overlay_host', None)}):
             float_window.schedule_fit()
+        if self._subtitle_navigation_key_event(watched, event):
+            return True
         canvas_editor = (
             getattr(self, "_canvas_editor", None)
             if event_type in (QEvent.Type.InputMethodQuery, QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress)
@@ -1688,7 +1701,8 @@ class SubtitleStudioPage(
                 getattr(self, '_caption_split_session', None) is not None
                 and sequence.casefold() in {'ctrl+z', 'ctrl+y', 'ctrl+shift+z'}):
             return False  # Native dispatch leaves these keys to the bound window.
-        if self._editing_has_focus() or getattr(self,"_studio_ime_composing",False):
+        if (getattr(self,"_studio_ime_composing",False)
+                or self._editing_has_focus() and not getattr(self, '_subtitle_navigation_text_shortcut', lambda _s: False)(sequence)):
             # Do not record literal typing. Only modified application shortcuts
             # have a meaningful blocked-command diagnostic here. The record
             # must never stop the key from reaching the editor.
@@ -3217,9 +3231,15 @@ class SubtitleStudioPage(
             if _cue_review_level(self.project, cue, risks) == "high":
                 counts["critical"] += 1
         captions = {"all": "全部", "priority": "建议确认", "critical": "需要检查", "pending": "未审核", "issue": "有问题", "done": "已处理"}
+        from ..subtitle_rules.current_issues import current_issue_view
+        issue_view=current_issue_view(self.project)
+        counted_ids={c.id for c in counted_cues}
+        current_rows=[r for r in issue_view.records if r.disposition=='actionable' and r.cue_id in counted_ids]
+        issue_summary=f'{len({r.cue_id for r in current_rows})} 条字幕，包含 {len(current_rows)} 个问题点'
+        self._current_issue_summary=issue_summary
         for key, button in self.cue_filter_buttons.items():
             if key in {'priority', 'critical'}:
-                button.setToolTip('按当前搜索和范围去重统计字幕。建议确认与需要检查互不重叠。规则原因可有多条，语音待恢复区间另计，导出时另做结构校验。')
+                button.setToolTip(issue_summary+'。建议确认与需要检查按字幕互斥统计；无字幕的待试听区间、工程说话人问题另计。')
             if key in {"priority", "critical"} and not hasattr(self.project, "_qc_result"):
                 button.setText(f"{tr(captions[key])} --")
             else:

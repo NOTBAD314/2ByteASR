@@ -75,7 +75,16 @@ def _pass_signature(obj, language, zoom, text_widget, line_edit):
     )
 
 
-def apply(root, language):
+def apply(root, language, *, visible_only=False):
+    for _step in apply_steps(root, language, visible_only=visible_only):
+        pass
+
+
+def apply_steps(root, language, *, visible_only=False):
+    """The same translation/geometry pass, with cooperative GUI boundaries."""
+    from .design.gui_slices import GuiSlice
+    from shiboken6 import isValid
+    budget = GuiSlice()
     from PySide6.QtCore import QSignalBlocker, Qt
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (QAbstractButton, QComboBox, QGroupBox, QLabel,
@@ -138,8 +147,13 @@ def apply(root, language):
             setter(value)
 
     nodes = [root, *root.findChildren(QWidget), *root.findChildren(QAction)]
+    if visible_only:
+        nodes = [obj for obj in nodes if obj is root or not isinstance(obj, QWidget) or obj.isVisibleTo(root)]
     seen = set()
     for obj in nodes:
+        yield from budget.checkpoint()
+        if not isValid(obj):
+            continue
         if id(obj) in seen:
             continue
         seen.add(id(obj))
@@ -322,7 +336,8 @@ def install_language_events():
                     return result
                 roots = [r for r in roots if not has_pending_parent(r)]
                 for root in roots:
-                    apply(root,current_language())
+                    # Hidden stacked pages receive their own Show pass later.
+                    apply(root,current_language(),visible_only=True)
             finally:
                 self.busy = False
 

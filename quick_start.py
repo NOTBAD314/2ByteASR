@@ -288,6 +288,8 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
     from twobyteasr.app.single_instance import SingleInstanceGuard
     app = QApplication.instance() or QApplication([sys.argv[0]])
+    from twobyteasr.design.hover_hints import install_hover_hint_policy
+    install_hover_hint_policy(app)
     _startup_mark("EARLY_QT_READY")
     instance_guard = SingleInstanceGuard(SingleInstanceGuard.application_name(application_root()))
     _startup_mark("EARLY_INSTANCE_GUARD_CREATED")

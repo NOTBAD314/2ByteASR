@@ -30,12 +30,16 @@ COMPLETION_SECONDARY_GAP = 16
 COMPLETION_SECONDARY_HORIZONTAL_GAP = 18
 COMPLETION_SECONDARY_WIDTH = 272
 COMPLETION_SECONDARY_HEIGHT = 44
-COMPLETION_MAIN_HEIGHT = 148
-# Main action card inner geometry: padding, icon chip, gaps (2026-10-07).
-CARD_PAD = 20
-CARD_ICON = 56
-CARD_ICON_GAP = 16
+COMPLETION_MAIN_HEIGHT = 196
+COMPLETION_RADIUS_CARD = 20
+# Main action card inner geometry (2026-11-11): the icon chip sits above the
+# title, the description follows, and the action pill closes the card.
+CARD_PAD = 18
+CARD_ICON = 46
+CARD_ICON_GAP = 12
 CARD_TEXT_GAP = 4
+CARD_ACTION_GAP = 14
+CARD_MIN_WIDTH = 226
 COMPLETION_MAX_WIDTH = 3400
 COMPLETION_TOP_GAP = 28
 
@@ -271,7 +275,7 @@ class CompletionContent(QWidget):
         t = theme_definition(theme_key())
         self.setStyleSheet(f"""
 QFrame#resultSummaryCard {{ background:{t.surface}; border:1px solid {t.border}; border-radius:{COMPLETION_RADIUS_MAIN}px; }}
-QFrame#resultSummaryCard[outcome="success"] {{ background:{blend_hex(t.surface, t.success, 0.08)}; border-color:{blend_hex(t.surface, t.success, 0.42)}; }}
+QFrame#resultSummaryCard[outcome="success"] {{ background:{blend_hex(t.surface, t.success, 0.17)}; border-color:{blend_hex(t.surface, t.success, 0.55)}; }}
 QFrame#resultSummaryCard[outcome="warning"] {{ background:{blend_hex(t.surface, t.warning, 0.08)}; border-color:{blend_hex(t.surface, t.warning, 0.42)}; }}
 QFrame#resultSummaryCard[outcome="danger"] {{ background:{blend_hex(t.surface, t.danger, 0.08)}; border-color:{blend_hex(t.surface, t.danger, 0.42)}; }}
 QToolButton#completionReviewChip {{ background:{t.warning_soft}; color:{t.warning}; border:1px solid {blend_hex(t.surface, t.warning, 0.45)}; }}
@@ -293,7 +297,8 @@ QLabel#completionPreviewTime {{ color:{t.text_muted}; font-family:{MONO_FONT_STA
 QLabel#completionPreviewText {{ color:{t.text}; font-size:15px; font-weight:500; background:transparent; }}
 QLabel#resultSummaryStats {{ color:{t.text_secondary}; font-size:14px; font-weight:500; background:transparent; }}
 QLabel#resultSummaryMeta {{ color:{t.text_secondary}; font-size:14px; font-weight:500; background:transparent; }}
-QLabel#resultStatValue {{ color:{t.text}; font-size:24px; font-weight:800; background:transparent; }}
+QFrame#resultStatTile {{ background:{t.surface_elevated}; border:0; border-radius:14px; }}
+QLabel#resultStatValue {{ color:{t.text}; font-size:26px; font-weight:800; background:transparent; }}
 QLabel#resultStatCaption {{ color:{t.text_muted}; font-size:13px; font-weight:500; background:transparent; }}
 QLabel#resultSummaryFile {{ color:{t.text_secondary}; font-size:14px; font-weight:500; background:transparent; }}
 QLabel#resultSummaryNote {{ color:{t.text_secondary}; font-size:13px; font-weight:500; background:transparent; }}
@@ -311,6 +316,10 @@ QToolButton[completionRole="chip"], QPushButton[completionRole="chip"] {{ backgr
  border-radius:{COMPLETION_RADIUS_SMALL}px; font-size:13px; font-weight:500; padding:4px 12px; min-height:30px; }}
 QToolButton[completionRole="chip"]:hover, QPushButton[completionRole="chip"]:hover {{ background:{t.selected}; border-color:{t.text_muted}; }}
 QToolButton[completionRole="chip"]:focus, QPushButton[completionRole="chip"]:focus {{ border-color:{t.focus}; }}
+QToolButton#completionFoldDetail {{ background:{blend_hex(t.surface, t.text, 0.08)}; color:{t.text}; border:0;
+ border-radius:15px; font-size:13px; font-weight:700; padding:0 12px; min-height:0; }}
+QToolButton#completionFoldDetail:hover {{ background:{blend_hex(t.surface, t.text, 0.15)}; }}
+QToolButton#completionFoldDetail:focus {{ border:1px solid {t.focus}; }}
 QComboBox[completionRole="secondary"] {{ border-radius:{COMPLETION_RADIUS_SMALL}px; }}
 QMenu[completionRole="secondary"] {{ border-radius:{COMPLETION_RADIUS_SMALL}px; }}
 QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
@@ -552,6 +561,7 @@ class CompletionInfoPanel(QWidget):
         self._extra_height = 0
         self._peer_summary_height = 0
         self._rows = []
+        self.body = None
         self.setObjectName('completionInfoPanel')
         self.setProperty("uiZoomOwnSize", True)  # rows are measured from their fonts
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -574,6 +584,7 @@ class CompletionInfoPanel(QWidget):
         # next closes it. Summary/full is this separate switch on the header.
         self.detail_button = QToolButton(header)
         self.detail_button.setObjectName('completionFoldDetail')
+        self.detail_button.setProperty('uiZoomOwnSize', True)  # placed by _place_detail_button
         self.detail_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.detail_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.detail_button.clicked.connect(lambda: self.set_mode('summary' if self.mode == 'full' else 'full'))
@@ -591,6 +602,34 @@ class CompletionInfoPanel(QWidget):
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5),
                                 COMPLETION_RADIUS_MAIN, COMPLETION_RADIUS_MAIN)
 
+    def set_summary_body(self, body):
+        """A painted summary (tiles, bars) shown instead of the text rows
+        whenever it has content; the rows stay as the fallback and still
+        feed the folded header's preview (2026-11-11)."""
+        self.body = body
+        self.summary_box.addWidget(body)
+        self._refresh_rows()
+
+    def body_active(self):
+        return self.body is not None and self.body.has_content()
+
+    def refresh_summary_body(self):
+        """The body's content changed; size the panel for it."""
+        self._refresh_rows()
+        self.content_changed.emit()
+
+    def _body_width(self):
+        margins = self.summary_box.contentsMargins()
+        return max(1, self.width() - 2 - margins.left() - margins.right())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.body_active() and event.size().width() != event.oldSize().width():
+            before = self.height()
+            self._refresh_rows()
+            if self.height() != before:
+                self.content_changed.emit()
+
     def _header_toggled(self, checked):
         # Checked means open; the header never needs a separate close button.
         self.set_mode('summary' if checked else 'collapsed')
@@ -601,9 +640,11 @@ class CompletionInfoPanel(QWidget):
         return super().eventFilter(watched, event)
 
     def _place_detail_button(self):
-        width = self.detail_button.fontMetrics().horizontalAdvance(self.detail_button.text()) + 20
+        # Sized from the zoomed font and padding, centred in the header.
+        width = self.detail_button.fontMetrics().horizontalAdvance(self.detail_button.text()) + _zpx(28)
+        height = min(self.header.height() - 8, _zpx(30))
         right = self.header._mode_rect().left() - 12
-        self.detail_button.setGeometry(max(0, int(right) - width), 9, width, 30)
+        self.detail_button.setGeometry(max(0, int(right) - width), (self.header.height() - height) // 2, width, height)
 
     def set_mode(self, mode):
         if mode not in {'summary', 'full', 'collapsed'}:
@@ -667,6 +708,8 @@ class CompletionInfoPanel(QWidget):
     def natural_summary_height(self):
         rows = self.visible_summary_rows()
         margins = self.summary_box.contentsMargins()
+        if self.body_active():
+            return margins.top() + margins.bottom() + self.body.height_for(self._body_width())
         return max(150, margins.top() + margins.bottom()
                    + sum(row.fontMetrics().height() + 3 for row in rows)
                    + max(0, len(rows) - 1) * self.summary_box.spacing())
@@ -686,6 +729,19 @@ class CompletionInfoPanel(QWidget):
         self._refresh_rows()
 
     def _refresh_rows(self):
+        painted = self.body_active()
+        self.summary_box.setContentsMargins(*((16, 12, 16, 14) if painted else (18, 16, 18, 18)))
+        if self.body is not None:
+            self.body.setVisible(painted)
+        if painted:
+            for row in self._rows:
+                row.hide()
+            self.body.setFixedHeight(self.body.height_for(self._body_width()))
+            height = max(self.natural_summary_height(), self._peer_summary_height)
+            self.summary.setFixedHeight(height)
+            self.setFixedHeight(2 + self.header.height() + (height if self.mode == 'summary' else self.detail.height() if self.mode == 'full' else 0))
+            self.updateGeometry()
+            return
         visible = self.visible_summary_rows()
         count = max(1, len(visible))
         for index, row in enumerate(self._rows):
@@ -745,24 +801,80 @@ class CompletionFoldRow(QWidget):
         super().resizeEvent(event)
         from .ui_zoom import logical
         self._arrange(2 if logical(self.width()) >= 900 else 1)
+        self.sync_heights()  # painted bodies wrap by width
 
     def minimumSizeHint(self):
         return QSize(0, self.grid.minimumSize().height())
 
 
-class CompletionActionCard(QPushButton):
-    """A whole-card button; native keyboard and click semantics stay intact."""
+def result_badge(icon_name, color, mark_color, size):
+    """A filled circle in ``color`` with the icon's mark in ``mark_color``
+    (2026-11-12, user, design A: the green tick bubble)."""
+    import qtawesome as qta
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtWidgets import QApplication
+    ratio = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1.0
+    pixmap = QPixmap(int(size * ratio), int(size * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(color))
+    painter.drawEllipse(QRectF(0, 0, size, size))
+    mark = {'fa5s.check-circle': 'fa5s.check', 'fa5s.exclamation-circle': 'fa5s.exclamation',
+            'fa5s.question-circle': 'fa5s.question', 'fa5s.stop-circle': 'fa5s.stop'}.get(icon_name, icon_name)
+    inner = int(size * 0.46)
+    qta.icon(mark, color=mark_color).paint(painter, QRect((size - inner) // 2, (size - inner) // 2, inner, inner))
+    painter.end()
+    return pixmap
 
-    def __init__(self, title, description, icon_name, parent=None, *, hue="brand"):
+
+def soft_hue(color, on_color='#ffffff'):
+    """An identity hue made quiet enough to fill a whole card (2026-11-11).
+
+    Saturation is cut and lightness set to a mid tone; it then moves away
+    from ``on_color`` (darker under light text, lighter under the dark text
+    of the dark themes) until that text reads clearly on it.
+    """
+    from ..design.ui_theme import contrast_ratio
+    source = QColor(color)
+    hue, saturation, _lightness, _alpha = source.getHslF()
+    saturation = min(saturation * 0.8, 0.52)
+    dark_text = QColor(on_color).lightnessF() < 0.5
+    lightness, step = (0.62, 0.02) if dark_text else (0.41, -0.02)
+    result = QColor.fromHslF(max(0.0, hue), saturation, lightness)
+    while 0.2 < lightness < 0.86 and contrast_ratio(result.name(), on_color) < 4.6:
+        lightness += step
+        result = QColor.fromHslF(max(0.0, hue), saturation, lightness)
+    return result.name()
+
+
+class CompletionActionCard(QPushButton):
+    """A whole-card button; native keyboard and click semantics stay intact.
+
+    2026-11-11 (user, design A): four cards of one height. Each is filled
+    with its quiet identity hue and reads top to bottom: icon, title, one
+    line of purpose, then a pill naming what a click does. The 'finish' card
+    is the light one, so leaving the page never competes with the work.
+    """
+
+    def __init__(self, title, description, icon_name, parent=None, *, hue="brand", action_text='', badge=''):
         super().__init__(title, parent)
         self.description = description
         self.icon_name = icon_name
-        # Identity hue (category, never status): export blue / Studio brand /
-        # finish teal, from theme.role_colors. All three keep equal weight.
+        self.action_text = action_text
+        self.badge_text = badge
+        self._note = ''
+        self._followed = None
+        # Identity hue (category, never status): AI purple / Studio brand /
+        # export blue / finish olive, from the theme's role and zone colours.
         self.hue = hue
         self.setObjectName("completionActionCard")
         self.setProperty("uiZoomOwnSize", True)  # height measured from its text
-        self.setProperty("completionRadius", COMPLETION_RADIUS_MAIN)
+        self.setProperty("completionRadius", COMPLETION_RADIUS_CARD)
+        # The grid reflows the cards; the text pass must not pin a width.
+        self.setProperty("flexibleWidth", True)
         self.setProperty("i18nText", title)
         self.setAccessibleDescription(description)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -777,7 +889,7 @@ class CompletionActionCard(QPushButton):
         return QSize(300, self.height())
 
     def minimumSizeHint(self):
-        return QSize(240, self.height())
+        return QSize(CARD_MIN_WIDTH, self.height())
 
     def refresh_theme_palette(self):
         import qtawesome as qta
@@ -787,8 +899,45 @@ class CompletionActionCard(QPushButton):
                                    color_disabled=self._theme.disabled)
         self.update()
 
+    # --- a card that stands for another button ---------------------------
+    def follow(self, button):
+        """Click ``button`` and mirror its enabled state (the AI entry keeps
+        its own button object, which other code enables and disables)."""
+        self._followed = button
+        button.installEventFilter(self)
+        self.clicked.connect(button.click)
+        self.setEnabled(button.isEnabled())
+
+    def eventFilter(self, watched, event):
+        if watched is self._followed and event.type() == QEvent.Type.EnabledChange:
+            self.setEnabled(watched.isEnabled())
+        return super().eventFilter(watched, event)
+
+    def set_note(self, text):
+        """A current fact shown in place of the standing description."""
+        text = str(text or '')
+        if text != self._note:
+            self._note = text
+            self.updateGeometry()
+            self.update()
+            parent = self.parentWidget()
+            if isinstance(parent, CompletionActionGrid):
+                parent._refresh_card_heights()
+
+    def shown_description(self):
+        return self._note or translate(self.description, self.copy_language())
+
+    def shown_action(self):
+        return translate(self.action_text, self.copy_language()) if self.action_text else ''
+
+    def shown_badge(self):
+        return translate(self.badge_text, self.copy_language()) if self.badge_text else ''
+
+    # --- colours ---------------------------------------------------------
     def hue_color(self):
         theme = self._theme
+        if self.hue == "ai":
+            return theme.zone_colors.get("ai", theme.accent_text)
         if self.hue == "finish":
             # Teal or orchid, whichever stays farther from the brand hue (green
             # brands such as warm/plum would otherwise read like teal).
@@ -799,32 +948,61 @@ class CompletionActionCard(QPushButton):
             return max((theme.role_colors["timeline"], theme.role_colors["review"]), key=distance)
         return theme.role_colors.get(self.hue, theme.accent_text)
 
+    def is_light(self):
+        return self.hue == "finish"
+
+    def fill_color(self):
+        """The resting fill: the quiet hue, or its pale wash on the light card."""
+        theme = self._theme
+        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        return blend_hex(theme.surface, solid, 0.16) if self.is_light() else solid
+
     def card_colors(self):
         """(background, border) for the current interaction state."""
-        theme, hue = self._theme, self.hue_color()
+        theme = self._theme
         if not self.isEnabled():
             return theme.panel, theme.border
-        rest, hover, edge = theme.role_wash
+        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        fill = self.fill_color()
+        border = solid if self.is_light() else fill
         if self.isDown():
-            return blend_hex(theme.surface, hue, hover + 0.06), hue
+            return blend_hex(fill, theme.text, 0.10), border
         if self.underMouse():
-            return blend_hex(theme.surface, hue, hover), hue
-        return blend_hex(theme.surface, hue, rest), blend_hex(theme.surface, hue, edge)
+            return blend_hex(fill, '#ffffff' if not self.is_light() else solid, 0.10), border
+        return fill, border
 
+    def ink_colors(self):
+        """(title, description, chip, pill, pill text) on the current fill."""
+        theme = self._theme
+        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        if not self.isEnabled():
+            return theme.disabled, theme.disabled, theme.surface, theme.surface, theme.disabled
+        if self.is_light():
+            return theme.text, theme.text_secondary, solid, solid, theme.on_vivid
+        return (theme.on_vivid, blend_hex(solid, theme.on_vivid, 0.86), blend_hex(solid, theme.on_vivid, 0.18),
+                theme.surface, blend_hex(solid, theme.text, 0.35))
+
+    # --- fonts and geometry ----------------------------------------------
     def title_font(self):
-        return _ui_font(self.font(), 22, QFont.Weight.DemiBold)
+        return _ui_font(self.font(), 21, QFont.Weight.Bold)
 
     def description_font(self):
-        return _ui_font(self.font(), 14)
+        return _ui_font(self.font(), 13)
+
+    def action_font(self):
+        return _ui_font(self.font(), 15, QFont.Weight.Bold)
+
+    def badge_font(self):
+        return _ui_font(self.font(), 12, QFont.Weight.Bold)
 
     def _text_heights(self, width):
-        available = max(1, int(width) - 2 * CARD_PAD - CARD_ICON - CARD_ICON_GAP)
+        available = max(1, int(width) - 2 * CARD_PAD)
         flags = Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap
         title_metrics = QFontMetrics(self.title_font())
         description_metrics = QFontMetrics(self.description_font())
         title = title_metrics.boundingRect(QRect(0, 0, available, 10000), flags, self.text()).height()
         description = description_metrics.boundingRect(QRect(0, 0, available, 10000), flags,
-            translate(self.description, self.copy_language())).height()
+            self.shown_description()).height()
         return max(title_metrics.height(), title), max(description_metrics.height(), description)
 
     def copy_language(self):
@@ -832,59 +1010,84 @@ class CompletionActionCard(QPushButton):
         return next((language for language in (current_language(), 'zh', 'en', 'ja')
                      if translate(source, language) == self.text()), current_language())
 
+    def action_height(self):
+        return QFontMetrics(self.action_font()).height() + 22 if self.action_text else 0
+
+    def _stack_height(self, title, description):
+        action = self.action_height()
+        return (2 * CARD_PAD + CARD_ICON + CARD_ICON_GAP + title + CARD_TEXT_GAP + description
+                + (CARD_ACTION_GAP + action if action else 0))
+
     def desired_height(self, width):
         title, description = self._text_heights(width)
         if getattr(self, '_slots_width', None) == width:
             title, description = self._content_slots
-        return max(COMPLETION_MAIN_HEIGHT, 2 * CARD_PAD + title + CARD_TEXT_GAP + description)
+        return max(COMPLETION_MAIN_HEIGHT, self._stack_height(title, description))
 
     def content_rects(self):
         title_height, description_height = getattr(self, '_content_slots', self._text_heights(self.width()))
-        group_height = title_height + CARD_TEXT_GAP + description_height
-        top = (self.height() - group_height) / 2
-        # Center the icon + text group in wide cards; wrap from the padding
-        # edge when the copy is longer than the card.
-        available = max(0, self.width() - 2 * CARD_PAD - CARD_ICON - CARD_ICON_GAP)
-        natural = max(QFontMetrics(self.title_font()).horizontalAdvance(self.text()),
-                      QFontMetrics(self.description_font()).horizontalAdvance(
-                          translate(self.description, self.copy_language())))
-        text_width = min(available, natural + 2)
-        left = max(CARD_PAD, (self.width() - (CARD_ICON + CARD_ICON_GAP + text_width)) / 2)
-        text_left = left + CARD_ICON + CARD_ICON_GAP
+        text_width = max(0, self.width() - 2 * CARD_PAD)
+        top = CARD_PAD + CARD_ICON + CARD_ICON_GAP
         return (
-            QRectF(left, (self.height() - CARD_ICON) / 2, CARD_ICON, CARD_ICON),
-            QRectF(text_left, top, text_width, title_height),
-            QRectF(text_left, top + title_height + CARD_TEXT_GAP, text_width, description_height),
+            QRectF(CARD_PAD, CARD_PAD, CARD_ICON, CARD_ICON),
+            QRectF(CARD_PAD, top, text_width, title_height),
+            QRectF(CARD_PAD, top + title_height + CARD_TEXT_GAP, text_width, description_height),
         )
+
+    def action_rect(self):
+        height = self.action_height()
+        return QRectF(CARD_PAD, self.height() - CARD_PAD - height, max(0, self.width() - 2 * CARD_PAD), height)
+
+    def badge_rect(self):
+        metrics = QFontMetrics(self.badge_font())
+        width = metrics.horizontalAdvance(self.shown_badge()) + 20
+        height = metrics.height() + 6
+        return QRectF(self.width() - CARD_PAD - width, CARD_PAD + (CARD_ICON - height) / 2, width, height)
 
     def paintEvent(self, event):
         theme = self._theme
         enabled = self.isEnabled()
         background, border = self.card_colors()
+        title_ink, description_ink, chip, pill, pill_ink = self.ink_colors()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         frame = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
-        painter.setPen(QPen(QColor(border), 1))
+        painter.setPen(QPen(QColor(border), 1.5 if self.is_light() and enabled else 1))
         painter.setBrush(QColor(background))
-        painter.drawRoundedRect(frame, COMPLETION_RADIUS_MAIN, COMPLETION_RADIUS_MAIN)
+        painter.drawRoundedRect(frame, COMPLETION_RADIUS_CARD, COMPLETION_RADIUS_CARD)
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(theme.focus), 2))
-            painter.drawRoundedRect(frame.adjusted(2, 2, -2, -2), COMPLETION_RADIUS_MAIN-2, COMPLETION_RADIUS_MAIN-2)
+            painter.drawRoundedRect(frame.adjusted(3, 3, -3, -3), COMPLETION_RADIUS_CARD-3, COMPLETION_RADIUS_CARD-3)
         icon_rect, title_rect, description_rect = self.content_rects()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(self.hue_color() if enabled else theme.surface))
+        painter.setBrush(QColor(chip))
         painter.drawRoundedRect(icon_rect, 14, 14)
-        self._card_icon.paint(painter, icon_rect.adjusted(14, 14, -14, -14).toRect(),
+        inset = (CARD_ICON - 24) / 2
+        self._card_icon.paint(painter, icon_rect.adjusted(inset, inset, -inset, -inset).toRect(),
                               mode=self._card_icon.Mode.Normal if enabled else self._card_icon.Mode.Disabled)
+        if self.badge_text and enabled:
+            badge = self.badge_rect()
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.warning, 0.30)))
+            painter.drawRoundedRect(badge, badge.height() / 2, badge.height() / 2)
+            painter.setFont(self.badge_font())
+            painter.setPen(QColor(theme.text))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, self.shown_badge())
         painter.setFont(self.title_font())
-        painter.setPen(QColor(theme.text if enabled else theme.disabled))
-        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, self.text())
+        painter.setPen(QColor(title_ink))
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.text())
         painter.setFont(self.description_font())
-        painter.setPen(QColor(theme.text_secondary if enabled else theme.disabled))
-        description = translate(self.description, self.copy_language())
+        painter.setPen(QColor(description_ink))
         painter.drawText(description_rect,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, description)
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.shown_description())
+        if self.action_text:
+            action = self.action_rect()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(pill))
+            painter.drawRoundedRect(action, 12, 12)
+            painter.setFont(self.action_font())
+            painter.setPen(QColor(pill_ink))
+            painter.drawText(action, Qt.AlignmentFlag.AlignCenter, self.shown_action())
 
 
 COMPLETION_PREVIEW_ROWS = 12  # visible rows; the list scrolls through all cues
@@ -1069,6 +1272,11 @@ class CompletionPreview(QFrame):
 
 class CompletionMoreButton(QToolButton):
     """Native popup activation with a vertically centered disclosure arrow."""
+    def set_quiet(self, quiet):
+        """A filled pill without an outline, for the slim strip (2026-11-11)."""
+        self._quiet = bool(quiet)
+        self.update()
+
     def set_compact(self, compact):
         self._compact = bool(compact)
         self.setFont(_ui_font(self.font(), 13 if compact else 14, QFont.Weight.DemiBold))
@@ -1081,7 +1289,8 @@ class CompletionMoreButton(QToolButton):
         compact = getattr(self, '_compact', False)
         metrics = QFontMetrics(_ui_font(self.font(), 13 if compact else 14))
         text_width = max(metrics.horizontalAdvance(self.text()), metrics.boundingRect(self.text()).width())
-        return QSize(text_width + (52 if compact else 72), 36 if compact else COMPLETION_SECONDARY_HEIGHT)
+        return QSize(text_width + (52 if compact else 72),
+                     (self.height() if getattr(self, '_quiet', False) else 36) if compact else COMPLETION_SECONDARY_HEIGHT)
 
     def minimumSizeHint(self):
         return self.sizeHint()
@@ -1098,9 +1307,15 @@ class CompletionMoreButton(QToolButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         border = theme.focus if self.hasFocus() else theme.text_muted if self.underMouse() else theme.border_strong
-        painter.setPen(QPen(QColor(border), 1))
-        painter.setBrush(QColor(theme.selected if self.underMouse() or self.isDown() else theme.surface))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), COMPLETION_RADIUS_SMALL, COMPLETION_RADIUS_SMALL)
+        if getattr(self, '_quiet', False):
+            active = self.underMouse() or self.isDown()
+            painter.setPen(QPen(QColor(theme.focus), 1.5) if self.hasFocus() else Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.app_background, theme.text, 0.19 if active else 0.12)))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), self.height() / 2, self.height() / 2)
+        else:
+            painter.setPen(QPen(QColor(border), 1))
+            painter.setBrush(QColor(theme.selected if self.underMouse() or self.isDown() else theme.surface))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), COMPLETION_RADIUS_SMALL, COMPLETION_RADIUS_SMALL)
         title, arrow = self.content_rects()
         painter.setFont(_ui_font(self.font(), 13 if getattr(self, '_compact', False) else 14))
         painter.setPen(QColor(theme.text if self.isEnabled() else theme.disabled))
@@ -1146,11 +1361,16 @@ class CompletionActionGrid(QWidget):
         self.columns = 0
         self._height_allowance = 0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._arrange(3)
+        self._arrange(len(self.cards) or 1)
 
     @property
     def _columns(self):
         return self.columns
+
+    def column_choices(self):
+        """Widest first: every card in one row, four as two pairs, a stack."""
+        count = len(self.cards) or 1
+        return (count, 2, 1) if count == 4 else (count, 1)
 
     def set_secondary_actions(self, buttons, *, retry_button=None):
         self.secondary_actions = tuple(buttons)
@@ -1172,7 +1392,7 @@ class CompletionActionGrid(QWidget):
             return
         while self.grid.count():
             self.grid.takeAt(0)
-        for column in range(3):
+        for column in range(max(4, len(self.cards))):
             self.grid.setColumnStretch(column, 1 if column < columns else 0)
         for index, card in enumerate(self.cards):
             self.grid.addWidget(card, index // columns, index % columns)
@@ -1195,7 +1415,7 @@ class CompletionActionGrid(QWidget):
         width = (self.width() - (self.columns-1)*self.grid.horizontalSpacing()) // self.columns
         measured = [card._text_heights(width) for card in self.cards]
         slots = (max(item[0] for item in measured), max(item[1] for item in measured))
-        height = max(COMPLETION_MAIN_HEIGHT, 2 * CARD_PAD + slots[0] + CARD_TEXT_GAP + slots[1]) + self._height_allowance
+        height = max(COMPLETION_MAIN_HEIGHT, max(card._stack_height(*slots) for card in self.cards)) + self._height_allowance
         for card in self.cards:
             card._content_slots = slots
             card._slots_width = width
@@ -1211,9 +1431,12 @@ class CompletionActionGrid(QWidget):
             self.updateGeometry()
 
     def _reflow(self):
-        minimum = max((max(280, button.minimumWidth(), button.fontMetrics().horizontalAdvance(button.text())
-            + (64 if isinstance(button, CompletionMoreButton) else 40)) for button in self.secondary_actions), default=280)
-        self._arrange(3 if self.width() >= minimum*3+2*self.grid.horizontalSpacing() else 1)
+        floor = CARD_MIN_WIDTH if len(self.cards) == 4 else 280
+        minimum = max((max(floor, button.minimumWidth(), button.fontMetrics().horizontalAdvance(button.text())
+            + (64 if isinstance(button, CompletionMoreButton) else 40)) for button in self.secondary_actions), default=floor)
+        spacing = self.grid.horizontalSpacing()
+        self._arrange(next((columns for columns in self.column_choices()
+                            if self.width() >= minimum*columns + (columns-1)*spacing), 1))
         self._refresh_card_heights()
 
     def event(self, event):

@@ -350,7 +350,7 @@ class StudioSourceMonitor(QWidget):
     controller_ready = Signal(int, object, str)
     surface_retired = Signal(int)
 
-    def __init__(self, page, parent=None):
+    def __init__(self, page, parent=None, *, deferred_build=False):
         super().__init__(parent)
         self.page = page
         self.setObjectName('studioSourceMonitor')
@@ -383,49 +383,75 @@ class StudioSourceMonitor(QWidget):
         self.controller_ready.connect(self._controller_ready)
         self.surface_retired.connect(self._surface_retired)
         self.narrow = False
+        self._control_steps = self._build_control_steps()
+        if not deferred_build:
+            for _step in self.build_steps():
+                pass
+
+    def build_steps(self):
+        if self._control_steps is not None:
+            yield from self._control_steps
+            self._control_steps = None
+
+    def _build_control_steps(self):
+        from ..design.gui_slices import GuiSlice
+        budget = GuiSlice()
         # 2026-11-03 capsule layout: one-line title, fixed picture, then two
         # rounded cards (preview + in/out, selection + insertion).
         shell = QVBoxLayout(self); shell.setContentsMargins(10, 8, 10, 6); shell.setSpacing(8)
+        yield from budget.checkpoint()
         header = QHBoxLayout(); header.setSpacing(8)
         self.title = ElidedLabel('双击媒体池素材，预览原文件'); self.title.setObjectName('sourceTitle')
+        yield from budget.checkpoint()
         header.addWidget(self.title, 1)
         self.origin_chip = QLabel('原始内容'); self.origin_chip.setObjectName('sourceChip')
+        yield from budget.checkpoint()
         self.origin_chip.setToolTip('显示原始文件内容，独立于序列；出点为下一帧边界')
         self.origin_chip.setVisible(False); header.addWidget(self.origin_chip)
         header.addWidget(self.icon_button('fa5s.times', '关闭源', self.close_source, 'sourceClose', 'muted', 13))
+        yield from budget.checkpoint()
         shell.addLayout(header)
         self.visual = QStackedWidget()
         self.surface = self._new_surface()
         self.visual.addWidget(self.surface)
+        yield from budget.checkpoint()
         self.waveform = SourceRuler(self, large=True)
         self.visual.addWidget(self.waveform)
         self.visual.setFixedHeight(150)
         self.waveform.setMinimumHeight(90)
+        yield from budget.checkpoint()
         # Keep source picture/waveform visible while its narrow-column
         # controls scroll. The sequence canvas remains in the center.
         shell.addWidget(self.visual)
         self.content_scroll = QScrollArea(self)
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        yield from budget.checkpoint()
         self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.content_scroll.setMinimumHeight(140)
         self.content = QWidget(); self.content.setObjectName('sourceContent')
+        yield from budget.checkpoint()
         self.content_scroll.setWidget(self.content); shell.addWidget(self.content_scroll, 1)
         outer = QVBoxLayout(self.content)
         outer.setContentsMargins(0, 0, 0, 4); outer.setSpacing(8)
+        yield from budget.checkpoint()
         # Zoom keeps its state objects (Ctrl+wheel, acceptance) without a visible row.
         self.zoom = QSlider(Qt.Orientation.Horizontal, self); self.zoom.hide()
         self.zoom.setRange(1, 100); self.zoom.setValue(1)
+        yield from budget.checkpoint()
         self.zoom.valueChanged.connect(self._zoom_changed)
         self.scroll = QScrollBar(Qt.Orientation.Horizontal, self); self.scroll.hide()
+        yield from budget.checkpoint()
         self.scroll.valueChanged.connect(self._scroll_changed)
 
         view_card, view = self.card()
         self.ruler = SourceRuler(self)
         self.ruler.setToolTip('点击定位，拖动 I/O 调整选段；Ctrl+滚轮缩放')
+        yield from budget.checkpoint()
         view.addWidget(self.ruler)
         self.point_layouts = []
         points = self.points_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight); points.setSpacing(8)
+        yield from budget.checkpoint()
         self.in_edit = self.time_field(lambda: self._time_edited('in_ms'))
         self.out_edit = self.time_field(lambda: self._time_edited('out_ms'))
         self.point_buttons = {}
@@ -434,53 +460,70 @@ class StudioSourceMonitor(QWidget):
                                f'把{label}设为当前位置 ({key})')
             self.point_buttons[which] = point
             points.addWidget(point, 1)
+        yield from budget.checkpoint()
         view.addLayout(points)
         transport = self.transport_layout = QHBoxLayout(); transport.setSpacing(8)
         clock = QVBoxLayout(); clock.setSpacing(0)
+        yield from budget.checkpoint()
         self.time_edit = self.time_field(lambda: self._time_edited('position'))
         self.time_edit.setProperty('role', 'position'); self.time_edit.setMinimumWidth(128)
+        yield from budget.checkpoint()
         self.time_edit.setToolTip('源素材播放位置；不改变工程播放头')
         self.total_label = QLabel('/ 00:00:00.000'); self.total_label.setObjectName('sourceTotal')
         clock.addWidget(self.time_edit); clock.addWidget(self.total_label)
+        yield from budget.checkpoint()
         transport.addLayout(clock, 1)
         self.play_button = self.icon_button('fa5s.play', '播放 (Space)', self.toggle_play, 'sourcePlay', 'on_accent', 17)
         self.transport_buttons = (self.icon_button('fa5s.step-backward', '上一帧 (←)', lambda: self.step(-1)),
                                   self.play_button, self.icon_button('fa5s.step-forward', '下一帧 (→)', lambda: self.step(1)))
+        yield from budget.checkpoint()
         for button in self.transport_buttons:
             transport.addWidget(button)
         volume = QHBoxLayout(); volume.setSpacing(4); volume.addStretch(1)
+        yield from budget.checkpoint()
         self.mute_button = self.icon_button('fa5s.volume-up', '试听音量；单击静音', self._toggle_mute, 'sourceGlyph', 'muted', 14)
         volume.addWidget(self.mute_button)
         self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setObjectName('sourceVolume')
+        yield from budget.checkpoint()
         self.volume.setRange(0, 100); self.volume.setValue(70); self.volume.setFixedWidth(64)
         self.volume.setToolTip('试听音量')
+        yield from budget.checkpoint()
         self.volume.valueChanged.connect(self._volume_changed)
         volume.addWidget(self.volume); transport.addLayout(volume, 1)
         view.addLayout(transport)
+        yield from budget.checkpoint()
         outer.addWidget(view_card)
 
         self.selection_card = SourceSelectionArea(self)
         put_card, put = self.card(self.selection_card)
         head = QHBoxLayout(); head.setSpacing(6)
+        yield from budget.checkpoint()
         self.selection_handle = SourceSelectionArea(self)
         self.selection_handle.setObjectName('sourceSelectionHandle')
         grip_row = QHBoxLayout(self.selection_handle); grip_row.setContentsMargins(0, 0, 0, 0); grip_row.setSpacing(6)
+        yield from budget.checkpoint()
         grip = QLabel('⠿'); grip.setObjectName('sourceDragGrip')
+        yield from budget.checkpoint()
         heading = QLabel('选段'); heading.setObjectName('sourceSectionTitle')
         self.range_label = QLabel('00:00.000'); self.range_label.setObjectName('sourceDuration')
+        yield from budget.checkpoint()
         for widget in (grip, heading, self.range_label):
             widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             grip_row.addWidget(widget)
         grip_row.addStretch(1)
         head.addWidget(self.selection_handle, 1)
         play_range = self.link_button(' 试看选段', self.play_selection)
+        yield from budget.checkpoint()
         install_themed_icon(play_range, 'fa5s.play', 'muted'); play_range.setIconSize(QSize(9, 9))
         head.addWidget(play_range); head.addWidget(self.link_button('清除', self.clear_range))
+        yield from budget.checkpoint()
         put.addLayout(head)
         segment = QFrame(); segment.setObjectName('sourceSegment')
         segment.setToolTip('单击选择加入方式；按住拖到兼容轨道直接加入')
+        yield from budget.checkpoint()
         modes = QHBoxLayout(segment); modes.setContentsMargins(3, 3, 3, 3); modes.setSpacing(2)
         self.mode_buttons = {}
+        yield from budget.checkpoint()
         for mode, label, icon in (('av', '音视频', 'fa5s.photo-video'), ('video', '仅视频', 'fa5s.film'),
                                   ('audio', '仅音频', 'fa5s.music')):
             button = SourceDragButton(' '+label, self, mode)
@@ -488,12 +531,15 @@ class StudioSourceMonitor(QWidget):
             modes.addWidget(button, 1); self.mode_buttons[mode] = button
         put.addWidget(segment)
         self.stream = QComboBox(); self.stream.setMinimumWidth(0); self.stream.setObjectName('sourceTarget')
+        yield from budget.checkpoint()
         self.stream.setCursor(Qt.CursorShape.ArrowCursor)
         self.stream.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.stream.currentIndexChanged.connect(self._stream_changed)
+        yield from budget.checkpoint()
         put.addWidget(self.stream)
         targets = self.targets_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight); targets.setSpacing(8)
         self.video_target = QComboBox(); self.audio_target = QComboBox()
+        yield from budget.checkpoint()
         for combo in (self.video_target, self.audio_target):
             combo.setCursor(Qt.CursorShape.ArrowCursor)
             combo.setObjectName('sourceTarget')
@@ -501,22 +547,29 @@ class StudioSourceMonitor(QWidget):
             targets.addWidget(combo, 1)
         self.video_target.setToolTip('画面目标轨；音视频一起时声音进入该轨的关联音轨')
         self.audio_target.setToolTip('仅音频的目标轨；可选择新建独立音轨')
+        yield from budget.checkpoint()
         self.video_target.currentIndexChanged.connect(self._target_changed)
         put.addLayout(targets)
         self.insert_button = self.button(' 加入时间线 · 工程播放头', self.insert)
         self.insert_button.setObjectName('sourcePrimary')
+        yield from budget.checkpoint()
         self.insert_button.setCursor(Qt.CursorShape.PointingHandCursor)
         install_themed_icon(self.insert_button, 'fa5s.plus', 'on_accent'); self.insert_button.setIconSize(QSize(13, 13))
         put.addWidget(self.insert_button)
+        yield from budget.checkpoint()
         self.status = StatusLabel(self); put.addWidget(self.status)
         outer.addWidget(put_card)
         outer.addStretch(1)
+        yield from budget.checkpoint()
         self.timer = QTimer(self); self.timer.setInterval(40); self.timer.timeout.connect(self._tick)
         self.seek_timer = QTimer(self); self.seek_timer.setSingleShot(True); self.seek_timer.setInterval(25)
+        yield from budget.checkpoint()
         self.seek_timer.timeout.connect(self._post_seek)
         self.wave_timer = QTimer(self); self.wave_timer.setSingleShot(True); self.wave_timer.setInterval(120)
+        yield from budget.checkpoint()
         self.wave_timer.timeout.connect(self._request_wave)
         self.refresh_targets()
+        yield from budget.checkpoint()
         self.set_mode('av')
 
     @staticmethod

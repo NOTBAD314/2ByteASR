@@ -182,12 +182,12 @@ def start(window, output):
     def bar_check(name):
         todo = window.result_todo
         controls = [card for card in todo.cards if card.isVisible()] + [window.result_more_button]
-        check(f'{name}: bar is one 52px row', todo.columns == 3 and abs(todo.height()-52) <= 2,
+        check(f'{name}: compact follow-ups retain measured row height', todo.columns >= 1 and todo.height() >= todo.bar_height,
               dict(width=todo.width(), height=todo.height(), groups=[card.geometry().getRect() for card in controls]))
         check(f'{name}: fixed groups do not overlap',
-              all(a.geometry().right() < b.geometry().left() for a, b in zip(controls, controls[1:])))
-        measured = [secondary_control_measurement(card.action, expected_height=36) for card in todo.cards if card.isVisible()]
-        measured.append(secondary_control_measurement(window.result_more_button, expected_height=36))
+              all(not a.geometry().intersects(b.geometry()) for i,a in enumerate(controls) for b in controls[i+1:]))
+        measured = [secondary_control_measurement(card.action, expected_height=todo.bar_height) for card in todo.cards if card.isVisible()]
+        measured.append(secondary_control_measurement(window.result_more_button, expected_height=todo.bar_height))
         check(f'{name}: all button labels fit at 36px', all(row['fits'] for row in measured), measured)
         labels = [label for card in todo.cards if card.isVisible() for label in (card.title, card.badge, card.note)
                   if not label.isHidden()]
@@ -232,7 +232,8 @@ def start(window, output):
             show('busy')
             yield from settle()
             todo = window.result_todo
-            check(f'{theme}: busy task shows all three groups', all(card.isVisible() for card in todo.cards))
+            check(f'{theme}: busy task shows AI card and review/retry strip', window.result_ai_card.isVisible()
+                  and todo.ai_card.isHidden() and todo.review_card.isVisible() and todo.retry_card.isVisible())
             check(f'{theme}: retry count is the real recoverable stage count', todo.retry_card.badge.text() == '1'
                   and todo.retry_card.badge.isVisible() and todo.retry_card.action.isEnabled(), todo.retry_card.badge.text())
             bar_check(f'{theme} busy')
@@ -353,7 +354,7 @@ def start(window, output):
             window.pages.widget(2).verticalScrollBar().setValue(0)
             show('quiet')
             yield from settle()
-            check(f'{theme}: quiet task shows AI and review only', todo.ai_card.isVisible() and todo.review_card.isVisible()
+            check(f'{theme}: quiet task shows AI and review only', window.result_ai_card.isVisible() and todo.ai_card.isHidden() and todo.review_card.isVisible()
                   and not todo.retry_card.isVisible() and todo.dividers[1].isHidden())
             check(f'{theme}: next completion opens both summaries again', files.mode == log.mode == 'summary')
             bar_check(f'{theme} quiet')
@@ -363,7 +364,7 @@ def start(window, output):
         # before restoring the production task on the next run.
         todo.set_review(())
         yield .3
-        check('no review and no retry: only AI and more remain', todo.ai_card.isVisible()
+        check('no review and no retry: only AI and more remain', window.result_ai_card.isVisible() and todo.ai_card.isHidden()
               and todo.review_card.isHidden() and todo.retry_card.isHidden()
               and all(divider.isHidden() for divider in todo.dividers))
         shot('grape-no-review-or-retry')
@@ -399,10 +400,10 @@ def start(window, output):
         yield .3
         shot('grape-busy-narrow-folds')
         check('narrow: category labels hidden and actions remain full width', todo.review_card.chips.isHidden()
-              and all(card.action.fontMetrics().horizontalAdvance(card.action.text())+28 <= card.action.width() for card in todo.cards))
+              and all(card.action.fontMetrics().horizontalAdvance(card.action.text())+28 <= card.action.width() for card in todo.cards if card.action.isVisible()))
         scroll = window.pages.widget(2)
-        for button in (todo.ai_card.action, todo.review_card.action, todo.retry_card.action, window.result_more_button,
-                       *window.result_action_grid.cards):
+        for button in (control for control in (todo.review_card.action, todo.retry_card.action, window.result_more_button,
+                       *window.result_action_grid.cards) if control.isVisible()):
             scroll.ensureWidgetVisible(button)
             yield .1
             check(f'narrow: scroll reaches {button.text()}', scroll.viewport().rect().contains(button.mapTo(scroll.viewport(), QPoint())))

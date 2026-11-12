@@ -3,12 +3,25 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from dataclasses import replace
 from types import SimpleNamespace
 
 from .terminology import GlossarySnapshot, TermResolver
 from .studio_glossary_review import diff_occurrences
 from ..studio.subtitle_text_targets import bind_occurrence
+
+
+def review_context_versions(project, entries):
+    cues=sorted(getattr(project,'_review_dialogue_cues',project.cues),key=lambda c:(c.start_ms,c.end_ms,c.id))
+    indexes={c.id:i for i,c in enumerate(cues)}
+    versions={}
+    for entry in entries:
+        i=indexes.get(entry.source_cue_id or entry.target.cue_id)
+        if i is not None:
+            rows=[(c.id,c.text,c.speaker_id,c.start_ms,c.end_ms) for c in cues[max(0,i-3):i+4]]
+            versions[entry.key]=hashlib.sha256(json.dumps(rows,ensure_ascii=False).encode()).hexdigest()
+    return versions
 
 
 def _script(text):
@@ -55,7 +68,8 @@ SYSTEM = """你是字幕词库校对员。只校对输入中已有的 target_tex
 source_reference 仅用于理解句意，不是写入目标；不能修改原文、ID、时间、语言、轨道或字幕关联。没有原文关联时只按已有文本判断。
 保留原句意思、信息、语气和目标语言；不要重译、扩写、删句或补译空白。中文规范词不能直接替换英语、意大利语或日语等目标文本。
 same_language_terms 是可用规范词/别名；cross_language_pairs 只在有可靠方向对应时提供。reference_terms 只作参考，缺少可靠译名时给出需人工判断的建议并说明不确定。
-所有建议由用户确认。只返回 JSON：{"changes":[{"target_id":"输入ID","original":"完整target_text快照","replacement":"建议全文","reason":"修改原因及不确定性"}]}。
+dialogue_context 是按工程时间排序、跨说话人的只读邻文；只写回targets。原文是转写校对；译文须结合source_reference检查错译、漏译、否定、指代、语气和固定译法。保留正常语气词、助词、口语省略和重复。
+所有建议由用户确认。只返回 JSON：{"changes":[{"target_id":"输入ID","original":"完整target_text快照","replacement":"建议全文","reason":"修改原因及不确定性"}],"suspects":[{"target_id":"输入ID","original":"完整target_text快照","reason":"具体证据与需试听判断之处"}]}。
 没有需要修改的文本返回空 changes。original 必须逐字等于输入；replacement 不得为空。"""
 
 
@@ -104,6 +118,8 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
             "local_draft": resolution.text, "translation_terminology": terms_by_key[entry.key],
             "terminology_warnings": violations(entry.source_text, entry.text, terms_by_key[entry.key])})
     batches = []
+    dialogue = sorted(getattr(project,'_review_dialogue_cues',project.cues), key=lambda cue:(cue.start_ms,cue.end_ms,cue.id))
+    dialogue_indexes = {cue.id:i for i,cue in enumerate(dialogue)}
     batch, size = [], 0
     for entry in entries:
         cost = len(entry.text) + len(entry.source_text) + 200
@@ -140,6 +156,16 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
             "cross_language_pairs": [{"source": source, "target": target, "target_language": container_target(project)}
                                      for source, target in pairs] if container_target(project) in languages else [],
             "reference_terms": list(snapshot.canonical_terms)[:400] if any(e.target.layer == 'original' for e in batch) else []}
+        indexes = set()
+        for entry in batch:
+            owner = entry.source_cue_id or entry.target.cue_id
+            i = dialogue_indexes.get(owner)
+            if i is not None:
+                indexes.update(range(max(0,i-3), min(len(dialogue),i+4)))
+        payload['dialogue_context'] = [{'cue_id':dialogue[i].id,'speaker_id':dialogue[i].speaker_id,
+            'start_ms':dialogue[i].start_ms,'end_ms':dialogue[i].end_ms,'original':dialogue[i].text}
+            for i in sorted(indexes)]
+        receipt.setdefault('context_snapshots', []).append(payload['dialogue_context'])
         try:
             from ..providers.subtitle_request_policy import provider_policy
             policy = provider_policy(provider)
@@ -155,6 +181,18 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
             if not isinstance(changes, list):
                 raise ValueError("AI 没有返回有效 changes 列表")
             lookup = {entry.key: entry for entry in batch}
+            suspects = parsed.get('suspects', [])
+            if not isinstance(suspects, list):
+                receipt['rejected_changes'] += 1
+                suspects = []
+            for suspect in suspects:
+                entry = lookup.get(suspect.get('target_id')) if isinstance(suspect,dict) else None
+                if (entry is None or suspect.get('original') != entry.text
+                        or not isinstance(suspect.get('reason'),str) or not suspect['reason'].strip()):
+                    receipt['rejected_changes'] += 1
+                    continue
+                receipt['pending_rows'].append({'cue_id':entry.key,'state':'speech_review',
+                    'span':[0,len(entry.text)],'surface':entry.text,'reason':suspect['reason']})
             seen = set()
             rejected = set()
             for change in changes:
@@ -176,6 +214,14 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 from ..subtitle_rules.math_text import mask_formulas
                 if valid:
                     valid = mask_formulas(new)[1] == mask_formulas(entry.text)[1]
+                if valid and entry.target.layer=='original' and entry.target.language.split('-')[0]=='ja':
+                    from ..subtitle_rules.japanese_correction import preserves_final_particle
+                    if not preserves_final_particle(entry.text,new):
+                        receipt['pending_rows'].append({'cue_id':entry.key,'state':'speech_review',
+                            'span':[0,len(entry.text)],'surface':entry.text,
+                            'reason':'AI建议会删除或改变日语句末语气词；保留原文，请试听确认'})
+                        seen.add(entry.key)
+                        continue
                 if valid and terms_by_key[entry.key]:
                     conflicts = violations(entry.source_text, new, terms_by_key[entry.key])
                     if conflicts:

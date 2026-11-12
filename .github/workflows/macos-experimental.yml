@@ -204,6 +204,8 @@ jobs:
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caret_split_smoke.py --app "$app" --output "$MAC_QA_ROOT/caret-split"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario stable-captions --output "$MAC_QA_ROOT/stable-captions"
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario chinese-complete-expression --output "$MAC_QA_ROOT/chinese-complete-expression"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario speaker-board --output "$MAC_QA_ROOT/speaker-board"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario timeline-cue-pill --output "$MAC_QA_ROOT/timeline-cue-pill"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
@@ -350,7 +352,7 @@ jobs:
   same-candidate-newer-macos:
     needs: native-arm64
     if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
-    runs-on: macos-26
+    runs-on: ${{ inputs.app_runner == 'macos-26' && 'macos-15' || 'macos-26' }}
     timeout-minutes: 45
     defaults:
       run:

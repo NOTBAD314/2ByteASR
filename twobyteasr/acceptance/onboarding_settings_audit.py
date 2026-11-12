@@ -338,23 +338,27 @@ def start(window, output: Path):
               and [a for _l, a in card.step.actions] == ['choose_media', 'tour', 'open_sample'],
               dict(message=card.message.text()))
         capture('A1-home-welcome')
-        # Dismiss and bring back from 说明.
+        # Dismiss and bring back. 2026-11-11 (user): 说明 keeps five entries and no longer lists
+        # 显示新手引导; the feature search entry 新手引导 runs the same action.
         QTest.mouseClick(card.close_button, Qt.MouseButton.LeftButton)
         yield 0.4
         check('the welcome card can be closed', not card.isVisible() and onboarding.load_state().get('guide') is False)
         chosen = {}
 
-        def pick_guide(menu):
+        def look_at_menu(menu):
             grab(menu, 'A4-help-menu')
-            chosen['action'] = next(a for a in menu.actions() if a.text().startswith('显示新手引导'))
+            chosen['texts'] = [a.text() for a in menu.actions()]
             menu.close()
-        on_modal(QMenu, pick_guide, 'help-menu')
+        on_modal(QMenu, look_at_menu, 'help-menu')
         QTest.mouseClick(window.help_button, Qt.MouseButton.LeftButton)
-        yield lambda: 'action' in chosen
+        yield lambda: 'texts' in chosen
         yield 0.3
-        chosen['action'].trigger()                     # after the menu closed, as a click would
+        check('说明 no longer lists 显示新手引导', not any(t.startswith('显示新手引导') for t in chosen['texts']), chosen['texts'])
+        from twobyteasr.app.feature_search import entries as feature_entries
+        entry = next(e for e in feature_entries(window) if e.title == "新手引导")
+        entry.run()
         yield lambda: card.isVisible()
-        check('说明 → 显示新手引导 brings it back', card.isVisible() and onboarding.load_state().get('guide') is True)
+        check('功能搜索 → 新手引导 brings it back', card.isVisible() and onboarding.load_state().get('guide') is True)
         # Example project: no model, no key, nothing uploaded.
         from PySide6.QtWidgets import QPushButton
         button = card.findChild(QPushButton, 'nextStepAction_open_sample')

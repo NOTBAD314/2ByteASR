@@ -578,6 +578,8 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
             {
                 "model": QWEN_ASR_MODEL,
                 "worker_contract": "qwen-worker-shared-float32-v1",
+                "generation_policy": "measured-stop-single-window-retry-v1",
+                "reference_projection": "temporal-ordered-local-span-v1",
                 "max_new_tokens": QWEN_ASR_MAX_NEW_TOKENS,
                 "chunk": QWEN_ASR_CHUNK_SECONDS,
                 "pad": QWEN_ASR_AUDIO_PAD_SECONDS,

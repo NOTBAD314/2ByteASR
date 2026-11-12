@@ -468,3 +468,20 @@ def apply_candidate_role(project, snapshot, label, role, *, decision_source='man
     if any(cue.speaker_id not in speaker_ids or cue.end_ms <= cue.start_ms for cue in result.cues):
         raise ValueError("说话人用途产生了无效的字幕引用或时间。")
     return result
+
+
+def apply_candidate_roles(project, snapshot, changes, *, decision_source='manual'):
+    """Several labels' roles applied in order as one result (one undo step).
+
+    2026-11-12 (speaker board): merging a whole secondary group or sending it
+    to the game sound is one user action. Each step is ``apply_candidate_role``
+    on the previous step's result, so every label keeps its own role record
+    (a merged label can be split again). Unchanged roles are skipped; returns
+    ``None`` when nothing changes.
+    """
+    result, state = project, snapshot
+    for label, role in changes:
+        step = apply_candidate_role(result, state, label, role, decision_source=decision_source)
+        if step is not None:
+            result, state = step, step.generation_metadata["speaker_recovery"]
+    return None if result is project else result

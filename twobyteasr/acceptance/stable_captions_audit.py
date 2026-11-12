@@ -105,7 +105,10 @@ def run(output, window=None):
         win=window or MainWindow([],core,object(),None); win.resize(1440,920); win.show()
         metrics['device_pixel_ratio']=win.devicePixelRatioF()
         win.open_studio_project(str(fixture))
-        wait(lambda: win.built_page('studio') is not None and win.studio_page.project is not None)
+        wait(lambda: win.built_page('studio') is not None and win.studio_page.project is not None
+             and win.studio_page.project_path is not None
+             and Path(win.studio_page.project_path).resolve() == fixture.resolve()
+             and {c.id for c in win.studio_page.project.cues} == {'damage','four','yes'})
         page=win.studio_page
         wait(lambda: win.__dict__.get('_studio_loading_session') is None or
              (not win._studio_loading_session.active and not win._studio_loading_session.view.isVisible()))
@@ -168,7 +171,9 @@ def run(output, window=None):
         seed_qc(p);page.cue_model.refresh();page._refresh_cue_list_summary()
         page.cue_search.setText('是的');pump(.05)
         page._refresh_cue_list_summary()
-        check('whole-project count ignores search', '3' in page.confirm_all_reviews_button.text())
+        # 2026-11-12: the count moved from the button to the strip's note.
+        check('whole-project count ignores search', page.confirm_all_reviews_button.property('pendingCount') == 3
+              and '3' in page.confirm_all_reviews_note.text())
         original=deepcopy(p.to_dict());steps=page.undo_stack.count()
         _capture(win,output/'07-before-bulk.png')
         begin=time.perf_counter();QTest.mouseClick(page.confirm_all_reviews_button,Qt.LeftButton);pump(.05)

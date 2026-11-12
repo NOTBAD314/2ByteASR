@@ -1,0 +1,415 @@
+{
+ "source": "兔子.pngRemix (PNGTuber Remix, user-provided, 2026-11-02)",
+ "canvas": [
+  900,
+  888
+ ],
+ "trim": [
+  178,
+  7,
+  561,
+  664
+ ],
+ "ring": [
+  452,
+  12
+ ],
+ "layers": [
+  {
+   "img": "26_img.png",
+   "name": "后发",
+   "role": "",
+   "pivot": [
+    459.6,
+    471.2
+   ],
+   "shift": [
+    -0.4,
+    -1.3
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "27_img.png",
+   "name": "左耳",
+   "role": "",
+   "pivot": [
+    346.6,
+    256.4
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "28_img.png",
+   "name": "右耳",
+   "role": "",
+   "pivot": [
+    573.2,
+    264.1
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "35_img.png",
+   "name": "身体",
+   "role": "",
+   "pivot": [
+    450.0,
+    444.0
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "36_img.png",
+   "name": "脚",
+   "role": "",
+   "pivot": [
+    455.9,
+    639.0
+   ],
+   "shift": [
+    -0.9,
+    -4.2
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "01_img.png",
+   "name": "6脸",
+   "role": "",
+   "pivot": [
+    462.0,
+    525.5
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "04_img.png",
+   "name": "眉毛",
+   "role": "",
+   "pivot": [
+    460.9,
+    520.8
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "07_img.png",
+   "name": "闭嘴",
+   "role": "mouthClosed",
+   "pivot": [
+    460.9,
+    523.3
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "08_img.png",
+   "name": "张嘴",
+   "role": "mouthOpen",
+   "pivot": [
+    460.9,
+    519.6
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "10_img.png",
+   "name": "眼睛",
+   "role": "eyes",
+   "pivot": [
+    459.7,
+    528.1
+   ],
+   "shift": [
+    -1.8,
+    5.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "13_img.png",
+   "name": "闭眼",
+   "role": "blink",
+   "pivot": [
+    462.1,
+    524.5
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "24_img.png",
+   "name": "底色",
+   "role": "",
+   "pivot": [
+    463.3,
+    302.2
+   ],
+   "shift": [
+    2.4,
+    -5.9
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "11_img.png",
+   "name": "睫毛",
+   "role": "eyes",
+   "pivot": [
+    458.5,
+    520.8
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "20_img.png",
+   "name": "鬓角左",
+   "role": "",
+   "pivot": [
+    290.5,
+    390.6
+   ],
+   "shift": [
+    0.0,
+    -5.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "21_img.png",
+   "name": "鬓角右",
+   "role": "",
+   "pivot": [
+    609.5,
+    378.5
+   ],
+   "shift": [
+    0.0,
+    -8.1
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "22_img.png",
+   "name": "左发",
+   "role": "",
+   "pivot": [
+    414.8,
+    286.1
+   ],
+   "shift": [
+    -0.4,
+    -10.1
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "23_img.png",
+   "name": "右发",
+   "role": "",
+   "pivot": [
+    562.2,
+    324.6
+   ],
+   "shift": [
+    -0.4,
+    -5.2
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "19_img.png",
+   "name": "刘海",
+   "role": "",
+   "pivot": [
+    455.3,
+    288.9
+   ],
+   "shift": [
+    0.0,
+    -5.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "33_img.png",
+   "name": "双手",
+   "role": "",
+   "pivot": [
+    458.5,
+    606.7
+   ],
+   "shift": [
+    0.9,
+    -1.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "02_img.png",
+   "name": "高光",
+   "role": "",
+   "pivot": [
+    563.2,
+    329.4
+   ],
+   "shift": [
+    -0.8,
+    -17.1
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "15_img.png",
+   "name": "头饰",
+   "role": "",
+   "pivot": [
+    332.3,
+    420.3
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "16_img.png",
+   "name": "眼镜",
+   "role": "",
+   "pivot": [
+    450.0,
+    444.0
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "17_img.png",
+   "name": "反光",
+   "role": "",
+   "pivot": [
+    457.7,
+    543.5
+   ],
+   "shift": [
+    0.0,
+    0.0
+   ],
+   "mask": "16_img.png",
+   "maskShift": [
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "img": "03_img.png",
+   "name": "腮红",
+   "role": "",
+   "pivot": [
+    368.9,
+    572.9
+   ],
+   "shift": [
+    0.0,
+    0.4
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "38_img.png",
+   "name": "17钥匙",
+   "role": "",
+   "pivot": [
+    452.6,
+    217.9
+   ],
+   "shift": [
+    -4.2,
+    -34.4
+   ],
+   "mask": null,
+   "maskShift": null
+  },
+  {
+   "img": "39_img.png",
+   "name": "反光2",
+   "role": "",
+   "pivot": [
+    444.6,
+    401.7
+   ],
+   "shift": [
+    -5.4,
+    -42.3
+   ],
+   "mask": "38_img.png",
+   "maskShift": [
+    -4.2,
+    -34.4
+   ]
+  }
+ ]
+}

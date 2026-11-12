@@ -280,6 +280,7 @@ class CueValidationFailures(dict):
         super().__init__()
         self.details = {}
         self.protected = {}
+        self.completed = {}
         self.rejected_patches = {}
 
 
@@ -388,6 +389,18 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
                             edit = {**edit, 'start': start, 'end': end}
                             repaired.append(dict(given=old_span, located=[start, end]))
                         else:
+                            target = edit.get('to', '')
+                            if (not positions and target and len(target)==len(quote)
+                                    and type(start) is int and type(end) is int
+                                    and end == start + len(quote) and 0 <= start
+                                    and original[start:start+len(target)] == target):
+                                # Only this submitted location is satisfied. A
+                                # target elsewhere in the line proves nothing.
+                                if hasattr(quarantined, 'completed'):
+                                    quarantined.completed.setdefault(row['id'], []).append({**edit,
+                                        'state': 'completed_no_change', 'rule_id': 'current_span_already_satisfied',
+                                        'input_text_sha256': hashlib.sha256(original.encode()).hexdigest()})
+                                continue
                             if not positions and hasattr(quarantined, 'protected'):
                                 # The model checked this ID, but its proposed
                                 # source quote does not exist. Reject this
@@ -503,57 +516,7 @@ def _decode_polish_batch(value):
         unassigned_new_suspects=value.get('unassigned_new_suspects', ()))
 
 
-def _validate_new_suspects(value, originals):
-    """Quarantine optional discoveries; they never authorize a text edit.
-
-    Preserve raw rows, including malformed types, for honest local/global
-    review. Only exact integer cue IDs attach to a known editable cue.
-    """
-    import copy
-    scoped, unassigned, positions = {}, [], set()
-    rows = value if isinstance(value, list) else [value]
-    for original in rows:
-        row = copy.deepcopy(original) if isinstance(original, dict) else {}
-        errors = []
-        if not isinstance(value, list):
-            errors.append('new_suspects_not_array')
-        if not isinstance(original, dict):
-            errors.append('new_suspect_not_object')
-        cue_id = row.get('id')
-        attributable = type(cue_id) is int and cue_id in originals and isinstance(value, list)
-        if type(cue_id) is not int:
-            errors.append('invalid_cue_id_type')
-        elif cue_id not in originals:
-            errors.append('unknown_editable_cue_id')
-        start, end, surface = row.get('start'), row.get('end'), row.get('surface')
-        valid_span_type = type(start) is int and type(end) is int
-        if not valid_span_type:
-            errors.append('invalid_span_type')
-        if not isinstance(surface, str):
-            errors.append('invalid_surface_type')
-        if attributable and valid_span_type:
-            raw = originals[cue_id]
-            if not 0 <= start < end <= len(raw):
-                errors.append('span_out_of_bounds')
-            elif isinstance(surface, str) and raw[start:end] != surface:
-                errors.append('surface_mismatch')
-            position = (cue_id, start, end)
-            if position in positions:
-                errors.append('duplicate_new_suspect_position')
-            positions.add(position)
-        evidence = row.get('evidence')
-        if not isinstance(evidence, str):
-            errors.append('invalid_evidence_type')
-        elif not evidence.strip():
-            errors.append('empty_evidence')
-        row.update(raw_model_row=copy.deepcopy(original),
-            validation_state='invalid' if errors else 'validated_original_position',
-            validation_errors=errors, model_evidence_is_not_source_proof=True)
-        if attributable:
-            scoped.setdefault(cue_id, []).append(row)
-        else:
-            unassigned.append(row)
-    return scoped, unassigned
+from .proofread_identity import validate_new_suspects as _validate_new_suspects
 
 
 def _scoped_correction_body(body, candidates=()):
@@ -582,6 +545,11 @@ def _scoped_correction_body(body, candidates=()):
     evidence['matched_candidates'] = {str(row['id']): row['nearby_glossary_candidates'] for row in body['cues']}
     body['enabled_glossary_evidence'] = evidence
     body['context_access'] = 'context_before/context_after are read-only; only cues IDs are editable'
+    body['text_contract'] = {'editable_primary_text': 'cues.primary_text',
+        'reference_asr_texts': 'ASR evidence only; never patch references',
+        'span_unit': 'Python Unicode codepoint; start inclusive/end exclusive'}
+    for row in body['cues']:
+        row['text_revision'] = hashlib.sha256(row['primary_text'].encode('utf8')).hexdigest()
     return body
 
 
@@ -1073,6 +1041,11 @@ def call_correction_api(
 优先适用且无歧义的confirmed别名→规范名称，这是用户名称统一，不要求另一ASR直接写出英文ID，不受字符变长限制；普通动画/电影等话题不能机械套选手昵称。规范词逐字使用canonical，包括大小写和数字，不按记忆换成其他拼写。reference/ambiguous/context-only只提供候选，近音或英文错拼修改仍需局部来源与语境证据；非音近昵称必须有明确别名关联。完整Latin ID允许有据有限拼写修正，两字母普通英文/单字音译不能仅凭词表改名。approved_global_term_mappings保持。
 只改目标词或必要错断词跨度，保留语气、重复、代词、原意及数字事件顺序；不把‘一个’改为‘1个’，不合并重复数字。编辑给from/to、原文start/end（左闭右开）、candidate_id（适用时）、type=alias_normalization|phonetic_correction|id_spelling|asr_correction|pronoun_gender及简短evidence；basis用真实输入来源+context，别名用glossary+context。不修改时输出空edits或省略该cue，绝不要在编辑type中写keep；keep只用于suspect_results的disposition。不声称听过未提供音频。疑似词suspects每项必须在suspect_results给suspect_id、disposition=replace|keep|review|missing_candidate和短evidence；空edits不代表已经审查。两个候选合理、证据冲突或缺项时保留并待确认；新疑似词用new_suspects(id,start,end,surface,evidence)，不编造candidate_id。固定规则：{editorial_rule}"""
     from twobyteasr.subtitle_rules.language_rules import is_english, is_european, is_japanese, is_korean
+    prompt = prompt.replace('新疑似词用new_suspects(id,start,end,surface,evidence)',
+        '新疑似词用new_suspects(cue_id整数,suspect_id字符串,start,end,surface,evidence)')
+    prompt += ('\nprimary_text是唯一editable_primary_text，ASR参考稿只读。from和字符范围必须逐字定位当前主稿，'
+        '禁止把参考稿的错字当作主稿from。主稿对应句位已经满足目标时不提替换；目标只在其他句位出现不能跳过。'
+        'cue_id/source_segment_id与suggestion_id/suspect_id属不同身份，不能把疑点字符串填作字幕ID。')
     if is_japanese():
         # Japanese subtitles: same edit contract, but never translate, never
         # convert kanji to simplified Chinese forms, no Chinese numeral rules.
@@ -1366,7 +1339,8 @@ def call_correction_api(
                     if any(m['cue_id'] == segment.segment_id for m in x['matches'])],
                     sent_candidates=sent_for_cue,
                     returned_edits=item.get('edits', []), accepted_edits=applied, validated_text=corrected,
-                    completed_no_change_edits=[x for x in edit_decisions if x.get('state') in ('completed_no_change','already_applied')],
+                    completed_no_change_edits=[x for x in edit_decisions if x.get('state') in ('completed_no_change','already_applied')]
+                        + getattr(quarantined, 'completed', {}).get(segment.segment_id, []),
                     rejected_patches=getattr(quarantined, 'rejected_patches', {}).get(segment.segment_id, []),
                     rejected_edits=[{**edit, 'rejected_at': 'local_correction_safety',
                         **next(({'rule_id': x['rule_id'], 'evidence': x.get('evidence', {})}
@@ -1406,7 +1380,9 @@ def call_correction_api(
                         input_text_sha256=hashlib.sha256(segment.text.encode()).hexdigest(),
                         rejected_edits=protected, original_retained=True)
                 if receipt['rejected_edit_count']:
-                    receipt.update(quality_state='pending_rejected_edit_review',
+                    receipt.update(quality_state=(receipt['quality_state'] if receipt['quality_state']=='pending_suspect_adjudication'
+                                                  else 'rejected_proposal_diagnostic'),
+                        proposal_validation_state='rejected_proposal_diagnostic',
                         review_reason='model_edits_rejected_by_local_safety; original retained; no acoustic verification')
                 record_run_event('terminology_polish_detail', job_id=runtime_context.job_id,
                     cue_id=segment.segment_id, details=receipt)
@@ -2331,7 +2307,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
             receipt['quality_state'] = 'pending_suspect_adjudication'
         receipt['rejected_edit_count'] = len(receipt.get('rejected_edits', ()))
         if receipt['rejected_edit_count']:
-            receipt.update(quality_state='pending_rejected_edit_review',
+            receipt.update(quality_state='rejected_proposal_diagnostic',
                 review_reason='model_edits_rejected_by_local_safety; original retained; no acoustic verification')
         if pending:
             add_review_item(segment.start, '术语候选待确认',
@@ -2374,7 +2350,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
         'recall_gap_cues': sum(bool(x.caption_arbitration.get('terminology_polish', {})
             .get('candidate_usage', {}).get('unresolved_recall_gaps')) for x in segments),
         'rejected_edits': sum(len(x.caption_arbitration.get('terminology_polish', {}).get('rejected_edits', ())) for x in segments),
-        'pending_rejected_edit_cues': sum(bool(x.caption_arbitration.get('terminology_polish', {}).get('rejected_edits')) for x in segments),
+        'pending_rejected_edit_cues': 0,
         'unreviewed_suspects': sum(len(x.caption_arbitration.get('terminology_polish', {}).get('unreviewed_suspects', ())) for x in segments),
         'invalid_new_suspect_rows': sum(row.get('validation_state') == 'invalid' for segment in segments
             for row in segment.caption_arbitration.get('terminology_polish', {}).get('new_suspects', ())),

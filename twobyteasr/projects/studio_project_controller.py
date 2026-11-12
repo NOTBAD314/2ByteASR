@@ -126,7 +126,9 @@ class StudioProjectController:
             page._close_export_workspace()
         page._project_view_state = "hub"
         page._project_opening_path = ""
-        page._close_project_session("project_hub")
+        gate = getattr(page, '_readiness', None)
+        if page.project is not None or (gate is not None and gate.active):
+            page._close_project_session("project_hub")
         bind_text(page.filename, tr('2ByteASR  兔白字幕'))
         bind_text(page.save_state, translate('未打开项目', current_language()))
         page._recovered_autosave_pending = False
@@ -487,6 +489,8 @@ class StudioProjectController:
         expected_result_ref=None,
         async_recovery=False,
     ) -> None:
+        from ..design.gui_slices import GuiSlice, GUI_YIELD
+        _gui_slice = GuiSlice()
         page = self.page
         from .studio_save import defer_navigation_until_saved
         if defer_navigation_until_saved(page, lambda: self.open_project(
@@ -715,14 +719,21 @@ class StudioProjectController:
 
         page._studio_trace("PROJECT_ASSIGN", project_path=str(requested_path), cue_count=len(project.cues))
         self.session.project_path = requested_path.resolve()
+        yield from _gui_slice.checkpoint()
         self.session._cue_lookup = {cue.id: cue for cue in project.cues}
         page._manual_text_baselines = {cue.id: cue.text for cue in project.cues}
         page._project_view_state = "open"
         page._studio_trace("VIEW_TRANSITION", source="loading", target="open")
+        yield from _gui_slice.checkpoint()
         page._project_opening_path = ""
+        # Polish the inactive workspace in short turns before Qt shows all
+        # its visible controls in a single native transition.
+        from ..design.theme_scopes import prepare_steps
+        yield from prepare_steps(page, branch=page.workspace_splitter)
         page._set_hub_toolbar_mode(False)
         page.studio_empty.setEnabled(True)
         page.hub_loading_label.hide()
+        yield from _gui_slice.checkpoint()
         page.studio_empty.hide()
         play_res_x = max(1, int(project.render_settings.get("play_res_x", 1920)))
         play_res_y = max(1, int(project.render_settings.get("play_res_y", 1080)))
@@ -730,15 +741,18 @@ class StudioProjectController:
             project.media.width,
             project.media.height,
         )
+        yield from _gui_slice.checkpoint()
         mark_hydration("project_assignment")
         page._remember_recent_project(self.session.project_path)
         owner = page.window().parentWidget() if page.window() is not None else None
         if owner is not None and hasattr(owner, "_refresh_studio_entry_card"):
             owner._refresh_studio_entry_card()
+        yield from _gui_slice.checkpoint()
         self.session.undo_stack.clear()
         self.session.undo_stack.setClean()
         page._recovered_autosave_pending = recovered_autosave
         user_text(page.filename).setText(display_project_name(path=self.session.project_path, project=project))
+        yield from _gui_slice.checkpoint()
         _language = current_language()
         (bind_text(page.save_state, translate('已恢复自动保存（尚未保存）', _language)) if recovered_autosave else bind_text(page.save_state, translate('已保存', _language)))
         mark_hydration("recent_undo_state")
@@ -754,6 +768,7 @@ class StudioProjectController:
             if hasattr(page, '_sync_timeline_duration_label'):
                 from ..timeline.studio_edit_sequence import timeline_duration_ms
                 page._sync_timeline_duration_label(timeline_duration_ms(project))
+        yield from _gui_slice.checkpoint()
         if hasattr(page, "media_pool_panel"):
             page.media_pool_panel.refresh(project)
         # Project open may consume an existing disk thumbnail, but it must not
@@ -770,6 +785,7 @@ class StudioProjectController:
         ):
             page._populate_speakers()
             page._qc_terminology = terminology_from_project(project)
+        yield from _gui_slice.checkpoint()
         page._pending_qc_cue_ids.clear()
         page._qc_full_scan_pending = False
         mark_hydration("models_timeline_speakers")
@@ -783,18 +799,22 @@ class StudioProjectController:
         studio_state = project.studio_state if page._studio_preferences().get("restore_layout", True) is not False else {}
         # Opening a project only reflects its saved display; no undo entry.
         from ..studio.studio_bilingual import sync_controls
+        yield from _gui_slice.checkpoint()
         from ..caption_style.bilingual_layout import settings_from_state
         sync_controls(page, settings_from_state(project.studio_state))
         from ..studio.studio_punctuation import sync_controls as sync_punctuation
         sync_punctuation(page)
+        yield from _gui_slice.checkpoint()
         from ..studio.studio_chinese_script import sync_controls as sync_chinese_script
         sync_chinese_script(page)
         page.continuous_review_toggle.blockSignals(True)
         page.continuous_review_toggle.setChecked(bool(studio_state.get("continuous_review", False)))
+        yield from _gui_slice.checkpoint()
         page.continuous_review_toggle.blockSignals(False)
         page.follow_playhead_toggle.setChecked(bool(studio_state.get("follow_playhead", True)))
         page.snap_toggle.setChecked(bool(studio_state.get("timeline_snap_enabled", True)))
         page._set_timeline_tool(str(studio_state.get("timeline_tool", "selection")))
+        yield from _gui_slice.checkpoint()
         saved_track_heights = studio_state.get("timeline_track_heights")
         if isinstance(saved_track_heights, dict):
             # 2026-09-18 VIII：恢复三类轨高（空值=回落默认档位/常量）。
@@ -805,6 +825,7 @@ class StudioProjectController:
             })
         layout_state = studio_state.get("layout", {})
         restored_workspace_sizes = False
+        yield from _gui_slice.checkpoint()
         if isinstance(layout_state, dict):
             upper_sizes = layout_state.get("upper_sizes")
             workspace_sizes = layout_state.get("workspace_sizes")
@@ -837,9 +858,10 @@ class StudioProjectController:
                     )
         # QSplitter defers hide/show geometry. Commit visibility first, then
         # restore ratios against the final available rectangle before media IO.
-        from ..design.ui_motion import settle_layout
+        from ..design.ui_motion import settle_layout_steps
         page._show_teach_hint("studio")
-        settle_layout(page)
+        yield from settle_layout_steps(page)
+        yield from _gui_slice.checkpoint()
         if isinstance(layout_state, dict):
             for splitter, key, count in ((page.upper_splitter, 'upper_sizes', 3),
                                          (page.workspace_splitter, 'workspace_sizes', 2),
@@ -859,6 +881,7 @@ class StudioProjectController:
             context = min(480, max(380, round(total * 0.24)))
             left = min(420, max(page.cue_list_panel.minimumWidth(), round(total * 0.22)))
             page.upper_splitter.setSizes([left, max(360, total - left - context), context])
+        yield from _gui_slice.checkpoint()
         if not restored_workspace_sizes:
             page._apply_default_workspace_layout()
         mark_hydration("layout_restore")
@@ -870,7 +893,8 @@ class StudioProjectController:
         from ..timeline.studio_edit_sequence import projected_cues
         view_cues = projected_cues(project)
         valid_cue_ids = {cue.id for cue in view_cues}
-        page.select_cue(
+        yield from _gui_slice.checkpoint()
+        getattr(page, '_select_cue_observation', page.select_cue)(
             saved_cue_id
             if saved_cue_id in valid_cue_ids
                 else (view_cues[0].id if view_cues else "")
@@ -880,11 +904,13 @@ class StudioProjectController:
         page.timeline.explicit_subtitle_id = ''
         page._caption_canvas_edit_target = None
         mark_hydration("cue_selection")
+        yield from _gui_slice.checkpoint()
         # 选中/可见窗/播放头恢复是第二大的单块主线程阶段（实测 ~450ms），同样切块。
         yield '恢复播放位置'
         from ..timeline.studio_edit_sequence import timeline_duration_ms
         duration = timeline_duration_ms(project)
         saved_zoom = studio_state.get("zoom")
+        yield from _gui_slice.checkpoint()
         saved_view = studio_state.get('timeline_view')
         explicit_view = (isinstance(saved_view, dict) and saved_view.get('mode') in ('manual', 'fit', 'initial')
                          and isinstance(saved_view.get('duration_ms'), int) and saved_view['duration_ms'] >= 1000)
@@ -904,6 +930,7 @@ class StudioProjectController:
             )
         if explicit_view:
             visible_duration = saved_view['duration_ms']
+        yield from _gui_slice.checkpoint()
         maximum_scroll = max(0, duration + page.timeline._tail_padding_ms(visible_duration) - visible_duration)
         page.timeline.set_visible_window(
             min(maximum_scroll, max(0, int(studio_state.get("scroll_ms", 0) or 0))),
@@ -917,6 +944,7 @@ class StudioProjectController:
         playhead_ms = min(
             duration, max(0, int(studio_state.get("playhead_ms", 0) or 0))
         )
+        yield from _gui_slice.checkpoint()
         active_v1 = next(
             (
                 clip
@@ -935,6 +963,7 @@ class StudioProjectController:
         )
         page.timeline.set_playhead(playhead_ms)
         mark_hydration("timeline_window")
+        yield from _gui_slice.checkpoint()
         if project.generation_metadata.get('display_overlap_audit',{}).get('status') != 'user_undone':
             from ..subtitle_rules.display_timing import project_display_tail_plan
             cached_tail=getattr(project, '_prepared_display_tail', None)
@@ -955,10 +984,13 @@ class StudioProjectController:
             bind_text(page.save_state, '压制前请安装字体或在样式中选择已安装字体。', property='toolTip')
         if hasattr(page, "_set_subtitle_editor_visible"):
             page._set_subtitle_editor_visible(False)
+        yield from _gui_slice.checkpoint()
         page._studio_trace("WORKSPACE_READY", project_path=str(self.session.project_path), cue_count=len(project.cues))
         if hasattr(page, "_studio_mark_startup_milestone"):
             page._studio_mark_startup_milestone("TIMELINE_INTERACTIVE")
         mark_hydration("timeline_interactive")
+        from ..design.theme_scopes import prepare_steps
+        yield from prepare_steps(page)
         yield '准备播放器'
         page._studio_trace(
             "PROJECT_UI_HYDRATION",
@@ -970,10 +1002,12 @@ class StudioProjectController:
         profile["界面与时间轴构建"] = perf_counter() - profile_mark
         profile_mark = perf_counter()
         page._initial_preview_timer.stop()
+        yield from _gui_slice.checkpoint()
         profile["ASS 后台调度"] = perf_counter() - profile_mark
         profile_mark = perf_counter()
         untitled = not str(project.media.path or "").strip()
         media_exists = media_available(project, project.media.path)
+        yield from _gui_slice.checkpoint()
         page.relink_button.setVisible(not media_exists and not untitled)
         playable_source = project.media.path if media_exists else next(
             (asset.canonical_source for asset in project.media_pool if not asset.offline), '')
@@ -1085,6 +1119,7 @@ class StudioProjectController:
                 page._sync_multitrack_preview_at(playhead_ms)
         if hasattr(page, "_sync_video_empty_state"):
             page._sync_video_empty_state()
+        yield from _gui_slice.checkpoint()
         if hasattr(page, 'media_availability'):
             page.media_availability.refresh()
         if hasattr(page, "highlight_panel"):
@@ -1094,6 +1129,7 @@ class StudioProjectController:
         if stale_preview:
             single_shot_fn(1_000, lambda stale=stale_preview: stale.unlink(missing_ok=True))
         profile["窗口打开总计"] = perf_counter() - profile_started
+        yield from _gui_slice.checkpoint()
         page.last_open_profile = profile
         page._studio_trace("OPEN_FINISHED", project_path=str(self.session.project_path), cue_count=len(project.cues), media_exists=media_exists)
         # A successful open settles any pending recognition reload; failures
@@ -1101,6 +1137,7 @@ class StudioProjectController:
         page._pending_recognition_reload = ""
         if needs_contract_probe and media_exists and hasattr(page, "_schedule_project_media_probe"):
             page._schedule_project_media_probe(project, project_id)
+        yield from _gui_slice.checkpoint()
         def deferred_open_analysis() -> None:
             if page.project is not project or page._project_view_state != "open":
                 return
@@ -1255,9 +1292,8 @@ class StudioProjectController:
         page = self.page
         project = self.session.project
         pending = bool(project and project.generation_metadata.get("speaker_recovery", {}).get("needs_confirmation"))
-        unapplied = bool(getattr(page, "_speaker_roles_pending", False))
         if hasattr(page, "speaker_manager_button"):
-            (bind_text(page.speaker_manager_button, '说话人管理 · 待应用') if unapplied else (bind_text(page.speaker_manager_button, '说话人管理 · 待确认') if pending else bind_text(page.speaker_manager_button, '说话人管理')))
+            bind_text(page.speaker_manager_button, '说话人管理')
             if pending:
                 from ..recognition.speaker_recovery import confirmation_message
                 bind_text(page.speaker_manager_button, confirmation_message(project.generation_metadata['speaker_recovery']), property='toolTip')

@@ -192,8 +192,11 @@ def draw_glyph_text(painter,face,text,rect,color):
     painter.scale(scale,scale);painter.drawGlyphRun(QPointF(0,0),shaped.run);painter.restore()
 
 
-def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True):
-    """Two text columns inside one existing control; return truthful paint state."""
+def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True,name_first=False):
+    """Two text columns inside one existing control; return truthful paint state.
+
+    ``name_first`` (the collapsed field, 2026-11-12, user): the font name is
+    never cut for the sample; the sample uses what is left, or is left out."""
     face,warning=preview_face(request,preview_pixels(ui_font),load=allow_load)
     metrics=QFontMetricsF(ui_font);gap=12.
     glyph_sample=face.sample()if face is not None else ''
@@ -208,15 +211,23 @@ def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True)
                   if sample else metrics.horizontalAdvance(example)+4)
     required_sample_width=sample_width
     sample_width=min(max(54.,sample_width),max(54.,rect.width()-60-gap))
+    if name_first:
+        # The name in the interface font (bold), the sample in the real face.
+        name_font=QFont(ui_font);name_font.setBold(True)
+        metrics=QFontMetricsF(name_font);ui_font=name_font
+        name_need=metrics.horizontalAdvance(name)+4
+        left=rect.width()-name_need-gap
+        sample_width=min(required_sample_width,left) if left>=40 else 0.
     sample_rect=QRectF(rect.right()-sample_width,rect.top(),sample_width,rect.height())
     name_rect=QRectF(rect.left(),rect.top(),max(0.,rect.width()-sample_width-gap),rect.height())
-    own_name=bool(face is not None and face.covers(name))
+    own_name=bool(face is not None and face.covers(name)) and not name_first
     if own_name:draw_glyph_text(painter,face,name,name_rect,color)
     else:
         painter.save();painter.setFont(ui_font);painter.setPen(color)
         text=metrics.elidedText(name,Qt.TextElideMode.ElideRight,int(name_rect.width()))
         painter.drawText(name_rect,Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,text);painter.restore()
-    if sample and prefix_is_target:draw_glyph_text(painter,face,sample,sample_rect,color)
+    if sample_width<=0:pass
+    elif sample and prefix_is_target:draw_glyph_text(painter,face,sample,sample_rect,color)
     elif sample:
         painter.save();painter.setFont(ui_font);painter.setPen(color)
         prefix_rect=QRectF(sample_rect.left(),sample_rect.top(),prefix_width,sample_rect.height())
@@ -226,6 +237,7 @@ def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True)
     else:
         painter.save();painter.setFont(ui_font);painter.setPen(color)
         painter.drawText(sample_rect,Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignRight,example);painter.restore()
+    name_rect=QRectF(rect.left(),rect.top(),max(0.,rect.width()-(sample_width+gap if sample_width>0 else 0)),rect.height()) if name_first else name_rect
     return dict(requested=name,actual=face.raw.familyName()if face else '',
         actual_style=face.raw.styleName()if face else '',file=face.metadata.file if face else '',
         actual_weight=int(face.raw.weight())if face else None,preview_pixels=preview_pixels(ui_font),

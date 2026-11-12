@@ -5,6 +5,11 @@ import json
 import re
 from pathlib import Path
 
+PUBLIC_RENDERER_AUDIO = {
+    'renderer/node_modules/@remotion/studio-server/web/beep.wav':
+        '3cf5b39164b9f8282b10705ecff18d5c73d4e2efb8193a1e6e7ad8f53fc34d24',
+}
+
 
 def user_directory(relative: Path) -> bool:
     """Code's projects subpackage is distinct from users' project folders."""
@@ -37,12 +42,13 @@ def main():
             errors.append(dict(category='user_or_build_directory',path=rel.as_posix()))
         if p.name.lower() in forbidden_names or p.suffix.lower() in {'.log','.2byteasr','.2byteproj','.safetensors','.ckpt','.pt'}:
             errors.append(dict(category='user_or_weight_file',path=rel.as_posix()))
-        if p.suffix.lower() in {'.mp4','.mov','.mp3','.wav','.flv','.mkv'} and rel.as_posix()!='assets/diagnostics/speech_en.wav':
-            errors.append(dict(category='unexpected_media',path=rel.as_posix()))
         h=hashlib.sha256()
         with p.open('rb') as stream:
             for chunk in iter(lambda:stream.read(1024*1024),b''):h.update(chunk)
         files.append(dict(path=rel.as_posix(),bytes=p.stat().st_size,sha256=h.hexdigest()))
+        if p.suffix.lower() in {'.mp4','.mov','.mp3','.wav','.flv','.mkv'} and rel.as_posix()!='assets/diagnostics/speech_en.wav':
+            if PUBLIC_RENDERER_AUDIO.get(rel.as_posix()) != h.hexdigest():
+                errors.append(dict(category='unexpected_media',path=rel.as_posix()))
         if p.suffix.lower() in text_ext or p.name.lower().startswith(('license','notice','copying')):
             texts+=1;data=p.read_bytes()
             for category,pattern in patterns.items():

@@ -22,6 +22,7 @@ SELECTORS.append('tests/test_audio_endpoint_startup_deadline.py')
 SELECTORS.append('tests/test_page_open_sidebar.py::test_settle_layout_walks_only_the_visible_tree')
 SELECTORS.extend(['tests/test_caption_caret_split.py', 'tests/test_caption_editor_a.py'])
 SELECTORS.extend(['tests/test_stable_caption_instances.py', 'tests/test_chinese_complete_expression.py'])
+SELECTORS.append('tests/test_subtitle_export_process.py')
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);a=parser.parse_args()

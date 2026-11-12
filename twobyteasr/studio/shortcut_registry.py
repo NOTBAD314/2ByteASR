@@ -62,6 +62,8 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('seek_back', '后退 1 秒', 'Shift+Left', category='播放'),
     _a('seek_forward', '前进 1 秒', 'Shift+Right', category='播放'),
     _a('loop_cue', '循环播放当前字幕', 'Ctrl+L', category='播放'),
+    _a('jump_cue_boundary', '跳转到当前字幕起点／终点', 'Alt+J', category='播放',
+       note='使用主动选中的字幕；连续按键往返起点和终点，E 编辑浮窗也可使用，文本框保留标准编辑键'),
     _a('speed_down', '播放减速', '', category='播放'),
     _a('speed_up', '播放加速', '', category='播放'),
     _a('speed_reset', '恢复 1 倍速', '', category='播放'),
@@ -291,6 +293,16 @@ def load_values(stored: dict | None, platform: str | None = None) -> tuple[dict[
         owners = [other for other, key in custom.items()
                   if key.casefold() == value.casefold() and scopes_overlap(scope, BY_ID[other].scope)]
         if owners:
+            if action_id == 'jump_cue_boundary':
+                # A newly added default must not displace an older custom key.
+                fallback = next((candidate for candidate in ('Alt+Shift+J', 'Ctrl+Shift+J', 'Alt+Shift+K')
+                                 if not any(key.casefold() == candidate.casefold()
+                                            and (scopes_overlap(scope, BY_ID[other].scope)
+                                                 or shadows(scope, BY_ID[other].scope))
+                                            for other, key in values.items() if other != action_id)), '')
+                if fallback:
+                    values[action_id] = fallback
+                    continue
             values[action_id] = ''
             unbound.append(action_id)
     return values, unbound

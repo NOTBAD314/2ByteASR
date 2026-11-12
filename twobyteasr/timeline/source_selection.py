@@ -101,7 +101,8 @@ def plan_source_insert(project, selection, position_ms, video_target='new', audi
         if video is None:
             raise ValueError('请选择视频轨道，或选择「新建视频轨」')
         _available(video, start, end)
-        if video.id == primary_video_track_id(project) and sequence_of(project).video_track_locked:
+        from .studio_clip_edit import video_track_locked
+        if video_track_locked(project, video):
             raise ValueError(f'轨道 {video.id} 已锁定，请先解锁')
     if selection.mode == 'av' and video:
         group = next((g for g in project.av_track_groups if g.video_track_id == video.id), None)

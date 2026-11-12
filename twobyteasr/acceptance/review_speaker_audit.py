@@ -228,7 +228,6 @@ def start(window, output):
         auto = page.project.generation_metadata['speaker_organization']['low_share_policy']['ignored']
         check('final logical low-share policy selects four speakers', set(auto) == {'R001_S06','R001_S07','R001_S09','R001_S10'})
         check('nine captions recoverable after automatic ignore', sum(v['cues'] for v in auto.values()) == 9)
-        manager.role_filter.setCurrentIndex(1)
         yield .1
         _capture(manager, output / 'ignored-list.png')
         # Repeated input is one consistent role commit; preview is stopped by
@@ -238,7 +237,6 @@ def start(window, output):
             if manager._roles()[label] == 'ignore':
                 manager.cards[label].restore_button.click()
                 yield .2
-            manager.role_filter.setCurrentIndex(2)
             cue = next(c for c in page.project.cues if c.speaker_id == label)
             page.select_cue(cue.id)
             manager._card_preview(manager.cards[label])
@@ -251,7 +249,6 @@ def start(window, output):
         # The last visible speaker and reopening a manager with no active
         # speakers must still expose its recoverable ignored list.
         for speaker in list(page.project.speakers):
-            manager.role_filter.setCurrentIndex(2)
             manager.cards[speaker.id].roles.buttons['ignore'].click()
             yield .15
         check('all active speakers can be ignored without dangling cues', not page.project.cues and not page.project.speakers)
@@ -259,7 +256,6 @@ def start(window, output):
         QTimer.singleShot(0, page._open_speaker_manager)
         yield .3
         manager = next(d for d in page.findChildren(SpeakerManagerDialog) if d.isVisible())
-        manager.role_filter.setCurrentIndex(1)
         yield .1
         _capture(manager, output / 'all-ignored.png')
         for label, role in list(manager._roles().items()):

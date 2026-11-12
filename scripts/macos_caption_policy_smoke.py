@@ -18,7 +18,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--scenario', choices=['stable-captions', 'chinese-complete-expression'], required=True)
+    parser.add_argument('--scenario', choices=['stable-captions', 'chinese-complete-expression',
+        'speaker-board', 'timeline-cue-pill'], required=True)
     args = parser.parse_args()
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise SystemExit('Native Apple Silicon macOS is required')
@@ -35,16 +36,43 @@ def main():
         install()
         from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
         target = save_project(SubtitleProject(StudioMedia('')), output / 'startup.2byteproj')
+        if args.scenario in {'speaker-board', 'timeline-cue-pill'}:
+            ffmpeg = args.app.resolve() / 'Contents/Resources/tools/ffmpeg/bin/ffmpeg'
+            if not ffmpeg.is_file():
+                ffmpeg = args.app.resolve() / 'Contents/Frameworks/tools/ffmpeg/bin/ffmpeg'
+            media = output / 'fixture.mp4'
+            with (output / 'sample-media.log').open('wb') as stream:
+                subprocess.run([str(ffmpeg), '-v', 'error', '-f', 'lavfi', '-i',
+                    'color=c=0x252131:size=1280x720:rate=30:duration=24', '-f', 'lavfi', '-i',
+                    'anullsrc=r=48000:cl=stereo', '-t', '24', '-c:v', 'libx264', '-preset', 'ultrafast',
+                    '-threads', '2', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(media)],
+                    check=True, timeout=90, stdout=stream, stderr=stream)
+            if args.scenario == 'speaker-board':
+                from scripts.verify_speaker_board_headed import project
+                fixture = project()
+                fixture.media.path = str(media)
+            else:
+                from twobyteasr.projects.studio_project import StudioCue, StudioSpeaker
+                fixture = SubtitleProject(StudioMedia(str(media), duration_ms=24000, width=1280, height=720),
+                    speakers=[StudioSpeaker('S0', '主播')],
+                    cues=[StudioCue('a', 10000, 13000, '第一句字幕', 'S0'),
+                          StudioCue('b', 13000, 16000, '第二句字幕', 'S0'),
+                          StudioCue('c', 17000, 20000, '第三句字幕', 'S0')])
+                fixture.render_settings['fps'] = 30
+            save_project(fixture, output / 'fixture.2byteproj')
         env = blank_environment(output, invoker, target)
         env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = args.scenario
         with (output / 'caption-policy.log').open('wb') as stream:
-            process = subprocess.Popen([str(executable), str(target)], cwd=invoker, env=env,
+            # The guard project is not a second CLI navigation request. Each
+            # scene opens its own fixture through the normal MainWindow API.
+            process = subprocess.Popen([str(executable)], cwd=invoker, env=env,
                 stdout=stream, stderr=stream, start_new_session=True)
             result['process_exit'] = process.wait(timeout=660)
         audit = json.loads((output / 'result.json').read_text('utf8'))
         identity = json.loads((output / 'local/2ByteASR/logs/build_identity.json').read_text('utf8'))
         checks = audit.get('checks', [])
-        expected_checks = 50 if args.scenario == 'stable-captions' else 17
+        expected_checks = {'stable-captions': 50, 'chinese-complete-expression': 17,
+            'speaker-board': 20, 'timeline-cue-pill': 22}[args.scenario]
         result.update(application_result=audit, identity=identity, checks=len(checks))
         result['passed'] = (result['process_exit'] == 0 and audit.get('passed') is True
             and len(checks) >= expected_checks and all(row['passed'] for row in checks)

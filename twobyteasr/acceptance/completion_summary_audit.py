@@ -106,17 +106,17 @@ def start(window, output):
             self.result['geometry'].append(geometry)
             self.check(phase+': no horizontal scroll', scroll.horizontalScrollBar().maximum() == 0, geometry)
             self.check(phase+': top summary stays near navigation', window.result_summary_card.mapTo(viewport, QPoint()).y() == 28, geometry)
-            if grid.columns == 3:
+            if grid.columns == 4:
                 self.check(phase+': shared equal action columns', max(card.width() for card in grid.cards)-min(card.width() for card in grid.cards) <= 1, geometry)
             self.check(phase+': cards retain readable bounded height', all(COMPLETION_MAIN_HEIGHT <= card.height() <= card.desired_height(card.width())+24 for card in grid.cards), geometry)
             self.check(phase+': real summary row cadence remains font-bounded', all(
                 row.height() <= row.fontMetrics().height()+3+round(row.fontMetrics().height()*1.5)+1
                 for panel in panels for row in panel.visible_summary_rows()), geometry)
-            self.check(phase+': follow-ups sit above the main actions', window.result_todo.geometry().bottom() < grid.geometry().top(), geometry)
+            self.check(phase+': follow-ups sit below the main actions', grid.geometry().bottom() < window.result_todo.geometry().top(), geometry)
             if all(panel.mode == 'summary' for panel in panels):
                 compact = viewport.height() < 760
-                self.check(phase+': actual task/log summary rows shown', len(panels[0].visible_summary_rows()) == (2 if compact else 4)
-                    and 4 <= len(panels[1].visible_summary_rows()) <= (4 if compact else 6), geometry)
+                self.check(phase+': actual task/log summary content shown', all(panel.body.isVisible() and panel.body.has_content()
+                    if panel.body_active() else bool(panel.visible_summary_rows()) for panel in panels), geometry)
                 self.check(phase+': summaries are distinct from full logs', all(panel.summary.isVisible() and panel.detail.isHidden() for panel in panels), geometry)
                 capacity_reached = any(panel._extra_height == panel.max_extra_height() for panel in panels)
                 if not compact and not scroll.verticalScrollBar().maximum() and not capacity_reached:

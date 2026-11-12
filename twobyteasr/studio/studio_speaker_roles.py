@@ -130,6 +130,9 @@ def role_menu(page, menu, speaker_id: str) -> None:
     if manual:
         sub.addAction(tr("恢复自动判断"), lambda: set_role(page, speaker_id, None))
     sub.addSeparator()
+    visible = page.project.studio_state.get('subtitle_track_visibility', {}).get('speaker:'+speaker_id,True)
+    sub.addAction(tr('隐藏该角色（原文和译文）') if visible else tr('恢复该角色（原文和译文）'),
+                  lambda: page._subtitle_visibility_changed('speaker:'+speaker_id,not visible))
     sub.addAction(tr("选择该说话人的全部字幕"), lambda: page.timeline.select_speakers([speaker_id]))
     group_actions(page, sub)
 
@@ -138,10 +141,13 @@ def group_actions(page, menu) -> None:
     state = state_of(page.project)
     members = group_members(page.project)
     if members:
-        expanded = bool(state.get("expanded"))
+        expanded = page.timeline._group_expanded
         menu.addAction(tr("收起次要角色") if expanded else tr("展开次要角色（{count} 位）", count=len(members)),
                        lambda: set_expanded(page, not expanded))
         menu.addAction(tr("选择次要角色组的全部字幕"), lambda: page.timeline.select_speakers(list(members)))
+        hidden = not page.project.studio_state.get('subtitle_track_visibility', {}).get(GROUP_KEY, True)
+        menu.addAction(tr('恢复显示次要角色') if hidden else tr('一键隐藏次要角色'),
+                       lambda: page._subtitle_visibility_changed(GROUP_KEY, hidden))
     menu.addAction(tr("按主要/次要角色整理轨道（可撤销）") if not state else tr("重新判断主要/次要角色（可撤销）"),
                    lambda: organize(page))
     from ..recognition.speaker_roles import CAP_CHOICES, MAIN_CAP

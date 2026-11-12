@@ -105,7 +105,14 @@ def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
                     cue.timing_locked or segment.timing_locked
                 )
                 piece.speaker = speaker
-                repaired.append(piece)
+            from types import SimpleNamespace
+            parent=SimpleNamespace(text=segment.text,start=segment.start,end=segment.end,cue_id=cue.cue_id,
+                source_spans=[dict(source_id=segment.segment_id,char_start=0,char_end=len(segment.text),
+                    raw_text=segment.text,source_time=[segment.start,segment.end])],
+                segmentation_language=getattr(cue,'segmentation_language',''),
+                timing_basis=getattr(cue,'timing_basis','source_envelope_and_existing_word_evidence'))
+            _inherit_repaired_source_spans(parent,pieces)
+            repaired.extend(pieces)
         repaired_count += 1
 
     repaired.sort(
@@ -126,7 +133,54 @@ def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
     return repaired
 
 
+def _inherit_repaired_source_spans(parent,pieces):
+    """Copy exact parent character ownership through a local split, atomically."""
+    import copy
+    parts=getattr(parent,'source_spans',None)
+    if not parts:return False
+    stream=[];characters={};times={}
+    for part in parts:
+        key=part.get('source_id');start=part.get('char_start');raw=part.get('raw_text')
+        if key is None or type(start) is not int or not isinstance(raw,str):return False
+        table=characters.setdefault(key,{})
+        times[key]=copy.deepcopy(part.get('source_time',[parent.start,parent.end]))
+        for offset,char in enumerate(raw):
+            table[start+offset]=char
+            if not char.isspace():stream.append((key,start+offset,char))
+    compact=lambda value:''.join(c for c in value if not c.isspace())
+    if ''.join(c for key,pos,c in stream)!=compact(parent.text):return False
+    cursor=0;assignments=[]
+    for piece in pieces:
+        body=compact(piece.text);hits=stream[cursor:cursor+len(body)]
+        if not body or ''.join(c for key,pos,c in hits)!=body:return False
+        output=[]
+        for key,pos,char in hits:
+            if not output or output[-1]['source_id']!=key:
+                output.append(dict(source_id=key,char_start=pos,char_end=pos+1,raw_text='',
+                    index_unit='python_unicode_codepoint',source_time=times[key],audible=True))
+            else:output[-1]['char_end']=pos+1
+        for part in output:
+            table=characters[part['source_id']]
+            if any(i not in table for i in range(part['char_start'],part['char_end'])):return False
+            part['raw_text']=''.join(table[i] for i in range(part['char_start'],part['char_end']))
+        assignments.append((piece,output));cursor+=len(body)
+    if cursor!=len(stream):return False
+    for piece,output in assignments:
+        piece.source_spans=output
+        piece.segmentation_language=getattr(parent,'segmentation_language','')
+        piece.timing_basis=getattr(parent,'timing_basis','retained_parent_source_spans')
+        piece.grouping_origin='local_overlong_source_repair'
+        piece.grouping_boundary_receipt=dict(origin='local_overlong_source_repair',parent_cue_ids=[getattr(parent,'cue_id',None)])
+    return True
+
+
 def _repair_cue_on_own_timeline(cue):
+    pieces=_repair_cue_on_own_timeline_unmapped(cue)
+    _inherit_repaired_source_spans(cue,pieces)
+    return pieces
+
+
+def _repair_cue_on_own_timeline_unmapped(cue):
     """Last-resort split that conserves a cue's text when source matching fails."""
     chars = content_exact(cue.text)
     count = len(chars)
@@ -433,10 +487,33 @@ def bridge_short_display_gaps(
     ]
     changed = 0
     largest_gap_frames = 0
-    for index, end_frame in short_gap_bridges(frames, bridge_frames).items():
+    from .display_continuity import VERSION, MICRO_GAP_MS
+    blocked = {index for index,cue in enumerate(rows) if getattr(cue,'timing_locked',False)}
+    continuous = set()
+    previous = {}
+    for index,cue in enumerate(rows):
+        prior = previous.get(cue.speaker)
+        if prior is not None:
+            left = getattr(rows[prior],'source_spans',[]) or []
+            right = getattr(cue,'source_spans',[]) or []
+            if left and right and left[-1].get('source_id') == right[0].get('source_id') and left[-1].get('char_end') == right[0].get('char_start'):
+                continuous.add((prior,index))
+        previous[cue.speaker] = index
+    from .segmentation_profiles import current_profile
+    maximum = current_profile().max_seconds * timeline_fps
+    for index, end_frame in short_gap_bridges(frames, bridge_frames, blocked=blocked, continuous=continuous,
+            micro_threshold=MICRO_GAP_MS*timeline_fps/1000, max_duration=maximum).items():
         if end_frame <= audio_end_frame:
+            cue = rows[index]
+            before = [round(cue.start*1000),round(cue.end*1000)]
             largest_gap_frames = max(largest_gap_frames, end_frame - frames[index][3])
-            rows[index].end = end_frame / timeline_fps
+            cue.end = end_frame / timeline_fps
+            after = [round(cue.start*1000),round(cue.end*1000)]
+            cue.display_handoff = dict(version=VERSION,base_display_interval_ms=before,
+                display_interval_ms=after,reason='bounded_display_continuation',speech_evidence_changed=False)
+            record_run_event('display_handoff_change', before=before,after=after,
+                reason='bounded_display_continuation',stage='final_frame_handoff',speaker=cue.speaker,
+                cue_id=cue.cue_id)
             changed += 1
 
     if changed:
@@ -495,6 +572,7 @@ def relock_display_timing(cues, audio_seconds, timeline_fps=TIMELINE_FPS, *, sta
         return cues
     moved = lock_cue_endpoints_to_frames(cues, timeline_fps)
     gaps_before = _display_flicker_gaps(cues, timeline_fps)
+    bridge_short_display_gaps(cues,audio_seconds,timeline_fps)
     gaps_after = _display_flicker_gaps(cues, timeline_fps)
     if moved or gaps_before:
         record_run_event(
@@ -592,29 +670,15 @@ def refresh_final_cue_reviews(cues, segments=(), *, legacy=None, audio_seconds=N
     coverage={speaker:(''.join(content_exact(s.text) for s in segments if s.speaker==speaker)
                        ==''.join(content_exact(c.text) for c in cues if c.speaker==speaker))
               for speaker in sorted(speakers)}
-    # Classification observes source intervals only; it never manufactures
-    # independent simultaneous-speech evidence or changes the final cues.
-    from .display_timing import classify_overlap
-    from ..recognition.evidence_windows import EvidenceWindows
-    windows=EvidenceWindows([dict(start=s.start,end=s.end,speaker=s.speaker) for s in segments])
-    acoustics={}
-    def source_spans(cue):
-        key=id(cue)
-        if key not in acoustics:
-            acoustics[key]=[(s['start'],s['end']) for s in windows.between(cue.start,cue.end)
-                if s['speaker']==cue.speaker and max(s['start'],cue.start)<min(s['end'],cue.end)]
-        return acoustics[key]
-    overlap_counts={}
-    ordered=sorted(cues,key=lambda c:(c.start,c.end))
-    for i,left in enumerate(ordered):
-        for j in range(i+1,len(ordered)):
-            right=ordered[j]
-            if right.start>=left.end:
-                break
-            kind=classify_overlap(source_spans(left),source_spans(right))
-            if kind=='acoustic':
-                kind='source_overlap_unverified'
-            overlap_counts[kind]=overlap_counts.get(kind,0)+1
+    # The final display audit is the same one used by the saved-cue event.
+    # Coarse source ranges must not overwrite bounded display-hold decisions.
+    from .display_timing import protect_runtime_display_tails,runtime_display_signature
+    audit = getattr(get_runtime_context(), '_display_overlap_audit', None)
+    if audit is None or getattr(get_runtime_context(),'_display_overlap_signature',None)!=runtime_display_signature(cues,segments):
+        import copy
+        audit = protect_runtime_display_tails(copy.deepcopy(cues),segments)
+        get_runtime_context()._display_overlap_signature=runtime_display_signature(cues,segments)
+    overlap_counts = dict(Counter(row['classification'] for row in audit))
     legacy.record_run_event('final_subtitle_validation',basis='final_saved_cues',cues=len(cues),
         short_cues=short,finite_positive_times=True,content_coverage_by_speaker=coverage,
         overlap_classification_counts=overlap_counts,

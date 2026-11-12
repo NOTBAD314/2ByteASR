@@ -10,10 +10,12 @@ import hashlib
 import json
 import math
 import time
+import unicodedata
+from bisect import bisect_left,bisect_right
 from difflib import SequenceMatcher
 
 KEY = 'speech_coverage'
-POLICY = 'speech-coverage-v2'
+POLICY = 'speech-coverage-v3-text-identity'
 TOLERANCE = .25
 MIN_GAP = 1.0
 AUTO_CONFIDENCE = .85
@@ -167,26 +169,142 @@ def make_state(speech, rows, *, duration, windows=(), excluded=(), source='vad',
                 gaps=gaps, stages=[])
 
 
+def _content(text):
+    return ''.join(c.casefold() for c in unicodedata.normalize('NFC',str(text or ''))
+                   if unicodedata.category(c)[0] in 'LN')
+
+
+def _text_snapshot(rows):
+    result=[]
+    for row in rows:
+        get=row.get if isinstance(row,dict) else lambda k,d=None:getattr(row,k,d)
+        text=_content(get('text',''))
+        if not text:continue
+        start=get('start',None);end=get('end',None)
+        start=float(start if start is not None else get('start_ms',0)/1000)
+        end=float(end if end is not None else get('end_ms',0)/1000)
+        namespace='segment' if get('segment_id',None) is not None else 'cue' if get('cue_id',get('id',None)) is not None else 'derived'
+        identity=get('segment_id',get('cue_id',get('id','')))
+        if identity in ('',None):
+            identity='asr-'+hashlib.sha256(json.dumps([get('speaker','S00'),start,end,text],ensure_ascii=False).encode()).hexdigest()[:20]
+        result.append(dict(id=identity,namespace=namespace,raw_text=str(get('text','')),
+            start=start,end=end,text=text,
+            speaker=str(get('speaker',get('speaker_id','S00')) or 'S00'),
+            source_spans=copy.deepcopy(get('source_spans',[]))))
+    return result
+
+
+def _part_chars(part):
+    start=part.get('char_start');raw=part.get('raw_text')
+    if type(start) is not int or not isinstance(raw,str):return None
+    return {start+i:(_content(c) or c) for i,c in enumerate(raw) if unicodedata.category(c)[0] in 'LNM'}
+
+
+def _retention_index(current):
+    speakers={};direct={};mapped={};characters={};has_parts=set();segment_speakers=set();trusted_speakers=set()
+    for item in current:
+        speaker=item['speaker'];speakers.setdefault(speaker,[]).append(item)
+        direct.setdefault((speaker,item.get('namespace'),str(item['id'])),[]).append(item)
+        if item.get('namespace')=='segment':segment_speakers.add(speaker)
+        parts=item.get('source_spans') or []
+        if not isinstance(parts,list):parts=[]
+        if parts:has_parts.add(speaker)
+        keys=set()
+        for part in parts:
+            if isinstance(part,dict):keys.add(str(part.get('source_id')))
+        for key in keys:mapped.setdefault((speaker,key),[]).append(item)
+        valid=bool(parts) and all(isinstance(p,dict) and _part_chars(p) is not None for p in parts)
+        if valid and _content(''.join(p['raw_text'] for p in parts))==item['text']:
+            trusted_speakers.add(speaker)
+            for part in parts:characters.setdefault((speaker,str(part.get('source_id'))),{}).update(_part_chars(part))
+    intervals={}
+    for speaker,items in speakers.items():
+        items.sort(key=lambda r:(r['start'],r['end'],str(r['id'])))
+        maximum=float('-inf');prefix=[]
+        for item in items:maximum=max(maximum,item['end']);prefix.append(maximum)
+        intervals[speaker]=(items,[r['start'] for r in items],prefix)
+    return dict(intervals=intervals,direct=direct,mapped=mapped,characters=characters,
+                has_parts=has_parts,segment_speakers=segment_speakers,trusted_speakers=trusted_speakers)
+
+
+def text_retained(row, current, *, index=None):
+    """Prefer exact source characters, with one shared local interval index."""
+    index=index or _retention_index(current);speaker=row['speaker']
+    items,starts,prefix=index['intervals'].get(speaker,([],[],[]))
+    low,high=row['start']-.5,row['end']+.5
+    local=[r for r in items[bisect_right(prefix,low):bisect_left(starts,high)] if r['end']>low]
+    unlinked=[r for r in local if not r.get('source_spans') and (r['text'] in row['text'] or row['text'] in r['text'])]
+    if unlinked and ''.join(r['text'] for r in local).count(row['text'])==1:return True
+    expected=row.get('source_spans') or ([dict(source_id=row['id'],char_start=0,raw_text=row.get('raw_text',''))]
+                                       if row.get('namespace')=='segment' else [])
+    complete=all(isinstance(p,dict) and isinstance(p.get('raw_text'),str) for p in expected) and _content(''.join(p['raw_text'] for p in expected))==row['text']
+    if expected and complete and speaker in index['trusted_speakers'] and all(_part_chars(p) is not None for p in expected):
+        for part in expected:
+            wanted=_part_chars(part);offered=index['characters'].get((speaker,str(part.get('source_id'))),{})
+            if any(offered.get(pos)!=char for pos,char in wanted.items()):return False
+        return True
+    if row.get('namespace')=='segment':
+        mapped=index['mapped'].get((speaker,str(row['id'])),[])
+        if not mapped and speaker in index['has_parts']:return False
+        if not mapped and speaker in index['segment_speakers']:
+            mapped=index['direct'].get((speaker,'segment',str(row['id'])),[])
+            if not mapped:return False
+        if mapped:
+            return ''.join(r['text'] for r in sorted(mapped,key=lambda r:(r['start'],r['end'],str(r['id'])))).count(row['text'])==1
+    return bool(row['text'] and ''.join(r['text'] for r in local).count(row['text'])==1)
+
+
 def checkpoint(state, stage, rows, *, excluded=()):
-    """Record the first downstream loss without treating a later stage as ASR."""
+    """Compare text identity separately from timing contraction at each boundary."""
+    rows=list(rows)
     ranges = text_ranges(rows)
+    current=_text_snapshot(rows)
     previous = state.get('stages', [])
     if previous:
-        lost = subtract(previous[-1]['ranges'], ranges, tolerance=TOLERANCE, minimum=MIN_GAP)
-        # Broad paragraph timestamps also contain pauses. Only independent
-        # speech evidence can turn a timing contraction into a speech gap.
+        prior=previous[-1]
+        index=_retention_index(current)
+        decisions=[(r,text_retained(r,current,index=index)) for r in prior.get('text_rows',[])]
+        retained=[r for r,kept in decisions if kept]
+        missing=[r for r,kept in decisions if not kept]
+        lost = subtract(prior['ranges'], ranges, tolerance=TOLERANCE, minimum=MIN_GAP)
+        # Proven text retention resolves the loss claim, not the acoustic
+        # accuracy of the newly tightened timing. Keep that distinction.
+        contractions=subtract(lost,[(r['start'],r['end']) for r in missing]) if retained else []
+        lost = subtract(lost,[(r['start'],r['end']) for r in retained])
         lost = [(max(a, c), min(b, d)) for a, b in lost
                 for c, d in state.get('speech_ranges', []) if min(b, d)-max(a, c) >= MIN_GAP]
         lost = subtract(lost, excluded)
+        # Losing characters with unchanged timestamps is still downstream
+        # loss; an interval-only comparison previously missed it altogether.
+        for row in missing if stage in {'segmentation','final_cues'} else []:
+            if not any(_overlaps((row['start'],row['end']),v) for v in lost):
+                lost.extend(subtract([(row['start'],row['end'])],excluded))
         for start, end in lost:
-            # Existing upstream gaps retain the earlier cause.
             if any(_overlaps((start, end), (g['start'], g['end'])) for g in state['gaps']):
                 continue
+            affected=[r for r in missing if _overlaps((start,end),(r['start'],r['end']))]
             gap_id = hashlib.sha256(f'{state.get("identity")}/{stage}/{start}/{end}'.encode()).hexdigest()[:24]
             state['gaps'].append(dict(id=gap_id, start=start, end=end, reason='downstream_text_loss',
                 first_missing_stage=stage, status='needs_confirmation', attempts=[],
+                text_evidence=affected, comparison='text_and_source_identity' if affected else 'legacy_interval_only',
                 recovery_source='retained_upstream', recovered_ranges=[], remaining_ranges=[[start, end]]))
-    state.setdefault('stages', []).append(dict(stage=stage, ranges=[list(r) for r in ranges]))
+        if contractions:
+            state.setdefault('timing_diagnostics',[]).append(dict(stage=stage,reason='text_retained_timing_contracted',
+                ranges=contractions,source_ids=[r['id'] for r in retained]))
+    changes=[];removed=[];added=[];owner_changes=[]
+    if previous and stage=='prepared_source':
+        prior_by_id={(r.get('namespace'),str(r['id'])):r for r in previous[-1].get('text_rows',[])}
+        current_by_id={(r.get('namespace'),str(r['id'])):r for r in current}
+        removed=[r['id'] for key,r in prior_by_id.items() if key not in current_by_id]
+        added=[r['id'] for key,r in current_by_id.items() if key not in prior_by_id]
+        for item in current:
+            old=prior_by_id.get((item.get('namespace'),str(item['id'])))
+            if old and old['speaker']!=item['speaker']:owner_changes.append(dict(source_id=item['id'],before=old['speaker'],after=item['speaker'],acoustic_identity='not_confirmed_by_this_trace'))
+            if old and old.get('raw_text',old['text'])!=item['raw_text']:
+                changes.append(dict(source_id=item['id'],before=old.get('raw_text',old['text']),after=item['raw_text'],
+                    effect='formatting_only' if old['text']==item['text'] else 'upstream_source_text_change',
+                    meaning='upstream source processing; not a segmentation deletion verdict'))
+    state.setdefault('stages', []).append(dict(stage=stage, ranges=[list(r) for r in ranges],text_rows=current,source_changes=changes,removed_source_ids=removed,added_source_ids=added,source_owner_changes=owner_changes))
     return state
 
 
@@ -393,3 +511,26 @@ def finalize(context, cues, legacy):
             f"{gap['start']:.3f}–{gap['end']:.3f}s · {gap['first_missing_stage']} · {gap['reason']}",
             priority=3, severity='warning')
     legacy.record_run_event('speech_coverage_final', **state, pending_gap_count=len(pending(state)))
+
+
+def reconcile_legacy_text_loss(project):
+    """Recheck derived interval-only claims; retain receipts, never label silence."""
+    state=project.generation_metadata.get(KEY)
+    raw=(project.generation_metadata.get('speaker_recovery') or {}).get('raw_segments',[])
+    if not isinstance(state,dict) or not raw:
+        return []
+    before=_text_snapshot(raw)
+    after=_text_snapshot(project.cues)
+    index=_retention_index(after)
+    resolved=[]
+    for gap in pending(state):
+        if gap.get('reason')!='downstream_text_loss' or gap.get('comparison')=='text_and_source_identity':
+            continue
+        parents=[r for r in before if _overlaps((r['start'],r['end']),(gap['start'],gap['end']))]
+        if parents and all(text_retained(row,after,index=index) for row in parents):
+            gap['text_reconciliation']=dict(rule=POLICY,previous_status=gap.get('status'),
+                reason='text_retained_timing_contracted',source_ids=[r['id'] for r in parents],
+                acoustic_verification='not_performed',request_count=0)
+            gap['status']='excluded'
+            resolved.append(gap['id'])
+    return resolved

@@ -1,4 +1,4 @@
-"""A review row belongs to a round until the user explicitly dismisses it."""
+"""Review decisions persist; the suggestions filter contains only current proposals."""
 from types import SimpleNamespace
 import copy
 import pytest
@@ -35,7 +35,7 @@ def test_adopt_two_different_lengths_retains_row_and_toggles_locally(page):
     assert visible(w)==['middle','later']
     w._toggle_issue('middle',1)
     assert p.cues[0].text=='大骨龙和火笼来了'
-    assert visible(w)==['middle','later']
+    assert visible(w)==['later']
     count=w._live_stack().count()
     w._toggle_issue('middle',0)
     assert p.cues[0].text=='古龙和火笼来了'
@@ -45,7 +45,7 @@ def test_adopt_two_different_lengths_retains_row_and_toggles_locally(page):
 def test_manual_rewrite_retains_even_all_stale_and_dismiss_keeps_edit(page):
     w,p=page
     w._edit_committed('middle','手动改成完整的新句子')
-    assert visible(w)==['middle','later']
+    assert visible(w)==['later']
     w._dismiss_group('middle',-1)
     assert visible(w)==['later']
     assert p.cues[0].text=='手动改成完整的新句子'
@@ -65,10 +65,10 @@ def test_ignore_without_edit_is_not_changed_and_does_not_revive(page):
 def test_adopted_row_can_be_dismissed_undo_redo_and_restored_from_disk(page,tmp_path):
     w,p=page
     w._toggle_issue('middle',0);w._toggle_issue('middle',1)
-    assert 'middle' in visible(w)
+    assert 'middle' not in visible(w)
     w._dismiss_group('middle',0)
     assert visible(w)==['later']
-    w._undo();assert 'middle' in visible(w)
+    w._undo();assert 'middle' not in visible(w)
     w._redo();assert visible(w)==['later']
     path=tmp_path/'saved.2byteproj';save_project(p,path)
     reopened=load_project(path)
@@ -84,7 +84,7 @@ def test_retained_adoption_reopens_without_relying_on_rematch(page,tmp_path):
     path=tmp_path/'retained.2byteproj';save_project(p,path)
     reopened=load_project(path)
     w._project=reopened;w._build_rows(reopened,start_checks=False);w._apply_filter()
-    assert 'middle' in visible(w)
+    assert 'middle' not in visible(w)
     assert len([i for i in w._by_id['middle']['issues'] if i['checked']])==2
 
 def test_ambiguous_deleted_occurrence_does_not_move_old_proposal_to_another_word():
@@ -116,13 +116,16 @@ def test_batch_adoption_then_explicit_batch_ignore_keeps_written_text(page):
     w,p=page
     w._batch_selected={'middle','later'}
     w._batch_adopt()
-    assert visible(w)==['middle','later']
+    assert visible(w)==[]
     text=[c.text for c in p.cues]
+    w.filter_buttons['changed'].setChecked(True);w._apply_filter()
+    assert visible(w)==['middle','later']
     w._batch_selected={'middle','later'}
     w._batch_ignore()
+    w.filter_buttons['suggested'].setChecked(True);w._apply_filter()
     assert visible(w)==[] and [c.text for c in p.cues]==text
     w._undo()
-    assert visible(w)==['middle','later'] and [c.text for c in p.cues]==text
+    assert visible(w)==[] and [c.text for c in p.cues]==text
 
 def test_explicit_new_round_releases_round_dismissal_and_can_be_undone(page,monkeypatch):
     w,p=page
@@ -200,7 +203,7 @@ def test_shift_r_uses_same_retained_adoption_and_r_stays_text_in_editor(page):
     QTest.keyClick(w.list,Qt.Key.Key_R,Qt.KeyboardModifier.ShiftModifier)
     assert p.cues[0].text=='大骨龙和火龙来了' and 'middle' in visible(w)
     QTest.keyClick(w.list,Qt.Key.Key_R,Qt.KeyboardModifier.ShiftModifier)
-    assert p.cues[0].text=='大骨龙和火笼来了' and 'middle' in visible(w)
+    assert p.cues[0].text=='大骨龙和火笼来了' and 'middle' not in visible(w)
     w._edit('middle');w.list.editor.setText('')
     QTest.keyClick(w.list.editor,Qt.Key.Key_R)
     assert w.list.editor.text()=='r' and p.cues[0].text=='大骨龙和火笼来了'
