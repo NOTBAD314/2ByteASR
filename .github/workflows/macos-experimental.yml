@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/tmp/probe-runtime"
-          "$RUNNER_TEMP/tmp/probe-runtime/bin/python" -m pip install --only-binary=:all: -r packaging/macos/requirements-gui.txt
+          "$RUNNER_TEMP/tmp/probe-runtime/bin/python" -m pip install -r packaging/macos/requirements-gui.txt
           "$RUNNER_TEMP/tmp/probe-runtime/bin/python" scripts/macos_subtitle_worker_probe.py --inputs "$RUNNER_TEMP/tmp/probe-input" --receipts "$RUNNER_TEMP/tmp/probe-receipts" --output "$RUNNER_TEMP/tmp/subtitle-worker-probe"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
