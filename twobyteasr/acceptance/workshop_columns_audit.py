@@ -26,7 +26,7 @@ def start(window,out):
         for wrapper in page._cards.values():
             card=wrapper.__dict__.get('_card')
             if card is None or wrapper.isHidden():continue
-            row=dict(key=card.model.key,frame=rect(card,host),language=rect(card.language_row,host),accuracy=rect(card.accuracy_bar,host),speed=rect(card.speed_bar,host),action=rect(card.action_host,host))
+            row=dict(key=card.model.key,scope_factor=effective_factor(card),page_factor=effective_factor(page),frame=rect(card,host),language=rect(card.language_row,host),accuracy=rect(card.accuracy_bar,host),speed=rect(card.speed_bar,host),action=rect(card.action_host,host))
             for key in names:
                 if key in ('accuracy','speed') and card.metrics_host.isHidden():continue
                 actual=row[key];expected=cells[key]

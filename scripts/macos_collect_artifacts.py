@@ -48,7 +48,7 @@ def main(argv=None):
     if "tmp" not in {p.lower() for p in root.parts}:raise SystemExit("An isolated tmp QA boundary is required")
     files=selected_files(root)
     if args.maximum_bytes<16*1024*1024:raise SystemExit("Artifact allowance must reserve at least 16 MiB for diagnostic receipts")
-    if args.maximum_bytes>600*1024*1024:raise SystemExit("Artifact allowance must not exceed the verified 600 MiB cap")
+    if args.maximum_bytes>800*1024*1024:raise SystemExit("Artifact allowance must not exceed the owner-authorized 800 MiB cap")
     total=0
     destination=root/"artifacts"
     if destination.exists():raise SystemExit("Artifact staging already exists; no retry/overwrite")

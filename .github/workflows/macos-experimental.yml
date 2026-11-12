@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
       maximum_artifact_bytes:
-        description: 'Bounded installer plus receipts, maximum600MiB, one-day retention'
+        description: 'Bounded installer plus receipts, maximum800MiB, one-day retention'
         required: true
         type: string
       run_app_checks:
@@ -119,7 +119,7 @@ jobs:
           test "$(uname -m)" = arm64
           [[ "$MAXIMUM_ARTIFACT_BYTES" =~ ^[0-9]+$ ]]
           test "$MAXIMUM_ARTIFACT_BYTES" -ge 16777216
-          test "$MAXIMUM_ARTIFACT_BYTES" -le 629145600
+          test "$MAXIMUM_ARTIFACT_BYTES" -le 838860800
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Node24, official action.yml checked 2026-10-02
         with:
           ref: ${{ inputs.source_sha }}

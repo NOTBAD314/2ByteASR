@@ -3162,6 +3162,20 @@ class ModelCard(QFrame):
         self.info_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._sync_column_sizes()
 
+    def ui_zoom_factor(self, user_factor):
+        # A cached row can be visited as a separate subtree during a theme
+        # or native resize pass. Its column scope still belongs to the page.
+        # Independent dialogs keep their own user zoom.
+        from PySide6.QtWidgets import QDialog
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                return parent.ui_zoom_factor(user_factor)
+            if isinstance(parent, QDialog):
+                break
+            parent = parent.parentWidget()
+        return user_factor
+
     def _sync_column_sizes(self):
         from ..app.ui_zoom import set_layout,set_size,px
         set_size(self,min_h=84)

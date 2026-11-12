@@ -31,8 +31,8 @@ def test_artifact_selection_does_not_expose_runtime_models_or_nested_build_sourc
         "build/app.app.zip","build/native-build-inputs.json","desktop-flow/exports/中文.srt"}
     with pytest.raises(SystemExit,match="reserve at least"):
         main(["--qa-root",str(root),"--maximum-bytes","16"])
-    with pytest.raises(SystemExit,match="600 MiB cap"):
-        main(["--qa-root",str(root),"--maximum-bytes",str(601*1024*1024)])
+    with pytest.raises(SystemExit,match="800 MiB cap"):
+        main(["--qa-root",str(root),"--maximum-bytes",str(801*1024*1024)])
     assert not (root/"artifacts").exists()
 
 
