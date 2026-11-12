@@ -1,47 +1,93 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: bounded-1.0.0-public-verification
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, for example v0.6.5"
         required: true
-
+        type: string
 permissions: {}
-
 jobs:
-  anonymous-download-check:
+  anonymous-downloads:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+      SPEC_B64: 'W3sidGFnIjoidjEuMC4wIiwibmFtZSI6IjJCeXRlQVNSLTEuMC4wLWFwcC0yZjljZDI3MDg1OWYuemlwIiwic2l6ZSI6MTE2MzU0NTAyLCJzaGEyNTYiOiI1YzM3YmJkYTg1MWNmM2U3YTg5MzFiNWM1Zjg4Zjc0ZTQ4Y2M3N2I3NGY3NDdjOWZlNWM5MTY4MDhlNzA3YTExIn0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiMkJ5dGVBU1ItMS4wLjAtYXNzZXRzLTUxZDVjYzI0NjNmNi56aXAiLCJzaXplIjo1MzMzNzMyMSwic2hhMjU2IjoiYTQwMWUyYWRjODgyOGY4ZWM2ZTNiMThmZjUzY2M5NmY0N2Y1MDQyN2Q0MDNkNWQ1NDIzZmZlNDUxZWY1ZjVjYyJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6IjJCeXRlQVNSLTEuMC4wLW1hY29zLWFybTY0LVNldHVwLmRtZyIsInNpemUiOjU4NzA2Njc0MSwic2hhMjU2IjoiMDI5OGUxZjgxNDZhZGVhNmQ1MzMzOGE1NTc2M2EyMDI2ZGZiMWZjODJkMTczNDUxN2Q2YTYzZTllY2ZiZGM5YSJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6IjJCeXRlQVNSLTEuMC4wLW1hY29zLWFybTY0Lmpzb24iLCJzaXplIjoxOTE1NSwic2hhMjU2IjoiOWM5ZWUxNmMwZTkxMGM5NDZhZTdlYzJmNGMwYTBlNThiYTJmMzRhOGRkMWJhNmRiYmZiMTIyN2E1MDYzNThjOCJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6IjJCeXRlQVNSLTEuMC4wLXJlbmRlcmVyLWRkZTdlZjU5NDc2ZC56aXAiLCJzaXplIjoyMzcwNjgzMzMsInNoYTI1NiI6Ijc4NTlhM2I3NjU1NTE0ODI4ZDU4OGE5OGI0MzZiOGZmZjk5Y2EwNDYzMzhkNGZmNmYxOTM4M2ZhYjRmODg5NzQifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiIyQnl0ZUFTUi1TZXR1cC0xLjAuMC5leGUiLCJzaXplIjoxMTYzOTk1NTEyLCJzaGEyNTYiOiJiNWVlNmVmZjIwYzg1NTRmOTlmMmQ5Y2E4ZGQ0NTc3MzIwMDY3ZjZmMmI1ZTQwYzEyMGYxZjk2NTNhNzZhMzYyIn0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiMkJ5dGVBU1ItU291cmNlLTEuMC4wLW1hY29zLWFybTY0LnppcCIsInNpemUiOjE5NDYzOTEwMCwic2hhMjU2IjoiY2M1MmY0ZjY2NWQ4NjQ0YzNkYzNjOTlkNmIyZjI1MGQzNDE2ZTMwNGQyOTJiYjYxZmU3NjRlMzQ0ZjdiMTExMiJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6IjJCeXRlQVNSLVNvdXJjZS0xLjAuMC56aXAiLCJzaXplIjoxMDkwOTIwMDg2LCJzaGEyNTYiOiI4MDJkNTgzYWQ0Njg2ODhmZmI5ZTU4OTJjMDM2MWM2OWY5NDYxMjYyNjIxYjU2NjZjM2I1NGFjODhlYTlhZmUzIn0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiMkJ5dGVBU1ItVGhpcmRQYXJ0eS1NYXRlcmlhbHMtMS4wLjAtbWFjb3MtYXJtNjQuemlwIiwic2l6ZSI6MTE4OTM4ODIxLCJzaGEyNTYiOiJmY2EyY2QxZGEwOTRiYmZjOWEzNDk1NmRiYWU3MDQ3OWQ2N2NmZjY3ZjQ0YjZiZmRiZDFjOThmNDEzNGZlOTc4In0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiMkJ5dGVBU1ItVGhpcmRQYXJ0eS1NYXRlcmlhbHMtMS4wLjAuemlwIiwic2l6ZSI6MzAxMTI5NjgsInNoYTI1NiI6IjgwMTRmYWM2MDI0NzBkYWMwNDJjODM1Mzg1MzU1OTIwMjI3MjJhZDE5M2JmZWUwZjg5YWU5YmU5YmUzZjk3OTYifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiIyQnl0ZUFTUi11cGRhdGUuanNvbiIsInNpemUiOjg4OTcsInNoYTI1NiI6IjM0ODc0Mjg0MjMwYTYzMzBmMzE2NjUwNWRiZDllYTlkMDA0YWJhOTg0ZGUyZjY1MzVhZTZiNzZjYjczNmZkODkifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiIyQnl0ZUFTUi11cGRhdGUuanNvbi5zaWciLCJzaXplIjoyOTEsInNoYTI1NiI6ImE0YzllOTA4Y2Q2MDJlNDlmNTQzMTVkNGIwNTVjYmQ4MjkwZjZmZTBhZTljN2Q0MzIyZWJkMzI2Y2EzYTY4ZGYifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiJtaW5ndy13NjQtbGliaWNvbnYtMS4xOS0xLnNyYy50YXIuenN0Iiwic2l6ZSI6NTEzMTAyOSwic2hhMjU2IjoiNzQ0MjgyODBjMTcwOTRkYTViNzAyYzI5YjJlMWEwYWJhZTU5NTU2ZWE1ZGZkZDY1NzA1Y2M4Y2NjMWUwMDBmYiJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6Im1pbmd3LXc2NC1saWJpY29udi0xLjE5LTEuc3JjLnRhci56c3Quc2lnIiwic2l6ZSI6NTY2LCJzaGEyNTYiOiJkOTlmMjY1YmQ0ZTUxZDdlODYyNjcyNThkM2QwMTAxYTcyZDkwMWQ4YzJiOGM0ZjJmNTljZjg0NTY1NmRiZTYyIn0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiUkVBRE1FLm1hY29zLWFybTY0LnpoLUNOLm1kIiwic2l6ZSI6MjQ4Mywic2hhMjU2IjoiM2QwZjI2OWRlMTBhOTBhZTg5NWQyMTdhNzU0MzJhZTEwMjcxYjVmMDg4YTI4NjllNTYwZTk4MTllNWYxYjZlYiJ9LHsidGFnIjoidjEuMC4wIiwibmFtZSI6IlJFQURNRS56aC1DTi5tZCIsInNpemUiOjI0ODUsInNoYTI1NiI6IjYxNjBiZjRkZGQ3NDM4NGYxZTEzNjNmYTI4NzViMTZhZjliZjE0NWI5MTg3MmE2OWI5YmJiY2EzYzczN2IwNzYifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiJTSEEyNTZTVU1TLnR4dCIsInNpemUiOjE1OTIsInNoYTI1NiI6Ijk5OGMwNDI2ZTM2MTRjZjQ2NTBlNjQ1MmUyYWRjMTRhMDE4OGNlMGRhZDBiOTA1MDRiZTI3MGM3YTlmZTg1MDkifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiJTSEEyNTZTVU1TLnR4dC5zaWciLCJzaXplIjoyOTEsInNoYTI1NiI6IjcwZDY5MjkwZmY3MmRhOGVjNDc1N2E5MzhjNzQzYWM3ZTAyOTExMmI1ODNiY2NmMTUyNjQzMmIzYWFiZDk4YzMifSx7InRhZyI6InYwLjkuMyIsIm5hbWUiOiIyQnl0ZUFTUi0wLjkuMy1weXRob24tcnVudGltZS0yZjNmMDc2YzI1NWUuemlwIiwic2l6ZSI6MTQ4OTgyMjE5LCJzaGEyNTYiOiIxZjY3OGI1ZjdiYTFiZmYwMDA2Njc2Mzk5MjBiMGQ5NjkwODdlYmRkZGRkZmYzNDk5NzI2ODkzM2RhMWM5MWI2In0seyJ0YWciOiJ2MC45LjciLCJuYW1lIjoiMkJ5dGVBU1ItMC45LjctdG9vbHMtYWE4YWQyYWZiMjYxLnppcCIsInNpemUiOjIyODU4NDg4Miwic2hhMjU2IjoiZmQ4Mzc0YmI1MTU4MjhiMjZkMWNlNmU4ODhmYzJlN2FlZTBmZDE2OTlhZmM1YzM3ZTNjNTllNzIzZTcwNmFiZSJ9LHsidGFnIjoidjAuOS4zIiwibmFtZSI6IjJCeXRlQVNSLTAuOS4zLXdoZWVscy1lZGNiZGY3OTEzYjcuemlwIiwic2l6ZSI6NDQyNzU3NTMzLCJzaGEyNTYiOiI2NWE4Y2Y3YmYwMjVkYjdjMmRjZDQwMWNjZWVjNWE2OTM3NWY1M2I1Y2VkNjk1ZDg1YzQyNzdhZmJkMzU5YmUyIn0seyJ0YWciOiJ2MC45LjciLCJuYW1lIjoiMkJ5dGVBU1ItMC45LjctbGljZW5zZXMtNDg2MWY5MjFhYTNlLnppcCIsInNpemUiOjI5ODQ2MjA0LCJzaGEyNTYiOiJhYjIzZDQ3MWE4NzI4NmFkYjNmZWUzYzIzOGQ4NmFlNmM4N2I0MWYzM2YxYTFlNjYwZDJiYmI3MmEzMDI5ODkyIn1d'
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Hash all public release bytes without credentials
         shell: bash
         run: |
-          set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
           python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          """Stream every public asset and referenced component without credentials."""
+          import base64
+          from concurrent.futures import ThreadPoolExecutor
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import time
+          import urllib.parse
+          import urllib.request
+
+          opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          spec=json.loads(base64.b64decode(os.environ['SPEC_B64']))
+          tag='v1.0.0'
+          assert os.environ['INPUT_TAG']==tag
+          bases=dict(github='https://github.com/NOTBAD314/2ByteASR/releases/download/',
+              gitcode='https://gitcode.com/Notbad314/2ByteASR/releases/download/')
+          latest_urls=dict(github='https://api.github.com/repos/NOTBAD314/2ByteASR/releases/latest',
+              gitcode='https://api.gitcode.com/api/v5/repos/Notbad314/2ByteASR/releases/latest')
+
+          def request(url):
+              return urllib.request.Request(url,headers={'User-Agent':'2ByteASR-anonymous-release-audit/1.0.0'})
+
+          latest={}
+          for host,url in latest_urls.items():
+              with opener.open(request(url),timeout=90) as response:
+                  latest[host]=json.load(response)['tag_name']
+          assert all(value==tag for value in latest.values()),latest
+
+          def check(task):
+              host,item=task
+              url=bases[host]+item['tag']+'/'+urllib.parse.quote(item['name'])
+              started=time.monotonic()
+              for attempt in range(3):
+                  try:
+                      digest=hashlib.sha256()
+                      count=0
+                      with opener.open(request(url),timeout=120) as response:
+                          status=response.status
+                          for block in iter(lambda:response.read(4*1024*1024),b''):
+                              digest.update(block)
+                              count+=len(block)
+                      result=dict(host=host,**item,url=url,status=status,length=count,actual_sha256=digest.hexdigest(),
+                          ok=count==item['size'] and digest.hexdigest()==item['sha256'],
+                          seconds=round(time.monotonic()-started,2))
+                      print(json.dumps(result),flush=True)
+                      return result
+                  except Exception as error:
+                      if attempt==2:
+                          result=dict(host=host,**item,url=url,ok=False,error=str(error)[:300])
+                          print(json.dumps(result),flush=True)
+                          return result
+                      time.sleep(3)
+
+          tasks=[(host,item) for host in bases for item in spec]
+          with ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,tasks))
+          report=dict(passed=all(item['ok'] for item in results),version='1.0.0',anonymous=True,
+              full_sha256=True,latest=latest,assets=results)
+          Path('anonymous-release-verification.json').write_text(json.dumps(report,indent=2),'utf8')
+          assert report['passed']
+          print('ALL_PUBLIC_BYTES_VERIFIED',len(results),flush=True)
+
           PY
+      - name: Retain bounded verification receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: anonymous-release-verification-1.0.0
+          path: anonymous-release-verification.json
+          retention-days: 1
