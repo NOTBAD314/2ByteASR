@@ -96,7 +96,7 @@ for name, project, formats in [('simple-srt', simple, {'srt'}), ('retained-srt',
 
 # Reproduce the audit's wait primitive inside a timer callback. The real GUI
 # completes subtitle tasks from a QTimer, so both event-loop modes matter.
-from PySide6.QtCore import QEventLoop, QTimer, qVersion
+from PySide6.QtCore import QEventLoop, QTimer, QMetaObject, Qt, qVersion
 from PySide6.QtWidgets import QApplication
 application = QApplication.instance() or QApplication([])
 timer_result = {'qt': qVersion()}
@@ -111,14 +111,60 @@ def timer_wait_probe():
         application.processEvents()
         time.sleep(.005)
     timer_result['process_events_ticks'] = len(ticks)
+    (out / 'qt-timer-result.json').write_text(json.dumps(timer_result, indent=2), 'utf8')
     before = len(ticks)
     loop = QEventLoop()
     QTimer.singleShot(500, loop.quit)
+    import threading
+    watchdog = threading.Timer(3, lambda: QMetaObject.invokeMethod(loop, 'quit', Qt.QueuedConnection))
+    watchdog.start()
     loop.exec()
+    watchdog.cancel()
     timer_result['nested_event_loop_ticks'] = len(ticks) - before
     timer.stop()
     (out / 'qt-timer-result.json').write_text(json.dumps(timer_result, indent=2), 'utf8')
     print(json.dumps(timer_result), flush=True)
+    # Exercise the application's actual threaded owner and 100 ms pipe loop
+    # in the same nonzero-timer callback context as the UI audit.
+    from types import SimpleNamespace
+    from twobyteasr.exports import subtitle_export_task as owner
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, export_language_layers
+    old_sys = owner.sys
+    owner.sys = SimpleNamespace(frozen=True, executable=str(app / 'Contents/MacOS/2ByteASR'), platform='darwin')
+    task = owner.SubtitleExportTask(SubtitleSnapshot.capture(retained), out / 'threaded-owner', 'owned',
+        {'srt', 'ass', 'txt', 'json'}, (), 'combined', False, export_subtitle_artifacts, export_language_layers)
+    ui_state = {'poll_ticks': 0, 'complete': False}
+    poll = QTimer(application)
+    def inspect():
+        ui_state['poll_ticks'] += 1
+        ui_state['complete'] = task.done.is_set()
+    poll.setInterval(30)
+    poll.timeout.connect(inspect)
+    poll.start()
+    task.start()
+    until = time.monotonic() + 8
+    while not ui_state['complete'] and time.monotonic() < until:
+        application.processEvents()
+        time.sleep(.005)
+    ui_state.update(worker_done=task.done.is_set(), worker_pid=getattr(task, 'worker_pid', None),
+        error=str(task.error), details=task.details, artifacts=[str(a.path) for a in task.artifacts])
+    if not task.done.is_set():
+        import threading
+        frames = sys._current_frames()
+        ui_state['thread_stacks'] = {t.name: traceback.format_stack(frames[t.ident])[-12:]
+            for t in threading.enumerate() if t.ident in frames}
+        task.cancel.set()
+        pid = getattr(task, 'worker_pid', None)
+        if pid is not None:
+            import psutil
+            child = psutil.Process(pid)
+            if child.ppid() == os.getpid():
+                child.terminate()
+        task.done.wait(3)
+    poll.stop()
+    owner.sys = old_sys
+    (out / 'threaded-owner-result.json').write_text(json.dumps(ui_state, indent=2), 'utf8')
+    print(json.dumps(ui_state), flush=True)
     application.quit()
-QTimer.singleShot(0, timer_wait_probe)
+QTimer.singleShot(500, timer_wait_probe)
 application.exec()
