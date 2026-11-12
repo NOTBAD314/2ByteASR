@@ -3186,12 +3186,32 @@ class ModelCard(QFrame):
         set_layout(self._root,margins=(12,8,12,8),spacing=6)
         set_layout(self._row,margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
         set_layout(self.info_host.layout(),margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+        if os.environ.get('TWOBYTEASR_WORKSHOP_COLUMNS_ONLY') == '1':
+            from ..app.ui_zoom import effective_factor
+            self._column_sync_sample = dict(factor=effective_factor(self),language=self.language_row.width(),metrics=self.metrics_host.width(),action=self.action_host.width())
 
     def apply_ui_zoom(self,factor):
         self._sync_column_sizes()
         self._apply_compact_layout(self.width()/factor<760)
         if getattr(self,'_logo_factor',None)!=factor:
             self._logo_factor=factor;self._paint_monogram()
+
+    def _queue_owner_columns(self):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_owner_columns()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, 'language_row') and event.type() in (QEvent.Type.StyleChange, QEvent.Type.FontChange):
+            self._queue_owner_columns()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3205,6 +3225,7 @@ class ModelCard(QFrame):
             ancestor = ancestor.parentWidget()
         from ..app.ui_zoom import logical
         self._apply_compact_layout(logical(available_width,self) < 760)
+        self._sync_column_sizes()
 
     def _apply_compact_layout(self, compact: bool):
         cap = 240 if compact else 380
