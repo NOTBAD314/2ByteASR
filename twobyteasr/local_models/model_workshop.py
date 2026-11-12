@@ -3284,6 +3284,12 @@ class ModelCard(QFrame):
 
     def refresh_theme_palette(self):
         self._paint_monogram()
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
 
     def set_state_badge(self, text: str, tone: str = "muted"):
         label = str(text or "").strip()
@@ -5967,6 +5973,7 @@ class ModelWorkshopPage(QWidget):
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
+        self._queue_column_sync()
 
 
     def _mac_cpu_runtime_checked(self, result):
@@ -6060,12 +6067,36 @@ class ModelWorkshopPage(QWidget):
 
     def apply_ui_zoom(self,factor):
         self._reading_factor=factor
+        self._queue_column_sync()
         if hasattr(self,'detail_monogram'):
             model=next((m for m in MODELS if m.key==self.detail_model_key),None)
             if model is not None:
                 edge=round((38 if model.logo_asset else 24)*factor)
                 size=QSize(edge,edge)
                 self.detail_monogram.setPixmap(_model_logo(model,size).pixmap(size))
+
+    def _queue_column_sync(self):
+        # Native style repolishing can restore old fixed widths after the
+        # zoom traversal. Finish the shared table geometry after that pass.
+        if getattr(self, '_column_sync_pending', False):
+            return
+        self._column_sync_pending = True
+        QTimer.singleShot(0, self._sync_list_columns)
+
+    def _sync_list_columns(self):
+        from shiboken6 import isValid
+        if not isValid(self):
+            return
+        self._column_sync_pending = False
+        header = getattr(self, 'list_header', None)
+        if header is None:
+            return
+        from ..app.ui_zoom import effective_factor
+        header.apply_ui_zoom(effective_factor(self))
+        for wrapper in getattr(self, '_cards', {}).values():
+            card = wrapper.__dict__.get('_card')
+            if card is not None and isValid(card):
+                card._sync_column_sizes()
 
     def _queue_reading_size(self):
         if getattr(self,'_reading_pending',False):return
