@@ -117,12 +117,22 @@ def _verified_overlap_pairs(project):
     return verified
 
 
-def project_display_tail_plan(project):
-    rows=[dict(id=c.id,start_ms=c.start_ms,end_ms=c.end_ms,speaker=c.speaker_id) for c in project.cues]
+def project_display_tail_plan(project, *, editorial_only=False):
+    from .display_continuity import visible_display_cues, boundary_blocked, continuity_successors, layout_cues
+    receipts=project.studio_state.get('caption_timeline',{}).get('instances',{})
+    visible=visible_display_cues(project)
+    successors=continuity_successors(layout_cues(project,visible),positions=False)
+    by_visible={c.id:c for c in visible}
+    rows=[dict(continuity_successor_start_ms=by_visible[successors[c.id]].start_ms if c.id in successors else None,
+               id=c.id,start_ms=c.start_ms,end_ms=c.end_ms,speaker=c.speaker_id,text=c.text,
+               timing_locked=boundary_blocked(c,receipts.get(c.id,{})) or c.speaker_id in project.studio_state.get('locked_speakers',()),
+               preserve_overlap=bool(c.transform.get('position_locked') or c.transform.get('preserve_overlap')
+                                     or c.transform.get('protected_start') or receipts.get(c.id,{}).get('protected_start')),
+               display_handoff=c.transform.get('display_handoff',{})) for c in visible_display_cues(project)]
     views = {}
-    boundaries = {c.id: project_word_boundaries(project, c, views=views) for c in project.cues}
-    acoustic={c.id:project_acoustics(project,c,boundaries=boundaries[c.id]) for c in project.cues}
-    verified = _verified_overlap_pairs(project)
+    boundaries = {} if editorial_only else {c.id: project_word_boundaries(project, c, views=views) for c in project.cues}
+    acoustic={c.id:project_acoustics(project,c,boundaries=boundaries.get(c.id,(None,None))) for c in project.cues}
+    verified = set() if editorial_only else _verified_overlap_pairs(project)
     changes,audit=protect_intervals(rows,acoustic,word_boundaries=boundaries,verified_pairs=verified)
     by_id={c.id:c for c in project.cues}
     frame=project_frame_ms(project)
@@ -134,14 +144,14 @@ def project_display_tail_plan(project):
         pair.update(raw_labels=[left.speaker_id,right.speaker_id],
                     display_labels=[labels.get(c.speaker_id,c.speaker_id) for c in (left,right)],
                     cue_before=[[left.start_ms,left.end_ms],[right.start_ms,right.end_ms]],frame_ms=frame,
-                    independently_verified=independent_overlap_verified(project,left,right))
+                    independently_verified=False if editorial_only else independent_overlap_verified(project,left,right))
         if pair['classification'] == 'acoustic' and not pair['independently_verified']:
-            pair.update(classification='source_overlap_unverified', review_required=True)
+            pair.update(classification='source_overlap_unverified', review_required=False)
         if left.id in changes:
             pair.update(boundary_ms=changes[left.id], boundary_source='incoming_cue_or_measured_speech_end')
-    report=dict(policy_version=4,status='applied',pairs_before=audit,changed_ends=changes,
+    report=dict(policy_version=5,status='applied',pairs_before=audit,changed_ends=changes,
                 counts={name:sum(p['classification']==name for p in audit) for name in
-                        ('display_compensation','acoustic','uncertain','source_overlap_unverified')},
+                        ('display_compensation','acoustic','uncertain','source_overlap_unverified','bounded_display_hold','editorial_handoff')},
                 source='measured cue words before coarse source intervals; unknown overlap retained')
     return changes,report
 
@@ -163,7 +173,23 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
     ends = {row["id"]: row["end_ms"] for row in rows}
     audit = []
     ordered = sorted(rows, key=lambda row: (row["start_ms"], row["end_ms"], row["id"]))
+    import heapq
+    active_ends=[]
+    active_counts={}
+    for row in ordered:
+        while active_ends and active_ends[0] <= row['start_ms']:
+            heapq.heappop(active_ends)
+        heapq.heappush(active_ends,row['end_ms'])
+        active_counts[row['id']]=len(active_ends)
+    from .display_continuity import MAX_GAP_MS, VERSION
+    successor_starts = {(row['speaker'],row['start_ms']) for row in rows}
     for index, left in enumerate(ordered):
+        tail = left.get('display_handoff') or {}
+        base = tail.get('base_display_interval_ms',[])
+        held = (tail.get('version') == VERSION and len(base) == 2
+                and tail.get('display_interval_ms') == [left['start_ms'],left['end_ms']]
+                and 0 <= left['end_ms']-base[1] <= MAX_GAP_MS
+                and (left['speaker'],left['end_ms']) in successor_starts)
         for later in range(index+1, len(ordered)):
             right = ordered[later]
             if right["start_ms"] >= left["end_ms"]:
@@ -181,13 +207,34 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
                         (right['id'],left['id']) in verified_pairs)
             if verified:
                 kind = 'acoustic'
+            acoustic_kind = kind
+            hold_only = held and right['start_ms'] >= base[1]
+            if hold_only:
+                kind = 'bounded_display_hold'
+            third=(active_counts[right['id']]>2 or
+                   later+1<len(ordered) and ordered[later+1]['start_ms']<left['end_ms'])
+            same_flow = left.get('continuity_successor_start_ms') is not None
+            handoff_reason = ('same_flow_continuation_preserved' if same_flow else
+                              editorial_handoff_reason(left, right, third=third) if not held else '')
+            ordered_speech = measured or (a and b and max(end for _, end in a) <= min(start for start, _ in b))
+            if handoff_reason == 'bounded_tail_handoff' and kind == 'display_compensation' and ordered_speech and not verified:
+                kind = 'editorial_handoff'
+                ends[left['id']] = min(ends[left['id']], right['start_ms'])
             if left["speaker"] != right["speaker"]:
                 audit.append({"left": left["id"], "right": right["id"], "classification": kind,
+                              'source_classification': acoustic_kind,
+                              'has_bounded_display_hold': held, 'hold_only_overlap':hold_only,
+                              'display_decision': handoff_reason or 'retain_overlap',
+                              'display_adjustment_ms': ends[left['id']]-left['end_ms'],
+                              'review_required': False,
                               "left_acoustic": a, "right_acoustic": b,
                               "word_boundaries_ms": [left_word_end, right_word_start],
                               "evidence_kind": 'measured_cue_words' if measured else 'source_intervals',
                               "overlap_ms": min(left["end_ms"], right["end_ms"]) - right["start_ms"]})
-            ordered_speech = measured or (a and b and max(end for _, end in a) <= min(start for start, _ in b))
+            if held or same_flow:
+                continue
+            if kind == 'editorial_handoff':
+                continue
             if kind == "display_compensation" and ordered_speech:
                 if right["start_ms"] > left["start_ms"]:
                     # An incoming display can start before its actual speech.
@@ -201,6 +248,32 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
                 boundary = max(right['start_ms'], left_word_end)
                 ends[left['id']] = min(ends[left['id']], boundary)
     return {row["id"]: ends[row["id"]] for row in rows if ends[row["id"]] != row["end_ms"]}, audit
+
+
+def editorial_handoff_reason(left, right, *, third=False):
+    """An editorial reading choice, independent of simultaneous-speech proof."""
+    if left['speaker'] == right['speaker']:
+        return ''
+    if any(row.get('timing_locked') or row.get('preserve_overlap') for row in (left,right)):
+        return 'manual_overlap_preserved'
+    overlap = left['end_ms']-right['start_ms']
+    if not 0 < overlap <= 200 or right['end_ms'] <= left['end_ms']:
+        return 'sustained_or_contained_overlap'
+    from .grouping_syntax import INDEPENDENT_RESPONSES
+    texts=[re.sub(r'[\W_]+','',row.get('text',''),flags=re.UNICODE) for row in (left,right)]
+    if any(not text or text in INDEPENDENT_RESPONSES or len(text)<=3 for text in texts):
+        return 'independent_response_or_unknown_text'
+    durations=[row['end_ms']-row['start_ms'] for row in (left,right)]
+    if overlap > min(durations)*.2:
+        return 'substantial_fraction_overlap'
+    available=right['start_ms']-left['start_ms']
+    # At most 200ms / 15% reading loss; the outgoing text keeps >=12 chars/s
+    # with a 600ms floor. A short readable reply never borrows the next onset.
+    if available < max(600,len(texts[0])*1000/12) or overlap > durations[0]*.15:
+        return 'insufficient_outgoing_reading_time'
+    if third:
+        return 'third_caption_overlap'
+    return 'bounded_tail_handoff'
 
 
 def project_acoustics(project, cue, *, boundaries=None):
@@ -269,22 +342,113 @@ def protect_project_display_tails(project):
     changes,report=project_display_tail_plan(project)
     for cue in project.cues:
         if cue.id in changes:
+            before=[cue.start_ms,cue.end_ms]
             cue.end_ms = changes[cue.id]
+            decision=next((p for p in report['pairs_before'] if p['left']==cue.id
+                           and p['classification']=='editorial_handoff'),None)
+            if decision:
+                cue.transform['display_handoff']=dict(version='editorial-handoff-v1',
+                    base_display_interval_ms=before,display_interval_ms=[cue.start_ms,cue.end_ms],
+                    reason='bounded_tail_handoff',adjustment_ms=cue.end_ms-before[1],
+                    acoustic_overlap_claim='unchanged',successor_id=decision['right'])
     project.generation_metadata["display_overlap_audit"] = report
     return report['pairs_before']
 
 
+def apply_project_editorial_handoffs(project, *, editorial_only=False):
+    """Apply only bounded editorial decisions before opening a display plan."""
+    from .display_continuity import boundary_blocked
+    receipts=project.studio_state.get('caption_timeline',{}).get('instances',{})
+    for cue in project.cues:
+        tail=cue.transform.get('display_handoff',{})
+        base=tail.get('base_display_interval_ms',())
+        if (tail.get('version')=='editorial-handoff-v1' and len(base)==2
+                and tail.get('display_interval_ms')==[cue.start_ms,cue.end_ms]
+                and base[0]==cue.start_ms and base[1]>cue.end_ms
+                and not boundary_blocked(cue,receipts.get(cue.id,{}))):
+            cue.end_ms=base[1]
+            cue.transform=dict(cue.transform)
+            cue.transform.pop('display_handoff',None)
+    ends,report=project_display_tail_plan(project,editorial_only=editorial_only)
+    by_id={c.id:c for c in project.cues}
+    for pair in report['pairs_before']:
+        if pair['classification'] != 'editorial_handoff':
+            continue
+        cue=by_id[pair['left']]
+        before=[cue.start_ms,cue.end_ms]
+        cue.end_ms=ends[cue.id]
+        cue.transform['display_handoff']=dict(version='editorial-handoff-v1',
+            base_display_interval_ms=before,display_interval_ms=[cue.start_ms,cue.end_ms],
+            reason='bounded_tail_handoff',adjustment_ms=cue.end_ms-before[1],
+            acoustic_overlap_claim='unchanged',successor_id=pair['right'])
+    if any(p['classification']=='editorial_handoff' for p in report['pairs_before']):
+        project.generation_metadata['display_overlap_audit']=report
+    return report
+
+
+def reconcile_editorial_handoffs(project, cue_ids=(), previous_cues=None, *, apply=True):
+    """Replan only the edit's local display neighbourhood, without saving."""
+    from .display_continuity import boundary_blocked
+    keys=set(cue_ids)
+    cues=project.cues
+    previous_cues=previous_cues or {}
+    owned=[c for c in cues if c.id in keys or
+           c.transform.get('display_handoff',{}).get('successor_id') in keys]
+    owned.extend(c for key,c in previous_cues.items() if key in keys and c not in owned)
+    if keys and not owned:
+        return set() if apply else {}
+    if owned:
+        low=min(c.start_ms for c in owned)-200
+        high=max(c.end_ms for c in owned)+200
+        local=[c for c in cues if c.start_ms<high and c.end_ms>low]
+    else:
+        local=list(cues)
+    before={c.id:(c.end_ms,copy(c.transform)) for c in local}
+    local=[copy(c) for c in local]
+    receipts=project.studio_state.get('caption_timeline',{}).get('instances',{})
+    for cue in local:
+        tail=cue.transform.get('display_handoff',{})
+        if (tail.get('version')=='editorial-handoff-v1'
+                and tail.get('display_interval_ms')==[cue.start_ms,cue.end_ms]
+                and not boundary_blocked(cue,receipts.get(cue.id,{}))):
+            base=tail.get('base_display_interval_ms',[])
+            if len(base)==2 and base[0]==cue.start_ms and base[1]>cue.start_ms:
+                cue.end_ms=base[1]
+                cue.transform=dict(cue.transform)
+                cue.transform.pop('display_handoff',None)
+    view=copy(project)
+    view.cues=local
+    # Only this private audit is rebuilt; immutable acoustic evidence is shared.
+    view.generation_metadata=dict(project.generation_metadata)
+    apply_project_editorial_handoffs(view,editorial_only=True)
+    changes={c.id:(c.end_ms,c.transform) for c in local if (c.end_ms,c.transform)!=before[c.id]}
+    if apply:
+        for cue in cues:
+            if cue.id in changes:
+                cue.end_ms,cue.transform=changes[cue.id]
+        return set(changes)
+    return changes
+
+
 def protect_runtime_display_tails(cues, segments):
-    if not segments:
-        return []  # No source evidence: leave timing unchanged for review.
     # Key by position: content recovery may append cues whose ids repeat an
     # existing cue's id until the final renumbering (2026-10-11 688 s run).
     keys = [str(index) for index in range(len(cues))]
     rows = [dict(id=key, start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker=cue.speaker,
-                 timing_locked=bool(getattr(cue, 'timing_locked', False)))
+                 text=cue.text, timing_locked=bool(getattr(cue, 'timing_locked', False)),
+                 preserve_overlap=bool(getattr(cue,'preserve_overlap',False)),
+                 display_handoff=getattr(cue,'display_handoff',{}))
             for key, cue in zip(keys, cues)]
     acoustic = {}
     from types import SimpleNamespace
+    from .display_continuity import continuity_successors
+    proxies=[SimpleNamespace(id=row['id'],start_ms=row['start_ms'],end_ms=row['end_ms'],speaker=row['speaker'],
+                             transform=getattr(cue,'transform',{}) or {},timing_locked=row['timing_locked'])
+             for row,cue in zip(rows,cues)]
+    follows=continuity_successors(proxies,positions=False)
+    starts={row['id']:row['start_ms'] for row in rows}
+    for row in rows:
+        row['continuity_successor_start_ms']=starts.get(follows.get(row['id']))
     evidence = {}
     for index, segment in enumerate(segments):
         row = {key: getattr(segment, key, None) for key in
@@ -326,61 +490,41 @@ def protect_runtime_display_tails(cues, segments):
             adjusted_end_ms=changes.get(pair['left'], rows[int(pair['left'])]['end_ms']))
         independently_verified = ((pair['left'], pair['right']) in verified or
                                   (pair['right'], pair['left']) in verified)
-        pair.update(left=str(cues[int(pair['left'])].cue_id), right=str(cues[int(pair['right'])].cue_id))
+        pair.update(left=str(cues[int(pair['left'])].cue_id), right=str(cues[int(pair['right'])].cue_id),
+                    independently_verified=independently_verified)
         # Mono source boundaries alone do not prove simultaneous speakers.
         if pair['classification'] == 'acoustic' and not independently_verified:
-            pair.update(classification='source_overlap_unverified', review_required=True)
+            pair.update(classification='source_overlap_unverified', review_required=False)
         if pair['evidence_kind'] != 'measured_cue_words':
             pair['evidence_kind'] = 'source_intervals_without_editorial_or_search_padding'
     for key, cue in zip(keys, cues):
         if key in changes:
+            before=[round(cue.start*1000),round(cue.end*1000)]
             cue.end = changes[key] / 1000
+            decision=next((p for p in audit if p['left']==str(cue.cue_id)
+                           and p['classification']=='editorial_handoff'),None)
+            if decision:
+                cue.display_handoff=dict(version='editorial-handoff-v1',base_display_interval_ms=before,
+                    display_interval_ms=[before[0],changes[key]],reason='bounded_tail_handoff',
+                    adjustment_ms=changes[key]-before[1],acoustic_overlap_claim='unchanged',
+                    successor_id=decision['right'])
+    from ..recognition.run_context import get_runtime_context
+    context=get_runtime_context()
+    context._display_overlap_audit = audit
+    context._display_overlap_signature = runtime_display_signature(cues,segments)
     return audit
 
 
-SHORT_GAP_BRIDGE_MS = 500
+def runtime_display_signature(cues,segments):
+    return (id(segments),tuple((c.cue_id,c.start,c.end,c.text,c.speaker) for c in cues))
 
 
-def short_gap_bridges(rows, threshold, *, full_track=True, same_speaker=True, max_duration=None):
-    """New end values that close short blank gaps; the next start never moves.
+from .display_continuity import MAX_GAP_MS as SHORT_GAP_BRIDGE_MS
 
-    2026-10-10 (user): a gap of 0.5 s or less between captions makes them
-    flicker, so the earlier caption runs on until the next one appears.
-    ``rows`` are ``(key, speaker, start, end)`` in any one unit.
 
-    * full_track: a moment where no caption is on screen at all.
-    * same_speaker: one speaker's caption disappears and comes back while
-      someone else's caption stays up. Skipped when another speaker starts
-      talking inside the gap, which would create a new overlap.
-    """
-    rows = sorted(rows, key=lambda row: (row[2], row[3], str(row[1]), str(row[0])))
-    original = {key: end for key, _speaker, _start, end in rows}
-    ends = dict(original)
-
-    def fits(start, target):
-        return max_duration is None or target - start <= max_duration
-
-    if full_track and rows:
-        owner_key, _speaker, owner_start, cover = rows[0]
-        for key, _speaker, start, _end in rows[1:]:
-            if cover < start <= cover + threshold and fits(owner_start, start):
-                ends[owner_key] = cover = start
-            if ends[key] > cover:
-                owner_key, owner_start, cover = key, start, ends[key]
-    if same_speaker:
-        starts = [(start, speaker) for _key, speaker, start, _end in rows]
-        lanes = {}
-        for row in rows:
-            lanes.setdefault(row[1], []).append(row)
-        for speaker, lane in lanes.items():
-            for (key, _s, start, _e), (_k, _s2, next_start, _e2) in zip(lane, lane[1:]):
-                end = ends[key]
-                if not (end < next_start <= end + threshold) or not fits(start, next_start):
-                    continue
-                # Intervals are half-open: a new speaker exactly at the old
-                # end is a handoff too. Extending past it would manufacture
-                # overlap and undo the preceding display-tail protection.
-                if any(end <= other < next_start and who != speaker for other, who in starts):
-                    continue
-                ends[key] = next_start
-    return {key: end for key, end in ends.items() if end != original[key]}
+def short_gap_bridges(rows, threshold, *, full_track=True, same_speaker=True, max_duration=None,
+                      micro_threshold=None, keys=None, blocked=(), continuous=()):
+    """Shared display-only handoffs, with explicit evidence for larger gaps."""
+    from .display_continuity import handoff_ends
+    return handoff_ends(rows, threshold, micro=micro_threshold, full_track=full_track,
+        same_speaker=same_speaker,max_duration=max_duration,keys=keys,blocked=blocked,continuous=continuous)

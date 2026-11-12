@@ -2209,12 +2209,13 @@ MAX_HELD_SUBTITLE_SECONDS = 4.00
 
 
 # 与下一条之间有足够空白的独立字幕，在识别尾音后多保留 200ms，避免突兀消失。
-ISOLATED_CUE_TAIL_SECONDS = 0.20
+from twobyteasr.subtitle_rules.display_continuity import MICRO_GAP_MS, MAX_GAP_MS
+ISOLATED_CUE_TAIL_SECONDS = MICRO_GAP_MS / 1000
 
 
 # 默认尾帧仍只增加 200ms；如果所有轨道在相邻字幕间仍剩不足 500ms 的空白，
 # 再让当前可见字幕保持到下一条开始，避免剪映画面出现短促闪轴。
-SHORT_DISPLAY_GAP_BRIDGE_SECONDS = 0.50
+SHORT_DISPLAY_GAP_BRIDGE_SECONDS = MAX_GAP_MS / 1000
 
 
 EDITORIAL_OMITTABLE_SINGLE_CHARACTERS = frozenset(
@@ -2276,9 +2277,9 @@ CACHE_STAGE_VERSIONS = {
 # API 阶段只依赖各自逻辑版本，不再散列整个 6800 行模块。以后修改时间轴、
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
-GROUP_LOGIC_VERSION = "group-v65-zh-complete-expression-14"
+GROUP_LOGIC_VERSION = "group-v68-japanese-ai-provenance-retention"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
-TIMING_LOGIC_VERSION = "timing-v17-evidence-preserving-handoffs"
+TIMING_LOGIC_VERSION = "timing-v21-editor-and-source-identity"
 
 
 # 复核清单只打印在运行窗口，不增加第三个输出文件。
@@ -2549,7 +2550,7 @@ def serialize_cues(cues):
     rows=[]
     for cue in cues:
         row=asdict(cue)
-        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment'):
+        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment','display_handoff','grouping_origin','grouping_boundary_receipt'):
             if hasattr(cue,key):row[key]=copy.deepcopy(getattr(cue,key))
         rows.append(row)
     return rows
@@ -2566,7 +2567,7 @@ def deserialize_cues(items):
             timing_locked=bool(item.get("timing_locked", False)),
             speaker=str(item.get("speaker", "S00")),
         )
-        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment'):
+        for key in ('source_spans','timing_basis','segmentation_language','forced_alignment','display_handoff','grouping_origin','grouping_boundary_receipt'):
             if key in item:setattr(cue,key,copy.deepcopy(item[key]))
         result.append(cue)
     return result

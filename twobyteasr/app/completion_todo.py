@@ -40,6 +40,7 @@ CATEGORY_LABELS = {
 }
 CHIP_LIMIT = 3
 BAR_HEIGHT = 36  # buttons and chips inside the bar
+SLIM_HEIGHT = 30  # the same controls in the slim strip under the action cards
 
 
 def review_groups(items):
@@ -77,20 +78,23 @@ def _label(object_name, tone=''):
 class _BarButton(QPushButton):
     """Compact controls keep their own 36px contract, separate from 44px actions."""
 
+    bar_height = BAR_HEIGHT
+
     def sizeHint(self):
-        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 30, BAR_HEIGHT)
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 30, self.bar_height)
 
     def minimumSizeHint(self):
         return self.sizeHint()
 
 
-def _button(tone):
+def _button(tone, height=BAR_HEIGHT):
     button = _BarButton()
+    button.bar_height = height
     button.setFont(application_font())
     button.setObjectName('completionTodoAction')
     button.setProperty('tone', tone)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
-    button.setFixedHeight(BAR_HEIGHT)
+    button.setFixedHeight(height)
     button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return button
 
@@ -142,7 +146,7 @@ class _FittingChips(QWidget):
 class TodoGroup(QFrame):
     """One follow-up in the bar: icon, title, count badge, short note, action."""
 
-    def __init__(self, tone, icon, title, parent=None, *, action=True):
+    def __init__(self, tone, icon, title, parent=None, *, action=True, height=BAR_HEIGHT):
         super().__init__(parent)
         self.tone = tone
         self.setProperty('uiZoomOwnSize', True)
@@ -178,7 +182,7 @@ class TodoGroup(QFrame):
         # The action stays at the right in the stacked layout, too.
         self.action_spacer_index = row.count()
         row.addStretch(1)
-        self.action = _button(tone) if action else None
+        self.action = _button(tone, height) if action else None
         if self.action is not None:
             row.addWidget(self.action)
         for child in (self.title, self.badge, self.note):
@@ -231,14 +235,25 @@ class CompletionTodoSection(QFrame):
     review_list = Signal()        # the full current review list
     content_changed = Signal()    # height changed; the page re-measures its fixed height
 
-    def __init__(self, more_button, parent=None):
+    ai_changed = Signal(bool, int)  # enabled, unfinished records (the page's AI card follows)
+
+    def __init__(self, more_button, parent=None, *, ai_in_bar=True):
+        """``ai_in_bar=False`` (2026-11-11, user): AI proofreading is a main
+        action card on the page; this becomes a slim strip for the items most
+        users can leave alone: review categories, a retry and 更多操作."""
         super().__init__(parent)
         self.setObjectName('completionTodo')
+        self.slim = not ai_in_bar
+        self.bar_height = SLIM_HEIGHT if self.slim else BAR_HEIGHT
+        self.setProperty('slim', self.slim)
+        self._rejected = 0
+        self._rejected_reason = ''
         self.setProperty('uiZoomOwnSize', True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.more_button = more_button
         more_button.set_compact(True)
-        more_button.setFixedHeight(BAR_HEIGHT)
+        more_button.set_quiet(self.slim)
+        more_button.setFixedHeight(self.bar_height)
         more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.ai_card = TodoGroup('ai', 'fa5s.magic', 'AI 词库校对', self)
         bind_text(self.ai_card.badge, '新')
@@ -247,10 +262,14 @@ class CompletionTodoSection(QFrame):
         bind_text(self.ai_card, '把写错的人名和术语一次找出来，原文和建议并排对照，勾选的才会改；改完能在字幕工作台撤销。',
                   property='toolTip')
         self.review_card = TodoGroup('review', 'fa5s.flag', '待检查', self, action=False)
-        self.retry_card = TodoGroup('retry', 'fa5s.redo', '重试', self)
+        self.retry_card = TodoGroup('retry', 'fa5s.redo', '重试', self, height=self.bar_height)
         self.cards = (self.ai_card, self.review_card, self.retry_card)
+        # Nothing to check and nothing to retry: the strip says so in a word.
+        self.idle_note = bind_text(_label('completionTodoNote'), '没有需要检查的字幕')
+        self.idle_note.setParent(self)
+        self.idle_note.hide()
         # Which groups apply; visibility follows once they are placed.
-        self._shown = {self.ai_card: True, self.review_card: False, self.retry_card: False}
+        self._shown = {self.ai_card: ai_in_bar, self.review_card: False, self.retry_card: False}
         self._groups = []
         self._jump_enabled = True
         self.dividers = [QFrame(self) for _ in range(2)]
@@ -260,10 +279,13 @@ class CompletionTodoSection(QFrame):
         # One row on wide pages; a narrow page turns the same layout into lines.
         self.box = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
         self.box.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        self.box.setContentsMargins(8, 3, 10, 3)
+        self.box.setContentsMargins(*((14, 5, 6, 5) if self.slim else (8, 3, 10, 3)))
         for widget in (self.ai_card, self.dividers[0], self.review_card, self.dividers[1], self.retry_card):
             self.box.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
         self.box.addStretch(1)
+        self._stretch_index = self.box.count() - 1
+        self.box.insertWidget(self._stretch_index, self.idle_note, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._stretch_index += 1
         self.box.addWidget(more_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.columns = 0
         self._layout_signature = None
@@ -280,18 +302,37 @@ class CompletionTodoSection(QFrame):
         else:
             bind_text(self.ai_card.note, '')
         self.ai_card.note.setVisible(bool(unfinished))
+        self.ai_changed.emit(bool(enabled), int(unfinished or 0))
         self._arrange()
 
     def set_review(self, items, *, enabled=True):
+        self._review_items = list(items)
+        self._jump_enabled = enabled
+        self._refresh_review()
+
+    def set_rejected(self, count, reason=''):
+        """AI edits the protection rules refused: something to look at, so it
+        is counted with the review items rather than in the run log."""
+        self._rejected = max(0, int(count or 0))
+        self._rejected_reason = str(reason or '')
+        self._refresh_review()
+
+    def _refresh_review(self):
+        items = getattr(self, '_review_items', [])
         groups = review_groups(items)
         self._groups = groups
-        self._jump_enabled = enabled
-        self._shown[self.review_card] = bool(groups)
+        self._shown[self.review_card] = bool(groups or self._rejected)
         self.review_card.badge.setProperty('i18nUserText', True)
         self.review_card.badge.setText(str(len(items)))
         self.review_card.badge.setVisible(bool(items))
-        self.review_card.set_chips([f'{tr(label)} {count}' for label, count, _row in groups[:CHIP_LIMIT]]
-                                   + ([tr('+{count} 类', count=len(groups) - CHIP_LIMIT)] if len(groups) > CHIP_LIMIT else []))
+        chips = [f'{tr(label)} {count}' for label, count, _row in groups[:CHIP_LIMIT]]
+        if len(groups) > CHIP_LIMIT:
+            chips.append(tr('+{count} 类', count=len(groups) - CHIP_LIMIT))
+        if self._rejected:
+            # First, so a narrow strip drops a category before it drops this.
+            chips.insert(0, tr('保护规则拒绝的 AI 建议 {count}', count=self._rejected))
+        self.review_card.set_chips(chips)
+        self.review_card.setToolTip(self._rejected_reason)
         if getattr(self, '_group_menu', None) is not None:
             self._group_menu.close()
         self._arrange()
@@ -310,6 +351,12 @@ class CompletionTodoSection(QFrame):
                   property='toolTip', **(body_arguments or {}))
         bind_text(self.retry_card.note, note)
         self.retry_card.note.setVisible(bool(note))
+        if self.slim:
+            # One short line: 「1 项没跑完 [重试]」. A title that only repeats
+            # the button, and a count the note already states, are left out.
+            self.retry_card.icon.hide()
+            self.retry_card.title.setVisible(title != label)
+            self.retry_card.badge.setVisible(bool(badge) and not note)
         self._arrange()
 
     def group_menu_rows(self):
@@ -343,20 +390,22 @@ class CompletionTodoSection(QFrame):
         self.dividers[1].setVisible(wide and shown[self.review_card] and shown[self.retry_card])
         for card in self.cards:
             card.setVisible(shown[card])
-            card.setFixedHeight(max(BAR_HEIGHT, card.layout().minimumSize().height()))
+            card.setFixedHeight(max(self.bar_height, card.layout().minimumSize().height()))
             box.setAlignment(card, Qt.AlignmentFlag.AlignVCenter)
             card.setSizePolicy(QSizePolicy.Policy.Expanding if not wide or card is self.review_card
                                else QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             box.setStretch(box.indexOf(card), 1 if wide and card is self.review_card else 0)
-        self.review_card.chips.setVisible(wide and bool(self._groups))
+        self.review_card.chips.setVisible(wide and bool(self._groups or self._rejected))
+        self.idle_note.setVisible(self.slim and not any(shown.values()))
         # In a wide review group all spare room goes to whole category chips;
         # its narrow row uses the spacer to keep the action at the right.
         self.review_card.layout().setStretch(self.review_card.action_spacer_index, 0 if wide else 1)
-        box.setStretch(5, 1 if wide and not shown[self.review_card] else 0)
+        box.setStretch(self._stretch_index, 1 if wide and not shown[self.review_card] else 0)
         box.setAlignment(self.more_button, Qt.AlignmentFlag.AlignVCenter if wide else Qt.AlignmentFlag.AlignRight)
         # AI's 36px action + 8px padding + border sit inside the 52px bar.
         margins = box.contentsMargins()
-        heights = [card.height() for card in self.cards if shown[card]] + [self.more_button.height()]
+        heights = ([card.height() for card in self.cards if shown[card]] + [self.more_button.height()]
+                   + ([self.idle_note.sizeHint().height()] if self.idle_note.isVisibleTo(self) and not wide else []))
         height = margins.top() + margins.bottom() + (max(heights) if wide else sum(heights) + box.spacing()*(len(heights)-1))
         self.setFixedHeight(height)
         self.columns = columns
@@ -393,6 +442,13 @@ class CompletionTodoSection(QFrame):
         tones = {'ai': ai, 'review': t.warning, 'retry': t.danger}
         rules = [
             f"QFrame#completionTodo {{ background:{t.surface}; border:1px solid {t.border}; border-radius:{COMPLETION_RADIUS_MAIN}px; }}",
+            # The slim strip is a quiet tinted band, not another white card.
+            f"QFrame#completionTodo[slim=\"true\"] {{ background:{blend_hex(t.app_background, t.text, 0.05)}; border:0; border-radius:{COMPLETION_RADIUS_MAIN}px; }}",
+            f"QFrame#completionTodo[slim=\"true\"] QLabel#completionTodoTitle {{ font-size:13px; }}",
+            f"QFrame#completionTodo[slim=\"true\"] QLabel#completionTodoNote {{ color:{t.text_secondary}; font-size:13px; }}",
+            # 2026-11-12 (user, design A): category chips are round pills.
+            f"QFrame#completionTodo[slim=\"true\"] QLabel#completionTodoChip {{ background:{t.surface}; color:{t.text};"
+            f" border:1px solid {blend_hex(t.surface, t.warning, 0.30)}; border-radius:9px; padding:1px 9px; font-size:12px; }}",
             f"QFrame#completionTodoDivider {{ background:{t.border}; border:0; }}",
             f"QFrame#completionTodoGroup {{ background:transparent; border:0; }}",
             f"QFrame#completionTodoGroup[tone=\"ai\"] {{ background:qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {blend_hex(t.surface, ai, 0.26)},"
@@ -406,7 +462,7 @@ class CompletionTodoSection(QFrame):
                 f"QToolButton#completionTodoIcon[tone=\"{tone}\"] {{ background:{color if tone == 'ai' else blend_hex(t.surface, color, 0.18)};"
                 f" border:0; padding:0; min-height:0; border-radius:7px; }}",
                 f"QLabel#completionTodoBadge[tone=\"{tone}\"] {{ background:{color if tone == 'ai' else blend_hex(t.surface, color, 0.18)};"
-                f" color:{t.on_vivid if tone == 'ai' else color}; border-radius:9px; padding:1px 8px; font-size:12px; font-weight:700; }}",
+                f" color:{t.on_vivid if tone == 'ai' else color}; border-radius:8px; padding:1px 8px; font-size:12px; font-weight:700; }}",
                 f"QLabel#completionTodoChip[tone=\"{tone}\"] {{ background:transparent; color:{t.text_secondary};"
                 f" border:1px solid {blend_hex(t.surface, color, 0.32)}; border-radius:10px; padding:1px 8px; font-size:12px; }}",
             ]
@@ -422,5 +478,10 @@ class CompletionTodoSection(QFrame):
             f"QPushButton#completionTodoAction[tone=\"ai\"]:disabled {{ background:{t.panel}; color:{t.disabled}; border-color:{t.border}; }}",
             f"QPushButton#completionTodoAction[tone=\"review\"] {{ background:{t.warning_soft}; color:{t.warning}; border-color:{blend_hex(t.surface, t.warning, 0.45)}; }}",
             f"QPushButton#completionTodoAction[tone=\"review\"]:hover {{ background:{blend_hex(t.surface, t.warning, 0.24)}; border-color:{t.warning}; }}",
+            # 2026-11-11 (user): the retry button is a filled pill, never a white box.
+            f"QPushButton#completionTodoAction[tone=\"retry\"] {{ background:{t.danger}; color:{t.on_vivid}; border:1px solid {t.danger}; border-radius:10px; padding:0 14px; }}",
+            f"QPushButton#completionTodoAction[tone=\"retry\"]:hover {{ background:{blend_hex(t.danger, t.text, 0.14)}; border-color:{blend_hex(t.danger, t.text, 0.14)}; }}",
+            f"QPushButton#completionTodoAction[tone=\"retry\"]:focus {{ border:2px solid {t.focus}; }}",
+            f"QPushButton#completionTodoAction[tone=\"retry\"]:disabled {{ background:{blend_hex(t.app_background, t.text, 0.10)}; color:{t.disabled}; border-color:transparent; }}",
         ]
         self.setStyleSheet('\n'.join(rules))

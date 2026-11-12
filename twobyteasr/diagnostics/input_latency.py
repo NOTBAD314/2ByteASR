@@ -70,8 +70,12 @@ class InputLatencyTextEdit(QPlainTextEdit):
     def paintEvent(self, event):
         super().paintEvent(event)
         now=time.perf_counter()
-        while self._input_pending:
-            item=self._input_pending.popleft()
+        pending = list(self._input_pending)
+        self._input_pending.clear()
+        text = self.toPlainText()
+        for item in pending:
+            if item.get('expected_text') is not None and item['expected_text'] != text:
+                continue  # superseded; a later frame is not proof of this content
             paint_ms=(now-item["started"])*1000
             row=dict(operation=item["kind"], input_id=item['input_id'], queue_ms=item["queue_ms"], update_ms=item["update_ms"],
                      paint_ms=paint_ms,total_ms=paint_ms+(item["queue_ms"] or 0),

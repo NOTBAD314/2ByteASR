@@ -145,12 +145,12 @@ def start(window, out):
                     self.toolbar(language + '-' + theme)
                     self.click(window.support_button)
                     yield .2
-                    dialog = window._support_dialog
+                    dialog = window._support_entry_dialog
                     self.check('localized support title ' + language, dialog.windowTitle() == tr('支持我！'))
                     self.fits(language + '-' + theme, dialog)
                     self.shot(language + '-' + theme + '-support', dialog)
                     self.click(window.support_button)
-                    self.check('repeated entry keeps same dialog', window._support_dialog is dialog)
+                    self.check('repeated entry keeps same dialog', window._support_entry_dialog is dialog)
                     self.click(dialog.hide_button)
                     yield .2
                     confirmation = dialog._confirmation
@@ -163,7 +163,7 @@ def start(window, out):
                     self.check('Escape cancels without persistence', dialog.isVisible() and not support.support_entry_hidden())
                     self.click(dialog.close_button)
                     yield .1
-                    self.check('ordinary close leaves entry', window.support_button.isVisible() and window._support_dialog is None)
+                    self.check('ordinary close leaves entry', window.support_button.isVisible() and window._support_entry_dialog is None)
                 for width in (900, 1100, 1440):
                     apply_theme('grape', QApplication.instance())
                     window.resize(width, 720 if width < 1440 else 900)
@@ -173,7 +173,7 @@ def start(window, out):
             self.check('dialogs did not make support requests', not self.opened)
             self.click(window.support_button)
             yield .2
-            dialog = window._support_dialog
+            dialog = window._support_entry_dialog
             for language, theme in (('en', 'warm'), ('zh', 'grape'), ('ja', 'plum')):
                 window.language_combo.setCurrentIndex(window.language_combo.findData(language))
                 apply_theme(theme, QApplication.instance())
@@ -195,7 +195,7 @@ def start(window, out):
             yield .2
             self.click(dialog._confirmation.confirm_button)
             yield .3
-            self.check('confirmed hide is immediately durable', window.support_button.isHidden() and support.support_entry_hidden() and window._support_dialog is None)
+            self.check('confirmed hide is immediately durable', window.support_button.isHidden() and support.support_entry_hidden() and window._support_entry_dialog is None)
             self.toolbar('hidden')
             self.shot('confirmed-hidden-home', window)
             for language, theme in (('en', 'warm'), ('zh', 'plum'), ('ja', 'grape')):

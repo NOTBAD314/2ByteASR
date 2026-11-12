@@ -1,0 +1,4 @@
+{
+  "zh-CN": "· 新增说话人分区管理、当前字幕定位胶囊与起止快捷键。\n· 改进编辑浮窗、日语定位、双语来源保护与字幕交接。\n· 更新模型工坊、识别记录、完成页、外观与兔白教学。\n· 恢复原教学动画，修订主页诊断导出与默认保存目录。\n· 提供 Windows 和 Apple Silicon Mac；实际验证与限制见完整说明。",
+  "en": "Adds grouped speaker management and focused subtitle navigation. Improves inline editing, Japanese navigation, bilingual integrity, caption handoffs, onboarding and diagnostics. Includes the latest accepted daily interfaces and Apple Silicon Mac support. See full release notes for actual validation and remaining limits."
+}

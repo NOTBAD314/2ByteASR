@@ -305,14 +305,15 @@ def _record_fused_review_classification(
             counts["TIMING_LOW_CONFIDENCE"] += 1
         qwen_score = _confidence({"qwen_confidence": segment.qwen_confidence,
             "qwen_confidence_available": getattr(segment, "qwen_confidence_available", False)}, "qwen3-asr")
-        if qwen_selected and not qwen_failed and has_qwen and qwen_score is None:
+        if qwen_selected and qwen_score is None:
             counts["TEXT_CONFIDENCE_UNKNOWN"] += 1
-        if qwen_selected and (qwen_failed or not has_qwen or
-                (qwen_score is not None and qwen_score < 0.60)):
+        if qwen_selected and qwen_score is not None and qwen_score < 0.60:
             counts["TEXT_LOW_CONFIDENCE"] += 1
     legacy.record_run_event(
         "review_classification",
         phase="post_model_fusion",
+        unit='source_segment', non_exclusive_dimensions=True,
+        missing_reference_is_not_text_error=True,
         counts=counts,
         segment_count=len(segments),
     )
@@ -3081,6 +3082,9 @@ def attach_qwen_review_evidence(segments, qwen_chunks, legacy):
         # 纵深防御：即使上游漏了短路，关闭开关时也绝不附着 Qwen 证据。
         return segments
     accepted = 0
+    from twobyteasr.subtitle_rules.language_rules import is_japanese
+    from twobyteasr.recognition.reference_projection import project_reference_windows
+    projected = project_reference_windows(segments,qwen_chunks) if is_japanese() else None
     for segment in segments:
         contexts = []
         matched_chunks = []
@@ -3107,10 +3111,20 @@ def attach_qwen_review_evidence(segments, qwen_chunks, legacy):
         coverage = dict(decision.get("source_coverage") or {})
         coverage[model] = [dict(start_ms=round(float(chunk['start']) * 1000),
             end_ms=round(float(chunk['end']) * 1000), text=str(chunk.get('text') or ''),
+            generation=copy.deepcopy(chunk.get('generation') or {}), source_window_id=chunk.get('source_window_id'),
             confidence=chunk.get('confidence'), coverage_basis='observed_model_window')
             for chunk in matched_chunks]
         decision['source_coverage'] = coverage
         segment.caption_arbitration = decision
+
+        if projected is not None:
+            mapping=projected[segment.segment_id]
+            decision['independent_reference_mapping']=mapping
+            segment.qwen_asr_text=mapping['text']
+            segment.qwen_confidence=0.0
+            segment.qwen_confidence_available=False
+            accepted+=bool(mapping['text'])
+            continue
 
         primary_candidate, primary_score = legacy.best_alternate_window(
             segment.text, raw_context
@@ -3154,6 +3168,11 @@ def attach_qwen_review_evidence(segments, qwen_chunks, legacy):
             segment.qwen_asr_text = moss_candidate
             segment.qwen_confidence = qwen_confidence
             accepted += 1
+    if projected is not None:
+        from collections import Counter
+        legacy.record_run_event('qwen_reference_associations',primary_segments=len(segments),
+            audio_windows=len(qwen_chunks or []),status_counts=dict(Counter(r['status'] for r in projected.values())),
+            text_similarity_is_not_acoustic_confidence=True)
     review_label = "Qwen3-ASR"
     if str(getattr(legacy, "QWEN_ASR_BACKEND", "")) == "api":
         try:
@@ -3266,6 +3285,9 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
             continue
         if row.get('provider_source'):
             segment.caption_arbitration['provider_source'] = copy.deepcopy(row['provider_source'])
+            available = row['provider_source'].get('confidence_available', True)
+            segment.caption_arbitration.update(native_model_probability=segment.confidence if available else None,
+                confidence_kind='provider_reported' if available else row['provider_source'].get('confidence_source','not_reported'))
         if aligned_own:
             segment.caption_arbitration = dict(segment.caption_arbitration or {}, forced_alignment_window={
                 "start": min(float(t["start"]) for t in aligned_own), "end": max(float(t["end"]) for t in aligned_own),
@@ -5395,6 +5417,9 @@ def process_media(
     if not english_task and not korean_task and not european_task:
         segments = apply_to_segments(segments, term_snapshot, legacy)
     save_speaker_evidence(speaker_audit_root, "polished", legacy.serialize_segments(segments))
+    # Segmentation conserves the adopted post-proofread source. Its legal
+    # spelling/terminology edits are traced separately from later text loss.
+    coverage_checkpoint(runtime_context.speech_coverage,'prepared_source',segments)
     if getattr(runtime_context, "task_language", "") == "ja":
         # Japanese line breaks follow bunsetsu boundaries of these exact texts
         # (nagisa in the main runtime, no model). Without it the script-class

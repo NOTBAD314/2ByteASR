@@ -21,6 +21,10 @@ EXCLUDED = {'.git', '__pycache__', '.pytest_cache', '.mimosa', '.cache', 'tmp',
             'logs', 'reports', '.venv', '.venv-main', '.venv-moss'}
 BAD_EXT = {'.pyc', '.pyo', '.log', '.2byteasr', '.2byteproj', '.mp4', '.mp3',
            '.mov', '.flv', '.wav', '.safetensors', '.ckpt', '.pt', '.pth'}
+PUBLIC_RENDERER_AUDIO = {
+    'renderer/node_modules/@remotion/studio-server/web/beep.wav':
+        '3cf5b39164b9f8282b10705ecff18d5c73d4e2efb8193a1e6e7ad8f53fc34d24',
+}
 ROOT_FILES = {'.gitignore', 'LICENSE', 'PROJECT_LICENSE.md', 'SOURCE_DELIVERY.md', 'BUILD_FROM_SOURCE.md', 'SOURCE_ONLY_SCOPE.md', 'CONTRIBUTING.md', 'THIRD_PARTY_NOTICES.md', 'CHANGELOG.md', '2byteasr_version.json',
               'dependencies.lock.json', 'game_profiles.json', 'glossary.txt',
               'requirements-main.txt', 'quick_start.py', 'subtitle_core.py',
@@ -46,6 +50,20 @@ def validate_renderer_fonts(root):
             raise ValueError('Required renderer font missing or checksum mismatch: ' + item['file'])
 
 
+def validate_renderer_audio(root):
+    """Retain the pinned public Remotion tone without admitting user media."""
+    for relative, expected in PUBLIC_RENDERER_AUDIO.items():
+        path = root / relative
+        if not path.is_file() or digest(path) != expected:
+            raise ValueError('Required renderer audio missing or checksum mismatch: ' + relative)
+
+
+def release_input_allowed(relative):
+    return (relative.name.lower() not in {'secrets.json', 'secrets.dat', '.env'}
+            and (relative.suffix.lower() not in BAD_EXT
+                 or relative.as_posix() in PUBLIC_RENDERER_AUDIO))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -56,6 +74,7 @@ def main():
     if not out.is_relative_to(ROOT / 'tmp') or out.exists():
         raise ValueError('Choose a NEW directory under repository tmp; existing outputs are never overwritten')
     validate_renderer_fonts(ROOT)
+    validate_renderer_audio(ROOT)
     # Build fixed renderer code before freezing. End-user exports only provide
     # props; a missing/changed developer build can still be built persistently.
     sys.path.insert(0,str(ROOT))
@@ -95,7 +114,7 @@ def main():
             for name in names:
                 p = Path(current) / name
                 rel = p.relative_to(ROOT)
-                if p.suffix.lower() in BAD_EXT or name.lower() in {'secrets.json','secrets.dat','.env'}: continue
+                if not release_input_allowed(rel): continue
                 if p.is_symlink(): raise ValueError(f'Unexpected symlink in release input: {rel}')
                 selected.add(rel)
     wheel_manifest = json.loads((ROOT/'packaging/model_wheels.json').read_text('utf8'))

@@ -518,6 +518,16 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
         },
         "default": None, "unsupported": {}, "gap": "英语无公开成绩",
     },
+    ("mosi_moss_pro", "accuracy"): {
+        "scenes": {
+            "zh": _ref(90, "tier", "2ByteASR 使用体验校准",
+                "MOSS 云端 Pro 版；无公开同表成绩，按 2ByteASR 使用体验定为 90",
+                "MOSI 未公布 MOSS-Transcribe-Diarize Pro 的独立评测表。它与本地 MOSS-Transcribe-Diarize 同源（本地版普通话档位 80，长音频多人同表最佳），"
+                "2026-11-11 按 2ByteASR 实际使用体验（作者指定）校准为 90。说话人区分能力不计入文字准确度。",
+                [_MOSS_URL]),
+        },
+        "default": None, "unsupported": {}, "gap": "仅中文场景有参考",
+    },
     ("moss", "speed"): {
         "scenes": {},
         "default": _ref(70, "tier", "官方环境+本机体验校准",

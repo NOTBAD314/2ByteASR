@@ -68,7 +68,8 @@ def static_graph_project(project, *, start_ms=None, end_ms=None):
     from .static_caption_contract import shared_static_cue
     _, advanced=split_renderer_cues(project)
     hidden=project.hidden_speaker_ids()
-    advanced=[c for c in advanced if c.speaker_id not in hidden
+    from ..caption_style.collision_layout import visible_subtitle_cues
+    advanced=[c for c in visible_subtitle_cues(project,advanced) if c.speaker_id not in hidden
               and (start_ms is None or c.end_ms>start_ms) and (end_ms is None or c.start_ms<end_ms)]
     if not advanced: return False
     for cue in advanced:
@@ -100,6 +101,8 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         # The Qt still path needs one canonical snapshot per cue, not the
         # normalized browser payload followed by a second identical snapshot.
         _, advanced = split_renderer_cues(project)
+        from ..caption_style.collision_layout import visible_subtitle_cues
+        advanced = visible_subtitle_cues(project,advanced)
         hidden = project.hidden_speaker_ids()
         origin_ms, end_ms = round(start*1000), round((start+duration)*1000)
         from ..caption_style.collision_layout import project_layout_schedule

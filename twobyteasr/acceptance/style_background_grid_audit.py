@@ -223,12 +223,14 @@ def start(window, output):
             starts = {x(item) for item in controls if item.isVisibleTo(root)}
             self.check('controls_start_on_one_line', len(starts) == 1, sorted(starts))
             self.check('preset_action_row_has_more_name_space',x(page.style_preset)<x(page.style_font))
+            # 2026-11-12 (user): no shadow switch (opacity 0% turns it off).
             self.check('switches_share_trailing_slot',
-                       x(page.style_shadow_switch) == x(page.style_glow) == x(page.style_background),
-                       [x(page.style_background), x(page.style_shadow_switch), x(page.style_glow)])
+                       x(page.style_glow) == x(page.style_background) and page.style_shadow_switch.isHidden(),
+                       [x(page.style_background), x(page.style_glow)])
             swatches = [page.style_fill_swatch, page.style_outline_swatch, page.style_back_swatch,
                         page.style_shadow_swatch, page.style_glow_swatch]
-            self.check('swatches_are_squares', all(abs(w.width() - w.height()) <= 2 for w in swatches),
+            # 2026-11-11 (user): wide colour wells that show their colour.
+            self.check('swatches_are_wells', all(w.width() >= 2 * w.height() for w in swatches),
                        [(w.width(), w.height()) for w in swatches])
             from PySide6.QtWidgets import QLabel
             captions = {label.text() for row in page._appearance_rows.values()

@@ -111,9 +111,11 @@ def test_ambiguous_candidate_retains_range_and_context_without_replacement():
         assert candidates and all(r['context_only'] for r in candidates)
         assert candidates[0]['original_start_ms'] == 2600
         assert set(candidates[0]['related_references']) == {'a', 'b'}
-        issues = current_issue_view(p).for_cue(cue.id)
-        assert any(r.kind == 'candidate_ownership' and not r.suggestions for r in issues)
-        assert not any(r.kind == 'model_disagreement' for r in issues)
+        view = current_issue_view(p)
+        assert not any(r.kind=='candidate_ownership' for r in view.for_cue(cue.id))
+        assert any(r.kind=='candidate_ownership' and not r.suggestions
+                   for r in view.diagnostics.get(cue.id,()))
+        assert not any(r.kind == 'model_disagreement' for r in view.for_cue(cue.id))
 
 
 @pytest.mark.parametrize('text,reading', [('前半句保持后面火龙出现了', '后面火笼出现了'),
@@ -196,22 +198,18 @@ def test_successful_empty_range_retry_does_not_become_a_processing_failure():
     assert not coverage.counts(p.generation_metadata[coverage.KEY])['speech_failure_count']
 
 
-def test_terminal_review_chip_hides_cancel_and_uses_confirmation_count():
-    from twobyteasr.studio.speech_recovery_ui import sync_action
-    frame = QWidget()
-    layout = QHBoxLayout(frame)
-    label, cancel = QLabel(), QPushButton('取消识别')
-    layout.addWidget(label)
-    layout.addWidget(cancel)
-    page = SimpleNamespace(project=gap_project(), _recognition_chip_parts=lambda: (frame, label),
-                           recognition_cancel_button=cancel, _recognition_running=False)
-    sync_action(page)
-    assert cancel.isHidden() and '待试听确认 2 处' in label.text()
-    assert '部分完成' not in label.text()
-    page._recognition_status_sticky = '识别未完成 · HTTP 401'
-    sync_action(page)
-    assert 'HTTP 401' in label.text() and '待试听确认 2 处' in label.text()
-    frame.close()
+def test_gap_listening_remains_in_menu_without_creating_status_widgets():
+    from PySide6.QtWidgets import QMenu
+    from twobyteasr.studio.speech_recovery_ui import add_actions
+    page=SimpleNamespace(project=gap_project())
+    before=copy.deepcopy(page.project.generation_metadata)
+    menu=QMenu()
+    add_actions(page,menu)
+    assert [a.objectName() for a in menu.actions()]==['speechRecoveryAction']
+    assert len(project_ranges(page.project))==2
+    assert page.project.generation_metadata==before
+    assert not menu.findChildren(QLabel)
+    menu.close()
 
 
 def test_cancellation_marks_only_the_current_recognition_task():

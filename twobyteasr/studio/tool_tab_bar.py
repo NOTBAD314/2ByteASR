@@ -19,7 +19,10 @@ class ToolTabSelector(QWidget):
         self.setObjectName('contextToolSelector')
         self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
         self.grid=QGridLayout(self)
-        self.grid.setContentsMargins(0,0,0,0)
+        # 2026-11-12 (user, design A): the six entries sit in one tinted
+        # track; the chosen one is a raised tile, like the cue filter track.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.grid.setContentsMargins(3,3,3,3)
         self.grid.setSpacing(2)
         self.group=QButtonGroup(self)
         self.group.setExclusive(True)
@@ -49,10 +52,15 @@ class ToolTabSelector(QWidget):
         if key==self._theme:return
         self._theme=key
         t=theme_definition(key)
-        self.setStyleSheet(f'''QToolButton#contextToolTab {{ color:{t.text_muted}; background:transparent;
-            border:0; border-radius:7px; padding:4px 2px 3px 2px; font-weight:500; }}
-            QToolButton#contextToolTab:hover {{ color:{t.text}; background:{t.selected}; }}
-            QToolButton#contextToolTab:checked {{ color:{t.accent}; background:{t.accent_soft}; font-weight:700; }}''')
+        from ..design.ui_theme import blend_hex
+        track=blend_hex(t.panel,t.text,0.07 if t.is_light else 0.10)
+        raised=t.surface_elevated if t.is_light else blend_hex(t.panel,t.text,0.20)
+        self.setStyleSheet(f'''QWidget#contextToolSelector {{ background:{track}; border:0; border-radius:12px; }}
+            QToolButton#contextToolTab {{ color:{t.text_secondary}; background:transparent;
+            border:0; border-radius:9px; padding:4px 2px 3px 2px; font-weight:500; }}
+            QToolButton#contextToolTab:hover {{ color:{t.text}; background:{blend_hex(track,t.text,0.06)}; }}
+            QToolButton#contextToolTab:checked {{ color:{t.accent_text}; background:{raised}; font-weight:700;
+            border:1px solid {blend_hex(raised,t.text,0.10)}; }}''')
 
     def sync(self, *_args):
         for index,button in enumerate(self.buttons):
@@ -73,7 +81,8 @@ class ToolTabSelector(QWidget):
         self._restyle()
         cell=self._minimum_cell()
         spacing=self.grid.horizontalSpacing()
-        columns=next((n for n in (6,3,2,1) if n*cell+(n-1)*spacing<=self.width()),1)
+        room=self.width()-self.grid.contentsMargins().left()-self.grid.contentsMargins().right()
+        columns=next((n for n in (6,3,2,1) if n*cell+(n-1)*spacing<=room),1)
         if columns!=self._columns:
             while self.grid.count():self.grid.takeAt(0)
             for old in range(6):self.grid.setColumnStretch(old,0)
@@ -81,7 +90,9 @@ class ToolTabSelector(QWidget):
             for column in range(columns):self.grid.setColumnStretch(column,1)
             self._columns=columns
         rows=(len(self.buttons)+columns-1)//columns
-        height=max(b.sizeHint().height() for b in self.buttons)*rows+self.grid.verticalSpacing()*(rows-1)
+        margins=self.grid.contentsMargins()
+        height=(max(b.sizeHint().height() for b in self.buttons)*rows+self.grid.verticalSpacing()*(rows-1)
+                +margins.top()+margins.bottom())
         if self.height()!=height:self.setFixedHeight(height)
 
     def sizeHint(self):

@@ -153,6 +153,9 @@ class StudioCueController:
         if not force and cue_id == session.observed_playhead_target_id:
             return cue
         session.observed_playhead_target_id = cue_id
+        held_navigation = getattr(self.page, '_held_subtitle_navigation', None)
+        if callable(held_navigation) and held_navigation():
+            return cue
         if (getattr(self.page, '_canvas_editor', None) is not None
                 or getattr(self.page, '_text_input_in_progress', False)):
             # Playback continues highlighting active cues, but an input
@@ -231,6 +234,8 @@ class StudioCueController:
         self.session.observed_playhead_target_id = cue.id if cue else ''
         self.session.playhead_target_id = ''
         self.page._manual_selection_hold = False
+        remember = getattr(self.page, '_remember_subtitle_navigation', None)
+        if callable(remember): remember('')
         self._mirror_clock_selection('', clear=True)
 
     def selected_cue_ids(self) -> list[str]:
@@ -267,8 +272,9 @@ class StudioCueController:
         if not selected_set:
             self.cancel_selection()
             return
-        from ..timeline.studio_edit_sequence import projected_cues
-        selected = [cue.id for cue in projected_cues(self.session.project) if cue.id in selected_set] if self.session.project else []
+        timeline = self.page.timeline
+        selected = sorted((key for key in selected_set if key in timeline._timeline_cue_by_id),
+                          key=lambda key: timeline._timeline_row_by_id.get(key, -1)) if self.session.project else []
         active = self.page.timeline.selected_id
         scope = SelectionScope.explicit(
             selected,
@@ -290,9 +296,14 @@ class StudioCueController:
         page.selection_model.set_scope(scope)
         page._manual_selection_hold = bool(scope.active_id)
         self.session.selected_cue_id = scope.active_id or ''
+        remember = getattr(page, '_remember_subtitle_navigation', None)
+        if callable(remember): remember(scope.active_id)
         refresh_target = getattr(page, '_refresh_ai_design_target', None)
         if callable(refresh_target):
             refresh_target()
+        sync_capsule = getattr(page, '_sync_cue_capsule', None)
+        if callable(sync_capsule):
+            sync_capsule()
         if sync_timeline:
             page.timeline.set_selection_scope(scope)
             page._selection_latency.increment("timeline_selection_mirror")
@@ -388,6 +399,8 @@ class StudioCueController:
             page.timeline.selected_video_clip_id = ''
             page.timeline.selected_track_header = None
         self.session.selected_cue_id = scope.active_id or ''
+        remember = getattr(page, '_remember_subtitle_navigation', None)
+        if callable(remember): remember(scope.active_id)
         refresh_target = getattr(page, '_refresh_ai_design_target', None)
         if callable(refresh_target):
             refresh_target()
@@ -405,6 +418,13 @@ class StudioCueController:
                 return
             page._load_style_inspector(selection_scope=scope)
         QTimer.singleShot(0, page, hydrate)
+        # Native list keyboard navigation has no clicked() signal. Programmatic
+        # clock mirrors block this selection signal; mouse activation keeps its
+        # existing one-frame coalescing boundary.
+        from PySide6.QtWidgets import QApplication
+        centered = getattr(page, '_selection_centered', None)
+        if callable(centered) and centered() and QApplication.mouseButtons() == Qt.NoButton:
+            page._navigate_selected_subtitle(scope.active_id)
 
     def smart_align_current(self) -> None:
         project = self.session.project
@@ -479,6 +499,9 @@ class StudioCueController:
             self.page._caption_canvas_edit_target=None
         self.page.timeline.explicit_subtitle_id = str(cue_id or '')
         self._select_cue_transaction(cue_id,refresh_advanced=refresh_advanced,hydrate=hydrate)
+        remember = getattr(self.page, '_remember_subtitle_navigation', None)
+        if callable(remember) and not getattr(self.page, '_navigation_observation_selection', False):
+            remember(cue_id)
         # 2026-10-24 (user): a caption picked while 视频 is open stays there;
         # the tab swaps to the caption's 位置与变换 card (panel.refresh).
         panel=getattr(self.page,'caption_transform_panel',None)
@@ -495,7 +518,7 @@ class StudioCueController:
         if project is None or previous_id == cue_id:
             self._select_cue_ui(cue_id, refresh_advanced=refresh_advanced, hydrate=hydrate)
             return
-        runtime = state_for(project)
+        runtime = self._read_runtime(project)
         with runtime.transaction(
             project,
             action_id="select_cue",
@@ -601,6 +624,7 @@ class StudioCueController:
             if cue is None:
                 return
             if not playing_follow:
+                page.timeline.reveal_cue(cue.id)
                 # 2026-09-02（倍速顺滑）：播放期跟随选中只更新选择域/时间轴/
                 # 表格行——编辑器与样式检查器水合（实测单次 280ms）推迟到暂停
                 # 时补做（见 _playback_state_changed 的全量重选）。
@@ -1755,4 +1779,7 @@ class StudioCueController:
         self.select_cue(cue_id)
         cue = self._read_runtime(project).cue_by_id.get(cue_id)
         if cue is not None:
-            self.page._seek(cue.start_ms / 1000.0)
+            if self.page._selection_centered():
+                self.page._navigate_selected_subtitle(cue.id)
+            else:
+                self.page._seek(cue.start_ms / 1000.0)

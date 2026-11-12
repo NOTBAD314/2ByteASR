@@ -431,6 +431,7 @@ class StudioReadiness(QObject):
         self.loading.stage('读取工程')
         self.overlay.raise_()
         self.page.timeline.setUpdatesEnabled(False)
+        self.timer.setInterval(10)
         self.timer.start()
         self.player_ready = (os.environ.get("TWOBYTEASR_DIAGNOSTIC_NO_PLAYER") == "1"
                              or getattr(page.video, '_recovery_request', None) is not None
@@ -519,6 +520,8 @@ class StudioReadiness(QObject):
         self.page.video._native_subtitle_visibility_controller=None
         self.page.video._playback_source_dead=False
         self.player_ready=True
+        if getattr(self, 'steps', None) is not None:
+            self.timer.setInterval(1)
         self.last_progress=time.perf_counter()
         self.profile['player_process_ready_ms']=round((time.perf_counter()-self.started)*1000,3)
 
@@ -537,12 +540,22 @@ class StudioReadiness(QObject):
                 show_load_failure(self.page, self.path, project)
             return
         self._reader_reused = bool(getattr(project,'_open_from_retained_cache',False))
+        if project.media.path and project.media_pool and all(asset.offline for asset in project.media_pool):
+            from ..i18n import tr
+            from .loading_faces import MISSING_MEDIA_LINE
+            self.overlay.media_notice = tr(MISSING_MEDIA_LINE)
         self.mark('读取工程')
         if not self._owns_request(epoch):
             return
-        self.steps = self.page.project_controller._open_project_steps(
+        contents = self.page.project_controller._open_project_steps(
             self.path, single_shot_fn=QTimer.singleShot, skip_dirty_guard=True, loaded_project=project,
             expected_result_ref=self.expected_result_ref, async_recovery=True)
+        def hydrate_and_settle():
+            yield from contents
+            from ..design.ui_motion import settle_layout_steps
+            yield from settle_layout_steps(self.page)
+        self.steps = hydrate_and_settle()
+        self.timer.setInterval(1)
 
     def _close_recovery_choice(self):
         dialog = getattr(self, '_recovery_dialog', None)
@@ -608,6 +621,7 @@ class StudioReadiness(QObject):
         try:
             if self.steps is not None:
                 if self.next_stage == '准备播放器' and not self.player_ready:
+                    self.timer.setInterval(10)
                     # 等待播放器进程时保持已用时间跳动（动画不僵死）。
                     self._set_stage_label(self.next_stage or '准备播放器')
                     return
@@ -615,6 +629,10 @@ class StudioReadiness(QObject):
                     epoch, steps = self.generation, self.steps
                     stage = next(steps)
                     if not self._owns_request(epoch):
+                        return
+                    from ..design.gui_slices import GUI_YIELD
+                    if stage is GUI_YIELD:
+                        self.last_progress = time.perf_counter()
                         return
                     from ..projects.project_recovery_dialog import RecoveryChoice
                     if isinstance(stage, RecoveryChoice):
@@ -629,10 +647,9 @@ class StudioReadiness(QObject):
                     if not self._owns_request(epoch):
                         return
                     self.steps = None
+                    self.timer.setInterval(10)
                     self.hydrated = True
                     self.page.timeline.setUpdatesEnabled(True)
-                    from ..design.ui_motion import settle_layout
-                    settle_layout(self.page)
                     self.page.timeline.update()
                     if (self.page.project is None or self.page.project_path is None
                             or Path(self.page.project_path).resolve() != Path(self.path).resolve()):

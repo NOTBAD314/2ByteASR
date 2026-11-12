@@ -580,7 +580,9 @@ def complete_media_run(
         if not output_details.get("project") and not output_details.get('recovery_project'):
             raise RuntimeError("识别结果工程保存失败：" + str(output_details.get("project_error") or "unknown"))
         if output_details.get("project"):
-            legacy.record_run_event("studio_project_saved", project_path=output_details["project"], cue_count=len(cues),
+            from ..projects.recognition_provenance import committed_cue_count
+            legacy.record_run_event("studio_project_saved", project_path=output_details["project"],
+                cue_count=committed_cue_count(output_details,len(cues)),generated_cue_count=len(cues),
                 **{k: v for k, v in runtime_context.committed_result_ref.items() if k not in {"path", "cue_count"}})
 
     legacy.run_timed_stage(
@@ -599,6 +601,8 @@ def complete_media_run(
     from .transcript_delivery import terminal_status
     counts = dict((getattr(runtime_context, 'transcript_acceptance', {}) or {}).get('counts') or {})
     counts['final_cue_count'] = len(cues)
+    from ..projects.recognition_provenance import committed_cue_count
+    counts['saved_project_cue_count']=committed_cue_count(output_details,len(cues))
     from .speech_coverage import counts as speech_counts
     counts.update(speech_counts(runtime_context.speech_coverage))
     status = 'needs_recovery' if output_details.get('project_error') else terminal_status(counts, len(cues), degraded=degraded or bool(

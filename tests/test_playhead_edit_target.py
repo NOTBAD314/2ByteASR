@@ -17,6 +17,7 @@ def page_at(position=10500):
     page = SimpleNamespace(project=project, session=session, selected_cue_id='',
         _review_mode=False, _canvas_editor=None, _subtitle_track_visibility={},
         timeline=SimpleNamespace(playhead_ms=position, hidden_speakers=set(), locked_speakers=set(),
+            selected_ids=set(), active_subtitle_layer='original',
             selected_track_header=None, _speaker_ids=['S1', 'S2'], setFocus=lambda *_: None),
         video=SimpleNamespace(playback_position_snapshot=lambda: SimpleNamespace(
             presentation_media_ms=page.timeline.playhead_ms)),

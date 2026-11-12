@@ -116,11 +116,11 @@ def continue_editing(page,project_path,source,out):
     signature=lambda:[(c.text,c.start_ms,c.end_ms) for c in projected_cues(p)]
     before=signature();checks={'real_asr_loaded':len(p.speakers)==1 and bool(before)}
     from ..studio.studio_speaker_manager import SpeakerManagerDialog
-    manager=SpeakerManagerDialog(page);manager.show();manager.multi_button.setChecked(True)
+    manager=SpeakerManagerDialog(page);manager.show()
     def click(text):
         button=next(b for b in manager.findChildren(QPushButton) if b.text()==text)
         QTest.mouseClick(button,Qt.LeftButton)
-    click('全选');click('归入游戏背景声');page.undo_stack.undo()
+    manager._select_visible('all');click('归入游戏声');page.undo_stack.undo()
     checks['real_batch_undo']=signature()==before
     manager.close()
     page._seek(6);QTest.qWait(450);page.timeline.setFocus()

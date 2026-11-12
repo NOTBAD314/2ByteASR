@@ -578,6 +578,27 @@ def fallback_group(segment_batch, firered_tokens=(), speech_regions=()):
 
 
 @_source_bound_candidate
+def conservative_ai_fallback(segment_batch, firered_tokens=(), speech_regions=()):
+    if not _quality_enabled():
+        return fallback_group(segment_batch,firered_tokens,speech_regions)
+    from .ai_boundary_policy import minimal_fallback, annotate
+    quality=quality_for_segments(segment_batch,firered_tokens)
+    boundaries=[]
+    cursor=0
+    for row in segment_batch:
+        cursor+=display_length(row.text)
+        boundaries.append(cursor)
+    final,receipts=minimal_fallback(quality,boundaries,record=record_run_event)
+    cues,_,issues=cues_from_quality(segment_batch,final,firered_tokens,repair=False,record=record_run_event)
+    annotate(cues,boundaries,final,receipts)
+    for cue in cues:
+        if cue.grouping_origin=='ai_accepted':
+            cue.grouping_origin='source_retained_after_request_failure'
+            cue.grouping_boundary_receipt['origin']=cue.grouping_origin
+    return cues
+
+
+@_source_bound_candidate
 def call_grouping_api(
     segment_batch,
     protect_all_source_boundaries=False,
@@ -638,7 +659,7 @@ def call_grouping_api(
             batch_diagnostics['fallback_reason'] = rejected[0]
         record_run_event('grouping_api_fallback', batch_index=batch_index,
             category=rejected[0], error=rejected[1], request_dispatched=False)
-        result = fallback_group(segment_batch, firered_tokens, speech_regions)
+        result = conservative_ai_fallback(segment_batch, firered_tokens, speech_regions)
         if not _restore_grouped_source(segment_batch, result):
             result = [individual_cue(segment) for segment in segment_batch]
             for cue, segment in zip(result, segment_batch):
@@ -655,7 +676,7 @@ def call_grouping_api(
             batch_index=batch_index,
             batch_total=batch_total,
         )
-        return fallback_group(segment_batch, firered_tokens, speech_regions)
+        return conservative_ai_fallback(segment_batch, firered_tokens, speech_regions)
 
     hard_break_offsets = sorted(
         hard_break_character_offsets(segment_batch, firered_tokens)
@@ -671,7 +692,7 @@ def call_grouping_api(
         add_review_item(segment_batch[0].start, "断句回退",
             "本批字符索引不适合 AI 断句，已保留本地原文和时间。", "",
             priority=3, severity="warning")
-        return GroupedBatchResult(fallback_group(segment_batch, firered_tokens, speech_regions),
+        return GroupedBatchResult(conservative_ai_fallback(segment_batch, firered_tokens, speech_regions),
                                   origin="fallback", data_validated=True)
     segment_payload = []
     source_global_starts = {}
@@ -756,6 +777,7 @@ def call_grouping_api(
         "pause_hints": pause_hints,
         "source_gap_hints": source_gap_hints,
         "segments": segment_payload,
+        "source_segment_contract": "provenance_only_optional_boundaries",
         "read_only_context": _read_only_context or segment_batch[0].caption_arbitration.get("grouping_read_only_context", {}),
         "body_range": [0, total_length],
         "index_unit": "content_exact_unicode_codepoints",
@@ -771,6 +793,12 @@ def call_grouping_api(
                 protected=set(hard_break_offsets) | set(protected_source_offsets))
             request_body["allowed_boundaries"] = request_quality.allowed
             request_body["semantic_required_boundaries"] = sorted(request_quality.semantic_required)
+            if not _messages_only:
+                record_run_event('grouping_boundary_evidence', batch_index=batch_index,
+                    policy=QUALITY_VERSION, tokens=request_quality.tagged_tokens,
+                    candidates=[request_quality.explain_boundary(edge) for edge in sorted(
+                        request_quality.candidate_edges | set(source_boundary_offsets)) if 0 < edge < total_length],
+                    tokenizer=request_quality.tokenizer_identity())
             from .segmentation import lexical_boundary_terms
             request_body['protected_terms'] = [term for term in lexical_boundary_terms()
                 if content_exact(term) in request_quality.index.content]
@@ -788,6 +816,8 @@ def call_grouping_api(
     ]
     if _messages_only:
         return messages
+    record_run_event('grouping_request_contract', batch_index=batch_index,
+        system_prompt=prompt, request_body=request_body)
 
     def run_child(child, child_id, *, retry_child=False):
         child_diag = dict(batch_id=child_id, parent_batch_id=batch_index)
@@ -796,7 +826,7 @@ def call_grouping_api(
                 child_diag['fallback_reason'] = 'retry_budget_exhausted'
                 record_run_event('grouping_api_fallback', batch_index=child_id, parent_batch_id=batch_index,
                     category='retry_budget_exhausted', request_dispatched=False)
-                return GroupedBatchResult(fallback_group(child, firered_tokens, speech_regions),
+                return GroupedBatchResult(conservative_ai_fallback(child, firered_tokens, speech_regions),
                     origin='fallback', data_validated=True)
             return call_grouping_api(child,
                 protect_all_source_boundaries=protect_all_source_boundaries,
@@ -849,7 +879,7 @@ def call_grouping_api(
             for item in segment_batch:
                 if item.segment_id in rejected_ids:
                     if not _quality_enabled():
-                        combined.extend(fallback_group([item],firered_tokens,speech_regions))
+                        combined.extend(conservative_ai_fallback([item],firered_tokens,speech_regions))
                         all_validated=False
                         add_review_item(item.start,'断句回退','此语言的单条来源超过请求预算，保留本地结果。',
                             item.text,priority=3,severity='warning')
@@ -869,7 +899,7 @@ def call_grouping_api(
                             failure_stage='local_budget', request_dispatched=False, reason=str(exc))
                         add_review_item(item.start,'断句约束待复核',str(exc),item.text,
                             priority=3,severity='warning')
-                        combined.extend(fallback_group([item],firered_tokens,speech_regions))
+                        combined.extend(conservative_ai_fallback([item],firered_tokens,speech_regions))
                         all_validated=False
                         continue
                     record_run_event('grouping_request_source_split',batch_index=batch_index,
@@ -887,8 +917,9 @@ def call_grouping_api(
                         offsets.append(cursor)
                     # A request seam is merely a proposal. Re-evaluate its full
                     # source context using the same semantic and length gate.
-                    reconciled,_,issues=cues_from_quality([item],offsets,firered_tokens,record=record_run_event)
-                    combined.extend(reconciled)
+                    from .ai_boundary_policy import inspect
+                    issues=inspect(quality_for_segments([item],firered_tokens),offsets)
+                    combined.extend(child_cues)
                     all_validated = all_validated and item_validated and not issues
                 elif item.segment_id in by_first:
                     child_count+=1
@@ -897,7 +928,9 @@ def call_grouping_api(
                     combined.extend(child_result)
             if not _restore_grouped_source(segment_batch,combined):
                 raise ValueError('分批断句未保持完整正文与顺序。')
-            return GroupedBatchResult(combined,validated=all_validated,origin='ai' if all_validated else 'fallback')
+            from .ai_boundary_policy import provenance
+            origin,status=provenance(combined,all_validated)
+            return GroupedBatchResult(combined,validated=all_validated,origin=origin,result_status=status)
     group_settings = snapshot.endpoint()
     provider = provider_for_stage(snapshot.execution_settings(), "group", sender=post_chat_completion)
     print(
@@ -958,25 +991,42 @@ def call_grouping_api(
                 parsed_response_sha256=hashlib.sha256(json.dumps(returned,
                     sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest())
             quality_issues = []
+            boundary_receipts = []
             if _quality_enabled():
                 quality = quality_for_segments(segment_batch, firered_tokens,
                     protected=set(hard_break_offsets) | set(protected_source_offsets))
-                from .grouping_contract import assess_grouping_boundaries
-                diag["model_quality_issues"] = assess_grouping_boundaries(source_text, model_boundaries, quality=quality)
-                boundary_offsets, _ = quality.repair(model_boundaries, record=record_run_event)
-                boundary_offsets = retry_quality_windows(quality, model_boundaries, boundary_offsets,
+                from .ai_boundary_policy import inspect, minimal_fallback, annotate
+                diag["model_quality_issues"] = inspect(quality, model_boundaries)
+                diag['semantic_advice'] = quality.inspect(model_boundaries)
+                source_cuts = sorted(set(source_boundary_offsets) | {total_length})
+                model_state = ('unchanged_with_violations' if diag['model_quality_issues'] else 'unchanged_valid') if model_boundaries == source_cuts else 'regrouped'
+                diag['model_quality_state'] = model_state
+                record_run_event('grouping_model_quality', batch_index=batch_index, state=model_state,
+                    protocol_valid=True, content_conserved=True, issues=diag['model_quality_issues'])
+                boundary_offsets = retry_quality_windows(quality, model_boundaries, model_boundaries,
                     provider=provider, snapshot=snapshot, schema=GROUPING_SCHEMA,
                     budget=_quality_budget, record=record_run_event, batch_index=batch_index,
-                    source_spans=segment_payload,
+                    source_spans=segment_payload,receipts=boundary_receipts,
                     cancel_check=lambda: bool(abort_event is not None and abort_event.is_set()) or bool(
                         getattr(get_runtime_context().cancellation_token,"is_cancelled",False)))
+                boundary_offsets, local_receipts = minimal_fallback(quality,boundary_offsets,record=record_run_event)
+                boundary_receipts.extend(local_receipts)
                 result, boundary_offsets, quality_issues = cues_from_quality(segment_batch,
                     boundary_offsets, firered_tokens,
-                    protected=set(hard_break_offsets) | set(protected_source_offsets), record=record_run_event)
+                    protected=set(hard_break_offsets) | set(protected_source_offsets), record=record_run_event,repair=False)
+                annotate(result,model_boundaries,boundary_offsets,boundary_receipts)
                 record_run_event('pipeline_work_progress',work_id=f'grouped:{batch_index}:local',
-                    label='断句：本地断点检查',phase='grouping_local_validation',state='completed',
+                    label='断句：边界校验',phase='grouping_local_validation',state='completed',
                     done=1,total=1,batch_index=batch_index,review_required=bool(quality_issues))
                 proposed_texts = quality.index.pieces(boundary_offsets)
+            elif prompt_language=='ja' and (accepted_ja:=accepted_japanese_boundaries(
+                    segment_batch,model_boundaries,set(hard_break_offsets)|set(protected_source_offsets),
+                    firered_tokens,speech_regions)) is not None:
+                result=accepted_ja
+                proposed_texts=texts_from_boundary_offsets(segment_batch,model_boundaries,firered_tokens)
+                boundary_offsets=list(model_boundaries)
+                record_run_event('japanese_ai_boundaries_retained',batch_index=batch_index,
+                    boundaries=boundary_offsets,basis='measured_phrase_edges_content_time_hard_limits')
             else:
                 boundary_offsets = repair_lexical_boundary_offsets(
                     segment_batch,
@@ -1151,11 +1201,12 @@ def call_grouping_api(
                 raise AIProviderError("断句结果未通过逐字符原文校验。", category="text_mutation_rejected")
             diag["final_cues_sha256"] = hashlib.sha256(json.dumps(serialize_cues(result),
                 sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-            repaired_locally = model_boundaries != boundary_offsets or proposed_texts != [c.text for c in result]
-            diag.update(result_status="local_review" if quality_issues else "cloud_repaired" if repaired_locally else "cloud_direct",
+            repaired_locally = any(r['origin']=='local_minimal_fallback' for r in boundary_receipts)
+            ai_corrected = any(r['origin']=='ai_targeted_correction' for r in boundary_receipts)
+            diag.update(result_status="unresolved" if quality_issues else "local_minimal_fallback" if repaired_locally else "ai_targeted_correction" if ai_corrected else "ai_accepted",
                         parse_status="valid", body_empty=False)
             diag.update(boundary_count=len(boundary_offsets), validator_result="quality_review" if quality_issues else "exact_text_length_semantics_and_boundaries",
-                        total_duration_ms=round((time.perf_counter()-attempt_started)*1000, 3), result_origin="fallback" if quality_issues else "ai")
+                        total_duration_ms=round((time.perf_counter()-attempt_started)*1000, 3), result_origin="fallback" if quality_issues else "mixed" if repaired_locally else "ai")
             # 2026-10-10: keep the model's own answer next to what local
             # repair and timing made of it (input -> response -> result).
             record_run_event("grouping_trace", batch_index=batch_index, attempt=attempt,
@@ -1165,13 +1216,14 @@ def call_grouping_api(
                 protected_source_offsets=protected_source_offsets,
                 model_boundaries=model_boundaries, model_texts=_texts_at(source_text, model_boundaries),
                 final_boundaries=list(boundary_offsets), final_texts=_texts_at(source_text, boundary_offsets),
+                boundary_receipts=boundary_receipts,result_status=diag['result_status'],
                 cues=[{"text": cue.text, "start": round(cue.start, 3), "end": round(cue.end, 3),
                        "speaker": cue.speaker, "start_basis": getattr(cue,"start_timing_basis",_timing_basis(cue.start, firered_tokens, "start")),
                        "end_basis": getattr(cue,"end_timing_basis",_timing_basis(cue.end, firered_tokens, "end"))} for cue in result])
             if batch_diagnostics is not None:
                 batch_diagnostics["fallback_reason"] = "semantic_quality" if quality_issues else None
             record_run_event("asr_provider_request", **diag)
-            accepted = GroupedBatchResult(result, validated=not quality_issues, origin="fallback" if quality_issues else "ai")
+            accepted = GroupedBatchResult(result, validated=not quality_issues, origin=diag['result_origin'])
             accepted.result_status = diag["result_status"]
             return accepted
         except Exception as exc:
@@ -1277,10 +1329,11 @@ def call_grouping_api(
         if batch_diagnostics is not None:
             batch_diagnostics['retry_reason'] = last_category
             if all_validated:batch_diagnostics['fallback_reason'] = None
-        return GroupedBatchResult(child_cues,validated=all_validated,origin='ai' if all_validated else 'fallback',
-                                  result_status='cloud_repaired' if all_validated else 'local_fallback')
+        from .ai_boundary_policy import provenance
+        origin,status=provenance(child_cues,all_validated)
+        return GroupedBatchResult(child_cues,validated=all_validated,origin=origin,result_status=status)
 
-    print(f"   [警告] 断句连续失败，当前批次使用本地均衡分段：{last_error}")
+    print(f"   [警告] 断句连续失败，当前失败范围保守保留原边界：{last_error}")
     record_run_event(
         "grouping_api_fallback",
         source_processing_ids=[int(segment.segment_id) for segment in segment_batch],
@@ -1301,7 +1354,7 @@ def call_grouping_api(
         batch_index=batch_index,
         batch_total=batch_total,
     )
-    result = fallback_group(segment_batch, firered_tokens, speech_regions)
+    result = conservative_ai_fallback(segment_batch, firered_tokens, speech_regions)
     if not _restore_grouped_source(segment_batch, result):
         result = [individual_cue(segment) for segment in segment_batch]
         for cue, segment in zip(result, segment_batch):
@@ -1325,6 +1378,27 @@ def retain_source_utterances(segments,profile=None):
         overflow+=measure(row.text,profile.code)>profile.hard_max or row.end-row.start>profile.max_seconds
     record_run_event('conservative_language_grouping',language=profile.code,policy=profile.fingerprint,
         utterances=len(result),over_limit_retained=overflow,reason='no_reliable_lexical_boundaries; source_utterances_retained')
+    return result
+
+
+def accepted_japanese_boundaries(segments,boundaries,required=(),firered_tokens=(),speech_regions=None):
+    """Freeze exact model edges only with measured Japanese phrase evidence."""
+    from .japanese_morphology import document_phrase_spans
+    from .language_rules import JAPANESE_CUE_MAX_CHARS,JAPANESE_CUE_MAX_SECONDS
+    text=''.join(content_exact(segment.text) for segment in segments)
+    spans=document_phrase_spans(text)
+    if spans is None or not set(required)<=set(boundaries):return None
+    allowed={len(text),*[end for start,end,word in spans]}
+    if not set(boundaries)<=allowed:return None
+    pieces=texts_from_boundary_offsets(segments,boundaries,firered_tokens)
+    result=cues_from_resegmented_texts(segments,pieces,firered_tokens,speech_regions)
+    cursor=0;actual=[]
+    for cue in result:
+        size=len(content_exact(cue.text));cursor+=size;actual.append(cursor)
+        if size>JAPANESE_CUE_MAX_CHARS or cue.end-cue.start>JAPANESE_CUE_MAX_SECONDS+.05:return None
+    if actual!=list(boundaries):return None
+    from .ai_boundary_policy import annotate
+    annotate(result,boundaries,boundaries,[])
     return result
 
 
@@ -1452,8 +1526,9 @@ def group_subtitles(
                                        "source_boundaries": sorted(source_segment_character_offsets(batch))}),
         }
         jobs.append((index, speaker, batch, dependency, local_fast))
+    quality_budget.register_batches(index for index, *_ in jobs)
 
-    def run_job(job):
+    def execute_job(job):
         index, speaker, batch, dependency, local_fast = job
         _batch_trace.batch_id = index
         batch_tokens=dependency['firered_tokens']
@@ -1553,6 +1628,12 @@ def group_subtitles(
                 text=str(cue.text or ''), state='grouped') for cue in batch_cues if str(cue.text or '').strip()])
         return index, batch_cues, review_items
 
+    def run_job(job):
+        try:
+            return execute_job(job)
+        finally:
+            quality_budget.finish_batch(job[0])
+
     results = {}
     from ..system.task_resources import cloud_request_workers
     workers = (
@@ -1613,7 +1694,13 @@ def group_subtitles(
             for cue in cues:
                 cursor += display_length(cue.text)
                 offsets.append(cursor)
-            cues, _, final_quality_issues = cues_from_quality(ordered_segments, offsets, firered_tokens, record=record_run_event)
+            # Batch results are already validated and own their boundaries.
+            # Reconstructing here used to silently resegment accepted windows.
+            if use_ai:
+                from .ai_boundary_policy import inspect
+                final_quality_issues=inspect(quality_for_segments(ordered_segments,firered_tokens),offsets)
+            else:
+                cues, _, final_quality_issues = cues_from_quality(ordered_segments, offsets, firered_tokens, record=record_run_event)
     else:
         if _restore_grouped_source(ordered_segments, copy.deepcopy(cues)):
             cues = _contract_safe_pass('merge_same_speaker_dangling_cues', merge_same_speaker_dangling_cues,
@@ -1659,6 +1746,7 @@ def group_subtitles(
     from .grouping_contract import capture_grouping_source
     return GroupedBatchResult(cues, origin=origin, validated=all_validated,data_validated=True,
         source_fingerprint=capture_grouping_source(ordered_segments).fingerprint,
-        result_status='local_review' if final_quality_issues or any(getattr(v,'result_status','')=='local_review' for v in results.values())
-            else 'cloud_repaired' if any(getattr(v,'result_status','')=='cloud_repaired' for v in results.values())
-            else 'cloud_direct' if all_validated else 'local_fallback' if use_ai else 'local')
+        result_status='unresolved' if final_quality_issues or any(getattr(v,'result_status','')=='unresolved' for v in results.values())
+            else 'local_minimal_fallback' if any(getattr(v,'result_status','')=='local_minimal_fallback' for v in results.values())
+            else 'ai_targeted_correction' if any(getattr(v,'result_status','')=='ai_targeted_correction' for v in results.values())
+            else 'ai_accepted' if all_validated else 'local_fallback' if use_ai else 'local')

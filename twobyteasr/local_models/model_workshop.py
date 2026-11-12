@@ -19,11 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import qtawesome as qta
-from PySide6.QtCore import QObject, QPoint, QProcess, QProcessEnvironment, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import QFrame  # for dim backdrop on technical dialog
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QLayout,
     QComboBox,
     QDialog,
     QFrame,
@@ -805,6 +806,7 @@ MODELS = (
         icon_color="#ffffff",
         icon_background="#8a78df",
         languages=("多语言", "11种"),
+        recommended=True,  # 2026-11-11 (user): Qwen3 0.6B 对齐也是时间轴推荐
         asr_capabilities=("ALIGNMENT",),
         adapter_bindings=(("timeline", "qwen_aligner"),),
     ),
@@ -925,6 +927,7 @@ MODELS = (
         icon_color="#ffffff",
         icon_background="#8a78df",
         languages=("多语言", "11种"),
+        recommended=True,  # 2026-11-11 (user): Qwen3 0.6B 对齐也是时间轴推荐
         asr_capabilities=("ALIGNMENT",),
         adapter_bindings=(("timeline", "mlx_qwen_aligner"),),
         platforms=("darwin-arm64",),
@@ -1089,6 +1092,15 @@ def _runtime_role_available(model: WorkshopModel, role: str) -> bool:
         and _capability_supports_role(model.asr_capabilities, role)
         and _adapter_backend(model, role)
     )
+
+
+# 2026-11-11 (workshop design A): model rows line up under one list header.
+WORKSHOP_MONOGRAM = 44
+WORKSHOP_COLUMN_SPACING = 16
+WORKSHOP_LANGUAGE_COLUMN = 204
+WORKSHOP_METRIC_COLUMN = 100
+WORKSHOP_METRIC_SPACING = 14
+WORKSHOP_ACTION_COLUMN = 112
 
 
 def _stars(score: int) -> str:
@@ -1785,13 +1797,17 @@ class _EvidenceTrack(QWidget):
 class RatingBar(QWidget):
     """Official evidence row with a neutral, non-ranking horizontal track."""
 
-    def __init__(self, label: str, evidence: dict, parent=None, *, label_width: int = 42):
+    def __init__(self, label: str, evidence: dict, parent=None, *, label_width: int = 42, stacked: bool = False):
         super().__init__(parent)
         self._label = label
         self._evidence = dict(evidence)
+        # stacked (model list, 2026-11-11): a large number centred over a
+        # full-width bar; the column header names the metric and the
+        # evidence note moves into the tooltip.
+        self._stacked = bool(stacked)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(3)
+        box.setSpacing(5 if stacked else 3)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(7)
@@ -1811,7 +1827,14 @@ class RatingBar(QWidget):
         self._note = ElideLabel(str(evidence.get("note") or ""))
         self._note.setObjectName("workshopMetricEvidence")
         box.addWidget(self._note)
-        self.setMinimumHeight(50)
+        if stacked:
+            self._caption.hide()
+            self._note.hide()
+            self._word.setObjectName("workshopRatingNumber")
+            self._word.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._track.setFixedHeight(10)
+            box.addStretch(1)
+        self.setMinimumHeight(40 if stacked else 50)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.set_evidence(evidence)
 
@@ -1825,7 +1848,13 @@ class RatingBar(QWidget):
         self._current_caption = caption
         self._caption.setText(translate(caption, current_language()))
         self._word.setText(value)
-        self._word.setToolTip(value)
+        self._word.setToolTip(note if self._stacked and note else value)
+        if self._stacked:
+            numeric = value.lstrip("约≈~ ").isdigit()
+            if self._word.property("numeric") is not numeric:
+                self._word.setProperty("numeric", numeric)
+                self._word.style().unpolish(self._word)
+                self._word.style().polish(self._word)
         self._note.setText(note)
         self.setAccessibleName(f"{translate(caption, current_language())}, {value}, {note}")
         bind_text(self, str(evidence.get('tooltip') or translate('仅展示可追溯官方证据；不同数据集、指标和硬件不换算成统一分数。', current_language())) + '\n' + translate(COMPARISON_NOTE, current_language()) + ('\n' + translate(SPEED_NOTE, current_language()) if caption == '速度指数' else ''), property='toolTip')
@@ -2681,6 +2710,16 @@ QWidget#technicalBenchmarkHeader {{
 QFrame#technicalBenchmark {{ border-color: {theme.border}; }}
 QLabel#modelDownloadChromeTitle {{ color: {theme.text}; }}
 QPushButton#modelDownloadChromeClose:hover {{ background: {theme.danger_soft}; }}
+QPushButton#workshopToolButton {{
+    background: {theme.timeline}; color: {theme.text}; border: 0; border-radius: 10px;
+    padding: 8px 13px; font-weight: 600;
+}}
+QPushButton#workshopToolButton:hover {{ background: {theme.selected}; }}
+QPushButton#workshopToolButton:pressed {{ background: {theme.accent_tint}; }}
+QLabel#workshopColumnCaption {{ color: {theme.text_muted}; font-size: 12px; font-weight: 700; padding: 2px 0; }}
+QLabel#workshopRatingNumber {{ color: {theme.text_muted}; font-size: 12px; font-weight: 600; }}
+QLabel#workshopRatingNumber[numeric="true"] {{ color: {theme.text}; font-size: 21px; font-weight: 700; }}
+QWidget#workshopCardText {{ background: transparent; }}
 """
 
 
@@ -2694,6 +2733,98 @@ def build_workshop_qss(theme=None) -> str:
     from ..design.control_qss import build_control_qss
     from ..design.surface_qss import build_surface_qss
     return retheme_qss(WORKSHOP_QSS, active) + _workshop_theme_override(active) + build_control_qss(active) + build_surface_qss(active)
+
+
+class _PillFlowLayout(QLayout):
+    """Pills left to right, wrapping to a new line when the row is full."""
+
+    def __init__(self, parent=None, spacing: int = 5):
+        super().__init__(parent)
+        self._items = []
+        self.setContentsMargins(0, 2, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        margins = self.contentsMargins()
+        return self._arrange(QRect(0, 0, width, 0), False) + margins.top() + margins.bottom()
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        margins = self.contentsMargins()
+        self._arrange(rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom()), True)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect, apply):
+        x, y, line = rect.x(), rect.y(), 0
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            hint = item.sizeHint()
+            if x + hint.width() > rect.right() + 1 and line:
+                x, y, line = rect.x(), y + line + self.spacing(), 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self.spacing()
+            line = max(line, hint.height())
+        return y + line - rect.y()
+
+
+def model_list_header() -> QWidget:
+    """Column captions over model rows (workshop design A, 2026-11-11)."""
+    header = QWidget()
+    header.setObjectName("workshopListHeader")
+    row = QHBoxLayout(header)
+    # The rows' frame and inner margins: 1 px border + 14 px.
+    row.setContentsMargins(15, 2, 15, 0)
+    row.setSpacing(WORKSHOP_COLUMN_SPACING)
+
+    def caption(text, width=None, align=Qt.AlignmentFlag.AlignLeft, tip=""):
+        label = QLabel()
+        bind_text(label, text)
+        if tip:
+            bind_text(label, tip, property="toolTip")
+        label.setObjectName("workshopColumnCaption")
+        label.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+        if width:
+            label.setFixedWidth(width)
+        return label
+
+    row.addWidget(caption("模型"), 1)
+    row.addWidget(caption("支持语言", WORKSHOP_LANGUAGE_COLUMN))
+    metrics = QHBoxLayout()
+    metrics.setSpacing(WORKSHOP_METRIC_SPACING)
+    metrics.addWidget(caption("准确度", WORKSHOP_METRIC_COLUMN, Qt.AlignmentFlag.AlignHCenter, COMPARISON_NOTE))
+    metrics.addWidget(caption("速度", WORKSHOP_METRIC_COLUMN, Qt.AlignmentFlag.AlignHCenter, SPEED_NOTE))
+    row.addLayout(metrics)
+    row.addWidget(caption("操作", WORKSHOP_ACTION_COLUMN, Qt.AlignmentFlag.AlignHCenter))
+    return header
 
 
 class ModelCard(QFrame):
@@ -2710,42 +2841,49 @@ class ModelCard(QFrame):
         self.setProperty("selected", False)
         self.setProperty("recommended", bool(getattr(model, "recommended", False)))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(176)
+        self.setMinimumHeight(84)
         self._compact = None
         self._root = QVBoxLayout(self)
-        self._root.setContentsMargins(16, 13, 16, 13)
-        self._root.setSpacing(10)
+        self._root.setContentsMargins(14, 10, 14, 10)
+        self._root.setSpacing(8)
         self._row = QHBoxLayout()
         self._row.setContentsMargins(0, 0, 0, 0)
-        self._row.setSpacing(16)
+        self._row.setSpacing(WORKSHOP_COLUMN_SPACING)
         self._root.addLayout(self._row, 1)
 
         self.monogram = QLabel()
         self.monogram.setObjectName("workshopMonogram")
         self.monogram.setProperty("selected", False)
         self.monogram.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.monogram.setFixedSize(52, 52)
+        self.monogram.setFixedSize(WORKSHOP_MONOGRAM, WORKSHOP_MONOGRAM)
         self.monogram.setToolTip(model.name)
-        logo_size = QSize(44, 44) if model.logo_asset else QSize(28, 28)
+        logo_size = QSize(38, 38) if model.logo_asset else QSize(24, 24)
         self._paint_monogram(logo_size)
-        self._row.addWidget(self.monogram, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._row.addWidget(self.monogram, 0, Qt.AlignmentFlag.AlignTop)
 
         self.info_host = QWidget(self)
         self.info_host.setObjectName("workshopCardInfo")
-        text = QVBoxLayout(self.info_host)
+        # 2026-11-11 (workshop design A): one table row per model. The info
+        # block holds three columns that line up with the list header:
+        # name + full description + facts | 支持语言 | 准确度 · 速度.
+        columns = QHBoxLayout(self.info_host)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(WORKSHOP_COLUMN_SPACING)
+        text_host = QWidget(self.info_host)
+        text_host.setObjectName("workshopCardText")
+        text_host.setMinimumWidth(0)
+        text_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        text = QVBoxLayout(text_host)
         text.setContentsMargins(0, 0, 0, 0)
-        text.setSpacing(5)
-        title_row = QHBoxLayout()
+        text.setSpacing(4)
+        title_row = QVBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(7)
-        # 长模型名（如 Qwen-Audio-3.0-ASR-Flash）在窄卡片单行必然被省略号
-        # 截断（标题列仅 ~170px）；允许两行折行保证完整显示（三十二轮 agy）。
-        if len(model.name) > 18:
-            self.title_label = QLabel(model.name)
-            self.title_label.setWordWrap(True)
-            self.title_label.setToolTip(model.name)
-        else:
-            self.title_label = ElideLabel(model.name)
+        # Names and descriptions are shown in full (wrapping), never elided.
+        self.title_label = QLabel(model.name)
+        self.title_label.setWordWrap(True)
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bind_text(self.title_label, model.name)
         bind_text(self.title_label, model.name, property='toolTip')
         self.title_label.setObjectName("workshopModelTitle")
@@ -2756,101 +2894,85 @@ class ModelCard(QFrame):
                 "★ 2ByteASR 推荐", "workshopRecommendationBadge"
             )
             title_row.addWidget(
-                self.recommendation_badge, 0, Qt.AlignmentFlag.AlignVCenter
+                self.recommendation_badge, 0, Qt.AlignmentFlag.AlignTop
             )
         text.addLayout(title_row)
-        summary_row = QHBoxLayout()
-        summary_row.setContentsMargins(0, 0, 0, 0)
-        summary_row.setSpacing(7)
         self.summary_label = QLabel(model_scene(model))
         self.summary_label.setWordWrap(True)
         self.summary_label.setMinimumWidth(0)
         self.summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.summary_label.setObjectName("workshopMuted")
-        summary_row.addWidget(self.summary_label, 1)
-        text.addLayout(summary_row)
-
-        meta_stack = QVBoxLayout()
-        meta_stack.setContentsMargins(0, 0, 0, 0)
-        meta_stack.setSpacing(3)
-        size_row = QHBoxLayout()
-        size_row.setContentsMargins(0, 0, 0, 0)
-        size_text = ui_literal(_install_size_label(model.size), current_language())
-        self.size_label = PillLabel(size_text, "workshopSizeBadge")
-        bind_text(self.size_label, '体积 {size_text}', property='accessibleName', size_text=size_text)
-        self.size_label.setToolTip(SIZE_NOTE)
-        size_row.addWidget(self.size_label, 0, Qt.AlignmentFlag.AlignLeft)
-        size_row.addStretch(1)
-        meta_stack.addLayout(size_row)
-        self.language_pills = []
-        languages = model_task_badges(model)
-        for start in range(0, len(languages), 3):
-            language_row = QHBoxLayout()
-            language_row.setContentsMargins(0, 0, 0, 0)
-            language_row.setSpacing(5)
-            for lang in languages[start : start + 3]:
-                pill = PillLabel(str(lang), "langPill")
-                self.language_pills.append(pill)
-                language_row.addWidget(pill, 0, Qt.AlignmentFlag.AlignLeft)
-            language_row.addStretch(1)
-            meta_stack.addLayout(language_row)
-        # 2026-10-18: the same six language badges on every card, in the
-        # same place, so one column (e.g. 日语) can be scanned down the list.
-        from .model_language_badges import LanguageBadgeRow
-        from .model_languages import language_support
-        self.language_row = LanguageBadgeRow(caption=True)
-        self.language_row.set_support(language_support(model.key))
-        meta_stack.addWidget(self.language_row)
-        text.addLayout(meta_stack)
-        self._row.addWidget(self.info_host, 4)
-
-        self.metrics_host = QWidget(self)
-        self.metrics_host.setObjectName("workshopCardMetrics")
-        self.metrics_host.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
-        metrics = QVBoxLayout(self.metrics_host)
-        metrics.setContentsMargins(0, 0, 0, 0)
-        metrics.setSpacing(4)
-        self.reference_index_label = QLabel("2ByteASR 参考指数")
-        self.reference_index_label.setObjectName("workshopReferenceIndex")
-        self.reference_index_label.setToolTip(COMPARISON_NOTE)
-        metrics.addWidget(self.reference_index_label)
-        metric_row = QHBoxLayout()
-        metric_row.setContentsMargins(0, 0, 0, 0)
-        metric_row.setSpacing(18)
-        self.accuracy_bar = RatingBar(
-            "转写准确度", _metric_evidence(model, "accuracy"), label_width=72
-        )
-        self.speed_bar = RatingBar(
-            "速度指数", _metric_evidence(model, "speed"), label_width=64
-        )
-        metric_row.addWidget(self.accuracy_bar, 1)
-        metric_row.addWidget(self.speed_bar, 1)
-        metrics.addLayout(metric_row)
-
-        self.action_host = QWidget(self)
-        self.action_host.setObjectName("workshopCardActions")
-        self.action_host.setMinimumWidth(94)
-        self.action_host.setMaximumWidth(122)
-        action_box = QVBoxLayout(self.action_host)
-        action_box.setContentsMargins(0, 0, 0, 0)
-        action_box.setSpacing(5)
-        badge_row = QHBoxLayout()
-        badge_row.setContentsMargins(0, 0, 0, 0)
-        badge_row.setSpacing(5)
-        badge_row.addStretch(1)
-        # 卡片右侧空间窄（94-136px）：长徽章会与状态徽章互挤截断成
-        # "线 · A"（三十二轮 agy）。在线属性一个词足够，服务商在副标题。
+        text.addWidget(self.summary_label)
+        facts_host = QWidget(text_host)
+        facts_host.setObjectName("workshopCardFacts")
+        # Wraps instead of squeezing the pills in a narrow window.
+        facts = _PillFlowLayout(facts_host, spacing=5)
+        self.state_badge = PillLabel("", "workshopStateBadge")
+        self.state_badge.setProperty("tone", "muted")
+        facts.addWidget(self.state_badge)
         self.kind_badge = PillLabel(
             "在线" if model_is_online(model) else "本地",
             "workshopKindBadge",
         )
-        badge_row.addWidget(self.kind_badge)
-        self.state_badge = PillLabel("", "workshopStateBadge")
-        self.state_badge.setProperty("tone", "muted")
-        badge_row.addWidget(self.state_badge)
-        action_box.addLayout(badge_row)
+        facts.addWidget(self.kind_badge)
+        size_text = ui_literal(_install_size_label(model.size), current_language())
+        self.size_label = PillLabel(size_text, "workshopSizeBadge")
+        bind_text(self.size_label, '体积 {size_text}', property='accessibleName', size_text=size_text)
+        self.size_label.setToolTip(SIZE_NOTE)
+        facts.addWidget(self.size_label)
+        self.language_pills = []
+        for lang in model_task_badges(model)[:3]:
+            pill = PillLabel(str(lang), "langPill")
+            self.language_pills.append(pill)
+            facts.addWidget(pill)
+        text.addWidget(facts_host)
+        columns.addWidget(text_host, 1)
+
+        # 2026-10-18: the same six language badges on every row, in the same
+        # place, so one column (e.g. 日语) can be scanned down the list.
+        from .model_language_badges import LanguageBadgeRow
+        from .model_languages import language_support
+        self.language_row = LanguageBadgeRow(grid_columns=3)
+        self.language_row.set_support(language_support(model.key))
+        self.language_row.setFixedWidth(WORKSHOP_LANGUAGE_COLUMN)
+        columns.addWidget(self.language_row, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.metrics_host = QWidget(self.info_host)
+        self.metrics_host.setObjectName("workshopCardMetrics")
+        self.metrics_host.setFixedWidth(WORKSHOP_METRIC_COLUMN * 2 + WORKSHOP_METRIC_SPACING)
+        policy = self.metrics_host.sizePolicy()
+        # A model without evidence keeps its (empty) columns so rows stay aligned.
+        policy.setRetainSizeWhenHidden(True)
+        self.metrics_host.setSizePolicy(policy)
+        metrics = QVBoxLayout(self.metrics_host)
+        metrics.setContentsMargins(0, 0, 0, 0)
+        metrics.setSpacing(0)
+        self.reference_index_label = QLabel("2ByteASR 参考指数")
+        self.reference_index_label.setObjectName("workshopReferenceIndex")
+        self.reference_index_label.setToolTip(COMPARISON_NOTE)
+        self.reference_index_label.hide()
+        metrics.addWidget(self.reference_index_label)
+        metric_row = QHBoxLayout()
+        metric_row.setContentsMargins(0, 0, 0, 0)
+        metric_row.setSpacing(WORKSHOP_METRIC_SPACING)
+        self.accuracy_bar = RatingBar(
+            "转写准确度", _metric_evidence(model, "accuracy"), label_width=72, stacked=True
+        )
+        self.speed_bar = RatingBar(
+            "速度指数", _metric_evidence(model, "speed"), label_width=64, stacked=True
+        )
+        metric_row.addWidget(self.accuracy_bar, 1)
+        metric_row.addWidget(self.speed_bar, 1)
+        metrics.addLayout(metric_row)
+        columns.addWidget(self.metrics_host, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._row.addWidget(self.info_host, 1)
+
+        self.action_host = QWidget(self)
+        self.action_host.setObjectName("workshopCardActions")
+        self.action_host.setFixedWidth(WORKSHOP_ACTION_COLUMN)
+        action_box = QVBoxLayout(self.action_host)
+        action_box.setContentsMargins(0, 0, 0, 0)
+        action_box.setSpacing(5)
         self.action_controls = QWidget(self.action_host)
         action_controls = QVBoxLayout(self.action_controls)
         action_controls.setContentsMargins(0, 0, 0, 0)
@@ -2887,9 +3009,7 @@ class ModelCard(QFrame):
         action_controls.addStretch(1)
         action_box.addWidget(self.action_controls, 1)
         self._row.addWidget(self.action_host, 0)
-        self._root.addWidget(self.metrics_host)
-        # Unavailable evidence never acquires a synthetic score. The shared
-        # card layout still owns the right-side controls for every model.
+        # Unavailable evidence never acquires a synthetic score.
         self.metrics_host.setVisible(any(
             bool(_metric_evidence(model, kind).get("available"))
             for kind in ("accuracy", "speed")
@@ -2912,20 +3032,10 @@ class ModelCard(QFrame):
         if self._compact is compact:
             return
         self._compact = compact
-        if compact:
-            self._root.setContentsMargins(16, 8, 16, 8)
-            self._root.setSpacing(8)
-            self._row.setSpacing(12)
-            self.action_host.setMinimumWidth(94)
-            self.action_host.setMaximumWidth(122)
-            self.action.setMinimumWidth(82)
-        else:
-            self._root.setContentsMargins(16, 8, 16, 8)
-            self._root.setSpacing(8)
-            self._row.setSpacing(16)
-            self.action_host.setMinimumWidth(108)
-            self.action_host.setMaximumWidth(138)
-            self.action.setMinimumWidth(92)
+        self._root.setContentsMargins(14, 10, 14, 10)
+        self._root.setSpacing(8)
+        self._row.setSpacing(WORKSHOP_COLUMN_SPACING)
+        self.action.setMinimumWidth(82 if compact else 92)
         self.accuracy_bar.apply_compact(compact)
         self.speed_bar.apply_compact(compact)
         self.updateGeometry()
@@ -2965,7 +3075,7 @@ class ModelCard(QFrame):
         without a logo or a vendor colour) follows the active theme instead of
         a light-green tile that glares on dark themes (2026-10-07)."""
         model = self.model
-        logo_size = logo_size or (QSize(44, 44) if model.logo_asset else QSize(28, 28))
+        logo_size = logo_size or (QSize(38, 38) if model.logo_asset else QSize(24, 24))
         generic = not model.logo_asset and model.icon_background == WorkshopModel.icon_background
         if generic:
             from ..design.theme_manager import theme_key
@@ -5589,13 +5699,17 @@ class ModelWorkshopPage(QWidget):
         if split is None:
             return
         compact = self.width() < 1050
+        # The table needs a readable name column beside its fixed language,
+        # score and action columns. Open details on demand on laptop widths.
+        compact_detail = self.width() < 1520
+        self._detail_is_compact = compact_detail
         self.sidebar.setVisible(not compact)
         split.setOrientation(Qt.Orientation.Horizontal)
-        self._responsive_detail.setMinimumWidth(0 if compact else 300)
-        self._responsive_detail.setMaximumWidth(16777215 if compact else 400)
+        self._responsive_detail.setMinimumWidth(0 if compact_detail else 300)
+        self._responsive_detail.setMaximumWidth(16777215 if compact_detail else 400)
         if self._responsive_detail.parentWidget() is split:
-            self._responsive_detail.setVisible(not compact)
-        self.compact_details_button.setVisible(compact)
+            self._responsive_detail.setVisible(not compact_detail)
+        self.compact_details_button.setVisible(compact_detail)
         self.role_subtitle.setVisible(self.height() >= 480)
 
     def _show_compact_details(self):
@@ -5616,7 +5730,7 @@ class ModelWorkshopPage(QWidget):
         surface.footer_layout.addStretch();surface.footer_layout.addWidget(close)
         def restore(_result):
             self._responsive_split.addWidget(self._responsive_detail)
-            self._responsive_detail.setVisible(self.width() >= 1050)
+            self._responsive_detail.setVisible(not getattr(self, '_detail_is_compact', True))
             dialog.deleteLater()
         dialog.finished.connect(restore)
         dialog.show()
@@ -5819,11 +5933,11 @@ class ModelWorkshopPage(QWidget):
         layout.addLayout(tabs)
 
         self.ai_segmentation_button = QPushButton("AI 模型 / 智能断句")
-        self.ai_segmentation_button.setObjectName("workshopSecondary")
+        self.ai_segmentation_button.setObjectName("workshopToolButton")
         install_themed_icon(self.ai_segmentation_button, "fa5s.project-diagram")
         self.ai_segmentation_button.clicked.connect(self.ai_segmentation_requested)
         self.task_settings_button = QPushButton("高级设置 / 任务设置")
-        self.task_settings_button.setObjectName("workshopSecondary")
+        self.task_settings_button.setObjectName("workshopToolButton")
         install_themed_icon(self.task_settings_button, "fa5s.sliders-h")
         self.task_settings_button.clicked.connect(self.task_settings_requested)
 
@@ -5837,9 +5951,11 @@ class ModelWorkshopPage(QWidget):
         search_row.addWidget(self.ai_segmentation_button)
         search_row.addWidget(self.task_settings_button)
         self.sort_filter_button = QPushButton("排序与筛选")
-        self.sort_filter_button.setObjectName("workshopSecondary")
+        self.sort_filter_button.setObjectName("workshopToolButton")
+        install_themed_icon(self.sort_filter_button, "fa5s.filter")
         self.sort_filter_button.clicked.connect(self._toggle_sort_filter)
         search_row.addWidget(self.sort_filter_button)
+        search_row.setSpacing(8)
         layout.addLayout(search_row)
         self.sort_filter_popover = QFrame(self)
         self.sort_filter_popover.setObjectName("workshopSortPopover")
@@ -5925,6 +6041,8 @@ class ModelWorkshopPage(QWidget):
         self.card_layout = QVBoxLayout(host)
         self.card_layout.setContentsMargins(0, 0, 0, 0)
         self.card_layout.setSpacing(10)  # P0-2: 8~12px spacing between cards so they don't visually merge
+        self.list_header = self._build_list_header()
+        self.card_layout.addWidget(self.list_header)
         by_key = {model.key: model for model in MODELS}
         for key in CANONICAL_MODEL_ORDER:
             model = by_key.get(key)
@@ -5947,6 +6065,9 @@ class ModelWorkshopPage(QWidget):
         scroll.setWidget(host)
         layout.addWidget(scroll, 1)
         return content
+
+    def _build_list_header(self) -> QWidget:
+        return model_list_header()
 
     def _build_detail(self) -> QFrame:
         detail = QFrame()
@@ -6842,7 +6963,8 @@ class ModelWorkshopPage(QWidget):
         visible = 0
         for model, (_key, show) in zip(ordered, visibility):
             card = self._cards[model.key]
-            self.card_layout.insertWidget(visible if show else self.card_layout.count() - 2, card)
+            # Index 0 is the column header.
+            self.card_layout.insertWidget(1 + visible if show else self.card_layout.count() - 2, card)
             card.setVisible(show)
             visible += int(show)
         self.empty_label.setVisible(visible == 0)
@@ -7624,6 +7746,8 @@ class ModelPickerPanel(QWidget):
         self.cards_layout = cards_layout
         cards_layout.setContentsMargins(0, 0, 0, 0)
         cards_layout.setSpacing(10)  # P0-2: consistent 8-12px spacing in picker too
+        self.list_header = model_list_header()
+        cards_layout.addWidget(self.list_header)
         by_key = {key: card.model for key, card in self.controller._cards.items()}
         for key in CANONICAL_MODEL_ORDER:
             model = by_key.get(key)
@@ -7713,7 +7837,7 @@ class ModelPickerPanel(QWidget):
         selected = [key for key, card in self.cards.items() if card.property("selected")]
         pinned = selected + [key for key in self._pinned_keys if key not in selected]
         ordered = pinned + [key for key in self.cards if key not in pinned]
-        for index, key in enumerate(ordered):
+        for index, key in enumerate(ordered, 1):  # index 0 is the column header
             card = self.cards[key]
             if self.cards_layout.itemAt(index).widget() is not card:
                 self.cards_layout.removeWidget(card)

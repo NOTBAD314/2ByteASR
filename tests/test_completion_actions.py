@@ -138,12 +138,15 @@ def test_three_cards_share_theme_accent_and_reflow(key, monkeypatch):
     for card in cards:
         monkeypatch.setattr(card, 'underMouse', lambda: False)
         image = card.grab().toImage()
-        # 2026-10-07: equal cards, each with its identity hue (wash + chip).
+        # 2026-11-11: equal cards, each filled with its quiet identity hue;
+        # the finish card is the pale one. White text stays readable.
         theme = theme_definition(key)
-        hue = card.hue_color()
-        assert image.pixelColor(card.width()-25, card.height()-25) == QColor(blend_hex(theme.surface, hue, theme.role_wash[0]))
+        assert image.pixelColor(card.width()-25, card.height()-25) == QColor(card.fill_color())
         chip = card.content_rects()[0]
-        assert image.pixelColor(int(chip.left()) + 4, int(chip.center().y())) == QColor(hue)
+        assert image.pixelColor(int(chip.left()) + 4, int(chip.center().y())) == QColor(card.ink_colors()[2])
+        from twobyteasr.design.ui_theme import contrast_ratio
+        assert contrast_ratio(card.ink_colors()[0], card.fill_color()) >= 4.5
+        assert card.is_light() == (card.hue == 'finish')
     assert len({card.hue_color() for card in cards}) == 3
     grid.resize(700, 600)
     APP.processEvents()
@@ -300,6 +303,7 @@ def test_completion_report_path_identity_keeps_same_media_tasks_separate(complet
     assert shell._last_recognition_report == tasks[1].report_json_path
     assert tasks[1].project_path in shell.result_files.toPlainText()
     assert tasks[0].project_path not in shell.result_files.toPlainText()
-    assert shell.result_return_button is shell.result_action_grid.cards[2]
+    assert shell.result_return_button is shell.result_action_grid.cards[3]
+    assert shell.result_ai_card is shell.result_action_grid.cards[0]
     assert not hasattr(shell, 'burn_subtitle_result_button')
     assert all('压制' not in action.text() for action in shell.result_more_menu.actions())

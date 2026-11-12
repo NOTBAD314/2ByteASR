@@ -516,6 +516,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     attempts_limit = max(1, min(3, int(max_attempts)))
     json_mode = True
     terminal_request_failure = None
+    candidate_actions = {}
     from ..providers.subtitle_request_policy import provider_policy
     policy = provider_policy(provider)
     preferred, hard_limit, measure = refinement_limits(language)
@@ -598,6 +599,11 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             continue
         payload = refine_payload([unit.cue for unit in group], neighbors=neighbors, project=project)
         for item, unit in zip(payload['cues'], group):
+            previous_result=outcome.results[unit.cue.id]
+            if previous_result.get('editable_windows'):
+                item['editable_windows']=previous_result['editable_windows']
+                item['frozen_boundaries']=previous_result.get('frozen_boundaries',[])
+                item['previous_candidate']=previous_result.get('candidate_boundaries',[])
             previous = 0
             candidates = []
             for key, value in unit.candidates.items():
@@ -690,6 +696,22 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         action = CueRefineAction(unit.cue.id, 'keep')
                     if boundary_only and language.split('-')[0] == 'zh' and not unit.owner_id:
                         from .sentence_refine_ranges import repair_chinese_range
+                        from .text_rules import display_length
+                        if action.action=='keep':
+                            candidate=[]
+                            cursor=0
+                            for original in unit.originals:
+                                cursor+=display_length(original.text)
+                                candidate.append(cursor)
+                        else:
+                            candidate=[display_length(unit.cue.text[:x+1]) for x in action.split_after_chars]+[display_length(unit.cue.text)]
+                        frozen=record.get('frozen_boundaries',[])
+                        windows=record.get('editable_windows',[])
+                        previous=record.get('candidate_boundaries',[])
+                        if windows and (any(x not in candidate for x in frozen) or
+                                any(x not in previous and not any(a<x<b for a,b in windows) for x in candidate)):
+                            raise RefineError('纠错结果改变了范围外已接受的 AI 边界','frozen_boundary_changed')
+                        candidate_actions[unit.cue.id]=action
                         action, changes = repair_chinese_range(unit, action, project)
                         record['local_boundary_changes'] = changes
                     pieces = validate_quality(unit, action, language, hard_limit=hard_limit if boundary_only else None)
@@ -698,6 +720,11 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                     outcome.actions.append(action)
                     emit(unit)
                 except RefineError as exc:
+                    if getattr(exc,'editable_windows',None) and not record.get('editable_windows'):
+                        record['candidate_boundaries']=exc.candidate_boundaries
+                        record['editable_windows']=exc.editable_windows
+                        record['frozen_boundaries']=[x for x in exc.candidate_boundaries
+                            if not any(a<x<b for a,b in exc.editable_windows)]
                     bad.append(unit)
                     emit(unit, status='failed', final=False, phase='校验未通过', category=exc.category, error=str(exc))
             receipt['status'] = 'validated' if not bad else 'partial' if len(bad) < len(group) else 'failed'
@@ -770,7 +797,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 and record['status'] == 'failed' and not unit.owner_id):
             from .sentence_refine_ranges import repair_chinese_range
             try:
-                local, changes = repair_chinese_range(unit, CueRefineAction(unit.cue.id, 'keep'), project)
+                local, changes = repair_chinese_range(unit, candidate_actions.get(unit.cue.id) or CueRefineAction(unit.cue.id, 'keep'), project, fallback=True)
                 pieces = validate_quality(unit, local, language, hard_limit=hard_limit)
             except RefineError:
                 pass  # The failed range retains its precise original failure.

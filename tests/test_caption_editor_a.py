@@ -238,3 +238,42 @@ def test_hidden_panel_supports_no_argument_theme_refresh_callback(page):
         assert page.subtitle_edit_input.palette().color(QPalette.ColorRole.Base) != page.subtitle_edit_card.palette().color(QPalette.ColorRole.Window)
     finally:
         apply_theme(previous)
+
+
+def test_paused_late_clock_sample_cannot_clear_new_target_but_explicit_navigation_can(page):
+    page.video.set_paused(True)
+    page.timeline.set_playhead(5500)
+    page._open_caption_editor('b','original')
+    draft=page._caption_draft
+    page._follow_caption_editor(0,clock_sample=True)
+    assert page._caption_draft is draft and draft.target.cue_id=='b'
+    page._follow_caption_editor(0)
+    assert page._caption_draft.target.cue_id=='a'
+
+
+def test_first_pronoun_click_does_not_synchronously_scan_cold_suggestions(page,monkeypatch):
+    editor=page.subtitle_edit_input
+    page._caption_draft.suggestion_text=''
+    def forbidden(*args,**kwargs):raise AssertionError('cold synchronous suggestion scan')
+    monkeypatch.setattr(page,'_refresh_editor_suggestions',forbidden)
+    page.caption_pronoun_button.click()
+    assert editor.toPlainText().startswith('他')
+    # Deferred work is owned by the timer and is stopped before teardown.
+    page._caption_suggestion_timer.stop()
+
+
+def test_commit_signal_reentry_does_not_bind_or_paint_another_caption(page,monkeypatch):
+    editor=page.subtitle_edit_input;before=page.project.cues[0].text
+    editor.setPlainText('确认当前这句')
+    kind=type(page.cue_controller);original=kind.set_text;observed=[]
+    editor.textChanged.connect(lambda:observed.append(editor.toPlainText()))
+    def reentrant(controller,*args,**kwargs):
+        result=original(controller,*args,**kwargs)
+        page._open_caption_editor('b','original')
+        return result
+    monkeypatch.setattr(kind,'set_text',reentrant)
+    index=page.undo_stack.index();page._caption_trigger_commit('test_reentry')
+    assert page.project.cues[0].text=='确认当前这句' and page.project.cues[1].text=='第二条保持不变'
+    assert '第二条保持不变' not in observed and page._caption_draft is None
+    assert page.undo_stack.index()==index+1
+    page.undo_stack.undo();assert page.project.cues[0].text==before

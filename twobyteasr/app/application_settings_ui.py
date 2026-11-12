@@ -57,6 +57,8 @@ class ApplicationSettingsDialog(SpringDialog):
         # A window shown again calls the callbacks of the opening that shows it.
         self._callbacks = dict(clear_recent=clear_recent, reset_layout=reset_layout)
         self.setObjectName('applicationSettings')
+        from ..design.theme_scopes import SHELL_QSS
+        self.setStyleSheet(SHELL_QSS)
         bind_text(self, '应用设置', property='windowTitle')
         self.setMinimumSize(480, 300)
         self.resize(860, 650)
@@ -823,9 +825,9 @@ class ApplicationSettingsDialog(SpringDialog):
 
     def _preview_theme(self, key):
         from PySide6.QtWidgets import QApplication
-        from ..design.theme_manager import apply_theme
-        apply_theme(str(key), QApplication.instance())
+        from ..design.theme_manager import request_theme
         self._update_theme_hint()
+        request_theme(str(key), QApplication.instance())
 
     def _update_theme_hint(self):
         from ..design.ui_theme import theme_definition
@@ -841,6 +843,8 @@ class ApplicationSettingsDialog(SpringDialog):
     def done(self, result):
         # A previewed theme that was not saved goes back to the opening one.
         from PySide6.QtWidgets import QApplication, QDialog
+        app = QApplication.instance()
+        app._theme_request_generation = getattr(app, '_theme_request_generation', 0) + 1
         if result != QDialog.DialogCode.Accepted and theme_key() != getattr(self, '_theme_on_open', theme_key()):
             from ..design.theme_manager import apply_theme
             apply_theme(self._theme_on_open, QApplication.instance())

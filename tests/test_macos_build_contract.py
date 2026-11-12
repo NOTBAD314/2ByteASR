@@ -22,7 +22,7 @@ def test_manual_workflow_is_bounded_read_only_and_pinned_to_trusted_source():
     # remain on explicitly selected standard Apple Silicon environments.
     assert job["runs-on"]=="${{ inputs.app_runner || 'macos-15' }}"
     assert set(workflow["on"]["workflow_dispatch"]["inputs"]["app_runner"]["options"])=={"macos-15","macos-26"}
-    assert workflow['jobs']['same-candidate-newer-macos']['runs-on']=='macos-26'
+    assert workflow['jobs']['same-candidate-newer-macos']['runs-on']=="${{ inputs.app_runner == 'macos-26' && 'macos-15' || 'macos-26' }}"
     assert int(job["timeout-minutes"])<=100
     checkout=next(step for step in job["steps"] if "uses" in step and "actions/checkout@" in step["uses"])
     assert checkout["with"]["ref"]=="${{ inputs.source_sha }}"
@@ -93,14 +93,14 @@ def test_real_app_spec_selects_arm64_and_does_not_claim_universal_or_developer_i
     assert "BUNDLE(coll,name='2ByteASR.app'" in text
 
 
-@pytest.mark.parametrize('failed', ['embedded_preview', 'studio_perf', 'edit_save', 'cold_save', 'waveform_stability', 'full_waveform', 'caret_split', 'stable_captions', 'chinese_complete_expression'])
+@pytest.mark.parametrize('failed', ['embedded_preview', 'studio_perf', 'edit_save', 'cold_save', 'waveform_stability', 'full_waveform', 'caret_split', 'stable_captions', 'chinese_complete_expression', 'speaker_board', 'timeline_cue_pill'])
 def test_final_gate_rejects_failed_native_pixels_or_requested_studio_perf_even_when_other_steps_succeed(tmp_path, failed):
     from scripts.macos_ci_status import main
     root = tmp_path/'tmp/qa'
     receipts = root/'artifacts/receipts'; receipts.mkdir(parents=True)
     (receipts/'artifact-selection.json').write_text(json.dumps({'files': [{'path': 'dmg/real.dmg'}]}))
     record = dict.fromkeys(['runtime_identity','media','app','relocation','startup','dmg','blank_project',
-                           'edit_save','caret_split','cold_save','waveform_stability','full_waveform','embedded_preview','renderer','studio_perf', 'stable_captions', 'chinese_complete_expression'], 'passed')
+                           'edit_save','caret_split','cold_save','waveform_stability','full_waveform','embedded_preview','renderer','studio_perf', 'stable_captions', 'chinese_complete_expression', 'speaker_board', 'timeline_cue_pill'], 'passed')
     record.update(model_requested=False, cloud_mlx_requested=False, studio_perf_requested=True, test_step='success')
     status = root/'ci-status.json'; status.write_text(json.dumps(record))
     assert main(['--qa-root', str(root), '--enforce']) == 0

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from functools import lru_cache
 import sys
+import weakref
 
 from PySide6.QtCore import QRect, QSize
 from PySide6.QtGui import QAction, QFontDatabase, QFontMetricsF, QIcon, QIconEngine, QPainter, QPixmap
@@ -30,6 +31,7 @@ ICON_ROLES = (
 _BUTTON_PROPERTY = "_themed_icon"          # (name, role) on QAbstractButton
 _TABS_PROPERTY = "_themed_tab_icons"       # [(name, role)] on QTabWidget
 _FONT_FALLBACK_PRIMED = False
+_THEMED_OBJECTS = weakref.WeakSet()
 _PIXMAP_CACHE: dict[tuple[str, str, int, int, int, str], QPixmap] = {}
 _NORMAL_PIXMAP_CACHE: dict[tuple[str, int, int, int], QPixmap] = {}
 
@@ -230,6 +232,7 @@ def clear_icon_pixmap_cache() -> None:
 def install_themed_icon(button: QAbstractButton | QAction, name: str, role: str = "primary") -> None:
     """Set a role-driven icon and remember it for theme refreshes."""
     button.setProperty(_BUTTON_PROPERTY, (str(name), str(role)))
+    _THEMED_OBJECTS.add(button)
     button.setIcon(themed_icon(name, role))
 
 
@@ -237,6 +240,7 @@ def install_themed_tabs(tabs: QTabWidget, entries: list[tuple[str, str]]) -> Non
     """Remember [(icon_name, role)] so tab icons can be re-rasterized."""
     payload = [(str(name), str(role)) for name, role in entries]
     tabs.setProperty(_TABS_PROPERTY, payload)
+    _THEMED_OBJECTS.add(tabs)
     for index, (name, role) in enumerate(payload):
         tabs.setTabIcon(index, themed_icon(name, role))
 
@@ -246,31 +250,35 @@ def refresh_themed_icons(app: QApplication | None = None) -> int:
     app = app or QApplication.instance()
     if app is None:
         return 0
-    clear_icon_pixmap_cache()
     refreshed = 0
-    seen_actions = set()
-    for widget in app.allWidgets():
-        for action in widget.actions():
-            if action in seen_actions:
-                continue
-            seen_actions.add(action)
-            spec = action.property(_BUTTON_PROPERTY)
-            if isinstance(spec, tuple) and len(spec) == 2:
-                action.setIcon(themed_icon(spec[0], spec[1]))
-                refreshed += 1
-        if isinstance(widget, QAbstractButton):
+    from shiboken6 import isValid
+    from .theme_updates import dispatch
+    for widget in tuple(_THEMED_OBJECTS):
+        if not isValid(widget):
+            continue
+        if isinstance(widget, QWidget) and not widget.isVisible():
+            widget._theme_icon_pending = True
+            continue
+        dispatch(lambda widget=widget: refresh_widget_icons(widget))
+        refreshed += 1
+    return refreshed
+
+
+def refresh_widget_icons(widget):
+    from shiboken6 import isValid
+    if not isValid(widget):
+        return
+    widget._theme_icon_pending = False
+    if isinstance(widget, (QAbstractButton, QAction)):
             spec = widget.property(_BUTTON_PROPERTY)
             if isinstance(spec, tuple) and len(spec) == 2:
                 widget.setIcon(themed_icon(spec[0], spec[1]))
-                refreshed += 1
-        elif isinstance(widget, QTabWidget):
+    elif isinstance(widget, QTabWidget):
             specs = widget.property(_TABS_PROPERTY)
             if isinstance(specs, list):
                 for index, spec in enumerate(specs):
                     if isinstance(spec, tuple) and len(spec) == 2 and index < widget.count():
                         widget.setTabIcon(index, themed_icon(spec[0], spec[1]))
-                        refreshed += 1
-    return refreshed
 
 
 def widget_has_themed_icons(widget: QWidget) -> bool:

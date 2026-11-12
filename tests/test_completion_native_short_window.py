@@ -31,19 +31,19 @@ def test_actual_mainwindow_translation_then_short_resize_keeps_supporting_height
     window._apply_ui_language()
     app.processEvents()
     scroll = window.pages.widget(2)
-    buttons = (window.result_todo.ai_card.action, window.result_more_button)
+    buttons = (window.result_more_button,)
     heights = [button.height() for button in buttons]
-    from twobyteasr.app.completion_todo import BAR_HEIGHT as height
-    assert heights == [height] * 2
+    from twobyteasr.app.completion_todo import SLIM_HEIGHT as height
+    assert heights == [height]
     # Reproduce all three native translation/resize cycles from the headed run.
     for _ in range(3):
         window.result_files_toggle.setChecked(True); app.processEvents()
         window.result_files_toggle.setChecked(False); app.processEvents()
         window._apply_ui_language()
         window.resize(900, 620); app.processEvents()
-        assert window.result_action_grid.columns == 1 and window.result_todo.columns == 1
+        assert window.result_action_grid.columns == 2 and window.result_todo.columns == 1
         assert [button.height() for button in buttons] == heights
-        measured = [secondary_control_measurement(button, expected_height=36) for button in buttons]
+        measured = [secondary_control_measurement(button, expected_height=height) for button in buttons]
         assert all(row["fits"] for row in measured), measured
         assert scroll.verticalScrollBar().maximum() > 0
         assert scroll.horizontalScrollBar().maximum() == 0

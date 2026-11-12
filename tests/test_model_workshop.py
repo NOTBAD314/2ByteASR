@@ -21,6 +21,30 @@ from twobyteasr.app.ui import FramelessPopupCombo, populate_available_asr_choice
 ROOT = Path(__file__).parents[1]
 
 
+def test_laptop_table_keeps_model_names_and_restores_details(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    page = ModelWorkshopPage(ROOT, {'models': {}})
+    page.resize(1440, 900)
+    page.show()
+    app.processEvents()
+    try:
+        card = page._cards['mosi_moss_pro']
+        assert card.title_label.isVisibleTo(page) and card.title_label.width() >= 100
+        assert page.sidebar.isVisible() and not page._responsive_detail.isVisible()
+        page.compact_details_button.click()
+        app.processEvents()
+        assert page._compact_detail_dialog.isVisible() and page._responsive_detail.isVisible()
+        page._compact_detail_dialog.reject()
+        from PySide6.QtTest import QTest
+        QTest.qWait(350)  # SpringDialog publishes finished after its close animation.
+        app.processEvents()
+        assert not page._responsive_detail.isVisible() and card.title_label.width() >= 100
+    finally:
+        page.close()
+        page.deleteLater()
+        app.processEvents()
+
+
 @pytest.fixture(autouse=True)
 def isolated_model_registry(tmp_path, monkeypatch):
     from twobyteasr.runtime_paths import reset_runtime_paths, MODEL_ROOT_ENV, USER_DATA_ENV

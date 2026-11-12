@@ -129,7 +129,8 @@ def recognize_range(audio, start_sample, end_sample, *, language, cache_root, to
                 job=wanted.get(row.get('segment_id'))
                 if (job and all(row.get(k)==job[k] for k in ('samples','pcm_sha256','start','end'))
                         and row.get('request_language')==job['language'] and row.get('text')
-                        and not (row.get('generation') or {}).get('token_limit_reached')):
+                        and not (row.get('generation') or {}).get('token_limit_reached')
+                        and (row.get('generation') or {}).get('stop_reason')!='other_stop'):
                     resumed.append(row)
     done={r['segment_id'] for r in resumed}
     remaining=[j for j in jobs if j['segment_id'] not in done]
@@ -161,6 +162,8 @@ def recognize_range(audio, start_sample, end_sample, *, language, cache_root, to
         rows = values[:production_count]
         if any((r.get('generation') or {}).get('token_limit_reached') for r in rows):
             raise RuntimeError('本地识别达到生成上限；保留部分结果与范围，请缩小范围后重试')
+        if any((r.get('generation') or {}).get('stop_reason')=='other_stop' for r in rows):
+            raise RuntimeError('本地识别未取得明确终止原因；保留检查点，请只重试未完成范围')
         if any(not str(r.get('text') or '').strip() for r in rows):
             raise RuntimeError('本地识别存在空窗口；保留检查点，未将该范围标成恢复成功')
         from .language_diagnostics import transcript_language_sample

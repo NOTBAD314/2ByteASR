@@ -531,7 +531,11 @@ class CueReadingDelegate(QStyledItemDelegate):
 
     LINES = 2
     PAD_X = 12
-    PAD_Y = 5
+    PAD_Y = 8
+    # 2026-11-12 (user, design A): every row is its own rounded card with a
+    # small gap to the next; the chosen row has an accent outline.
+    CARD_INSET_X = 2
+    CARD_INSET_Y = 3
     # 2026-11-09 (user, redesign): review reasons show in the row itself and
     # a ✓ on the right confirms the cue without entering review mode.
     review_confirm_requested = Signal(str)
@@ -624,22 +628,36 @@ class CueReadingDelegate(QStyledItemDelegate):
         self._layout_cache[key] = lines
         return lines
 
+    def card_rect(self, option) -> QRectF:
+        return QRectF(option.rect).adjusted(self.CARD_INSET_X + 0.5, self.CARD_INSET_Y + 0.5,
+                                            -self.CARD_INSET_X - 0.5, -self.CARD_INSET_Y - 0.5)
+
+    def card_colors(self, option, theme) -> tuple[str, str, float]:
+        """(fill, outline, outline width) for the row's card."""
+        from ..design.ui_theme import blend_hex
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        card = theme.surface_elevated
+        if selected:
+            return blend_hex(card, theme.accent, 0.10), theme.accent, 1.6
+        if hover:
+            return blend_hex(card, theme.text, 0.03), blend_hex(card, theme.text, 0.22), 1.0
+        return card, blend_hex(card, theme.text, 0.12), 1.0
+
     def paint(self, painter, option, index) -> None:
         model = index.model()
-        prepared = QStyleOptionViewItem(option)
-        self.initStyleOption(prepared, index)
-        prepared.text = ""
-        style = prepared.widget.style() if prepared.widget else QApplication.style()
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, prepared, painter, prepared.widget)
         cue = model.cue_at(index.row())
         project = model.project
         palette = timeline_palette()
         rect = option.rect
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        if selected:
-            painter.fillRect(rect.left(), rect.top(), 3, rect.height(), QColor(GREEN))
+        from ..design.theme_manager import theme_key as _theme_key
+        from ..design.ui_theme import theme_definition as _theme_definition
+        fill, outline, outline_width = self.card_colors(option, _theme_definition(_theme_key()))
+        painter.setPen(QPen(QColor(outline), outline_width))
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(self.card_rect(option), 10, 10)
         meta_font = self.meta_font(option.font)
         meta_metrics = QFontMetrics(meta_font)
         top = rect.top() + self.PAD_Y

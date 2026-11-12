@@ -5,7 +5,8 @@ from uuid import uuid4
 REVIEW_KEY = 'glossary_proofread_review'
 ISSUE_FIELDS = ('kind', 'span', 'original', 'replacement', 'checked', 'default', 'reason',
                 'options', 'evidence', 'lexical', 'cleanup', 'provenance', 'ignored',
-                'reviewed', 'stale', 'context', 'anchor', 'proposal_id', 'application_parts')
+                'reviewed', 'stale', 'context', 'anchor', 'proposal_id', 'application_parts',
+                'ai_generated', 'recognition_import')
 
 
 def review_state(project, *, create=False):
@@ -60,6 +61,7 @@ def restore_row(project, row):
         issue.update(checked=False, default=False, reason='', hit=hit, options=(), evidence='',
                      stale=False, reviewed=False)
         issue.update(deepcopy(saved_issue))
+        issue.setdefault('ai_generated',issue['kind'] in {'ai','ai_review'})
         for key in ('span', 'options', 'context', 'anchor'):
             if key in issue:
                 issue[key] = tuple(issue[key])

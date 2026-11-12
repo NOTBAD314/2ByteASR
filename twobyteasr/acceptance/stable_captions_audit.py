@@ -6,6 +6,40 @@ import time
 import traceback
 
 
+def native_caption_pixel_evidence(scene_path, native_path, cue_pixels):
+    """Match every native glyph region, allowing selection-handle occlusion.
+
+    This audit owns a uniform blue video. Counting disconnected white scan
+    lines mistakes tiny CJK strokes for extra subtitles on small displays.
+    """
+    import math
+    import numpy as np
+    from PIL import Image
+    rgba=np.array(Image.open(scene_path).convert('RGBA'))
+    rgb=np.array(Image.open(native_path).convert('RGB'))
+    background=np.max(np.abs(rgb.astype(int)-np.array([51,65,85])),axis=2)<=12
+    ys,xs=np.where(background)
+    if len(xs)<1000:raise AssertionError('Owned blue fixture is not visible')
+    x0,x1,y0,y1=int(xs.min()),int(xs.max())+1,int(ys.min()),int(ys.max())+1
+    sx,sy=(x1-x0)/rgba.shape[1],(y1-y0)/rgba.shape[0]
+    white=rgb.min(axis=2)>210
+    reference=(rgba[:,:,:3].min(axis=2)>210)&(rgba[:,:,3]>210)
+    union=np.zeros(white.shape,dtype=bool);evidence=[]
+    for row in cue_pixels:
+        bx,by,width,height=row['bounds']
+        a,b=max(0,math.floor(x0+bx*sx)-1),min(rgb.shape[1],math.ceil(x0+(bx+width)*sx)+1)
+        c,d=max(0,math.floor(y0+by*sy)-1),min(rgb.shape[0],math.ceil(y0+(by+height)*sy)+1)
+        pixels=int(white[c:d,a:b].sum());expected=int(reference[by:by+height,bx:bx+width].sum())
+        if expected<=4 or pixels<=4:raise AssertionError('Missing native caption pixels: '+row['cue_id'])
+        union[c:d,a:b]=True
+        evidence.append(dict(cue_id=row['cue_id'],native_white_pixels=pixels,scene_white_pixels=expected))
+    video=np.zeros(white.shape,dtype=bool);video[y0:y1,x0:x1]=True
+    outside=int((white&video&~union).sum())
+    if outside:raise AssertionError('Unexpected native caption pixels: '+str(outside))
+    return dict(captions=len(evidence),native_video_bounds=[x0,y0,x1-x0,y1-y0],
+                unexpected_white_pixels=outside,cue_pixels=evidence)
+
+
 def start(window, output):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -105,7 +139,10 @@ def run(output, window=None):
         win=window or MainWindow([],core,object(),None); win.resize(1440,920); win.show()
         metrics['device_pixel_ratio']=win.devicePixelRatioF()
         win.open_studio_project(str(fixture))
-        wait(lambda: win.built_page('studio') is not None and win.studio_page.project is not None)
+        wait(lambda: win.built_page('studio') is not None and win.studio_page.project is not None
+             and win.studio_page.project_path is not None
+             and Path(win.studio_page.project_path).resolve() == fixture.resolve()
+             and {c.id for c in win.studio_page.project.cues} == {'damage','four','yes'})
         page=win.studio_page
         wait(lambda: win.__dict__.get('_studio_loading_session') is None or
              (not win._studio_loading_session.active and not win._studio_loading_session.view.isVisible()))
@@ -127,15 +164,8 @@ def run(output, window=None):
             _capture(win,output/(name+'-window.png'))
             shot=output/(name+'-mpv.png');page.video.controller.screenshot_to_file(shot)
             wait(shot.is_file,3);check(name+' actual mpv image',not QImage(str(shot)).isNull())
-            from PIL import Image
-            import numpy as np
-            rgb=np.array(Image.open(shot).convert('RGB'))
-            ys=np.where((rgb.min(2)>210).sum(1)>4)[0]
-            bands=[]
-            for y in ys:
-                if bands and y-bands[-1][-1]<4:bands[-1].append(int(y))
-                else:bands.append([int(y)])
-            check(name+' actual visible text rows',len(bands)==len(expected),[(b[0],b[-1]) for b in bands])
+            pixels=native_caption_pixel_evidence(output/(name+'-scene.png'),shot,trace['cue_pixels'])
+            check(name+' actual visible caption instances',pixels['captions']==len(expected),pixels)
             return {r['cue_id']:r['position'] for r in trace['cue_pixels']}
 
         three=scene(1800,['damage','four','yes'],'01-three')
@@ -168,7 +198,9 @@ def run(output, window=None):
         seed_qc(p);page.cue_model.refresh();page._refresh_cue_list_summary()
         page.cue_search.setText('是的');pump(.05)
         page._refresh_cue_list_summary()
-        check('whole-project count ignores search', '3' in page.confirm_all_reviews_button.text())
+        # 2026-11-12: the count moved from the button to the strip's note.
+        check('whole-project count ignores search', page.confirm_all_reviews_button.property('pendingCount') == 3
+              and '3' in page.confirm_all_reviews_note.text())
         original=deepcopy(p.to_dict());steps=page.undo_stack.count()
         _capture(win,output/'07-before-bulk.png')
         begin=time.perf_counter();QTest.mouseClick(page.confirm_all_reviews_button,Qt.LeftButton);pump(.05)
