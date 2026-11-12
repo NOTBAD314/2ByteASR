@@ -2,6 +2,7 @@ import ctypes
 import os
 import sys
 import time
+from pathlib import Path
 
 import psutil
 import pytest
@@ -60,6 +61,7 @@ def large_cold_task(tmp_path, monkeypatch):
     from twobyteasr.system import processes
     real_start = processes.popen_hidden_subprocess
     def cold_start(_command, **kwargs):
+        kwargs.setdefault('cwd', Path(__file__).resolve().parents[1])
         return real_start([sys.executable, '-B', '-X', 'utf8', '-c',
             'import time; time.sleep(.35); from twobyteasr.exports.subtitle_export_process import main; raise SystemExit(main())'],
             **kwargs)
