@@ -26,6 +26,8 @@ from .diagnosis_catalog import ACTION_LABELS
 HISTORY_ACTIONS = tuple(action for action in ACTION_LABELS
                         if action not in {"retry", "recover", "studio", "glossary_proofread", "mosi_resplit"})
 RESUME_ACTION = "resume"
+# Panel-local: start the AI analysis in place.
+ANALYSE_ACTION = "ai_analyse"
 _RESUME_ALIASES = {"retry", "recover", "resume", "mosi_resplit"}
 CONFIDENCE_LEVELS = {"high": ("高", 88), "medium": ("中", 62), "low": ("低", 35)}
 _LOCAL_CONFIDENCE = {"certain": "high", "likely": "medium", "possible": "low"}
@@ -103,10 +105,23 @@ def local_view(diagnosis, *, language: str = "zh") -> DiagnosisView:
     actions = [normalize_action(action) for action in issue.actions]
     actions = [action for action in actions if action]
     steps: list[DiagnosisStep] = []
-    for index, sentence in enumerate(advice):
-        steps.append(DiagnosisStep(title=sentence, action=actions[index] if index < len(actions) else ""))
-    for action in actions[len(steps):]:
-        steps.append(DiagnosisStep(title=translate(ACTION_LABELS.get(action, ""), language) or action, action=action))
+    used: set[str] = set()
+    for sentence in advice:
+        # A step's button must do what its sentence says.
+        action = ""
+        if "AI" in sentence and ("分析" in sentence or "analy" in sentence.lower()):
+            action = ANALYSE_ACTION
+        elif "回报问题" in sentence or "Report a problem" in sentence:
+            action = "support"
+        else:
+            action = next((item for item in actions if item not in used and item != "support"), "")
+        used.add(action)
+        steps.append(DiagnosisStep(title=sentence, action=action))
+    for action in actions:
+        if action not in used and action != "support":
+            steps.append(DiagnosisStep(title=translate(ACTION_LABELS.get(action, ""), language).rstrip("…") or action,
+                                       action=action))
+            used.add(action)
     return DiagnosisView(
         source="local",
         conclusion=conclusion,

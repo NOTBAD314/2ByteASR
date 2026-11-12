@@ -26,6 +26,9 @@ DEFAULT_SETTINGS = {
         # 本地侧门控孤立语气词省略。
         "api_transcribe_style": "clean",
         "speaker_source": "moss",
+        # 2026-11-12 (user): Qwen Audio 3.1 (Qwen 官方 API) separates speakers
+        # only when turned on in the model picker; its labels were poor.
+        "qwen_audio_diarize": False,
         "asr_vocabulary_id": "",
         "asr_vocabulary_model": "",
         # 四十轮：OSS 临时音频中转（Qwen filetrans 需要公网 URL）。

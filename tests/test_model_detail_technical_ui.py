@@ -251,7 +251,7 @@ def test_workshop_metrics_use_verified_group_scores_with_official_evidence():
 
     speed = _metric_evidence(qwen, "speed", "review")
     assert speed["available"] is True  # 2026-09-18 V+：公开资料速度参考分默认显示
-    assert speed["score"] == 30 and speed["value"] == "约 30"  # 估算分带“约”
+    assert speed["score"] == 30 and speed["value"] == "30" and speed["approx"] is True  # 2026-11-12: no 约 on screen
     assert "估算" in str(speed["note"]) or "同级类推" in str(speed["note"])
 
     align_evidence = _metric_evidence(aligner, "accuracy", "timeline")

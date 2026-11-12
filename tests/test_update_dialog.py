@@ -38,12 +38,11 @@ def test_component_offer_lists_only_changed_parts(app):
     dialog = UpdateOfferDialog(_check(plan))
     text = _texts(dialog)
     assert "0.6.6" in text and "0.6.5" in text
-    assert "23.0 MB" in text
     # 2026-11-12 (user): the kept parts and "nothing to download" lines are gone.
     assert "沿用" not in text and "高级字幕渲染器" not in text
     assert "修复" in text and "校对后能打开工作台" in text  # 2026-11-11: title and line of one card
     labels = [b.text() for b in dialog.findChildren(QPushButton)]
-    assert "下载并准备更新" in labels
+    assert "下载并准备更新 · 23.0 MB" in labels  # 2026-11-12: the size is on the button
     dialog.deleteLater()
 
 

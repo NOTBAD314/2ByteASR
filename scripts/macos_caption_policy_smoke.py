@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--scenario', choices=['stable-captions', 'chinese-complete-expression',
-        'speaker-board', 'timeline-cue-pill'], required=True)
+        'speaker-board', 'timeline-cue-pill', 'vm2-model-settings', 'workshop-columns'], required=True)
     args = parser.parse_args()
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise SystemExit('Native Apple Silicon macOS is required')
@@ -61,7 +61,9 @@ def main():
                 fixture.render_settings['fps'] = 30
             save_project(fixture, output / 'fixture.2byteproj')
         env = blank_environment(output, invoker, target)
-        env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = args.scenario
+        env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = 'vm2-model-settings' if args.scenario == 'workshop-columns' else args.scenario
+        if args.scenario == 'workshop-columns':
+            env['TWOBYTEASR_WORKSHOP_COLUMNS_ONLY'] = '1'
         with (output / 'caption-policy.log').open('wb') as stream:
             # The guard project is not a second CLI navigation request. Each
             # scene opens its own fixture through the normal MainWindow API.
@@ -72,7 +74,7 @@ def main():
         identity = json.loads((output / 'local/2ByteASR/logs/build_identity.json').read_text('utf8'))
         checks = audit.get('checks', [])
         expected_checks = {'stable-captions': 50, 'chinese-complete-expression': 17,
-            'speaker-board': 20, 'timeline-cue-pill': 22}[args.scenario]
+            'speaker-board': 20, 'timeline-cue-pill': 22, 'vm2-model-settings': 100, 'workshop-columns': 100}[args.scenario]
         result.update(application_result=audit, identity=identity, checks=len(checks))
         result['passed'] = (result['process_exit'] == 0 and audit.get('passed') is True
             and len(checks) >= expected_checks and all(row['passed'] for row in checks)

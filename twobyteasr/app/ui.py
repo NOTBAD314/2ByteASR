@@ -404,12 +404,12 @@ TIMELINE_MODEL_CHOICES = (
 )
 
 
-def populate_available_asr_choices(primary, review, timeline, settings, root=APP_ROOT):
+def populate_available_asr_choices(primary, review, timeline, settings, root=APP_ROOT, *, installed=None):
     """Populate selectors from complete local installs, never from catalog claims."""
     from ..local_models.model_workshop import MODELS, model_platform_available
     unavailable_backends = {backend for model in MODELS if not model_platform_available(model)
                             for _role, backend in model.adapter_bindings}
-    installed = installed_model_keys(Path(root))
+    installed = installed_model_keys(Path(root)) if installed is None else set(installed)
     desired = settings.get("models", {})
     missing = []
 
@@ -1303,7 +1303,7 @@ class MainWindow(QWidget):
     def _construct_lazy_page(self, name: str, prepared=None):
         started = time.perf_counter()
         if name == "workshop":
-            page = ModelWorkshopPage(APP_ROOT, self.legacy.RUNTIME_SETTINGS, self)
+            page = ModelWorkshopPage(APP_ROOT, self.legacy.RUNTIME_SETTINGS, self, defer_ui=True)
             self._workshop_page_instance = page
             page.return_requested.connect(self._return_to_settings)
             page.terms_requested.connect(self._open_terms_from_workshop)
@@ -1316,6 +1316,7 @@ class MainWindow(QWidget):
             page.api_configure_requested.connect(self._open_api_setup_guide)
             page.backend_requested.connect(self._apply_workshop_backend)
             page.auto_stage_changed.connect(self._timeline_helper_changed)
+            page.models_refreshed.connect(self._on_model_inventory_refreshed)
             if self._density_comfortable is not None:
                 page.apply_density(self._density_comfortable)
         elif name == "history":
@@ -1327,6 +1328,7 @@ class MainWindow(QWidget):
                 _reporting.REPORT_ROOT,
                 self,
                 extra_roots=_reporting.LEGACY_REPORT_ROOTS,
+                async_scan=True,
             )
             self._history_page_instance = page
             page.recognition_requested.connect(self._return_to_settings)
@@ -2000,7 +2002,9 @@ class MainWindow(QWidget):
             pass
 
     def _open_model_workshop(self):
+        self._interaction_busy_until = time.perf_counter() + .35
         self._ensure_recognition_page()
+        self.workshop_page.ensure_ui()
         self.workshop_page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
         self.workshop_page.restore_active_navigation()
         self._switch_page(self.workshop_page)
@@ -2584,6 +2588,7 @@ class MainWindow(QWidget):
 
     @navigation_timed('home.return')
     def _return_to_settings(self):
+        self._interaction_busy_until = time.perf_counter() + .4
         loading = self.__dict__.get('_studio_loading_session')
         if loading is not None and (loading.active or loading.state == 'failed'):
             loading.return_target = 'home'
@@ -2935,6 +2940,7 @@ class MainWindow(QWidget):
         )
 
     def _open_recognition_history(self):
+        self._interaction_busy_until = time.perf_counter() + .35
         # Nav buttons are checkable and exclusive: reset the highlight that may
         # have been left on another item when this page was visited before.
         if hasattr(self.history_page, "restore_active_navigation"):
@@ -2967,13 +2973,30 @@ class MainWindow(QWidget):
                 **current_models,
             }
         }
+        from ..local_models.model_status_cache import cached_registry
+        registry = cached_registry(APP_ROOT)
+        installed = registry.installed_keys() if registry is not None else self.__dict__.get('_home_installed_model_keys')
+        if installed is None:
+            installed = installed_model_keys(APP_ROOT)
+        self._home_installed_model_keys = set(installed)
         self._missing_saved_asr_backends = populate_available_asr_choices(
             self.primary_asr_backend,
             self.qwen_asr_backend,
             self.firered_asr_backend,
             live_settings,
+            installed=installed,
         )
         self._apply_asr_backend_mode()
+
+    def _on_model_inventory_refreshed(self):
+        page = self.built_page('workshop')
+        if page is None or page._registry is None:
+            return
+        if page._installed == self.__dict__.get('_home_installed_model_keys'):
+            return
+        self._home_installed_model_keys = set(page._installed)
+        if self.pages.currentWidget() is self.settings_scroll:
+            self._refresh_available_asr_choices()
 
     def _open_terms_from_workshop(self):
         self._manage_terms()
@@ -3559,9 +3582,21 @@ class MainWindow(QWidget):
         else:
             QMessageBox.warning(self, tr('范例工程'), tr('没能准备范例工程：{reason}', reason=value))
 
+    def _studio_idle_allowed(self):
+        if self.__dict__.get('_studio_entry_pending') is not None:
+            return True
+        module = sys.modules.get('twobyteasr.app.home_tour')
+        tour_type = getattr(module, 'GuidedTour', None) if module is not None else None
+        tour = self.findChild(tour_type) if tour_type is not None else None
+        return (self.pages.currentWidget() is self.settings_scroll
+                and not self._modal_host.isVisible()
+                and not (tour is not None and tour.mode not in ('idle','closed') and tour.isVisible())
+                and time.perf_counter() >= self.__dict__.get('_interaction_busy_until', 0))
+
     def _warm_studio_module(self):
         """Warm dependencies without a monolithic GUI-thread import."""
-        if QApplication.mouseButtons() != Qt.MouseButton.NoButton or QApplication.activePopupWidget():
+        if (not self._studio_idle_allowed() or QApplication.mouseButtons() != Qt.MouseButton.NoButton
+                or QApplication.activePopupWidget()):
             QTimer.singleShot(1000, self, self._warm_studio_module)
             return
         # Runtime fingerprinting is one of these callbacks and imports the
@@ -3582,7 +3617,7 @@ class MainWindow(QWidget):
         from .studio_module_preload import StudioModulePreloader
         loader = self.__dict__.get('_studio_module_preloader')
         if loader is None:
-            loader = self._studio_module_preloader = StudioModulePreloader(self)
+            loader = self._studio_module_preloader = StudioModulePreloader(self, allowed=self._studio_idle_allowed)
             loader.ready.connect(self._studio_modules_prepared)
             loader.failed.connect(self._studio_module_prepare_failed)
         loader.start()
@@ -9441,7 +9476,12 @@ class MainWindow(QWidget):
                                            spoken, "字幕语言是英语，{value0} 只用于中文"), value0=timeline_name)
             timeline_name = translate(language_stage["name"], language)
         timeline_short = dict(timeline_short, **{timeline_backend: timeline_name})
-        installed = installed_model_keys(APP_ROOT)
+        from ..local_models.model_status_cache import cached_registry
+        registry = cached_registry(APP_ROOT)
+        installed = registry.installed_keys() if registry is not None else self.__dict__.get('_home_installed_model_keys')
+        if installed is None:
+            installed = installed_model_keys(APP_ROOT)
+        self._home_installed_model_keys = set(installed)
         # The files each choice needs, from the selectors' own lists. A copy
         # kept here lacked the Apple Silicon (MLX) choices, so on a Mac the
         # downloaded Qwen3 aligner always said 需要下载 (2026-10-28).
@@ -9593,7 +9633,10 @@ class MainWindow(QWidget):
         _t0 = _t.perf_counter()
         try:
             # 1) Model install status (used by workshop + picker cards)
-            keys = installed_model_keys(APP_ROOT)
+            from ..local_models.model_status_cache import request_registry, cached_registry
+            request_registry(APP_ROOT)
+            registry = cached_registry(APP_ROOT)
+            keys = registry.installed_keys() if registry is not None else set()
             # Warm the workshop cache (cheap assignment, no UI rebuild). The
             # page itself is built on first use and picks these keys up then.
             self._preloaded_installed_model_keys = set(keys)
@@ -9676,12 +9719,11 @@ class MainWindow(QWidget):
         Card shows at final size immediately; only backdrop fades. Skeleton + defer heavy work.
         四十二轮：on_closed 供二级宿主（Studio 识别弹窗）在弹窗关闭后恢复自身。
         """
+        self._interaction_busy_until = time.perf_counter() + .35
         self._popup_click_ts = time.perf_counter() if GUI_PROFILE_ENABLED else None
         self._popup_first_paint_title = f"选择{ModelPickerPanel.ROLE_LABELS.get(role, '识别')}模型"
         self.workshop_page.runtime_settings = self.legacy.RUNTIME_SETTINGS
-        latest_installed = installed_model_keys(APP_ROOT)
-        if latest_installed != self.workshop_page._installed:
-            self.workshop_page._installed = latest_installed
+        self.workshop_page._check_registry_in_background()
         installed_before = frozenset(self.workshop_page._installed)
         # The picker only needs controller state. Refiltering and repainting the
         # hidden full Workshop page made every open pay for two interfaces.
@@ -9717,6 +9759,7 @@ class MainWindow(QWidget):
             min_size=(760, 560),
             on_closed=_after_close,
             retain_content=True,
+            bare=True,
         )
         # Log the request time (real first-paint is measured inside ModalHost).
         try:
@@ -10789,6 +10832,7 @@ class MainWindow(QWidget):
             QMessageBox.information(self, tr('添加术语'), tr('该术语已存在或内容为空。'))
 
     def _manage_terms(self):
+        self._interaction_busy_until = time.perf_counter() + .35
         # Full CRUD is a resident page. The lightweight per-batch selector
         # remains in _pick_glossaries().
         self._switch_page(self.term_library_page)

@@ -247,10 +247,24 @@ class ScriptMatchJob(QThread):
 
 
 def open_home_script_match(window) -> None:
-    from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit,
-                                   QProgressBar, QPushButton, QVBoxLayout)
+    """The 匹配文稿 wizard (2026-11-12, user picked design C).
+
+    A rounded window of its own (no Windows title bar): ① 选素材 (drop or
+    choose), ② 贴文稿 with the bunny's tip, ③ 开始匹配 runs the job. With
+    media already on the home page it opens on step ②.
+    """
+    from PySide6.QtCore import QEvent, QObject, QSize, Qt
+    from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
+                                   QLabel, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSizeGrip,
+                                   QStackedWidget, QVBoxLayout, QWidget)
     from ..design.presentation import button_role
+    from ..design.studio_theme import apply_secondary_surface_theme
+    from ..design.themed_icons import cached_icon_pixmap
+    from ..design.theme_manager import theme_definition, theme_key
     from ..studio.studio_script_match import read_script_file
+    from .home_script_match_ui import DropZone, StepBadge, StepLine
+    from .rounded_window import SHADOW, RoundedWindow
+    from .settings_widgets import Bunny
     media = [str(path) for path in getattr(window, 'media_paths', ()) if str(path).strip()]
     # 'error': (reason, full error) of the last failed run, shown until an input changes.
     state = {'media': media[0] if media else '', 'job': None, 'ready': {}, 'error': None}
@@ -263,40 +277,185 @@ def open_home_script_match(window) -> None:
     dialog = _Dialog(window)
     dialog.setObjectName('homeScriptMatchDialog')
     dialog.setWindowTitle(tr('匹配文稿'))
-    dialog.resize(760, 620)
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(20, 18, 20, 16)
-    layout.setSpacing(10)
-    intro = QLabel(tr('你已经有完整文稿并断好句：每行一条字幕。这里只生成字级时间来对齐，文字保持你输入的样子。'))
-    intro.setWordWrap(True)
-    layout.addWidget(intro)
-    media_row = QHBoxLayout()
+    dialog.setMinimumSize(560 + 2 * SHADOW, 520 + 2 * SHADOW)
+    dialog.resize(700 + 2 * SHADOW, 640 + 2 * SHADOW)
+    outer = QVBoxLayout(dialog)
+    outer.setContentsMargins(0, 0, 0, 0)
+    root = QWidget()
+    root.setObjectName('scriptWizardRoot')
+    root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    outer.addWidget(root)
+    layout = QVBoxLayout(root)
+    layout.setContentsMargins(26, 16, 22, 20)
+    layout.setSpacing(12)
+
+    header = QFrame()
+    header.setObjectName('scriptWizardHeader')
+    top = QHBoxLayout(header)
+    top.setContentsMargins(0, 0, 0, 0)
+    title = QLabel(tr('匹配文稿'))
+    title.setObjectName('scriptWizardTitle')
+    close = QPushButton('×')
+    close.setObjectName('scriptWizardClose')
+    close.setToolTip(tr('关闭'))
+    close.setAccessibleName(tr('关闭'))
+    top.addWidget(title)
+    top.addStretch(1)
+    top.addWidget(close)
+    layout.addWidget(header)
+
+    # ①──②──③
+    stepper = QHBoxLayout()
+    stepper.setSpacing(8)
+    badges, names, lines = [], [], []
+    media_detail = QLabel()
+    media_detail.setObjectName('scriptStepDetail')
+    for number, name in ((1, '选素材'), (2, '贴文稿'), (3, '开始匹配')):
+        badge = StepBadge(number)
+        caption = QLabel(tr(name))
+        caption.setObjectName('scriptStepName')
+        words = QVBoxLayout()
+        words.setSpacing(0)
+        words.addStretch(1)
+        words.addWidget(caption)
+        if number == 1:
+            words.addWidget(media_detail)
+        words.addStretch(1)
+        stepper.addWidget(badge)
+        stepper.addLayout(words)
+        badges.append(badge)
+        names.append(caption)
+        if number < 3:
+            line = StepLine()
+            lines.append(line)
+            stepper.addWidget(line, 1)
+    layout.addLayout(stepper)
+
+    def tip(text):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(Bunny(54), 0, Qt.AlignmentFlag.AlignBottom)
+        bubble = QLabel(text)
+        bubble.setObjectName('scriptWizardTip')
+        bubble.setWordWrap(True)
+        bubble.setTextFormat(Qt.TextFormat.RichText)
+        row.addWidget(bubble, 1, Qt.AlignmentFlag.AlignBottom)
+        return row
+
+    pages = QStackedWidget()
+    layout.addWidget(pages, 1)
+    accent = theme_definition(theme_key()).accent
+
+    # ① 选素材
+    media_page = QWidget()
+    first = QVBoxLayout(media_page)
+    first.setContentsMargins(0, 6, 0, 0)
+    first.setSpacing(14)
+    first.addLayout(tip(tr('先告诉我要对哪个视频或音频，拖进来或者点按钮选都可以。')))
+
+    def set_media(path):
+        state['media'] = path
+        inputs_changed()
+        go(1)
+
+    zone = DropZone(set_media)
+    zone_lines = QVBoxLayout(zone)
+    zone_lines.setContentsMargins(24, 28, 24, 28)
+    zone_lines.setSpacing(10)
+    film = QLabel()
+    film.setPixmap(cached_icon_pixmap('fa5s.film', accent, QSize(34, 34)))
+    film.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    drop_title = QLabel(tr('把视频或音频拖到这里'))
+    drop_title.setObjectName('scriptDropTitle')
+    drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    choose = button_role(QPushButton(tr('选择素材…')), 'primary')
     media_label = QLabel()
     media_label.setObjectName('homeScriptMatchMedia')
     media_label.setWordWrap(True)
-    choose = button_role(QPushButton(tr('选择素材…')), 'secondary')
-    media_row.addWidget(media_label, 1)
-    media_row.addWidget(choose)
-    layout.addLayout(media_row)
-    language_row = QHBoxLayout()
-    language_row.addWidget(QLabel(tr('文稿语言')))
-    language_box = QComboBox()
+    media_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    zone_lines.addStretch(1)
+    zone_lines.addWidget(film)
+    zone_lines.addWidget(drop_title)
+    zone_lines.addWidget(choose, 0, Qt.AlignmentFlag.AlignCenter)
+    zone_lines.addWidget(media_label)
+    zone_lines.addStretch(1)
+    first.addWidget(zone, 1)
+    pages.addWidget(media_page)
+
+    # ② 贴文稿
+    script_page = QWidget()
+    second = QVBoxLayout(script_page)
+    second.setContentsMargins(0, 6, 0, 0)
+    second.setSpacing(12)
+    second.addLayout(tip(tr('每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>文字我不会改，只负责把时间对准。')))
+    editor = QFrame()
+    editor.setObjectName('scriptEditorFrame')
+    editor_lines = QVBoxLayout(editor)
+    editor_lines.setContentsMargins(8, 6, 10, 10)
+    editor_lines.setSpacing(4)
+    script = QPlainTextEdit()
+    script.setObjectName('homeScriptMatchInput')
+    script.setPlaceholderText(tr('每行一条字幕，例如：\n大家好，欢迎回来\n今天我们继续打洛克王国'))
+    editor_lines.addWidget(script, 1)
+    tools = QHBoxLayout()
+    tools.setSpacing(8)
+    line_count = QLabel()
+    line_count.setObjectName('scriptLineCount')
+    load = QPushButton(tr('从文件读取…'))
+    load.setObjectName('scriptEditorTool')
+    paste = QPushButton(tr('粘贴'))
+    paste.setObjectName('scriptEditorTool')
+    tools.addSpacing(6)
+    tools.addWidget(line_count)
+    tools.addStretch(1)
+    tools.addWidget(load)
+    tools.addWidget(paste)
+    editor_lines.addLayout(tools)
+    second.addWidget(editor, 1)
+
+    # 文稿语言: four chips and 更多 for the other recognition languages.
+    language_box = QComboBox(script_page)
     language_box.setObjectName('homeScriptMatchLanguage')
+    language_box.hide()
     for code, caption in (('', tr('自动判断')), ('zh', tr('中文')), ('ja', tr('日语')), ('en', tr('英语')),
                           ('ko', tr('韩语')), ('es', tr('西班牙语')), ('de', tr('德语')), ('fr', tr('法语')),
                           ('pt', tr('葡萄牙语')), ('it', tr('意大利语')), ('ru', tr('俄语'))):
         language_box.addItem(caption, code)
-    language_row.addWidget(language_box)
+    language_row = QHBoxLayout()
+    language_row.setSpacing(8)
+    language_caption = QLabel(tr('文稿语言'))
+    language_caption.setObjectName('scriptLanguageCaption')
+    language_row.addWidget(language_caption)
+    chips = QButtonGroup(dialog)
+    chips.setExclusive(True)
+    chip_for = {}
+    for index in range(4):
+        chip = QPushButton(language_box.itemText(index))
+        chip.setObjectName('scriptLanguageChip')
+        chip.setCheckable(True)
+        chip.setAutoDefault(False)
+        chip.clicked.connect(lambda _checked=False, i=index: language_box.setCurrentIndex(i))
+        chips.addButton(chip)
+        chip_for[index] = chip
+        language_row.addWidget(chip)
+    more = QPushButton(tr('更多') + ' ▾')
+    more.setObjectName('scriptLanguageChip')
+    more.setCheckable(True)
+    more.setAutoDefault(False)
+    more_menu = QMenu(more)
+    for index in range(4, language_box.count()):
+        more_menu.addAction(language_box.itemText(index), lambda i=index: language_box.setCurrentIndex(i))
+    more.setMenu(more_menu)
+    chips.addButton(more)
+    language_row.addWidget(more)
     language_row.addStretch(1)
-    layout.addLayout(language_row)
-    script = QPlainTextEdit()
-    script.setObjectName('homeScriptMatchInput')
-    script.setPlaceholderText(tr('每行一条字幕，例如：\n大家好，欢迎回来\n今天我们继续打洛克王国'))
-    layout.addWidget(script, 1)
+    second.addLayout(language_row)
     runs = QLabel()
     runs.setObjectName('homeScriptMatchRuns')
     runs.setWordWrap(True)
-    layout.addWidget(runs)
+    second.addWidget(runs)
+    pages.addWidget(script_page)
+
     status = QLabel('')
     status.setObjectName('homeScriptMatchStatus')
     status.setWordWrap(True)
@@ -308,20 +467,68 @@ def open_home_script_match(window) -> None:
     bar.hide()
     layout.addWidget(bar)
     actions = QHBoxLayout()
-    load = button_role(QPushButton(tr('从文件读取…')), 'secondary')
+    actions.setSpacing(10)
+    back = button_role(QPushButton(tr('上一步')), 'ghost')
     workshop = button_role(QPushButton(tr('打开模型工坊')), 'secondary')
     copy_error = button_role(QPushButton(tr('复制错误详情')), 'secondary')
     copy_error.setObjectName('homeScriptMatchCopyError')
     copy_error.hide()
     cancel = button_role(QPushButton(tr('取消')), 'secondary')
+    forward = button_role(QPushButton(tr('下一步')), 'primary')
     start = button_role(QPushButton(tr('开始匹配')), 'primary')
-    actions.addWidget(load)
+    for button in (back, workshop, copy_error, cancel, forward, start, choose, close):
+        button.setAutoDefault(False)
+    actions.addWidget(back)
     actions.addWidget(workshop)
     actions.addWidget(copy_error)
     actions.addStretch(1)
     actions.addWidget(cancel)
+    actions.addWidget(forward)
     actions.addWidget(start)
     layout.addLayout(actions)
+
+    def repolish(widget, name, value):
+        widget.setProperty(name, value)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    class _EditorFocus(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+                repolish(editor, 'focused', 'true' if event.type() == QEvent.Type.FocusIn else 'false')
+            return False
+
+    focus_watch = _EditorFocus(dialog)
+    script.installEventFilter(focus_watch)
+
+    def go(index):
+        pages.setCurrentIndex(index)
+        refresh()
+        if index == 1:
+            script.setFocus()
+
+    def show_steps():
+        page = pages.currentIndex()
+        running = state['job'] is not None
+        step_states = (('done', 'current', 'todo') if page == 1 and not running else
+                       ('done', 'done', 'current') if running else ('current', 'todo', 'todo'))
+        for badge, caption, value in zip(badges, names, step_states):
+            badge.set_state(value)
+            repolish(caption, 'stepState', value)
+        lines[0].set_done(step_states[0] == 'done')
+        lines[1].set_done(step_states[1] == 'done')
+        back.setVisible(page == 1)
+        forward.setVisible(page == 0)
+        start.setVisible(page == 1)
+
+    def sync_language_chips(*_args):
+        index = language_box.currentIndex()
+        if index in chip_for:
+            chip_for[index].setChecked(True)
+            more.setText(tr('更多') + ' ▾')
+        else:
+            more.setChecked(True)
+            more.setText(language_box.itemText(index) + ' ▾')
 
     def current_language():
         return script_language(parse_script(script.toPlainText()), str(language_box.currentData() or ''))
@@ -331,6 +538,12 @@ def open_home_script_match(window) -> None:
         media_label.setText(tr('素材：{name}', name=name) if name else tr('素材：还没选择'))
         if len(media) > 1 and state['media'] == media[0]:
             media_label.setText(media_label.text() + tr('（本批共 {count} 个，只匹配第一个）', count=len(media)))
+        media_detail.setText(name)
+        media_detail.setToolTip(state['media'])
+        media_detail.setVisible(bool(name))
+        drop_title.setText(tr('换一个视频或音频') if name else tr('把视频或音频拖到这里'))
+        count = len(parse_script(script.toPlainText()))
+        line_count.setText(tr('{count} 行 → {count} 条字幕', count=count) if count else tr('还没有文稿'))
         language = current_language()
         if uses_qwen(language):
             runs.setText(tr('只运行：{asr} 听写 + {aligner} 字词时间（本机）。不会运行 MOSS、AI 校对与 AI 断句，也不上传。'
@@ -350,8 +563,11 @@ def open_home_script_match(window) -> None:
             # A failed run keeps its reason here; it used to be cleared right away,
             # so a failure looked like the button "did nothing" (2026-10-16).
             status.setText(tr('匹配没有完成：{error}', error=error[0]) if error else ('' if ready else reason))
+        status.setVisible(bool(status.text()))
         copy_error.setVisible(bool(error) and state['job'] is None)
+        forward.setEnabled(bool(state['media']))
         start.setEnabled(bool(ready and state['media'] and state['job'] is None))
+        show_steps()
 
     def inputs_changed():
         state['error'] = None
@@ -362,8 +578,7 @@ def open_home_script_match(window) -> None:
         pattern = ' '.join('*' + suffix for suffix in sorted(SUPPORTED_MEDIA_SUFFIXES))
         path, _ = QFileDialog.getOpenFileName(dialog, tr('选择素材'), '', tr('音视频 ({pattern})', pattern=pattern))
         if path:
-            state['media'] = path
-            inputs_changed()
+            set_media(path)
 
     def load_file():
         path, _ = QFileDialog.getOpenFileName(dialog, tr('选择文稿'), '', tr('文本文件 (*.txt);;所有文件 (*)'))
@@ -372,55 +587,70 @@ def open_home_script_match(window) -> None:
                 script.setPlainText(read_script_file(path))
             except (OSError, ValueError) as exc:
                 status.setText(str(exc))
+                status.show()
 
     def finished(path, match):
         bar.hide()
         state['job'] = None
         status.setText(tr('共 {count} 句；文稿 {coverage}% 的字对上了字级时间；{review} 句标为待检查。正在打开工作台…',
                           count=len(match.lines), coverage=round(match.coverage * 100), review=match.review_count))
+        status.show()
         dialog.accept()
         window.open_studio_project(path, mode='edit', source='script_match')
+
+    inputs = (script, load, paste, choose, cancel, back, more, zone, *chip_for.values())
 
     def failed(reason, detail=''):
         bar.hide()
         state['job'] = None
         state['error'] = (reason, detail or reason)
         copy_error.setText(tr('复制错误详情'))
-        for widget in (script, load, choose, cancel, language_box):
+        for widget in inputs:
             widget.setEnabled(True)
         refresh()
 
     def copy_failure():
-        from PySide6.QtWidgets import QApplication
         if state['error']:
             QApplication.clipboard().setText(state['error'][1])
             copy_error.setText(tr('已复制'))
 
     def begin():
-        lines = parse_script(script.toPlainText())
-        if not lines:
+        lines_ = parse_script(script.toPlainText())
+        if not lines_:
             status.setText(tr('文稿是空的：每行一条字幕'))
+            status.show()
             return
         state['error'] = None
         copy_error.hide()
-        job = ScriptMatchJob(state['media'], lines, dialog, language=current_language())
+        job = ScriptMatchJob(state['media'], lines_, dialog, language=current_language())
         state['job'] = job
-        job.progressed.connect(status.setText)
+        job.progressed.connect(lambda text: (status.setText(text), status.show()))
         job.succeeded.connect(finished)
         job.failed.connect(failed)
-        for widget in (script, load, choose, start, cancel, language_box):
+        for widget in (*inputs, start):
             widget.setEnabled(False)
         bar.show()
+        show_steps()
         job.start()
 
+    close.clicked.connect(dialog.reject)
     choose.clicked.connect(choose_media)
     load.clicked.connect(load_file)
+    paste.clicked.connect(script.paste)
+    back.clicked.connect(lambda: go(0))
+    forward.clicked.connect(lambda: go(1))
     workshop.clicked.connect(lambda: (dialog.reject(), window._open_model_workshop()))
     copy_error.clicked.connect(copy_failure)
     cancel.clicked.connect(dialog.reject)
     start.clicked.connect(begin)
-    language_box.currentIndexChanged.connect(lambda _index: inputs_changed())
+    language_box.currentIndexChanged.connect(lambda _index: (sync_language_chips(), inputs_changed()))
     script.textChanged.connect(inputs_changed)
+    apply_secondary_surface_theme(dialog)
+    dialog.chrome = RoundedWindow(dialog, root, title_areas=[header], radius=26, maximizable=False)
+    for grip in dialog.findChildren(QSizeGrip):
+        grip.setMaximumSize(0, 0)
+    sync_language_chips()
+    pages.setCurrentIndex(1 if state['media'] else 0)
     refresh()
     window._home_script_match_dialog = dialog
     dialog._begin = begin  # automated checks drive the real handlers

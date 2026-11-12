@@ -48,26 +48,19 @@ QComboBox#headerLanguage::drop-down {{ subcontrol-origin: content; subcontrol-po
 
 def _build_surface_qss(t):
     from ..app.home_studio_entry import studio_paper_colors
+    from .soft_dialog_qss import build_script_match_qss, build_settings_qss
     paper, paper_hover, paper_edge, paper_ink, paper_muted = studio_paper_colors(t)
     r=RADIUS_SCALE
     return f"""
 QLabel[typography="title"] {{ font-family: {TITLE_FONT_STACK}; font-size: {TYPE_SCALE['heading1']}px; font-weight: {WEIGHT_SCALE['heavy']}; color: {t.text}; }}
 QLabel[typography="section"] {{ font-family: {UI_FONT_STACK}; font-size: {TYPE_SCALE['section']}px; font-weight: {WEIGHT_SCALE['semibold']}; color: {t.text}; }}
 QLabel[typography="meta"] {{ font-family: {UI_FONT_STACK}; font-size: {TYPE_SCALE['small']}px; font-weight: {WEIGHT_SCALE['regular']}; color: {t.text_muted}; }}
-QDialog#applicationSettings {{ background: {t.app_background}; color: {t.text}; }}
-QFrame#settingsHeader, QFrame#settingsFooter {{ background: {t.app_background}; border: 0; }}
-QFrame#settingsHeader {{ border-bottom: 1px solid {t.border}; }}
-QFrame#settingsFooter {{ border-top: 1px solid {t.border}; }}
-QListWidget#settingsNavigation {{ background: {t.app_background}; border: 0; padding: 8px; }}
-QListWidget#settingsNavigation::item {{ height: 36px; padding: 0 12px; border-radius: {r['control']}px; color: {t.text_secondary}; }}
-QListWidget#settingsNavigation::item:selected {{ background: {t.accent_soft}; color: {t.text}; border: 0; }}
-QWidget#settingsPage, QScrollArea#settingsScroll, QWidget#settingsViewport {{ background: {t.surface}; }}
-QFrame#settingsSection {{ background: transparent; border: 0; border-top: 1px solid {t.border}; border-radius: 0; }}
-QLabel#settingsDescription {{ color: {t.text_secondary}; font-size: 13px; font-weight: 500; }}
-QLabel#settingsRowTitle {{ color: {t.text}; font-size: 13px; font-weight: 500; }}
+{build_settings_qss(t)}
+{build_script_match_qss(t)}
 QLabel#buildIdentityLabel {{ background: {t.panel}; color: {t.text_secondary}; padding: 16px;
     border: 1px solid {t.border}; border-radius: {r['control']}px; font-size: 12px; font-weight: 400; }}
 QFrame#dialogSurface {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: {r['modal']}px; }}
+QFrame#dialogSurface[chrome="bare"] {{ border-radius: 28px; }}
 QFrame#dialogSurfaceHeader {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
 QLabel#dialogSurfaceTitle {{ color: {t.text}; font-family: {UI_FONT_STACK}; font-size: 16px; font-weight: {WEIGHT_SCALE['semibold']}; background: transparent; }}
 QWidget#dialogSurfaceBody, QFrame#dialogSurfaceFooter {{ background: transparent; color: {t.text}; border: 0; }}

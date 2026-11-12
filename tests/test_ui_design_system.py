@@ -58,7 +58,7 @@ def test_workshop_wide_density_uses_reference_proportions():
     widths=(page.sidebar.width(),page.detail.width())
     page.apply_density(True);_app().processEvents()
     assert (page.sidebar.width(),page.detail.width()) == widths
-    assert all(card.minimumHeight() == 176 for card in page._cards.values())
+    assert all(card.minimumHeight() == 84 for card in page._cards.values())  # one table row per model (2026-11-12)
     # 2026-10-12: the sidebar is the column shared with Recognition History and
     # Term Library (one fixed width, zoom-scaled); the list and detail flex.
     from twobyteasr.design.ui_navigation import SIDEBAR_WIDTH
@@ -86,8 +86,8 @@ def test_model_scroll_surfaces_do_not_override_card_and_pill_qss():
     assert picker.current_badge.text()
     assert all(card.state_badge.text() for card in picker.cards.values())
     assert all(card.action.text() for card in picker.cards.values())
-    # 2026-11-11: one table row per model under the column header.
-    assert picker.list_header.objectName() == "workshopListHeader"
+    # 2026-11-12 (picker design B): a card wall with filter chips, not table rows.
+    assert set(picker.filter_buttons) >= {"all", "cloud", "local"}
     assert all(card.minimumHeight() >= 84 for card in picker.cards.values())
     picker.deleteLater()
     page.deleteLater()

@@ -311,8 +311,10 @@ class PillLabel(QLabel):
         fm = self.fontMetrics()
         text = self.text() or ""
         # Account for typical QSS horizontal padding (left+right ~12-16px total + border).
-        w = fm.horizontalAdvance(text) + 18
-        h = max(super().sizeHint().height(), fm.height() + 8)
+        from ..app.ui_zoom import px
+        style_hint=super().sizeHint()
+        w = max(style_hint.width(),fm.horizontalAdvance(text)+px(18,self))
+        h = max(style_hint.height(),fm.height()+px(8,self))
         from PySide6.QtCore import QSize
         return QSize(w, h)
 
