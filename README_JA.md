@@ -23,14 +23,14 @@
 
 ## ダウンロード
 
-Windows 現行版：**0.9.3**（2026-11-04）。Mac は **0.8.8 実験版**を継続します。
+現行版：**Windows・Apple Silicon Mac 1.0.0**（2026-11-12）。
 
 | 環境 | ダウンロード |
 | --- | --- |
-| Windows 10 1809以降、64bit | [2ByteASR-Setup-0.9.3.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.9.3/2ByteASR-Setup-0.9.3.exe)、約1.1GB |
-| Apple Silicon Mac、macOS14以降 | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg)、約578MB、**実験版**。Intel Mac非対応 |
+| Windows 10 1809以降、64bit | [2ByteASR-Setup-1.0.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.0/2ByteASR-Setup-1.0.0.exe)、約1164MB |
+| Apple Silicon Mac、macOS14以降 | [2ByteASR-1.0.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.0/2ByteASR-1.0.0-macos-arm64-Setup.dmg)、約587MB、**実験版**。Intel Mac非対応 |
 
-保存してアプリを終了してから上書きインストールしてください。Windowsの0.6.5以降はアプリ内更新も利用できます。[リリースノート・チェックサム](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.9.3) · [導入ガイド](docs/product-guide.ja.md)。WindowsのAuthenticode署名とApple公証はありません。Source、ライセンス、コンポーネント、署名の添付は検証・ソース提供・アプリ内更新用です。
+保存して終了してから上書きインストールしてください。Windows 0.6.5以降はアプリ内更新も利用できます。MacはApplicationsのアプリを置き換えてください。[変更点・検証範囲・チェックサム](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.0.0) · [GitCodeミラー](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.0.0) · [導入ガイド](docs/product-guide.ja.md)。WindowsのAuthenticode署名とApple公証はありません。Source、ライセンス、コンポーネント、署名の添付は検証・ソース提供・アプリ内更新用です。
 
 Linux向け[Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)も利用できます。
 
