@@ -1,47 +1,63 @@
-name: verify-public-release
-
-# Releases are built, signed and uploaded as drafts on the controlled build
-# machine (scripts/release_pipeline.py); the signing key never reaches CI.
-# This manual workflow only checks, without any credentials, that a published
-# release and every asset its signed update manifest references can be
-# downloaded anonymously. It never creates, edits or deletes a release, and it
-# is not triggered by pushing or creating tags.
+name: full-GitCode-pre-publication-audit
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, for example v0.6.5"
         required: true
-
+        type: string
 permissions: {}
-
 jobs:
-  anonymous-download-check:
+  anonymous-read-only:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+      SPEC_B64: 'W3sidGFnIjoidjEuMC4yIiwibmFtZSI6IjJCeXRlQVNSLTEuMC4yLWFwcC05NzkxMjY5MWVjYWEuemlwIiwic2l6ZSI6MTE2ODUyNzAwLCJzaGEyNTYiOiI2YzFiY2Y4NmJlNDA5OGZkYmU4YmIwNzA5ZWM5NTg3MTI4ZjM4NzExOTE4ZmExZGRiNDU2MjdjNjlkYTRhZmJlIn0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiMkJ5dGVBU1ItMS4wLjItbWFjb3MtYXJtNjQtU2V0dXAuZG1nIiwic2l6ZSI6NTkwMDc5OTQ0LCJzaGEyNTYiOiIxNTI0OWQ2NmZmOWEwZDdhNTNiMjdjMDc3MzMyOWY3ZWMzNDNlMzc3OWQ2OGY3NjU5OTgxMTgzZjBiYzU1ZDU5In0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiMkJ5dGVBU1ItMS4wLjItbWFjb3MtYXJtNjQuanNvbiIsInNpemUiOjQ1NjMsInNoYTI1NiI6IjZmNTZjMTRiZWNhNzc4NTEyNzJmNTBhNWQzNGJhMmQxMmI4ODY3ZmNiZWQ2M2MyNGVkYzU5ZmI1MmUzMWQ0OGEifSx7InRhZyI6InYxLjAuMiIsIm5hbWUiOiIyQnl0ZUFTUi1TZXR1cC0xLjAuMi5leGUiLCJzaXplIjoxMTY0NDU4MTk2LCJzaGEyNTYiOiIxYTQ3ZTM0NjM1Zjk5OTc4MjJhY2QwZjc0YTAzOWNlMWZiNjE2YjQ2ZjI4ODk0NWIyMTc5NTg5M2I1ZmFlMWFlIn0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiMkJ5dGVBU1ItU291cmNlLTEuMC4yLW1hY29zLWFybTY0LnppcCIsInNpemUiOjE5MTk5NDE4NSwic2hhMjU2IjoiZDdlMWJiYmVmZDQ3YWMwMjBlNmZhNDUyMTczMjY2MTEyYTljOTFjYWNkMDcyZGVhZmYxNGU1Mzg5YjIzZGJlMiJ9LHsidGFnIjoidjEuMC4yIiwibmFtZSI6IjJCeXRlQVNSLVNvdXJjZS0xLjAuMi56aXAiLCJzaXplIjoxMDkxMTc0ODE2LCJzaGEyNTYiOiJlZDJmMjk1MGU3MTVlOWU4YjIzNWRlYzE0NzcwNDMyYmNkZjk3NzU2YTU4NjcxNzlhNDBjOTUyMThiMGFkZmJhIn0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiMkJ5dGVBU1ItVGhpcmRQYXJ0eS1NYXRlcmlhbHMtMS4wLjItbWFjb3MtYXJtNjQuemlwIiwic2l6ZSI6MTE0NzE1NDAwLCJzaGEyNTYiOiIyZjhhNDNhY2NlNDdmOGFiMDg5M2JlZGI0ZmQ3MDVjY2Y3NGUxNTkyYjg4M2M4NDkzZTFhYWYyZDllODBiZTk4In0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiMkJ5dGVBU1ItVGhpcmRQYXJ0eS1NYXRlcmlhbHMtMS4wLjIuemlwIiwic2l6ZSI6MzAxMTI5NjgsInNoYTI1NiI6IjFlNGQ5MzgwMTdkMjJhZDMwNjNkZTFiMzRhNmRlMmMwMzA2OWVhODliODE2N2QwODIxOTU4M2RlMjRiYzJhYmQifSx7InRhZyI6InYxLjAuMiIsIm5hbWUiOiJtaW5ndy13NjQtbGliaWNvbnYtMS4xOS0xLnNyYy50YXIuenN0Iiwic2l6ZSI6NTEzMTAyOSwic2hhMjU2IjoiNzQ0MjgyODBjMTcwOTRkYTViNzAyYzI5YjJlMWEwYWJhZTU5NTU2ZWE1ZGZkZDY1NzA1Y2M4Y2NjMWUwMDBmYiJ9LHsidGFnIjoidjEuMC4yIiwibmFtZSI6Im1pbmd3LXc2NC1saWJpY29udi0xLjE5LTEuc3JjLnRhci56c3Quc2lnIiwic2l6ZSI6NTY2LCJzaGEyNTYiOiJkOTlmMjY1YmQ0ZTUxZDdlODYyNjcyNThkM2QwMTAxYTcyZDkwMWQ4YzJiOGM0ZjJmNTljZjg0NTY1NmRiZTYyIn0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiUkVBRE1FLm1hY29zLWFybTY0LnpoLUNOLm1kIiwic2l6ZSI6OTk4LCJzaGEyNTYiOiI1MjNlOWU5MzllZGZiYjRlMDhiODc2ODkwZWVlYzViZjM1Nzc1ZjlkMTZkODUxYWRmN2MwNDE0ZWViMzk5ZDg3In0seyJ0YWciOiJ2MS4wLjIiLCJuYW1lIjoiUkVBRE1FLnpoLUNOLm1kIiwic2l6ZSI6MTUzNiwic2hhMjU2IjoiYjcxOTQxYzc5MmRiM2RhZGM5NzZlNWU5MjI3N2IzNDIxMzA3OTNlYmUxN2EzNDg4NmVhNjRiODk1OWQyMDUzNyJ9LHsidGFnIjoidjEuMC4yIiwibmFtZSI6IlNIQTI1NlNVTVMudHh0Iiwic2l6ZSI6MTM4MCwic2hhMjU2IjoiZDg4NjYwYTZlNGUwYjAyMWFlZWI1OTNiZWI5ZWJmN2Y5NzViNDQwZGZjZjUzNWVhNWIxNjBjNDg4ZjIxZDRhNSJ9LHsidGFnIjoidjEuMC4yIiwibmFtZSI6IlNIQTI1NlNVTVMudHh0LnNpZyIsInNpemUiOjI5MSwic2hhMjU2IjoiMDQ0NDdlMmU4ZDlkOGJkMmIzNzdkMGIwNTM1MTBmMDNkNjg4Y2E4YmIyNDBmMTU1ZGZhOWU5NTgzN2NkM2NlYSJ9LHsidGFnIjoidjAuOS4zIiwibmFtZSI6IjJCeXRlQVNSLTAuOS4zLXB5dGhvbi1ydW50aW1lLTJmM2YwNzZjMjU1ZS56aXAiLCJzaXplIjoxNDg5ODIyMTksInNoYTI1NiI6IjFmNjc4YjVmN2JhMWJmZjAwMDY2NzYzOTkyMGIwZDk2OTA4N2ViZGRkZGRmZjM0OTk3MjY4OTMzZGExYzkxYjYifSx7InRhZyI6InYxLjAuMCIsIm5hbWUiOiIyQnl0ZUFTUi0xLjAuMC1hc3NldHMtNTFkNWNjMjQ2M2Y2LnppcCIsInNpemUiOjUzMzM3MzIxLCJzaGEyNTYiOiJhNDAxZTJhZGM4ODI4ZjhlYzZlM2IxOGZmNTNjYzk2ZjQ3ZjUwNDI3ZDQwM2Q1ZDU0MjNmZmU0NTFlZjVmNWNjIn0seyJ0YWciOiJ2MS4wLjAiLCJuYW1lIjoiMkJ5dGVBU1ItMS4wLjAtcmVuZGVyZXItZGRlN2VmNTk0NzZkLnppcCIsInNpemUiOjIzNzA2ODMzMywic2hhMjU2IjoiNzg1OWEzYjc2NTU1MTQ4MjhkNTg4YTk4YjQzNmI4ZmZmOTljYTA0NjMzOGQ0ZmY2ZjE5MzgzZmFiNGY4ODk3NCJ9LHsidGFnIjoidjAuOS43IiwibmFtZSI6IjJCeXRlQVNSLTAuOS43LXRvb2xzLWFhOGFkMmFmYjI2MS56aXAiLCJzaXplIjoyMjg1ODQ4ODIsInNoYTI1NiI6ImZkODM3NGJiNTE1ODI4YjI2ZDFjZTZlODg4ZmMyZTdhZWUwZmQxNjk5YWZjNWMzN2UzYzU5ZTcyM2U3MDZhYmUifSx7InRhZyI6InYwLjkuMyIsIm5hbWUiOiIyQnl0ZUFTUi0wLjkuMy13aGVlbHMtZWRjYmRmNzkxM2I3LnppcCIsInNpemUiOjQ0Mjc1NzUzMywic2hhMjU2IjoiNjVhOGNmN2JmMDI1ZGI3YzJkY2Q0MDFjY2VlYzVhNjkzNzVmNTNiNWNlZDY5NWQ4NWM0Mjc3YWZiZDM1OWJlMiJ9LHsidGFnIjoidjAuOS43IiwibmFtZSI6IjJCeXRlQVNSLTAuOS43LWxpY2Vuc2VzLTQ4NjFmOTIxYWEzZS56aXAiLCJzaXplIjoyOTg0NjIwNCwic2hhMjU2IjoiYWIyM2Q0NzFhODcyODZhZGIzZmVlM2MyMzhkODZhZTZjODdiNDFmMzNmMWExZTY2MGQyYmJiNzJhMzAyOTg5MiJ9XQ=='
     steps:
-      - name: Check assets without authentication
-        env:
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Hash every pre-upload and referenced component without credentials
         shell: bash
         run: |
-          set -euo pipefail
-          base="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-          curl -fsSL "${base}/SHA256SUMS.txt" -o SHA256SUMS.txt
-          curl -fsSL "${base}/2ByteASR-update.json" -o 2ByteASR-update.json
-          curl -fsSL "${base}/2ByteASR-update.json.sig" -o 2ByteASR-update.json.sig
-          sha256sum --check --ignore-missing SHA256SUMS.txt
-          while read -r digest name; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 "${base}/${name}")
-            echo "${code} ${name}"
-            test "${code}" = "206" -o "${code}" = "200"
-          done < SHA256SUMS.txt
           python3 - <<'PY'
-          import json, urllib.request
-          manifest = json.load(open("2ByteASR-update.json", encoding="utf-8"))
-          urls = [manifest["setup"]["urls"][0]] + [c["archive"]["urls"][0] for c in manifest["components"].values() if c.get("archive")]
-          for url in urls:
-              request = urllib.request.Request(url, method="HEAD")
-              with urllib.request.urlopen(request) as response:
-                  print(response.status, url)
+          import base64,hashlib,json,os,time,urllib.parse,urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+          from pathlib import Path
+          assert os.environ['INPUT_TAG']=='v1.0.2'
+          spec=json.loads(base64.b64decode(os.environ['SPEC_B64']))
+          opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          latest_url='https://api.gitcode.com/api/v5/repos/Notbad314/2ByteASR/releases/latest'
+          def request(url):return urllib.request.Request(url,headers={'User-Agent':'2ByteASR-anonymous-pre-audit/1.0.2'})
+          def latest():
+              with opener.open(request(latest_url),timeout=90) as response:return json.load(response)['tag_name']
+          before=latest()
+          assert before=='v1.0.1',before
+          def check(row):
+              url='https://gitcode.com/Notbad314/2ByteASR/releases/download/'+row['tag']+'/'+urllib.parse.quote(row['name'])
+              start=time.monotonic()
+              for attempt in range(3):
+                  try:
+                      digest=hashlib.sha256();size=0
+                      with opener.open(request(url),timeout=120) as response:
+                          status=response.status
+                          for block in iter(lambda:response.read(4*1024*1024),b''):
+                              size+=len(block);digest.update(block)
+                      result=dict(**row,status=status,length=size,actual_sha256=digest.hexdigest(),url=url,
+                          ok=status==200 and size==row['size'] and digest.hexdigest()==row['sha256'],
+                          seconds=round(time.monotonic()-start,2))
+                      print(json.dumps(result),flush=True);return result
+                  except Exception as error:
+                      if attempt==2:return dict(**row,ok=False,error=str(error)[:300])
+                      time.sleep(3)
+          with ThreadPoolExecutor(max_workers=4) as pool:results=list(pool.map(check,spec))
+          after=latest()
+          result=dict(passed=before==after=='v1.0.1' and all(row['ok'] for row in results),
+              anonymous=True,full_sha256=True,before_publish=True,latest_before=before,latest_after=after,assets=results)
+          Path('gitcode-pre-anonymous.json').write_text(json.dumps(result,indent=2),'utf8')
+          assert result['passed']
+          print('ALL_GITCODE_PRE_BYTES_VERIFIED',len(results),flush=True)
           PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: gitcode-pre-anonymous-1.0.2
+          retention-days: 1
+          path: gitcode-pre-anonymous.json
