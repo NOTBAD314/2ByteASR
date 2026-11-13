@@ -1,4 +1,4 @@
 {
-  "zh": "· 多语言术语：外语名称与译文术语分开管理，AI 候选按语言确认。\n· 原声双语校对：原文与译文共用分组和原声试听。\n· 校对更聚焦：减少纯标点与无依据扩写，保留真实内容问题。\n· 首次使用引导：先确认识别方案，未完成教学下次继续。\n· 显示与时间戳：工坊遵循所选比例，时间戳只选本地支持模型。",
+  "zh": "· 多语言术语：外语名称与译文术语分开管理，AI 候选按语言确认。\n· 原声双语校对：原文与译文共用分组和原声试听。\n· 校对更聚焦：减少纯标点与无依据扩写，保留真实内容问题。\n· 首次使用引导：先确认识别方案，未完成教学下次继续。\n· 工坊比例与本地时间戳：工坊遵循所选比例，时间戳只选本地支持模型。",
   "en": "Multilingual terminology: manage foreign names and translation terms with per-language AI review. Original-audio proofing: review original and translated subtitles together. Focused review: fewer punctuation-only edits and unsupported expansions. First-run guidance: confirm your recognition setup and resume unfinished tutorials. Display and timestamps: workshop respects your chosen scale; timestamp models must support local execution."
 }
