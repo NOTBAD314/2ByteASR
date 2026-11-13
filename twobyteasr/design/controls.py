@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from .theme_manager import theme_key
 from .ui_theme import theme_definition
+from .typography import weighted_font
 
 
 def polar_to_offset(angle_deg: float, distance: float) -> tuple[float, float]:
@@ -166,7 +167,7 @@ class AngleDisc(QWidget):
         painter.setPen(QColor(theme.text))
         font = QFont(painter.font())
         font.setPixelSize(10)
-        font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(font, QFont.Weight.DemiBold)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{self._angle:.0f}°")
         painter.end()

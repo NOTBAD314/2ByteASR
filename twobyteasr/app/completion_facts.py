@@ -15,6 +15,7 @@ from ..design.theme_manager import theme_key
 from ..design.typography import UI_FONT_FAMILIES
 from ..design.ui_theme import blend_hex, theme_definition
 from .ui_zoom import px as _zpx
+from ..design.typography import weighted_font
 
 WRAP = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWrapAnywhere
 GAP = 8
@@ -24,7 +25,7 @@ def _font(base, size, weight=QFont.Weight.Medium):
     font = QFont(base)
     font.setFamilies(list(UI_FONT_FAMILIES))
     font.setPixelSize(_zpx(size))
-    font.setWeight(weight)
+    weighted_font(font, weight)
     return font
 
 

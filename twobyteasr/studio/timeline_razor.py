@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from ..projects.studio_project import StudioCue
 from ..timeline.studio_timing import SplitBlocked, SplitPreview, describe_split, word_boundary_times
 from ..i18n import tr
+from ..design.typography import weighted_font
 
 PILL_HEIGHT = 23
 PILL_TOP = 4
@@ -99,7 +100,7 @@ def _pill(timeline, resolution) -> tuple[QRectF, str]:
         label += ' · ' + tr('吸附')
     font = QFont()
     font.setPointSize(9)
-    font.setBold(True)
+    weighted_font(font, 700)
     width = QFontMetrics(font).horizontalAdvance(label) + 24 + ICON
     x = timeline._time_to_x(resolution.split_ms)
     lo = timeline.TRACK_HEADER_WIDTH + 2
@@ -379,7 +380,7 @@ def _paint_cut(timeline, painter, palette, colors, resolution, blocked) -> None:
     painter.drawRoundedRect(rect, 4, 4)
     font = QFont()
     font.setPointSize(9)
-    font.setBold(True)
+    weighted_font(font, 700)
     painter.setFont(font)
     ink = colors['ink'] if not blocked else QColor('#141118')
     from ..design.themed_icons import paint_cached_icon

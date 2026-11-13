@@ -39,6 +39,7 @@ from .theme_manager import theme_key
 from .typography import MONO_FONT_FAMILIES
 from .ui_motion import motion_duration
 from .ui_theme import ThemeDefinition, theme_definition
+from .typography import emphasized, weighted_font
 
 
 def _theme() -> ThemeDefinition:
@@ -136,7 +137,7 @@ def mono_font(size: int = 13, weight: QFont.Weight = QFont.Weight.DemiBold) -> Q
     font = QFont()
     font.setFamilies(list(MONO_FONT_FAMILIES))
     font.setPixelSize(size)
-    font.setWeight(weight)
+    weighted_font(font, weight)
     return font
 
 
@@ -1023,6 +1024,7 @@ class FillColorPicker(QWidget):
         _start_screen_eyedrop(self)
 
 
+@emphasized
 def fill_editor_qss(theme: ThemeDefinition) -> str:
     """Dialog-local sheet appended after the secondary-surface sheet."""
     t = theme

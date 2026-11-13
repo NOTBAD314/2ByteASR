@@ -17,6 +17,7 @@ from ..i18n_widgets import user_text
 from .diagnosis_catalog import ACTION_LABELS
 from .history_diagnosis import (ANALYSE_ACTION, RESUME_ACTION, DiagnosisView, ai_view, local_view,
                                 structured_messages, view_text)
+from ..design.typography import weighted_font
 
 AI_STAGE = "polish"
 
@@ -306,7 +307,7 @@ class HistoryDiagnosisPanel(QFrame):
         from ..design.typography import SOURCE_HAN_FAMILY_ALIASES
         heavy = QFont(SOURCE_HAN_FAMILY_ALIASES[0])
         heavy.setPixelSize(15)
-        heavy.setWeight(QFont.Weight.ExtraBold)
+        weighted_font(heavy, QFont.Weight.ExtraBold)
         title_width = QFontMetrics(heavy).horizontalAdvance(step.title) + 16
         title.setMinimumWidth(min(title_width, 260 if step.detail else 440))
         title.setMaximumWidth(title_width)

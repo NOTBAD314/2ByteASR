@@ -65,7 +65,9 @@ def test_title_and_body_resolve_different_faces_across_theme_switches(app):
         root.close()
 
 
-def test_studio_small_section_title_does_not_inherit_page_heavy(app):
+def test_studio_small_section_title_is_heavy_at_section_size(app):
+    """2026-11-13: section titles are emphasis, so the Heavy face, but keep their
+    14 px section size instead of inheriting the page title's."""
     from twobyteasr.design.studio_theme import build_studio_qss
     from twobyteasr.design.ui_theme import theme_definition
     root = QWidget()
@@ -76,8 +78,9 @@ def test_studio_small_section_title_does_not_inherit_page_heavy(app):
     root.show()
     app.processEvents()
     try:
+        from twobyteasr.design.typography import TITLE_FONT_FAMILIES
         assert label.font().pixelSize() == 14
-        assert not is_heavy(label.font())
+        assert label.font().families()[:1] == [TITLE_FONT_FAMILIES[0]]
         assert label.font().weight() == 600
     finally:
         root.close()

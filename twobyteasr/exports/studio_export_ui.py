@@ -19,6 +19,7 @@ from ..design.presentation import button_role, field_width
 from ..i18n import current_language, bind_text
 
 from ..i18n import join_text, tr
+from ..design.typography import emphasis_qss
 
 _ASSETS_ROOT = Path(__file__).resolve().parents[2] / "assets"
 _EXPORT_CHECK_ICON = (_ASSETS_ROOT / "check-dark.png").as_posix()
@@ -337,7 +338,7 @@ class SubtitleExportDialog(QDialog):
         self.setObjectName("subtitleExportDialog")
         apply_secondary_surface_theme(self)
         theme = _active_theme(None)
-        self.setStyleSheet(build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme))
+        self.setStyleSheet(emphasis_qss(build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme)))
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -962,9 +963,9 @@ class StudioExportWorkspace(QWidget):
         if self.parentWidget() is None and app is not None:
             self._theme_root_local_sheet = local
             self._theme_root_sheet = getattr(app, '_theme_window_qss', '') + local
-            self.setStyleSheet(self._theme_root_sheet)
+            self.setStyleSheet(emphasis_qss(self._theme_root_sheet))
         else:
-            self.setStyleSheet(local)
+            self.setStyleSheet(emphasis_qss(local))
 
     def refresh_theme_palette(self) -> None:
         self._apply_workspace_theme()
@@ -1101,7 +1102,7 @@ class StudioExportWorkspace(QWidget):
         heading.setSpacing(0)
         title = self.setup_title = QLabel("导出字幕视频")
         title.setObjectName("exportPageTitle")
-        title.setStyleSheet(f"font-size:23px;font-weight:{WEIGHT_SCALE['heavy']}")
+        title.setStyleSheet(emphasis_qss(f"font-size:23px;font-weight:{WEIGHT_SCALE['heavy']}"))
         heading.addWidget(title)
         from ..design.elided_label import ElidedLabel
         self.export_context = ElidedLabel("", minimum=60, mode=Qt.TextElideMode.ElideRight)
@@ -2014,13 +2015,13 @@ class StudioExportWorkspace(QWidget):
         header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         header_layout = QHBoxLayout(header); header_layout.setContentsMargins(12, 8, 12, 8)
         header_copy = QHBoxLayout()
-        title = self.processing_title = QLabel("正在压制字幕视频"); title.setStyleSheet('font-size:16px;font-weight:700')
+        title = self.processing_title = QLabel("正在压制字幕视频"); title.setStyleSheet(emphasis_qss('font-size:16px;font-weight:700'))
         header_copy.addWidget(title)
         self.elapsed_label = QLabel("已用时 00:00")
         header_copy.addWidget(self.elapsed_label)
         header_layout.addLayout(header_copy, 1)
         self.render_percent = QLabel("…"); self.render_percent.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.render_percent.setMinimumWidth(52); self.render_percent.setStyleSheet('font-size:18px;font-weight:700')
+        self.render_percent.setMinimumWidth(52); self.render_percent.setStyleSheet(emphasis_qss('font-size:18px;font-weight:700'))
         header_layout.addWidget(self.render_percent); layout.addWidget(header)
         self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setFixedHeight(6); self.progress.setTextVisible(False); layout.addWidget(self.progress)
         stages = QHBoxLayout(); self.render_stage_labels = []
@@ -2050,7 +2051,7 @@ class StudioExportWorkspace(QWidget):
         self.current_stage_title = QLabel("当前步骤  ·  准备工程")
         self.current_stage_title.setObjectName("exportCurrentStage")
         detail_layout.addWidget(self.current_stage_title)
-        self.processing_time = QLabel("正在准备…"); self.processing_time.setWordWrap(True); self.processing_time.setStyleSheet("font-size:14px;font-weight:600"); detail_layout.addWidget(self.processing_time)
+        self.processing_time = QLabel("正在准备…"); self.processing_time.setWordWrap(True); self.processing_time.setStyleSheet(emphasis_qss("font-size:14px;font-weight:600")); detail_layout.addWidget(self.processing_time)
         self.processing_info = QLabel("正在解析工程、检查输入文件并准备字幕。编码器尚未开始。")
         self.processing_info.setWordWrap(True); self.processing_info.setObjectName("exportProcessingInfo"); detail_layout.addWidget(self.processing_info)
         self.processing_output = QLabel(); self.processing_output.setWordWrap(True); self.processing_output.setTextInteractionFlags(Qt.TextSelectableByMouse); self.processing_output.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred); detail_layout.addWidget(self.processing_output)
@@ -2093,7 +2094,7 @@ class StudioExportWorkspace(QWidget):
 
     def _failure_page(self) -> QWidget:
         page, layout = QWidget(), QVBoxLayout(); page.setLayout(layout); page.setObjectName("exportFailurePage"); layout.setContentsMargins(60, 60, 60, 60); layout.addStretch(1)
-        title = self.failure_title = QLabel("导出失败"); title.setAlignment(Qt.AlignmentFlag.AlignCenter); title.setObjectName("exportFailureTitle"); title.setStyleSheet("font-size:29px;font-weight:800"); layout.addWidget(title)
+        title = self.failure_title = QLabel("导出失败"); title.setAlignment(Qt.AlignmentFlag.AlignCenter); title.setObjectName("exportFailureTitle"); title.setStyleSheet(emphasis_qss("font-size:29px;font-weight:800")); layout.addWidget(title)
         self.failure_reason = QLabel(); self.failure_reason.setObjectName('exportFailureReason'); self.failure_reason.setAlignment(Qt.AlignmentFlag.AlignCenter); self.failure_reason.setWordWrap(True); layout.addWidget(self.failure_reason)
         row = QHBoxLayout(); row.addStretch(1)
         back, self.retry_button, self.install_renderer_button, self.details_button = QPushButton("返回设置"), QPushButton("重试"), QPushButton("安装渲染环境"), QToolButton()

@@ -46,6 +46,10 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path,mo
         assert visible['passed']
         assert (tmp_path/'preview-ready.json').is_file()
         assert (tmp_path/'preview-reopened-composed.png').is_file()
+        canvas.hide(); app.processEvents()
+        hidden = preserve_studio_preview(page, tmp_path, 'cut-before')
+        assert hidden['composed']['colour_fraction'] > .10
+        assert not hidden['canvas_visible'] and not hidden['passed']
     finally:
         controller.close(); canvas.close(); app.processEvents()
 
@@ -248,3 +252,96 @@ def test_original_project_bytes_are_preserved_but_profile_and_other_projects_are
     unrelated.write_bytes(payload)
     assert [p.relative_to(root).as_posix() for p in selected_files(root)] == [
         'desktop-flow/owned-projects/recognized.2byteproj']
+
+
+def test_runtime_default_project_tree_is_owned_but_sibling_and_resolved_escape_are_excluded(tmp_path):
+    output = tmp_path/'tmp/desktop-flow'
+    project = output/'local/2ByteASR/Projects/p-owned/project.2byteproj'
+    project.parent.mkdir(parents=True)
+    project.write_bytes(b'{"owned":true}')
+    assert Path(preserve_owned_project(project, output, 'final')['path']).read_bytes() == project.read_bytes()
+    sibling = output/'local/2ByteASR/Projects-other/project.2byteproj'
+    sibling.parent.mkdir(); sibling.write_bytes(b'{}')
+    with pytest.raises(ValueError): preserve_owned_project(sibling, output, 'final')
+    escape = project.parent/'../../../../private.2byteproj'
+    escape.resolve().write_bytes(b'{}')
+    with pytest.raises(ValueError): preserve_owned_project(escape, output, 'final')
+    outside = tmp_path/'private.2byteproj'; outside.write_bytes(b'{}')
+    link = project.parent/'escaped.2byteproj'
+    try: link.symlink_to(outside)
+    except OSError: return  # Link creation requires privileges on some Windows hosts.
+    with pytest.raises(ValueError): preserve_owned_project(link, output, 'final')
+
+
+@pytest.mark.parametrize('ready', [False, True])
+def test_mac_edit_entry_observes_cli_without_opening_and_records_real_shutdown(tmp_path, monkeypatch, ready):
+    from PySide6 import QtCore, QtWidgets
+    from twobyteasr.acceptance import edit_save_audit, macos_desktop_evidence, macos_edit_save_entry
+
+    class Signal:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+    class Timer:
+        def __init__(self, parent):
+            self.timeout = Signal()
+
+        def setInterval(self, value):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        @staticmethod
+        def singleShot(delay, callback):
+            callback()
+
+    target = tmp_path/'fixture.2byteproj'
+    target.write_text('{}')
+    page = SimpleNamespace(project=object(), project_path=target, _readiness=SimpleNamespace(ready=ready))
+    loading = SimpleNamespace(state='ready' if ready else 'failed', snapshot=lambda: {'state': 'observed'})
+    app = SimpleNamespace(aboutToQuit=Signal())
+    delegated = []
+
+    class Window:
+        _studio_loading_session = loading
+
+        @property
+        def studio_page(self):
+            raise AssertionError('The observer must not construct or switch a Studio page')
+
+        def built_page(self, name):
+            return page
+
+        def grab(self):
+            return SimpleNamespace(save=lambda path: Path(path).write_bytes(b'owned test raster'))
+
+        def close(self):
+            pass
+
+    window = Window()
+    # The real session is an instance-owned binding, as on MainWindow.
+    window._studio_loading_session = loading
+    monkeypatch.setattr(QtCore, 'QTimer', Timer)
+    monkeypatch.setattr(QtWidgets, 'QApplication', SimpleNamespace(instance=lambda: app))
+    monkeypatch.setattr(macos_desktop_evidence, 'studio_snapshot', lambda value: {'ready': ready})
+    monkeypatch.setattr(edit_save_audit, 'start', lambda owner, output: delegated.append(owner))
+    monkeypatch.setenv('EDIT_SAVE_PROJECT', str(target))
+    monkeypatch.setenv('EDIT_SAVE_PART', 'edits')
+    macos_edit_save_entry.start(window, tmp_path)
+    startup = json.loads((tmp_path/'startup-project-result.json').read_text('utf8'))
+    assert startup['passed'] is ready and startup['passive_cli_startup']
+    if ready:
+        assert delegated == [window]
+    else:
+        receipt = tmp_path/'result.json'
+        assert json.loads(receipt.read_text('utf8'))['gui_shutdown'] is False
+        for callback in app.aboutToQuit.callbacks:
+            callback()
+        assert json.loads(receipt.read_text('utf8'))['gui_shutdown'] is True

@@ -98,7 +98,8 @@ def test_pending_cards_show_banner_role_buttons_and_representative_line(manager)
     assert list(manager.cards) == ["API_S01", "API_S02", "API_S03"]
     assert manager.banner.isVisible()
     assert "3 个待确认" in manager.banner_text.text()
-    assert manager.inspector.currentWidget() is manager.empty_page
+    # 2026-11-13 (user): the first speaker is shown on open.
+    assert manager.inspector.currentWidget() is manager.cards["API_S01"]
     card = open_card(manager, "API_S01")
     assert manager.inspector.currentWidget() is card
     assert card.pill.isVisible() and card.pill.text() == "待确认"

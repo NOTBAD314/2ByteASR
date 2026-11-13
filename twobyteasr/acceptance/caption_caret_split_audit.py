@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 import time
 import traceback
@@ -15,7 +16,7 @@ def start(window, output):
     from ..studio.caption_editor import qt_position
     app = QApplication.instance()
     output = Path(output)
-    result = dict(passed=False, checks={}, split_ms=[], scope='normal MainWindow, native Windows Qt, synthetic 7000 cues over 5h50m; 16s synthetic media')
+    result = dict(passed=False, checks={}, split_ms=[], scope=f'normal MainWindow, native {sys.platform} Qt, synthetic 7000 cues over 5h50m; 16s synthetic media')
 
     def receipt():
         (output/'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), 'utf8')
@@ -156,7 +157,10 @@ def start(window, output):
                      complete_scene_for_seek(page._caption_scene, parts[1].id, page.video._playback_clock.generation), 30)
                 check(f'language {number} expected scene actually published', True)
                 frame = output/f'native-preview-{number}.png'
-                page.video.controller.screenshot_to_file(str(frame), mode='window', fast=True)
+                if sys.platform == 'darwin':
+                    page.video_overlay_host.grab().save(str(frame))
+                else:
+                    page.video.controller.screenshot_to_file(str(frame), mode='window', fast=True)
                 wait(frame.is_file, 10)
                 from PIL import Image, ImageStat
                 pixels = Image.open(frame).convert('RGB')

@@ -16,6 +16,7 @@ from ..i18n import current_language, tr
 from .updater import (
     STARTUP_RECHECK_SECONDS, automatic_check_due, check_for_update, format_bytes, prepare_update, UpdateCancelled,
 )
+from ..design.typography import emphasis_qss
 
 # How often a waiting reminder looks again whether the user is free, and for
 # how long it keeps looking (2026-10-24).
@@ -154,7 +155,7 @@ def card_ink(theme, index):
     ink = hue
     for amount in (0.0, 0.2, 0.35, 0.5, 0.65):
         ink = blend_hex(hue, theme.text, amount)
-        if contrast_ratio(ink, tint) >= 4.5:
+        if contrast_ratio(ink, tint) >= 3.0:  # 2026-11-12 (user): vivid titles, still readable
             break
     return ink
 
@@ -332,7 +333,7 @@ class UpdateOfferDialog(SpringDialog):
         from ..design.theme_manager import theme_key
         from ..design.ui_theme import theme_definition
         self._offer_theme = theme_definition(theme_key())
-        self.setStyleSheet(self.styleSheet() + '\n' + offer_qss(self._offer_theme))
+        self.setStyleSheet(emphasis_qss(self.styleSheet() + '\n' + offer_qss(self._offer_theme)))
 
     def refresh_theme_palette(self) -> None:
         super().refresh_theme_palette()

@@ -67,6 +67,7 @@ from twobyteasr.local_models.model_task_metadata import (
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import emphasis_qss, emphasized, weighted_font
 
 
 GUI_PROFILE_ENABLED = os.environ.get("TWOBYTEASR_GUI_PROFILE") == "1"
@@ -1038,11 +1039,31 @@ def model_platform_available(model: WorkshopModel) -> bool:
     return not model.platforms or _host_platform_tag() in model.platforms
 
 
+def _local_timeline_supported(model: WorkshopModel) -> bool:
+    """Timestamp output alone does not make a standalone timeline adapter.
+
+    The timeline runs locally. Japanese CTC is an existing local helper within
+    that stage, with its own parent-aligner check rather than a backend binding.
+    """
+    backend = _adapter_backend(model, "timeline")
+    return bool(
+        not model_is_online(model)
+        and model.available
+        and model.runtime_available
+        and model.download_key
+        and model.install_keys
+        and _capability_supports_role(model.asr_capabilities, "timeline")
+        and ((backend and backend not in {"api", "off"})
+             or (model.key == "ja_ctc_aligner" and model.auto_stage))
+    )
+
+
 def _model_roles(model: WorkshopModel) -> tuple[str, ...]:
     return tuple(
         role
         for role in ("primary", "timeline", "review")
         if _capability_supports_role(model.asr_capabilities, role)
+        and (role != "timeline" or _local_timeline_supported(model))
     )
 
 
@@ -1052,8 +1073,8 @@ _PRIMARY_TAB_API_MODELS = frozenset({"mosi_moss_pro"})
 def _browser_groups(model: WorkshopModel) -> tuple[str, ...]:
     """Browse tabs include recommended MOSS Pro in primary and all APIs in API.
 
-    _model_roles keeps capability semantics (the role picker still offers
-    API models for primary/review). The browser tabs are a deployment-mode
+    _model_roles keeps API models for primary/review, while the independent
+    timeline requires local execution support. The browser tabs are a deployment-mode
     grouping: API cards used to leak into 主力转写/文字复核 via capability
     derivation while the 在线 API tab stayed empty because nothing ever
     produced the "api" role (三十二轮用户实录）。
@@ -1091,13 +1112,21 @@ def _runtime_role_available(model: WorkshopModel, role: str) -> bool:
         model.runtime_available
         and _capability_supports_role(model.asr_capabilities, role)
         and _adapter_backend(model, role)
+        and (role != "timeline" or _local_timeline_supported(model))
     )
 
 
 # 2026-11-11 (workshop design A): model rows line up under one list header.
 WORKSHOP_MONOGRAM = 46
 WORKSHOP_COLUMN_SPACING = 12
-WORKSHOP_LANGUAGE_COLUMN = 196
+# 2026-11-13: ten languages in a 5 x 2 grid (was six in 3 x 2), using the
+# room the description column left empty.
+WORKSHOP_LANGUAGE_GRID_COLUMNS = 5
+WORKSHOP_LANGUAGE_COLUMN = 300
+# A narrower list (small window, high zoom) keeps the six main languages in
+# 3 x 2, as before, so the name column is not squeezed.
+WORKSHOP_LANGUAGE_COLUMN_NARROW = 196
+WORKSHOP_WIDE_LANGUAGES_MIN = 940
 WORKSHOP_METRIC_COLUMN = 96
 WORKSHOP_METRIC_SPACING = 10
 WORKSHOP_ACTION_COLUMN = 96
@@ -2753,6 +2782,7 @@ QWidget#workshopCardText {{ background: transparent; }}
 """
 
 
+@emphasized
 def build_workshop_qss(theme=None) -> str:
     """Build Workshop QSS from the active application theme."""
     from ..design.qss_retheme import retheme_qss
@@ -2775,19 +2805,22 @@ def _workshop_design_a_qss(t) -> str:
     tint = blend_hex(t.surface, t.text, 0.085 if t.is_light else 0.14)
     tint_hover = blend_hex(t.surface, t.text, 0.14 if t.is_light else 0.2)
     count_bg = blend_hex(t.surface, t.text, 0.12 if t.is_light else 0.2)
+    row_hover = blend_hex(t.surface, t.text, 0.035 if t.is_light else 0.06)
     return f"""
 QPushButton#workshopToolButton {{ background: {tint}; color: {t.text}; border: 0; border-radius: 10px;
-    padding: 8px 14px; {heavy} font-size: 13px; }}
+    padding: 8px 11px; {heavy} font-size: 13px; }}
 QPushButton#workshopToolButton:hover {{ background: {tint_hover}; }}
 QFrame#workshopDetail QPushButton#workshopToolButton {{ background: {t.surface_elevated}; border: 1px solid {t.border_strong}; }}
 QFrame#workshopDetail QPushButton#workshopToolButton:hover {{ background: {tint}; }}
 QPushButton#workshopAction {{ {heavy} }}
 QLabel#workshopColumnCaption {{ {heavy} font-size: 12px; color: {t.text_muted}; }}
-QFrame#workshopModelCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 14px; }}
-QFrame#workshopModelCard:hover {{ border-color: {t.border_strong}; }}
-QFrame#workshopModelCard[selected="true"] {{ background: {t.selected}; border: 2px solid {t.accent}; }}
-QLabel#workshopModelTitle {{ color: {t.text}; font-size: 16px; {heavy} }}
-QFrame#workshopModelCard QLabel#workshopMuted {{ font-size: 13px; }}
+QFrame#workshopModelCard {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; border-radius: 0; }}
+QFrame#workshopModelCard:hover {{ background: {row_hover}; border: 0; border-bottom: 1px solid {t.border}; border-radius: 0; }}
+QFrame#workshopModelCard[selected="true"],
+QFrame#workshopModelCard[selected="true"]:hover {{ background: {t.selected}; border: 0;
+    border-bottom: 1px solid transparent; border-radius: 12px; }}
+QLabel#workshopModelTitle {{ color: {t.text}; font-size: 22px; {heavy} }}
+QFrame#workshopModelCard QLabel#workshopMuted {{ font-size: 14px; }}
 QFrame#workshopTabBar {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
 QPushButton#workshopTab {{ background: transparent; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
     color: {t.text_secondary}; font-size: 15px; {heavy} padding: 8px 34px 8px 2px; min-height: 22px; }}
@@ -2900,21 +2933,35 @@ class _PillFlowLayout(QLayout):
         return y + line - rect.y()
 
 
-def _workshop_language_width() -> int:
+def _workshop_languages(wide: bool):
+    """(languages, columns) of the list's language grid: ten in 5 x 2 when wide, else six in 3 x 2."""
+    from .model_languages import BADGE_LANGUAGES, WORKSHOP_LANGUAGES
+    return (WORKSHOP_LANGUAGES, WORKSHOP_LANGUAGE_GRID_COLUMNS) if wide else (BADGE_LANGUAGES, 3)
+
+
+def _workshop_wide_languages(logical_width: float) -> bool:
+    """Whether a list row this wide (logical px) has room for the ten-language grid."""
+    return logical_width >= WORKSHOP_WIDE_LANGUAGES_MIN
+
+
+def _workshop_language_width(wide: bool = True) -> int:
     """One logical width shared by every row, including translated labels."""
     from PySide6.QtGui import QFont,QFontMetrics
     from ..design.typography import TITLE_FONT_STACK
-    from .model_languages import BADGE_LANGUAGES,LANGUAGE_NAMES
+    from .model_language_badges import grid_label
     font=QFont();font.setFamilies([name.strip(' \"\'') for name in TITLE_FONT_STACK.split(',')])
-    font.setPixelSize(13);font.setWeight(QFont.Weight.ExtraBold)
+    font.setPixelSize(13);weighted_font(font, QFont.Weight.ExtraBold)
     metrics=QFontMetrics(font)
-    cell=max(metrics.horizontalAdvance(translate(LANGUAGE_NAMES[code],current_language())) for code in BADGE_LANGUAGES)+20
-    return max(WORKSHOP_LANGUAGE_COLUMN,cell*3+10)
+    language=current_language()
+    languages,columns=_workshop_languages(wide)
+    cell=max(metrics.horizontalAdvance(grid_label(code,language,languages)) for code in languages)+20
+    floor=WORKSHOP_LANGUAGE_COLUMN if wide else WORKSHOP_LANGUAGE_COLUMN_NARROW
+    return max(floor,cell*columns+5*(columns-1))
 
 
 def model_list_header() -> QWidget:
     """Column captions over model rows (workshop design A, 2026-11-11)."""
-    header = QWidget()
+    header = _ListHeader()
     header.setObjectName("workshopListHeader")
     row = QHBoxLayout(header)
     from ..app.ui_zoom import set_layout,set_size
@@ -2933,11 +2980,13 @@ def model_list_header() -> QWidget:
         return label
 
     row.addWidget(caption("模型"), 1)
-    languages=caption("支持语言", _workshop_language_width(), Qt.AlignmentFlag.AlignHCenter)
+    languages=caption("支持语言", _workshop_language_width(header.wide_languages), Qt.AlignmentFlag.AlignHCenter)
     row.addWidget(languages)
     def sync_header(factor):
         from ..app.ui_zoom import px
-        set_size(languages,fixed_w=_workshop_language_width())
+        if header.width() > 0 and factor:
+            header.wide_languages = _workshop_wide_languages(header.width() / factor)
+        set_size(languages,fixed_w=_workshop_language_width(header.wide_languages))
         margin=px(12,header)+1
         top=px(2,header)
         row.setContentsMargins(margin,top,margin,0)
@@ -2952,6 +3001,22 @@ def model_list_header() -> QWidget:
     row.addLayout(metrics)
     row.addWidget(caption("操作", WORKSHOP_ACTION_COLUMN, Qt.AlignmentFlag.AlignHCenter))
     return header
+
+
+class _ListHeader(QWidget):
+    """The caption row; its language caption follows the rows' wide/narrow grid."""
+
+    wide_languages = True
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        from ..app.ui_zoom import effective_factor, logical
+        wide = _workshop_wide_languages(logical(self.width(), self))
+        if wide != self.wide_languages:
+            self.wide_languages = wide
+            sync = getattr(self, "apply_ui_zoom", None)
+            if sync is not None:
+                sync(effective_factor(self))
 
 
 class ModelCard(QFrame):
@@ -3066,13 +3131,16 @@ class ModelCard(QFrame):
         # 2026-10-18: the same six language badges on every row, in the same
         # place, so one column (e.g. 日语) can be scanned down the list.
         from .model_language_badges import LanguageBadgeRow
-        from .model_languages import language_support
-        self.language_row = LanguageBadgeRow(grid_columns=3, show_more=False)
-        self.language_row.set_support(language_support(model.key))
+        from .model_languages import WORKSHOP_LANGUAGES, language_support
+        self._wide_languages = True
+        columns_count = WORKSHOP_LANGUAGE_GRID_COLUMNS
+        self.language_row = LanguageBadgeRow(grid_columns=columns_count, show_more=False,
+                                             languages=WORKSHOP_LANGUAGES)
+        self.language_row.set_support(language_support(model.key, WORKSHOP_LANGUAGES))
         self.language_row.setFixedWidth(WORKSHOP_LANGUAGE_COLUMN)
         grid=self.language_row.layout()
-        grid.setColumnStretch(3,0)
-        for column in range(3):grid.setColumnStretch(column,1)
+        grid.setColumnStretch(columns_count,0)
+        for column in range(columns_count):grid.setColumnStretch(column,1)
         for badge in self.language_row.badges.values():
             badge.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
         columns.addWidget(self.language_row, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -3166,18 +3234,39 @@ class ModelCard(QFrame):
         from ..app.ui_zoom import set_layout,set_size,px
         set_size(self,min_h=84)
         set_size(self.monogram,fixed_w=WORKSHOP_MONOGRAM,fixed_h=WORKSHOP_MONOGRAM)
-        set_size(self.language_row,fixed_w=_workshop_language_width())
+        set_size(self.language_row,fixed_w=_workshop_language_width(self._wide_languages))
         self.metrics_host.setFixedWidth(px(WORKSHOP_METRIC_COLUMN,self)*2+px(WORKSHOP_METRIC_SPACING,self))
         set_size(self.action_host,fixed_w=WORKSHOP_ACTION_COLUMN)
         set_layout(self._root,margins=(12,8,12,8),spacing=6)
         set_layout(self._row,margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
         set_layout(self.info_host.layout(),margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+        if os.environ.get('TWOBYTEASR_WORKSHOP_COLUMNS_ONLY') == '1':
+            from ..app.ui_zoom import effective_factor
+            self._column_sync_sample = dict(factor=effective_factor(self),language=self.language_row.width(),metrics=self.metrics_host.width(),action=self.action_host.width())
 
     def apply_ui_zoom(self,factor):
+        self._set_wide_languages(_workshop_wide_languages(self.width()/factor))
         self._sync_column_sizes()
         self._apply_compact_layout(self.width()/factor<760)
         if getattr(self,'_logo_factor',None)!=factor:
             self._logo_factor=factor;self._paint_monogram()
+
+    def _queue_owner_columns(self):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_owner_columns()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, 'language_row') and event.type() in (QEvent.Type.StyleChange, QEvent.Type.FontChange):
+            self._queue_owner_columns()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3190,14 +3279,24 @@ class ModelCard(QFrame):
                 break
             ancestor = ancestor.parentWidget()
         from ..app.ui_zoom import logical
+        self._set_wide_languages(_workshop_wide_languages(logical(self.width(),self)))
         self._apply_compact_layout(logical(available_width,self) < 760)
+        self._sync_column_sizes()
+
+    def _set_wide_languages(self, wide: bool):
+        if wide == self._wide_languages:
+            return
+        self._wide_languages = wide
+        languages, columns = _workshop_languages(wide)
+        self.language_row.set_grid_languages(languages, columns)
+        self._sync_column_sizes()
 
     def _apply_compact_layout(self, compact: bool):
         cap = 240 if compact else 380
         from ..app.ui_zoom import px
         # Measured with the polished (bold) font, which the sheet applies late.
         full = self.title_label.fontMetrics().horizontalAdvance(self.model.name) + px(8,self)
-        fixed=24+WORKSHOP_MONOGRAM+WORKSHOP_COLUMN_SPACING*4+_workshop_language_width()+WORKSHOP_METRIC_COLUMN*2+WORKSHOP_METRIC_SPACING+WORKSHOP_ACTION_COLUMN
+        fixed=24+WORKSHOP_MONOGRAM+WORKSHOP_COLUMN_SPACING*4+_workshop_language_width(self._wide_languages)+WORKSHOP_METRIC_COLUMN*2+WORKSHOP_METRIC_SPACING+WORKSHOP_ACTION_COLUMN
         badge=self.recommendation_badge.sizeHint().width()+px(8,self) if self.recommendation_badge is not None else 0
         width = min(full,px(cap,self),max(px(70,self),self.width()-px(fixed,self)-badge))
         if self.title_label.minimumWidth() != width:
@@ -3270,6 +3369,12 @@ class ModelCard(QFrame):
 
     def refresh_theme_palette(self):
         self._paint_monogram()
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
 
     def set_state_badge(self, text: str, tone: str = "muted"):
         label = str(text or "").strip()
@@ -3388,7 +3493,7 @@ class ModelDownloadDialog(QDialog):
 
     def refresh_theme_palette(self) -> None:
         from .download_widgets import download_dialog_qss
-        self.setStyleSheet(build_workshop_qss() + download_dialog_qss())
+        self.setStyleSheet(emphasis_qss(build_workshop_qss() + download_dialog_qss()))
         for widget in (getattr(self, 'step_track', None), getattr(self, 'activity_graph', None)):
             if widget is not None:
                 widget.update()  # painted from the theme tokens
@@ -3436,7 +3541,7 @@ class ModelDownloadDialog(QDialog):
         install_window_bounds(self, within_parent=True)
         from .download_activity import DownloadActivity, ProcessTreeProbe
         from .download_widgets import ActivityGraph, StepTrack, WrapRow, download_dialog_qss
-        self.setStyleSheet(build_workshop_qss() + download_dialog_qss())
+        self.setStyleSheet(emphasis_qss(build_workshop_qss() + download_dialog_qss()))
         self._activity = DownloadActivity({item.download_key: item.name for item in MODELS if item.download_key})
         self._probe = ProcessTreeProbe()
         self._failure_text = ''
@@ -5825,6 +5930,119 @@ class _CardViewport(QObject):
                 break
 
 
+class _ToolStripPlacer(QObject):
+    """Keeps the search and tool buttons beside the tabs while they fit (2026-11-13)."""
+
+    _SEARCH_MIN = 100
+
+    def __init__(self, bar, tabs, below, strip):
+        super().__init__(bar)
+        self.bar, self.tabs, self.below, self.strip = bar, tabs, below, strip
+        self.inline = True
+        bar.installEventFilter(self)
+
+    def _needed(self) -> int:
+        tabs = [self.tabs.itemAt(i).widget() for i in range(self.tabs.count())]
+        tabs = [w for w in tabs if w is not None and w is not self.strip]
+        strip = self.strip.layout()
+        tools = [strip.itemAt(i).widget() for i in range(1, strip.count())]
+        margins = self.tabs.contentsMargins()
+        width = margins.left() + margins.right() + sum(w.sizeHint().width() for w in tabs)
+        width += self.tabs.spacing() * (len(tabs) + 1)  # between tabs, to the tools, to the stretch
+        width += sum(w.sizeHint().width() for w in tools if w is not None) + strip.spacing() * len(tools)
+        from ..app.ui_zoom import px
+        return width + px(self._SEARCH_MIN, self.bar)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self.place)  # outside the layout pass
+        return False
+
+    def place(self):
+        try:
+            inline = self.bar.width() >= self._needed()
+        except RuntimeError:  # deleted during teardown
+            return
+        if inline == self.inline:
+            return
+        self.inline = inline
+        if inline:
+            self.below.removeWidget(self.strip)
+            self.tabs.insertWidget(self.tabs.count() - 1, self.strip, 1)  # before the trailing stretch
+        else:
+            self.tabs.removeWidget(self.strip)
+            self.below.addWidget(self.strip, 1)
+
+
+class _DragScroll(QObject):
+    """Hold the left button and drag to scroll the model list (2026-11-13).
+
+    The list has no visible scroll bar; the wheel and this drag both scroll
+    it. Dragging up moves the content up (shows the models further down).
+    A press that does not move past the drag distance stays a normal click;
+    once a drag starts, a pressed button is released without clicking.
+    Watches the application's mouse events because the press lands on the
+    card or button under the cursor, not on the viewport.
+    """
+
+    _SKIP = ("QLineEdit", "QAbstractSpinBox", "QComboBox", "QAbstractSlider", "QScrollBar", "QTextEdit",
+             "QPlainTextEdit")
+
+    def __init__(self, scroll):
+        super().__init__(scroll)
+        from PySide6.QtWidgets import QApplication
+        self.scroll = scroll
+        self._start = None
+        self._value = 0
+        self._dragging = False
+        self._pressed = None
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            scroll.destroyed.connect(lambda *_: app.removeEventFilter(self))
+
+    def _inside(self, obj) -> bool:
+        if not isinstance(obj, QWidget) or not self.scroll.isVisible():
+            return False
+        viewport = self.scroll.viewport()
+        if obj is not viewport and not viewport.isAncestorOf(obj):
+            return False
+        return not any(obj.inherits(name) for name in self._SKIP)
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton and self._inside(obj):
+                self._start = event.globalPosition().toPoint()
+                self._value = self.scroll.verticalScrollBar().value()
+                self._dragging = False
+                self._pressed = obj
+            return False
+        if kind == QEvent.Type.MouseMove and self._start is not None:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                self._start = None
+                return False
+            from PySide6.QtWidgets import QAbstractButton, QApplication
+            delta = event.globalPosition().toPoint().y() - self._start.y()
+            if not self._dragging and abs(delta) >= QApplication.startDragDistance():
+                self._dragging = True
+                self.scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                if isinstance(self._pressed, QAbstractButton):
+                    self._pressed.setDown(False)
+            if self._dragging:
+                self.scroll.verticalScrollBar().setValue(self._value - delta)
+                return True
+            return False
+        if kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton \
+                and self._start is not None:
+            dragged = self._dragging
+            self._start, self._pressed, self._dragging = None, None, False
+            if dragged:
+                self.scroll.viewport().unsetCursor()
+                return True  # the drag is not a click
+        return False
+
+
 class _DeferredPickerCard(_DeferredModelCard):
     """Keep the card wall's state and filters without constructing offscreen cards."""
     diarize_toggled = Signal(bool)
@@ -5953,6 +6171,7 @@ class ModelWorkshopPage(QWidget):
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
+        self._queue_column_sync()
 
 
     def _mac_cpu_runtime_checked(self, result):
@@ -6038,14 +6257,9 @@ class ModelWorkshopPage(QWidget):
             self._responsive_detail.setVisible(not compact_detail)
         self.compact_details_button.setVisible(compact_detail)
         self.role_subtitle.setVisible(self.height() >= 480)
-        self._queue_reading_size()
-
-    def ui_zoom_factor(self,user_factor):
-        # Wide management windows grow their content, not just empty name space.
-        return max(user_factor,min(2.75,self.width()/1440.))
 
     def apply_ui_zoom(self,factor):
-        self._reading_factor=factor
+        self._queue_column_sync()
         if hasattr(self,'detail_monogram'):
             model=next((m for m in MODELS if m.key==self.detail_model_key),None)
             if model is not None:
@@ -6053,17 +6267,28 @@ class ModelWorkshopPage(QWidget):
                 size=QSize(edge,edge)
                 self.detail_monogram.setPixmap(_model_logo(model,size).pixmap(size))
 
-    def _queue_reading_size(self):
-        if getattr(self,'_reading_pending',False):return
-        self._reading_pending=True
-        QTimer.singleShot(0,self._apply_reading_size)
+    def _queue_column_sync(self):
+        # Native style repolishing can restore old fixed widths after the
+        # zoom traversal. Finish the shared table geometry after that pass.
+        if getattr(self, '_column_sync_pending', False):
+            return
+        self._column_sync_pending = True
+        QTimer.singleShot(0, self._sync_list_columns)
 
-    def _apply_reading_size(self):
-        self._reading_pending=False
-        from ..app.ui_zoom import apply_to,effective_factor
-        factor=effective_factor(self)
-        if abs(factor-getattr(self,'_reading_factor',0))>.005:
-            apply_to(self,factor)
+    def _sync_list_columns(self):
+        from shiboken6 import isValid
+        if not isValid(self):
+            return
+        self._column_sync_pending = False
+        header = getattr(self, 'list_header', None)
+        if header is None:
+            return
+        from ..app.ui_zoom import effective_factor
+        header.apply_ui_zoom(effective_factor(self))
+        for wrapper in getattr(self, '_cards', {}).values():
+            card = wrapper.__dict__.get('_card')
+            if card is not None and isValid(card):
+                card._sync_column_sizes()
 
     def _show_compact_details(self):
         if self._responsive_detail.parentWidget() is not self._responsive_split:
@@ -6305,7 +6530,6 @@ class ModelWorkshopPage(QWidget):
             self.tab_counts[role] = count
             self.tab_group.addButton(button)
             tabs.addWidget(button)
-        tabs.addStretch(1)
         layout.addWidget(tab_bar)
 
         self.ai_segmentation_button = QPushButton("AI 模型 / 智能断句")
@@ -6317,23 +6541,39 @@ class ModelWorkshopPage(QWidget):
         install_themed_icon(self.task_settings_button, "fa5s.sliders-h")
         self.task_settings_button.clicked.connect(self.task_settings_requested)
 
-        search_row = QHBoxLayout()
-        search_row.setContentsMargins(16,0,16,0)
+        # 2026-11-13: search and tools share the tab row (was a second row).
         self.search = QLineEdit()
         self.search.setObjectName("workshopSearch")
         bind_text(self.search, '搜索模型或使用场景', property='placeholderText')
         self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(100)
         self.search.textChanged.connect(self._apply_filter)
-        search_row.addWidget(self.search, 1)
-        search_row.addWidget(self.ai_segmentation_button)
-        search_row.addWidget(self.task_settings_button)
         self.sort_filter_button = QPushButton("排序与筛选")
         self.sort_filter_button.setObjectName("workshopToolButton")
         install_themed_icon(self.sort_filter_button, "fa5s.filter")
         self.sort_filter_button.clicked.connect(self._toggle_sort_filter)
-        search_row.addWidget(self.sort_filter_button)
-        search_row.setSpacing(8)
-        layout.addLayout(search_row)
+        self.tool_strip = QWidget()
+        self.tool_strip.setObjectName("workshopToolStrip")
+        # No minimum of its own: the placer moves it below the tabs before it
+        # would be squeezed, so it never widens the page.
+        self.tool_strip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        tools = QHBoxLayout(self.tool_strip)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(8)  # closer than the tabs' 22px
+        tools.addWidget(self.search, 1, Qt.AlignmentFlag.AlignVCenter)
+        for tool in (self.ai_segmentation_button, self.task_settings_button, self.sort_filter_button):
+            tools.addWidget(tool, 0, Qt.AlignmentFlag.AlignVCenter)
+        tabs.setSpacing(12)  # tighter so the tools fit beside the tabs
+        for button in self.tab_group.buttons():
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, button.sizePolicy().verticalPolicy())
+        tabs.addWidget(self.tool_strip, 1)
+        tabs.addStretch(0)  # keeps the tabs left when the tools move below
+        # Too narrow for tabs and tools on one line (small window, high zoom):
+        # the tools drop to their own row under the tabs.
+        self._tool_row_below = QHBoxLayout()
+        self._tool_row_below.setContentsMargins(16, 0, 16, 0)
+        layout.addLayout(self._tool_row_below)
+        self._tool_placer = _ToolStripPlacer(tab_bar, tabs, self._tool_row_below, self.tool_strip)
         self.sort_filter_popover = QFrame(self)
         self.sort_filter_popover.setObjectName("workshopSortPopover")
         self.sort_filter_popover.setWindowFlags(Qt.WindowType.Popup)
@@ -6414,6 +6654,9 @@ class ModelWorkshopPage(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 2026-11-13: no visible scroll bar; the wheel or a left-button drag scrolls.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._drag_scroll = _DragScroll(scroll)
         host = QWidget()
         host.setObjectName("workshopScrollHost")
         self.card_layout = QVBoxLayout(host)
@@ -6627,12 +6870,12 @@ class ModelWorkshopPage(QWidget):
             return
         # Sidebar/detail widths are now set via SizePolicy + max in _build_*; keep only font scaling here.
         self.page_title.setStyleSheet(
-            f"font-family: {TITLE_FONT_STACK}; "
-            f"font-size: {24 if comfortable else 21}px; font-weight: {WEIGHT_SCALE['heavy']};"
+            emphasis_qss(f"font-family: {TITLE_FONT_STACK}; "
+            f"font-size: {24 if comfortable else 21}px; font-weight: {WEIGHT_SCALE['heavy']};")
         )
         self.detail_title.setStyleSheet(
-            f"font-family: {TITLE_FONT_STACK}; "
-            f"font-size: {21 if comfortable else 19}px; font-weight: {WEIGHT_SCALE['heavy']};"
+            emphasis_qss(f"font-family: {TITLE_FONT_STACK}; "
+            f"font-size: {21 if comfortable else 19}px; font-weight: {WEIGHT_SCALE['heavy']};")
         )
         for card in self._cards.values():
             card.setMinimumHeight(84)
@@ -6970,6 +7213,8 @@ class ModelWorkshopPage(QWidget):
         return _spoken_timeline_state(self.runtime_settings, model, role, self._compute_model_state(model, role))
 
     def _compute_model_state(self, model: WorkshopModel, role: str) -> str:
+        if role == "timeline" and not _local_timeline_supported(model):
+            return "unsupported_role"
         models = self.runtime_settings.get("models", {})
         if not model_platform_available(model):
             return 'platform_unavailable'
@@ -7088,6 +7333,7 @@ class ModelWorkshopPage(QWidget):
         )
 
     def _action_text(self, model: WorkshopModel, state: str) -> tuple[str, bool]:
+        if state == "unsupported_role": return "此用途不支持", False
         if state=='platform_unverified':return '当前平台未验证',False
         if model.key in self._removing: return '正在永久删除…', False
         if state == 'platform_unavailable':
@@ -7463,7 +7709,7 @@ class ModelWorkshopPage(QWidget):
         self._view_model(key)
         effective_role = role or self.browser_role
         state = self._model_state(model, effective_role)
-        if state in {"selected", "installed", "configured"}:
+        if state in {"selected", "installed", "configured", "unsupported_role"}:
             self._request_model_selection(model, state, role=effective_role)
 
     def _refresh_detail(self):
@@ -7511,7 +7757,7 @@ class ModelWorkshopPage(QWidget):
         pixmap = card.monogram.pixmap()
         if pixmap is not None and not pixmap.isNull():
             self.detail_monogram.setPixmap(pixmap)
-        self.detail_monogram.setStyleSheet(card.monogram.styleSheet())
+        self.detail_monogram.setStyleSheet(emphasis_qss(card.monogram.styleSheet()))
         from .model_languages import language_support
         self.detail_languages.set_support(language_support(model.key))
         is_online = model_is_online(model)
@@ -7646,6 +7892,9 @@ class ModelWorkshopPage(QWidget):
             # "使用/取消使用"都没有任何反应（三十四轮用户实录）。
             effective_role = "primary"
         state = self._model_state(model, effective_role)
+        if state == "unsupported_role":
+            self._request_model_selection(model, state, role=effective_role)
+            return
         if state in {"planned", "language_unused"}:
             return
         if state == "downloading":
@@ -7688,6 +7937,8 @@ class ModelWorkshopPage(QWidget):
         role = role or self.browser_role
         if role == "api":
             role = "primary"
+        if role == "timeline" and not _local_timeline_supported(model):
+            return None
         backend = _adapter_backend(model, role)
         if not backend:
             return None
@@ -7714,6 +7965,9 @@ class ModelWorkshopPage(QWidget):
         requested_role = role or self.browser_role
         target = self._selection_target(model, requested_role)
         if target is None:
+            message = (tr("字幕时间戳仅支持已接入的本地时间戳或对齐模型，请选择本地模型。")
+                       if requested_role == "timeline" else tr("此模型尚未接入当前用途，请更换模型。"))
+            QMessageBox.information(self, tr("无法选择模型"), message)
             return
         if state != "selected" and requested_role in {"primary", "review"}:
             other_role = "review" if requested_role == "primary" else "primary"
@@ -8251,7 +8505,7 @@ class ModelPickerPanel(QWidget):
         from ..design.theme_manager import theme_key
         from ..design.ui_theme import theme_definition
         from .model_picker_cards import build_picker_qss
-        self.setStyleSheet(build_workshop_qss() + build_picker_qss(theme_definition(theme_key())))
+        self.setStyleSheet(emphasis_qss(build_workshop_qss() + build_picker_qss(theme_definition(theme_key()))))
         for card in self.cards.values():
             if not isinstance(card, _DeferredPickerCard) or card._card is not None:
                 _paint_picker_logo(card.model)(card.monogram, QSize(34, 34))
@@ -8309,6 +8563,11 @@ class ModelPickerPanel(QWidget):
             chips.addWidget(chip)
         chips.addStretch(1)
         layout.addLayout(chips)
+        self.scope_note = bind_text(QLabel(), "字幕时间戳仅支持本地模型，须具备时间戳或对齐能力。")
+        self.scope_note.setObjectName("pickerFooterNote")
+        self.scope_note.setWordWrap(True)
+        self.scope_note.setVisible(self.role == "timeline")
+        layout.addWidget(self.scope_note)
         # 2026-10-18: why the Chinese timing models are not used for the
         # spoken language chosen on home (shown for Japanese/English only).
         self.language_note = QLabel()

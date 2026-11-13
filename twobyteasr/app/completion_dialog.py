@@ -16,6 +16,7 @@ from ..design.ui_widgets import AnimatedButton
 from ..i18n import apply_ui_language
 from .main_ui_branding import _app_icon
 from .main_ui_helpers import _icon, APP_ICON_SOURCE_PATH
+from ..design.typography import emphasis_qss
 
 
 def delivery_hint(tasks, studio=None, *, synced=False):
@@ -93,8 +94,8 @@ class CompletionDialog(SpringDialog):
         self.status_badge = QLabel(badge_text)
         self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_badge.setStyleSheet(
-            f"color: {self.accent}; background: {self.tint}; border: 1px solid {self.accent}; "
-            "border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 800;"
+            emphasis_qss(f"color: {self.accent}; background: {self.tint}; border: 1px solid {self.accent}; "
+            "border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 800;")
         )
         self.card.header_layout.insertWidget(
             self.card.header_layout.count() - 1,
@@ -119,7 +120,7 @@ class CompletionDialog(SpringDialog):
         self.title_label = QLabel(title)
         self.title_label.setWordWrap(True)
         self.title_label.setStyleSheet(
-            f"color: {theme.text}; font-size: 22px; font-weight: 900; border: 0; background: transparent;"
+            emphasis_qss(f"color: {theme.text}; font-size: 22px; font-weight: 900; border: 0; background: transparent;")
         )
         copy.addWidget(self.title_label)
         self.message_label = QLabel(message)
@@ -162,10 +163,10 @@ class CompletionDialog(SpringDialog):
         self.confirm_button.setDefault(True)
         self.confirm_button.setMinimumSize(112, 42)
         self.confirm_button.setStyleSheet(
-            f"QPushButton {{ color: {theme.text_on_accent}; background: {theme.accent}; border: 1px solid {theme.accent}; "
+            emphasis_qss(f"QPushButton {{ color: {theme.text_on_accent}; background: {theme.accent}; border: 1px solid {theme.accent}; "
             "border-radius: 12px; padding: 8px 22px; font-size: 14px; font-weight: 800; }}"
             f"QPushButton:hover {{ background: {theme.accent_hover}; border-color: {theme.accent_hover}; }}"
-            f"QPushButton:pressed {{ background: {theme.accent_pressed}; border-color: {theme.accent_pressed}; padding-top: 10px; }}"
+            f"QPushButton:pressed {{ background: {theme.accent_pressed}; border-color: {theme.accent_pressed}; padding-top: 10px; }}")
         )
         self.confirm_button.clicked.connect(self.accept)
         footer.addWidget(self.confirm_button)

@@ -1,4 +1,4 @@
 {
-  "zh": "· 字幕固定避让、结束释放空位，衔接补偿限定在下一次开口前。\n· 完整中文14字内优先一条，统一新识别、失败回退和选区重断句。\n· 字幕编辑卡增加错字候选提示和Shift+C切分。\n· 新增全部标记已检查，术语学习经主动确认后生效。\n· 合入最新工作台、AI任务进度、审核同步及字幕导出修订。\n· 实际验证和听审、硬件、输入法及耐久边界详见版本说明。",
-  "en": "Stable caption placement reuses freed space and limits reading compensation before the next utterance. Complete Chinese expressions within 14 characters share one grouping policy across recognition, fallback and selected-range regrouping. Adds inline spelling candidates, Shift+C splitting, project-wide review confirmation and explicitly approved glossary learning. Includes the latest workbench, AI progress, review synchronization and subtitle-export changes. See release notes for validation and remaining limits."
+  "zh": "· 字幕固定避让、结束释放空位，衔接补偿限定在下一次开口前。\n· 完整中文14字内优先一条，统一新识别、失败回退和选区重断句。\n· 新增全部标记已检查，术语学习经主动确认后生效。\n· 合入最新工作台、AI任务进度、审核同步及字幕导出修订。\n· 实际验证和听审、硬件、输入法及耐久边界详见版本说明。",
+  "en": "Stable caption placement reuses freed space and limits reading compensation before the next utterance. Complete Chinese expressions within 14 characters share one grouping policy across recognition, fallback and selected-range regrouping. Adds project-wide review confirmation and explicitly approved glossary learning. Includes the latest workbench, AI progress, review synchronization and subtitle-export changes. See release notes for validation and remaining limits."
 }

@@ -17,6 +17,7 @@ from ..design.soft_qss import soft_tokens
 from ..i18n import tr
 from ..i18n_widgets import user_text
 from ..media.link_choices import size_text
+from ..design.typography import emphasis_qss, weighted_font
 
 STAGES = dict(queued="排队中", running="正在下载", parsing="解析视频", tools="准备下载工具",
     downloading="下载音视频", merging="无损合并", subtitles="下载选定字幕", organizing="整理字幕",
@@ -195,7 +196,7 @@ QPushButton#linkCapsule[tone="warn"] {{ background: {tone[0]}; color: {tone[1]};
 
 def apply_link_sheet(widget: QWidget, t=None) -> None:
     from .ui_zoom import set_sheet
-    set_sheet(widget, link_qss(t))
+    set_sheet(widget, emphasis_qss(link_qss(t)))
 
 
 def pill(text: str = "", tone: str = "off") -> QLabel:
@@ -337,7 +338,7 @@ class CoverView(QWidget):
         if self._badge:
             font = QFont(self.font())
             font.setPixelSize(max(10, int(11 * scale)))
-            font.setBold(True)
+            weighted_font(font, 700)
             painter.setFont(font)
             metrics = painter.fontMetrics()
             width = metrics.horizontalAdvance(self._badge) + 10 * scale

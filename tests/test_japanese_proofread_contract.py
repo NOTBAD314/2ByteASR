@@ -70,8 +70,10 @@ def test_no_glossary_original_and_translation_review_with_dialogue_and_pending(m
             data=json.loads(messages[-1]['content']);seen.append(data)
             a,b=data['targets'][:2]
             return {'changes':[{'target_id':b['target_id'],'original':b['target_text'],
-                'replacement':'あ'+b['target_text'],'reason':'合成局部候选，需确认'}],
-                'suspects':[{'target_id':a['target_id'],'original':a['target_text'],'reason':'两份参考有分歧，需要试听'}]}
+                'replacement':b['target_text'].replace('行く','逝く').replace('已有中文','已有译文'),
+                'reason':'离线字词替换夹具，需确认'}],
+                'suspects':[{'target_id':a['target_id'],'original':a['target_text'],
+                    'issue_type':'proper_name','reason':'两份参考有具体分歧，需要试听'}]}
     monkeypatch.setattr(providers,'provider_for_stage',lambda *a,**k:Provider())
     p=project()
     for cue in p.cues:set_manual(p,cue.id,'已有中文'+cue.id)

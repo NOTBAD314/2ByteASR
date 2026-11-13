@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from .tokens import BUTTON_SIZES, CONTROL_HEIGHTS, RADIUS_SCALE, WEIGHT_SCALE
 from .presentation import BUTTON_ALIASES
 from .typography import UI_FONT_STACK
+from .typography import emphasized
 
 if TYPE_CHECKING:
     from .ui_theme import ThemeDefinition
@@ -19,6 +20,7 @@ _CHECK_ICON = (Path(__file__).resolve().parents[2] / "assets" / "check-dark.png"
 _DOT_ICON = (Path(__file__).resolve().parents[2] / "assets" / "dot-dark.png").as_posix()
 
 
+@emphasized
 def build_control_qss(theme: ThemeDefinition) -> str:
     """SURFACE_3 controls, themed popups, thin scrollbars. No gradients."""
     bg0 = theme.app_background
@@ -338,6 +340,7 @@ QTableView::indicator:checked {{ background: {accent}; border-color: {accent}; i
 """ + build_button_qss(theme)
 
 
+@emphasized
 def build_button_qss(t) -> str:
     """All variants and legacy semantic names share one state specification.
 

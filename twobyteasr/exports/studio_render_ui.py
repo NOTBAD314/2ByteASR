@@ -41,6 +41,7 @@ from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme,
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import emphasis_qss
 
 
 class StudioRenderDialog(QDialog):
@@ -623,7 +624,7 @@ class StudioRenderDialog(QDialog):
         title = QLabel("✓ 压制完成")
         from ..design.ui_theme import theme_definition
         from ..design.theme_manager import theme_key
-        title.setStyleSheet(f"font-size:18px; font-weight:700; color:{theme_definition(theme_key()).success};")
+        title.setStyleSheet(emphasis_qss(f"font-size:18px; font-weight:700; color:{theme_definition(theme_key()).success};"))
         layout.addWidget(title)
         message = bind_text(QLabel(), '视频已保存：\n{output}', output=output)
         message.setWordWrap(True)

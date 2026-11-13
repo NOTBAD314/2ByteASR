@@ -100,11 +100,11 @@ from .studio_style_widgets import (
     StyleLabelColumn,
 )
 from ..design.controls import (
-    AngleDisc,
     CompactNumericField,
     offset_to_polar,
     polar_to_offset,
 )
+from ..design.ink_controls import PillSlider, ShadowStage
 
 
 def _sync_background_enable(page, enabled: bool) -> None:
@@ -135,6 +135,47 @@ def _background_switched(page) -> None:
     follow (the switch's own toggled connection then commits it)."""
     if not getattr(page, "_updating_style_ui", False):
         page._background_edited = True
+
+
+def _fill_is_on(page) -> bool:
+    """A solid fill of full transparency is the switched-off fill."""
+    spec = getattr(page, "_fill_spec", None)
+    return not (spec is not None and spec.kind == "solid" and QColor(str(spec.color)).alpha() == 0)
+
+
+def _shadow_is_on(page) -> bool:
+    if not hasattr(page, "style_shadow_opacity"):
+        return float(page.style_shadow.value()) > 0
+    _angle, distance = offset_to_polar(page.style_shadow_offset_x.value(), page.style_shadow_offset_y.value())
+    return float(page.style_shadow_opacity.value()) > 0 and (
+        float(page.style_shadow_blur.value()) > 0 or float(page.style_shadow.value()) > 0 or distance > 0)
+
+
+def _sync_appearance_switches(page) -> None:
+    """Every appearance row has a switch (2026-11-13, user); each follows the
+    values that mean on or off for its row, and the row's well follows it."""
+    states = {
+        "fill": _fill_is_on(page),
+        "outline": float(page.style_outline_width.value()) > 0,
+        "background": bool(page.style_background.isChecked()),
+        "shadow": _shadow_is_on(page),
+        "glow": bool(page.style_glow.isChecked()),
+    }
+    if states["fill"]:
+        page._fill_before_off = None  # what a switched-off fill goes back to; this one is on
+    for name, switch_name in (("fill", "style_fill_switch"), ("outline", "style_outline_switch"),
+                              ("shadow", "style_shadow_switch")):
+        switch = getattr(page, switch_name, None)
+        if switch is not None and switch.isChecked() != states[name]:
+            blocker = QSignalBlocker(switch)
+            switch.setChecked(states[name])
+            del blocker
+    for name, button_name in (("fill", "style_fill_button"), ("outline", "style_outline_button"),
+                              ("background", "style_back_button"), ("shadow", "style_shadow_button"),
+                              ("glow", "style_glow_button")):
+        button = getattr(page, button_name, None)
+        if button is not None and hasattr(button, "set_ink_on"):
+            button.set_ink_on(states[name])
 
 
 def _refresh_appearance_summaries(page) -> None:
@@ -213,9 +254,12 @@ def _refresh_appearance_summaries(page) -> None:
     else:
         rows["glow"].set_summary(tr("已关闭"))
         rows["glow"].set_chip_colors([])
-    sync_shadow = getattr(page, "_sync_shadow_switch", None)
-    if callable(sync_shadow):
-        sync_shadow()
+    if hasattr(page, "style_shadow_opacity"):
+        stage = getattr(page, "style_shadow_angle", None)
+        if hasattr(stage, "set_look"):
+            stage.set_look(QColor(shadow_color), opacity / 100.0, blur, float(page.style_shadow_spread.value()))
+    if hasattr(page, "style_glow"):
+        _sync_appearance_switches(page)
 
 
 class StudioStyleController:
@@ -890,29 +934,90 @@ class StudioStyleController:
             host.setFixedSize(swatch_width, swatch_width)
             return host
 
-        def colour_well(row, host):
-            # 2026-11-11 (user): the box is filled with the colour it holds
-            # and takes the row's spare width; the value is written on it.
+        def colour_well(row, host, role):
+            # 2026-11-13 (user): the well is ink on the capsule's paper. It
+            # takes the row's spare width; the value is written on the wash.
             host.setFixedHeight(swatch_width)
             host.setMinimumWidth(swatch_width)
             host.setMaximumWidth(16777215)
             host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             row.inline_layout().addWidget(host, 1)
-            row.stretch_inline()
+            button = host.findChild(page._style_color_button_type())
+            if button is not None:
+                button.set_ink_role(role)
+                row.capsule.set_well(button)
             return host
 
-        def well_number(field):
-            # The number beside a well keeps a fixed width, so the spare
-            # width goes to the colour and not to an empty number box.
+        def well_number(field, suffix=" px"):
+            # The number sits in the capsule after the wash, unboxed; it
+            # keeps a fixed width, so the spare width goes to the colour.
             field.spin.setMinimumWidth(0)
-            # The unit sits inside the box: a separate 「px」 label was cut off.
-            field.spin.setSuffix(" px")
-            field.setFixedWidth(68)
+            field.spin.setSuffix(suffix)
+            field.spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            field.setFixedWidth(60)
             return field
+
+        def row_switch(tip):
+            switch = QCheckBox()
+            switch.setObjectName("styleSwitch")
+            bind_text(switch, tip, property='toolTip')
+            return switch
+
+        # 2026-11-13 (user): every row has a switch. 填充 off is a transparent
+        # fill (hollow text when there is a stroke); 描边 off is width 0. What
+        # was set before comes back when the row is switched on again.
+        page.style_fill_switch = row_switch('开启或关闭填充；关闭后文字是透明的，只留描边')
+        page.style_outline_switch = row_switch('开启或关闭描边')
+        page._fill_before_off = None
+        page._outline_last_width = 3.0
+
+        def toggle_fill(checked: bool, _page=page) -> None:
+            if _page._updating_style_ui or checked == _fill_is_on(_page):
+                return
+            current = _page._fill_spec
+            if checked:
+                fill = _page._fill_before_off
+                if fill is None:
+                    color = QColor(str(current.color))
+                    color.setAlpha(255)
+                    fill = FillSpec.solid(color.name(QColor.NameFormat.HexArgb).upper())
+            else:
+                _page._fill_before_off = current
+                first = current.color if current.kind == "solid" else str(
+                    (current.stops[0] if current.stops else {}).get("color") or "#FFFFFFFF")
+                color = QColor(str(first))
+                color.setAlpha(0)
+                fill = FillSpec.solid(color.name(QColor.NameFormat.HexArgb).upper())
+            _page._updating_style_ui = True
+            try:
+                _page._fill_spec = fill
+                _page.style_fill_color.setText(
+                    fill.color if fill.kind == "solid" else str(fill.stops[0].get("color") or "#FFFFFFFF"))
+                if _page.style_fill_button is not None:
+                    _page.style_fill_button.set_fill_value(fill)
+            finally:
+                _page._updating_style_ui = False
+            _page._refresh_style_preview()
+            _page._apply_fill_spec(fill)
+
+        def toggle_outline(checked: bool, _page=page) -> None:
+            width = float(_page.style_outline_width.value())
+            if _page._updating_style_ui or checked == (width > 0):
+                return
+            if checked:
+                _page.style_outline_width.setValue(_page._outline_last_width or 3.0)
+            else:
+                _page._outline_last_width = width
+                _page.style_outline_width.setValue(0.0)
+            _page._commit_style_now()
+
+        page.style_fill_switch.toggled.connect(toggle_fill)
+        page.style_outline_switch.toggled.connect(toggle_outline)
 
         fill_row = StylePropertyRow("填充", on_activate=page._open_fill_editor)
         fill_row.set_inline(True, summary=True, expandable=False)
-        colour_well(fill_row, page.style_fill_swatch)
+        colour_well(fill_row, page.style_fill_swatch, "fill")
+        fill_row.set_trailing(page.style_fill_switch)
         appearance_layout.addWidget(fill_row)
         yield from _gui_slice.checkpoint()
 
@@ -925,7 +1030,8 @@ class StudioStyleController:
         page.style_outline_swatch.setMinimumHeight(28)
         page.style_outline_width.setMinimumHeight(28)
         page.style_outline_width.setMinimumWidth(0)
-        colour_well(outline_row, page.style_outline_swatch)
+        colour_well(outline_row, page.style_outline_swatch, "outline")
+        outline_row.set_trailing(page.style_outline_switch)
         yield from _gui_slice.checkpoint()
         # No 宽度 caption: next to the stroke swatch the number is obviously its width.
         bind_text(page.style_outline_width, '描边宽度', property='toolTip')
@@ -977,7 +1083,7 @@ class StudioStyleController:
         background_row.set_inline(True, summary=False, expandable=False)
         yield from _gui_slice.checkpoint()
         background_editor = background_row.inline_layout()
-        colour_well(background_row, page.style_back_swatch)
+        colour_well(background_row, page.style_back_swatch, "background")
         background_row.set_trailing(page.style_background)
         page.style_background.toggled.connect(lambda _checked: _background_switched(page))
         yield from _gui_slice.checkpoint()
@@ -991,7 +1097,9 @@ class StudioStyleController:
         yield from _gui_slice.checkpoint()
         page.style_shadow_offset_x.hide()
         page.style_shadow_offset_y.hide()
-        page.style_shadow_angle = AngleDisc()
+        # 2026-11-13 (user): a strip of caption text with its shadow; dragging
+        # the shadow sets direction and distance. It keeps the disc's contract.
+        page.style_shadow_angle = ShadowStage()
         page.style_shadow_angle.scrubStarted.connect(page._begin_style_scrub)
         yield from _gui_slice.checkpoint()
         page.style_shadow_angle.scrubFinished.connect(page._finish_style_scrub)
@@ -1010,6 +1118,8 @@ class StudioStyleController:
         page.style_shadow_distance.setRange(0, 140)
         page.style_shadow_distance.setDecimals(0)
         page.style_shadow_distance.setValue(6)
+        page.style_shadow_angle.distanceChanged.connect(page.style_shadow_distance.setValue)
+        page.style_shadow_distance.valueChanged.connect(page.style_shadow_angle.setDistance)
         yield from _gui_slice.checkpoint()
         page._shadow_polar_syncing = False
 
@@ -1079,36 +1189,42 @@ class StudioStyleController:
         page.style_shadow_switch.toggled.connect(toggle_shadow)
         yield from _gui_slice.checkpoint()
         page._sync_shadow_switch = sync_shadow_switch
-        # 2026-11-12 (user): no switch on the shadow row; opacity 0% in its
-        # settings turns it off. The hidden switch keeps following the
-        # values for the code that reads it.
-        page.style_shadow_switch.setParent(shadow_row.content)
-        page.style_shadow_switch.hide()
-        colour_well(shadow_row, page.style_shadow_swatch)
-        # 2026-10-18 (user): the disc shows and sets the direction itself (its
-        # centre reads the angle), so no 方向 box; distance / opacity / blur /
-        # spread sit in a 2 x 2 grid beside the disc, as tall as the disc.
-        page.style_shadow_angle_value.setParent(shadow_row.content)  # kept for sync, never top-level
+        # 2026-11-13 (user): the shadow row has its switch again, like every
+        # other row; its opacity is the number in the capsule.
+        colour_well(shadow_row, page.style_shadow_swatch, "shadow")
+        bind_text(page.style_shadow_opacity, '阴影不透明度', property='toolTip')
+        shadow_row.inline_layout().addWidget(well_number(CompactNumericField(page.style_shadow_opacity), " %"))
+        shadow_row.set_trailing(page.style_shadow_switch)
+        # The stage sets direction and distance; four rounded sliders under
+        # it carry caption, value and level in one bar each. The spin boxes
+        # stay the value holders (hidden, except the opacity in the capsule).
         yield from _gui_slice.checkpoint()
-        page.style_shadow_angle_value.hide()
-        page.style_shadow_angle.setFixedSize(112, 112)
+        page.style_shadow_sliders = {}
         shadow_grid = QGridLayout()
         shadow_grid.setContentsMargins(0, 0, 0, 0)
-        yield from _gui_slice.checkpoint()
-        shadow_grid.setHorizontalSpacing(10)
-        shadow_grid.setVerticalSpacing(8)
-        shadow_grid.addWidget(page.style_shadow_angle, 0, 0, 2, 1, Qt.AlignmentFlag.AlignVCenter)
-        for index, (control, label, unit) in enumerate((
-            (page.style_shadow_distance, "距离", "px"),
-            (page.style_shadow_opacity, "不透明度", "%"),
-            (page.style_shadow_blur, "模糊", "px"),
-            (page.style_shadow_spread, "扩散", "px"),
+        shadow_grid.setHorizontalSpacing(6)
+        shadow_grid.setVerticalSpacing(6)
+        for index, (name, label, unit) in enumerate((
+            ("distance", "距离", "px"),
+            ("blur", "模糊", "px"),
+            ("spread", "扩散", "px"),
+            ("opacity", "不透明度", "%"),
         )):
-            grid_width(control, 44)
-            shadow_grid.addWidget(CompactNumericField(control, label=label, unit=unit), index // 2, 1 + index % 2)
+            control = getattr(page, "style_shadow_" + name)
+            slider = PillSlider(control, label, unit)
+            slider.scrubStarted.connect(page._begin_style_scrub)
+            slider.scrubFinished.connect(page._finish_style_scrub)
+            page.style_shadow_sliders[name] = slider
+            shadow_grid.addWidget(slider, index // 2, index % 2)
+            if name != "opacity":
+                control.setParent(shadow_row.content)  # kept as the value holder, never top-level
+                control.hide()
         yield from _gui_slice.checkpoint()
+        page.style_shadow_angle_value.setParent(shadow_row.content)  # kept for sync, never top-level
+        page.style_shadow_angle_value.hide()
+        shadow_grid.setColumnStretch(0, 1)
         shadow_grid.setColumnStretch(1, 1)
-        shadow_grid.setColumnStretch(2, 1)
+        shadow_row.content_layout().addWidget(page.style_shadow_angle)
         shadow_row.content_layout().addLayout(shadow_grid)
         appearance_layout.addWidget(shadow_row)
         yield from _gui_slice.checkpoint()
@@ -1119,7 +1235,7 @@ class StudioStyleController:
         page.style_glow.setText("")
         yield from _gui_slice.checkpoint()
         glow_row.set_trailing(page.style_glow)
-        colour_well(glow_row, page.style_glow_swatch)
+        colour_well(glow_row, page.style_glow_swatch, "glow")
         # No 半径 caption (2026-10-18): next to the glow swatch it reads as the radius.
         bind_text(page.style_glow_strength, '发光半径', property='toolTip')
         glow_row.inline_layout().addWidget(well_number(CompactNumericField(page.style_glow_strength)))
@@ -2366,6 +2482,10 @@ class StudioStyleController:
                 enabled = bool(getattr(page, "style_background", None) and page.style_background.isChecked())
             elif getattr(page, "style_glow_button", None) is not None and button is page.style_glow_button:
                 enabled = bool(getattr(page, "style_glow", None) and page.style_glow.isChecked())
+            elif button is getattr(page, "style_outline_button", None):
+                enabled = float(page.style_outline_width.value()) > 0
+            elif button is getattr(page, "style_shadow_button", None):
+                enabled = _shadow_is_on(page)
             button.set_color_value(value, label, enabled=enabled)
             targets = {'outline':'outline', 'outline2':'outline2', 'shadow':'shadow', 'glow':'glow'}
             target = 'background' if button is getattr(page, 'style_back_button', None) else None

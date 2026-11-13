@@ -47,6 +47,9 @@ class TermEntry:
     priority: int = 20
     correction_enabled: bool = True
     emphasis_enabled: bool = False
+    language: str = ''
+    concept_id: str = ''
+    legal_aliases: tuple[str, ...] = ()
 
     def __post_init__(self):
         # Old frozen task/project snapshots can still carry the automatic marker.
@@ -143,7 +146,7 @@ class GlossarySnapshot:
             revision=str(x.get("revision", "")), found=bool(x.get("found", True)),
             profile_json=str(x.get("profile_json", "")),
             reference_terms=tuple(x.get("reference_terms", ())),
-            terms=tuple(TermEntry(**{**row, "aliases": tuple(row.get("aliases", ()))})
+            terms=tuple(TermEntry(**{**row, "aliases": tuple(row.get("aliases", ())), 'legal_aliases': tuple(row.get('legal_aliases', ()))})
                         for row in x.get("terms", ())))
             for x in payload.get("libraries", ())))
 
@@ -223,8 +226,12 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
             terms.append(TermEntry(_text(row["canonical"]), aliases,
                 provenance="builtin", category=_text(row.get("category")), origin="官方", priority=10, correction_enabled=bool(row.get("correction_enabled", True)),
                 emphasis_enabled=bool(row.get("emphasis_enabled", False))))
+        concepts = entry.get('concepts', ())
+        owned = {tuple(k) for c in concepts for k in c.get('legacy_keys', ())}
         for row in entry.get("mappings", ()):
             if not isinstance(row, dict) or not _text(row.get("to")):
+                continue
+            if (row.get('from'), row.get('to')) in owned:
                 continue
             from .learning_review import requires_review
             if requires_review(row):
@@ -247,6 +254,16 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
                 provenance or ("user_confirmed" if user else "candidate"),
                 _text(row.get("category")) or "其他", _text(row.get("origin")) or "手动", 20,
                 bool(row.get("correction_enabled", True)), bool(row.get("emphasis_enabled", False))))
+        from .multilingual_terms import is_confirmed
+        for value in concepts:
+            for code, record in value.get('names', {}).items():
+                if not is_confirmed(record): continue
+                errors = [name for name in record.get('mishearings', ()) if record.get('mishearing_enabled', {}).get(name, True)]
+                if record.get('unify_aliases', False): errors.extend(record.get('aliases', ()))
+                terms.append(TermEntry(record['name'], tuple(errors), True, 'user_confirmed',
+                    value.get('category', '其他'), '手动', 20, bool(record.get('correction_enabled', True)),
+                    bool(record.get('emphasis_enabled', False)), code, value['id'],
+                    tuple(record.get('aliases', ()))))
         references = []
         paths = getattr(legacy, "_profile_lexicon_paths_for", lambda _profile: [])(profile)
         for path in paths:
@@ -404,7 +421,9 @@ class TermResolver:
             for term in library.terms:
                 if not term.confirmed or not term.correction_enabled:
                     continue
-                target = self._written(term.canonical)
+                # Explicit language spellings are owned by the user, including
+                # independently stored Hans/Hant. Script fallback is legacy only.
+                target = term.canonical if term.language and term.language != 'und' else self._written(term.canonical)
                 for source in (term.canonical, *term.aliases):
                     if source:
                         if not term.correction_enabled:
@@ -576,7 +595,10 @@ def runtime_snapshot(legacy: Any | None = None) -> GlossarySnapshot:
         return GlossarySnapshot()
     snapshot = getattr(context, "glossary_snapshot", None)
     if snapshot is not None:
-        return snapshot
+        from .multilingual_terms import source_snapshot
+        code = getattr(context, 'task_language', '') or getattr(context, 'requested_language', 'und')
+        if code == 'zh': code = getattr(context, 'chinese_script', 'zh-Hans')
+        return source_snapshot(snapshot, code)
     if legacy is None:
         import subtitle_core as legacy
     return snapshot_glossaries(legacy, legacy.runtime_enabled_glossary_ids())

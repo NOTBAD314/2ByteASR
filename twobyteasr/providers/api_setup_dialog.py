@@ -39,6 +39,7 @@ from . import api_setup_catalog as catalog
 from . import cloud_api_test as tests
 from ..i18n import bind_text, tr, ui_literal
 from ..design.main_ui_dialogs import SpringDialog
+from ..design.typography import emphasis_qss, weighted_font
 
 STATUS_MARKS = {tests.PASS: '✓', tests.FAIL: '✗', tests.UNKNOWN: '?', tests.SKIP: '—'}
 STATUS_NAMES = {'ok': tests.PASS, 'fail': tests.FAIL}
@@ -490,7 +491,7 @@ class ApiSetupDialog(SpringDialog):
 
     def _apply_theme(self) -> None:
         theme = _theme()
-        self.setStyleSheet(getattr(self, '_base_sheet', '') + dialog_qss(theme))
+        self.setStyleSheet(emphasis_qss(getattr(self, '_base_sheet', '') + dialog_qss(theme)))
         for button, name, color in list(self._icon_buttons):
             self._paint_icon(button, name, color)
         if self.more_toggle is not None:
@@ -541,7 +542,7 @@ class ApiSetupDialog(SpringDialog):
             head = menu.addAction(tr(label))
             head.setEnabled(False)
             font = QFont(head.font())
-            font.setBold(True)
+            weighted_font(font, 700)
             head.setFont(font)
             for guide in self._guides(kind):
                 text = str(tr(guide.name))
@@ -688,7 +689,7 @@ class ApiSetupDialog(SpringDialog):
             start = len(self._walk) - 1    # a saved key: straight to “贴上检查”
         # Pages built after the sheet was set keep their first polish (fonts
         # stayed 14 px offscreen and in the window); set it again so they follow it.
-        self.setStyleSheet(self.styleSheet())
+        self.setStyleSheet(emphasis_qss(self.styleSheet()))
         self.status.setText('')
         self._update_steps()
         self._go(start)
@@ -1378,7 +1379,7 @@ class ApiSetupDialog(SpringDialog):
         self.progress.set_steps([step.label for step in walk])
         if self._page_kind == 'paste':
             self._index = total - 1
-        self.setStyleSheet(self.styleSheet())   # the new step page follows the sheet (see _show)
+        self.setStyleSheet(emphasis_qss(self.styleSheet()))   # the new step page follows the sheet (see _show)
         self._update_steps()
         self._refresh_chrome()
 

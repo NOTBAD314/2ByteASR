@@ -7,6 +7,7 @@ painted switches. Every colour comes from the active theme, so dark themes
 get the same shapes with their own tones.
 """
 from .typography import TITLE_FONT_STACK, UI_FONT_STACK
+from .typography import emphasized
 
 
 def _tone(t, color, light, dark):
@@ -14,6 +15,7 @@ def _tone(t, color, light, dark):
     return blend_hex(t.surface, color, light if t.is_light else dark)
 
 
+@emphasized
 def build_settings_qss(t) -> str:
     selected = _tone(t, t.accent, 0.2, 0.3)
     hover = _tone(t, t.text, 0.05, 0.08)
@@ -66,12 +68,14 @@ QPushButton#settingsReport:hover {{ color: {t.accent}; }}
 """
 
 
+@emphasized
 def build_script_match_qss(t) -> str:
     hover = _tone(t, t.text, 0.06, 0.1)
     done = t.success
     return f"""
 QDialog#homeScriptMatchDialog {{ background: transparent; color: {t.text}; }}
 QWidget#scriptWizardRoot {{ background: {t.surface}; border: 0; }}
+QStackedWidget#scriptWizardPages, QWidget#scriptWizardPage {{ background: transparent; border: 0; }}
 QLabel#scriptWizardTitle {{ font-family: {TITLE_FONT_STACK}; font-size: 18px; font-weight: 900; color: {t.text};
     background: transparent; }}
 QPushButton#scriptWizardClose {{ background: {_tone(t, t.text, 0.07, 0.12)}; color: {t.text}; border: 0;

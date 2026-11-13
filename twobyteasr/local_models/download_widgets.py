@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLayout, QSizePolicy, QWidget
+from ..design.typography import emphasized, weighted_font
 
 
 class WrapRow(QLayout):
@@ -225,7 +226,7 @@ class StepTrack(QWidget):
             top = bar_height + self._px(10)
             glyph = QRectF(left, top + self._px(2), self._px(14), self._px(14))
             self._paint_glyph(painter, glyph, state, done, active, failed, muted, self._factor)
-            label_font.setWeight(QFont.Weight.DemiBold if state == 'active' else QFont.Weight.Normal)
+            weighted_font(label_font, QFont.Weight.DemiBold if state == 'active' else QFont.Weight.Normal)
             painter.setFont(label_font)
             painter.setPen(text if state in {'active', 'failed'} else (text if state == 'done' else muted))
             metrics = QFontMetrics(label_font)
@@ -349,6 +350,7 @@ class ActivityGraph(QWidget):
         painter.end()
 
 
+@emphasized
 def download_dialog_qss(theme=None) -> str:
     """Styles of the redesigned window; appended after the workshop sheet."""
     from ..design.ui_theme import blend_hex

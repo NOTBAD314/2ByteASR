@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 from ..i18n import bind_text
 from ..design.elided_label import ElidedLabel
 from .model_picker_copy import picker_copy
+from ..design.typography import emphasized
 
 _LANGUAGE_MARKS = (('zh', '中'), ('yue', '粤'), ('en', '英'), ('ja', '日'), ('ko', '韩'))
 
@@ -291,6 +292,7 @@ class PickerCard(QFrame):
         return filter_key in self.tags
 
 
+@emphasized
 def build_picker_qss(t) -> str:
     from ..design.ui_theme import blend_hex
 

@@ -7,6 +7,7 @@ stay complete; a narrower drawer still wraps as a single grid (6/3/2/1).
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QButtonGroup, QGridLayout, QSizePolicy, QToolButton, QWidget
+from ..design.typography import emphasis_qss
 
 
 class ToolTabSelector(QWidget):
@@ -55,12 +56,12 @@ class ToolTabSelector(QWidget):
         from ..design.ui_theme import blend_hex
         track=blend_hex(t.panel,t.text,0.07 if t.is_light else 0.10)
         raised=t.surface_elevated if t.is_light else blend_hex(t.panel,t.text,0.20)
-        self.setStyleSheet(f'''QWidget#contextToolSelector {{ background:{track}; border:0; border-radius:12px; }}
+        self.setStyleSheet(emphasis_qss(f'''QWidget#contextToolSelector {{ background:{track}; border:0; border-radius:12px; }}
             QToolButton#contextToolTab {{ color:{t.text_secondary}; background:transparent;
             border:0; border-radius:9px; padding:4px 2px 3px 2px; font-weight:500; }}
             QToolButton#contextToolTab:hover {{ color:{t.text}; background:{blend_hex(track,t.text,0.06)}; }}
             QToolButton#contextToolTab:checked {{ color:{t.accent_text}; background:{raised}; font-weight:700;
-            border:1px solid {blend_hex(raised,t.text,0.10)}; }}''')
+            border:1px solid {blend_hex(raised,t.text,0.10)}; }}'''))
 
     def sync(self, *_args):
         for index,button in enumerate(self.buttons):

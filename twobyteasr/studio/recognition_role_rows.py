@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..i18n import bind_text, current_language, tr, translate
+from ..design.typography import emphasized, weighted_font
 
 ROLE_LABELS = {"primary": "主力转写", "timeline": "字幕时间轴", "review": "文字复核"}
 # The glyph shown before a model is chosen or when the role is off (home card icons).
@@ -191,7 +192,7 @@ class LanguageBadges(QWidget):
     def _font(self) -> QFont:
         font = QFont(self.font())
         font.setPixelSize(_px(12))
-        font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(font, QFont.Weight.DemiBold)
         return font
 
     def _label(self, code: str) -> str:
@@ -515,6 +516,7 @@ class RecognitionRoleRow(QFrame):
         super().keyPressEvent(event)
 
 
+@emphasized
 def role_row_rules(palette, light: bool, radius: int, type_scale: dict) -> str:
     """The rows' QSS inside ``QWidget#studioRecognitionSheet`` (identity hue per role)."""
     from ..design.ui_theme import blend_hex

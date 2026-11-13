@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QMenu, QWidget, QWidgetAction
+from .typography import weighted_font
 
 ROW_HEIGHT = 48
 HEADER_HEIGHT = 26
@@ -51,7 +52,7 @@ class _RichRow(QWidget):
 
     def _fonts(self):
         title = QFont(self.font())
-        title.setWeight(QFont.Weight.DemiBold)
+        weighted_font(title, QFont.Weight.DemiBold)
         caption = QFont(self.font())
         caption.setPointSizeF(max(7.5, self.font().pointSizeF() - 1.5))
         return title, caption
@@ -136,7 +137,7 @@ class _Header(QWidget):
         painter = QPainter(self)
         font = QFont(self.font())
         font.setPointSizeF(max(7.5, self.font().pointSizeF() - 1.5))
-        font.setWeight(QFont.Weight.Bold)
+        weighted_font(font, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QColor(theme.accent_text))
         painter.drawText(QRectF(PAD + 4, 6, self.width() - PAD * 2, HEADER_HEIGHT - 6),

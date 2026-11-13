@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 from . import shortcut_registry as registry
 from ..design.presentation import button_role
 from ..i18n import bind_text, tr
+from ..design.typography import emphasis_qss
 
 STUDIO_SCOPES = ('studio', 'studio.review', 'studio.editor')
 
@@ -882,8 +883,8 @@ class ShortcutSettingsPanel(QWidget):
         from ..app.ui_zoom import set_sheet
         self._sheet_theme = _theme().key
         sheet = _panel_sheet()
-        set_sheet(self.list_view, sheet)
-        set_sheet(self.banner, sheet)
+        set_sheet(self.list_view, emphasis_qss(sheet))
+        set_sheet(self.banner, emphasis_qss(sheet))
 
     def showEvent(self, event) -> None:
         if self._pending_rows:

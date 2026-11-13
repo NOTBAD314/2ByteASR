@@ -25,6 +25,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 
 from ..i18n import tr
+from ..design.typography import weighted_font
 
 WIDTH, HEIGHT = 440.0, 187.0
 
@@ -151,7 +152,7 @@ class Draw:
         value = str(tr(value)) if ui else str(value)
         font = QFont(self.font)
         font.setPixelSize(int(round(size)))
-        font.setWeight(weight)
+        weighted_font(font, weight)
         p = self.p
         p.setFont(font)
         p.setPen(faded(color or self.look.text, alpha))
@@ -166,7 +167,7 @@ class Draw:
     def measure(self, value, size=13, weight=QFont.Weight.Medium, ui=False) -> float:
         font = QFont(self.font)
         font.setPixelSize(int(round(size)))
-        font.setWeight(weight)
+        weighted_font(font, weight)
         self.p.setFont(font)
         return self.p.fontMetrics().horizontalAdvance(str(tr(value)) if ui else str(value))
 

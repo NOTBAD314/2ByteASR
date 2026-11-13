@@ -1,4 +1,4 @@
 {
-  "zh": "· 说话人分区：拖放换组、合并角色和整组确认更方便。\n· 当前字幕：直接定位和操作，Alt+J 在字幕两端往返。\n· 编辑与日语：及时预览草稿，保护双语内容和校对来源。\n· 兔白教学：保留原版动画，加入可关闭的语音与知识气泡。\n· 界面与诊断：整理常用窗口，导出问题记录时反馈更清楚。",
-  "en": "Drag speakers between groups, merge roles and confirm whole groups. Locate and edit the current caption, with Alt+J for its endpoints. Editing and Japanese navigation better preserve bilingual content and proofreading sources. Tubai tutorials add optional voice and tips alongside the original animations. Common windows and diagnostic-export feedback are clearer."
+  "zh-CN": "· 新增说话人分区管理、当前字幕定位胶囊与起止快捷键。\n· 改进编辑浮窗、日语定位、双语来源保护与字幕交接。\n· 更新模型工坊、识别记录、完成页、外观与兔白教学。\n· 恢复原教学动画，修订主页诊断导出与默认保存目录。\n· 提供 Windows 和 Apple Silicon Mac；实际验证与限制见完整说明。",
+  "en": "Adds grouped speaker management and focused subtitle navigation. Improves inline editing, Japanese navigation, bilingual integrity, caption handoffs, onboarding and diagnostics. Includes the latest accepted daily interfaces and Apple Silicon Mac support. See full release notes for actual validation and remaining limits."
 }

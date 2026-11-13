@@ -34,6 +34,7 @@ from ..design.ui_widgets import AnimatedButton, SwitchControl
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import emphasis_qss
 
 
 class SmartGlossaryWorker(QThread):
@@ -346,7 +347,7 @@ class SmartGlossaryDialog(QWidget):
         review_layout.setSpacing(6)
         review_top = QHBoxLayout()
         self.review_count = QLabel("发现 0 个候选")
-        self.review_count.setStyleSheet("font-weight: 600;")
+        self.review_count.setStyleSheet(emphasis_qss("font-weight: 600;"))
         review_top.addWidget(self.review_count)
         review_top.addStretch(1)
         self.category_filter = FramelessPopupCombo()

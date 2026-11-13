@@ -148,15 +148,16 @@ def exercise(page, out, pump, wait):
         report['shadow_native_pixel_deltas']=[float(np.abs(a-b).sum()) for a,b in zip(frames,frames[1:])]
         check('shadow_each_step_changes_native_pixels',all(v>100 for v in report['shadow_native_pixel_deltas']))
         check('shadow_live_route_updated',all(r['trace']['renderer_route']=='advanced' for r in report['shadow_runtime'][1:]))
-        scroll.ensureWidgetVisible(page.style_shadow_spread,0,20);pump(.2)
+        scroll.ensureWidgetVisible(page.style_shadow_sliders['spread'],0,20);pump(.2)
         page.window().grab().save(str(out/'shadow-panel.png'))
-        # 2026-10-18: the direction is set on the disc itself (no number box); the
-        # distance field sits beside the disc, level with its top half.
+        # 2026-11-13: the direction and the distance are set on the stage (drag
+        # the shadow; no number box); the distance slider sits right under it.
         disc=page.style_shadow_angle
         check('angle_disc_visible',disc.isVisible() and not page.style_shadow_angle_value.isVisible())
-        disc_top=disc.mapToGlobal(disc.rect().topLeft()).y()
-        distance_top=page.style_shadow_distance.mapToGlobal(page.style_shadow_distance.rect().topLeft()).y()
-        check('compact_direction_distance',disc_top<=distance_top<=disc_top+disc.height()//2)
+        disc_bottom=disc.mapToGlobal(disc.rect().bottomLeft()).y()
+        distance=page.style_shadow_sliders['distance']
+        distance_top=distance.mapToGlobal(distance.rect().topLeft()).y()
+        check('compact_direction_distance',disc_bottom<=distance_top<=disc_bottom+disc.height()//2)
         reopen(original_path)
         report['passed']=all(report['checks'].values())
     finally:

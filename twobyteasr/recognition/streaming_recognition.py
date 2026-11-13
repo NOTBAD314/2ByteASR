@@ -496,9 +496,8 @@ class LongMediaPipeline:
         # mutation can invalidate all batches of this shard.
         left=min(row['start'] for row in primary)-2.;right=max(row['end'] for row in primary)+2.
         speech=[row for row in self.speech_regions if float(row['end'])>=left and float(row['start'])<=right]
-        if context.task_language=='zh':
-            from ..glossary.terminology import apply_to_segments, runtime_snapshot
-            segments=apply_to_segments(segments,runtime_snapshot(self.legacy),self.legacy)
+        from ..glossary.multilingual_terms import apply_source_terms
+        segments=apply_source_terms(segments,self.legacy)
         if self.text_plan.polish:
             segments=self._step(index,'polished','校对',lambda:self.legacy.polish_subtitles(segments,
                 Path(self.media_path).stem,cache))
@@ -506,7 +505,7 @@ class LongMediaPipeline:
             self._step(index,'polished','保留原文',lambda:None)
         if context.task_language=='zh':
             segments=self.legacy.apply_editorial_segment_rules(segments)
-            segments=apply_to_segments(segments,runtime_snapshot(self.legacy),self.legacy)
+        segments=apply_source_terms(segments,self.legacy)
         cues=self._step(index,'grouped','断句',lambda:self.legacy.group_subtitles(segments,
             firered_tokens=tokens,speech_regions=speech,protect_all_source_boundaries=False,
             cache_context=cache,use_ai=self.text_plan.group,provider_snapshot=context.provider_snapshot))

@@ -518,8 +518,11 @@ def start(window, out: Path):
             def clickable(rows):
                 result=[]
                 for cue,rect in rows:
-                    hit,mode=timeline._cue_at(rect.center())
-                    if hit is not None and hit.id==cue.id and mode=='move' and timeline._caption_seam_at(rect.center()) is None:
+                    point = rect.center().toPoint()
+                    hit,mode=timeline._cue_at(point)
+                    if (rect.height() > 14 and hit is not None and hit.id==cue.id and mode=='move'
+                            and timeline._caption_seam_at(point) is None
+                            and timeline._track_resize_boundary_at(point) is None):
                         result.append((cue,rect))
                 return result[:12]
             rows=clickable(self.visible_cue_rects())
@@ -528,14 +531,20 @@ def start(window, out: Path):
                 yield .3
                 rows=clickable(self.visible_cue_rects())
             expected=''
+            observations = []
+            self.result['selection_clicks'] = observations
             for cue, rect in rows:
-                c = rect.center()
+                c = rect.center().toPoint()
                 hit,_mode=timeline._cue_at(c)
                 expected=hit.id if hit is not None else cue.id
                 yield from self.track("select-click", lambda c=c: (
                     self.mouse(QEvent.Type.MouseButtonPress, c),
                     self.mouse(QEvent.Type.MouseButtonRelease, c, buttons=Qt.MouseButton.NoButton)))
                 yield 0.2
+                observations.append(dict(expected=expected, selected=self.page.session.selected_cue_id,
+                    timeline_selected=timeline.selected_id, explicit=timeline.explicit_subtitle_id,
+                    point=[c.x(),c.y()], rect=list(rect.getRect()), mode=_mode,
+                    visible_start=timeline.visible_start_ms, visible_duration=timeline.visible_duration_ms))
             self.result["checks"]["select_last_ok"] = bool(rows) and self.page.session.selected_cue_id == expected
 
         def phase_drag_repeat(self):
@@ -1330,7 +1339,9 @@ def start(window, out: Path):
             page.cue_controller.set_text(cue.id, cue.text + "·")
             yield 0.4
             yield from self.track("save", page.save)
-            yield 1.0
+            yield self.until(lambda: page.undo_stack.isClean()
+                             and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                             90, 'formal save durable')
             path = str(page.session.project_path)
             old = page.project
             t = time.perf_counter()
@@ -1350,6 +1361,9 @@ def start(window, out: Path):
                 page.cue_controller.set_text(page.project.cues[0].id, page.project.cues[0].text[:-1])
                 yield 0.3
                 page.save()
+                yield self.until(lambda: page.undo_stack.isClean()
+                                 and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                                 90, 'restore save durable')
             yield 2.0
 
         def phase_close_while_busy(self):
@@ -1361,7 +1375,9 @@ def start(window, out: Path):
             digest = lambda: hashlib.sha256(path.read_bytes()).hexdigest()
             self.clean_project()
             page.save()
-            yield 1.0
+            yield self.until(lambda: page.undo_stack.isClean()
+                             and not getattr(getattr(page, '_persistence_queue', None), 'busy', False),
+                             90, 'pre-close save durable')
             saved = digest()
             cue = page.project.cues[len(page.project.cues) // 2]
             original_text = cue.text

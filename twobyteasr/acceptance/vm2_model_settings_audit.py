@@ -3,6 +3,14 @@ import json,os,sys,time,traceback
 
 
 def start(window, output):
+    if os.environ.get('TWOBYTEASR_VM2_ONBOARDING_ONLY')=='1':
+        from .vm2_onboarding_audit import start as onboarding_start
+        onboarding_start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_VM2_UI_POLISH_ONLY')=='1':
+        from .vm2_ui_polish_audit import start as polish_start
+        polish_start(window,output)
+        return
     if os.environ.get('TWOBYTEASR_WORKSHOP_COLUMNS_ONLY')=='1':
         from .workshop_columns_audit import start as columns_start
         columns_start(window,output)
@@ -89,6 +97,31 @@ def start(window, output):
                 QTimer.singleShot(300,inspect_settings)
                 window._open_application_settings()
                 check('settings normal entry inspection completed',not callback_errors,callback_errors)
+
+                saved_grouping=window.ai_grouping.isChecked()
+                window.ai_grouping.setChecked(False)
+                for enable in (True,False):
+                    window._open_ai_settings_dialog(enable_grouping=enable);settle(.35)
+                    ai=window._ai_settings_dialog
+                    check('AI enable intent reaches the open settings',ai.isVisible() and window.ai_grouping.isChecked()==enable)
+                    check('AI dialog opens without Qt fades',not ai.ENTRY_ANIMATED and not ai.EXIT_ANIMATED)
+                    from PySide6.QtGui import QFontInfo
+                    title=ai.findChild(QLabel,'aiDialogTitle');face=QFontInfo(title.font())
+                    check('AI title resolves the bundled Heavy face','heavy' in (face.family()+' '+face.styleName()).casefold(),
+                          dict(family=face.family(),style=face.styleName(),weight=int(face.weight())))
+                    import ctypes
+                    from ctypes import wintypes
+                    hwnd=wintypes.HWND(int(ai.winId()))
+                    status=getattr(ai,'_native_transitions_status',None)
+                    check('native AI dialog accepts disabled Windows transitions',status==0,dict(set_status=status,hwnd=hwnd.value))
+                    from ..design.popup_corners import _windows_supports_rounding
+                    supported=_windows_supports_rounding();applied=getattr(ai,'_native_rounding_applied',False)
+                    check('native corner request follows Windows capability',applied if supported else not applied,
+                          dict(supported=supported,applied=applied,windows_build=sys.getwindowsversion().build,
+                               scope='Windows 10 keeps the existing square fallback; Windows 11 native rounding requires a supported host.'))
+                    shot(ai,theme+'-ai-settings-'+str(enable));ai.reject();settle(.15)
+                    check('AI settings cancel restores the prior off choice',not window.ai_grouping.isChecked())
+                window.ai_grouping.setChecked(saved_grouping)
 
                 window.media_paths=[]
                 import wave

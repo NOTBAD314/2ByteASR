@@ -14,6 +14,7 @@ from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QWidget
 
 from ..i18n import bind_text
+from ..design.typography import emphasized
 
 RADIUS = 20
 
@@ -43,6 +44,7 @@ def _svg(name: str, body: str, size: int = 16) -> str:
                          f'viewBox="0 0 16 16">{body}</svg>')
 
 
+@emphasized
 def find_replace_qss(t) -> str:
     k = _tokens(t)
     chevron = _svg("replace-chevron", f'<path d="M4 6.2 L8 10 L12 6.2" fill="none" stroke="{t.text_muted}" '

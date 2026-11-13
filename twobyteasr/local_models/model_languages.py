@@ -34,10 +34,17 @@ Pure data and functions: no Qt.
 from __future__ import annotations
 
 BADGE_LANGUAGES = ("zh", "yue", "dialects", "en", "ja", "ko")
+# 2026-11-13: the workshop model list has room for four more mainstream
+# languages next to the description, in a 5 x 2 grid. Other cards keep six.
+EXTRA_LANGUAGES = ("fr", "de", "es", "ru")
+WORKSHOP_LANGUAGES = BADGE_LANGUAGES + EXTRA_LANGUAGES
 TIERS = ("strong", "usable", "no", "unknown")
 
 # Chinese source strings; the locales translate them.
-LANGUAGE_NAMES = {"zh": "中文", "yue": "粤语", "dialects": "方言", "en": "英语", "ja": "日语", "ko": "韩语"}
+LANGUAGE_NAMES = {"zh": "中文", "yue": "粤语", "dialects": "方言", "en": "英语", "ja": "日语", "ko": "韩语",
+                  "fr": "法语", "de": "德语", "es": "西班牙语", "ru": "俄语"}
+# Two-character labels for the workshop grid where the full name is longer.
+GRID_NAMES = {"zh": {"es": "西语"}, "zh-Hant": {"es": "西語"}}
 TIER_NAMES = {"strong": "支持", "usable": "支持（官方成绩稍弱）", "no": "不支持", "unknown": "不确定"}
 # Badge colour per tier, and the three colours the legend explains.
 TIER_COLORS = {"strong": "yes", "usable": "yes", "unknown": "unsure", "no": "no"}
@@ -45,11 +52,16 @@ LEGEND = (("yes", "支持"), ("unsure", "不确定"), ("no", "不支持"))
 
 # One-character labels for the narrow home cards, per interface language.
 _SHORT_NAMES = {
-    "zh": {"zh": "中", "yue": "粤", "dialects": "方", "en": "英", "ja": "日", "ko": "韩"},
-    "zh-Hant": {"zh": "中", "yue": "粵", "dialects": "方", "en": "英", "ja": "日", "ko": "韓"},
-    "en": {"zh": "ZH", "yue": "YUE", "dialects": "DIA", "en": "EN", "ja": "JA", "ko": "KO"},
-    "ja": {"zh": "中", "yue": "粤", "dialects": "方", "en": "英", "ja": "日", "ko": "韓"},
-    "ko": {"zh": "중", "yue": "광", "dialects": "방", "en": "영", "ja": "일", "ko": "한"},
+    "zh": {"zh": "中", "yue": "粤", "dialects": "方", "en": "英", "ja": "日", "ko": "韩",
+           "fr": "法", "de": "德", "es": "西", "ru": "俄"},
+    "zh-Hant": {"zh": "中", "yue": "粵", "dialects": "方", "en": "英", "ja": "日", "ko": "韓",
+                "fr": "法", "de": "德", "es": "西", "ru": "俄"},
+    "en": {"zh": "ZH", "yue": "YUE", "dialects": "DIA", "en": "EN", "ja": "JA", "ko": "KO",
+           "fr": "FR", "de": "DE", "es": "ES", "ru": "RU"},
+    "ja": {"zh": "中", "yue": "粤", "dialects": "方", "en": "英", "ja": "日", "ko": "韓",
+           "fr": "仏", "de": "独", "es": "西", "ru": "露"},
+    "ko": {"zh": "중", "yue": "광", "dialects": "방", "en": "영", "ja": "일", "ko": "한",
+           "fr": "프", "de": "독", "es": "스", "ru": "러"},
 }
 
 
@@ -57,29 +69,38 @@ def _tiers(text: str) -> dict[str, str]:
     return dict(item.split(":") for item in text.split())
 
 
+# French / German / Spanish / Russian (2026-11-13), from the same sources:
+# listed by name (Qwen3-ASR's 30, the aligner's 11, Whisper, gpt-4o FLEURS,
+# MAI-Transcribe-2's 60) -> strong; only a broad "N languages" claim (MOSS
+# 50+, omniASR 1600+) -> usable; a closed list without them -> no.
+_EU_STRONG = " fr:strong de:strong es:strong ru:strong"
+_EU_USABLE = " fr:usable de:usable es:usable ru:usable"
+_EU_NO = " fr:no de:no es:no ru:no"
+
+
 _QWEN3_ASR = {
-    "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong"),
+    "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong" + _EU_STRONG),
     "more": 25, "summary": "30 种语言 · 22 种方言",
     "source": "https://github.com/QwenLM/Qwen3-ASR",
 }
 _QWEN3_ALIGNER = {
-    "tiers": _tiers("zh:strong yue:strong dialects:no en:strong ja:strong ko:strong"),
+    "tiers": _tiers("zh:strong yue:strong dialects:no en:strong ja:strong ko:strong" + _EU_STRONG),
     "more": 6, "summary": "11 种语言",
     "source": "https://github.com/QwenLM/Qwen3-ASR",
 }
 _FIRERED = {
-    "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:no ko:no"),
+    "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:no ko:no" + _EU_NO),
     "summary": "中英 · 20+ 种方言口音",
     "source": "https://github.com/FireRedTeam/FireRedASR2S",
 }
 _WHISPER = {
-    "tiers": _tiers("zh:strong yue:usable en:strong ja:strong ko:strong"),
+    "tiers": _tiers("zh:strong yue:usable en:strong ja:strong ko:strong" + _EU_STRONG),
     "more": 95, "summary": "约 100 种语言",
     "source": "https://github.com/openai/whisper",
 }
 
 _MOSS = {
-    "tiers": _tiers("zh:strong yue:usable en:strong ja:usable ko:usable"),
+    "tiers": _tiers("zh:strong yue:usable en:strong ja:usable ko:usable" + _EU_USABLE),
     "more": "50+", "summary": "50+ 种语言",
     "source": "https://github.com/OpenMOSS/MOSS-Transcribe-Diarize",
 }
@@ -98,18 +119,18 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
     "qwen_aligner": _QWEN3_ALIGNER,
     # Qwen-Audio-3.1: 30 languages + dialects; Qwen3-ASR-Flash lists 26.
     "qwen_cloud_filetrans": {
-        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong"),
+        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong" + _EU_STRONG),
         "more": 25, "summary": "30 种语言 · 10 种方言",
         "source": "https://docs.qwencloud.com/developer-guides/speech/speech-to-text-models",
     },
     "qwen31_filetrans": {
-        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong"),
+        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong" + _EU_STRONG),
         "more": 25, "summary": "30 种语言 · 多种方言",
         "source": "https://help.aliyun.com/zh/model-studio/asr-model",
     },
     # 中英听写: Chinese, English and 202 dialects; the language is fixed to zh_cn.
     "spark_asr_v2": {
-        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:no ko:no"),
+        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:no ko:no" + _EU_NO),
         "summary": "中英 · 202 种方言",
         "source": "https://www.xfyun.cn/doc/spark/spark_zh_iat_new.html",
     },
@@ -120,44 +141,44 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
         "source": "https://github.com/zai-org/GLM-ASR",
     },
     "canary_qwen": {
-        "tiers": _tiers("zh:no yue:no dialects:no en:strong ja:no ko:no"),
+        "tiers": _tiers("zh:no yue:no dialects:no en:strong ja:no ko:no" + _EU_NO),
         "summary": "仅英语",
         "source": "https://huggingface.co/nvidia/canary-qwen-2.5b",
     },
     # Official per-language CER: zh 11.5, yue 17.0, ja 19.2, ko 5.8, en 3.0 (%).
     "omni_asr_llm_7b": {
-        "tiers": _tiers("zh:usable yue:usable dialects:usable en:strong ja:usable ko:strong"),
+        "tiers": _tiers("zh:usable yue:usable dialects:usable en:strong ja:usable ko:strong" + _EU_USABLE),
         "more": "1600+", "summary": "1600+ 种语言",
         "source": "https://github.com/facebookresearch/omnilingual-asr",
     },
     # English is the weakest of the five in the official chart.
     "sensevoice": {
-        "tiers": _tiers("zh:strong yue:strong en:usable ja:strong ko:strong"),
+        "tiers": _tiers("zh:strong yue:strong en:usable ja:strong ko:strong" + _EU_NO),
         "summary": "5 种语言",
         "source": "https://github.com/FunAudioLLM/SenseVoice",
     },
     # The checkpoint card says Mandarin training only; FunASR's list adds en.
     "paraformer": {
-        "tiers": _tiers("zh:strong en:usable ja:no ko:no"),
+        "tiers": _tiers("zh:strong en:usable ja:no ko:no" + _EU_NO),
         "summary": "中文普通话",
         "source": "https://modelscope.cn/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     },
     "whisper": _WHISPER,
     # Fun-ASR-Nano-2512 (not the 31-language MLT-Nano).
     "funasr_nano": {
-        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:no"),
+        "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:no" + _EU_NO),
         "summary": "中英日 · 7 大方言",
         "source": "https://github.com/FunAudioLLM/Fun-ASR",
     },
     "ja_ctc_aligner": {
-        "tiers": _tiers("zh:no yue:no dialects:no en:no ja:strong ko:no"),
+        "tiers": _tiers("zh:no yue:no dialects:no en:no ja:strong ko:no" + _EU_NO),
         "summary": "仅日语",
         "source": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
     },
     # Only the Mandarin (China) and Japanese model sets are installed; Japanese
     # is weaker in the 2026-10-19 comparison (names it does not know).
     "mfa_aligner": {
-        "tiers": _tiers("zh:strong yue:no dialects:no en:no ja:usable ko:no"),
+        "tiers": _tiers("zh:strong yue:no dialects:no en:no ja:usable ko:no" + _EU_NO),
         "summary": "中文 · 日语（实验）",
         "source": "https://huggingface.co/MontrealCorpusTools",
     },
@@ -166,13 +187,13 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
     # The default gpt-transcribe has no per-language results; the docs accept
     # cmn / yue codes; gpt-4o-transcribe FLEURS: en 2.46, ja 3.0, ko 4.07, zh ~7.
     "openai_api": {
-        "tiers": _tiers("zh:strong yue:usable en:strong ja:strong ko:strong"),
+        "tiers": _tiers("zh:strong yue:usable en:strong ja:strong ko:strong" + _EU_STRONG),
         "source": "https://platform.openai.com/docs/guides/speech-to-text",
     },
     # The MAI-Transcribe family's newest published list (MAI-Transcribe-2):
     # 60 languages, zh / yue / en / ja / ko each listed. Dialects not named.
     "mai_latest": {
-        "tiers": _tiers("zh:strong yue:strong en:strong ja:strong ko:strong"),
+        "tiers": _tiers("zh:strong yue:strong en:strong ja:strong ko:strong" + _EU_STRONG),
         "more": 55, "summary": "60 种语言",
         "source": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe",
     },
@@ -185,14 +206,18 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
 }
 
 
-def language_support(key: str) -> dict | None:
-    """``{"tiers": {code: tier for all six}, "more", "summary", "source"}`` or None."""
+def language_support(key: str, codes: tuple[str, ...] = BADGE_LANGUAGES) -> dict | None:
+    """``{"tiers": {code: tier for each of codes}, "more", "summary", "source"}`` or None.
+
+    ``codes`` defaults to the six badges; the workshop list passes
+    ``WORKSHOP_LANGUAGES``.
+    """
     record = LANGUAGE_SUPPORT.get(key)
     if record is None:
         return None
     tiers = record.get("tiers", {})
     return {
-        "tiers": {code: tiers.get(code, "unknown") for code in BADGE_LANGUAGES},
+        "tiers": {code: tiers.get(code, "unknown") for code in codes},
         "more": record.get("more"),
         "summary": record.get("summary", ""),
         "source": record.get("source", ""),

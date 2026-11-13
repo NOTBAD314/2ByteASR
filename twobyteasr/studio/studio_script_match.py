@@ -18,6 +18,7 @@ import uuid
 from ..i18n import tr
 from ..recognition.script_match import ScriptMatch, ScriptMatchError, match_script, parse_script, tokens_from_project
 from ..timeline.studio_commands import MutationOrigin, ReplaceCuesCommand
+from ..design.typography import weighted_font
 
 REVIEW_REASON = 'script_match_needs_review'
 
@@ -256,7 +257,7 @@ def open_script_match_dialog(page) -> bool:
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 3 and line.needs_review:
-                    font = item.font(); font.setBold(True); item.setFont(font)
+                    font = item.font(); weighted_font(font, 700); item.setFont(font)
                 table.setItem(row, column, item)
         summary.setText(tr('共 {count} 句；文稿 {coverage}% 的字对上了字级时间；{review} 句标为待检查。'
                            '替换后可用 Ctrl+Z 一步恢复。', count=len(match.lines),

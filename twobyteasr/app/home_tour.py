@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushB
 
 from ..i18n import bind_text, tr
 from .tour_mascot import GREETING, MascotVoice, Typewriter, marked_html, marker_colors, next_chat_line, speaking_ms
+from ..design.typography import emphasis_qss
 
 
 @dataclass
@@ -516,7 +517,7 @@ class GuidedTour(QWidget):
         accent = QColor(t.accent)
         self.bubble = TourBubble(self)
         self.bubble.setStyleSheet(
-            f"QFrame#tourCard {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 22px; }}"
+            emphasis_qss(f"QFrame#tourCard {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 22px; }}"
             f"QLabel#tourCount {{ color: {t.accent}; background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16);"
             f" border-radius: 10px; padding: 2px 10px; font-size: 12px; font-weight: 700; }}"
             f"QLabel#tourText {{ color: {t.text}; font-size: 16px; }}"
@@ -524,7 +525,7 @@ class GuidedTour(QWidget):
             f"QPushButton#tourSkip {{ background: transparent; border: 0; color: {t.text_muted}; padding: 4px 6px; }}"
             f"QPushButton#tourSkip:hover {{ color: {t.text}; }}"
             f"QPushButton#tourVoice {{ background: transparent; border: 0; border-radius: 12px; padding: 3px; }}"
-            f"QPushButton#tourVoice:hover {{ background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16); }}")
+            f"QPushButton#tourVoice:hover {{ background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16); }}"))
         self.bubble.hide()
         layout = QVBoxLayout(self.bubble.card)
         layout.setContentsMargins(18, 14, 18, 16)
@@ -549,7 +550,7 @@ class GuidedTour(QWidget):
         self.skip.setObjectName('tourSkip')
         self.skip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.skip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.skip.clicked.connect(lambda: self.close_tour(False))
+        self.skip.clicked.connect(lambda: self._user_close())
         top.addWidget(self.skip)
         layout.addLayout(top)
         self.anim = TourAnim(self.bubble)
@@ -612,7 +613,7 @@ class GuidedTour(QWidget):
         self.chip_end = button_role(QPushButton(), 'ghost')
         bind_text(self.chip_end, '结束教学')
         self.chip_end.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.chip_end.clicked.connect(lambda: self.close_tour(False))
+        self.chip_end.clicked.connect(lambda: self._user_close())
         row.addWidget(self.chip_end)
         self.chip.hide()
 
@@ -626,8 +627,8 @@ class GuidedTour(QWidget):
         self.chat.setWordWrap(True)
         self.chat.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.chat.setStyleSheet(
-            f"QLabel#tourChat {{ background: {t.surface_elevated}; color: {t.text}; border: 2px solid {t.accent};"
-            f" border-radius: 16px; padding: 8px 14px; font-size: 14px; font-weight: 600; }}")
+            emphasis_qss(f"QLabel#tourChat {{ background: {t.surface_elevated}; color: {t.text}; border: 2px solid {t.accent};"
+            f" border-radius: 16px; padding: 8px 14px; font-size: 14px; font-weight: 600; }}"))
         self.chat.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.chat.hide()
 
@@ -1976,6 +1977,17 @@ class GuidedTour(QWidget):
         self.index = -1
         self.go(0)
 
+    def set_required(self, required: bool) -> None:
+        self.required = bool(required)
+        for button in (getattr(self, 'skip', None), getattr(self, 'chip_end', None)):
+            if button is not None:
+                button.setVisible(not self.required)
+
+    def _user_close(self):
+        """跳过教学 / 结束教学 / Esc; a required first tutorial stays open."""
+        if not getattr(self, 'required', False):
+            self.close_tour(False)
+
     def close_tour(self, completed: bool):
         for animation in (self._glide, self._reveal, self._attention, self._carry):
             animation.stop()
@@ -2078,7 +2090,7 @@ class GuidedTour(QWidget):
             key = event.key()
             step = self._step()
             if key == Qt.Key.Key_Escape:
-                self.close_tour(False)
+                self._user_close()
             elif self.mode == 'shown' and step.show_next and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Right):
                 self.go(self.index + 1)
             elif self.mode == 'shown' and step.show_next and key == Qt.Key.Key_Left and self.index > 0:
@@ -2880,13 +2892,17 @@ def tutorial_avoid(window):
     return rects
 
 
-def start_home_tour(window, on_finished=None, part: str = 'all') -> GuidedTour | None:
-    """Start the tutorial (one at a time). 2026-10-22: one tutorial; ``part`` is kept for old callers."""
+def start_home_tour(window, on_finished=None, part: str = 'all', *, required: bool = False) -> GuidedTour | None:
+    """Start the tutorial (one at a time). 2026-10-22: one tutorial; ``part`` is kept for old callers.
+
+    2026-11-13 (user): ``required`` is a fresh install's first tutorial: no
+    跳过教学 / 结束教学 and Esc does not close it; it can still be paused."""
     existing = window.findChild(GuidedTour)
     if existing is not None and getattr(existing, 'mode', '') != 'closed':
         return existing
     tour = GuidedTour(window, tutorial_steps(window, part), avoid=tutorial_avoid(window))
     tour.part = part
+    tour.set_required(required)
     if on_finished is not None:
         tour.finished.connect(on_finished)
     tour.start()

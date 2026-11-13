@@ -9,6 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from ..design.typography import emphasized
 
 STEP_SIZE = 22
 
@@ -148,6 +149,7 @@ class StatusBar(QWidget):
         painter.end()
 
 
+@emphasized
 def build_translation_dialog_qss(t) -> str:
     """Rules for the translation dialog; appended after the secondary-surface sheet."""
     return f"""

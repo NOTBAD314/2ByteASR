@@ -1116,7 +1116,7 @@ DEFAULT_RULES: tuple[QCRule, ...] = (
     TextQualityRule(),
     TerminologyRule(),
     TimelineRule(),
-    ReadabilityRule(),
+    # Readability is an explicitly requested layout tool, not a content alarm.
     SpeakerContinuityRule(),
 )
 

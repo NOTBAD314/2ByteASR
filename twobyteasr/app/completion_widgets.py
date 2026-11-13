@@ -14,13 +14,14 @@ from ..design.ui_theme import blend_hex, theme_definition
 from ..design.ui_widgets import AnimatedButton
 from .completion_summary import completion_translate
 from ..design.typography import MONO_FONT_STACK, TITLE_FONT_FAMILIES, UI_FONT_FAMILIES
+from ..design.typography import emphasis_qss, weighted_font
 
 
 def _ui_font(base, size, weight=QFont.Weight.Medium):
     font = QFont(base)
     font.setFamilies(list(UI_FONT_FAMILIES))
     font.setPixelSize(_zpx(size))
-    font.setWeight(weight)
+    weighted_font(font, weight)
     return font
 
 
@@ -175,7 +176,7 @@ class CompletionTitle(QLabel):
         font = QFont(self.font())
         font.setFamilies(list(TITLE_FONT_FAMILIES))
         font.setPixelSize(_zpx(26))
-        font.setWeight(QFont.Weight.ExtraBold)
+        weighted_font(font, QFont.Weight.ExtraBold)
         return font
 
     def pill_font(self):
@@ -245,7 +246,7 @@ class CompletionTitle(QLabel):
             room = int(pill.width()) - 22
             if self._action:
                 action_font = QFont(self.pill_font())
-                action_font.setWeight(QFont.Weight.Bold)
+                weighted_font(action_font, QFont.Weight.Bold)
                 action_font.setUnderline(self._hover)
                 action_width = QFontMetrics(action_font).horizontalAdvance(self._action)
                 tail_room = max(0, room - action_width - 12)
@@ -273,7 +274,7 @@ class CompletionContent(QWidget):
 
     def refresh_theme_palette(self):
         t = theme_definition(theme_key())
-        self.setStyleSheet(f"""
+        self.setStyleSheet(emphasis_qss(f"""
 QFrame#resultSummaryCard {{ background:{t.surface}; border:1px solid {t.border}; border-radius:{COMPLETION_RADIUS_MAIN}px; }}
 QFrame#resultSummaryCard[outcome="success"] {{ background:{blend_hex(t.surface, t.success, 0.17)}; border-color:{blend_hex(t.surface, t.success, 0.55)}; }}
 QFrame#resultSummaryCard[outcome="warning"] {{ background:{blend_hex(t.surface, t.warning, 0.08)}; border-color:{blend_hex(t.surface, t.warning, 0.42)}; }}
@@ -323,7 +324,7 @@ QToolButton#completionFoldDetail:focus {{ border:1px solid {t.focus}; }}
 QComboBox[completionRole="secondary"] {{ border-radius:{COMPLETION_RADIUS_SMALL}px; }}
 QMenu[completionRole="secondary"] {{ border-radius:{COMPLETION_RADIUS_SMALL}px; }}
 QMenu[completionRole="secondary"]::item {{ border-radius:6px; }}
-""")
+"""))
 
     def bind_actions(self, layout, cards, *, viewport=None,
                      summary_layout=None, summary_copy=None, page_layout=None, panels=(), action_grid=None,
@@ -458,7 +459,7 @@ class CompletionAccordionHeader(QToolButton):
         self.setArrowType(Qt.ArrowType.RightArrow)
         self.setProperty('completionRadius', COMPLETION_RADIUS_MAIN)
         self.setObjectName('completionAccordionHeader')
-        self.setStyleSheet('font-size:15px; font-weight:600;')
+        self.setStyleSheet(emphasis_qss('font-size:15px; font-weight:600;'))
         self.setFixedHeight(48)
         self.preview_text = ''
         self.setMinimumWidth(0)
@@ -1280,7 +1281,7 @@ class CompletionMoreButton(QToolButton):
     def set_compact(self, compact):
         self._compact = bool(compact)
         self.setFont(_ui_font(self.font(), 13 if compact else 14, QFont.Weight.DemiBold))
-        self.setStyleSheet(f'font-size:{13 if compact else 14}px; font-weight:600;')
+        self.setStyleSheet(emphasis_qss(f'font-size:{13 if compact else 14}px; font-weight:600;'))
         self.updateGeometry()
         self.update()
 

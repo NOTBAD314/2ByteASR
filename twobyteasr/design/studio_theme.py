@@ -318,7 +318,8 @@ _QSS_CACHE: dict[str, str] = {}
 def _cached_qss(cache_key: str, build) -> str:
     sheet = _QSS_CACHE.get(cache_key)
     if sheet is None:
-        sheet = build()
+        from .typography import emphasis_qss
+        sheet = emphasis_qss(build())
         _QSS_CACHE[cache_key] = sheet
     return sheet
 

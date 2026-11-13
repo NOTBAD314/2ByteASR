@@ -12,6 +12,7 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QFrame, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from twobyteasr.design.ui_theme import GREEN, INK, MUTED
+from .typography import emphasis_qss
 
 
 # Pages that share this sidebar (Model Workshop, Term Library, History) used
@@ -75,13 +76,13 @@ QLabel#workspaceSidebarHeading {{ color: {theme.text_muted}; background: transpa
 
 def style_workspace_page_title(label):
     from ..app.ui_zoom import set_sheet
-    set_sheet(label, PAGE_TITLE_QSS)
+    set_sheet(label, emphasis_qss(PAGE_TITLE_QSS))
     return label
 
 
 def style_workspace_sidebar_heading(label):
     from ..app.ui_zoom import set_sheet
-    set_sheet(label, SIDEBAR_HEADING_QSS)
+    set_sheet(label, emphasis_qss(SIDEBAR_HEADING_QSS))
     return label
 
 
@@ -129,7 +130,7 @@ class WorkspaceNavigation(QWidget):
 
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
-        set_sheet(self, navigation_item_qss(_active_theme()))
+        set_sheet(self, emphasis_qss(navigation_item_qss(_active_theme())))
 
     def set_active(self, key: str):
         for item_key, _label, icon_name in self.ITEMS:
@@ -183,7 +184,7 @@ class WorkspaceSidebar(QFrame):
 
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
-        set_sheet(self, sidebar_frame_qss(self.objectName(), _active_theme()))
+        set_sheet(self, emphasis_qss(sidebar_frame_qss(self.objectName(), _active_theme())))
 
 
 NAVIGATION_QSS = f"""

@@ -29,7 +29,9 @@ class _Output(QObject):
             elif action=="resume":self.sink.resume()
             elif action=="stop":self.sink.stop();self._close_buffer()
             elif action=="query":
-                self.result=(self.sink.processedUSecs(),self.sink.state(),self.sink.error(),self.sink.bufferSize())
+                self.result=(self.sink.processedUSecs(),self.sink.state(),self.sink.error(),self.sink.bufferSize(),
+                             self.buffer.pos() if self.buffer is not None else 0,
+                             self.buffer.size() if self.buffer is not None else 0)
             elif action=="dispose":
                 self.sink.reset();self._close_buffer();self.sink.deleteLater();self.sink=None
         except Exception as exc:self.failure=str(exc)
@@ -71,6 +73,7 @@ class AudioOutputSink(QObject):
     def resume(self):self._call("resume")
     def setVolume(self,value):self._call("volume",value)
     def processedUSecs(self):return self._call("query")[0]
+    def output_snapshot(self):return self._call('query')
     def state(self):return self._call("query")[1]
     def error(self):return self._call("query")[2]
     def bufferSize(self):return self._call("query")[3]

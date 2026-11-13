@@ -7,12 +7,13 @@ Studio opens a two-caption project with real media in isolated user data:
   draw follows every step and the caption's drawn pixels shrink when the background is off;
 * the background switch is one undo step;
 * every left label of the style tab shares one column, every control starts on one line, both
-  checkboxes use one style, the shadow / glow switches share the trailing slot, no row overlaps;
+  checkboxes use one style, the five appearance switches share the trailing slot, no row overlaps;
 * with English labels the column widens instead of clipping ``Background``;
-* 2026-10-18: square swatches with no 宽度 / 半径 / 方向 captions, no text preview, the shadow
-  fields in a 2 x 2 grid beside the disc, active rows fade their color from the right edge,
+* 2026-10-18: square swatches with no 宽度 / 半径 / 方向 captions, no text preview,
   one click on the font field opens a list that stays open, and the motion tab's category
   filter back to 全部 does not stack tiles.
+* 2026-11-13: each appearance row is an ink capsule with a switch; the shadow editor is the
+  stage over four sliders in a 2 x 2 grid.
 """
 import json
 import os
@@ -219,14 +220,17 @@ def start(window, output):
             controls = [page.style_scope, page.style_apply_geometry, page.style_font,
                         page.style_font_size, page.style_fill_button, page.style_outline_button,
                         page.style_back_button, page.style_shadow_button, page.style_glow_button,
-                        page.style_outline2, page.style_alignment, page.style_position_x]
+                        page.style_alignment, page.style_position_x]
             starts = {x(item) for item in controls if item.isVisibleTo(root)}
             self.check('controls_start_on_one_line', len(starts) == 1, sorted(starts))
             self.check('preset_action_row_has_more_name_space',x(page.style_preset)<x(page.style_font))
-            # 2026-11-12 (user): no shadow switch (opacity 0% turns it off).
+            # 2026-11-13 (user): every row has a switch, all in one slot.
+            switches = [page.style_fill_switch, page.style_outline_switch, page.style_background,
+                        page.style_shadow_switch, page.style_glow]
             self.check('switches_share_trailing_slot',
-                       x(page.style_glow) == x(page.style_background) and page.style_shadow_switch.isHidden(),
-                       [x(page.style_background), x(page.style_glow)])
+                       len({x(switch) for switch in switches}) == 1
+                       and all(switch.isVisibleTo(root) for switch in switches),
+                       [x(switch) for switch in switches])
             swatches = [page.style_fill_swatch, page.style_outline_swatch, page.style_back_swatch,
                         page.style_shadow_swatch, page.style_glow_swatch]
             # 2026-11-11 (user): wide colour wells that show their colour.
@@ -297,15 +301,14 @@ def start(window, output):
                 return item.mapTo(root, QPoint(0, 0))
 
             disc = page.style_shadow_angle
-            fields = [page.style_shadow_distance, page.style_shadow_opacity, page.style_shadow_blur,
-                      page.style_shadow_spread]
+            fields = list(page.style_shadow_sliders.values())
             xs = sorted({pos(f).x() for f in fields})
             ys = sorted({pos(f).y() for f in fields})
-            self.check('shadow_fields_two_by_two_beside_disc',
-                       len(xs) == 2 and len(ys) == 2 and xs[0] > pos(disc).x() + disc.width()
-                       and pos(disc).y() <= ys[1] and pos(disc).y() + disc.height() >= ys[0]
+            self.check('shadow_sliders_two_by_two_under_stage',
+                       len(fields) == 4 and len(xs) == 2 and len(ys) == 2
+                       and ys[0] >= pos(disc).y() + disc.height()
                        and not page.style_shadow_angle_value.isVisibleTo(root),
-                       dict(disc=[pos(disc).x(), pos(disc).y(), disc.width()], xs=xs, ys=ys))
+                       dict(stage=[pos(disc).x(), pos(disc).y(), disc.width(), disc.height()], xs=xs, ys=ys))
             self.shot(page.context_drawer, '07-shadow-editor')
             page._appearance_rows['shadow'].set_expanded(False)
             yield .3

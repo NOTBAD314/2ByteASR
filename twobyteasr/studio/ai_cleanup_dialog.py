@@ -36,6 +36,7 @@ from ..i18n import bind_text, tr
 from .studio_find_replace import (PREVIEW_HTML_ROLE, PreviewBinding, _PreviewRowDelegate, _TextPreviewDialog,
                                   _preview_colors, occurrence_conflicts)
 from .studio_text_tools import clock_ms, scope_cue_ids, values_from_occurrences
+from ..design.typography import emphasis_qss
 
 ROW_ROLE = Qt.ItemDataRole.UserRole + 5      # ("ai" | "local", index)
 KIND_ROLE = Qt.ItemDataRole.UserRole + 6     # "break" | "delete" | "text"
@@ -479,7 +480,7 @@ class AiCleanupDialog(_TextPreviewDialog):
         from ..design.studio_theme import refresh_secondary_surface_theme
         from ..design.theme_manager import theme_definition, theme_key
         refresh_secondary_surface_theme(self)
-        set_sheet(self.root, cleanup_qss(theme_definition(theme_key())))
+        set_sheet(self.root, emphasis_qss(cleanup_qss(theme_definition(theme_key()))))
         self._theme_refresh_pending = False
 
     def showEvent(self, event):

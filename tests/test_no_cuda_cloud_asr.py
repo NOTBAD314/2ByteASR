@@ -93,7 +93,8 @@ def test_qwen3_filetrans_uses_its_own_schema_and_word_timestamps(tmp_path):
     assert len(rows) == 1 and 'speaker' not in rows[0]
     assert rows[0]['timestamp_source'] == 'qwen3_filetrans_native_word'
     assert rows[0]['timing_precision'] == 'word'
-    assert [t['text'] for t in rows[0]['tokens']] == ['欢迎', '使用', '阿里云。']
+    assert rows[0]['text'] == '欢迎使用阿里云。'
+    assert [t['text'] for t in rows[0]['tokens']] == ['欢迎', '使用', '阿里云']
     assert rows[0]['tokens'][0]['start'] == pytest.approx(.1)
     assert storage.deletes == 1
 

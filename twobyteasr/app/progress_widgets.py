@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QListWi
 from .ui_zoom import px as _zpx  # painted text follows the interface zoom
 from ..i18n import bind_text, translate
 from ..design.typography import MONO_FONT_STACK, TITLE_FONT_STACK, UI_FONT_STACK
+from ..design.typography import emphasis_qss, weighted_font
 
 
 def _theme():
@@ -127,11 +128,11 @@ class ProgressPhaseCard(QFrame):
         theme = _theme()
         colors = phase_state_colors(theme, self._state)
         self.title_label.setStyleSheet(
-            f"color: {theme.text if self._state != 'pending' else theme.text_secondary};"
-            f" font-family: {UI_FONT_STACK}; font-size: 16px; font-weight: 600; background: transparent;")
+            emphasis_qss(f"color: {theme.text if self._state != 'pending' else theme.text_secondary};"
+            f" font-family: {UI_FONT_STACK}; font-size: 16px; font-weight: 600; background: transparent;"))
         self.state_label.setStyleSheet(
-            f"color: {colors['label']}; font-family: {UI_FONT_STACK}; font-size: 13px; font-weight: 500;"
-            " background: transparent;")
+            emphasis_qss(f"color: {colors['label']}; font-family: {UI_FONT_STACK}; font-size: 13px; font-weight: 500;"
+            " background: transparent;"))
         self.update()
 
     def refresh_theme_palette(self) -> None:
@@ -216,7 +217,7 @@ class ProgressPhaseCard(QFrame):
             painter.drawEllipse(badge)
             font = QFont(self.font())
             font.setPixelSize(_zpx(12))
-            font.setWeight(QFont.Weight.DemiBold)
+            weighted_font(font, QFont.Weight.DemiBold)
             painter.setFont(font)
             painter.setPen(QColor(theme.text_muted))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(self.number or ""))
@@ -272,8 +273,8 @@ class RunningIndicator(QLabel):
             base = {"warning": theme.warning, "success": theme.success, "danger": theme.danger}[tone]
             color, background, border = base, blend_hex(theme.surface, base, 0.12), blend_hex(theme.surface, base, 0.55)
         self.setStyleSheet(
-            f"background:{background}; color:{color}; border:1px solid {border}; border-radius:12px;"
-            f" padding:3px 12px; font-family:{UI_FONT_STACK}; font-size:13px; font-weight:600;")
+            emphasis_qss(f"background:{background}; color:{color}; border:1px solid {border}; border-radius:12px;"
+            f" padding:3px 12px; font-family:{UI_FONT_STACK}; font-size:13px; font-weight:600;"))
 
     def refresh_theme_palette(self) -> None:
         self._apply_theme()
@@ -405,12 +406,12 @@ class TaskEventCard(QFrame):
         size = 15 if self._nested else 16
         self.icon.setPixmap(qta.icon(self.ICONS.get(self._badge, "fa5s.circle"), color=color).pixmap(QSize(15, 15)))
         self.setStyleSheet(
-            "QFrame#taskEventRow { background: transparent; border: 0; }"
+            emphasis_qss("QFrame#taskEventRow { background: transparent; border: 0; }"
             f"QLabel#eventBadge {{ color: {color}; font-family: {UI_FONT_STACK}; font-size: 14px; font-weight: 600; }}"
             f"QLabel#eventMeta {{ color: {theme.text_muted}; font-family: {MONO_FONT_STACK}; font-size: 14px;"
             " font-weight: 500; padding-right: 6px; }"
             f"QLabel#eventMessage {{ color: {theme.text if not self._nested else theme.text_secondary};"
-            f" font-family: {UI_FONT_STACK}; font-size: {size}px; font-weight: 500; }}")
+            f" font-family: {UI_FONT_STACK}; font-size: {size}px; font-weight: 500; }}"))
 
     def refresh_theme_palette(self) -> None:
         self._apply_theme(_theme())
@@ -801,7 +802,7 @@ class RecognitionPreview(QWidget):
         text_font.setPixelSize(_zpx(16))
         tag_font = QFont(self.font())
         tag_font.setPixelSize(_zpx(13))
-        tag_font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(tag_font, QFont.Weight.DemiBold)
         visible = max(1, self.height() // self.ROW)
         rows = self._rows[-visible:]
         y = 0

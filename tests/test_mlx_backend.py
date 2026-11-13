@@ -254,7 +254,7 @@ def test_workshop_cards_are_apple_silicon_only(monkeypatch):
     aligner = cards['mlx_qwen_aligner']
     assert aligner.asr_capabilities == ('ALIGNMENT',) and '不是语音识别模型' in aligner.summary
     assert dict(cards['mlx_qwen3_asr_1_7b'].adapter_bindings)['primary'] == 'mlx_qwen3_asr_1_7b'
-    page = SimpleNamespace(runtime_settings={'models': {}}, _installed={'mlx_qwen3_asr_0_6b'}, _registry=None,
+    page = SimpleNamespace(_async_status=False, runtime_settings={'models': {}}, _installed={'mlx_qwen3_asr_0_6b'}, _registry=None,
                            _active_download_dialog=lambda key: None)
     compute = model_workshop.ModelWorkshopPage._compute_model_state
     monkeypatch.setattr(model_workshop, '_host_platform_tag', lambda: 'win32-x86_64')

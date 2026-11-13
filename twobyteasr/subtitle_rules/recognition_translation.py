@@ -117,11 +117,13 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     cues = list(cues)
     from ..glossary.translation_terms import KEY, normalize
     term_policy = normalize(getattr(runtime_context, KEY, None))
+    if language == 'zh': term_policy['source_locale'] = getattr(runtime_context, 'chinese_script', 'zh-Hans')
     fake = SimpleNamespace(cues=[StudioCue(id=cue_id, start_ms=round(float(cue.start) * 1000),
                                            end_ms=round(float(cue.end) * 1000), text=str(cue.text or ""),
                                            speaker_id=str(getattr(cue, "speaker", "S00") or "S00"))
                                  for cue_id, cue in zip(project_cue_ids(cues), cues)],
-                           generation_metadata={"language": {"code": language}, KEY: term_policy}, studio_state={}, speakers=[])
+                           generation_metadata={"language": {"code": language}, KEY: term_policy},
+                           _frozen_translation_policy=term_policy, studio_state={}, speakers=[])
     snapshot = (getattr(runtime_context, "provider_snapshots", {}) or {}).get("polish")
     if provider is None:
         from ..providers.ai_providers import provider_for_stage

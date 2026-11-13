@@ -19,6 +19,7 @@ from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import QProgressBar, QWidget
+from ..design.typography import weighted_font
 
 STAGE_ICONS = {
     '创建工作台界面': 'fa5s.th-large', '读取工程': 'fa5s.folder-open', '建立时间轴': 'fa5s.stream',
@@ -278,7 +279,7 @@ class ReadinessSteps(QWidget):
                 painter.drawPixmap(QPointF(center.x() - 7.5, center.y() - 7.5), icon)
             font = QFont(base)
             font.setPixelSize(14 if not self.compact else 13)
-            font.setWeight(QFont.Weight.Bold if state in ('active', 'failed') else QFont.Weight.Medium)
+            weighted_font(font, QFont.Weight.Bold if state in ('active', 'failed') else QFont.Weight.Medium)
             painter.setFont(font)
             color = {'active': theme.accent_text, 'failed': theme.danger,
                      'done': theme.text_secondary, 'reused': theme.text_secondary}.get(state, theme.text_muted)
@@ -314,7 +315,7 @@ class ReadinessSteps(QWidget):
             elif state in ('failed', 'waiting') and not self.compact:
                 small = QFont(base)
                 small.setPixelSize(12)
-                small.setWeight(QFont.Weight.Bold if state == 'failed' else QFont.Weight.Medium)
+                weighted_font(small, QFont.Weight.Bold if state == 'failed' else QFont.Weight.Medium)
                 painter.setFont(small)
                 painter.setPen(QColor(theme.danger if state == 'failed' else theme.text_muted))
                 painter.drawText(QRectF(width - right_space - 14, top, right_space, self.row),
@@ -358,7 +359,7 @@ def _outlined_text(painter, rect: QRectF, text: str, pixel_size: int, *, scale=1
     if image is None:
         from PySide6.QtGui import QImage
         from ..design.loading_font import loading_font
-        font=loading_font();font.setPixelSize(pixel_size);font.setWeight(QFont.Weight.Normal)
+        font=loading_font();font.setPixelSize(pixel_size);weighted_font(font, QFont.Weight.Normal)
         metrics=QFontMetricsF(font)
         while metrics.horizontalAdvance(text)>rect.width() and font.pixelSize()>14:
             font.setPixelSize(font.pixelSize()-2);metrics=QFontMetricsF(font)
@@ -389,7 +390,7 @@ def cover_placeholder(size: QSize) -> QPixmap:
     painter.fillRect(pixmap.rect(), gradient)
     font = QFont(painter.font())
     font.setPixelSize(max(24, size.height() // 4))
-    font.setWeight(QFont.Weight.Black)
+    weighted_font(font, QFont.Weight.Black)
     painter.setFont(font)
     painter.setPen(QColor(255, 255, 255, 46))
     painter.drawText(QRectF(pixmap.rect()), Qt.AlignmentFlag.AlignCenter, 'CC')
@@ -705,7 +706,7 @@ class RecentFan(QWidget):
             if top:
                 title = QFont(base)
                 title.setPixelSize(14)
-                title.setWeight(QFont.Weight.Bold)
+                weighted_font(title, QFont.Weight.Bold)
                 painter.setFont(title)
                 painter.setPen(QColor(theme.text))
                 text_rect = QRectF(14, cover.bottom() + 8, width - 28, 22)
@@ -728,7 +729,7 @@ class RecentFan(QWidget):
                 painter.drawRoundedRect(card.adjusted(-1.5, -1.5, 1.5, 1.5), 23, 23)
                 badge_font = QFont(base)
                 badge_font.setPixelSize(11)
-                badge_font.setWeight(QFont.Weight.Bold)
+                weighted_font(badge_font, QFont.Weight.Bold)
                 text = _tr('就绪后打开')
                 badge = QRectF(18, 18, QFontMetricsF(badge_font).horizontalAdvance(text) + 20, 24)
                 painter.setPen(Qt.PenStyle.NoPen)

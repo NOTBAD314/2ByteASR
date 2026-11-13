@@ -20,6 +20,7 @@ from ..design.timeline_theme import TimelinePalette, mix, rgba_color
 from ..design.themed_icons import paint_cached_icon
 from .studio_track_header import ACTIONS, action_at, button_rect, paint_button, CONTROL_LEFT
 from .media_clip_shape import media_clip_shape
+from ..design.typography import weighted_font
 
 
 VIDEO_TRACK_HEIGHT = 58
@@ -227,7 +228,7 @@ def paint_video_track_header(
     painter.setPen(QColor(palette.header_name))
     letter = QFont(painter.font())
     letter.setPointSize(10)
-    letter.setBold(True)
+    weighted_font(letter, 700)
     letter.setItalic(False)
     painter.setFont(letter)
     painter.drawRoundedRect(QRectF(13, badge_top, 34, 23), 6, 6)
@@ -240,7 +241,7 @@ def paint_video_track_header(
         painter.setPen(QColor(palette.header_name))
         name_font = QFont(painter.font())
         name_font.setPointSize(8)
-        name_font.setWeight(QFont.Weight.Medium)
+        weighted_font(name_font, QFont.Weight.Medium)
         painter.setFont(name_font)
         painter.drawText(
             QRectF(13, badge_top + 24, 114, 20),
@@ -388,7 +389,7 @@ def paint_video_track(
         painter.setPen(QColor(palette.clip_text))
         font = QFont(painter.font())
         font.setPointSize(10)
-        font.setBold(True)
+        weighted_font(font, 700)
         painter.setFont(font)
         name_text = Path(source).name or "源视频"
         if offline:
@@ -403,7 +404,7 @@ def paint_video_track(
             Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
             name_text,
         )
-        font.setBold(False)
+        weighted_font(font, 400)
         font.setPointSize(9)
         painter.setFont(font)
         painter.setPen(QColor(palette.header_letter))
@@ -521,7 +522,7 @@ def paint_project_video_track(
         painter.setPen(QColor(palette.clip_text))
         font = QFont(painter.font())
         font.setPointSize(9)
-        font.setBold(True)
+        weighted_font(font, 700)
         painter.setFont(font)
         label = asset.display_name if asset else clip.asset_id
         if offline:
@@ -566,7 +567,7 @@ def paint_candidate_lane(
     painter.setPen(QColor(palette.header_name))
     font = painter.font()
     font.setPointSize(9)
-    font.setBold(True)
+    weighted_font(font, 700)
     painter.setFont(font)
     painter.drawText(QRectF(10, lane.top(), 210, lane.height()), Qt.AlignmentFlag.AlignVCenter, "AI CANDIDATES")
     fill = QColor(getattr(palette, "candidate_fill", "") or "#e8a54b")

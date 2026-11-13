@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRegion
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QStackedLayout, QVBoxLayout, QHBoxLayout, QWidget
 from ..i18n import bind_text
 from .loading_faces import ReadinessSteps
+from ..design.typography import emphasis_qss
 
 TASKS = ('创建工作台界面', '读取工程', '建立时间轴', '准备播放器', '准备音频', '准备字幕', '首屏绘制')
 NATIVE_COVER_PENDING_TIMEOUT_MS = 3000  # Failure watchdog, never a successful-handoff delay.
@@ -557,7 +558,7 @@ class StudioLoadingView(QFrame):
         self._invalidate_native_paint()
         self._ambient = None
         self.setStyleSheet(
-            f'QFrame#studioLoadingSurface {{background:{background};}}'
+            emphasis_qss(f'QFrame#studioLoadingSurface {{background:{background};}}'
             'QFrame#studioLoadingCard, QFrame#studioLoadingLibrary {background:transparent;border:0;}'
             f'QFrame#studioLoadingPoster {{background:{theme.surface};border:1px solid {theme.border};border-radius:32px;}}'
             f'QFrame#studioLoadingRecent {{background:{theme.surface};border:1px solid {theme.border};border-radius:32px;}}'
@@ -587,7 +588,7 @@ class StudioLoadingView(QFrame):
             + ('QFrame#windowTitleBar {background:transparent;border:0;}'
                'QPushButton#windowControl,QPushButton#windowControlClose '
                '{padding:0;min-width:30px;max-width:30px;min-height:22px;max-height:22px;border:0;border-radius:6px;}'
-               if self.uses_native_cover else ''))
+               if self.uses_native_cover else '')))
         for widget in (self.steps_view, self.library_steps, self.cover, self.fan):
             widget.update()
 

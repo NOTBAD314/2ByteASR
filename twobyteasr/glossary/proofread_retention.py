@@ -6,7 +6,7 @@ REVIEW_KEY = 'glossary_proofread_review'
 ISSUE_FIELDS = ('kind', 'span', 'original', 'replacement', 'checked', 'default', 'reason',
                 'options', 'evidence', 'lexical', 'cleanup', 'provenance', 'ignored',
                 'reviewed', 'stale', 'context', 'anchor', 'proposal_id', 'application_parts',
-                'ai_generated', 'recognition_import')
+                'ai_generated', 'recognition_import', 'content_evidence_verified', 'issue_type', 'rule_source')
 
 
 def review_state(project, *, create=False):
@@ -27,7 +27,10 @@ def row_record(row):
         if isinstance(value,dict):return {key:plain(item) for key,item in value.items()}
         if isinstance(value,(list,tuple)):return [plain(item) for item in value]
         return value
-    for issue in row['issues']:
+    from .proofread_constraints import issue_allowed
+    policy = row.get('_edit_policy', dict(cleanup=False, punctuation=False))
+    enabled = [issue for issue in row['issues'] if issue_allowed(issue, row['base'], policy)]
+    for issue in enabled:
         issue.setdefault('proposal_id', uuid4().hex)
     target=row.get('target')
     return dict(cue_id=row['cue_id'], layer=target.layer if target else 'original',
@@ -35,7 +38,7 @@ def row_record(row):
                 text_sha=text_version(row['base']),
                 retained=bool(row.get('review_retained')), dismissed=bool(row.get('review_dismissed')),
                 issues=[{key: plain(issue[key]) for key in ISSUE_FIELDS if key in issue}
-                        for issue in row['issues']])
+                        for issue in enabled], edit_policy=policy)
 
 
 def restore_row(project, row):

@@ -110,8 +110,9 @@ def start(window, output: Path) -> None:
                     raise RuntimeError(error)
                 now = time.monotonic()
                 if callable(self.waiting):
-                    if self.page._readiness.profile.get('error'):
-                        raise RuntimeError(str(self.page._readiness.profile['error']))
+                    readiness = getattr(self.page, '_readiness', None)
+                    if readiness is not None and readiness.profile.get('error'):
+                        raise RuntimeError(str(readiness.profile['error']))
                     if not self.waiting():
                         if now > self.deadline:
                             raise TimeoutError('Blank project UI readiness timed out')
@@ -140,12 +141,31 @@ def start(window, output: Path) -> None:
         def click(self, button):
             self.check('enabled visible button: ' + button.objectName(),
                        button.isVisible() and button.isEnabled(), button.text())
-            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            clicked = []
+            def observed(*_): clicked.append(True)
+            button.clicked.connect(observed)
+            try:
+                QTest.mouseClick(button, Qt.MouseButton.LeftButton, pos=button.rect().center())
+            finally:
+                button.clicked.disconnect(observed)
+            self.check('ordinary click delivered: ' + button.objectName(), bool(clicked),
+                       dict(rect=list(button.rect().getRect()), global_position=[button.mapToGlobal(button.rect().center()).x(), button.mapToGlobal(button.rect().center()).y()]))
 
         def ready(self):
             p = self.page
             return bool(p.project is not None and p._readiness.ready and not p._readiness.active
                         and p._project_view_state == 'open' and not p._readiness.overlay.isVisible())
+
+        def library_ready(self):
+            p = window.built_page('studio')
+            if p is None:
+                return False
+            self.page = p
+            loading = window.__dict__.get('_studio_loading_session')
+            if loading is not None and (loading.active or loading.view.isVisible()):
+                return False
+            return bool(window.pages.currentWidget() is p and p.studio_empty.isVisible()
+                        and p.project is None)
 
         def empty(self, phase):
             p = self.page
@@ -171,7 +191,6 @@ def start(window, output: Path) -> None:
             self.shot(phase)
 
         def run(self):
-            p = self.page
             window.showNormal()
             window.resize(1440, 900)
             QApplication.instance().setProperty('reduceMotion', True)
@@ -180,7 +199,8 @@ def start(window, output: Path) -> None:
                 self.check(key + ' isolated', Path(os.environ[key]).resolve().is_relative_to(output))
             self.check('QSettings isolated', Path(QSettings('2ByteASR', 'blank-project-audit').fileName()).resolve().is_relative_to(output))
             self.click(window.subtitle_studio_button)
-            yield .3
+            yield self.library_ready
+            p = self.page
             self.check('ordinary Studio entry opens project library',
                        window.pages.currentWidget() is p and p.studio_empty.isVisible() and p.project is None)
             self.shot('01-project-library')
@@ -190,13 +210,14 @@ def start(window, output: Path) -> None:
             self.empty('02-first-new')
             first_path, first_id = Path(p.project_path), p.project.project_id
             self.click(p.save_button)
+            yield lambda: p.undo_stack.isClean() and not getattr(getattr(p, '_persistence_queue', None), 'busy', False)
             yield .15
             saved = load_project(first_path)
             self.check('normal save retains zero-duration project',
                        saved.project_id == first_id and not saved.media.path and saved.media.duration_ms == 0
                        and not saved.cues and p.undo_stack.isClean())
             self.click(p.studio_back_button)
-            yield .2
+            yield self.library_ready
             self.check('ordinary back returns to project library', p.project is None and p.studio_empty.isVisible())
             window.open_studio_project(first_path, mode='edit', source='blank_project_audit_reopen')
             yield self.ready
@@ -204,7 +225,7 @@ def start(window, output: Path) -> None:
             self.empty('03-saved-reopen')
             self.check('reopen retains project identity', p.project.project_id == first_id)
             self.click(p.studio_back_button)
-            yield .2
+            yield self.library_ready
             self.click(p.project_new_button)
             yield self.ready
             yield .15
@@ -212,7 +233,7 @@ def start(window, output: Path) -> None:
             self.check('second new project has independent identity and path',
                        p.project.project_id != first_id and Path(p.project_path) != first_path)
             self.click(p.studio_back_button)
-            yield .2
+            yield self.library_ready
             fixture = output/'projects'/'existing-zero'/'existing-zero.2byteproj'
             window.open_studio_project(fixture, mode='edit', source='blank_project_audit_existing')
             yield self.ready

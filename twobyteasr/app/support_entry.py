@@ -1,15 +1,13 @@
 """Voluntary support links and a one-way, user-wide entry preference."""
 
-from PySide6.QtCore import QSettings, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QPushButton
 
 from ..design.presentation import button_role
 from ..i18n import bind_text, tr
-from ..design.main_ui_dialogs import DialogSurface, SpringDialog
-from ..design.theme_manager import SETTINGS_APP, SETTINGS_ORG, theme_key
-from ..design.themed_icons import install_themed_icon
-from ..design.ui_theme import theme_definition
+from ..design.theme_manager import SETTINGS_APP, SETTINGS_ORG
+from .support_letter import HighlightNote, LetterDialog, LetterLine, StampButton
 
 
 SUPPORT_HIDDEN_KEY = "ui/support_entry_hidden"
@@ -17,6 +15,7 @@ SUPPORT_CHANNELS = (
     ("PayPal", "https://paypal.me/2byte314"),
     ("爱发电", "https://afdian.com/a/2byteasr"),
 )
+SUPPORT_CAPTIONS = ("海外 · 银行卡", "国内 · 微信 / 支付宝")
 
 
 def _settings():
@@ -51,59 +50,21 @@ def hide_support_entry():
         raise
 
 
-class _SupportCard(DialogSurface):
-    """A local variation of the shared card; all colours follow theme tokens."""
+class _SupportSurface(LetterDialog):
+    """The letter window (2026-11-13, draft B): paper, tape, sticker, stamps."""
 
-    def refresh_theme_palette(self):
-        super().refresh_theme_palette()
-        theme = theme_definition(theme_key())
-        self.setStyleSheet(self.styleSheet() + f"""
-            QFrame#dialogSurfaceHeader {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {theme.surface_elevated}, stop:1 {theme.surface});
-                border-bottom: 1px solid {theme.border};
-            }}
-            QLabel#supportParagraph {{ color: {theme.text_secondary}; background: transparent; }}
-            QLabel#supportEmphasis {{
-                color: {theme.text}; background: {theme.accent_soft};
-                border: 1px solid {theme.border}; border-radius: 10px;
-                padding: 12px 16px; font-weight: 600;
-            }}
-            QPushButton#supportChannel {{ background: {theme.surface_elevated}; color: {theme.text}; }}
-            QPushButton#supportChannelAlternate {{ background: {theme.selected}; color: {theme.text}; }}
-            QPushButton#supportChannel:hover, QPushButton#supportChannelAlternate:hover {{
-                background: {theme.accent_soft}; border-color: {theme.border_strong};
-            }}
-            QFrame#dialogSurfaceFooter {{ background: {theme.panel}; }}
-        """)
+    def __init__(self, parent, title, subtitle):
+        super().__init__(parent, title, subtitle)
 
+    def note(self, text):
+        label = HighlightNote()
+        bind_text(label, text)
+        self.surface.body_layout.addWidget(label)
+        self.surface.body_layout.addSpacing(10)
+        return label
 
-class _SupportSurface(SpringDialog):
-    ENTRY_ANIMATED = False
-
-    def __init__(self, parent, title):
-        super().__init__(parent, backdrop=False)
-        bind_text(self, title, property="windowTitle")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.surface = _SupportCard(self, close_callback=self.reject)
-        self.surface.header_layout.setContentsMargins(16, 14, 16, 14)
-        self.surface.header_layout.insertSpacing(0, 30)  # balance the close icon
-        self.surface.header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.surface.header_title.setWordWrap(True)
-        self.surface.body_layout.setContentsMargins(28, 22, 28, 22)
-        self.surface.body_layout.setSpacing(18)
-        bind_text(self.surface.header_title, title)
-        layout.addWidget(self.surface)
-        self.setMinimumWidth(460)
-        self.resize(600, 410)
-
-    def paragraph(self, text, *, emphasis=False):
-        label = QLabel()
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setObjectName("supportEmphasis" if emphasis else "supportParagraph")
+    def paragraph(self, text, *, sign=False):
+        label = LetterLine(align=Qt.AlignmentFlag.AlignRight if sign else Qt.AlignmentFlag.AlignLeft, sign=sign)
         bind_text(label, text)
         self.surface.body_layout.addWidget(label)
         return label
@@ -116,24 +77,23 @@ class _SupportSurface(SpringDialog):
         button.setAutoDefault(False)
         return button
 
-    def done(self, result):
-        # This small utility surface has no entrance/exit animation.
-        QDialog.done(self, result)
+    def footer(self, *buttons):
+        self.surface.footer_layout.addStretch(1)
+        for button in buttons:
+            self.surface.footer_layout.addWidget(button)
+        self.surface.footer_layout.addStretch(1)
 
 
 class SupportHideConfirmation(_SupportSurface):
     def __init__(self, parent):
-        super().__init__(parent, '永久关闭「支持我」？')
+        super().__init__(parent, '永久关闭「支持我」？', '再确认一下下')
         self.setObjectName("supportHideConfirmation")
+        self.note("这同样不会影响任何功能的开发和使用。")
         self.paragraph('这会让「支持我！」按钮从主页上永久消失。')
-        self.paragraph("这同样不会影响任何功能的开发和使用。", emphasis=True)
         self.paragraph("也感谢你使用这款软件！")
         self.cancel_button = self.action("取消")
-        self.confirm_button = self.action("永久关闭")
-        self.surface.footer_layout.addStretch(1)
-        self.surface.footer_layout.addWidget(self.cancel_button)
-        self.surface.footer_layout.addWidget(self.confirm_button)
-        self.surface.footer_layout.addStretch(1)
+        self.confirm_button = self.action("永久关闭", "danger")
+        self.footer(self.cancel_button, self.confirm_button)
         self.cancel_button.clicked.connect(self.reject)
         self.confirm_button.clicked.connect(self.accept)
         self.cancel_button.setDefault(True)
@@ -144,35 +104,41 @@ class SupportDialog(_SupportSurface):
     entry_hidden = Signal()
 
     def __init__(self, parent):
-        super().__init__(parent, "支持我！")
+        super().__init__(parent, "支持我！", "来自兔白的一张小纸条")
         self.setObjectName("supportDialog")
         self._confirmation = None
-        self.paragraph("支持完全自愿，不影响任何功能的开发和使用。", emphasis=True)
+        self.note("支持完全自愿，不影响任何功能的开发和使用。")
         self.paragraph("如果兔白字幕帮到了你，而你也愿意支持，会让我开心一整天！")
         self.paragraph("不支持也完全没关系，感谢你使用兔白字幕！")
+        self.paragraph("— 兔白", sign=True)
         channels = QHBoxLayout()
-        channels.setSpacing(12)
+        channels.setSpacing(16)
         self.channel_buttons = []
         for index, (name, url) in enumerate(SUPPORT_CHANNELS):
-            button = self.action(name)
-            button.setObjectName("supportChannel" if index == 0 else "supportChannelAlternate")
-            install_themed_icon(button, "fa5s.external-link-alt", "primary")
+            button = StampButton("paypal" if index == 0 else "afdian", -2.0 if index == 0 else 2.0)
+            bind_text(button, name)
+            bind_text(button, SUPPORT_CAPTIONS[index], property="caption")
+            button.setAutoDefault(False)
             bind_text(button, "在默认浏览器中打开：{url}", property="toolTip", url=url)
             button.clicked.connect(lambda _checked=False, address=url: self._open_channel(address))
+            button.installEventFilter(self)
             channels.addWidget(button, 1)
             self.channel_buttons.append(button)
-        self.surface.body_layout.addSpacing(4)
+        self.surface.body_layout.addSpacing(10)
         self.surface.body_layout.addLayout(channels)
         self.hide_button = self.action('永久关闭「支持我」', "ghost")
         self.close_button = self.action("关闭")
-        self.surface.footer_layout.addStretch(1)
-        self.surface.footer_layout.addWidget(self.hide_button)
-        self.surface.footer_layout.addWidget(self.close_button)
-        self.surface.footer_layout.addStretch(1)
+        self.footer(self.hide_button, self.close_button)
         self.hide_button.clicked.connect(self._confirm_hide)
         self.close_button.clicked.connect(self.reject)
         self.close_button.setDefault(True)
         self.close_button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def eventFilter(self, watched, event):
+        # Pointing at a stamp makes the bunny sticker perk up.
+        if watched in getattr(self, "channel_buttons", ()) and event.type() in (QEvent.Type.Enter, QEvent.Type.Leave):
+            self.surface.sticker.set_happy(event.type() == QEvent.Type.Enter)
+        return super().eventFilter(watched, event)
 
     def _open_channel(self, address):
         try:

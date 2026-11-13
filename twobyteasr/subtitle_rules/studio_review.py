@@ -732,6 +732,9 @@ def _review_items(issues) -> tuple[ReviewItem, ...]:
     }
     grouped: dict[ReviewReasonCode, dict[str, Any]] = {}
     for issue in issues:
+        from .review_evidence_policy import retired_review_reason, unsupported_repeat_pattern
+        if retired_review_reason(issue.issue_type, issue.source) or unsupported_repeat_pattern(issue):
+            continue
         code = _reason_code(issue)
         severity = _review_severity(issue.severity)
         row = grouped.setdefault(code, {

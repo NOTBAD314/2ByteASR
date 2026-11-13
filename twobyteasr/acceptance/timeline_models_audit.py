@@ -54,6 +54,7 @@ def start(window, output: Path):
             window._switch_page(window.settings_scroll)
             window.showNormal()
             window.resize(1500, 960)
+            result["dpr"] = window.devicePixelRatioF()
             patch(ModelRegistry, "installed_keys", lambda self: set(installed))
             patch(ui, "installed_model_keys", lambda root: set(installed))
             patch(workshop, "_readiness_status", lambda key: "PASS")
@@ -69,10 +70,29 @@ def start(window, output: Path):
             check("isolated configuration saved", window._save_asr_configuration(show_feedback=False))
             window.recognition_language.setCurrentIndex(window.recognition_language.findData("ja"))
             page = window.workshop_page
+            page.ensure_ui()
+            for _ in range(150):
+                if page._registry is not None and not page.background_busy():
+                    break
+                QTest.qWait(20)
+            check("background model status delivered", page._registry is not None)
             page.update_runtime_settings(window.legacy.RUNTIME_SETTINGS)
             page.refresh()
             card = window.recognition_plan.cards["timeline"]
             panel, action = picker()
+            check("real deferred controller", page._async_status)
+            check("timestamp cards are local", all(not item.model.api_preset for item in panel.cards.values()))
+            check("timestamp cards have timing capability", all(
+                {"TIMESTAMP", "ALIGNMENT"} & set(item.model.asr_capabilities) for item in panel.cards.values()))
+            check("no cloud timestamp filter", "cloud" not in panel.filter_buttons)
+            check("local timing explanation visible", panel.scope_note.isVisible() and "本地" in panel.scope_note.text())
+            refused = []
+            patch(QMessageBox, "information", lambda *args: refused.append(args[2]))
+            before = dict(window.legacy.RUNTIME_SETTINGS["models"])
+            page._perform_action("mosi_moss_pro", role="timeline")
+            page._select_model("qwen_cloud_filetrans", role="timeline")
+            check("cloud requests explain local-only rule", len(refused) == 2 and all("本地" in str(text) for text in refused))
+            check("cloud rejection preserves all choices", window.legacy.RUNTIME_SETTINGS["models"] == before)
             check("Windows picker excludes Apple MLX", not any(key.startswith("mlx_") for key in panel.cards))
             page._set_role("timeline")
             check("Windows workshop hides MLX", page._cards["mlx_qwen_aligner"].isHidden())
@@ -80,6 +100,9 @@ def start(window, output: Path):
             check("off parent shows use, not cancel", action.text() == "使用")
             check("home says timeline off", card.model_label.text() == "已关闭")
             check("off hint does not promise alignment", "不会运行" in window.subtitle_language_hint.text())
+            panel.scroll.verticalScrollBar().setValue(0)
+            shot("picker-local-top")
+            panel.scroll.ensureWidgetVisible(action)
             shot("picker-off")
             QTest.mouseClick(action, Qt.MouseButton.LeftButton)
             check("CTC enables Qwen parent", window.firered_asr_backend.currentData() == "qwen_aligner")
@@ -89,6 +112,11 @@ def start(window, output: Path):
             check("action becomes cancel", action.text() == "取消使用")
             window._modal_host._request_close()
             shot("ctc-on-home")
+            window._open_model_picker("primary")
+            primary_panel = window._model_picker_primary_panel
+            check("cloud primary cards remain", {"mosi_moss_pro", "qwen_cloud_filetrans"} <= primary_panel.cards.keys())
+            check("primary retains cloud filter", "cloud" in primary_panel.filter_buttons)
+            window._modal_host._request_close()
             panel, action = picker()
             QTest.mouseClick(action, Qt.MouseButton.LeftButton)
             check("cancel leaves Qwen enabled", window.firered_asr_backend.currentData() == "qwen_aligner")

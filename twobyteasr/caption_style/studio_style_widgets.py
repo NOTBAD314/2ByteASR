@@ -143,7 +143,64 @@ STYLE_LABEL_MAX_WIDTH = 112
 STYLE_LABEL_GAP = 8
 STYLE_ROW_INSET = 13
 STYLE_SWITCH_SLOT = 36  # same width as the sliders button: the last column lines up
-STYLE_CHEVRON_SLOT = 36  # 2026-11-12: a square sliders button (design A)
+STYLE_CHEVRON_SLOT = 26  # 2026-11-13: a round chevron inside the capsule
+
+
+def ink_paper(theme, ink: QColor | None = None) -> tuple[QColor, QColor]:
+    """Paper and edge colours of an ink capsule.  An ink too close to the
+    paper (white on a light theme, black on a dark one) gets a toned sheet,
+    so it still shows."""
+    from ..design.ink_wash import luminance
+    from ..design.ui_theme import blend_hex
+
+    paper = QColor(blend_hex(theme.surface_elevated, "#ffffff", 0.65) if theme.is_light
+                   else blend_hex(theme.panel, theme.text, 0.10))
+    edge = QColor(blend_hex(theme.surface_elevated, theme.text, 0.16))
+    # A dark sheet hides dark inks sooner than a light sheet hides light ones.
+    near = 36 if theme.is_light else 64
+    if ink is not None and ink.isValid() and abs(luminance(ink) - luminance(paper)) < near:
+        paper = QColor(blend_hex(paper.name(), theme.selected, 0.85) if theme.is_light
+                       else blend_hex(paper.name(), theme.text, 0.22))
+    return paper, edge
+
+
+class InkCapsule(QFrame):
+    """The pill a property row keeps its controls in (2026-11-13, user): the
+    colour well, the row's number and the round expand button share one frame;
+    the well's ink runs across its paper."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("inkCapsule")
+        self.setFixedHeight(STYLE_FIELD_HEIGHT)
+        self._well = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(2)
+
+    def set_well(self, well) -> None:
+        self._well = well
+        self.update()
+
+    def outline_path(self) -> QPainterPath:
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
+        return path
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        ink = None
+        try:
+            ink = self._well.ink_color() if self._well is not None else None
+        except RuntimeError:  # the well was deleted with its page
+            self._well = None
+        paper, edge = ink_paper(theme_definition(theme_key()), ink)
+        painter.setPen(QPen(edge, 1.0))
+        painter.setBrush(paper)
+        painter.drawPath(self.outline_path())
+        painter.end()
 
 
 class StyleGridLabel(QLabel):
@@ -326,11 +383,14 @@ class StylePropertyRow(QFrame):
         self.title_label = StyleGridLabel(title)
         self._label_width = STYLE_LABEL_WIDTH
         header_layout.addWidget(self.title_label)
-        # Inline controls and summary (M16 one-line rows); empty otherwise.
+        # 2026-11-13 (user): the row's own controls sit in one capsule: the
+        # colour well, its number and the round expand button.
+        self.capsule = InkCapsule()
         self._inline = QHBoxLayout()
         self._inline.setContentsMargins(0, 0, 0, 0)
-        self._inline.setSpacing(6)
-        header_layout.addLayout(self._inline)
+        self._inline.setSpacing(2)
+        self.capsule.layout().addLayout(self._inline, 1)
+        header_layout.addWidget(self.capsule, 1)
         self.inline_summary = ElidedLabel("")
         self.inline_summary.setObjectName("stylePropertyRowSummary")
         self.inline_summary.setMinimumWidth(0)
@@ -345,7 +405,7 @@ class StylePropertyRow(QFrame):
         header_layout.addWidget(self.chip)
         self.chevron = QLabel("▸")
         self.chevron.setObjectName("stylePropertyRowChevron")
-        header_layout.addWidget(self.chevron)
+        self.capsule.layout().addWidget(self.chevron, 0, Qt.AlignmentFlag.AlignVCenter)
         if on_activate is not None:
             self.chevron.setText("✎")
         # On/off switch slot, kept (empty) on every inline row so swatches,
@@ -366,6 +426,7 @@ class StylePropertyRow(QFrame):
         outer.addWidget(self.summary_label)
         self.content = QWidget()
         self.content.setObjectName("stylePropertyRowContent")
+        self.content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._content_layout = QVBoxLayout(self.content)
         self._content_layout.setContentsMargins(4, 4, 4, 4)
         self._content_layout.setSpacing(8)
@@ -399,33 +460,35 @@ class StylePropertyRow(QFrame):
         self.trailing.setVisible(bool(inline) and getattr(self, "_has_trailing", False))
         self.set_label_width(self._label_width)
         self.summary_label.setVisible(not inline)
-        self.inline_summary.setVisible(inline and summary)
+        # The capsule takes the spare width; the well in it names the colour.
+        self.inline_summary.setVisible(False)
         self.chip.set_colors([])
         self.chip.setVisible(False)
-        # The summary takes the spare width when it is shown.
-        self._header_layout.setStretch(self._header_stretch, 0 if inline and summary else 1)
+        self._header_layout.setStretch(self._header_stretch, 0 if inline else 1)
         self.chevron.setVisible(expandable or callable(self._on_activate))
         if inline:
-            # 2026-11-11 (user): 填充 had a pencil, 描边 had 更多, and the rows
-            # ended at different places. One slot, one word, kept when empty.
             self._show_trailing_icon(False)
             self.chevron.setProperty("slot", True)
             self.chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.chevron.setFixedWidth(STYLE_CHEVRON_SLOT)
+            self.chevron.setFixedSize(STYLE_CHEVRON_SLOT, STYLE_CHEVRON_SLOT)
             policy = self.chevron.sizePolicy()
             policy.setRetainSizeWhenHidden(False)
             self.chevron.setSizePolicy(policy)
         layout = self.layout()
-        layout.setContentsMargins(10, 5, 8, 5)
+        # STYLE_ROW_INSET on the left, as when the row had a 3 px accent border.
+        layout.setContentsMargins(STYLE_ROW_INSET, 4, 8, 4)
+        layout.setSpacing(8)
 
     def _show_trailing_icon(self, open_: bool) -> None:
-        """The inline row's trailing control: a sliders icon in a square
-        (2026-11-12, user, design A); tinted while its editor is open."""
+        """The inline row's expand control: a round chevron at the end of
+        the capsule (2026-11-13, user), filled with the accent while its
+        editor is open.  A row that opens a dialog points right."""
         from ..design.themed_icons import colored_icon
         theme = theme_definition(theme_key())
         self.chevron.setText("")
-        self.chevron.setFixedHeight(STYLE_FIELD_HEIGHT - 2)
-        self.chevron.setPixmap(colored_icon("fa5s.sliders-h", theme.accent_text).pixmap(15, 15))
+        name = ("fa5s.chevron-right" if callable(self._on_activate)
+                else "fa5s.chevron-up" if open_ else "fa5s.chevron-down")
+        self.chevron.setPixmap(colored_icon(name, theme.text_on_accent if open_ else theme.text_muted).pixmap(10, 10))
         caption = tr("收起") if open_ else tr("更多设置")
         self.chevron.setToolTip(caption)
         self.chevron.setAccessibleName(caption)
@@ -440,10 +503,8 @@ class StylePropertyRow(QFrame):
             self._show_trailing_icon(bool(self.chevron.property("open")))
 
     def stretch_inline(self) -> None:
-        """The row's own controls take the spare width (a wide colour well)
-        instead of an empty stretch before the 更多 slot."""
+        """Kept for callers: the capsule always takes the row's spare width."""
         self.inline_summary.setVisible(False)
-        self._header_layout.setStretchFactor(self._inline, 1)
         self._header_layout.setStretch(self._header_stretch, 0)
 
     def set_label_width(self, width: int) -> None:
@@ -451,8 +512,9 @@ class StylePropertyRow(QFrame):
         self._label_width = int(width)
         inline = getattr(self, "_inline_mode", False)
         self.title_label.setFixedWidth(self._label_width if inline else self.title_label.sizeHint().width())
-        self._content_layout.setContentsMargins(
-            (self._label_width + STYLE_LABEL_GAP) if inline else 4, 4, 0, 4)
+        # 2026-11-13: an inline row's editor is a rounded sheet as wide as the row.
+        margin = 12 if inline else 4
+        self._content_layout.setContentsMargins(margin, margin, margin, margin)
 
     def set_summary(self, text: str) -> None:
         self.summary_label.setText(tr(str(text)))
@@ -673,7 +735,19 @@ class StyleColorButton(QToolButton):
         self._color = QColor("#000000")
         self._fill_spec = FillSpec.solid("#FF000000")
         self._label = "黑色"
-        self._enabled_state = True
+        self._enabled = True
+        # Ink mode (set_ink_role): the well of an appearance row.
+        self._ink_role = ""
+        self._ink_level = 1.0
+        self._ink_velocity = 0.0
+        self._ink_hover = 0.0
+        self._ink_pointer = QPointF(-99.0, -99.0)
+        self._ink_ripples: list[tuple[float, float, float]] = []
+        self._ink_time = 0.0
+        self._ink_seed = 0.0
+        self._ink_image = None
+        self._ink_timer = None
+        self._ink_clock = QElapsedTimer()
         self.setMinimumHeight(STYLE_FIELD_HEIGHT - 2)
         self.setMaximumHeight(STYLE_FIELD_HEIGHT - 2)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -686,14 +760,17 @@ class StyleColorButton(QToolButton):
             self._color.name(QColor.NameFormat.HexArgb)
         )
         self._label = str(label or ("白色" if self._color.lightness() > 180 else "黑色"))
-        self._enabled_state = bool(enabled)
         self._mixed_colors = ()
+        self._ink_image = None
+        self._enabled_state = bool(enabled)
+        self._ink_changed()
         self.setToolTip(self._color.name(QColor.NameFormat.HexArgb).upper() if color.isValid() else '无效颜色')
         self.setAccessibleName(label or self.toolTip())
         self.update()
 
     def set_mixed_colors(self, values) -> None:
         self._mixed_colors = tuple(sorted(values))
+        self._ink_image = None
         self._label = '混合'
         self.setToolTip('混合描边/颜色：' + ' / '.join(self._mixed_colors))
         self.setAccessibleName('混合颜色')
@@ -708,9 +785,243 @@ class StyleColorButton(QToolButton):
             first = self._fill_spec.stops[0] if self._fill_spec.stops else {"color": "#FFFFFFFF"}
             self._color = QColor(str(first.get("color") or "#FFFFFFFF"))
             self._label = "径向渐变" if self._fill_spec.kind == "radial-gradient" else "线性渐变"
-        self._enabled_state = True
         self._mixed_colors = ()
+        self._ink_image = None
+        # A fill of full transparency is the switched-off fill (2026-11-13).
+        self._enabled_state = not (self._ink_role and self._fill_spec.kind == "solid" and self._color.alpha() == 0)
+        self._ink_changed()
+
+    # ------------------------------------------------------------- ink mode
+    INK_ROLES = ("fill", "outline", "background", "shadow", "glow")
+
+    @property
+    def _enabled_state(self) -> bool:
+        return self._enabled
+
+    @_enabled_state.setter
+    def _enabled_state(self, value) -> None:
+        value = bool(value)
+        if value == self._enabled:
+            return
+        self._enabled = value
+        self._ink_changed(pour=True)
+
+    def set_ink_role(self, role: str) -> None:
+        """Paint as an ink well (2026-11-13, user): the colour runs across
+        the row's capsule like ink on paper, and drains to a drop when the
+        property is switched off.  ``role`` picks the small icon."""
+        self._ink_role = str(role)
+        self._ink_seed = 11.0 + 7.3 * (self.INK_ROLES.index(role) if role in self.INK_ROLES else 5)
+        self._ink_level = 1.0 if self._enabled else 0.0
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(STYLE_FIELD_HEIGHT)
+        self.setMaximumHeight(STYLE_FIELD_HEIGHT)
+        self._ink_changed()
+
+    def set_ink_on(self, on: bool) -> None:
+        self._enabled_state = on
+
+    def ink_color(self) -> QColor:
+        """The colour the capsule has to stay readable against."""
+        color = QColor(self._color)
+        color.setAlpha(255)
+        return color
+
+    def _ink_colors(self) -> list[QColor]:
+        if getattr(self, "_mixed_colors", ()):
+            colors = [QColor(value) for value in self._mixed_colors]
+        elif self._fill_spec.kind != "solid" and self._fill_spec.stops:
+            colors = [QColor(str(stop.get("color") or "#FFFFFFFF")) for stop in self._fill_spec.stops]
+        else:
+            colors = [QColor(self._color)]
+        for color in colors:
+            color.setAlpha(255)
+        return colors
+
+    def _ink_can_move(self) -> bool:
+        from PySide6.QtGui import QGuiApplication
+        from ..design.ui_motion import reduced_motion
+
+        return bool(self._ink_role) and self.isVisible() and not reduced_motion() \
+            and QGuiApplication.platformName() != "offscreen"
+
+    def _ink_changed(self, *, pour: bool = False) -> None:
+        self._ink_image = None
+        if not self._ink_role:
+            self.update()
+            return
+        if pour and self._ink_can_move():
+            self._ink_start()
+        elif self._ink_timer is None or not self._ink_timer.isActive():
+            self._ink_level = 1.0 if self._enabled else 0.0
+            self._ink_velocity = 0.0
         self.update()
+        parent = self.parentWidget()
+        for _ in range(3):  # the capsule's paper follows the ink
+            if parent is None:
+                break
+            if isinstance(parent, InkCapsule):
+                parent.update()
+                break
+            parent = parent.parentWidget()
+
+    def _ink_start(self) -> None:
+        if self._ink_timer is None:
+            self._ink_timer = QTimer(self)
+            self._ink_timer.setInterval(33)
+            self._ink_timer.timeout.connect(self._ink_tick)
+        if not self._ink_timer.isActive():
+            self._ink_clock.start()
+            self._ink_timer.start()
+
+    def _ink_tick(self, dt: float | None = None) -> None:
+        """One step of the wash: it settles like a liquid, leans towards the
+        pointer while hovered, and stops moving once it is at rest."""
+        if dt is None:
+            dt = min(0.08, self._ink_clock.restart() / 1000.0)
+        target = 1.0 if self._enabled else 0.0
+        stiffness = 30.0
+        damping = 2.0 * (stiffness ** 0.5) * 0.42
+        self._ink_velocity += (stiffness * (target - self._ink_level) - damping * self._ink_velocity) * dt
+        self._ink_level += self._ink_velocity * dt
+        hovered = 1.0 if self.underMouse() and self.isEnabled() and self.isVisible() else 0.0
+        self._ink_hover += (hovered - self._ink_hover) * min(1.0, dt * 6.0)
+        self._ink_time += dt
+        self._ink_ripples = [ripple for ripple in self._ink_ripples if self._ink_time - ripple[2] < 1.5]
+        if (not hovered and self._ink_hover < 0.01 and not self._ink_ripples
+                and abs(target - self._ink_level) < 0.002 and abs(self._ink_velocity) < 0.01):
+            self._ink_level, self._ink_velocity, self._ink_hover = target, 0.0, 0.0
+            if self._ink_timer is not None:
+                self._ink_timer.stop()
+        self._ink_image = None
+        self.update()
+
+    def _capsule_path(self) -> QPainterPath:
+        parent = self.parentWidget()
+        for _ in range(3):
+            if parent is None:
+                break
+            if isinstance(parent, InkCapsule):
+                path = parent.outline_path()
+                origin = self.mapTo(parent, QPoint(0, 0))
+                path.translate(-origin.x(), -origin.y())
+                return path
+            parent = parent.parentWidget()
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
+        return path
+
+    def _ink_icon(self, painter: QPainter, box: QRectF, ink: QColor) -> None:
+        """The property's own small mark, floating in the pool of ink."""
+        painter.save()
+        painter.translate(box.left(), box.top())
+        painter.scale(box.width() / 16.0, box.height() / 16.0)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(ink)
+        role = self._ink_role
+        if role == "outline":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(ink, 2.4))
+            painter.drawEllipse(QPointF(8.0, 8.0), 5.0, 5.0)
+        elif role == "background":
+            painter.drawRoundedRect(QRectF(1.5, 4.0, 13.0, 8.0), 3.2, 3.2)
+        elif role == "shadow":
+            faint = QColor(ink)
+            faint.setAlphaF(0.4)
+            painter.setBrush(faint)
+            painter.drawEllipse(QPointF(9.8, 9.8), 4.6, 4.6)
+            painter.setBrush(ink)
+            painter.drawEllipse(QPointF(6.4, 6.4), 4.6, 4.6)
+        elif role == "glow":
+            star = QPainterPath()
+            points = ((8, 1.2), (9.7, 6.3), (14.8, 8), (9.7, 9.7), (8, 14.8), (6.3, 9.7), (1.2, 8), (6.3, 6.3))
+            star.moveTo(*points[0])
+            for point in points[1:]:
+                star.lineTo(*point)
+            star.closeSubpath()
+            painter.drawPath(star)
+        else:
+            drop = QPainterPath()
+            drop.moveTo(8.0, 1.6)
+            drop.cubicTo(8.0, 1.6, 3.4, 6.7, 3.4, 9.9)
+            drop.arcTo(QRectF(3.4, 5.3, 9.2, 9.2), 180.0, 180.0)
+            drop.cubicTo(12.6, 6.7, 8.0, 1.6, 8.0, 1.6)
+            painter.drawPath(drop)
+        painter.restore()
+
+    def _paint_ink(self, painter: QPainter, theme) -> None:
+        from ..design import ink_wash
+
+        width, height = float(self.width()), float(self.height())
+        colors = self._ink_colors()
+        paper, edge = ink_paper(theme, self.ink_color())
+        path = self._capsule_path()
+        painter.save()
+        painter.setClipPath(path)
+        if self._ink_image is None:
+            try:
+                self._ink_image = ink_wash.wash_image(
+                    width, height, colors, level=self._ink_level, t=self._ink_time, seed=self._ink_seed,
+                    hover=(self._ink_pointer.x(), self._ink_pointer.y(), self._ink_hover),
+                    ripples=[(x, y, self._ink_time - started) for x, y, started in self._ink_ripples])
+            except ImportError:  # no numpy: a plain fade, no wash
+                self._ink_image = False
+        if self._ink_image:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            painter.drawImage(QRectF(0.0, 0.0, self._ink_image.width() * ink_wash.SCALE,
+                                     self._ink_image.height() * ink_wash.SCALE), self._ink_image)
+        else:
+            reach = max(height * ink_wash.POOL_RATIO, width * max(0.0, self._ink_level))
+            fade = QLinearGradient(0.0, 0.0, reach, 0.0)
+            solid, clear = QColor(colors[0]), QColor(colors[0])
+            solid.setAlphaF(0.82)
+            clear.setAlphaF(0.0)
+            fade.setColorAt(0.0, solid)
+            fade.setColorAt(1.0, clear)
+            painter.fillRect(QRectF(0.0, 0.0, reach, height), QBrush(fade))
+        painter.restore()
+        # The capsule's own line, over the ink.
+        painter.setPen(QPen(edge, 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        on = self._enabled
+        pool_ink = self.value_ink(pool=True)
+        self._ink_icon(painter, QRectF(10.0, (height - 14.0) / 2.0, 14.0, 14.0), pool_ink)
+        text = self.value_text() or tr("混合")
+        from ..design.typography import MONO_FONT_FAMILIES, weighted_font
+        font = QFont(self.font())
+        if text.startswith("#"):
+            font.setFamilies(list(MONO_FONT_FAMILIES))
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        font.setPixelSize(12)
+        # Emphasis takes the Heavy face (2026-11-13 app-wide rule); the mono value just takes the weight.
+        weighted_font(font, QFont.Weight.DemiBold if on else QFont.Weight.Medium)
+        metrics = QFontMetrics(font)
+        left = 32.0 + (0.0 if on else 6.0)
+        if width - left - 4.0 < metrics.horizontalAdvance(text):
+            return
+        baseline = (height + metrics.ascent() - metrics.descent()) / 2.0
+        glyphs = QPainterPath()
+        glyphs.addText(left, baseline, font, text)
+        if on:
+            ink = self.value_ink()
+            light = ink.lightness() > 128
+            # Around the value, a little of the opposite tone: the ink's own
+            # shade behind light text, the paper (or, on dark paper, a paler
+            # ink) behind dark text.
+            if light:
+                halo = QColor(colors[0]).darker(125)
+            elif paper.lightness() > 150:
+                halo = QColor(paper)
+            else:
+                halo = QColor(colors[0]).lighter(118)
+            halo.setAlphaF(0.72 if light else 0.8)
+            painter.strokePath(glyphs, QPen(halo, 3.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                            Qt.PenJoinStyle.RoundJoin))
+        else:
+            ink = QColor(theme.text_muted)
+        painter.fillPath(glyphs, ink)
 
     def paintEvent(self, event) -> None:
         # 2026-10-18 (user: "颜色卡外面还有一层框实在太难看"): the color is the
@@ -719,6 +1030,10 @@ class StyleColorButton(QToolButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         theme = theme_definition(theme_key())
+        if self._ink_role:
+            self._paint_ink(painter, theme)
+            painter.end()
+            return
         rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         radius = 7.0
         if not self._enabled_state:
@@ -808,12 +1123,20 @@ class StyleColorButton(QToolButton):
             return tr('透明')
         return self._color.name(QColor.NameFormat.HexRgb).upper()
 
-    def value_ink(self) -> QColor:
-        """Dark or light text, whichever reads on the painted colour."""
+    def value_ink(self, *, pool: bool = False) -> QColor:
+        """Dark or light text, whichever reads on the painted colour.  An
+        ink well's value sits on the thinned wash (about 60 % ink over the
+        paper); its icon sits in the ``pool`` of full colour."""
         color = self._color
-        if color.alpha() < 128:
+        tone = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+        if self._ink_role:
+            from ..design.ink_wash import luminance
+            paper, _edge = ink_paper(theme_definition(theme_key()), self.ink_color())
+            share = 0.82 if pool else 0.62
+            tone = tone * share + luminance(paper) * (1.0 - share)
+        elif color.alpha() < 128:
             return QColor("#2b2521")
-        return QColor("#2b2521") if (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) > 150 else QColor("#ffffff")
+        return QColor("#2b2521") if tone > 150 else QColor("#ffffff")
 
     def _paint_value(self, painter, rect) -> None:
         text = self.value_text()
@@ -829,11 +1152,41 @@ class StyleColorButton(QToolButton):
 
     def enterEvent(self, event) -> None:
         super().enterEvent(event)
+        if self._ink_can_move():
+            self._ink_pointer = QPointF(event.position())
+            self._ink_start()
         self.update()
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
         self.update()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._ink_role:
+            self._ink_pointer = QPointF(event.position())
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if self._ink_can_move() and event.button() == Qt.MouseButton.LeftButton:
+            # A touch: the whole wash rocks once and a ring runs out from it.
+            self._ink_pointer = QPointF(event.position())
+            if len(self._ink_ripples) < 6:
+                self._ink_ripples.append((event.position().x(), event.position().y(), self._ink_time))
+            self._ink_velocity += 0.7
+            self._ink_start()
+        super().mousePressEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._ink_image = None
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        if self._ink_timer is not None and self._ink_timer.isActive():
+            self._ink_timer.stop()
+            self._ink_level, self._ink_velocity, self._ink_hover = (1.0 if self._enabled else 0.0), 0.0, 0.0
+            self._ink_ripples = []
+            self._ink_image = None
 
 
 class StylePreview(QWidget):

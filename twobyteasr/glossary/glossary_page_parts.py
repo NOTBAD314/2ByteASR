@@ -10,9 +10,11 @@ import time
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter
-from PySide6.QtWidgets import QAbstractButton, QFrame, QLabel, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QLabel, QLayout, QPushButton, QStyle, QStyledItemDelegate,
+                               QVBoxLayout, QWidget)
 
 from ..i18n import bind_text
+from ..design.typography import weighted_font
 
 
 def _theme():
@@ -56,16 +58,16 @@ class PageTab(QAbstractButton):
     def _fonts(self) -> tuple[QFont, QFont]:
         label = QFont(self.font())
         label.setPixelSize(16)
-        label.setWeight(QFont.Weight.Bold if self.isChecked() else QFont.Weight.DemiBold)
+        weighted_font(label, QFont.Weight.Bold if self.isChecked() else QFont.Weight.DemiBold)
         small = QFont(self.font())
         small.setPixelSize(13)
-        small.setWeight(QFont.Weight.Medium)
+        weighted_font(small, QFont.Weight.Medium)
         return label, small
 
     def sizeHint(self):  # noqa: N802 - Qt API
         label, small = self._fonts()
         bold = QFont(label)
-        bold.setWeight(QFont.Weight.Bold)
+        weighted_font(bold, QFont.Weight.Bold)
         width = QFontMetrics(bold).horizontalAdvance(self.text()) + 4
         for part in (self._count, self._note):
             if part:
@@ -136,6 +138,116 @@ class StatusDotDelegate(QStyledItemDelegate):
         return QSize(option.fontMetrics.horizontalAdvance(text) + 30, 44)
 
 
+class AIMenuEntry(QPushButton):
+    """One 「AI 帮忙 ▾」 entry: a tinted icon, a plain-words title, one line on
+    what it does, and an optional badge (🔒 要能上网 / a count).
+
+    2026-11-13 (user, option A): the old menu listed eight mechanisms
+    (增量 / 完整建库 / 智能建词 / 联网补全); entries now say what they do.
+    ``text()`` / ``setText()`` are the title, so task states such as
+    「更新中（查看任务）」 still replace it."""
+
+    def __init__(self, title: str = "", subtitle: str = "", icon: str = "", tone: str = "", parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QHBoxLayout, QSizePolicy
+        self.setObjectName("termAiEntry")
+        self.setProperty("tone", tone)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 8, 10, 8)
+        row.setSpacing(12)
+        self._icon_name = icon
+        self.icon_label = QLabel(self)
+        self.icon_label.setObjectName("termAiEntryIcon")
+        self.icon_label.setProperty("tone", tone)
+        self.icon_label.setFixedSize(34, 34)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignTop)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        self.title_label = QLabel(self)
+        self.title_label.setObjectName("termAiEntryTitle")
+        self.subtitle_label = QLabel(self)
+        self.subtitle_label.setObjectName("termAiEntrySub")
+        self.subtitle_label.setWordWrap(True)
+        column.addWidget(self.title_label)
+        column.addWidget(self.subtitle_label)
+        row.addLayout(column, 1)
+        self.badge = QLabel(self)
+        self.badge.setObjectName("termAiEntryBadge")
+        self.badge.hide()
+        row.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.setText(title)
+        self.setSubtitle(subtitle)
+        self.refresh_icon()
+
+    def refresh_icon(self) -> None:
+        # Qt applies "Button:disabled QLabel" whatever the button's state; the
+        # labels carry the state themselves.
+        dim = not self.isEnabled()
+        for label in (self.title_label, self.subtitle_label):
+            if bool(label.property("dim")) != dim:
+                label.setProperty("dim", dim)
+                label.style().unpolish(label)
+                label.style().polish(label)
+        if self._icon_name:
+            from ..design.themed_icons import themed_icon
+            self.icon_label.setPixmap(themed_icon(self._icon_name, "accent" if self.isEnabled() else "disabled")
+                                      .pixmap(16, 16))
+
+    def changeEvent(self, event):  # noqa: N802 - Qt API
+        from PySide6.QtCore import QEvent
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.refresh_icon()
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt-style API
+        self.title_label.setText(str(text))
+        self.setAccessibleName(str(text))
+        self.updateGeometry()
+
+    def text(self) -> str:
+        return self.title_label.text()
+
+    def setSubtitle(self, text: str) -> None:  # noqa: N802 - Qt-style API (bind_text property="subtitle")
+        self.subtitle_label.setText(str(text))
+        self.subtitle_label.setVisible(bool(text))
+        self.updateGeometry()
+
+    def subtitle(self) -> str:
+        return self.subtitle_label.text()
+
+    def setBadge(self, text: str) -> None:  # noqa: N802 - bind_text property="badge"
+        self.badge.setText(str(text))
+        self.badge.setVisible(bool(text))
+
+    def set_badge(self, text: str, tone: str = "warn") -> None:
+        if self.badge.property("tone") != tone:
+            self.badge.setProperty("tone", tone)
+            self.badge.style().unpolish(self.badge)
+            self.badge.style().polish(self.badge)
+        self.setBadge(text)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt API (the subtitle wraps)
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt API
+        layout = self.layout()
+        return layout.heightForWidth(width) if layout is not None else super().heightForWidth(width)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        layout = self.layout()
+        return layout.sizeHint() if layout is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        layout = self.layout()
+        return layout.minimumSize() if layout is not None else super().minimumSizeHint()
+
+
 class ActionPopup(QFrame):
     """A small menu under a button that holds real buttons and controls.
 
@@ -166,6 +278,12 @@ class ActionPopup(QFrame):
             button.clicked.connect(self.hide)
         return button
 
+    def add_entry(self, entry: "AIMenuEntry", *, close: bool = True) -> "AIMenuEntry":
+        self._layout.addWidget(entry)
+        if close:
+            entry.clicked.connect(self.hide)
+        return entry
+
     def add_caption(self, text: str) -> QLabel:
         label = bind_text(QLabel(), text)
         label.setObjectName("termPopupCaption")
@@ -193,6 +311,24 @@ class ActionPopup(QFrame):
         self._hidden_at = time.monotonic()
         super().hideEvent(event)
 
+    def _needed_height(self) -> int:
+        """Rows at the popup's real width (wrapped entry subtitles included);
+        adjustSize under-measures a menu whose rows wrap."""
+        layout = self._layout
+        margins = layout.contentsMargins()
+        width = self.width() - margins.left() - margins.right()
+        total, rows = margins.top() + margins.bottom(), 0
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            if item.isEmpty():
+                continue
+            height = max(item.minimumSize().height(), item.sizeHint().height())
+            if item.hasHeightForWidth():
+                height = max(item.minimumSize().height(), item.heightForWidth(width))
+            total += height
+            rows += 1
+        return total + layout.spacing() * max(0, rows - 1)
+
     def toggle(self):
         if self.isVisible():
             self.hide()
@@ -202,7 +338,19 @@ class ActionPopup(QFrame):
             self.show_below()
 
     def show_below(self):
+        # Polish first: style-sheet sizes (combo heights, paddings) must be
+        # known before measuring, or rows overlap on the first opening.
+        self.ensurePolished()
+        for index in range(self._layout.count()):
+            widget = self._layout.itemAt(index).widget()
+            # A nested frame (the AI service bar) was squeezed below its own
+            # rows once wrapped entries made the menu height-for-width.
+            if widget is not None and widget.layout() is not None and not widget.hasHeightForWidth():
+                widget.setMinimumHeight(widget.minimumSizeHint().height())
         self.adjustSize()
+        needed = self._needed_height()
+        if needed > self.height():
+            self.resize(self.width(), needed)
         point = self.anchor.mapToGlobal(QPoint(0, self.anchor.height() + 4))
         screen = QGuiApplication.screenAt(point) or QGuiApplication.primaryScreen()
         if screen is not None:
@@ -214,4 +362,118 @@ class ActionPopup(QFrame):
             point = QPoint(x, max(area.top(), y))
         self.move(point)
         self.show()
+        # The window theme reaches a popup when it first shows; measure again.
+        for _pass in range(3):
+            needed = self._needed_height()
+            if needed <= self.height():
+                break
+            self.resize(self.width(), needed)
         self.raise_()
+
+
+class StripChip(QFrame):
+    """A chip of the 待处理 strip (2026-11-13, plan 2026-11-13-glossary-library-redesign-c):
+    an optional colored dot and a short count ("123 条字幕候选"); dashed for
+    work that is missing. Clicking emits ``clicked(checked)``; checkable chips
+    act as filters and show their checked state."""
+
+    from PySide6.QtCore import Signal as _Signal
+    clicked = _Signal(bool)
+
+    def __init__(self, text: str = "", *, tone: str = "", dashed: bool = False, checkable: bool = False, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QHBoxLayout
+        self.setObjectName("termStripChip")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("dashed", dashed)
+        self.setProperty("checked", False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(30)
+        self._checkable = checkable
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10 if tone else 12, 0, 12, 0)
+        row.setSpacing(7)
+        self.dot = QLabel(self)  # parented: setVisible(True) on a parentless label flashed a window (2026-11-13)
+        self.dot.setObjectName("termStripDot")
+        self.dot.setProperty("tone", tone)
+        self.dot.setFixedSize(7, 7)
+        self.dot.setVisible(bool(tone))
+        row.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.label = QLabel(text)
+        self.label.setObjectName("termStripChipText")
+        row.addWidget(self.label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def setText(self, text: str):  # noqa: N802 - Qt-style API
+        self.label.setText(text)
+
+    def text(self) -> str:
+        return self.label.text()
+
+    def isChecked(self) -> bool:  # noqa: N802
+        return bool(self.property("checked"))
+
+    def setChecked(self, checked: bool):  # noqa: N802
+        if bool(checked) != self.isChecked():
+            self.setProperty("checked", bool(checked))
+            for widget in (self, self.label, self.dot):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+
+    def click(self):
+        if self._checkable:
+            self.setChecked(not self.isChecked())
+        self.clicked.emit(self.isChecked())
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt API
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.click()
+        super().mouseReleaseEvent(event)
+
+
+class FlowLayout(QLayout):
+    """Wrapping row of small widgets (chips); items of a line share its vertical centre."""
+
+    def __init__(self, parent=None, spacing=6):
+        super().__init__(parent); self._items = []; self._spacing = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item): self._items.append(item)  # noqa: N802 - Qt API
+
+    def insertWidget(self, index, widget):  # noqa: N802 - Qt-style API
+        self.addWidget(widget)
+        self._items.insert(max(0, min(int(index), len(self._items) - 1)), self._items.pop())
+        self.invalidate()
+
+    def count(self): return len(self._items)
+    def itemAt(self, i): return self._items[i] if 0 <= i < len(self._items) else None  # noqa: N802
+    def takeAt(self, i): return self._items.pop(i) if 0 <= i < len(self._items) else None  # noqa: N802
+    def expandingDirections(self): return Qt.Orientation(0)  # noqa: N802
+    def hasHeightForWidth(self): return True  # noqa: N802
+    def heightForWidth(self, width): return self._place(QRect(0, 0, width, 0), True)  # noqa: N802
+    def setGeometry(self, rect): super().setGeometry(rect); self._place(rect, False)  # noqa: N802
+    def sizeHint(self): return self.minimumSize()  # noqa: N802
+
+    def minimumSize(self):  # noqa: N802
+        size = QSize()
+        for item in self._items: size = size.expandedTo(item.minimumSize())
+        return size
+
+    def _place(self, rect, measure):
+        """Wrap into lines; items of one line share its vertical centre."""
+        lines, current, x = [], [], rect.x()
+        for item in self._items:
+            hint = item.sizeHint()
+            if current and x + hint.width() > rect.right() + 1:
+                lines.append(current); current, x = [], rect.x()
+            current.append((item, hint)); x += hint.width() + self._spacing
+        if current: lines.append(current)
+        y = rect.y()
+        for line in lines:
+            height = max(hint.height() for _item, hint in line)
+            x = rect.x()
+            for item, hint in line:
+                if not measure:
+                    item.setGeometry(QRect(QPoint(x, y + (height - hint.height()) // 2), hint))
+                x += hint.width() + self._spacing
+            y += height + self._spacing
+        return max(0, y - self._spacing - rect.y())

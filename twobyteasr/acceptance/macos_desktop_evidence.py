@@ -26,6 +26,9 @@ def studio_snapshot(page) -> dict:
     # Keep raster data out of a diagnostic JSON; availability is sufficient.
     result['video']['_web_last_decoded'] = result['video']['_web_last_decoded'] is not None
     for name, callback in (
+        ('render_geometry', lambda: dict(video_rect=list(page.video.rect().getRect()),
+                                        overlay_rect=list(page.position_overlay.geometry().getRect()),
+                                        content_rect=list(page.position_overlay._content_rect().getRect()))),
         ('video_actor', lambda: page.video.controller.actor_status()),
         ('video_visual', lambda: page.video.controller.applied_visual_state()),
         ('video_composition', lambda: page.video_compositor.performance_snapshot()),
@@ -35,6 +38,11 @@ def studio_snapshot(page) -> dict:
         ('video_followers', lambda: {key: source.performance_snapshot()
                                    for key, source in page.video_compositor._players.items()}),
         ('playback_buffers_ready', lambda: page._playback_buffers_ready()),
+        ('waveform', lambda: dict(state=page.timeline.waveform_state,
+            detail=page.timeline.toolTip(), inflight=sorted(page._waveform_inflight),
+            pending=list(page._waveform_pending_media),
+            cache_root=str(getattr(page.timeline.cache, 'root', '')),
+            cache_metadata=page.timeline.cache.metadata.to_dict() if page.timeline.cache is not None else None)),
         ('caption_scene', lambda: page._caption_scene.trace()),
     ):
         try:
@@ -138,7 +146,9 @@ def preserve_studio_preview(page, output: Path, label: str) -> dict:
 
 def preserve_owned_project(path: Path, output: Path, label: str) -> dict:
     path, output = path.resolve(), output.resolve()
-    path.relative_to(output / 'projects')
+    roots = (output / 'projects', output / 'local' / '2ByteASR' / 'Projects')
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError('Project is outside the owned QA project roots')
     if path.suffix != '.2byteproj' or path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError('Only a bounded owned QA project may be archived')
     if label not in {'recognized', 'final', 'restart'}:

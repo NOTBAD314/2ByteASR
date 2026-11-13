@@ -66,7 +66,7 @@ ROLE_RECOMMENDED = {
 FILTERS = {
     'primary': (('all', '全部'), ('cloud', '云端'), ('local', '本机'), ('speakers', '分清说话人'),
                 ('dialect', '方言'), ('multilingual', '多语言')),
-    'timeline': (('all', '全部'), ('cloud', '云端'), ('local', '本机')),
+    'timeline': (('all', '本机模型'),),
     'review': (('all', '全部'), ('cloud', '云端'), ('local', '本机'), ('multilingual', '多语言')),
 }
 

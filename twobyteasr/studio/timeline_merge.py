@@ -15,6 +15,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPen, Q
 
 from ..i18n import tr
 from .timeline_razor import PILL_HEIGHT, PILL_TOP, _block_rect, _clock, razor_colors, paint_split_text, split_text_layout
+from ..design.typography import weighted_font
 
 
 @dataclass(frozen=True)
@@ -154,7 +155,7 @@ def _paint_ruler(timeline, painter, colors, state) -> None:
     label = tr('合并后 {seconds}s', seconds=f'{(end - start) / 1000:.1f}')
     font = QFont()
     font.setPointSize(9)
-    font.setBold(True)
+    weighted_font(font, 700)
     width = QFontMetrics(font).horizontalAdvance(label) + 18
     lo = timeline.TRACK_HEADER_WIDTH + 2
     hi = max(lo, timeline._content_right() - width - 2)

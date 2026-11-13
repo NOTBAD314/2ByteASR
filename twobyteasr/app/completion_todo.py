@@ -20,6 +20,7 @@ from ..design.ui_theme import blend_hex, theme_definition
 from ..i18n import bind_text, tr
 from .completion_widgets import COMPLETION_RADIUS_MAIN, COMPLETION_RADIUS_SMALL
 from .ui_zoom import logical
+from ..design.typography import emphasis_qss
 
 # Plain words for the categories a current review item can carry. An unknown
 # category keeps its own name.
@@ -484,4 +485,4 @@ class CompletionTodoSection(QFrame):
             f"QPushButton#completionTodoAction[tone=\"retry\"]:focus {{ border:2px solid {t.focus}; }}",
             f"QPushButton#completionTodoAction[tone=\"retry\"]:disabled {{ background:{blend_hex(t.app_background, t.text, 0.10)}; color:{t.disabled}; border-color:transparent; }}",
         ]
-        self.setStyleSheet('\n'.join(rules))
+        self.setStyleSheet(emphasis_qss('\n'.join(rules)))

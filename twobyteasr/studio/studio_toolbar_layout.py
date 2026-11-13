@@ -58,6 +58,10 @@ class CommandFlowLayout(QLayout):
         super().__init__(parent)
         self.items = []
         self.stretch_after = {0, 1}
+        # Item indexes that take their row's spare width (a search bar).
+        self.expand = set()
+        # Item indexes that hug the right edge when they start a row.
+        self.push_right = set()
         # Item index centred on the bar when its row has room (transport).
         self.center_index = None
         # Optional callable -> x (layout coordinates) the centred item aims
@@ -133,12 +137,21 @@ class CommandFlowLayout(QLayout):
             gaps = [index for index, _, _ in row[:-1] if index in self.stretch_after]
             extra = max(0, area.width() - sum(size.width() for _, _, size in row)
                         - self.spacing() * (len(row) - 1))
+            grow = [index for index, _, _ in row if index in self.expand]
+            if grow:
+                gaps = []
             x = area.x()
+            if not grow and not gaps and row[0][0] in self.push_right:
+                x += extra  # a group that wrapped alone keeps its place at the right
             for index, item, size in row:
+                width = size.width()
+                if index in grow:
+                    share, remainder = divmod(extra, len(grow))
+                    width += share + (1 if grow.index(index) < remainder else 0)
                 if apply:
                     item.setGeometry(QRect(x, y + (height - size.height()) // 2,
-                                           size.width(), size.height()))
-                x += size.width() + self.spacing()
+                                           width, size.height()))
+                x += width + self.spacing()
                 if index in gaps:
                     share, remainder = divmod(extra, len(gaps))
                     x += share + (1 if gaps.index(index) < remainder else 0)

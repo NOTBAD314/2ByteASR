@@ -1074,6 +1074,10 @@ def call_correction_api(
     user_notes = glossary_ai_notes(runtime_snapshot())
     if user_notes:
         prompt += '\n' + USER_GLOSSARY_NOTES_RULE + ''.join(f'\n【{name}】{note}' for name, note in user_notes)
+    review_policy = getattr(get_runtime_context(), 'proofread_edit_policy', None)
+    if review_policy is not None:
+        from ..glossary.proofread_constraints import request_rule
+        prompt += request_rule(review_policy)
     prepared = _prepared_correction_request(segment_batch, glossary, context_before, context_after,
         media_title, project_context, stable_term_candidates, approved_global_mappings, verified_terms,
         glossary_evidence, prompt)

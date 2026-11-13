@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..i18n import tr, bind_text
 from ..timeline.studio_transitions import (set_transition, transition_records, KEY, DEFAULT_LOOK_KEY,
                                            LOOK_DIRECTIONS, VIDEO_LOOKS, normalize_look, default_look)
+from ..design.typography import emphasis_qss
 
 # Card name, card hint. Generic editing techniques; names are our own.
 LOOK_TEXT = {
@@ -356,7 +357,7 @@ def create_inspector(page,parent):
                                    QVBoxLayout,QSlider,QButtonGroup)
     from ..caption_style.motion_inspector_ui import FlowLayout
     box=QGroupBox(tr('转场'));box.setObjectName('videoInspectorSection')
-    box.setStyleSheet(STYLE)
+    box.setStyleSheet(emphasis_qss(STYLE))
     outer=QVBoxLayout(box);outer.setContentsMargins(10,6,10,8);outer.setSpacing(7)
     page.transition_properties=box
     # Look cards, direction and strength: video seams only.

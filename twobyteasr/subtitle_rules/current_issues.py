@@ -15,9 +15,9 @@ from types import SimpleNamespace, MappingProxyType
 
 from .studio_qc import QCConfig, QCResult, QCSeverity, ReadabilityRule
 from .review_suggestions import model_suggestions, ReviewSuggestion, SuggestionOption, GLOSSARY, MAX_MARKS
-from .review_evidence_policy import evidence_only_reason
+from .review_evidence_policy import evidence_only_reason, retired_review_reason, unsupported_repeat_pattern
 
-ISSUE_RULE_VERSION = 6
+ISSUE_RULE_VERSION = 7
 DECISIONS = "current_issue_decisions"
 LEGACY_INPUTS = 'current_issue_legacy_inputs'
 LEGACY_SCOPES = 'current_issue_legacy_scopes'
@@ -277,6 +277,10 @@ def _language(project, cue, layer):
 def _classify(issue, cue, text, language, cues):
     """Calibrate tasks, retaining the original event and a concrete explanation."""
     kind = issue.issue_type
+    if retired_review_reason(kind, issue.source):
+        return 'confident', 'retired_rule'
+    if unsupported_repeat_pattern(issue):
+        return 'confident', 'unsubstantiated_pattern'
     if evidence_only_reason(kind):
         return 'confident', 'diagnostic'
     if kind in {'model_disagreement','suspected_word','current_projection_difference'}:

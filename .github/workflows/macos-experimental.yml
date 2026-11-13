@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
       maximum_artifact_bytes:
-        description: 'Allowance from this run included storage observation, including receipts and one-day retention'
+        description: 'Bounded installer plus receipts, maximum800MiB, one-day retention'
         required: true
         type: string
       run_app_checks:
@@ -33,11 +33,11 @@ on:
         default: true
         type: boolean
       app_runner:
-        description: 'Runner for the app checks (xlarge = paid larger runner)'
+        description: 'Apple Silicon runner for app checks; xlarge is paid and requires owner authorization'
         required: false
-        default: macos-14
+        default: macos-15
         type: choice
-        options: [macos-14, macos-14-xlarge]
+        options: [macos-15, macos-26, macos-15-xlarge, macos-26-xlarge]
       mlx_keys:
         description: 'MLX models for the timed MLX check'
         required: false
@@ -53,7 +53,7 @@ on:
         required: false
         default: macos-15
         type: choice
-        options: [macos-15, macos-15-xlarge, macos-14-xlarge]
+        options: [macos-15, macos-15-xlarge, macos-26-xlarge]
       local_models_args:
         description: 'Arguments for scripts/macos_local_models_bench.py (devices, models, MOSS dtypes, clips)'
         required: false
@@ -97,7 +97,7 @@ jobs:
     if: ${{ inputs.run_app_checks }}
     outputs:
       has_installer: ${{ steps.dmg.outcome == 'success' }}
-    runs-on: ${{ inputs.app_runner || 'macos-14' }}
+    runs-on: ${{ inputs.app_runner || 'macos-15' }}
     # 24 before 2026-10-13; the optional cloud/MLX checks need up to ~20 more,
     # the optional Studio performance check up to ~35 (2026-10-14).
     # Runs without them finish as before; this only caps a hung run.
@@ -119,7 +119,7 @@ jobs:
           test "$(uname -m)" = arm64
           [[ "$MAXIMUM_ARTIFACT_BYTES" =~ ^[0-9]+$ ]]
           test "$MAXIMUM_ARTIFACT_BYTES" -ge 16777216
-          test "$MAXIMUM_ARTIFACT_BYTES" -le 629145600
+          test "$MAXIMUM_ARTIFACT_BYTES" -le 838860800
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Node24, official action.yml checked 2026-10-02
         with:
           ref: ${{ inputs.source_sha }}
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain)"
-          qa="$RUNNER_TEMP/tmp/2byteasr-macos-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          qa="$RUNNER_TEMP/tmp/q101"
           mkdir -p "$qa"
           printf 'MAC_QA_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
           printf 'TWOBYTEASR_TEST_ROOT=%s\n' "$qa" >> "$GITHUB_ENV"
@@ -173,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_doctor.py --require-host --probe-torch --output "$MAC_QA_ROOT/doctor.json"
-          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_audit_isolation.py tests/test_worker_device_telemetry.py tests/test_asr_worker_utf8_payload.py tests/test_bilingual_display_and_translation_flow.py tests/test_macos_caption_visibility.py tests/test_macos_binary_audit.py tests/test_macos_compatibility.py tests/test_macos_compat_native.py tests/test_macos_wheels.py tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks tests/test_no_cuda_cloud_asr.py tests/test_api_setup_guide.py tests/test_macos_keychain_store.py tests/test_mlx_backend.py tests/test_mac_gpu_workshop.py --deselect tests/test_playhead_edit_target.py::test_overlap_priority_stable_with_reorder_visibility_locks_and_track_choice --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_regressions.py --qa-root "$MAC_QA_ROOT"
       - name: Build real DMG and verify drag-install Unicode copy
         if: ${{ always() && steps.build.outcome == 'success' }}
         id: dmg
@@ -189,10 +189,27 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); assert r["passed"] is True; print(r["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_blank_project_macos.py --app "$app" --output "$MAC_QA_ROOT/blank-project"
+      - name: Installed app E30 asynchronous save and stable completed waveform
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: edit_save
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-proof" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --output "$MAC_QA_ROOT/edit-save"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part saves --output "$MAC_QA_ROOT/cold-save"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform --output "$MAC_QA_ROOT/waveform-stability"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_edit_save_smoke.py --app "$app" --part waveform-full --output "$MAC_QA_ROOT/full-waveform"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caret_split_smoke.py --app "$app" --output "$MAC_QA_ROOT/caret-split"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-stable-captions" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario stable-captions --output "$MAC_QA_ROOT/stable-captions"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-chinese-complete-expression" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario chinese-complete-expression --output "$MAC_QA_ROOT/chinese-complete-expression"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-speaker-board" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario speaker-board --output "$MAC_QA_ROOT/speaker-board"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-timeline-cue-pill" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario timeline-cue-pill --output "$MAC_QA_ROOT/timeline-cue-pill"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
-        if: ${{ always() && inputs.run_cloud_mlx_smoke && steps.dmg.outcome == 'success' }}
+        if: ${{ always() && (inputs.run_cloud_mlx_smoke || inputs.run_model_smoke) && steps.dmg.outcome == 'success' }}
         id: cloud_only
         continue-on-error: true
         timeout-minutes: 8
@@ -202,7 +219,7 @@ jobs:
           ffmpeg=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/media/media-install.json"))["media"]["ffmpeg"]["tools"]["ffmpeg"]["path"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_cloud_only_flow.py --out "$MAC_QA_ROOT/cloud-only" --cloud loopback --no-model-runtime --speech say --ffmpeg "$ffmpeg" --worker-exe "$app/Contents/MacOS/2ByteASR"
       - name: Real Keychain round trip (separate test item, random non-key value)
-        if: ${{ always() && inputs.run_cloud_mlx_smoke && steps.runtime.outcome == 'success' }}
+        if: ${{ always() && (inputs.run_cloud_mlx_smoke || inputs.run_model_smoke) && steps.runtime.outcome == 'success' }}
         id: keychain
         continue-on-error: true
         timeout-minutes: 3
@@ -295,11 +312,24 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); print(r["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_studio_perf.py --app "$app" --output "$MAC_QA_ROOT/studio-perf"
+      - name: Installed 1.0.1 model cards settings and workshop columns
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: release_ui
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-release-ui" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario vm2-model-settings --output "$MAC_QA_ROOT/vm2-model-settings"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-workshop-columns" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario workshop-columns --output "$MAC_QA_ROOT/workshop-columns"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-multilingual" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario multilingual-terms --output "$MAC_QA_ROOT/multilingual-terms"
+          python scripts/macos_display_mode_probe.py "$MAC_QA_ROOT/display-onboarding" "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app "$app" --scenario vm2-onboarding --output "$MAC_QA_ROOT/vm2-onboarding"
       - name: Record separate validation outcomes
         if: always()
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.regressions.outcome }}
+          STUDIO_PERF_REQUESTED: ${{ inputs.run_studio_perf }}
           MODEL_REQUESTED: ${{ inputs.run_model_smoke }}
           CLOUD_MLX_REQUESTED: ${{ inputs.run_cloud_mlx_smoke }}
         run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT"
@@ -329,12 +359,14 @@ jobs:
           path: ${{ env.MAC_QA_ROOT }}/artifacts/application/
       - name: Enforce installer, blank project and requested desktop results
         if: always()
-        run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
+        run: |
+          python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
+          test '${{ steps.release_ui.outcome }}' = success
 
   same-candidate-newer-macos:
     needs: native-arm64
     if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
-    runs-on: macos-15
+    runs-on: ${{ startsWith(inputs.app_runner, 'macos-26') && 'macos-15' || 'macos-26' }}
     timeout-minutes: 45
     defaults:
       run:
@@ -369,12 +401,12 @@ jobs:
           "$RUNNER_TEMP/tmp/checker-runtime/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
           dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
           test -f "$dmg"
-          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
+          python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/display-other" "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/q101-other"
       - name: Select bounded regression receipts
         if: always()
         run: |
-          if test -d "$RUNNER_TEMP/tmp/newer-macos-candidate"; then
-            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/newer-macos-candidate" --maximum-bytes 67108864
+          if test -d "$RUNNER_TEMP/tmp/q101-other"; then
+            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/q101-other" --maximum-bytes 67108864
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -382,7 +414,7 @@ jobs:
           name: macos-newer-receipts-${{ inputs.source_sha }}
           retention-days: 1
           if-no-files-found: warn
-          path: ${{ runner.temp }}/tmp/newer-macos-candidate/artifacts/receipts/
+          path: ${{ runner.temp }}/tmp/q101-other/artifacts/receipts/
 
   installed-candidate-models:
     needs: native-arm64
@@ -390,7 +422,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 65
     permissions:

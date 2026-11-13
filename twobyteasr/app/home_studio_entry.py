@@ -11,6 +11,7 @@ from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_definition
 
 from ..i18n import bind_text
+from ..design.typography import weighted_font
 
 
 def studio_paper_colors(theme):
@@ -198,13 +199,13 @@ class RecentProjectHero(_HoverButton):
         left, width = rect.x() + 20, rect.width() - 40
         if not self.entry:
             font.setPixelSize(_zpx(15))
-            font.setWeight(QFont.Weight.DemiBold)
+            weighted_font(font, QFont.Weight.DemiBold)
             p.setFont(font)
             p.setPen(QColor(theme.text_secondary))
             p.drawText(QRectF(rect.x(), rect.center().y() + 4, rect.width(), 22), Qt.AlignmentFlag.AlignCenter,
                        tr('还没有工程'))
             font.setPixelSize(_zpx(13))
-            font.setWeight(QFont.Weight.Normal)
+            weighted_font(font, QFont.Weight.Normal)
             p.setFont(font)
             p.setPen(QColor(theme.text_muted))
             p.drawText(QRectF(rect.x(), rect.center().y() + 28, rect.width(), 20), Qt.AlignmentFlag.AlignCenter,
@@ -213,20 +214,20 @@ class RecentProjectHero(_HoverButton):
             return
         bottom = rect.bottom() - 18
         font.setPixelSize(_zpx(13))
-        font.setWeight(QFont.Weight.Normal)
+        weighted_font(font, QFont.Weight.Normal)
         p.setFont(font)
         p.setPen(QColor(255, 255, 255, 200))
         meta = _entry_meta(self.entry)
         p.drawText(QRectF(left, bottom - 20, width, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(font).elidedText(meta, Qt.TextElideMode.ElideRight, int(width)))
         font.setPixelSize(_zpx(20))
-        font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(font, QFont.Weight.DemiBold)
         p.setFont(font)
         p.setPen(QColor(255, 255, 255))
         p.drawText(QRectF(left, bottom - 50, width, 28), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(font).elidedText(self.entry.get("name", ""), Qt.TextElideMode.ElideMiddle, int(width)))
         font.setPixelSize(_zpx(12))
-        font.setWeight(QFont.Weight.Medium)
+        weighted_font(font, QFont.Weight.Medium)
         p.setFont(font)
         p.setPen(QColor(255, 255, 255, 170))
         p.drawText(QRectF(left, bottom - 74, width, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -283,7 +284,7 @@ class RecentProjectRow(_HoverButton):
             p.drawRoundedRect(QRectF(rect.x() + 6, rect.y() + 9, 3, rect.height() - 18), 1.5, 1.5)
         font = QFont(self.font())
         font.setPixelSize(_zpx(12))
-        font.setWeight(QFont.Weight.Normal)
+        weighted_font(font, QFont.Weight.Normal)
         meta = _entry_meta(self.entry)
         meta_width = min(QFontMetrics(font).horizontalAdvance(meta) + 4, int(rect.width() * 0.42))
         p.setFont(font)
@@ -294,7 +295,7 @@ class RecentProjectRow(_HoverButton):
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(font).elidedText(meta, Qt.TextElideMode.ElideRight, meta_width))
         font.setPixelSize(_zpx(15))
-        font.setWeight(QFont.Weight.DemiBold if self.current else QFont.Weight.Medium)
+        weighted_font(font, QFont.Weight.DemiBold if self.current else QFont.Weight.Medium)
         name_width = int(rect.width() - 22 - meta_width - 24)
         p.setFont(font)
         p.setPen(QColor(theme.text))

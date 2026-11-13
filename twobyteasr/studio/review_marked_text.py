@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy
+from ..design.typography import weighted_font
 
 BASE = -1   # hit on the questioned characters themselves
 MORE = -2   # hit on the "+n" chip
@@ -98,7 +99,7 @@ class ReviewMarkedText(QLabel):
             chip.setPixelSize(max(11, round(base.pixelSize() * 0.8)))
         else:
             chip.setPointSizeF(max(8.0, base.pointSizeF() * 0.8))
-        chip.setWeight(QFont.Weight.DemiBold)
+        weighted_font(chip, QFont.Weight.DemiBold)
         return base, chip
 
     def _atoms(self):

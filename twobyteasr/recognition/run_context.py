@@ -27,6 +27,7 @@ class RuntimeContext:
     enabled_glossary_ids: list[str] = field(default_factory=list)
     # Immutable content, stable IDs and revisions, owned by this queue.
     glossary_snapshot: Any | None = None
+    glossary_all_languages: Any | None = None
     discovered_terms: set[str] = field(default_factory=set)
     output_review_track: bool = False
     output_jianying_txt: bool = False

@@ -133,6 +133,11 @@ def test_apply_background_to_graph_keeps_shape_and_unchanged_gradient():
 def _shown_style_tab(page, app):
     page.resize(1700, 1000)
     page.show()
+    # The fixture's page starts on the project library; the editor (and with
+    # it the style tab) is only laid out once it is the current layer.
+    layers = getattr(page, "workspace_layers", None)
+    if layers is not None:
+        layers.setCurrentWidget(page.workspace_splitter)
     page.context_drawer.setCurrentIndex(1)
     for row in page._appearance_rows.values():
         row.set_expanded(False)
@@ -163,13 +168,13 @@ def test_style_tab_labels_controls_and_checkboxes_share_one_grid(tmp_path, monke
                 page.style_shadow_swatch, page.style_glow_swatch]
     starts = {x(item) for item in swatches + [page.style_font, page.style_font_size,
                                                page.style_scope, page.style_preset,
-                                               page.style_apply_mode, page.style_outline2,
+                                               page.style_apply_mode,
                                                page.style_alignment, page.style_position_x]}
     assert len(starts) == 1, starts
-    # Switches (background, shadow, glow) sit in the same trailing slot.
-    # 2026-11-12: the shadow row has no switch (opacity 0% turns it off).
-    assert page.style_shadow_switch.isHidden()
-    assert x(page.style_glow) == x(page.style_background)
+    # 2026-11-13: every row has a switch, all in the same trailing slot.
+    assert not page.style_shadow_switch.isHidden()
+    assert len({x(switch) for switch in (page.style_fill_switch, page.style_outline_switch, page.style_background,
+                                         page.style_shadow_switch, page.style_glow)}) == 1
     assert all(label.objectName() == "stylePropertyRowTitle" for label in labels)
     checks = [box for box in page.findChildren(QCheckBox)
               if box.isVisibleTo(page) and box.text() and page.context_drawer.isAncestorOf(box)]
@@ -240,8 +245,8 @@ def test_appearance_rows_are_colour_wells_without_captions(tmp_path, monkeypatch
     app, page = _page(tmp_path, monkeypatch)
     x = _shown_style_tab(page, app)
     # 2026-11-11 (user): the rows are wide wells filled with their colour and
-    # naming it. 2026-11-12: 阴影 too; its opacity and distance live in its
-    # settings, not as inline text.
+    # naming it. 2026-11-12: 阴影 too. 2026-11-13: the colour is ink on the
+    # row's capsule; the shadow's opacity is the number in its capsule.
     wells = [getattr(page, name) for name in ("style_fill_swatch", "style_outline_swatch",
                                                "style_back_swatch", "style_shadow_swatch", "style_glow_swatch")]
     for well in wells:
@@ -253,14 +258,16 @@ def test_appearance_rows_are_colour_wells_without_captions(tmp_path, monkeypatch
     assert page.style_outline_button.value_ink().lightness() > 200  # light text on a dark colour
     page._set_style_color(page.style_outline_color, "#FFFFEE88")
     assert page.style_outline_button.value_ink().lightness() < 80
-    # Every inline row keeps the same 更多 slot, so the rows end together.
+    # A row with more to set ends its capsule with the same round button.
     rows = page._appearance_rows
-    assert len({x(row.chevron) for row in rows.values()}) == 1
-    assert {row.chevron.width() for row in rows.values()} == {rows["fill"].chevron.width()}
-    # The last control of every row ends on one line: a switch or the sliders.
+    more = [rows[name].chevron for name in ("fill", "outline", "shadow")]
+    assert len({x(chevron) for chevron in more}) == 1
+    assert {(chevron.width(), chevron.height()) for chevron in more} == {(26, 26)}
+    assert rows["background"].chevron.isHidden() and rows["glow"].chevron.isHidden()
+    # The last control of every row is its switch, and they end on one line.
     def end(row):
-        last = row.trailing if not row.trailing.isHidden() else row.chevron
-        return last.mapTo(row, last.rect().topRight()).x()
+        assert not row.trailing.isHidden()
+        return row.trailing.mapTo(row, row.trailing.rect().topRight()).x()
     assert len({end(row) for row in rows.values()}) == 1
     assert rows["fill"].chevron.text() == rows["shadow"].chevron.text()  # the same word, no pencil
     # 套用预设: two buttons, one of them always on.
@@ -279,23 +286,6 @@ def test_appearance_rows_are_colour_wells_without_captions(tmp_path, monkeypatch
     _finish(page)
 
 
-def test_shadow_editor_is_the_disc_beside_a_two_by_two_grid(tmp_path, monkeypatch):
-    app, page = _page(tmp_path, monkeypatch)
-    x = _shown_style_tab(page, app)
-    page._appearance_rows["shadow"].set_expanded(True)
-    app.processEvents()
-    assert not page.style_shadow_angle_value.isVisibleTo(page)
-    disc = page.style_shadow_angle
-    fields = [page.style_shadow_distance, page.style_shadow_opacity, page.style_shadow_blur, page.style_shadow_spread]
-    assert all(x(field) > x(disc) + disc.width() for field in fields)
-    columns = sorted({x(field) for field in fields})
-    rows = sorted({field.mapTo(page, field.rect().topLeft()).y() for field in fields})
-    assert len(columns) == 2 and len(rows) == 2
-    top = disc.mapTo(page, disc.rect().topLeft()).y()
-    assert top <= rows[1] and top + disc.height() >= rows[0]  # the disc spans both rows
-    _finish(page)
-
-
 def test_active_rows_show_their_color_in_the_well_without_a_row_fade(tmp_path, monkeypatch):
     # 2026-11-12 (user): the colour lives in the row's well; the right-edge
     # fade behind the controls (2026-10-18) read as a grey band and is gone.
@@ -311,9 +301,10 @@ def test_active_rows_show_their_color_in_the_well_without_a_row_fade(tmp_path, m
     right = image.pixelColor(image.width() - 3, image.height() // 2)
     left = image.pixelColor(3, image.height() // 2)
     assert abs(right.red() - left.red()) <= 6 and abs(right.green() - left.green()) <= 6
+    # 2026-11-13: the colour is an ink wash, full strength in the pool at the left.
     well = page.style_back_swatch.grab().toImage()
-    middle = well.pixelColor(well.width() // 2, 4)
-    assert middle.red() > 200 and middle.green() < 60
+    pool = well.pixelColor(5, well.height() // 2)
+    assert pool.red() > 200 and pool.green() < 70
     page.style_background.click()
     app.processEvents()
     assert not rows["background"]._tint_colors

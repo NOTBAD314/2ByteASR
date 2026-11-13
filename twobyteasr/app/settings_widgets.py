@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QCheckBox, QComboB
                                QPushButton, QSizePolicy, QWidget)
 
 from ..i18n import bind_text
+from ..design.typography import weighted_font
 
 
 def _theme():
@@ -263,7 +264,7 @@ class _ChoiceCard(QAbstractButton):
         words = QRectF(left, rect.top(), mark.left() - left - _px(8), rect.height())
         title_font = self.font()
         title_font.setPixelSize(_px(14))
-        title_font.setBold(True)
+        weighted_font(title_font, 700)
         note_font = self.font()
         note_font.setPixelSize(_px(12))
         painter.setPen(QColor(t.text))

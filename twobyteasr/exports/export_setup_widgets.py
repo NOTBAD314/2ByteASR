@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLa
 from ..design.soft_qss import control_icons
 from ..design.soft_widgets import CaptionField, WrapLayout, _repolish
 from ..design.ui_theme import ThemeDefinition, blend_hex
+from ..design.typography import emphasized
 
 #: Height of a control inside a caption field (the caption sits above it).
 FIELD_HEIGHT = 22
@@ -209,6 +210,7 @@ def source_is_audio_only(project) -> bool:
     return all((getattr(asset, "video_metadata", None) or {}).get("has_video") is False for asset in assets)
 
 
+@emphasized
 def export_setup_qss(t: ThemeDefinition) -> str:
     """The setup page in the soft-filled style (cards on the page background,
     filled wells inside the cards)."""

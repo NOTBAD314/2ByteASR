@@ -115,7 +115,10 @@ def start(window, output):
             page.cue_proofread_action.trigger()
             check('normal AI proofreading entry', wait(lambda: getattr(window, 'glossary_proofread_page', None) is not None))
             review = window.glossary_proofread_page
-            check('translation entry default', review.text_targets.mode_value() == 'translation')
+            # 2026-11-13: the page opens on 原文＋译文 side by side, on the track the entry chose.
+            check('translation entry default', review.text_targets.mode_value() == 'both'
+                  and review.text_targets.track.currentData() == 'translation-records:zh-Hans' and review.list.paired)
+            review.text_targets.mode.setCurrentIndex(review.text_targets.mode.findData('translation'))
             review.text_targets.track.setCurrentIndex(review.text_targets.track.findData('translation-records:zh-Hans'))
             check('initial local checks settle', wait(lambda: not review.checks_running()))
             check('source text is reference', all(row['source_text'].startswith('SHARED Neuvillette') for row in review._rows))

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .tokens import TYPE_SCALE, RADIUS_SCALE
 from .typography import MONO_FONT_STACK, UI_FONT_STACK
 from .ui_theme import blend_hex
+from .typography import emphasized
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class StudioComponentTokens:
     input_padding: int = 8
 
 
+@emphasized
 def build_studio_component_qss(theme, tokens: StudioComponentTokens | None = None) -> str:
     t = tokens or StudioComponentTokens()
     from .ui_theme import blend_hex, contrast_ratio
@@ -387,9 +389,10 @@ QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:hover {{ 
 QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:checked {{ background: {theme.accent}; color: {theme.text_on_accent};
     border-color: {theme.accent}; font-weight: 700; }}
 QFrame#contextPanel QFrame#styleApplyMode QPushButton#styleApplyOption:checked:hover {{ background: {theme.accent_hover}; color: {theme.text_on_accent}; }}
-QLabel#stylePropertyRowChevron[slot="true"] {{ background: {theme.surface}; color: {theme.accent_text};
-    border: 1px solid {theme.border}; border-radius: 9px; padding: 0; }}
-QLabel#stylePropertyRowChevron[slot="true"][open="true"] {{ background: {theme.accent_tint}; border-color: {theme.accent}; }}
+/* 2026-11-13 (user): a round chevron at the end of the row's capsule. */
+QLabel#stylePropertyRowChevron[slot="true"] {{ background: {blend_hex(theme.surface, theme.text, 0.07)};
+    border: 0; border-radius: 13px; padding: 0; }}
+QLabel#stylePropertyRowChevron[slot="true"][open="true"] {{ background: {theme.accent}; }}
 QLabel#styleScopeSummary {{ background: transparent; color: {theme.text_muted}; font-size: 12px; padding-left: 8px; }}
 /* 2026-11-12 (user, design A): inside the style cards the fields are white
    boxes with a fine border (the soft fill read as grey), and the chosen
@@ -423,10 +426,16 @@ QToolButton#styleEmphasis:checked, QToolButton#styleAnchor:checked {{
 /* The compact button role's side padding made B/I/U 41 px instead of the
    31 px above, and 字号 / 字距 / B I U no longer fit one row. */
 QToolButton#styleEmphasis[controlSize="compact"], QToolButton#styleAnchor[controlSize="compact"] {{ padding: 0; }}
-QFrame#stylePropertyRow {{ background: transparent; border: 0; border-top: 1px solid {theme.hairline};
-    border-left: 3px solid transparent; border-radius: 0; }}
-QFrame#stylePropertyRow:hover {{ background: {theme.surface}; }}
-QFrame#stylePropertyRow[expanded="true"] {{ background: {theme.surface}; border-left: 3px solid {theme.accent_text}; }}
+/* 2026-11-13 (user): a row is a capsule and a switch. No rule between rows,
+   no accent bar; an open row's editor is a rounded sheet under it, and the
+   number in the capsule has no box of its own. */
+QFrame#stylePropertyRow, QFrame#stylePropertyRow:hover, QFrame#stylePropertyRow[expanded="true"] {{
+    background: transparent; border: 0; border-radius: 0; }}
+QWidget#stylePropertyRowContent {{ background: {field_white}; border: 1px solid {theme.hairline}; border-radius: 16px; }}
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QFrame#inkCapsule QAbstractSpinBox,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QFrame#inkCapsule QAbstractSpinBox:hover,
+QFrame#contextPanel QFrame#styleSection[softCard="true"] QFrame#inkCapsule QAbstractSpinBox:focus {{
+    background: transparent; border: 0; padding: 0 2px; min-width: 0; font-family: {MONO_FONT_STACK}; font-size: 12px; font-weight: 600; }}
 /* 2026-10-17: one style for every left-column label of the style tab
    (应用到, 预设, 字体, 字号, 填充…发光, 对齐, X, 边距). */
 QLabel#stylePropertyRowTitle {{ color: {theme.text_secondary}; font-size: 13px; font-weight: 600; }}

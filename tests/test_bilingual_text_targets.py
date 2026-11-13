@@ -197,22 +197,22 @@ def test_translation_local_review_is_bound_to_its_language_and_original_referenc
     entries = text_entries(p, mode='translation', tracks={'translation-records:zh-Hans'})
     result = preview_glossary_correction(review_project(p, entries), [e.key for e in entries],
         snapshot_from_pairs([('那维来特', '那维莱特')]), {}, use_ai=False)
-    assert len(result.hits) == 2
-    assert all(h.target.layer == 'translation' and h.target.language == 'zh-Hans' for h in result.hits)
+    # Legacy ASR mishearings do not acquire translation-error semantics.
+    # Explicit target-language rules are exercised by test_multilingual_terms.
+    assert not result.hits
     assert all(row['source_reference'].startswith('SHARED Neuvillette') for row in result.receipt['segments'])
-    assert apply_occurrences(page_for(p), list(result.hits), title='校对') == (2, 2)
+    assert apply_occurrences(page_for(p), list(result.hits), title='校对') == (0, 0)
     assert p.cues[0].text == 'SHARED Neuvillette wins'
 
 
-def test_chinese_translation_can_use_confirmed_latin_player_alias():
+def test_chinese_translation_does_not_inherit_asr_player_mishearings():
     p=make_project()
     st.set_manual(p,'source-a','球球赢了')
     entries=[e for e in text_entries(p,mode='translation',tracks={'translation-records:zh-Hans'}) if e.target.cue_id=='source-a']
     result=preview_glossary_correction(review_project(p,entries),[e.key for e in entries],
         snapshot_from_pairs([('球球','CHICHOO')]),{},use_ai=False)
-    assert result.hits and all(hit.target.layer=='translation' for hit in result.hits)
-    assert apply_occurrences(page_for(p),list(result.hits),title='player')==(1,1)
-    assert st.records_of(p)['source-a']['text']=='CHICHOO赢了'
+    assert not result.hits
+    assert st.records_of(p)['source-a']['text']=='球球赢了'
 
 
 def test_real_ai_request_target_snapshot_and_foreign_script_guard(monkeypatch):

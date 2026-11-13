@@ -149,6 +149,8 @@ class RunOptions:
             speaker_source=__import__('twobyteasr.recognition.speaker_strategy', fromlist=['resolve']).resolve(getattr(legacy, 'RUNTIME_SETTINGS', {})),
             settings_snapshot_json=json.dumps(getattr(legacy, 'RUNTIME_SETTINGS', {}), ensure_ascii=False),
             glossary_snapshot_json=json.dumps(snapshot_glossaries(legacy, ids if enabled else ()).to_dict(), ensure_ascii=False),
+            translation_terminology_json=json.dumps(__import__('twobyteasr.glossary.multilingual_terms', fromlist=['task_policy']).task_policy(
+                getattr(legacy, 'RUNTIME_SETTINGS', {}).get('glossary', {}).get('translation_terminology', {}), legacy), ensure_ascii=False),
         )
 
     def create_runtime_context(
@@ -176,6 +178,7 @@ class RunOptions:
         if not self.enable_domain_terms:
             snapshot = GlossarySnapshot()
         enabled_ids = [library.id for library in snapshot.libraries]
+        from ..glossary.multilingual_terms import source_snapshot
         return RuntimeContext(
             job_id=self.job_id or uuid.uuid4().hex,
             game_name=content_name,
@@ -183,7 +186,8 @@ class RunOptions:
             enable_term_search=bool(self.enable_term_search),
             enabled_glossary_ids=enabled_ids,
             selected_source_glossary_ids=list(self.source_glossary_selection or self.enabled_glossary_ids),
-            glossary_snapshot=snapshot,
+            glossary_all_languages=snapshot,
+            glossary_snapshot=source_snapshot(snapshot, self.chinese_script if self.recognition_language == 'zh' else self.recognition_language),
             output_review_track=bool(self.output_review_track),
             output_jianying_txt=bool(self.output_jianying_txt),
             output_speaker_tracks=bool(self.output_speaker_tracks),
@@ -201,9 +205,9 @@ class RunOptions:
             requested_language=self.recognition_language,
             subtitle_output=self.subtitle_output,
             translation_script=self.translation_script,
-            translation_terminology=__import__('twobyteasr.glossary.translation_terms',fromlist=['normalize']).normalize(
+            translation_terminology=__import__('twobyteasr.glossary.multilingual_terms',fromlist=['task_policy']).task_policy(
                 json.loads(self.translation_terminology_json) if self.translation_terminology_json else
-                (json.loads(self.settings_snapshot_json) if self.settings_snapshot_json else getattr(legacy,'RUNTIME_SETTINGS',{})).get('glossary',{}).get('translation_terminology')),
+                (json.loads(self.settings_snapshot_json) if self.settings_snapshot_json else getattr(legacy,'RUNTIME_SETTINGS',{})).get('glossary',{}).get('translation_terminology'), legacy),
             chinese_script=self.chinese_script,
         )
 
@@ -216,7 +220,7 @@ class RunOptions:
         configured = self.create_runtime_context(
             legacy,
             cancellation_token=context.cancellation_token,
-            _glossary_snapshot=context.glossary_snapshot,
+            _glossary_snapshot=context.glossary_all_languages or context.glossary_snapshot,
         )
         context.game_name = configured.game_name
         context.enable_domain_terms = configured.enable_domain_terms

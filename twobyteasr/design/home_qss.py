@@ -8,6 +8,7 @@ a centred hero drop zone while no media is loaded, and a bottom bar that names
 what is missing. Appended after the surface sheet so it owns these selectors.
 """
 from .typography import TITLE_FONT_STACK, UI_FONT_STACK
+from .typography import emphasized
 
 # 2026-10-22 (user): while no AI is connected the AI card and 内容与术语 are
 # blue-grey (the first draft's sand "跟紫色背景不搭"): a steel blue mixed into
@@ -241,6 +242,7 @@ QLabel#homeAiSummary {{ color: {t.text_secondary}; }}
 """
 
 
+@emphasized
 def build_home_qss(t):
     from .ui_theme import blend_hex
     light = t.is_light

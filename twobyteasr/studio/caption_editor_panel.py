@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton,
     QScrollArea, QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
+from ..design.typography import emphasis_qss, weighted_font
 
 # The card sits on the video in every theme, so its body is always light;
 # only the accent (tag, confirm, caret, focus) follows the theme.
@@ -542,7 +543,7 @@ class CaptionKeyCap(QWidget):
         self._foreground = QColor(KEY)
         font = QFont(self.font())
         font.setPixelSize(11)
-        font.setWeight(QFont.Weight.Bold)
+        weighted_font(font, QFont.Weight.Bold)
         self.setFont(font)
         self.setFixedSize(self.sizeHint())
 
@@ -780,7 +781,7 @@ class CaptionEditorPanel(QFrame):
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         font = QFont(self.editor.font())
         font.setPixelSize(self.TEXT_PX)
-        font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(font, QFont.Weight.DemiBold)
         self.editor.setFont(font)
         self.editor.document().setDocumentMargin(0)
         option = self.editor.document().defaultTextOption()
@@ -1223,7 +1224,7 @@ class CaptionEditorPanel(QFrame):
         self._accent, self._on_accent = accent, on_accent
         radius = 14
         self.setStyleSheet(
-            "QFrame#subtitleEditCard{background:transparent;border:0;}"
+            emphasis_qss("QFrame#subtitleEditCard{background:transparent;border:0;}"
             f"QFrame#captionCardFace{{background:{CREAM};border:0;border-top-left-radius:{radius}px;border-top-right-radius:{radius}px;}}"
             f"QFrame#captionCardFace[stripAbove=\"true\"]{{border-radius:0;border-bottom-left-radius:{radius}px;border-bottom-right-radius:{radius}px;}}"
             f"QFrame#captionCardStrip{{background:{CREAM};border:0;border-top:2px dashed {PERFORATION};border-bottom-left-radius:{radius}px;border-bottom-right-radius:{radius}px;}}"
@@ -1260,7 +1261,7 @@ class CaptionEditorPanel(QFrame):
             f"QMenu#captionMoreMenu{{background:{CREAM};color:{INK};border:1px solid {PERFORATION};border-radius:10px;padding:5px;}}"
             f"QMenu#captionMoreMenu::item{{padding:6px 16px 6px 10px;border-radius:7px;font-size:12px;}}"
             f"QMenu#captionMoreMenu::item:selected{{background:{CHIP};}}"
-            f"QMenu#captionMoreMenu::separator{{height:1px;background:{PERFORATION};margin:4px 6px;}}"
+            f"QMenu#captionMoreMenu::separator{{height:1px;background:{PERFORATION};margin:4px 6px;}}")
         )
         for button in (self.split_button, self.more_button, self.split_previous, self.split_next,
                        self.split_undo, self.split_redo):

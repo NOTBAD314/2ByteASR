@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import QMenu, QWidget, QWidgetAction
 
 from ..i18n import tr
+from ..design.typography import weighted_font
 
 SHADOW = 10
 RADIUS = 22
@@ -47,7 +48,7 @@ class _Row(QWidget):
     def _fonts(self):
         title = QFont(self.font())
         title.setPixelSize(14)
-        title.setWeight(QFont.Weight.DemiBold)
+        weighted_font(title, QFont.Weight.DemiBold)
         caption = QFont(self.font())
         caption.setPixelSize(12)
         return title, caption
@@ -151,7 +152,7 @@ class _Hello(QWidget):
         painter.drawPixmap(circle.topLeft().toPoint(), face)
         title = QFont(self.font())
         title.setPixelSize(15)
-        title.setWeight(QFont.Weight.Bold)
+        weighted_font(title, QFont.Weight.Bold)
         caption = QFont(self.font())
         caption.setPixelSize(12)
         x = circle.right() + 12

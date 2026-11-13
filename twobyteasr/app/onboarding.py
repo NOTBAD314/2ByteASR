@@ -8,8 +8,8 @@ key words in the accent colour, and one main button (2026-10-14). The facts are 
 
 Who sees what:
 * a fresh install (no projects, reports, models or saved keys when this
-  version first ran) gets the welcome with three directions until they
-  dismiss it or finish a first recognition;
+  version first ran) confirms a recognition plan and completes the tutorial;
+  an unfinished tutorial returns at the next opening;
 * everyone else only sees the card when something is missing (no usable
   recognition plan for this computer) — never a forced tutorial;
 * the help menu can always bring the guide back.
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from ..design.typography import emphasis_qss
 
 STATE_KEY = 'onboarding/state'
 STATE_VERSION = 1
@@ -131,6 +132,15 @@ def set_guide(on: bool) -> dict:
     state['guide'] = bool(on)
     save_state(state)
     return state
+
+
+def first_run_required(state: dict | None = None) -> bool:
+    """2026-11-13 (user: people who just downloaded keep asking whether there
+    is a tutorial): a fresh install must pick a way of working and go through
+    the tutorial once. Until the tutorial is finished it starts again at the
+    next launch, unless the person has already made subtitles."""
+    state = ensure_state() if state is None else state
+    return bool(state.get('fresh')) and not state.get('tour_done') and not state.get('first_task_done')
 
 
 def mark_first_task_done() -> None:
@@ -336,7 +346,7 @@ def build_card(parent=None):
             if key != self._theme_key:
                 theme = theme_definition(key)
                 self._theme_key, self._accent = key, theme.accent
-                self.setStyleSheet(card_qss(theme))
+                self.setStyleSheet(emphasis_qss(card_qss(theme)))
 
         def show_step(self, step: NextStep):
             self.step = step

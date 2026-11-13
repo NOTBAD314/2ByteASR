@@ -132,7 +132,7 @@ def test_switching_game_keeps_task_visible_and_button_semantic(dialog, monkeypat
     # 切到其它游戏：老 bug 是按钮无条件重亮且无任务可见——现在按钮仍可发起（排队语义）
     dialog.state["game"] = "原神"
     dialog._refresh_ai_update_buttons()
-    assert dialog.ai_full_button.text() == "AI 完整建库"
+    assert dialog.ai_full_button.text() == "从零整理一整个词库"
     assert dialog.ai_full_button.isEnabled()
     assert dialog.ai_update_button.isEnabled()
     # 任务栏不因切游戏消失
@@ -154,7 +154,7 @@ def test_pending_other_mode_button_semantic(dialog, monkeypatch):
     assert _spin(app, lambda: manager.get(task_id).status == "running")
     dialog._refresh_ai_update_buttons()
     # full 在跑：增量按钮保持原语义可点
-    assert dialog.ai_update_button.text() == "日常增量更新"
+    assert dialog.ai_update_button.text() == "补上最近版本的新词"
     assert dialog.ai_update_button.isEnabled()
     gate.set()
     assert _spin(app, lambda: manager.get(task_id).status == "finished")
@@ -171,7 +171,7 @@ def test_direct_complete_button_without_native_search_freezes_full_mode_and_targ
     dialog.state['game'] = '瓦罗兰特'
     dialog._refresh_ai_update_buttons()
     assert dialog.ai_full_button.menu() is None
-    assert dialog.ai_full_button.text() == 'AI 完整建库'
+    assert dialog.ai_full_button.text() == '从零整理一整个词库'
     QTest.mouseClick(dialog.ai_full_button, Qt.MouseButton.LeftButton)
     manager = dialog._ensure_task_manager()
     tasks = list(manager._tasks.values())

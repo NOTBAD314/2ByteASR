@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 
 from ..design.main_ui_dialogs import SpringDialog
 from ..i18n import bind_text, tr
+from ..design.typography import emphasis_qss
 
 # (animation, title, line) — short on purpose: the picture carries the meaning.
 HERO = ('ai_polish', '有了 API Key，AI 才能帮你改字幕', '翻译、AI 断句、AI 校对都要它：AI 会把句子改得通顺好看')
@@ -68,7 +69,7 @@ class ApiKeyExplainerDialog(SpringDialog):
         self.setObjectName('apiKeyExplainer')
         bind_text(self, 'API Key 是什么？', property='windowTitle')
         theme = theme_definition(theme_key())
-        self.setStyleSheet(explainer_qss(theme))
+        self.setStyleSheet(emphasis_qss(explainer_qss(theme)))
         # Three cards of ANIM_CARD width plus their margins, side by side.
         self.setMinimumWidth(3 * (self.ANIM_CARD.width() + 26) + 2 * 12 + 48)
         light = QColor(theme.app_background).lightness() > 128

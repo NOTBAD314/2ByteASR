@@ -13,8 +13,10 @@ meaning explicitly (2026-10-07 visual system):
 from __future__ import annotations
 
 from .typography import UI_FONT_STACK
+from .typography import emphasized
 
 
+@emphasized
 def build_semantic_qss(t) -> str:
     chip = "border-radius: 8px; padding: 3px 8px; font-size: 12px; font-weight: 500; border: 0;"
     pill = "border-radius: 9px; padding: 4px 10px; font-size: 12px; font-weight: 500; border: 0;"
