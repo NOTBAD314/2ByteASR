@@ -23,14 +23,14 @@
 
 ## 下载
 
-当前版本：**Windows 与 Apple Silicon Mac 1.0.0**（2026-11-12）。
+当前版本：**Windows 与 Apple Silicon Mac 1.0.1**（2026-11-13）。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 10 1809及以上，64位 | [2ByteASR-Setup-1.0.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.0/2ByteASR-Setup-1.0.0.exe)，约1164MB |
-| Apple Silicon Mac（M1及以上），macOS14及以上 | [2ByteASR-1.0.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.0/2ByteASR-1.0.0-macos-arm64-Setup.dmg)，约587MB；**实验版**，不支持Intel Mac |
+| Windows 10 1809及以上，64位 | [2ByteASR-Setup-1.0.1.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.1/2ByteASR-Setup-1.0.1.exe)，约1164MB |
+| Apple Silicon Mac（M1及以上），macOS14及以上 | [2ByteASR-1.0.1-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.0.1/2ByteASR-1.0.1-macos-arm64-Setup.dmg)，约587MB；**实验版**，不支持Intel Mac |
 
-先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新；Mac将应用拖入Applications覆盖。[本版变化、实测范围和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.0.0) · [GitCode大陆镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.0.0) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
+先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新；Mac将应用拖入Applications覆盖。[本版变化、实测范围和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.0.1) · [GitCode大陆镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.0.1) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
 
 Linux可使用[Docker 0.8.1版](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)，见[构建与运行](README.docker.md)。
 
