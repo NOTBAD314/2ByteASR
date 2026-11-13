@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QSizePolicy, QWidget
+from ..design.typography import weighted_font
 
 
 def _theme():
@@ -77,7 +78,7 @@ class StepBadge(QWidget):
         else:
             font = self.font()
             font.setPixelSize(_px(13))
-            font.setBold(True)
+            weighted_font(font, 700)
             painter.setFont(font)
             painter.setPen(QColor(ink))
             painter.drawText(circle, Qt.AlignmentFlag.AlignCenter, str(self.number))

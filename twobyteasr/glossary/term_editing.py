@@ -85,6 +85,29 @@ def edit_term(legacy, record, canonical=None, aliases=(), *, delete=False):
     games = payload.setdefault("games", {})
     before = copy.deepcopy(games.get(record.library_id))
     entry = games.setdefault(record.library_id, {"game": record.library_name, "mappings": []})
+    # The proofreading sidebar is another real editor of this same library.
+    # It must not create legacy rows alongside an authoritative concept.
+    matches = [(c, code) for c in entry.get('concepts', ()) for code, name in c.get('names', {}).items()
+               if name['name'] == record.canonical]
+    if matches:
+        if len(matches) != 1:
+            raise ValueError('存在同名概念或多个语言名称，请在术语库“名称与译名”中明确选择后编辑')
+        from .multilingual_terms import save_concept, delete_concept, name_record
+        concept, code = matches[0]
+        original = copy.deepcopy(concept)
+        if delete:
+            if len(concept['names']) == 1:
+                delete_concept(legacy, record.library_id, concept['id'])
+            else:
+                concept['names'].pop(code)
+                save_concept(legacy, record.library_id, concept, expected=original)
+        else:
+            old_name = concept['names'][code]
+            concept['names'][code] = name_record(**{**old_name, 'name': canonical, 'mishearings': aliases,
+                'confirmed': True, 'user_modified': True, 'confirmation_action': 'manual_save'})
+            save_concept(legacy, record.library_id, concept, expected=original)
+        after = legacy.load_learned_term_payload(strict=True)['games'][record.library_id]
+        return LibraryEdit(record.library_id, before, copy.deepcopy(after))
     mappings = [row for row in entry.get("mappings", ()) if row.get("to") != record.canonical]
     if record.builtin:
         hidden = set(entry.get("hidden_reference_terms", ())) | {record.canonical}

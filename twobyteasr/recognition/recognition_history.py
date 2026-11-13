@@ -54,6 +54,7 @@ from ..i18n import bind_text, tr
 from .recognition_outcome import (
     OUTCOME_VERSION, RecognitionOutcome, normalize_recognition_outcome, review_severity,
 )
+from ..design.typography import emphasis_qss, emphasized, weighted_font
 
 
 _SENSITIVE_KEY_PARTS = (
@@ -947,6 +948,7 @@ QFrame#historyDiagCta {{ background: {ai_soft}; border: 1px solid {ai_edge}; bor
 """
 
 
+@emphasized
 def build_history_page_qss(theme=None) -> str:
     from twobyteasr.design.qss_retheme import retheme_qss
     from twobyteasr.design.theme_manager import theme_key
@@ -1089,7 +1091,7 @@ class _RoundBadge(QLabel):
         painter.drawEllipse(rect)
         from ..design.typography import SOURCE_HAN_FAMILY_ALIASES
         font = QFont(SOURCE_HAN_FAMILY_ALIASES[0])
-        font.setWeight(QFont.Weight.Black)
+        weighted_font(font, QFont.Weight.Black)
         font.setPixelSize(max(10, int(side * 0.45)))
         painter.setFont(font)
         painter.setPen(QColor(ink))
@@ -1921,7 +1923,7 @@ class RecognitionHistoryDetail(QWidget):
         self.stage_table.setShowGrid(False)
         self.stage_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         from ..app.ui_zoom import set_sheet
-        set_sheet(self.stage_table, _stage_table_sheet())
+        set_sheet(self.stage_table, emphasis_qss(_stage_table_sheet()))
         status_labels = {
             "running": ("进行中", "historyResourcePill"),
             "interrupted": ("中断", "historyStageStatusWarn"),

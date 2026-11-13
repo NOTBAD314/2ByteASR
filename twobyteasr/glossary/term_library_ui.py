@@ -20,6 +20,7 @@ from ..design.ui_theme import GREEN, MUTED
 from ..design.ui_widgets import AnimatedButton
 from ..i18n import apply_ui_language, bind_text, current_language
 from .main_ui_glossary import TermLibraryDialog
+from ..design.typography import emphasized
 
 if TYPE_CHECKING:
     from ..app.ui import MainWindow
@@ -191,6 +192,7 @@ QLabel#termSyncStatus {{
 """
 
 
+@emphasized
 def build_term_library_page_qss(theme=None) -> str:
     from twobyteasr.design.qss_retheme import retheme_qss
 

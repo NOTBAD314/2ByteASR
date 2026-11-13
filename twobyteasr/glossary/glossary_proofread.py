@@ -35,13 +35,15 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer,
                             Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPen, QPolygonF, QUndoStack
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton,
-                               QScrollArea, QScrollBar, QSizePolicy, QVBoxLayout, QWidget)
+                               QScrollArea, QScrollBar, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate,
+                               QVBoxLayout, QWidget)
 
 import bisect
 
@@ -374,7 +376,7 @@ ClipPlayer = CuePlayer
 def _issue(kind, span, original, replacement, *, checked, reason="", hit=None, options=(), evidence=""):
     return dict(kind=kind, span=tuple(span), original=original, replacement=replacement, checked=bool(checked),
                 default=bool(checked), reason=reason, hit=hit, options=tuple(options), evidence=evidence,
-                stale=False, reviewed=False, ignored=False)
+                stale=False, reviewed=False, ignored=False, proposal_id=uuid4().hex)
 
 
 def issue_key(row_id, issue):
@@ -678,7 +680,8 @@ def issue_groups(row, terms=None, stutter=True):
     terms = terms or TermIndex()
     key = (row["base"], terms.version, bool(stutter),
            tuple((i["kind"], i["span"], i["original"], i["replacement"], i["checked"], i["stale"], i["reviewed"],
-                  i.get("default"), i.get("cleanup"), i.get("lexical")) for i in row["issues"]))
+                  i.get("default"), i.get("cleanup"), i.get("lexical"), i.get('_allow_punctuation'),
+                  i.get('content_evidence_verified')) for i in row["issues"]))
     cached = row.get("_groups")
     if cached is not None and cached[0] == key:
         return cached[1]
@@ -916,6 +919,13 @@ def wrap_units(units, width, top_metrics, below_metrics, pad, *, advances=None):
     return lines
 
 
+from ..design.ui_theme import contrast_ratio
+
+
+def _is_translation_row(row):
+    return getattr(row.get("target"), "layer", "") == "translation"
+
+
 class CaptionReviewList(QWidget):
     """Painted caption rows of varying height (one row per caption).
 
@@ -934,12 +944,21 @@ class CaptionReviewList(QWidget):
 
     2026-10-23 (redesign A): number · time · play · speaker share one line
     left of the caption, and captions of hidden speakers leave a thin band
-    ("旁白 2 条已隐藏 · 显示") where they would be (``gaps``)."""
+    ("旁白 2 条已隐藏 · 显示") where they would be (``gaps``).
 
-    BODY_PX = 19
-    BELOW_PX = 16
-    SMALL_PX = 14
-    LABEL_PX = 14
+    2026-11-13 (user, bilingual design A): with ``paired`` a caption's source
+    and its translation share one painted slot, source left and translation
+    right. ``visible`` stays the list of listed text rows; ``slots`` holds
+    the (left, right) row indexes actually painted. The meta column is the
+    select box · number · time over play · speaker, and each column carries
+    its own 已写回 / 还原 line. Proposals are drawn as rounded bubbles with
+    ✓ (adopt, again to undo) and ✕ (ignore) inside."""
+
+    # 2026-11-13 (user: the draft's sizes and weights): 17 / 14 / 13 / 12 px.
+    BODY_PX = 17
+    BELOW_PX = 14
+    SMALL_PX = 13
+    LABEL_PX = 12
 
     play_requested = Signal(str)
     edit_requested = Signal(str)
@@ -950,18 +969,24 @@ class CaptionReviewList(QWidget):
     revert_requested = Signal(str)
     context_requested = Signal(str, object, object)  # cue_id, target, global QPoint
     group_dismissed = Signal(str, int)  # cue_id, a proposal index of the group
+    group_ignored = Signal(str, int)  # ✕ in one bubble: only that group (2026-11-13)
     group_manual = Signal(str, int)
     hit_toggled = Signal(str, int)  # cue_id, start of the search hit
     reveal_requested = Signal(object)  # speaker keys of a hidden band
     selection_changed = Signal()
     row_toggled = Signal(str)
     rows_select_all = Signal()
+    columns_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("proofreadSuggestions")
         self.rows = []
         self.visible = []
+        self.paired = False
+        self.slots = []  # [(left row index | None, right row index | None)]
+        self._slot_by_key = {}
+        self._columns_seen = None
         # Hidden-speaker bands: slot -> dict(count, names, speakers) for the
         # captions hidden right before that listed row; len(visible) = after
         # the last one.
@@ -1021,7 +1046,12 @@ class CaptionReviewList(QWidget):
         self.body = QFont(base); self.body.setPixelSize(z(self.BODY_PX))
         self.below = QFont(base); self.below.setPixelSize(z(self.BELOW_PX)); self.below.setWeight(QFont.Weight.DemiBold)
         self.small = QFont(base); self.small.setPixelSize(z(self.SMALL_PX))
-        self.label_font = QFont(base); self.label_font.setPixelSize(z(self.LABEL_PX)); self.label_font.setWeight(QFont.Weight.DemiBold)
+        self.label_font = _heavy(QFont(base)); self.label_font.setPixelSize(z(self.LABEL_PX))
+        self.change_font = _heavy(QFont(base)); self.change_font.setPixelSize(z(13))
+        self.chip_font = _heavy(QFont(base)); self.chip_font.setPixelSize(z(11))
+        self.number_font = _heavy(QFont(base)); self.number_font.setPixelSize(z(12))
+        self.change_metrics = QFontMetricsF(self.change_font)
+        self.chip_metrics = QFontMetricsF(self.chip_font)
         self.mono = QFont(base)
         self.mono.setFamilies([p.strip().strip("'\"") for p in MONO_FONT_STACK.split(",")])
         self.mono.setPixelSize(z(self.SMALL_PX))
@@ -1034,22 +1064,26 @@ class CaptionReviewList(QWidget):
         self.PAD = z(8)
         self.LINE = int(self.body_metrics.height() + z(10))
         self.BELOW = int(self.below_metrics.height() + z(8))
-        self.ISSUE = int(max(self.small_metrics.height(), z(20)) + z(10))
+        # A proposal is a rounded bubble (2026-11-13): 30 px with 22 px ✓ / ✕ (the draft).
+        self.ISSUE = z(40)
         self.DETAIL = int(self.small_metrics.height() + z(8))
-        self.ACTION = z(36)
+        self.ACTION = z(38)
         self.MARK_PAD = z(3)
         self.time_w = self.mono_metrics.horizontalAdvance("00:00:00.0") + z(8)
-        self.play_d = z(26)
+        self.play_d = z(24)
         self.number_w = self.small_metrics.horizontalAdvance("#0000") + z(6)
         self.speaker_w = z(80)
+        self.box_d = z(18)
         self.META_LINE = int(max(self.small_metrics.height(), self.mono_metrics.height()) + z(10))
         self.GAP = z(30)
-        # 2026-10-23: number · time · play · speaker on one line, the
-        # caption's state (已写回 · 还原这句) under it only when there is one.
-        self.META_W = int(max(self.number_w + self.time_w + self.play_d + z(8) + self.speaker_w,
-                              self.small_metrics.horizontalAdvance("✓ " + tr("已写回") + "  " + tr("还原这句")) + z(8)))
+        # 2026-11-13: select box · number · time on the caption's first line,
+        # play · speaker under it; 已写回 · 还原这句 moved under each column.
+        self.META_W = int(max(self.box_d + z(8) + self.number_w + self.time_w,
+                              self.play_d + z(8) + self.speaker_w))
         self.TEXT_X = int(z(14) + self.META_W + z(16))
-        self.EDIT_W = int(self.label_metrics.horizontalAdvance(tr("修改")) + z(34))
+        self.COLUMN_GAP = z(30)
+        # A small ✎ square (2026-11-13): narrow columns rarely push it to its own line.
+        self.EDIT_W = z(22)
         self.editor.setFont(self.body)
         self._layout_cache.clear()
 
@@ -1073,7 +1107,7 @@ class CaptionReviewList(QWidget):
             return None
         top = self.offsets[slot]
         span = max(1, self.offsets[slot + 1] - top)
-        return self.rows[self.visible[slot]]["cue_id"], (self._offset - top) / span
+        return self.rows[self._primary(slot)]["cue_id"], (self._offset - top) / span
 
     def _restore_anchor(self, anchor):
         if anchor is None:
@@ -1092,17 +1126,132 @@ class CaptionReviewList(QWidget):
         self.set_visible(list(range(len(rows))) if visible is None else visible)
 
     def set_visible(self, visible, gaps=None, changed_ids=None):
-        previous = {index: self.heights[slot] - self._gap_before(slot) - self._gap_after(slot)
-                    for slot, index in enumerate(self.visible)} if changed_ids is not None else None
+        if changed_ids is not None and self.visible == list(visible) and getattr(self, '_raw_gaps', None) == dict(gaps or {}):
+            for cue_id in changed_ids:self.refresh_row(cue_id)
+            return
+        self._raw_gaps = dict(gaps or {})
         self.visible = list(visible)
-        self.gaps = dict(gaps or {})
-        self._layout_rows(previous, changed_ids)
+        self.slots, self.gaps = self._make_slots(self.visible, dict(gaps or {}))
+        self._slot_by_key = {}
+        for slot, members in enumerate(self.slots):
+            for index in members:
+                if index is not None:
+                    self._slot_by_key.setdefault(self.rows[index]["cue_id"], slot)
+        self._layout_rows(None, changed_ids)
+
+    def set_paired(self, paired):
+        """Source and translation side by side (2026-11-13); takes effect at
+        the next ``set_rows`` / ``set_visible``."""
+        paired = bool(paired)
+        if paired != self.paired:
+            self.paired = paired
+            self._layout_cache.clear()
+            self._height_cache.clear()
+
+    def _make_slots(self, visible, gaps):
+        """(left, right) row indexes per painted slot and the hidden-speaker
+        bands moved onto those slots. Unpaired: one listed row per slot.
+        Paired: a translation joins its source caption's slot; a listed row
+        brings its partner along as context even when the filter left it out."""
+        if not self.paired:
+            return [(index, None) for index in visible], gaps
+        rows = self.rows
+        sources, translations = {}, {}
+        for index, row in enumerate(rows):
+            if _is_translation_row(row):
+                owner = row.get("source_cue_id") or ""
+                if owner:
+                    translations.setdefault(owner, index)
+            else:
+                sources.setdefault(row["cue_id"], index)
+        slots, where, mapping = [], {}, {}
+        for position, index in enumerate(visible):
+            row = rows[index]
+            if index in where:
+                mapping[position] = where[index]
+                continue
+            if _is_translation_row(row):
+                owner = sources.get(row.get("source_cue_id") or "")
+                if owner is not None and owner in where and slots[where[owner]][1] is None:
+                    slot = where[owner]
+                    slots[slot] = (owner, index)
+                elif owner is not None and owner not in where and translations.get(rows[owner]["cue_id"]) == index:
+                    slot = len(slots)
+                    slots.append((owner, index))
+                    where[owner] = slot
+                else:
+                    slot = len(slots)
+                    slots.append((None, index))
+            else:
+                partner = translations.get(row["cue_id"])
+                if partner is not None and partner in where:
+                    partner = None  # already shown with another caption
+                slot = len(slots)
+                slots.append((index, partner))
+                if partner is not None:
+                    where[partner] = slot
+            where[index] = slot
+            mapping[position] = slot
+        moved = {}
+        for position, gap in gaps.items():
+            slot = mapping.get(position, len(slots))
+            if slot in moved:
+                merged = moved[slot]
+                merged["count"] += gap["count"]
+                for speaker, name in zip(gap["speakers"], gap["names"]):
+                    if speaker not in merged["speakers"]:
+                        merged["speakers"].append(speaker)
+                        merged["names"].append(name)
+            else:
+                moved[slot] = dict(gap, names=list(gap["names"]), speakers=list(gap["speakers"]))
+        return slots, moved
+
+    def _primary(self, slot):
+        left, right = self.slots[slot]
+        return left if left is not None else right
+
+    def _members(self, slot):
+        """[(row, column)] painted in ``slot``: column 0 is the source side."""
+        left, right = self.slots[slot]
+        out = []
+        if left is not None:
+            out.append((self.rows[left], self._row_column(self.rows[left])))
+        if right is not None:
+            out.append((self.rows[right], 1 if self.paired else 0))
+        return out
+
+    def _row_column(self, row):
+        return 1 if self.paired and _is_translation_row(row) else 0
+
+    def _column_width(self):
+        full = self._text_width()
+        if not self.paired:
+            return full
+        return max(100.0, (full - self.COLUMN_GAP) / 2)
+
+    def _column_x(self, column):
+        return float(self.TEXT_X) if not column else self.TEXT_X + self._column_width() + self.COLUMN_GAP
+
+    def _row_width(self, row):
+        return self._column_width()
+
+    def column_geometry(self):
+        """[(x, width)] of the text columns, for the header above the list."""
+        if not self.paired:
+            return [(float(self.TEXT_X), self._text_width())]
+        return [(self._column_x(0), self._column_width()), (self._column_x(1), self._column_width())]
+
+    def _row_at(self, slot, x):
+        members = self._members(slot)
+        if len(members) == 1 or not self.paired:
+            return members[0][0]
+        return members[1][0] if x >= self._column_x(1) - self.COLUMN_GAP / 2 else members[0][0]
 
     def _gap_before(self, slot):
         return self.GAP if slot in self.gaps else 0
 
     def _gap_after(self, slot):
-        return self.GAP if slot == len(self.visible) - 1 and len(self.visible) in self.gaps else 0
+        return self.GAP if slot == len(self.slots) - 1 and len(self.slots) in self.gaps else 0
 
     def row_by_id(self, cue_id):
         return next((row for row in self.rows if row["cue_id"] == cue_id), None)
@@ -1180,15 +1329,18 @@ class CaptionReviewList(QWidget):
 
     def _row_key(self, row, width=None):
         return (row["cue_id"], row["base"], row.get("origin"), self._zoom,
-                int(self._text_width() if width is None else width), self.stutter,
+                int(self._row_width(row) if width is None else width), self.stutter,
+                bool(row.get("review_retained") and not row.get("review_dismissed")),
                 self.terms.version, self.find.get("needle"), self.find.get("replace"),
                 tuple(sorted(start for cue, start in self.find.get("excluded") or () if cue == row["cue_id"])),
-                tuple(sorted(index for cue, index in self.expanded if cue == row["cue_id"])),
+                tuple(sorted(str(index) for cue, index in self.expanded if cue == row["cue_id"])),
+                row.get('group_first', True), row.get('group_last', True), row.get('translation_missing', False),
+                self.paired,
                 tuple((i["kind"], i["span"], i["checked"], i["stale"], i["reviewed"], i["replacement"],
                        i.get("default")) for i in row["issues"]))
 
     def _row_layout(self, row):
-        width = self._text_width()
+        width = self._row_width(row)
         key = self._row_key(row, width)
         cached = self._layout_cache.get(row["cue_id"])
         if cached is not None and cached[0] == key:
@@ -1207,16 +1359,23 @@ class CaptionReviewList(QWidget):
         entries = []
         for group in groups:
             entries.append(("group", group))
-            if (row["cue_id"], group["parts"][0]) in self.expanded:
+            if self._expansion_key(row, group['parts'][0]) in self.expanded or (row['cue_id'],group['parts'][0]) in self.expanded:
                 entries.extend(("detail", (group, line)) for line in self._detail_lines(row, group))
         for index, issue in self._visible_issues(row):
             if issue["kind"] == "suspect" and not issue["stale"]:
                 entries.append(("suspect", index))
+        if row.get('translation_missing') and not self.paired:
+            entries.append(('missing', None))
         layout = dict(lines=lines, heights=heights, edit_newline=edit_newline, last_end=last_end, entries=entries)
         self._layout_cache[row["cue_id"]] = (key, layout)
         while len(self._layout_cache) > 1024:
             self._layout_cache.pop(next(iter(self._layout_cache)))
         return layout
+
+    @staticmethod
+    def _expansion_key(row, index):
+        issue = row['issues'][index]
+        return row['cue_id'], issue.get('proposal_id', index)
 
     def _detail_lines(self, row, group):
         """Why a group is proposed, one line per source: shown under 详情."""
@@ -1259,14 +1418,21 @@ class CaptionReviewList(QWidget):
         return lines
 
     def _meta_lines(self, row):
-        lines = 2 + bool(row.get('layer_label'))
-        if row["base"] != row.get("origin", row["base"]):
-            lines += 1  # 已写回 · 还原这句
-        if any(issue["stale"] for issue in row["issues"]):
-            lines += 1
-        if row.get('review_retained') and not row.get('review_dismissed'):
-            lines += 1
-        return lines
+        """Lines of the meta column: box · number · time, then play · speaker."""
+        return 2
+
+    def _has_status(self, row):
+        """已写回 · 还原这句, expired proposals or 忽略本行建议 under the text."""
+        return bool(row["base"] != row.get("origin", row["base"]) or any(issue["stale"] for issue in row["issues"])
+                    or self._row_ignore_shown(row) or row.get('association_missing'))
+
+    def _row_ignore_shown(self, row):
+        """忽略本行建议 for a retained caption, unless its one open bubble's ✕
+        already does exactly that."""
+        if not row.get('review_retained') or row.get('review_dismissed'):
+            return False
+        open_groups = [g for g in self.groups(row) if g["state"] == "open" and not g["reviewed"]]
+        return len(open_groups) != 1
 
     def _row_height(self, row):
         layout = self._row_layout(row)
@@ -1274,8 +1440,10 @@ class CaptionReviewList(QWidget):
         text += sum(self.ISSUE if kind != "detail" else self.DETAIL for kind, _value in layout["entries"])
         if self._remember_action(row) is not None:
             text += self.ACTION
+        if self._has_status(row):
+            text += self.ISSUE
         meta = self.LINE + self.META_LINE * (self._meta_lines(row) - 1)
-        height = self.PAD + max(text, meta) + self.PAD
+        height = (self.PAD if row.get('group_first', True) else 0) + max(text, meta) + (self.PAD if row.get('group_last', True) else 0)
         self._height_cache[row['cue_id']] = ((self._metrics_key, self._row_key(row)), height)
         while len(self._height_cache) > 32768:
             self._height_cache.pop(next(iter(self._height_cache)))
@@ -1291,22 +1459,21 @@ class CaptionReviewList(QWidget):
         return pair
 
     def _slot_height(self, slot):
-        return self._gap_before(slot) + self._row_height(self.rows[self.visible[slot]]) + self._gap_after(slot)
+        return (self._gap_before(slot) + max(self._row_height(row) for row, _column in self._members(slot))
+                + self._gap_after(slot))
 
     def _layout_rows(self, previous=None, changed_ids=None):
-        metrics_key = getattr(self, "_metrics_key", None)
         self._metrics()
-        width = self._text_width()
-        if metrics_key != self._metrics_key or getattr(self, "_layout_width", None) != width:
-            previous = None
+        width = self._column_width()
         self._layout_width = width
-        changed_ids = set(changed_ids or ())
+        estimate = self.PAD * 2 + self.LINE + self.META_LINE
         heights = []
-        for slot, index in enumerate(self.visible):
-            row = self.rows[index]
-            cached = self._height_cache.get(row['cue_id'])
-            key = (self._metrics_key, self._row_key(row, width))
-            height = cached[1] if cached is not None and cached[0] == key else self.PAD*2 + self.LINE
+        for slot in range(len(self.slots)):
+            height = 0
+            for row, _column in self._members(slot):
+                cached = self._height_cache.get(row['cue_id'])
+                key = (self._metrics_key, self._row_key(row, width))
+                height = max(height, cached[1] if cached is not None and cached[0] == key else estimate)
             heights.append(self._gap_before(slot) + self._gap_after(slot) + height)
         self.heights = heights
         self.offsets = [0]
@@ -1314,17 +1481,21 @@ class CaptionReviewList(QWidget):
             self.offsets.append(self.offsets[-1] + height)
         self._sync_bar()
         self._measure_viewport_rows()
+        columns = (self.paired, tuple(round(x) for column in self.column_geometry() for x in column))
+        if columns != self._columns_seen:
+            self._columns_seen = columns
+            self.columns_changed.emit()
         self.update()
 
     def _measure_viewport_rows(self):
         """Shape only the rows about to be painted; keep the scroll anchor stable."""
-        if not self.visible:
+        if not self.slots:
             return
         anchor = self._top_anchor()
         first = max(0, self._slot_at(0))
         changes = {}
         end = self._offset + self.height() + self.LINE*3
-        for slot in range(first, min(len(self.visible), first+64)):
+        for slot in range(first, min(len(self.slots), first+64)):
             if self.offsets[slot] > end:
                 break
             value = self._slot_height(slot)
@@ -1393,13 +1564,10 @@ class CaptionReviewList(QWidget):
     def _slot_at(self, y):
         y = int(y) + self._offset
         slot = bisect.bisect_right(self.offsets, y) - 1
-        return slot if 0 <= slot < len(self.visible) else -1
+        return slot if 0 <= slot < len(self.slots) else -1
 
     def slot_of(self, cue_id):
-        for slot, index in enumerate(self.visible):
-            if self.rows[index]["cue_id"] == cue_id:
-                return slot
-        return -1
+        return self._slot_by_key.get(cue_id, -1)
 
     def ensure_visible(self, cue_id):
         slot = self.slot_of(cue_id)
@@ -1416,9 +1584,10 @@ class CaptionReviewList(QWidget):
         # made rows reflow when it appeared, and text ran under it.
         return self.width() - round(16 * (self._zoom or 1))
 
-    def _text_rect(self, slot):
+    def _text_rect(self, slot, row=None):
         y = self.offsets[slot] - self._offset + self._gap_before(slot) + self.PAD
-        return QRectF(self.TEXT_X, y, self._text_width(), self.LINE)
+        row = self.rows[self._primary(slot)] if row is None else row
+        return QRectF(self._column_x(self._row_column(row)), y, self._column_width(), self.LINE)
 
     # editing ----------------------------------------------------------
     def start_edit(self, cue_id, text, select=None):
@@ -1507,9 +1676,10 @@ class CaptionReviewList(QWidget):
         if slot < 0:
             self.cancel_edit()
             return
-        rect = self._text_rect(slot)
+        rect = self._text_rect(slot, self.row_by_id(self._editing))
         pad = round(6 * (self._zoom or 1))
-        self.editor.setGeometry(int(rect.left()) - pad, int(rect.top()), int(self._right() - rect.left()) - pad,
+        right = rect.right() + pad if self.paired else self._right()
+        self.editor.setGeometry(int(rect.left()) - pad, int(rect.top()), int(right - rect.left()) - pad,
                                 int(self.LINE))
 
     def _commit_edit(self):
@@ -1605,7 +1775,11 @@ class CaptionReviewList(QWidget):
         elif target and target[0] == "text":
             tip = tr("拖动鼠标选字，右键可批量替换相同文字；双击直接修改这句字幕")
         elif target and target[0] == "ignore":
+            tip = tr("不采用这一行的建议（不改字幕，只把它们标为已看过）")
+        elif target and target[0] == "ignore_group":
             tip = tr("不采用这组建议（不改字幕，只把它标为已看过）")
+        elif target and target[0] == "check":
+            tip = tr("采用这组建议（直接写回工程）；已采用时再点一下取消")
         elif target and target[0] == "detail":
             tip = tr("展开或收起这组建议的来源和理由")
         elif target and target[0] == "reveal":
@@ -1643,11 +1817,12 @@ class CaptionReviewList(QWidget):
             if target is not None and target[0] == "reveal":
                 self.reveal_requested.emit(tuple(self.gaps.get(target[2], {}).get("speakers", ())))
             return
-        row = self.rows[self.visible[slot]]
+        row = self._row_at(slot, event.position().x())
         self.current = row["cue_id"]
         self._press = None
         if target is None or target[0] == "rowcheck":
-            self.row_toggled.emit(row["cue_id"])
+            # One box per caption; the page toggles the caption's whole group.
+            self.row_toggled.emit(self.rows[self._primary(slot)]["cue_id"])
             self.setFocus()
             self.update()
             return
@@ -1664,11 +1839,13 @@ class CaptionReviewList(QWidget):
             elif action in {"check", "option"} and isinstance(index, int) and index >= 0:
                 self.issue_toggled.emit(cue_id, index)
             elif action == "detail" and isinstance(index, int):
-                key = (cue_id, index)
+                key = self._expansion_key(self.row_by_id(cue_id), index)
                 self.expanded.symmetric_difference_update({key})
                 self.refresh_row(cue_id)
             elif action == "ignore" and isinstance(index, int):
                 self.group_dismissed.emit(cue_id, index)
+            elif action == "ignore_group" and isinstance(index, int):
+                self.group_ignored.emit(cue_id, index)
             elif action == "manual" and isinstance(index, int):
                 self.group_manual.emit(cue_id, index)
                 return
@@ -1733,7 +1910,7 @@ class CaptionReviewList(QWidget):
         if slot >= 0 and self._in_band(slot, event.position().y()):
             return
         if slot >= 0 and (target is None or target[0] in {"text", "kind", "find"}):
-            cue_id = self.rows[self.visible[slot]]["cue_id"]
+            cue_id = target[1] if target is not None and target[1] else self._row_at(slot, event.position().x())["cue_id"]
             char = self._char_at(cue_id, event.position())
             # The editor opens with the caret where the caption was clicked.
             self._edit_caret = (cue_id, char) if char is not None else None
@@ -1743,7 +1920,7 @@ class CaptionReviewList(QWidget):
         slot = self._slot_at(event.pos().y())
         if slot < 0 or self._in_band(slot, event.pos().y()):
             return
-        row = self.rows[self.visible[slot]]
+        row = self._row_at(slot, event.pos().x())
         self.current = row["cue_id"]
         selection = self.selection()
         if selection is not None and selection[0] != row["cue_id"]:
@@ -1769,9 +1946,9 @@ class CaptionReviewList(QWidget):
             self.clear_selection()
             return
         slot = self.slot_of(self.current)
-        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self.visible:
-            slot = max(0, min(len(self.visible) - 1, slot + (1 if event.key() == Qt.Key.Key_Down else -1)))
-            self.current = self.rows[self.visible[slot]]["cue_id"]
+        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self.slots:
+            slot = max(0, min(len(self.slots) - 1, slot + (1 if event.key() == Qt.Key.Key_Down else -1)))
+            self.current = self.rows[self._primary(slot)]["cue_id"]
             self.ensure_visible(self.current)
             self.update()
             return
@@ -1802,7 +1979,7 @@ class CaptionReviewList(QWidget):
         self._painted_serial = self._serial
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         right = self._right()
-        if not self.visible:
+        if not self.slots:
             top = 0
             if 0 in self.gaps:
                 self._paint_band(painter, QRectF(0, 0, right, self.GAP), 0, theme)
@@ -1815,43 +1992,63 @@ class CaptionReviewList(QWidget):
             painter.end()
             return
         first = max(0, self._slot_at(0))
-        is_hot = lambda slot: slot == self._hover or self.rows[self.visible[slot]]["cue_id"] == self.current
-        for slot in range(first, len(self.visible)):
+        keys_of = lambda slot: {row["cue_id"] for row, _column in self._members(slot)}
+        is_hot = lambda slot: slot == self._hover or self.current in keys_of(slot)
+        for slot in range(first, len(self.slots)):
             top = self.offsets[slot] - self._offset
             if top > self.height():
                 break
-            row = self.rows[self.visible[slot]]
+            members = self._members(slot)
+            row = members[0][0]
+            keys = keys_of(slot)
             band = self._gap_before(slot)
             if band:
                 self._paint_band(painter, QRectF(0, top, right, band), slot, theme)
             after = self._gap_after(slot)
             if after:
                 self._paint_band(painter, QRectF(0, top + self.heights[slot] - after, right, after),
-                                 len(self.visible), theme)
+                                 len(self.slots), theme)
             top += band
             height = self.heights[slot] - band - after
             rect = QRectF(0, top, right, height)
             # Soft fills, no frames (2026-10-23): the current caption is tinted,
             # the hovered one lifted; a hairline only between plain rows.
-            if row["cue_id"] == self.current or slot == self._hover:
+            current = self.current in keys
+            # The draft: open proposals tint the row; the current caption gets
+            # a warm fill inside an accent outline; plain rows a hairline.
+            waiting = any(group["state"] == "open" and not group["reviewed"]
+                          for member, _column in members for group in self.groups(member))
+            if current:
+                painter.setPen(QPen(QColor(theme.accent), max(1.5, 2.0 * (self._zoom or 1))))
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.09)))
+                painter.drawRoundedRect(rect.adjusted(z(5), z(2), -z(5), -z(2)), z(14), z(14))
+            elif slot == self._hover or waiting:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.08) if row["cue_id"] == self.current
-                                        else blend_hex(theme.surface, theme.text, 0.035)))
-                painter.drawRoundedRect(rect.adjusted(z(2), 0, -z(2), 0), z(10), z(10))
-            elif slot and not band and not is_hot(slot - 1):
-                painter.fillRect(QRectF(z(10), top, right - z(20), 1), QColor(blend_hex(theme.surface, theme.text, 0.08)))
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.035) if slot == self._hover
+                                        else blend_hex(theme.surface, theme.warning, 0.03)))
+                painter.drawRect(rect)
+            if not current and slot and not band and not (self.current in keys_of(slot - 1)):
+                painter.fillRect(QRectF(0, top, right, 1), QColor(blend_hex(theme.surface, theme.text, 0.075)))
             y = top + self.PAD
             line_h = self.LINE
-            # meta: number · time · play · speaker on the caption's first line
+            # meta: select box · number · time, then play · speaker (2026-11-13)
             x = z(14)
-            painter.setFont(self.small)
-            painter.setPen(QColor(theme.text_muted))
-            painter.drawText(QRectF(x, y, self.number_w, line_h), int(Qt.AlignmentFlag.AlignVCenter), row["number"])
+            box = self._box(painter, x, QRectF(x, y, self.META_W, line_h),
+                            "adopted" if keys & set(self.selected_rows) else "open", theme)
+            nx = box.right() + z(8)
+            # The box and its number select the caption.
+            self._hit_boxes.append((QRectF(box.left() - z(5), y, nx + self.number_w - box.left() + z(5), line_h),
+                                    "rowcheck", row["cue_id"], -1))
+            painter.setFont(self.number_font)
+            painter.setPen(QColor(theme.accent_text if current else theme.text_secondary))
+            painter.drawText(QRectF(nx, y, self.number_w, line_h), int(Qt.AlignmentFlag.AlignVCenter), row["number"])
             painter.setFont(self.mono)
-            painter.drawText(QRectF(x + self.number_w, y, self.time_w, line_h), int(Qt.AlignmentFlag.AlignVCenter),
+            painter.setPen(QColor(legible(theme.text_muted, theme.surface, theme, 4.5)))
+            painter.drawText(QRectF(nx + self.number_w, y, self.time_w, line_h), int(Qt.AlignmentFlag.AlignVCenter),
                              row["time"])
-            play = QRectF(x + self.number_w + self.time_w, y + (line_h - self.play_d) / 2, self.play_d, self.play_d)
-            state = self.playing[1] if self.playing[0] == row["cue_id"] else ""
+            meta_y = y + line_h
+            play = QRectF(x, meta_y + (self.META_LINE - self.play_d) / 2, self.play_d, self.play_d)
+            state = self.playing[1] if self.playing[0] in keys else ""
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(theme.accent if state else blend_hex(theme.surface, theme.accent_text, 0.16)))
             painter.drawEllipse(play)
@@ -1870,134 +2067,170 @@ class CaptionReviewList(QWidget):
             self._hit_boxes.append((play.adjusted(-4, -4, 4, 4), "play", row["cue_id"], -1))
             name, color = row["speaker"]
             if name:
-                self._speaker_pill(painter, QPointF(play.right() + z(8), y + line_h / 2), name, color, theme)
-            meta_y = y + line_h
-            painter.setFont(self.small)
-            if row.get('layer_label'):
-                painter.setPen(QColor(theme.text_secondary))
-                painter.drawText(QRectF(x, meta_y, self.META_W, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter),
-                                 self.small_metrics.elidedText(row['layer_label'], Qt.ElideRight, self.META_W))
-                meta_y += self.META_LINE
-            box = self._box(painter, x, QRectF(x, meta_y, self.META_W, self.META_LINE),
-                            "adopted" if row["cue_id"] in self.selected_rows else "open", theme)
-            painter.setPen(QColor(theme.text_secondary))
-            painter.drawText(QRectF(box.right()+z(6), meta_y, self.META_W-z(24), self.META_LINE),
-                             int(Qt.AlignmentFlag.AlignVCenter), tr("选择本行"))
-            self._hit_boxes.append((QRectF(x, meta_y, self.META_W, self.META_LINE), "rowcheck", row["cue_id"], -1))
-            meta_y += self.META_LINE
-            if row.get('review_retained') and not row.get('review_dismissed'):
-                self._text_button(painter, x, QRectF(x,meta_y,self.META_W,self.META_LINE),
-                                  tr('忽略本行建议'), 'ignore', row, -1, theme)
-                meta_y += self.META_LINE
-            if row["base"] != row.get("origin", row["base"]):
-                written = "✓ " + tr("已写回")
-                painter.setPen(QColor(colors["applied_line"]))
-                written_w = self.small_metrics.horizontalAdvance(written) + z(10)
-                painter.drawText(QRectF(x, meta_y, written_w, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter), written)
-                revert = tr("还原这句")
-                box = QRectF(x + written_w, meta_y + z(3), self.small_metrics.horizontalAdvance(revert) + z(14),
-                             self.META_LINE - z(6))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.06)))
-                painter.drawRoundedRect(box, z(7), z(7))
-                painter.setPen(QColor(theme.text_secondary))
-                painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), revert)
-                self._hit_boxes.append((box, "revert", row["cue_id"], -1))
-                meta_y += self.META_LINE
-            stale = sum(issue["stale"] for issue in row["issues"])
-            if stale:
-                painter.setPen(QColor(legible(theme.warning, theme.surface, theme)))
-                painter.drawText(QRectF(x, meta_y, self.META_W, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter),
-                                 self.small_metrics.elidedText(tr("{count} 条建议已过期", count=stale),
-                                                               Qt.TextElideMode.ElideRight, self.META_W))
-            # the caption, wrapped, with marks
-            layout = self._row_layout(row)
-            line_y = y
-            selection = self.selection()
-            selected = (selection[1], selection[2]) if selection is not None and selection[0] == row["cue_id"] else None
-            char_lines = []
-            for line, line_height in zip(layout["lines"], layout["heights"]):
-                boxes = []
-                for unit in line:
-                    self._paint_unit(painter, unit, self.TEXT_X + unit["x"], line_y, theme, colors, row)
-                    # Where each character of the caption itself was drawn
-                    # (never the proposal under it): selection and hit tests.
-                    left = self.TEXT_X + unit["x"] + (0.0 if unit["mark"] is None
-                                                     else (unit["w"] - unit["top_w"]) / 2)
-                    for offset in range(len(unit["top"])):
-                        a = left + self.body_metrics.horizontalAdvance(unit["top"][:offset])
-                        b = left + self.body_metrics.horizontalAdvance(unit["top"][:offset + 1])
-                        boxes.append((a, b, unit["start"] + offset))
-                if selected is not None:
-                    chosen = [(a, b, index) for a, b, index in boxes if selected[0] <= index < selected[1]]
-                    if chosen:
-                        # A solid selection with the characters redrawn on it,
-                        # as in an editor: unmistakable over any mark or hit.
-                        fill = QColor(blend_hex(theme.surface, theme.accent, 0.78))
-                        painter.setPen(Qt.PenStyle.NoPen)
-                        painter.setBrush(fill)
-                        painter.drawRoundedRect(QRectF(chosen[0][0] - z(1), line_y + z(3),
-                                                       chosen[-1][1] - chosen[0][0] + z(2), self.LINE - z(6)), z(3), z(3))
-                        painter.setFont(self.body)
-                        painter.setPen(QColor(legible(theme.text_on_accent, fill.name(), theme, 4.5)))
-                        for a, b, index in chosen:
-                            painter.drawText(QRectF(a, line_y, b - a + z(4), self.LINE),
-                                             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
-                                             row["base"][index])
-                char_lines.append((line_y, line_y + self.LINE, line_y + line_height, boxes))
-                if line:
-                    line_box = QRectF(self.TEXT_X, line_y, line[-1]["x"] + line[-1]["w"], self.LINE)
-                    self._hit_boxes.insert(0, (line_box, "text", row["cue_id"], -1))
-                line_y += line_height
-            self._chars[row["cue_id"]] = char_lines
-            self._painted_text[row["cue_id"]] = QRectF(self.TEXT_X, y, self._text_width(), self.LINE)
-            # 修改 sits right after the sentence it edits (2026-10-10, user).
-            edit_text = tr("修改")
-            edit_h = z(26)
-            if layout["edit_newline"]:
-                edit_x, edit_y = self.TEXT_X, line_y - self.LINE + (self.LINE - edit_h) / 2
-            else:
-                last_height = layout["heights"][len(layout["lines"]) - 1] if layout["lines"] else self.LINE
-                edit_x = self.TEXT_X + layout["last_end"] + z(12)
-                edit_y = line_y - last_height + (self.LINE - edit_h) / 2
-            edit = QRectF(edit_x, edit_y, self.EDIT_W, edit_h)
-            hot = is_hot(slot)
-            painter.setFont(self.label_font)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14) if hot
-                                    else blend_hex(theme.surface, theme.text, 0.05)))
-            painter.drawRoundedRect(edit, z(8), z(8))
-            painter.setPen(QColor(theme.accent_text if hot else theme.text_muted))
-            painter.drawText(edit.adjusted(z(8), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), "✎")
-            painter.drawText(edit.adjusted(z(24), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), edit_text)
-            self._hit_boxes.append((edit, "edit", row["cue_id"], -1))
-            y = line_y if line_y > y else y + self.LINE
-            for kind, value in layout["entries"]:
-                height = self.DETAIL if kind == "detail" else self.ISSUE
-                rect = QRectF(self.TEXT_X, y, right - self.TEXT_X - z(16), height)
-                if kind == "group":
-                    self._draw_group(painter, row, value, rect, theme, colors)
-                elif kind == "detail":
-                    self._draw_detail(painter, row, value[0], value[1], rect, theme)
-                else:
-                    self._draw_issue(painter, row, value, row["issues"][value], rect, theme, colors)
-                y += height
-            pair = self._remember_action(row)
-            if pair is not None:
-                target = self.remember_targets.get("name") or ""
-                text = (tr("＋ 记住「{old} → {new}」到「{library}」", old=pair[0], new=pair[1], library=target)
-                        if target else tr("＋ 记住「{old} → {new}」到词库…", old=pair[0], new=pair[1]))
-                width = self.label_metrics.horizontalAdvance(text) + z(24)
-                box = QRectF(self.TEXT_X, y + z(4), min(width, right - self.TEXT_X - z(16)), z(28))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14)))
-                painter.drawRoundedRect(box, z(9), z(9))
-                painter.setFont(self.label_font)
-                painter.setPen(QColor(theme.accent_text))
-                painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter),
-                                 self.label_metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, box.width() - z(12)))
-                self._hit_boxes.append((box, "remember", row["cue_id"], -1))
+                self._speaker_pill(painter, QPointF(play.right() + z(8), meta_y + self.META_LINE / 2), name, color, theme)
+            if self.paired:
+                divider = self._column_x(1) - self.COLUMN_GAP / 2
+                painter.fillRect(QRectF(divider, y + z(4), 1, max(0.0, height - 2 * self.PAD - z(8))),
+                                 QColor(blend_hex(theme.surface, theme.text, 0.07)))
+            for member, column in members:
+                self._paint_row_text(painter, member, column, y, slot, theme, colors, z)
+            if self.paired and len(members) == 1 and members[0][1] == 0 and row.get('translation_missing'):
+                painter.setFont(self.small)
+                painter.setPen(QColor(legible(theme.text_muted, theme.surface, theme, 4.5)))
+                painter.drawText(QRectF(self._column_x(1), y, self._column_width(), self.LINE),
+                                 int(Qt.AlignmentFlag.AlignVCenter), tr('暂无对应译文'))
         painter.end()
+
+    def _paint_row_text(self, painter, row, column, y, slot, theme, colors, z):
+        """One text column of a slot: the caption with its marks, 修改, the
+        proposal bubbles, 记住到词库 and the 已写回 line."""
+        x0 = self._column_x(column)
+        width = self._column_width()
+        layout = self._row_layout(row)
+        line_y = y
+        selection = self.selection()
+        selected = (selection[1], selection[2]) if selection is not None and selection[0] == row["cue_id"] else None
+        char_lines = []
+        for line, line_height in zip(layout["lines"], layout["heights"]):
+            boxes = []
+            for unit in line:
+                self._paint_unit(painter, unit, x0 + unit["x"], line_y, theme, colors, row)
+                # Where each character of the caption itself was drawn
+                # (never the proposal under it): selection and hit tests.
+                left = x0 + unit["x"] + (0.0 if unit["mark"] is None else (unit["w"] - unit["top_w"]) / 2)
+                for offset in range(len(unit["top"])):
+                    a = left + self.body_metrics.horizontalAdvance(unit["top"][:offset])
+                    b = left + self.body_metrics.horizontalAdvance(unit["top"][:offset + 1])
+                    boxes.append((a, b, unit["start"] + offset))
+            if selected is not None:
+                chosen = [(a, b, index) for a, b, index in boxes if selected[0] <= index < selected[1]]
+                if chosen:
+                    # A solid selection with the characters redrawn on it,
+                    # as in an editor: unmistakable over any mark or hit.
+                    fill = QColor(blend_hex(theme.surface, theme.accent, 0.78))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(fill)
+                    painter.drawRoundedRect(QRectF(chosen[0][0] - z(1), line_y + z(3),
+                                                   chosen[-1][1] - chosen[0][0] + z(2), self.LINE - z(6)), z(3), z(3))
+                    painter.setFont(self.body)
+                    painter.setPen(QColor(legible(theme.text_on_accent, fill.name(), theme, 4.5)))
+                    for a, b, index in chosen:
+                        painter.drawText(QRectF(a, line_y, b - a + z(4), self.LINE),
+                                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                                         row["base"][index])
+            char_lines.append((line_y, line_y + self.LINE, line_y + line_height, boxes))
+            if line:
+                line_box = QRectF(x0, line_y, line[-1]["x"] + line[-1]["w"], self.LINE)
+                self._hit_boxes.insert(0, (line_box, "text", row["cue_id"], -1))
+            line_y += line_height
+        self._chars[row["cue_id"]] = char_lines
+        self._painted_text[row["cue_id"]] = QRectF(x0, y, width, self.LINE)
+        # 修改 sits right after the sentence it edits (2026-10-10, user).
+        edit_h = z(22)
+        if layout["edit_newline"]:
+            # Its own line under the text (the layout already counted it).
+            edit_x, edit_y = x0, line_y + (self.LINE - edit_h) / 2
+            line_y += self.LINE
+        else:
+            last_height = layout["heights"][len(layout["lines"]) - 1] if layout["lines"] else self.LINE
+            edit_x = x0 + layout["last_end"] + z(12)
+            edit_y = line_y - last_height + (self.LINE - edit_h) / 2
+        edit = QRectF(edit_x, edit_y, edit_h, edit_h)
+        hot = slot == self._hover or row["cue_id"] == self.current
+        self._edit_button(painter, edit, hot, theme)
+        self._hit_boxes.append((edit.adjusted(-z(2), -z(2), z(2), z(2)), "edit", row["cue_id"], -1))
+        y = line_y if line_y > y else y + self.LINE
+        for kind, value in layout["entries"]:
+            height = self.DETAIL if kind == "detail" else self.ISSUE
+            rect = QRectF(x0, y, width, height)
+            if kind == "group":
+                self._draw_group(painter, row, value, rect, theme, colors)
+            elif kind == "detail":
+                self._draw_detail(painter, row, value[0], value[1], rect, theme)
+            elif kind == "missing":
+                painter.setFont(self.small)
+                painter.setPen(QColor(legible(theme.text_muted, theme.surface, theme, 4.5)))
+                painter.drawText(rect, int(Qt.AlignmentFlag.AlignVCenter), tr('暂无对应译文'))
+            else:
+                self._draw_issue(painter, row, value, row["issues"][value], rect, theme, colors)
+            y += height
+        pair = self._remember_action(row)
+        if pair is not None:
+            target = self.remember_targets.get("name") or ""
+            text = (tr("＋ 记住「{old} → {new}」到「{library}」", old=pair[0], new=pair[1], library=target)
+                    if target else tr("＋ 记住「{old} → {new}」到词库…", old=pair[0], new=pair[1]))
+            text_w = self.label_metrics.horizontalAdvance(text) + z(28)
+            box = QRectF(x0, y + z(5), min(text_w, width), self.ACTION - z(10))
+            painter.setPen(QPen(QColor(blend_hex(theme.surface, theme.accent, 0.40)), max(1.0, 1.2 * (self._zoom or 1)),
+                                Qt.PenStyle.DashLine))
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.10)))
+            painter.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+            painter.setFont(self.label_font)
+            painter.setPen(QColor(theme.accent_text))
+            painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter),
+                             self.label_metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, box.width() - z(16)))
+            self._hit_boxes.append((box, "remember", row["cue_id"], -1))
+            y += self.ACTION
+        if self._has_status(row):
+            self._draw_status(painter, row, QRectF(x0, y, width, self.ISSUE), theme, colors)
+
+    def _edit_button(self, painter, box, hot, theme):
+        """修改 as in the draft: a small rounded square, hairline border, pencil."""
+        z = lambda value: max(1, round(value * (self._zoom or 1)))
+        line = max(1.0, 1.4 * (self._zoom or 1))
+        painter.setPen(QPen(QColor(blend_hex(theme.surface, theme.accent, 0.55) if hot
+                                   else blend_hex(theme.surface, theme.text, 0.16)), line))
+        painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.10) if hot
+                                else (theme.surface_elevated if theme.is_light else theme.surface)))
+        painter.drawRoundedRect(box.adjusted(line / 2, line / 2, -line / 2, -line / 2), z(8), z(8))
+        ink = QColor(theme.accent_text if hot else legible(theme.text_secondary, theme.surface, theme, 4.5))
+        pen = QPen(ink, max(1.3, 1.7 * (self._zoom or 1)))
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        k = box.width() / 26
+        ox, oy = box.left() + 6 * k, box.top() + 6 * k
+        painter.drawPolygon(QPolygonF([QPointF(ox + 0 * k, oy + 14 * k), QPointF(ox + 3.5 * k, oy + 14 * k),
+                                       QPointF(ox + 13 * k, oy + 4.5 * k), QPointF(ox + 9.5 * k, oy + 1 * k),
+                                       QPointF(ox + 0 * k, oy + 10.5 * k)]))
+
+    def _draw_status(self, painter, row, rect, theme, colors):
+        """✓ 已写回 · 还原这句, expired proposals and 忽略本行建议 under the text."""
+        z = lambda value: max(1, round(value * (self._zoom or 1)))
+        x = rect.left()
+        painter.setFont(self.small)
+        if row.get('association_missing'):
+            text = tr('未关联原文')
+            text_w = self.small_metrics.horizontalAdvance(text) + z(12)
+            painter.setPen(QColor(legible(theme.text_muted, theme.surface, theme, 4.5)))
+            painter.drawText(QRectF(x, rect.top(), text_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), text)
+            x += text_w
+        if row["base"] != row.get("origin", row["base"]):
+            written = "✓ " + tr("已写回")
+            painter.setPen(QColor(colors["applied_line"]))
+            written_w = self.small_metrics.horizontalAdvance(written) + z(8)
+            painter.drawText(QRectF(x, rect.top(), written_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), written)
+            x += written_w
+            revert = tr("还原这句")
+            box = QRectF(x, rect.top() + z(5), self.small_metrics.horizontalAdvance(revert) + z(18), rect.height() - z(10))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.06)))
+            painter.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+            painter.setPen(QColor(theme.text_secondary))
+            painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), revert)
+            self._hit_boxes.append((box, "revert", row["cue_id"], -1))
+            x = box.right() + z(12)
+        stale = sum(issue["stale"] for issue in row["issues"])
+        if stale:
+            text = tr("{count} 条建议已过期", count=stale)
+            text_w = min(self.small_metrics.horizontalAdvance(text) + z(10), max(0.0, rect.right() - x))
+            painter.setPen(QColor(legible(theme.warning, theme.surface, theme)))
+            painter.drawText(QRectF(x, rect.top(), text_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter),
+                             self.small_metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_w))
+            x += text_w + z(8)
+        if self._row_ignore_shown(row):
+            self._text_button(painter, x, rect, tr('忽略本行建议'), 'ignore', row, -1, theme)
 
     def _speaker_pill(self, painter, anchor, name, color, theme):
         """A soft pill with the speaker's colour dot, vertically centred on ``anchor``."""
@@ -2058,7 +2291,7 @@ class CaptionReviewList(QWidget):
         top_box = QRectF(x, y, unit["w"], self.LINE)
         if mark is None:
             painter.setFont(self.body)
-            painter.setPen(QColor(theme.text))
+            painter.setPen(QColor(legible(theme.text_secondary, theme.surface, theme, 7.0) if row.get('group_secondary') else theme.text))
             painter.drawText(top_box, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), unit["top"])
             return
         style = mark["style"]
@@ -2218,26 +2451,30 @@ class CaptionReviewList(QWidget):
 
     def _chip(self, painter, x, rect, label, color, theme):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
-        painter.setFont(self.label_font)
-        chip_w = self.label_metrics.horizontalAdvance(label) + z(18)
+        painter.setFont(self.chip_font)
+        chip_w = self.chip_metrics.horizontalAdvance(label) + z(18)
         chip_h = z(22)
         chip = QRectF(x, rect.top() + (rect.height() - chip_h) / 2, chip_w, chip_h)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(blend_hex(theme.surface, color.name(), 0.20)))
-        painter.drawRoundedRect(chip, chip_h / 2 - 1, chip_h / 2 - 1)
-        painter.setPen(QColor(legible(blend_hex(color.name(), theme.text, 0.25), blend_hex(theme.surface, color.name(), 0.20), theme)))
+        painter.setBrush(QColor(blend_hex(theme.surface, color.name(), 0.22)))
+        painter.drawRoundedRect(chip, chip_h / 2, chip_h / 2)
+        painter.setPen(QColor(legible(blend_hex(color.name(), theme.text, 0.30), blend_hex(theme.surface, color.name(), 0.22), theme, 4.5)))
         painter.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), label)
         return chip
 
     def _box(self, painter, x, rect, state, theme):
         """Adopt box: empty, ticked (adopted) or a dash (partly adopted)."""
         z = lambda value: max(1, round(value * (self._zoom or 1)))
-        box_d = z(18)
+        box_d = z(16)
         box = QRectF(x, rect.top() + (rect.height() - box_d) / 2, box_d, box_d)
         filled = state in {"adopted", "partial"}
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.accent if filled else blend_hex(theme.surface, theme.text, 0.13)))
-        painter.drawRoundedRect(box, z(5), z(5))
+        if filled:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.accent))
+        else:
+            painter.setPen(QPen(QColor(blend_hex(theme.surface, theme.text, 0.32)), max(1.0, 1.4 * (self._zoom or 1))))
+            painter.setBrush(QColor(theme.surface_elevated if theme.is_light else theme.surface))
+        painter.drawRoundedRect(box, z(4), z(4))
         pen = QPen(QColor(theme.text_on_accent)); pen.setWidthF(2.0 * (self._zoom or 1)); painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         k = box_d / 18
@@ -2250,11 +2487,11 @@ class CaptionReviewList(QWidget):
 
     def _text_button(self, painter, x, rect, text, action, row, index, theme, *, accent=False):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
-        painter.setFont(self.small)
-        width = self.small_metrics.horizontalAdvance(text) + z(18)
+        painter.setFont(self.label_font)
+        width = self.label_metrics.horizontalAdvance(text) + z(18)
         if x + width > rect.right():
             return x
-        box = QRectF(x, rect.top() + z(5), width, rect.height() - z(10))
+        box = QRectF(x, rect.top() + (rect.height() - z(26)) / 2, width, z(26))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14) if accent
                                 else blend_hex(theme.surface, theme.text, 0.06)))
@@ -2264,49 +2501,80 @@ class CaptionReviewList(QWidget):
         self._hit_boxes.append((box, action, row["cue_id"], index))
         return x + width + z(6)
 
+    def _round_button(self, painter, box, kind, fill, ink):
+        """A ✓ / ✕ circle inside a proposal bubble."""
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawEllipse(box)
+        pen = QPen(QColor(ink))
+        pen.setWidthF(max(1.6, 2.2 * (self._zoom or 1)))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        k = box.width() / 22
+        c = box.center()
+        if kind == "check":
+            painter.drawPolyline(QPolygonF([QPointF(c.x() - 5 * k, c.y()), QPointF(c.x() - 1.5 * k, c.y() + 3.5 * k),
+                                            QPointF(c.x() + 5.5 * k, c.y() - 4 * k)]))
+        else:
+            painter.drawLine(QPointF(c.x() - 3.5 * k, c.y() - 3.5 * k), QPointF(c.x() + 3.5 * k, c.y() + 3.5 * k))
+            painter.drawLine(QPointF(c.x() + 3.5 * k, c.y() - 3.5 * k), QPointF(c.x() - 3.5 * k, c.y() + 3.5 * k))
+
     def _draw_group(self, painter, row, group, rect, theme, colors):
-        """One line per decision: box, compact source, the real change, state,
-        详情 and 忽略. Reasons stay under 详情 (2026-10-10, user)."""
+        """One rounded bubble per decision (2026-11-13, user: design B's
+        bubbles in design A): source chip, the real change, its state, ✓
+        adopt (again to undo) and ✕ ignore, with 详情 beside the bubble.
+        Reasons stay under 详情 (2026-10-10, user)."""
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         issues = [row["issues"][index] for index in group["parts"]]
         first = group["parts"][0]
-        x = rect.left()
-        if not group["options"]:
-            box = self._box(painter, x, rect, group["state"], theme)
-            self._hit_boxes.append((box.adjusted(-4, -4, z(8), 4), "check", row["cue_id"], first))
-        x += z(18) + z(10)
         kinds = list(dict.fromkeys(issue["kind"] for issue in issues))
         label = (" · ".join(tr(KIND_LABELS.get(kind, kind)) for kind in kinds) if len(kinds) <= 2
                  else tr("{count} 个来源", count=len(kinds)))
-        chip = self._chip(painter, x, rect, label, QColor(self._kind_color(theme, kinds[0])), theme)
-        self._hit_boxes.append((chip, "kind", row["cue_id"], first))
-        x = chip.right() + z(10)
-        painter.setFont(self.small)
-        metrics = self.small_metrics
         reviewed = group["reviewed"] and group["state"] == "open"
-        painter.setPen(QColor(theme.text if not reviewed else theme.text_muted))
+        adopted = group["state"] in {"adopted", "partial"}
+        if group["state"] == "adopted":
+            status, tone = tr("已采用"), colors["applied_line"]
+        elif group["state"] == "partial":
+            status, tone = tr("部分已写回"), colors["applied_line"]
+        elif reviewed:
+            status, tone = tr("已忽略"), legible(theme.text_muted, theme.surface, theme, 4.5)
+        elif group["pending"]:
+            status, tone = "● " + tr("待确认"), legible(theme.warning, theme.surface, theme)
+        elif group["recommended"]:
+            status, tone = tr("推荐"), theme.accent_text
+        else:
+            status, tone = "", theme.text_muted
+        success = getattr(theme, "success", theme.accent)
+        # The draft (B): a warm sand bubble with a clear edge, 30 px tall,
+        # 22 px circles, Heavy text — noticeable at first glance.
+        if adopted:
+            fill = blend_hex(theme.surface, success, 0.16)
+        elif group["pending"] and not reviewed:
+            fill = blend_hex(theme.surface, theme.warning, 0.16)
+        else:
+            fill = blend_hex(theme.surface, theme.accent, 0.15)
+        bubble_h = z(30)
+        top = rect.top() + (rect.height() - bubble_h) / 2
+        circle = z(22)
+        metrics = self.change_metrics
+        chip_w = self.chip_metrics.horizontalAdvance(label) + z(18)
+        status_w = self.label_metrics.horizontalAdvance(status) + z(8) if status else 0
+        can_check = not group["options"]
+        can_ignore = not adopted and not reviewed
+        buttons_w = (circle + z(5)) * (int(can_check) + int(can_ignore))
+        opened = self._expansion_key(row, first) in self.expanded or (row["cue_id"], first) in self.expanded
+        detail = tr("收起") if opened else tr("详情")
+        detail_w = self.label_metrics.horizontalAdvance(detail) + z(18)
         if group["options"]:
             a, b = group["span"]
             stem = group["before"][a:b] if group["before"][a:b] else issues[0]["original"]
             prefix = f"{stem} →"
-            width = metrics.horizontalAdvance(prefix) + z(8)
-            painter.drawText(QRectF(x, rect.top(), width, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), prefix)
-            x += width
-            for index, issue in zip(group["parts"], issues):
-                text = issue["replacement"] or tr("删去")
-                pill_w = metrics.horizontalAdvance(text) + z(16)
-                if x + pill_w > rect.right():
-                    break
-                pill = QRectF(x, rect.top() + z(4), pill_w, rect.height() - z(8))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.24) if issue["checked"]
-                                        else blend_hex(theme.surface, theme.text, 0.07)))
-                painter.drawRoundedRect(pill, pill.height() / 2 - 1, pill.height() / 2 - 1)
-                painter.setPen(QColor(theme.accent_text if issue["checked"] else theme.text))
-                painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), text)
-                self._hit_boxes.append((pill, "option", row["cue_id"], index))
-                x += pill_w + z(6)
-            x += z(4)
+            texts = [issue["replacement"] or tr("删去") for issue in issues]
+            main_w = (metrics.horizontalAdvance(prefix) + z(8)
+                      + sum(metrics.horizontalAdvance(text) + z(22) for text in texts))
+            text = prefix
         else:
             if group["after"] is not None and group["before"] != group["after"]:
                 text = (f"{issues[0]['original']} → {issues[0]['replacement']}" if len(issues) == 1
@@ -2314,36 +2582,102 @@ class CaptionReviewList(QWidget):
                         else change_summary(group["before"], group["after"]))
             else:
                 text = change_summary(issues[0]["original"], issues[0]["replacement"])
-            main_w = min(metrics.horizontalAdvance(text) + z(8), max(z(40), rect.right() - x - z(160)))
-            main = QRectF(x, rect.top(), main_w, rect.height())
-            painter.drawText(main, int(Qt.AlignmentFlag.AlignVCenter), metrics.elidedText(text, Qt.TextElideMode.ElideRight, main_w))
-            self._hit_boxes.append((main, "mark", row["cue_id"], first))
-            x += main_w + z(6)
-        if group["state"] == "adopted":
-            status, tone = tr("已采用"), colors["applied_line"]
-        elif group["state"] == "partial":
-            status, tone = tr("部分已写回"), colors["applied_line"]
-        elif reviewed:
-            status, tone = tr("已忽略"), theme.text_muted
-        elif group["pending"]:
-            status, tone = tr("待确认"), legible(theme.warning, theme.surface, theme)
-        elif group["recommended"]:
-            status, tone = tr("推荐"), theme.accent_text
+            main_w = metrics.horizontalAdvance(text) + z(6)
+        fixed = z(4) + chip_w + z(8) + z(8) + status_w + buttons_w + z(2)
+        room = rect.width() - detail_w - z(6) - fixed
+        if status and room < main_w and not group["pending"]:
+            # A narrow column keeps the change readable before the word 推荐.
+            fixed -= status_w
+            room += status_w
+            status, status_w = "", 0
+        compact = room < main_w
+        if compact:
+            # …and 详情 shrinks to a round ⋯ beside the bubble.
+            room += detail_w - (circle + z(4))
+            detail_w = circle + z(4)
+        main_w = max(min(main_w, room), float(z(40)))
+        bubble = QRectF(rect.left(), top, min(fixed + main_w, rect.width() - detail_w - z(6)), bubble_h)
+        if reviewed:
+            pen = QPen(QColor(blend_hex(theme.surface, theme.text, 0.22)), max(1.0, 1.2 * (self._zoom or 1)))
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
         else:
-            status, tone = "", theme.text_muted
+            edge = (blend_hex(theme.surface, success, 0.40) if adopted else
+                    blend_hex(theme.surface, theme.warning, 0.45) if group["pending"] else
+                    blend_hex(theme.surface, theme.warning, 0.42))
+            painter.setPen(QPen(QColor(edge), max(1.0, 1.2 * (self._zoom or 1))))
+            painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(bubble, bubble_h / 2, bubble_h / 2)
+        x = bubble.left() + z(4)
+        chip = self._chip(painter, x, QRectF(x, top, chip_w, bubble_h), label,
+                          QColor(self._kind_color(theme, kinds[0])), theme)
+        self._hit_boxes.append((chip, "kind", row["cue_id"], first))
+        x = chip.right() + z(8)
+        painter.setFont(self.change_font)
+        ink = theme.text if not reviewed else legible(theme.text_muted, theme.surface, theme, 4.5)
+        if group["options"]:
+            painter.setPen(QColor(ink))
+            width = metrics.horizontalAdvance(prefix) + z(8)
+            painter.drawText(QRectF(x, top, width, bubble_h), int(Qt.AlignmentFlag.AlignVCenter), prefix)
+            x += width
+            end = bubble.left() + fixed - z(8) + main_w
+            for index, issue, option in zip(group["parts"], issues, texts):
+                pill_w = metrics.horizontalAdvance(option) + z(16)
+                if x + pill_w > end + z(2):
+                    break
+                pill = QRectF(x, top + z(4), pill_w, bubble_h - z(8))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(success if issue["checked"] else blend_hex(theme.surface, theme.text, 0.09)))
+                painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+                painter.setPen(QColor(theme.on_vivid if issue["checked"] and hasattr(theme, "on_vivid")
+                                      else theme.text_on_accent if issue["checked"] else theme.text))
+                painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), option)
+                self._hit_boxes.append((pill, "option", row["cue_id"], index))
+                x += pill_w + z(6)
+            x = max(x, end)
+        else:
+            main = QRectF(x, top, main_w, bubble_h)
+            painter.setPen(QColor(ink))
+            painter.drawText(main, int(Qt.AlignmentFlag.AlignVCenter),
+                             metrics.elidedText(text, Qt.TextElideMode.ElideRight, main_w))
+            self._hit_boxes.append((main, "mark", row["cue_id"], first))
+            x += main_w
+        x += z(8)
         if status:
-            painter.setPen(QColor(tone))
-            width = metrics.horizontalAdvance(status) + z(10)
-            painter.drawText(QRectF(x, rect.top(), width, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), status)
-            x += width + z(6)
-        opened = (row["cue_id"], first) in self.expanded
-        x = self._text_button(painter, x, rect, tr("收起") if opened else tr("详情"), "detail", row, first, theme)
-        # Row dismissal stays available in the metadata column even when
-        # all groups have been adopted or have expired after manual editing.
+            painter.setFont(self.label_font)
+            painter.setPen(QColor(legible(tone, fill, theme, 4.5)))
+            painter.drawText(QRectF(x, top, status_w, bubble_h), int(Qt.AlignmentFlag.AlignVCenter), status)
+            x += status_w
+        cy = top + bubble_h / 2
+        if can_check:
+            box = QRectF(x, cy - circle / 2, circle, circle)
+            on = getattr(theme, "on_vivid", theme.text_on_accent)
+            solid = success if contrast_ratio(success, on) >= 3.0 else blend_hex(success, theme.text, 0.3)
+            self._round_button(painter, box, "check", solid, on)
+            self._hit_boxes.append((box.adjusted(-z(3), -z(3), z(3), z(3)), "check", row["cue_id"], first))
+            x += circle + z(5)
+        if can_ignore:
+            box = QRectF(x, cy - circle / 2, circle, circle)
+            soft = blend_hex(theme.surface, theme.text, 0.13)
+            self._round_button(painter, box, "cross", soft, legible(theme.text, soft, theme, 4.5))
+            self._hit_boxes.append((box.adjusted(-z(3), -z(3), z(3), z(3)), "ignore_group", row["cue_id"], first))
+        if compact:
+            box = QRectF(bubble.right() + z(6), cy - circle / 2, circle, circle)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14) if opened
+                                    else blend_hex(theme.surface, theme.text, 0.06)))
+            painter.drawEllipse(box)
+            painter.setFont(self.label_font)
+            painter.setPen(QColor(theme.accent_text if opened else theme.text_secondary))
+            painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), "⋯")
+            self._hit_boxes.append((box.adjusted(-z(3), -z(3), z(3), z(3)), "detail", row["cue_id"], first))
+        else:
+            self._text_button(painter, bubble.right() + z(6), rect, detail, "detail", row, first, theme)
 
     def _draw_detail(self, painter, row, group, line, rect, theme):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
-        x = rect.left() + z(18) + z(10)
+        x = rect.left() + z(16)
         width = rect.right() - x
         painter.setFont(self.small)
         if line.get("manual"):
@@ -2356,7 +2690,7 @@ class CaptionReviewList(QWidget):
     def _draw_issue(self, painter, row, index, issue, rect, theme, colors):
         """A suspected name without a candidate: shown, never changed by itself."""
         z = lambda value: max(1, round(value * (self._zoom or 1)))
-        x = rect.left() + z(18) + z(10)
+        x = rect.left() + z(4)
         chip = self._chip(painter, x, rect, tr(KIND_LABELS.get(issue["kind"], issue["kind"])),
                           QColor(self._kind_color(theme, issue["kind"])), theme)
         self._hit_boxes.append((chip, "kind", row["cue_id"], index))
@@ -2372,7 +2706,6 @@ class CaptionReviewList(QWidget):
 # --------------------------------------------------------------------------
 # Spelling conflicts
 # --------------------------------------------------------------------------
-
 class ConflictPanel(QFrame):
     """'词条冲突 N 项' — expands into one decision per conflicting spelling.
 
@@ -2760,6 +3093,447 @@ def _time_label(ms):
 # --------------------------------------------------------------------------
 
 FILTERS = (("all", "全部字幕"), ("suggested", "有修改建议"), ("pending", "待确认"), ("changed", "已修改"))
+FILTER_SHORT = {"all": "全部", "suggested": "有建议"}
+
+
+def _zoomed(value):
+    from ..app.ui_zoom import zoom_factor
+    return max(1, round(value * zoom_factor()))
+
+
+def _heavy(font):
+    """The bundled 思源黑体 Heavy face (2026-11-13, user: emphasis must be
+    really heavy, not Medium made bold)."""
+    from ..design.typography import TITLE_FONT_FAMILIES
+    font.setFamilies(list(TITLE_FONT_FAMILIES))
+    font.setWeight(QFont.Weight.Black)
+    return font
+
+
+def _ui_font(widget, px, weight):
+    font = QFont(widget.font())
+    font.setPixelSize(_zoomed(px))
+    font.setWeight(weight)
+    if weight >= QFont.Weight.Bold:
+        _heavy(font)
+    return font
+
+
+class _TermDelegate(QStyledItemDelegate):
+    """规范词 as the draft's soft chips: the word, then 别名 … · 命中 N 处.
+    The item's text stays the bare canonical word (audits read it)."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+
+    def sizeHint(self, option, index):
+        return QSize(max(80, option.rect.width()), _zoomed(48))
+
+    def paint(self, painter, option, index):
+        theme = _theme()
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect).adjusted(0, _zoomed(1), -_zoomed(2), -_zoomed(1))
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        fill = blend_hex(theme.surface, theme.text, 0.10 if selected else 0.075 if hover else 0.055)
+        if selected:
+            painter.setPen(QPen(QColor(blend_hex(theme.surface, theme.accent, 0.55)), max(1.0, _zoomed(1.4))))
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(rect, _zoomed(10), _zoomed(10))
+        record = index.data(Qt.ItemDataRole.UserRole + 1)
+        name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        fresh = index.data(Qt.ItemDataRole.ForegroundRole) is not None
+        inner = rect.adjusted(_zoomed(10), _zoomed(5), -_zoomed(8), -_zoomed(5))
+        title = _ui_font(self.page, 13, QFont.Weight.Bold)
+        painter.setFont(title)
+        painter.setPen(QColor(theme.accent_text if fresh else theme.text))
+        half = inner.height() / 2
+        metrics = QFontMetricsF(title)
+        painter.drawText(QRectF(inner.left(), inner.top(), inner.width(), half), int(Qt.AlignmentFlag.AlignVCenter),
+                         metrics.elidedText(name, Qt.TextElideMode.ElideRight, inner.width()))
+        aliases = list(getattr(record, "aliases", ()) or ())
+        sub = tr("别名 {names}", names="、".join(aliases)) if aliases else tr("没有别名")
+        hits = getattr(self.page, "_term_hits", {}).get(name, 0)
+        if hits:
+            sub += " · " + tr("命中 {count} 处", count=hits)
+        small = _ui_font(self.page, 11, QFont.Weight.Normal)
+        painter.setFont(small)
+        painter.setPen(QColor(legible(theme.text_muted, fill, theme, 4.5)))
+        painter.drawText(QRectF(inner.left(), inner.top() + half, inner.width(), half), int(Qt.AlignmentFlag.AlignVCenter),
+                         QFontMetricsF(small).elidedText(sub, Qt.TextElideMode.ElideRight, inner.width()))
+        painter.restore()
+
+
+class _LibraryDelegate(QStyledItemDelegate):
+    """A chosen library row is tinted under its box and name (the draft)."""
+
+    def paint(self, painter, option, index):
+        if index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value or \
+                index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked:
+            theme = _theme()
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.12)))
+            painter.drawRoundedRect(QRectF(option.rect).adjusted(0, 0, -_zoomed(2), 0), _zoomed(10), _zoomed(10))
+            painter.restore()
+        super().paint(painter, option, index)
+
+
+class _CountButton(QPushButton):
+    """A filter segment as in the draft: the label, then its count in a
+    small round badge. ``text()`` keeps the full 「有修改建议 3 条」."""
+
+    def __init__(self, label, tone="plain", parent=None):
+        super().__init__(label, parent)
+        self.label, self.count, self.tone = label, 0, tone
+        self.setMouseTracking(True)
+
+    def set_parts(self, label, count):
+        if (label, count) != (self.label, self.count):
+            self.label, self.count = label, count
+            self.updateGeometry()
+            self.update()
+
+    def _fonts(self):
+        return (_ui_font(self, 13, QFont.Weight.Bold if self.isChecked() else QFont.Weight.Medium),
+                _ui_font(self, 11, QFont.Weight.Bold))
+
+    def sizeHint(self):
+        label, badge = self._fonts()
+        width = (QFontMetricsF(label).horizontalAdvance(self.label) + QFontMetricsF(badge).horizontalAdvance(str(self.count))
+                 + _zoomed(14) + _zoomed(6) + _zoomed(24))
+        return QSize(int(width), _zoomed(32))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, _event):
+        theme = _theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        if self.isChecked():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.app_background, theme.text, 0.10)))
+            painter.drawRoundedRect(rect.adjusted(0, 1.5, 0, 0), _zoomed(10), _zoomed(10))
+            painter.setBrush(QColor(theme.surface_elevated if theme.is_light else theme.surface))
+            painter.drawRoundedRect(rect.adjusted(0, 0, 0, -1.5), _zoomed(10), _zoomed(10))
+        elif self.underMouse():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.app_background, theme.text, 0.05)))
+            painter.drawRoundedRect(rect, _zoomed(10), _zoomed(10))
+        label_font, badge_font = self._fonts()
+        label_w = QFontMetricsF(label_font).horizontalAdvance(self.label)
+        badge_text = str(self.count)
+        badge_w = QFontMetricsF(badge_font).horizontalAdvance(badge_text) + _zoomed(14)
+        x = (rect.width() - label_w - _zoomed(6) - badge_w) / 2
+        painter.setFont(label_font)
+        painter.setPen(QColor(theme.text if self.isChecked() else theme.text_secondary))
+        painter.drawText(QRectF(x, 0, label_w + 2, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), self.label)
+        badge_h = _zoomed(17)
+        badge = QRectF(x + label_w + _zoomed(6), (rect.height() - badge_h) / 2, badge_w, badge_h)
+        if self.tone == "dark":
+            fill, ink = theme.text, (theme.surface_elevated if theme.is_light else theme.surface)
+        elif self.tone == "amber" and self.count:
+            from ..app.completion_widgets import soft_hue
+            on = getattr(theme, "on_vivid", "#ffffff")
+            fill, ink = soft_hue(theme.warning, on), on
+        else:
+            fill = blend_hex(theme.app_background, theme.text, 0.15)
+            ink = legible(theme.text_secondary, fill, theme, 4.5)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(badge, badge_h / 2, badge_h / 2)
+        painter.setFont(badge_font)
+        painter.setPen(QColor(ink))
+        painter.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), badge_text)
+        if self.hasFocus() and self.focusPolicy() != Qt.FocusPolicy.NoFocus:
+            pen = QPen(QColor(theme.accent), 1.5)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), _zoomed(10), _zoomed(10))
+        painter.end()
+
+
+class _AdoptAllButton(QPushButton):
+    """采用全部建议 as in the draft: green, a tick, the number left in a
+    white round badge."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.badge = ""
+        self.colors = ("#2f6a3d", "#285c35", "#ffffff")
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_badge(self, value):
+        value = str(value or "")
+        if value != self.badge:
+            self.badge = value
+            self.updateGeometry()
+            self.update()
+
+    def _fonts(self):
+        return _ui_font(self, 15, QFont.Weight.Black), _ui_font(self, 12, QFont.Weight.Bold)
+
+    def sizeHint(self):
+        text, badge = self._fonts()
+        width = _zoomed(16) + _zoomed(18) + _zoomed(8) + QFontMetricsF(text).horizontalAdvance(self.text()) + _zoomed(18)
+        if self.badge:
+            width += _zoomed(8) + QFontMetricsF(badge).horizontalAdvance(self.badge) + _zoomed(16)
+        return QSize(int(width), max(self.minimumHeight(), _zoomed(44)))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, _event):
+        theme = _theme()
+        base, hover, ink = self.colors
+        if not self.isEnabled():
+            base = blend_hex(theme.surface, theme.text, 0.08)
+            ink = theme.disabled
+        elif self.underMouse() or self.isDown():
+            base = hover
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(base))
+        painter.drawRoundedRect(rect, _zoomed(14), _zoomed(14))
+        text_font, badge_font = self._fonts()
+        text_w = QFontMetricsF(text_font).horizontalAdvance(self.text())
+        badge_w = (QFontMetricsF(badge_font).horizontalAdvance(self.badge) + _zoomed(16)) if self.badge else 0
+        total = _zoomed(18) + _zoomed(8) + text_w + ((_zoomed(8) + badge_w) if badge_w else 0)
+        x = (rect.width() - total) / 2
+        cy = rect.height() / 2
+        pen = QPen(QColor(ink), max(2.0, _zoomed(3) * 0.85))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        k = _zoomed(18) / 24
+        painter.drawPolyline(QPolygonF([QPointF(x + 5 * k, cy + 0 * k), QPointF(x + 10 * k, cy + 5 * k),
+                                        QPointF(x + 19 * k, cy - 5 * k)]))
+        x += _zoomed(18) + _zoomed(8)
+        painter.setFont(text_font)
+        painter.setPen(QColor(ink))
+        painter.drawText(QRectF(x, 0, text_w + 2, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text())
+        if badge_w:
+            x += text_w + _zoomed(8)
+            badge_h = _zoomed(20)
+            badge = QRectF(x, cy - badge_h / 2, badge_w, badge_h)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#ffffff" if self.isEnabled() else blend_hex(theme.surface, theme.text, 0.14)))
+            painter.drawRoundedRect(badge, badge_h / 2, badge_h / 2)
+            painter.setFont(badge_font)
+            painter.setPen(QColor(base if self.isEnabled() else theme.disabled))
+            painter.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), self.badge)
+        if self.hasFocus():
+            painter.setPen(QPen(QColor(ink), 1.5, Qt.PenStyle.DotLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), _zoomed(11), _zoomed(11))
+        painter.end()
+
+
+class _ProgressLine(QWidget):
+    """A thin bar under the bulk bar's counts: adopted / ignored / open."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("proofreadProgress")
+        self.parts = (0, 0, 0)
+        self.setFixedHeight(6)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMaximumWidth(320)
+
+    def set_parts(self, adopted, ignored, remaining):
+        parts = (max(0, int(adopted)), max(0, int(ignored)), max(0, int(remaining)))
+        if parts != self.parts:
+            self.parts = parts
+            self.update()
+
+    def paintEvent(self, _event):
+        theme = _theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        rect = QRectF(self.rect())
+        radius = rect.height() / 2
+        painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.10)))
+        painter.drawRoundedRect(rect, radius, radius)
+        total = sum(self.parts)
+        if total:
+            adopted, ignored, _remaining = self.parts
+            done = rect.width() * (adopted + ignored) / total
+            if done > 0:
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.26)))
+                painter.drawRoundedRect(QRectF(rect.left(), rect.top(), max(done, rect.height()), rect.height()), radius, radius)
+            if adopted:
+                painter.setBrush(QColor(getattr(theme, "success", theme.accent)))
+                painter.drawRoundedRect(QRectF(rect.left(), rect.top(), max(rect.width() * adopted / total, rect.height()),
+                                               rect.height()), radius, radius)
+        painter.end()
+
+
+class _ColumnHeader(QWidget):
+    """The draft's strip over the captions (2026-11-13): select-all box ·
+    序号 · 时间 | 原文 · 英语 ☐ 参与校对 | 译文 · 简体中文 ▾ ☐ 参与校对.
+
+    The two 参与校对 boxes say whether that side takes part (and is listed);
+    both make the paired view. The page's ``TextTargetSelector`` stays the
+    model: the boxes set its mode and its track combo moves in here."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.setObjectName("proofreadColumns")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(36)
+        self.select_all = QCheckBox(self)
+        self.select_all.setObjectName("proofreadSelectAll")
+        self.select_all.setToolTip(tr("全选当前列表"))
+        self.select_all.clicked.connect(self._select_all)
+        self.meta = QLabel(tr("序号 · 时间"), self)
+        self.meta.setObjectName("proofreadColumnLabel")
+        self.source_label = QLabel(tr("原文"), self)
+        self.source_label.setObjectName("proofreadColumnLabel")
+        self.source = QCheckBox(tr("参与校对"), self)
+        self.source.setObjectName("proofreadColumnCheck")
+        self.translation_label = QLabel(tr("译文"), self)
+        self.translation_label.setObjectName("proofreadColumnLabel")
+        self.translation = QCheckBox(tr("参与校对"), self)
+        self.translation.setObjectName("proofreadColumnCheck")
+        self.track = page.text_targets.track
+        outer = page.text_targets.layout()
+        if outer is not None:
+            outer.removeWidget(self.track)
+        for index in range(outer.count() if outer is not None else 0):
+            nested = outer.itemAt(index).layout()
+            if nested is not None:
+                nested.removeWidget(self.track)
+        self.track.setParent(self)
+        self.track.setObjectName("proofreadTrackCombo")
+        self.track.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        bind_text(self.track, "译文语言 / 轨道", property="toolTip")
+        self.note = QLabel(self)
+        self.note.setObjectName("proofreadColumnNote")
+        for box, tip in ((self.source, "原文参与校对并列出；取消后只校对译文"),
+                         (self.translation, "译文参与校对并列在原文右边；取消后只校对原文")):
+            box.setToolTip(tr(tip))
+            box.toggled.connect(lambda _checked=False, which=box: self._toggled(which))
+        page.list.columns_changed.connect(self.place)
+
+    def _select_all(self):
+        if self.page._batch_selected:
+            self.page._batch_clear()
+        else:
+            self.page._batch_select_all()
+        self.sync_selection()
+
+    def sync_selection(self):
+        chosen = set(getattr(self.page, "_batch_selected", ()))
+        state = Qt.CheckState.Unchecked
+        if chosen:
+            eligible = self.page._batch_eligible_ids()
+            state = Qt.CheckState.Checked if eligible and eligible <= chosen else Qt.CheckState.PartiallyChecked
+        self.select_all.blockSignals(True)
+        self.select_all.setTristate(state == Qt.CheckState.PartiallyChecked)
+        self.select_all.setCheckState(state)
+        self.select_all.blockSignals(False)
+
+    def sync(self):
+        targets = self.page.text_targets
+        mode = targets.mode_value()
+        has_translation = targets.track.count() > 1
+        rows = getattr(self.page, "_rows", ())
+        language = next((getattr(row.get("target"), "language", "") for row in rows if not _is_translation_row(row)), "")
+        from ..projects.subtitle_import import language_label
+        source_text = tr("原文") + (f" · {language_label(language)}" if language else "")
+        self.source_label.setText(source_text)
+        tabs = getattr(self.page, "rail_tabs", ())
+        if tabs:
+            tabs[0].setText(source_text)
+            target = targets.track.currentText().split(" · ")[0] if has_translation and targets.track.currentData() else ""
+            tabs[1].setText(tr("译文") + (f" · {target}" if target else ""))
+        for box, value in ((self.source, mode in {"original", "both"}), (self.translation, mode in {"translation", "both"})):
+            box.blockSignals(True)
+            box.setChecked(value)
+            box.blockSignals(False)
+        self.translation.setEnabled(has_translation)
+        for widget in (self.translation, self.translation_label):
+            widget.setVisible(has_translation)
+        self.track.setVisible(has_translation and mode != "original")
+        self.note.setText(tr("暂无译文；仍可校对原文。"))
+        self.note.setVisible(not has_translation)
+        self.sync_selection()
+        self.place()
+
+    def _toggled(self, which):
+        source, translation = self.source.isChecked(), self.translation.isChecked()
+        if not source and not translation:
+            which.blockSignals(True)
+            which.setChecked(True)
+            which.blockSignals(False)
+            return
+        mode = "both" if source and translation else "original" if source else "translation"
+        combo = self.page.text_targets.mode
+        combo.setCurrentIndex(combo.findData(mode))
+
+    def place(self, *_args):
+        """Put each label over its column of the list."""
+        lst = self.page.list
+        offset = lst.mapTo(self.page, lst.rect().topLeft()).x() - self.mapTo(self.page, self.rect().topLeft()).x()
+        columns = lst.column_geometry()
+        height = self.height()
+        zoom = lst._zoom or 1
+
+        def put(widget, x, max_w=None):
+            if not widget.isVisibleTo(self):
+                return int(x)
+            hint = widget.sizeHint()
+            width = hint.width() if max_w is None else min(hint.width(), int(max_w))
+            widget.setGeometry(int(x), (height - hint.height()) // 2, max(0, width), hint.height())
+            return int(x) + width
+
+        end = put(self.select_all, offset + round(14 * zoom))
+        put(self.meta, end + round(8 * zoom))
+        mode = self.page.text_targets.mode_value()
+
+        def side(label, box, x, limit, combo=False):
+            end = put(label, x, limit)
+            if combo and self.track.isVisibleTo(self):
+                end = put(self.track, end + 2, max(60, limit - (end - x) - 90))
+            return put(box, end + round(10 * zoom))
+
+        first_x, first_w = columns[0]
+        if lst.paired and len(columns) > 1:
+            side(self.source_label, self.source, offset + first_x, first_w)
+            second_x, second_w = columns[1]
+            side(self.translation_label, self.translation, offset + second_x, second_w, combo=True)
+            return
+        right = self.width() - round(14 * zoom)
+        if mode == "translation":
+            side(self.translation_label, self.translation, offset + first_x, first_w, combo=True)
+            spare = [self.source_label, self.source]
+        else:
+            side(self.source_label, self.source, offset + first_x, first_w)
+            spare = [self.translation_label, self.translation] if self.translation.isVisibleTo(self) else [self.note]
+        width = sum(widget.sizeHint().width() for widget in spare) + round(10 * zoom) * (len(spare) - 1)
+        x = right - width
+        for widget in spare:
+            x = put(widget, x) + round(10 * zoom)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.place()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.place)
 
 
 class _CompactSwitch(SwitchControl):
@@ -3094,7 +3868,7 @@ class GlossaryProofreadPage(QWidget):
         card = QFrame()
         card.setObjectName("proofreadCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(6)
         return card, layout
 
@@ -3108,70 +3882,139 @@ class GlossaryProofreadPage(QWidget):
         return row
 
     def _build(self):
-        """2026-10-23 redesign A (user picked it on the canvas): a narrower
-        side column of soft cards (词库 / 说话人 / 规范词), one resident
-        find-and-replace bar, captions one line high, undo/redo in the title
-        row and the bulk actions under the list."""
+        """2026-11-13 bilingual design A (user picked it on the canvas, with
+        design B's proposal bubbles): the checks — 口吃整理 · 按词库匹配 ·
+        AI 校对 — sit at the right of the title row; filters, find and
+        replace share one row; a column header names 原文 / 译文 over the
+        list (and chooses which take part); every bulk action lives in the
+        bar under the list with 采用全部建议 last. The side column keeps the
+        soft cards (词库 / 说话人 / 规范词) and gains the 译文术语库 card.
+        (2026-10-23 redesign A: one resident find-and-replace bar, undo/redo
+        in the title row.)"""
         from ..design.themed_icons import install_themed_icon
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 12, 20, 16)
-        root.setSpacing(12)
-        header = QHBoxLayout()
-        header.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0,0,0,0)
+        self.page_scroll = QScrollArea(self)
+        self.page_scroll.setObjectName('proofreadPageScroll')
+        self.page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.page_scroll.setWidgetResizable(True)
+        self.page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page_body = QWidget()
+        page_body.setObjectName('proofreadPageBody')
+        self.page_scroll.setWidget(page_body)
+        outer.addWidget(self.page_scroll)
+        root = QVBoxLayout(page_body)
+        root.setContentsMargins(20, 10, 20, 14)
+        root.setSpacing(10)
+        from ..studio.studio_toolbar_layout import CommandBar, CommandFlowLayout
+        header_bar = CommandBar()
+        header_bar.setObjectName("proofreadHeader")
+        header = CommandFlowLayout(header_bar)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.expand = {2}
+        header.stretch_after = {2}
+        header.setSpacing(10)
         self.back_button = QPushButton("返回结果")
         self.back_button.setObjectName("proofreadNav")
-        self.back_button.setFixedHeight(40)
+        self.back_button.setFixedHeight(38)
         self.back_button.clicked.connect(self._back)
         install_themed_icon(self.back_button, "fa5s.arrow-left", "secondary")
-        header.addWidget(self.back_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        heading = QVBoxLayout()
+        header.addWidget(self.back_button)
+        heading_box = QWidget()
+        heading = QVBoxLayout(heading_box)
+        heading.setContentsMargins(0, 0, 0, 0)
         heading.setSpacing(0)
         title = QLabel("AI 词库校对")
         title.setObjectName("proofreadTitle")
         heading.addWidget(title)
         self.file_label = QLabel()
         self.file_label.setObjectName("proofreadFile")
+        self.file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         heading.addWidget(self.file_label)
-        header.addLayout(heading)
-        header.addStretch(1)
+        header.addWidget(heading_box)
+        # What just happened, as a quiet line beside the title (no bubble).
         self.status_label = QLabel()
         self.status_label.setObjectName("proofreadStatus")
         self.status_label.setWordWrap(True)
-        self.status_label.setMinimumWidth(260)
-        self.status_label.setMaximumWidth(720)
+        self.status_label.setMinimumWidth(120)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(self.status_label)
+        self.sidebar_button = QPushButton(tr('词库与说话人'))
+        self.sidebar_button.setObjectName('proofreadContent')
+        self.sidebar_button.setFixedHeight(38)
+        self.sidebar_button.clicked.connect(self._open_sidebar)
+        self.sidebar_button.hide()
+        header.addWidget(self.sidebar_button)
         self.undo_button = QPushButton()
         self.redo_button = QPushButton()
         for button, icon, name, handler in ((self.undo_button, "fa5s.undo", "撤销（Ctrl+Z）", self._undo),
                                             (self.redo_button, "fa5s.redo", "重做（Ctrl+Y）", self._redo)):
             button.setObjectName("proofreadIcon")
-            button.setFixedSize(40, 40)
+            button.setFixedSize(38, 38)
             button.setAccessibleName(tr(name))
             button.setToolTip(tr(name))
             install_themed_icon(button, icon, "secondary")
             button.clicked.connect(handler)
             button.setEnabled(False)
-            header.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(header)
+            header.addWidget(button)
+        divider = QFrame()
+        divider.setObjectName("proofreadDivider")
+        divider.setFixedSize(1, 26)
+        header.addWidget(divider)
+        self.stutter_toggle = _CompactSwitch(tr("口吃整理"))
+        self.stutter_toggle.setObjectName("proofreadToggle")
+        self.stutter_toggle.setToolTip(tr("列出同一人卡顿、起句重来的重复字（只改显示文字，不删音频）；"
+                                          "采用后才写回"))
+        self.stutter_toggle.setChecked(self._stored_stutter())
+        self.stutter_toggle.toggled.connect(self._stutter_toggled)
+        header.addWidget(self.stutter_toggle)
+        self.punctuation_toggle = _CompactSwitch(tr('标点建议'))
+        self.punctuation_toggle.setObjectName('proofreadToggle')
+        self.punctuation_toggle.setChecked(False)
+        self.punctuation_toggle.setToolTip(tr('仅在工程已选择“添加标点”时允许标点建议；与口吃整理独立。'))
+        self.punctuation_toggle.toggled.connect(self._edit_policy_changed)
+        header.addWidget(self.punctuation_toggle)
+        self.local_button = QPushButton("按词库匹配")
+        self.local_button.setObjectName("proofreadContent")
+        self.local_button.setFixedHeight(40)
+        install_themed_icon(self.local_button, "fa5s.book", "zone_content")
+        bind_text(self.local_button, '只用所选词库里已确认的写法在本机匹配，不调用 AI', property='toolTip')
+        self.local_button.clicked.connect(lambda: self._restart_review(False))
+        header.addWidget(self.local_button)
+        self.ai_button = QPushButton("AI 校对")
+        self.ai_button.setObjectName("proofreadAI")
+        self.ai_button.setFixedHeight(40)
+        install_themed_icon(self.ai_button, "fa5s.magic", "on_accent")
+        bind_text(self.ai_button, '用已配置的校对模型结合所选词库和上下文生成建议（会调用付费模型）；不会直接修改字幕',
+                  property='toolTip')
+        self.ai_button.clicked.connect(self._run_ai)
+        header.addWidget(self.ai_button)
+        self.retry_ai_button = QPushButton(tr('重试未完成项'))
+        self.retry_ai_button.setObjectName('proofreadGhost')
+        self.retry_ai_button.setFixedHeight(40)
+        self.retry_ai_button.clicked.connect(self._retry_failed_review)
+        self.retry_ai_button.hide()
+        header.addWidget(self.retry_ai_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("proofreadGhost")
+        self.cancel_button.setFixedHeight(40)
+        self.cancel_button.clicked.connect(self._cancel_run)
+        self.cancel_button.hide()
+        header.addWidget(self.cancel_button)
+        root.addWidget(header_bar)
 
+        # The 原文 / 译文 choice is driven from the column header above the
+        # list; the selector stays the model (tests, audits and callers).
         from ..studio.text_target_widgets import TextTargetSelector
-        self.text_targets = TextTargetSelector(self)
+        self.text_targets = TextTargetSelector(self, compact=True)
         self.text_targets.changed.connect(self._text_scope_changed)
+        self.text_targets.hide()
         root.addWidget(self.text_targets)
-        from .translation_terms_ui import TranslationTermsWidget
-        from .translation_terms import policy_of
-        self.translation_term_libraries = TranslationTermsWidget(
-            lambda: policy_of(self._live_project()[0]), self._store_translation_terms, self)
-        root.addWidget(self.translation_term_libraries)
-        self.term_conflicts_button = QPushButton(tr('查看术语冲突…'))
-        self.term_conflicts_button.setObjectName('proofreadGhost')
-        self.term_conflicts_button.clicked.connect(self._show_term_conflicts)
-        self.term_conflicts_button.hide()
-        root.addWidget(self.term_conflicts_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         body = QHBoxLayout()
-        body.setSpacing(16)
+        self._body_layout = body
+        body.setSpacing(14)
         # ---------------------------------------------------------- left
         left = QFrame()
         left.setObjectName("proofreadSide")
@@ -3192,77 +4035,160 @@ class GlossaryProofreadPage(QWidget):
         left_outer.addWidget(left_scroll)
         left_layout = QVBoxLayout(left_body)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-        # 词库: which libraries check this project, and adding names to one.
+        left_layout.setSpacing(10)
+        # 术语库 (2026-11-13, the user's draft): one card, 原文 / 译文 tabs; the
+        # libraries are rows of boxes, the chosen ones tinted; adding a name
+        # is one field with 加入, where it goes is one quiet line under it.
         card, layout = self._card()
-        # 2026-10-23 (user): the count sits beside the title (the whole
-        # sentence is its tooltip); only what needs attention goes below.
-        self.library_summary = QLabel()
-        self.library_summary.setObjectName("proofreadHeadNote")
-        layout.addLayout(self._section_header("原文校对术语库", self.library_summary))
-        self.source_terms_enabled = QCheckBox(tr('启用原文校对术语库'))
+        self.library_card = card
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(self._caption("术语库"))
+        head.addStretch(1)
+        self.source_terms_enabled = QCheckBox(tr('校对时启用'))
+        self.source_terms_enabled.setObjectName("proofreadEnabled")
+        self.source_terms_enabled.setToolTip(tr('启用原文校对术语库'))
         self.source_terms_enabled.setChecked(True)
         self.source_terms_enabled.toggled.connect(self._source_terms_toggled)
-        layout.addWidget(self.source_terms_enabled)
+        head.addWidget(self.source_terms_enabled)
+        layout.addLayout(head)
+        tabs = QFrame()
+        tabs.setObjectName("proofreadRailTabs")
+        tabs_row = QHBoxLayout(tabs)
+        tabs_row.setContentsMargins(3, 3, 3, 3)
+        tabs_row.setSpacing(3)
+        self.rail_tab_group = QButtonGroup(self)
+        self.rail_tab_group.setExclusive(True)
+        self.rail_tabs = []
+        for index, label in enumerate(("原文", "译文")):
+            button = QPushButton(tr(label))
+            button.setObjectName("proofreadRailTab")
+            button.setCheckable(True)
+            button.setFixedHeight(30)
+            self.rail_tab_group.addButton(button, index)
+            self.rail_tabs.append(button)
+            tabs_row.addWidget(button, 1)
+        self.rail_tabs[0].setChecked(True)
+        layout.addWidget(tabs)
+        layout.addSpacing(2)
+        self.rail_pages = QStackedWidget()
+        self.rail_pages.setObjectName("proofreadRailPages")
+        self.rail_tab_group.idClicked.connect(self.rail_pages.setCurrentIndex)
+        layout.addWidget(self.rail_pages)
+        source_page = QWidget()
+        source_page.setObjectName("proofreadRailPage")
+        source = QVBoxLayout(source_page)
+        source.setContentsMargins(0, 0, 0, 0)
+        source.setSpacing(6)
         self.library_list = QListWidget()
         self.library_list.setObjectName("proofreadLibraries")
         self.library_list.setProperty("uiZoomOwnSize", True)  # whole rows: _fit_library_list
         self.library_list.setFixedHeight(110)
+        self.library_list.setSpacing(1)
+        self.library_list.setItemDelegate(_LibraryDelegate(self.library_list))
+        self.library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.library_list.itemChanged.connect(self._libraries_changed)
-        layout.addWidget(self.library_list)
+        source.addWidget(self.library_list)
         self.library_note = self._note()
         self.library_note.hide()
-        layout.addWidget(self.library_note)
-        layout.addSpacing(4)
+        source.addWidget(self.library_note)
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
         self.term_input = QPlainTextEdit()
         self.term_input.setObjectName("proofreadInput")
-        self.term_input.setFixedHeight(64)
-        bind_text(self.term_input, '添加专有名词：风丹 → 枫丹，每行一个', property='placeholderText')
+        self.term_input.setFixedHeight(36)
+        self.term_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        bind_text(self.term_input, '添加：风丹 → 枫丹', property='placeholderText')
         self.term_input.setToolTip(tr("只想改一句字幕，在右侧双击修改即可；这里把写法存进词库。每行一个：左边写常被听错的写法，"
                                       "右边写正确写法，用空格、“-”或 Tab 隔开（可直接从表格粘贴）；只写一个词就是标准写法。"))
         self.term_input.textChanged.connect(self._preview_terms)
-        layout.addWidget(self.term_input)
+        add_row.addWidget(self.term_input, 1)
+        self.add_button = QPushButton("加入")
+        self.add_button.setObjectName("proofreadAdd")
+        self.add_button.setFixedHeight(36)
+        bind_text(self.add_button, '把上面的专有名词加入所选词库', property='toolTip')
+        self.add_button.clicked.connect(self._add_terms)
+        add_row.addWidget(self.add_button)
+        source.addLayout(add_row)
         self.term_preview = QLabel()
         self.term_preview.setObjectName("proofreadTermPreview")
         self.term_preview.setWordWrap(True)
         self.term_preview.setTextFormat(Qt.TextFormat.RichText)
         self.term_preview.linkActivated.connect(self._flip_term)
         self.term_preview.hide()
-        layout.addWidget(self.term_preview)
+        source.addWidget(self.term_preview)
         target_row = QHBoxLayout()
-        target_row.setSpacing(6)
+        target_row.setSpacing(2)
+        into = QLabel(tr("加到"))
+        into.setObjectName("proofreadTiny")
+        target_row.addWidget(into)
         self.target_combo = QComboBox()
         self.target_combo.setEditable(True)
-        self.target_combo.setObjectName("proofreadCombo")
-        self.target_combo.lineEdit().setPlaceholderText(tr("加入的词库（可输入新名称）"))
+        self.target_combo.setObjectName("proofreadTinyCombo")
+        self.target_combo.lineEdit().setPlaceholderText(tr("词库（可输入新名称）"))
         self.target_combo.currentIndexChanged.connect(self._target_changed)
         self.target_combo.editTextChanged.connect(self._target_changed)
         target_row.addWidget(self.target_combo, 1)
+        kind = QLabel(tr("· 分类"))
+        kind.setObjectName("proofreadTiny")
+        target_row.addWidget(kind)
         self.category_combo = QComboBox()
-        self.category_combo.setObjectName("proofreadCombo")
+        self.category_combo.setObjectName("proofreadTinyCombo")
         for category in CATEGORIES:
             self.category_combo.addItem(category, category)
         self.category_combo.setCurrentIndex(self.category_combo.findData("其他"))
         target_row.addWidget(self.category_combo)
         # The narrow column decides their width, not their longest entry.
-        for combo, letters in ((self.target_combo, 4), (self.category_combo, 5)):
+        for combo, letters in ((self.target_combo, 6), (self.category_combo, 2)):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(letters)
-        layout.addLayout(target_row)
-        add_row = QHBoxLayout()
-        add_row.setSpacing(8)
+        source.addLayout(target_row)
         self.target_note = self._note()
-        add_row.addWidget(self.target_note, 1)
-        self.add_button = QPushButton("加入")
-        self.add_button.setObjectName("proofreadTint")
-        self.add_button.setFixedHeight(34)
-        bind_text(self.add_button, '把上面的专有名词加入所选词库', property='toolTip')
-        self.add_button.clicked.connect(self._add_terms)
-        add_row.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(add_row)
+        self.target_note.setObjectName("proofreadTiny")
+        source.addWidget(self.target_note)
         self.add_status = self._note()
         self.add_status.hide()
-        layout.addWidget(self.add_status)
+        source.addWidget(self.add_status)
+        # Kept for its tooltip and audits; the draft shows no summary line.
+        self.library_summary = QLabel()
+        self.library_summary.setObjectName("proofreadTiny")
+        self.library_summary.hide()
+        source.addWidget(self.library_summary)
+        self.rail_pages.addWidget(source_page)
+        # 译文 tab: the translation libraries (was a full-width row above the page).
+        translation_page = QWidget()
+        translation_page.setObjectName("proofreadRailPage")
+        translation = QVBoxLayout(translation_page)
+        translation.setContentsMargins(0, 0, 0, 0)
+        translation.setSpacing(6)
+        self.translation_card = translation_page
+        from .translation_terms_ui import TranslationTermsWidget
+        from .translation_terms import policy_of
+        self.translation_term_libraries = TranslationTermsWidget(
+            lambda: policy_of(self._live_project()[0]), self._store_translation_terms, self)
+        self.translation_term_libraries.setObjectName("proofreadTranslationTerms")
+        self.translation_term_libraries.layout().setDirection(QBoxLayout.Direction.TopToBottom)
+        self.translation_term_libraries.layout().setSpacing(6)
+        self.translation_term_libraries.summary.setObjectName("proofreadNote")
+        self.translation_term_libraries.manage.setObjectName("proofreadSoft")
+        self.translation_term_libraries.manage.setFixedHeight(32)
+        translation.addWidget(self.translation_term_libraries)
+        self.recheck_translation_button = QPushButton('使用当前词库重新校对译文')
+        self.recheck_translation_button.setObjectName('proofreadSoft')
+        self.recheck_translation_button.setFixedHeight(32)
+        def recheck_translation():
+            self.text_targets.mode.setCurrentIndex(self.text_targets.mode.findData('translation'))
+            self._restart_review(False)
+        self.recheck_translation_button.clicked.connect(recheck_translation)
+        translation.addWidget(self.recheck_translation_button)
+        self.term_conflicts_button = QPushButton(tr('查看术语冲突…'))
+        self.term_conflicts_button.setObjectName('proofreadSoft')
+        self.term_conflicts_button.setFixedHeight(32)
+        self.term_conflicts_button.clicked.connect(self._show_term_conflicts)
+        self.term_conflicts_button.hide()
+        translation.addWidget(self.term_conflicts_button)
+        translation.addStretch(1)
+        self.rail_pages.addWidget(translation_page)
         left_layout.addWidget(card)
         # 说话人 (2026-10-23, user): hide narration and the like.
         card, layout = self._card()
@@ -3279,9 +4205,10 @@ class GlossaryProofreadPage(QWidget):
         self.speaker_card.hide()
         left_layout.addWidget(card)
         self._speaker_widgets = {}
-        # 规范词 of the chosen libraries.
+        # 规范词: each a soft chip — the word, then 别名 … · 命中 N 处.
         card, layout = self._card()
-        self.term_count = self._note()
+        self.term_count = QLabel()
+        self.term_count.setObjectName("proofreadHeadNote")
         layout.addLayout(self._section_header("规范词", self.term_count))
         self.term_filter = QLineEdit()
         self.term_filter.setObjectName("proofreadSearch")
@@ -3290,20 +4217,27 @@ class GlossaryProofreadPage(QWidget):
         layout.addWidget(self.term_filter)
         self.term_list = QListWidget()
         self.term_list.setObjectName("proofreadTerms")
-        self.term_list.setMinimumHeight(170)
+        self.term_list.setMinimumHeight(150)
+        self.term_list.setSpacing(2)
+        self.term_list.setItemDelegate(_TermDelegate(self))
+        self.term_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.term_list.itemClicked.connect(self._term_clicked)
         layout.addWidget(self.term_list, 1)
         self.term_list.itemDoubleClicked.connect(lambda *_: self._edit_current_term())
         term_actions = QHBoxLayout()
-        self.term_edit = QPushButton(tr("编辑词条"))
-        self.term_delete = QPushButton(tr("删除词条"))
-        self.term_undo = QPushButton(tr("撤销词库修改"))
-        for button, handler in ((self.term_edit, self._edit_current_term),
-                                (self.term_delete, self._delete_current_term), (self.term_undo, self._undo_term_edit)):
-            button.setObjectName("proofreadMini")
-            button.setFixedHeight(34)
+        term_actions.setSpacing(4)
+        self.term_edit = QPushButton(tr("编辑"))
+        self.term_delete = QPushButton(tr("删除"))
+        self.term_undo = QPushButton(tr("撤销修改"))
+        self.term_edit.setToolTip(tr("编辑词条"))
+        self.term_undo.setToolTip(tr("撤销词库修改"))
+        for button, handler, name in ((self.term_edit, self._edit_current_term, "proofreadSoft"),
+                                      (self.term_delete, self._delete_current_term, "proofreadSoft"),
+                                      (self.term_undo, self._undo_term_edit, "proofreadMini")):
+            button.setObjectName(name)
+            button.setFixedHeight(30)
             button.clicked.connect(handler)
-            term_actions.addWidget(button)
+            term_actions.addWidget(button, 1)
         self.term_delete.setToolTip(tr("删除整个词条及其别名；只删错误别名请点编辑词条。可撤销。"))
         self.term_undo.setEnabled(False)
         layout.addLayout(term_actions)
@@ -3314,16 +4248,22 @@ class GlossaryProofreadPage(QWidget):
         right = QFrame()
         right.setObjectName("proofreadPanel")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(16, 14, 16, 14)
-        right_layout.setSpacing(10)
+        # The draft: filters and find sit above the columns; the panel holds
+        # the column header, the captions and the bulk bar edge to edge.
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         from ..studio.studio_toolbar_layout import CommandBar, CommandFlowLayout
         tools = CommandBar()
         tools.setObjectName("proofreadFilterBar")
         flow = CommandFlowLayout(tools)
         flow.setContentsMargins(0, 0, 0, 0)
-        flow.setSpacing(10)
-        # Filters left, the checks right; whole groups wrap when narrow.
-        flow.stretch_after = {0}
+        flow.setSpacing(8)
+        # Filters and speakers, then find-and-replace; groups wrap when narrow.
+        filters = QWidget()
+        filters.setObjectName("proofreadFilters")
+        filters_layout = QHBoxLayout(filters)
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(8)
         segment = QFrame()
         segment.setObjectName("proofreadSeg")
         segment_layout = QHBoxLayout(segment)
@@ -3333,7 +4273,9 @@ class GlossaryProofreadPage(QWidget):
         self.filter_group.setExclusive(True)
         self.filter_buttons = {}
         for key, label in FILTERS:
-            button = QPushButton(tr(label))
+            # The draft: short label plus a round count badge.
+            button = _CountButton(tr(FILTER_SHORT.get(key, label)),
+                                  tone={"all": "dark", "suggested": "amber"}.get(key, "plain"))
             button.setObjectName("proofreadFilter")
             button.setCheckable(True)
             button.setFixedHeight(32)
@@ -3347,55 +4289,22 @@ class GlossaryProofreadPage(QWidget):
             segment_layout.addWidget(button)
         self.filter_buttons["all"].setChecked(True)
         self.filter_group.buttonClicked.connect(lambda *_: self._apply_filter())
-        flow.addWidget(segment)
-        checks = QWidget()
-        checks.setObjectName("proofreadChecks")
-        checks_layout = QHBoxLayout(checks)
-        checks_layout.setContentsMargins(0, 0, 0, 0)
-        checks_layout.setSpacing(8)
-        self.stutter_toggle = _CompactSwitch(tr("口吃整理"))
-        self.stutter_toggle.setObjectName("proofreadToggle")
-        self.stutter_toggle.setToolTip(tr("列出同一人卡顿、起句重来的重复字（只改显示文字，不删音频）；"
-                                          "采用后才写回"))
-        self.stutter_toggle.setChecked(self._stored_stutter())
-        self.stutter_toggle.toggled.connect(self._stutter_toggled)
-        checks_layout.addWidget(self.stutter_toggle)
-        checks_layout.addSpacing(4)
-        self.local_button = QPushButton("按词库匹配")
-        self.local_button.setObjectName("proofreadContent")
-        self.local_button.setFixedHeight(38)
-        install_themed_icon(self.local_button, "fa5s.book", "zone_content")
-        bind_text(self.local_button, '只用所选词库里已确认的写法在本机匹配，不调用 AI', property='toolTip')
-        self.local_button.clicked.connect(lambda: self._restart_review(False))
-        checks_layout.addWidget(self.local_button)
-        self.ai_button = QPushButton("AI 校对")
-        self.ai_button.setObjectName("proofreadAccent")
-        self.ai_button.setFixedHeight(38)
-        install_themed_icon(self.ai_button, "fa5s.magic", "on_accent")
-        bind_text(self.ai_button, '用已配置的校对模型结合所选词库和上下文生成建议（会调用付费模型）；不会直接修改字幕',
-                  property='toolTip')
-        self.ai_button.clicked.connect(self._run_ai)
-        checks_layout.addWidget(self.ai_button)
-        self.retry_ai_button = QPushButton(tr('重试未完成项'))
-        self.retry_ai_button.setObjectName('proofreadGhost')
-        self.retry_ai_button.clicked.connect(self._retry_failed_review)
-        self.retry_ai_button.hide()
-        checks_layout.addWidget(self.retry_ai_button)
-        self.cancel_button = QPushButton("取消")
-        self.cancel_button.setObjectName("proofreadGhost")
-        self.cancel_button.setFixedHeight(38)
-        self.cancel_button.clicked.connect(self._cancel_run)
-        self.cancel_button.hide()
-        checks_layout.addWidget(self.cancel_button)
-        flow.addWidget(checks)
-        right_layout.addWidget(tools)
+        filters_layout.addWidget(segment)
+        self.speaker_filter = QComboBox()
+        self.speaker_filter.setObjectName("proofreadCombo")
+        self.speaker_filter.addItem(tr("全部说话人"), "")
+        self.speaker_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.speaker_filter.currentIndexChanged.connect(lambda *_: self._apply_filter())
+        filters_layout.addWidget(self.speaker_filter)
+        flow.addWidget(filters)
         # One resident find-and-replace bar (2026-10-23, user: replacing
         # needed Ctrl+H first). An empty 替换为 only searches.
         self.replace_bar = QFrame()
         self.replace_bar.setObjectName("proofreadReplaceBar")
         self.replace_bar.installEventFilter(self)  # resizes fit the bar (_fit_find_bar)
-        bar = QHBoxLayout(self.replace_bar)
-        bar.setContentsMargins(5, 5, 5, 5)
+        self.replace_bar.setMinimumWidth(420)
+        bar = QGridLayout(self.replace_bar)
+        bar.setContentsMargins(4, 4, 4, 4)
         bar.setSpacing(6)
         self.find_field = QFrame()
         self.find_field.setObjectName("proofreadField")
@@ -3411,10 +4320,6 @@ class GlossaryProofreadPage(QWidget):
         self.search.textChanged.connect(self._search_changed)
         self.search.installEventFilter(self)
         find_layout.addWidget(self.search, 1)
-        self.speaker_filter = QComboBox()
-        self.speaker_filter.setObjectName("proofreadCombo")
-        self.speaker_filter.addItem(tr("全部说话人"), "")
-        self.speaker_filter.currentIndexChanged.connect(lambda *_: self._apply_filter())
         self.hit_label = QLabel()
         self.hit_label.setObjectName("proofreadHitCount")
         find_layout.addWidget(self.hit_label)
@@ -3430,7 +4335,8 @@ class GlossaryProofreadPage(QWidget):
             button.clicked.connect(lambda _=False, step=delta: self._step_hit(step))
             button.setEnabled(False)
             find_layout.addWidget(button)
-        bar.addWidget(self.find_field, 1)
+        bar.addWidget(self.find_field, 0, 0)
+        bar.setColumnStretch(0, 1)
         self.replace_field = QFrame()
         self.replace_field.setObjectName("proofreadField")
         replace_layout = QHBoxLayout(self.replace_field)
@@ -3447,7 +4353,8 @@ class GlossaryProofreadPage(QWidget):
         self.replace_key = QLabel("Ctrl+H")
         self.replace_key.setObjectName("proofreadKey")
         replace_layout.addWidget(self.replace_key)
-        bar.addWidget(self.replace_field, 1)
+        bar.addWidget(self.replace_field, 0, 1)
+        bar.setColumnStretch(1, 1)
         # 2026-10-10 (user): replacing in a filtered list never quietly grows
         # to captions that are not listed; the whole project is a choice.
         self.replace_scope = QComboBox()
@@ -3459,27 +4366,30 @@ class GlossaryProofreadPage(QWidget):
         bind_text(self.replace_scope, '替换范围：当前列表＝上面的筛选、查找结果和显示的说话人（包括还没滚动到的字幕）；整个工程＝全部字幕',
                   property='toolTip')
         self.replace_scope.currentIndexChanged.connect(lambda *_: self._refresh_replace_count())
-        bar.addWidget(self.replace_scope)
+        bar.addWidget(self.replace_scope, 0, 2)
         self.replace_one = QPushButton(tr("替换"))
         self.replace_one.setObjectName("proofreadBarButton")
-        self.replace_one.setFixedHeight(38)
+        self.replace_one.setFixedHeight(36)
         bind_text(self.replace_one, '替换带框的这一处，然后跳到下一处；可撤销', property='toolTip')
         self.replace_one.clicked.connect(self._replace_current)
         self.replace_one.setEnabled(False)
-        bar.addWidget(self.replace_one)
+        bar.addWidget(self.replace_one, 0, 3)
         self.replace_go = QPushButton(tr("全部替换"))
         self.replace_go.setObjectName("proofreadAccent")
-        self.replace_go.setFixedHeight(38)
+        self.replace_go.setFixedHeight(36)
         bind_text(self.replace_go, '按范围替换列出的命中（排除的不改）；一步完成，可撤销', property='toolTip')
         self.replace_go.clicked.connect(self._replace_enter)
         self.replace_go.setEnabled(False)
-        bar.addWidget(self.replace_go)
-        right_layout.addWidget(self.replace_bar)
+        bar.addWidget(self.replace_go, 0, 4)
+        flow.addWidget(self.replace_bar)
+        flow.stretch_after = set()
+        flow.expand = {1}
+        root.addWidget(tools)
         self.replace_count = QLabel()
         self.replace_count.setObjectName("proofreadReplaceCount")
         self.replace_count.setWordWrap(True)
         self.replace_count.hide()
-        right_layout.addWidget(self.replace_count)
+        root.addWidget(self.replace_count)
         from PySide6.QtGui import QKeySequence, QShortcut
         # Keys come from the shared shortcut registry (customizable, 2026-10-13).
         page_shortcuts = {}
@@ -3498,7 +4408,7 @@ class GlossaryProofreadPage(QWidget):
         self.hint_label.setObjectName("proofreadHint")
         self.hint_label.setWordWrap(True)
         self.hint_label.hide()
-        right_layout.addWidget(self.hint_label)
+        root.addWidget(self.hint_label)
         # 2026-10-13: what this page checks right now, and the next step when
         # the project brought no glossary (never a blank page to puzzle over).
         self.scope_banner = QFrame()
@@ -3518,33 +4428,12 @@ class GlossaryProofreadPage(QWidget):
         self.scope_dismiss.clicked.connect(self._dismiss_scope_banner)
         scope_row.addWidget(self.scope_dismiss)
         self.scope_banner.hide()
-        right_layout.addWidget(self.scope_banner)
-        bulk_bar = CommandBar()
-        bulk = CommandFlowLayout(bulk_bar)
-        bulk.setContentsMargins(0, 0, 0, 0)
-        bulk.setSpacing(6)
-        bulk.addWidget(self.speaker_filter)
-        self.batch_all = QPushButton(tr("全选当前列表"))
-        self.batch_clear = QPushButton(tr("清空选择"))
-        self.batch_adopt = QPushButton(tr("采用所选"))
-        self.batch_ignore = QPushButton(tr("忽略所选"))
-        for button, handler in ((self.batch_all, self._batch_select_all), (self.batch_clear, self._batch_clear),
-                                (self.batch_adopt, self._batch_adopt), (self.batch_ignore, self._batch_ignore)):
-            button.clicked.connect(handler)
-        for button in (self.batch_all, self.batch_clear, self.batch_adopt, self.batch_ignore):
-            button.setObjectName("proofreadTint")
-            button.setFixedHeight(34)
-            bulk.addWidget(button)
-        self.batch_count = self._note()
-        bulk.addWidget(self.batch_count)
-        self.batch_adopt.setEnabled(False)
-        self.batch_ignore.setEnabled(False)
-        right_layout.addWidget(bulk_bar)
+        root.addWidget(self.scope_banner)
         self.conflicts = ConflictPanel()
         self.conflicts.changed.connect(self._conflict_chosen)
-        right_layout.addWidget(self.conflicts)
+        root.addWidget(self.conflicts)
         self.conflicts.header.toggled.connect(
-            lambda expanded: right_layout.setStretchFactor(self.conflicts, 3 if expanded else 0))
+            lambda expanded: root.setStretchFactor(self.conflicts, 3 if expanded else 0))
         self.list = CaptionReviewList()
         self.list.setProperty("uiZoomOwnSize", True)
         self.list.stutter = self.stutter_toggle.isChecked()
@@ -3557,44 +4446,95 @@ class GlossaryProofreadPage(QWidget):
         self.list.revert_requested.connect(self._revert)
         self.list.context_requested.connect(self._context_menu)
         self.list.group_dismissed.connect(self._dismiss_group)
+        self.list.group_ignored.connect(self._ignore_group)
         self.list.group_manual.connect(self._manual_group)
         self.list.hit_toggled.connect(self._toggle_hit)
         self.list.reveal_requested.connect(self._reveal_speakers)
         self.list.row_toggled.connect(self._batch_toggle_row)
         self.list.rows_select_all.connect(self._batch_select_all)
+        # 原文 · 英语 | 译文 · 简体中文 over the list's columns (2026-11-13).
+        self.columns_header = _ColumnHeader(self)
+        right_layout.addWidget(self.columns_header)
         right_layout.addWidget(self.list, 1)
-        # Bulk actions and what the list holds, under the list.
-        self.bulk_bar = QFrame()
+        # Every bulk action under the list; 采用全部建议 last (2026-11-13).
+        # Three groups that wrap whole: counts | selection | the list actions.
+        self.bulk_bar = CommandBar()
         self.bulk_bar.setObjectName("proofreadBulkBar")
+        self.bulk_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.bulk_bar.setToolTip(tr("本页的修改会直接写回工程（字幕工作台、预览和导出同时更新）；"
                                     "建议要点一下或勾选才采用。可撤销 / 重做（Ctrl+Z / Ctrl+Y）。"))
-        bulk = QHBoxLayout(self.bulk_bar)
-        bulk.setContentsMargins(12, 6, 8, 6)
-        bulk.setSpacing(8)
+        bulk = CommandFlowLayout(self.bulk_bar)
+        bulk.setContentsMargins(14, 8, 8, 8)
+        bulk.setSpacing(10)
+        counts_box = QWidget()
+        counts_box.setObjectName("proofreadCounts")
+        progress = QVBoxLayout(counts_box)
+        progress.setContentsMargins(0, 0, 0, 0)
+        progress.setSpacing(5)
         self.count_label = self._note()
-        # Wraps instead of forcing the page wider at large interface zoom.
-        self.count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        bulk.addWidget(self.count_label, 1)
-        self.select_all = QPushButton("采用全部建议")
-        self.select_none = QPushButton(tr('忽略当前列表'))
-        bind_text(self.select_all, '把列表中显示的建议全部写回工程（一步，可撤销）', property='toolTip')
-        bind_text(self.select_none, '列表中显示的、已采用的建议改回原文；其余建议标为不采用（一步，可撤销）', property='toolTip')
-        for button, state, name in ((self.select_all, True, "proofreadTint"), (self.select_none, False, "proofreadBarButton")):
+        self.count_label.setObjectName("proofreadCount")
+        self.count_label.setWordWrap(False)
+        self.count_label.setTextFormat(Qt.TextFormat.RichText)
+        progress.addWidget(self.count_label)
+        self.progress_bar = _ProgressLine()
+        progress.addWidget(self.progress_bar)
+        bulk.addWidget(counts_box)
+        self.batch_group = QFrame()
+        self.batch_group.setObjectName("proofreadBatch")
+        batch = QHBoxLayout(self.batch_group)
+        batch.setContentsMargins(4, 3, 3, 3)
+        batch.setSpacing(4)
+        self.batch_all = QPushButton(tr("全选当前列表"))
+        self.batch_count = QLabel()
+        self.batch_count.setObjectName("proofreadBatchCount")
+        self.batch_adopt = QPushButton(tr("采用所选"))
+        self.batch_ignore = QPushButton(tr("忽略所选"))
+        self.batch_clear = QPushButton(tr("清空选择"))
+        for button, handler, name in ((self.batch_all, self._batch_select_all, "proofreadPill"),
+                                      (self.batch_adopt, self._batch_adopt, "proofreadPillGo"),
+                                      (self.batch_ignore, self._batch_ignore, "proofreadPill"),
+                                      (self.batch_clear, self._batch_clear, "proofreadPillGhost")):
             button.setObjectName(name)
             button.setFixedHeight(32)
-            button.clicked.connect(lambda _=False, value=state: self._set_all(value))
-            bulk.addWidget(button)
+            button.clicked.connect(handler)
+        batch.addWidget(self.batch_all)
+        batch.addWidget(self.batch_count)
+        batch.addWidget(self.batch_adopt)
+        batch.addWidget(self.batch_ignore)
+        batch.addWidget(self.batch_clear)
+        self.batch_adopt.setEnabled(False)
+        self.batch_ignore.setEnabled(False)
+        bulk.addWidget(self.batch_group)
+        actions = QWidget()
+        actions.setObjectName("proofreadListActions")
+        actions_row = QHBoxLayout(actions)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
         self.hidden_note = QLabel()
         self.hidden_note.setObjectName("proofreadHiddenNote")
         self.hidden_note.hide()
-        bulk.addWidget(self.hidden_note)
+        actions_row.addWidget(self.hidden_note)
         self.show_speakers_button = QPushButton(tr("显示全部"))
         self.show_speakers_button.setObjectName("proofreadBarButton")
-        self.show_speakers_button.setFixedHeight(32)
+        self.show_speakers_button.setFixedHeight(36)
         bind_text(self.show_speakers_button, '重新显示所有说话人的字幕', property='toolTip')
         self.show_speakers_button.clicked.connect(lambda: self._reveal_speakers(None))
         self.show_speakers_button.hide()
-        bulk.addWidget(self.show_speakers_button)
+        actions_row.addWidget(self.show_speakers_button)
+        self.select_none = QPushButton(tr('忽略当前列表'))
+        self.select_all = _AdoptAllButton(tr("采用全部建议"))
+        bind_text(self.select_all, '把列表中显示的建议全部写回工程（一步，可撤销）', property='toolTip')
+        bind_text(self.select_none, '列表中显示的、已采用的建议改回原文；其余建议标为不采用（一步，可撤销）', property='toolTip')
+        for button, state, name, height in ((self.select_none, False, "proofreadQuiet", 40),
+                                            (self.select_all, True, "proofreadAdoptAll", 42)):
+            button.setObjectName(name)
+            button.setFixedHeight(height)
+            button.clicked.connect(lambda _=False, value=state: self._set_all(value))
+            actions_row.addWidget(button)
+        bulk.addWidget(actions)
+        bulk.expand = {0}
+        bulk.stretch_after = {1}
+        bulk.push_right = {1, 2}
         right_layout.addWidget(self.bulk_bar)
         body.addWidget(right, 1)
         root.addLayout(body, 1)
@@ -3622,38 +4562,107 @@ class GlossaryProofreadPage(QWidget):
         assets = Path(__file__).resolve().parents[2] / "assets" / "controls"
         check = (assets / f"check-{'light' if t.on_accent_is_light else 'dark'}.svg").as_posix()
         chevron = (assets / f"chevron-{'dark' if t.is_light else 'light'}.svg").as_posix()
+        # 2026-11-13: AI 校对 in the AI identity hue, 采用全部建议 in success,
+        # both quieted like the completion page's cards (soft_hue).
+        from ..app.completion_widgets import soft_hue
+        from ..design.ui_theme import contrast_ratio
+        on_vivid = getattr(t, "on_vivid", t.text_on_accent)
+        ai = soft_hue(t.zone_colors.get("ai", t.accent_text), on_vivid)
+        go_base = getattr(t, "success", t.accent)
+        go = soft_hue(go_base, on_vivid)
+        ai_ink = go_ink = on_vivid
+        ai_hover = blend_hex(ai, t.text, 0.12)
+        go_hover = blend_hex(go, t.text, 0.12)
+        go_soft = blend_hex(t.surface, go_base, 0.20)
+        go_soft_ink = legible(blend_hex(go_base, t.text, 0.25), go_soft, t)
+        ai_check = (assets / f"check-{'light' if QColor(on_vivid).lightnessF() > 0.5 else 'dark'}.svg").as_posix()
+        from ..design.typography import TITLE_FONT_STACK
+        heavy_stack = TITLE_FONT_STACK
+        line = blend_hex(t.surface, t.text, 0.13)
+        line_app = blend_hex(t.app_background, t.text, 0.15)
+        chrome = blend_hex(t.app_background, t.text, 0.07)
+        chrome_hover = blend_hex(t.app_background, t.text, 0.12)
+        chrome_line = blend_hex(t.app_background, t.text, 0.26)
+        seg = blend_hex(t.app_background, t.text, 0.09)
+        strip = blend_hex(t.surface, t.text, 0.045)
+        bulk = blend_hex(t.surface, t.text, 0.03)
+        soft = blend_hex(t.surface, t.text, 0.04)
+        chosen = blend_hex(t.surface, t.accent, 0.12)
+        rail_tabs = blend_hex(t.surface, t.text, 0.06)
+        input_fill = blend_hex(t.surface, t.text, 0.025)
+        box_line = blend_hex(t.surface, t.text, 0.32)
+        batch_line = blend_hex(t.surface, t.text, 0.16)
+        track_ink = legible(blend_hex(t.info, t.text, 0.25), strip, t)
+        success_ink = legible(go_base, t.surface, t)
+        if contrast_ratio(go_base, on_vivid) >= 4.5:
+            go, go_hover = go_base, blend_hex(go_base, t.text, 0.15)
+        self.select_all.colors = (go, go_hover, on_vivid)
+        self.select_all.update()
         self.setStyleSheet(f"""
 QWidget#glossaryProofreadPage {{ background: transparent; }}
+QScrollArea#proofreadPageScroll, QWidget#proofreadPageBody {{ background: transparent; border: 0; }}
+QScrollArea#proofreadPageScroll > QWidget#qt_scrollarea_viewport {{ background: transparent; }}
 QScrollArea#proofreadLeftScroll, QWidget#proofreadLeftBody, QFrame#proofreadSide {{ background: transparent; border: 0; }}
 QScrollArea#proofreadLeftScroll > QWidget#qt_scrollarea_viewport {{ background: transparent; }}
 QFrame#proofreadPanel, QFrame#proofreadCard {{ background: {t.surface}; border: 0; border-radius: 16px; }}
-QLabel#proofreadTitle {{ color: {t.text}; font-size: 24px; font-weight: 800; background: transparent; }}
+QLabel#proofreadTitle {{ color: {t.text}; font-size: 24px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
 QLabel#proofreadFile {{ color: {t.text_muted}; font-size: 13px; background: transparent; }}
-QLabel#proofreadStatus {{ color: {t.text_secondary}; font-size: 13px; background: {t.surface}; border-radius: 13px;
-    padding: 5px 12px; }}
-QLabel#proofreadCaption {{ color: {t.text}; font-size: 15px; font-weight: 800; background: transparent; }}
+QLabel#proofreadStatus {{ color: {t.text_secondary}; font-size: 13px; background: transparent; padding: 0 6px; }}
+QFrame#proofreadDivider {{ background: {blend_hex(t.app_background, t.text, 0.14)}; border: 0; }}
+QPushButton#proofreadAI {{ background: {ai}; color: {ai_ink}; border: 0; border-radius: 13px;
+    font-size: 15px; font-family: {heavy_stack}; font-weight: 800; padding: 0 18px; }}
+QPushButton#proofreadAI:hover {{ background: {ai_hover}; }}
+QPushButton#proofreadAdoptAll {{ background: {go}; color: {go_ink}; border: 0; border-radius: 13px;
+    font-size: 15px; font-family: {heavy_stack}; font-weight: 800; padding: 0 18px; }}
+QPushButton#proofreadAdoptAll:hover {{ background: {go_hover}; }}
+QPushButton#proofreadAI:disabled, QPushButton#proofreadAdoptAll:disabled {{ background: {fill}; color: {t.disabled}; }}
+QPushButton#proofreadQuiet {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 12px;
+    font-size: 14px; font-family: {heavy_stack}; font-weight: 800; padding: 0 12px; }}
+QPushButton#proofreadQuiet:hover {{ background: {fill_hover}; color: {t.text}; }}
+QPushButton#proofreadQuiet:disabled {{ color: {t.disabled}; }}
+QFrame#proofreadBatch {{ background: {t.surface}; border: 0; border-radius: 18px; }}
+QLabel#proofreadBatchCount {{ color: {t.text}; font-size: 13px; font-family: {heavy_stack}; font-weight: 800; background: transparent; padding: 0 6px; }}
+QPushButton#proofreadPill, QPushButton#proofreadPillGo, QPushButton#proofreadPillGhost {{ border: 0; border-radius: 16px;
+    font-size: 13px; font-family: {heavy_stack}; font-weight: 800; padding: 0 12px; }}
+QPushButton#proofreadPill {{ background: {fill}; color: {t.text}; }}
+QPushButton#proofreadPill:hover {{ background: {fill_hover}; }}
+QPushButton#proofreadPillGo {{ background: {go_soft}; color: {go_soft_ink}; }}
+QPushButton#proofreadPillGo:hover {{ background: {blend_hex(t.surface, go_base, 0.30)}; }}
+QPushButton#proofreadPillGhost {{ background: transparent; color: {t.text_secondary}; font-weight: 600; }}
+QPushButton#proofreadPillGhost:hover {{ background: {fill_hover}; color: {t.text}; }}
+QPushButton#proofreadPill:disabled, QPushButton#proofreadPillGo:disabled {{ background: {fill}; color: {t.disabled}; }}
+QLabel#proofreadCount {{ color: {t.text_secondary}; font-size: 13px; background: transparent; }}
+QWidget#proofreadColumns {{ background: {fill}; border: 0; border-radius: 11px; }}
+QLabel#proofreadColumnLabel, QLabel#proofreadColumnNote {{ color: {t.text_muted}; font-size: 12px; font-family: {heavy_stack}; font-weight: 800;
+    background: transparent; }}
+QCheckBox#proofreadColumnCheck {{ color: {t.text}; font-size: 13px; font-family: {heavy_stack}; font-weight: 800; background: transparent; spacing: 6px; }}
+QCheckBox#proofreadColumnCheck::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 0;
+    background: {blend_hex(t.surface, t.text, 0.16)}; }}
+QCheckBox#proofreadColumnCheck::indicator:checked {{ background: {ai}; image: url({ai_check}); }}
+QLabel#proofreadCaption {{ color: {t.text}; font-size: 15px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
 QLabel#proofreadNote {{ color: {t.text_muted}; font-size: 13px; background: transparent; }}
 QLabel#proofreadHeadNote {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
 QLabel#proofreadBadge {{ color: {legible(t.warning, warn_fill, t)}; background: {warn_fill}; border-radius: 11px;
-    font-size: 12px; font-weight: 700; padding: 2px 10px; }}
+    font-size: 12px; font-family: {heavy_stack}; font-weight: 800; padding: 2px 10px; }}
 QLabel#proofreadReplaceCount {{ color: {t.text_secondary}; font-size: 13px; background: transparent; padding: 0 4px; }}
-QLabel#proofreadReplaceCount[warn="true"] {{ color: {legible(t.warning, t.surface, t)}; font-weight: 700; }}
-QLabel#proofreadHiddenNote {{ color: {legible(t.warning, fill, t)}; font-size: 13px; font-weight: 700; background: transparent; }}
+QLabel#proofreadReplaceCount[warn="true"] {{ color: {legible(t.warning, t.surface, t)}; font-family: {heavy_stack}; font-weight: 800; }}
+QLabel#proofreadHiddenNote {{ color: {legible(t.warning, fill, t)}; font-size: 13px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
 QLabel#proofreadTermPreview {{ color: {t.text}; font-size: 13px; background: {fill}; border: 0; border-radius: 10px;
     padding: 6px 10px; }}
-QLabel#proofreadHitCount {{ color: {t.text_muted}; font-size: 12px; font-weight: 700; background: transparent; padding: 0 4px; }}
+QLabel#proofreadHitCount {{ color: {t.text_muted}; font-size: 12px; font-family: {heavy_stack}; font-weight: 800; background: transparent; padding: 0 4px; }}
 QLabel#proofreadKey {{ color: {t.text_muted}; background: {blend_hex(t.surface, t.text, 0.10)}; border-radius: 6px;
-    font-size: 11px; font-weight: 700; padding: 1px 6px; }}
+    font-size: 11px; font-family: {heavy_stack}; font-weight: 800; padding: 1px 6px; }}
 QFrame#proofreadReplaceBar {{ background: {fill}; border: 0; border-radius: 14px; }}
 QFrame#proofreadField {{ background: {field}; border: 2px solid transparent; border-radius: 11px; min-height: 34px; }}
 QFrame#proofreadField[focused="true"] {{ border-color: {t.accent}; }}
 QLineEdit#proofreadFieldEdit {{ background: transparent; border: 0; color: {t.text}; font-size: 14px; padding: 0 2px;
     min-height: 32px; selection-background-color: {selection}; selection-color: {t.text}; }}
 QFrame#proofreadSeg {{ background: {fill}; border: 0; border-radius: 12px; }}
-QFrame#proofreadBulkBar {{ background: {fill}; border: 0; border-radius: 14px; }}
+QWidget#proofreadBulkBar {{ background: {fill}; border: 0; border-radius: 16px; }}
+QWidget#proofreadCounts, QWidget#proofreadListActions {{ background: transparent; }}
 QFrame#proofreadSpeakerRow {{ background: transparent; border-radius: 10px; }}
 QFrame#proofreadSpeakerRow:hover {{ background: {fill}; }}
-QLabel#proofreadSpeakerName {{ color: {t.text}; font-size: 14px; font-weight: 700; background: transparent; }}
+QLabel#proofreadSpeakerName {{ color: {t.text}; font-size: 14px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
 QLabel#proofreadSpeakerName[hiddenSpeaker="true"] {{ color: {t.text_muted}; }}
 QLabel#proofreadSpeakerId, QLabel#proofreadSpeakerCount {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
 QListWidget#proofreadLibraries, QListWidget#proofreadTerms {{ background: transparent; border: 0; color: {t.text};
@@ -3699,10 +4708,10 @@ QPushButton#proofreadContent {{ background: {content_fill}; color: {t.text}; bor
     font-size: 14px; font-weight: 600; padding: 0 14px; }}
 QPushButton#proofreadContent:hover {{ background: {blend_hex(t.surface, content, 0.26)}; }}
 QPushButton#proofreadAccent {{ background: {t.accent}; color: {t.text_on_accent}; border: 0; border-radius: 11px;
-    font-size: 14px; font-weight: 700; padding: 0 16px; }}
+    font-size: 14px; font-family: {heavy_stack}; font-weight: 800; padding: 0 16px; }}
 QPushButton#proofreadAccent:hover {{ background: {t.accent_hover}; }}
 QPushButton#proofreadTint {{ background: {chip}; color: {t.accent_text}; border: 0; border-radius: 10px; font-size: 13px;
-    font-weight: 700; padding: 0 12px; }}
+    font-family: {heavy_stack}; font-weight: 800; padding: 0 12px; }}
 QPushButton#proofreadTint:hover {{ background: {chip_hover}; }}
 QPushButton#proofreadGhost {{ background: {fill}; color: {t.text_secondary}; border: 0; border-radius: 10px;
     font-size: 13px; font-weight: 600; padding: 0 12px; }}
@@ -3718,7 +4727,7 @@ QPushButton#proofreadFilter {{ background: transparent; color: {t.text_secondary
 QPushButton#proofreadFilter:hover {{ color: {t.text}; background: {fill_hover}; }}
 QPushButton#proofreadFilter:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
 QPushButton#proofreadPrimary {{ background: {t.accent}; color: {t.text_on_accent}; border: 0; border-radius: 11px;
-    font-size: 15px; font-weight: 700; padding: 0 22px; }}
+    font-size: 15px; font-family: {heavy_stack}; font-weight: 800; padding: 0 22px; }}
 QPushButton#proofreadPrimary:hover {{ background: {t.accent_hover}; }}
 QPushButton#proofreadPrimary:disabled, QPushButton#proofreadAccent:disabled, QPushButton#proofreadSecondary:disabled,
 QPushButton#proofreadBarButton:disabled, QPushButton#proofreadTint:disabled, QPushButton#proofreadContent:disabled,
@@ -3728,28 +4737,119 @@ QLabel#proofreadHint {{ background: {info_fill}; color: {t.text}; border: 0; bor
 QFrame#proofreadScope {{ background: {fill}; border: 0; border-radius: 12px; }}
 QLabel#proofreadScopeText {{ color: {t.text_secondary}; font-size: 13px; background: transparent; }}
 QPushButton#proofreadScopeUseHome {{ background: {chip}; color: {t.accent_text}; border: 0; border-radius: 9px;
-    font-size: 13px; font-weight: 700; padding: 4px 12px; }}
+    font-size: 13px; font-family: {heavy_stack}; font-weight: 800; padding: 4px 12px; }}
 QPushButton#proofreadScopeUseHome:hover {{ background: {chip_hover}; }}
 QFrame#proofreadConflicts {{ background: {blend_hex(t.surface, t.warning, 0.10)}; border: 0; border-radius: 12px; }}
 QPushButton#proofreadConflictHeader {{ background: transparent; border: 0; color: {legible(t.warning, t.surface, t)}; font-size: 15px;
-    font-weight: 700; text-align: left; padding: 4px 2px; }}
+    font-family: {heavy_stack}; font-weight: 800; text-align: left; padding: 4px 2px; }}
 QPushButton#proofreadConflictHeader[resolved="true"] {{ color: {t.text_secondary}; }}
 QPushButton#proofreadConflictHeader:hover {{ color: {t.text}; }}
 QLabel#proofreadConflictExplain {{ color: {t.text_secondary}; font-size: 14px; background: transparent; padding-top: 5px; }}
 QScrollArea#proofreadConflictScroll, QWidget#proofreadConflictBody {{ background: transparent; border: 0; }}
 QFrame#proofreadConflictRow {{ background: {t.surface}; border: 0; border-radius: 10px; }}
-QLabel#proofreadConflictTitle {{ color: {t.text}; font-size: 15px; font-weight: 700; background: transparent; }}
-QLabel#proofreadConflictValue {{ color: {t.text}; font-size: 15px; font-weight: 700; background: transparent; }}
+QLabel#proofreadConflictTitle {{ color: {t.text}; font-size: 15px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
+QLabel#proofreadConflictValue {{ color: {t.text}; font-size: 15px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
 QPushButton#proofreadConflictChoice {{ background: {fill}; color: {t.text_secondary}; border: 0;
     border-radius: 9px; font-size: 13px; padding: 4px 12px; min-height: 26px; }}
 QPushButton#proofreadConflictChoice:hover {{ background: {fill_hover}; color: {t.text}; }}
-QPushButton#proofreadConflictChoice:checked {{ background: {chip}; color: {t.accent_text}; font-weight: 700; }}
+QPushButton#proofreadConflictChoice:checked {{ background: {chip}; color: {t.accent_text}; font-family: {heavy_stack}; font-weight: 800; }}
 QMenu#proofreadMenu {{ background: {t.surface_elevated}; color: {t.text}; border: 1px solid {t.border};
     border-radius: 10px; padding: 6px; font-size: 14px; }}
 QMenu#proofreadMenu::item {{ padding: 7px 18px; border-radius: 7px; }}
 QMenu#proofreadMenu::item:selected {{ background: {chip}; color: {t.text}; }}
 QMenu#proofreadMenu::item:disabled {{ color: {t.disabled}; }}
 QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4px 8px; }}
+/* 2026-11-13: the user's draft (bilingual design A) — hairline-bordered cards,
+   the draft's sizes and weights, controls on the page background outlined. */
+QFrame#proofreadCard {{ background: {t.surface}; border: 1.5px solid {line}; border-radius: 18px; }}
+QFrame#proofreadPanel {{ background: {t.surface}; border: 1.5px solid {line}; border-radius: 20px; }}
+QLabel#proofreadTitle {{ font-size: 21px; font-family: {heavy_stack}; font-weight: 800; }}
+QLabel#proofreadFile {{ font-size: 13px; font-weight: 400; }}
+QLabel#proofreadCaption {{ font-size: 15px; font-family: {heavy_stack}; font-weight: 800; }}
+QLabel#proofreadHeadNote {{ color: {t.text_muted}; font-size: 12px; font-weight: 400; }}
+QLabel#proofreadNote {{ font-size: 12px; font-weight: 400; }}
+QPushButton#proofreadNav {{ background: {chrome}; border-radius: 18px; font-size: 13px; font-family: {heavy_stack}; font-weight: 800;
+    padding: 0 14px 0 10px; }}
+QPushButton#proofreadIcon {{ background: {chrome}; border-radius: 12px; }}
+QPushButton#proofreadNav:hover, QPushButton#proofreadIcon:hover {{ background: {chrome_hover}; }}
+QPushButton#proofreadIcon:disabled {{ background: {chrome}; }}
+QPushButton#proofreadContent {{ background: {field}; color: {t.text}; border: 1.5px solid {line_app}; border-radius: 14px;
+    font-size: 14px; font-family: {heavy_stack}; font-weight: 800; padding: 0 14px; }}
+QPushButton#proofreadContent:hover {{ background: {t.surface}; border-color: {chrome_line}; }}
+QPushButton#proofreadAI {{ border-radius: 14px; font-size: 15px; font-family: {heavy_stack}; font-weight: 800; padding: 0 16px; }}
+QFrame#proofreadSeg {{ background: {seg}; border: 0; border-radius: 14px; }}
+QFrame#proofreadReplaceBar {{ background: transparent; border: 0; border-radius: 0; }}
+QFrame#proofreadField {{ background: {field}; border: 1.5px solid {line_app}; border-radius: 12px; min-height: 34px; }}
+QFrame#proofreadField[focused="true"] {{ border-color: {t.accent}; }}
+QLineEdit#proofreadFieldEdit {{ font-size: 13px; }}
+QComboBox#proofreadScopeCombo, QWidget#proofreadFilters QComboBox#proofreadCombo {{ background: {field};
+    border: 1.5px solid {line_app}; border-radius: 12px; font-size: 13px; font-weight: 400; min-height: 34px; }}
+QPushButton#proofreadBarButton {{ background: {chrome}; border-radius: 12px; font-family: {heavy_stack}; font-weight: 800; }}
+QWidget#proofreadColumns {{ background: {strip}; border: 0; border-top-left-radius: 18px; border-top-right-radius: 18px;
+    border-bottom-left-radius: 0; border-bottom-right-radius: 0; }}
+QLabel#proofreadColumnLabel {{ color: {t.text_secondary}; font-size: 12px; font-family: {heavy_stack}; font-weight: 800; background: transparent; }}
+QLabel#proofreadColumnNote {{ color: {t.text_muted}; font-size: 12px; font-weight: 400; background: transparent; }}
+QCheckBox#proofreadColumnCheck {{ color: {t.text_muted}; font-size: 12px; font-weight: 400; spacing: 4px; }}
+QCheckBox#proofreadColumnCheck::indicator {{ width: 13px; height: 13px; border-radius: 4px; border: 1.5px solid {box_line};
+    background: {field}; }}
+QCheckBox#proofreadColumnCheck::indicator:checked {{ background: {ai}; border-color: {ai}; image: url({ai_check}); }}
+QCheckBox#proofreadSelectAll {{ background: transparent; spacing: 0; }}
+QCheckBox#proofreadSelectAll::indicator, QListWidget#proofreadLibraries::indicator {{ width: 16px; height: 16px;
+    border-radius: 4px; border: 1.5px solid {box_line}; background: {field}; image: none; }}
+QCheckBox#proofreadSelectAll::indicator:checked, QListWidget#proofreadLibraries::indicator:checked {{
+    background: {t.accent}; border-color: {t.accent}; image: url({check}); }}
+QCheckBox#proofreadSelectAll::indicator:indeterminate {{ background: {chosen}; border-color: {t.accent}; }}
+QComboBox#proofreadTrackCombo {{ background: transparent; border: 0; color: {track_ink}; font-size: 12px; font-family: {heavy_stack}; font-weight: 800;
+    padding: 0 2px; min-height: 22px; }}
+QComboBox#proofreadTrackCombo::drop-down {{ border: 0; width: 14px; }}
+QComboBox#proofreadTrackCombo::down-arrow {{ image: url({chevron}); width: 9px; height: 9px; }}
+QComboBox#proofreadTrackCombo QAbstractItemView {{ background: {t.surface_elevated}; color: {t.text}; border: 0;
+    border-radius: 10px; padding: 4px; selection-background-color: {chip}; selection-color: {t.accent_text}; outline: 0; }}
+QWidget#proofreadBulkBar {{ background: {bulk}; border: 0; border-top: 1.5px solid {line}; border-radius: 0;
+    border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; }}
+QLabel#proofreadCount {{ color: {t.text}; font-size: 13px; font-weight: 400; }}
+QFrame#proofreadBatch {{ background: {field}; border: 1.5px solid {batch_line}; border-radius: 19px; }}
+QLabel#proofreadBatchCount {{ font-size: 13px; font-family: {heavy_stack}; font-weight: 800; padding: 0 2px 0 8px; }}
+QPushButton#proofreadPill, QPushButton#proofreadPillGo, QPushButton#proofreadPillGhost {{ border-radius: 16px;
+    font-size: 13px; padding: 0 12px; }}
+QPushButton#proofreadPill {{ font-weight: 400; }}
+QPushButton#proofreadPillGo {{ font-family: {heavy_stack}; font-weight: 800; }}
+QPushButton#proofreadPillGhost {{ font-weight: 400; color: {t.text_muted}; }}
+QPushButton#proofreadQuiet {{ font-size: 14px; font-family: {heavy_stack}; font-weight: 800; color: {t.text_secondary}; }}
+QCheckBox#proofreadEnabled {{ color: {t.text_muted}; font-size: 12px; font-family: {heavy_stack}; font-weight: 800; spacing: 5px; background: transparent; }}
+QCheckBox#proofreadEnabled:checked {{ color: {success_ink}; }}
+QCheckBox#proofreadEnabled::indicator {{ width: 7px; height: 7px; border-radius: 3px; border: 0; background: {box_line}; }}
+QCheckBox#proofreadEnabled::indicator:checked {{ background: {success_ink}; }}
+QFrame#proofreadRailTabs {{ background: {rail_tabs}; border: 0; border-radius: 12px; }}
+QPushButton#proofreadRailTab {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
+    font-size: 12px; font-weight: 400; padding: 0 6px; }}
+QPushButton#proofreadRailTab:hover {{ color: {t.text}; }}
+QPushButton#proofreadRailTab:checked {{ background: {field}; color: {t.text}; font-family: {heavy_stack}; font-weight: 800; }}
+QStackedWidget#proofreadRailPages, QWidget#proofreadRailPage, QWidget#proofreadTranslationTerms {{ background: transparent; }}
+QListWidget#proofreadLibraries {{ font-size: 13px; }}
+QListWidget#proofreadLibraries::item {{ padding: 0 8px; border-radius: 10px; min-height: 30px; color: {t.text}; }}
+QListWidget#proofreadLibraries::item:selected {{ color: {t.text}; }}
+QListWidget#proofreadTerms::item, QListWidget#proofreadTerms::item:hover, QListWidget#proofreadTerms::item:selected {{
+    background: transparent; padding: 0; }}
+QPlainTextEdit#proofreadInput, QLineEdit#proofreadSearch {{ background: {input_fill}; border: 1.5px solid {line};
+    border-radius: 10px; font-size: 12px; padding: 4px 8px; }}
+QPushButton#proofreadAdd {{ background: {t.accent}; color: {t.text_on_accent}; border: 0; border-radius: 10px;
+    font-size: 12px; font-family: {heavy_stack}; font-weight: 800; padding: 0 13px; }}
+QPushButton#proofreadAdd:hover {{ background: {t.accent_hover}; }}
+QPushButton#proofreadAdd:disabled {{ background: {fill}; color: {t.disabled}; }}
+QLabel#proofreadTiny {{ color: {t.text_muted}; font-size: 11px; font-weight: 400; background: transparent; }}
+QComboBox#proofreadTinyCombo {{ background: transparent; border: 0; color: {t.text_muted}; font-size: 11px; font-weight: 400;
+    padding: 0 2px; min-height: 18px; }}
+QComboBox#proofreadTinyCombo QLineEdit {{ background: transparent; border: 0; color: {t.text_secondary}; padding: 0; }}
+QComboBox#proofreadTinyCombo::drop-down {{ border: 0; width: 12px; }}
+QComboBox#proofreadTinyCombo::down-arrow {{ image: url({chevron}); width: 8px; height: 8px; }}
+QComboBox#proofreadTinyCombo QAbstractItemView {{ background: {t.surface_elevated}; color: {t.text}; border: 0;
+    border-radius: 10px; padding: 4px; selection-background-color: {chip}; selection-color: {t.accent_text}; outline: 0; }}
+QPushButton#proofreadSoft {{ background: {fill}; color: {t.text}; border: 0; border-radius: 9px; font-size: 12px;
+    font-weight: 400; padding: 0 10px; }}
+QPushButton#proofreadSoft:hover {{ background: {fill_hover}; }}
+QPushButton#proofreadSoft:disabled {{ color: {t.disabled}; }}
+QPushButton#proofreadMini {{ font-weight: 400; }}
 """)
         self._term_colors = colors
         self._sync_speaker_rows()
@@ -3757,14 +4857,55 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def _fit_left_panel(self):
         from ..app.ui_zoom import zoom_factor
-        width = min(round(316 * zoom_factor()), max(260, int(self.width() * 0.30)))
+        width = min(round(292 * zoom_factor()), max(244, int(self.width() * 0.26)))
         if self.left_panel.width() != width or self.left_panel.minimumWidth() != width:
             self.left_panel.setFixedWidth(width)
+        narrow = self.width() < round(1250 * zoom_factor())
+        self.sidebar_button.setVisible(narrow)
+        if not getattr(self, '_sidebar_open', False):
+            self.left_panel.setVisible(not narrow)
+        self.status_label.setMinimumWidth(160 if narrow else 260)
+
+    def _open_sidebar(self):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('词库与说话人'))
+        layout = QVBoxLayout(dialog)
+        self._sidebar_open = True
+        layout.addWidget(self.left_panel)
+        self.left_panel.show()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(self.left_panel.width()+28, min(680,self.window().height()-40))
+        try:
+            dialog.exec()
+        finally:
+            layout.removeWidget(self.left_panel)
+            self._body_layout.insertWidget(0,self.left_panel)
+            self._sidebar_open = False
+            self._fit_left_panel()
+            dialog.deleteLater()
 
     def _fit_find_bar(self):
         """A narrow bar keeps its room for the two fields: the key hint goes first."""
         from ..app.ui_zoom import zoom_factor
         self.replace_key.setVisible(self.replace_bar.width() >= round(900 * zoom_factor()))
+        grid = self.replace_bar.layout()
+        compact = self.replace_bar.width() < round(800 * zoom_factor())
+        if compact != getattr(self, '_compact_find', None):
+            self._compact_find = compact
+            for widget in (self.find_field,self.replace_field,self.replace_scope,self.replace_one,self.replace_go):
+                grid.removeWidget(widget)
+            if compact:
+                grid.addWidget(self.find_field,0,0,1,5)
+                grid.addWidget(self.replace_field,1,0,1,2)
+                grid.addWidget(self.replace_scope,1,2)
+                grid.addWidget(self.replace_one,1,3)
+                grid.addWidget(self.replace_go,1,4)
+            else:
+                for column, widget in enumerate((self.find_field,self.replace_field,self.replace_scope,self.replace_one,self.replace_go)):
+                    grid.addWidget(widget,0,column)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3779,18 +4920,35 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
     @staticmethod
     def _stored_stutter():
         from PySide6.QtCore import QSettings
-        value = QSettings("2ByteASR", "2ByteASR").value("glossary_proofread/stutter_cleanup", True)
+        value = QSettings("2ByteASR", "2ByteASR").value("glossary_proofread/stutter_cleanup", False)
         return str(value).lower() not in {"false", "0"}
 
     def _stutter_toggled(self, enabled):
         from PySide6.QtCore import QSettings
         QSettings("2ByteASR", "2ByteASR").setValue("glossary_proofread/stutter_cleanup", bool(enabled))
         self.list.stutter = bool(enabled)
+        self._edit_policy_changed()
         self._refresh_view()
         # Disabled pending proposals stay in memory without becoming a user
         # decision. Newly enabled cleanup is checked against the current text.
         if enabled and self._rows:
             self._schedule_local_checks()
+
+    def _effective_edit_policy(self):
+        from .proofread_constraints import policy_of
+        project, _ = self._live_project()
+        from ..subtitle_rules.punctuation_style import project_mode, MODE_ADD
+        self.punctuation_toggle.setEnabled(project_mode(project) == MODE_ADD)
+        if project is not None:
+            project._proofread_edit_policy = dict(cleanup=self.stutter_toggle.isChecked(),
+                                                 punctuation=self.punctuation_toggle.isChecked())
+        return policy_of(project)
+
+    def _edit_policy_changed(self, *_args):
+        self._generation += 1
+        self._cancel_worker()
+        self._filter_context = None
+        self._apply_filter()
 
     # task -------------------------------------------------------------
     def open_task(self, project_path, project=None, hint="", *, studio=None):
@@ -3824,6 +4982,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._text_row_cache = {}
         self._by_id = {}
         self.text_targets.bind(live, studio)
+        self._prefer_both()
         if live is not None and studio_page is None:
             self._standalone = _StandalonePage(live)
         self._bind_stack(getattr(studio_page.session, "undo_stack", None) if studio_page is not None
@@ -3956,6 +5115,16 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
     def _text_lookup(self, project=None):
         return {entry.key: entry for entry in self._text_entries(project)}
 
+    def _prefer_both(self):
+        """2026-11-13 (user): with a translation, the page opens on 原文＋译文
+        side by side; the track the entry chose (bind) stays selected."""
+        targets = self.text_targets
+        if targets.track.count() > 1 and targets.mode_value() != "both":
+            targets.mode.blockSignals(True)
+            targets.mode.setCurrentIndex(targets.mode.findData("both"))
+            targets.mode.blockSignals(False)
+            targets._changed(emit=False)
+
     def _text_scope_changed(self):
         self.list.commit_pending_edit()
         self._cancel_worker()
@@ -3993,6 +5162,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
     def _build_rows(self, project, *, start_checks=True):
         from ..studio.studio_cue_table import _speaker_color, _speaker_name
         rows = []
+        entries = []
         if project is not None:
             if getattr(self.text_targets, '_project', None) is not project:
                 self.text_targets.bind(project)
@@ -4003,7 +5173,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             speaker_labels = {}
             track_labels = {}
             target_labels = {}
-            for number, entry in enumerate(entries, 1):
+            # One number per caption: its translation shares it (2026-11-13).
+            captions = {}
+            for entry in entries:
+                owner = (entry.source_cue_id if entry.target.layer == 'translation' and entry.source_cue_id
+                         else entry.target.cue_id)
+                number = captions.setdefault(owner, len(captions) + 1)
                 row = cache.get(entry.key)
                 if row is None:
                     row = dict(cue_id=entry.key, number=f"#{number}", time=_time_label(entry.start_ms),
@@ -4021,15 +5196,23 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 if target_key not in target_labels:
                     target_labels[target_key] = target_label(entry.target)
                 row.update(target=entry.target, layer_label=target_labels[target_key], source_text=entry.source_text,
+                           source_cue_id=entry.source_cue_id,
                            number=f'#{number}', time=_time_label(entry.start_ms),
                            start_ms=entry.start_ms, end_ms=entry.end_ms,
                            track_label=track_labels[track_key],
                            speaker_id=entry.speaker_id,
                            speaker=speaker_labels[entry.speaker_id])
+                row['association_missing'] = bool(entry.target.layer=='translation' and entry.target.storage=='cue' and not entry.source_cue_id)
+                if row['association_missing']:row['layer_label'] += tr(' · 未关联原文')
                 cache[entry.key] = row
                 rows.append(row)
             self._text_row_cache = cache
+        from .proofread_groups import group_rows
+        rows, self._group_indices = group_rows(rows, entries, project, bilingual=self.text_targets.mode_value() == 'both')
         self._rows = rows
+        self._row_order = tuple(row['cue_id'] for row in rows)
+        name = Path(getattr(getattr(project,'media',None),'path','') or self._project_path).name
+        self.file_label.setText(name + tr(' · {count} 条字幕',count=len(self._group_indices)))
         self._by_id = {row["cue_id"]: row for row in rows}
         if project is not None:
             from .recognition_review_import import existing_review
@@ -4050,8 +5233,10 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                     issue['recognition_import'] = True
                     row['issues'].append(issue)
         from .proofread_retention import restore_row, review_state
+        edit_policy = self._effective_edit_policy()
         self._review_round_id = review_state(project)['round_id']
         for row in rows:
+            row['_edit_policy'] = edit_policy
             previous = restore_row(project, row)
             if previous is not False and previous != row['base']:
                 rebase_issues(row['issues'], previous, row['base'])
@@ -4062,8 +5247,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._filter_context = None
         self._row_indexes = {row['cue_id']: index for index, row in enumerate(rows)}
         self._filter_members = set()
+        self._raw_visible = set()
         self._filter_included = {}
+        # 原文＋译文: each translation beside its caption (2026-11-13).
+        self.list.set_paired(self.text_targets.mode_value() == "both" and any(_is_translation_row(r) for r in rows))
         self.list.set_rows(self._rows)
+        if hasattr(self, "columns_header"):
+            self.columns_header.sync()
+        if self._player.cue_id:
+            self._playing_changed(self._player.cue_id,self._player.state)
         self._fill_speakers()
         self._batch_selected.intersection_update(self._by_id)
         selected_speaker = self.speaker_filter.currentData()
@@ -4295,6 +5487,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def _apply_filter(self, *_args, cue_ids=None):
         self._filter_timer.stop()
+        order = tuple(row['cue_id'] for row in self._rows)
+        if order != getattr(self,'_row_order',order):
+            from .proofread_groups import regroup_rows
+            self._rows,self._group_indices = regroup_rows(self._rows)
+            self.list.rows=self._rows
+            self._row_indexes={row['cue_id']:i for i,row in enumerate(self._rows)}
+            self._row_order=tuple(row['cue_id'] for row in self._rows)
+            self._filter_context=None
+        edit_policy = self._effective_edit_policy()
         button = self.filter_group.checkedButton()
         key = str(button.property("filterKey")) if button is not None else "all"
         raw = self._needle()
@@ -4308,7 +5509,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         counts = dict(self._filter_counts) if incremental else dict(all=0, suggested=0, pending=0, changed=0)
         totals = dict(self._proposal_totals) if incremental else dict(captions=len(self._rows), proposals=0,
             adopted=0, asked=0, suspects=0, changed=0, ignored=0, remaining=0)
-        visible = set(self.list.visible) if incremental else set()
+        visible = set(getattr(self, '_raw_visible', self.list.visible)) if incremental else set()
         members = set(getattr(self, '_filter_members', ())) if incremental else set()
         if not incremental:
             self._filter_included = {}
@@ -4319,6 +5520,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         saved_rows = review_state(project)['rows']
         for index in indices:
             row = self._rows[index]
+            row['_edit_policy'] = edit_policy
+            for issue in row['issues']:
+                issue['_allow_punctuation'] = edit_policy['punctuation']
+            from .proofread_constraints import issue_allowed
+            row['issues'][:] = [issue for issue in row['issues'] if issue_allowed(issue, row['base'], edit_policy)
+                               or not edit_policy['cleanup'] and repetition_cleanup(issue, row['base'])]
             identity = row["cue_id"]
             if speaker and (row.get("speaker_id") or "__none__") != speaker:
                 continue
@@ -4363,10 +5570,29 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             members.add(index)
             if not hidden:
                 visible.add(index)
-        shown = sorted(visible)
+        # A hit or filter on either field displays the complete stable group.
+        # Raw membership remains field-scoped for incremental updates.
+        self._raw_visible = set(visible)
+        grouped_members = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in members}
+        grouped_visible = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in visible}
+        shown = sorted(i for group in grouped_visible for i in self._group_indices.get(group, ()))
+        counted = {'all': set(), 'suggested': set(), 'pending': set(), 'changed': set()}
+        for row in self._rows:
+            identity = row['cue_id']
+            group = row.get('group_id', identity)
+            if self._filter_included.get(identity, False):
+                counted['all'].add(group)
+                for label, flag in zip(('suggested','pending','changed'), self._row_states.get(identity,(False,False,False))):
+                    if flag: counted[label].add(group)
+        counts = {label: len(values) for label, values in counted.items()}
+        totals['captions'] = len(self._group_indices)
+        totals['changed'] = len({r.get('group_id',r['cue_id']) for r in self._rows if r['base'] != r['origin']})
+        totals['ignored'] = len({r.get('group_id',r['cue_id']) for r in self._rows if self._row_summaries.get(r['cue_id'],{}).get('ignored')})
         import bisect
         for index in sorted(members-visible):
             row = self._rows[index]
+            if not row.get('group_first', True):
+                continue
             gap = gaps.setdefault(bisect.bisect_left(shown,index), dict(count=0,names=[],speakers=[],search=bool(needle)))
             gap['count'] += 1
             if row.get('speaker_id','') not in gap['speakers']:
@@ -4382,8 +5608,18 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._persist_soon(project, _studio)
         self._review_round_id = review_state(project)['round_id']
         self._filter_context, self._filter_counts, self._proposal_totals = context, counts, totals
+        shown_counts = counts  # by caption group (proofread_groups)
         for filter_key, label in FILTERS:
-            self.filter_buttons[filter_key].setText(tr("{label} {count} 条", label=tr(label), count=counts[filter_key]))
+            button = self.filter_buttons[filter_key]
+            button.setText(tr("{label} {count} 条", label=tr(label), count=shown_counts[filter_key]))
+            button.set_parts(tr(FILTER_SHORT.get(filter_key, label)), shown_counts[filter_key])
+        hits = {}
+        for row in self._rows:
+            for issue in row["issues"]:
+                if issue["kind"] in {"term", "near", "consistency", "merge"} and not issue["stale"] and issue["replacement"]:
+                    hits[issue["replacement"]] = hits.get(issue["replacement"], 0) + 1
+        self._term_hits = hits
+        self.term_list.viewport().update()
         empty = {"all": tr("这个工程没有字幕"),
                  "suggested": tr("目前没有修改建议；可点击AI校对"),
                  "pending": tr("没有需要你确认的地方"), "changed": tr("本页还没有修改")}
@@ -4411,17 +5647,19 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         """Units shown above the list: proposals are groups (one decision
         each), suspected names are counted apart, captions by caption."""
         groups = [group for row in self._rows for group in self._groups(row)]
-        return dict(captions=len(self._rows), proposals=len(groups),
+        from .proofread_groups import subtitle_count
+        return dict(captions=subtitle_count(self._rows), proposals=len(groups),
                     adopted=sum(group["state"] == "adopted" for group in groups),
                     remaining=sum(g['state']!='adopted' and not g['reviewed'] for g in groups),
                     asked=sum(group["pending"] and group["state"] != "adopted" and not group["reviewed"] for group in groups),
                     suspects=sum(issue["kind"] == "suspect" and not issue["stale"] for row in self._rows
                                  for issue in row["issues"]),
-                    changed=sum(1 for row in self._rows if row["base"] != row["origin"]),
-                    ignored=sum(1 for row in self._rows if row.get('review_dismissed') or any(i.get("ignored") for i in row["issues"])))
+                    changed=subtitle_count([r for r in self._rows if r['base'] != r['origin']]),
+                    ignored=subtitle_count([r for r in self._rows if r.get('review_dismissed') or any(i.get('ignored') for i in r['issues'])]))
 
     def _selection_changed(self, *_args):
         counts = self._proposal_totals or self.proposal_counts()
+        # 2026-11-13: one short line under the list; the whole sentence is its tooltip.
         text = tr('共 {total} 条字幕 · 建议 {proposals} 处（未处理 {remaining} · 已采用 {adopted}）',
                   total=counts['captions'], proposals=counts['proposals'], remaining=counts.get('remaining',0),adopted=counts['adopted'])
         if counts["suspects"]:
@@ -4429,10 +5667,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         text += tr(' · 本页已改 {changed} 条', changed=counts["changed"])
         if counts["ignored"]:
             text += tr(' · 已忽略 {count} 条', count=counts["ignored"])
-        self.count_label.setText(text)
-        self.count_label.setText(text + tr(' · 待确认 {count} 行 · 本轮保留 {retained} 行',
-            count=self._filter_counts.get('pending',0), retained=self._filter_counts.get('suggested',0)))
-        self.count_label.setToolTip(tr('有修改建议按本轮保留的字幕行计数；采用和改字后仍保留，主动忽略才移出。已修改只计实际改字。待确认只计尚未处理的建议。'))
+        short = tr('<b>{proposals}</b> 处建议 · 已采用 <b>{adopted}</b> · 待处理 <b>{remaining}</b> · 本页已改 {changed} 条',
+                   proposals=counts['proposals'], remaining=counts.get('remaining', 0), adopted=counts['adopted'],
+                   changed=counts["changed"])
+        self.count_label.setText(short)
+        self.count_label.setToolTip(text + "\n" + tr('有修改建议按本轮保留的字幕行计数；采用和改字后仍保留，主动忽略才移出。已修改只计实际改字。待确认只计尚未处理的建议。'))
+        remaining = int(counts.get('remaining', 0) or 0)
+        self.progress_bar.set_parts(counts['adopted'], max(0, counts['proposals'] - counts['adopted'] - remaining), remaining)
+        self.progress_bar.setVisible(bool(counts['proposals']))
+        self.select_all.set_badge(remaining or "")
         self.list.remember_targets = {"name": self._target_name()}
         self._batch_update()
         self.list.update()
@@ -4447,13 +5690,22 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         cues = {c.id: c for c in getattr(project, "cues", ())}
         return {self._rows[n]["cue_id"] for n in self.list.visible if (self._unresolved(self._rows[n])
                 or self._rows[n].get('review_retained') and not self._rows[n].get('review_dismissed'))
-                and self._rows[n]["cue_id"] in cues and not cue_locked(cues[self._rows[n]["cue_id"]], locked)}
+                and self._rows[n]['target'].cue_id in cues and not cue_locked(cues[self._rows[n]['target'].cue_id], locked)}
 
     def _batch_update(self):
         count = sum(len(self._unresolved(self._by_id[c])) for c in self._batch_selected if c in self._by_id)
-        self.batch_count.setText(tr("已选 {rows} 行 · {issues} 处建议", rows=len(self._batch_selected), issues=count))
+        from .proofread_groups import subtitle_count
+        self.batch_count.setText(tr("已选 {rows} 条字幕 · {issues} 处建议", rows=subtitle_count([self._by_id[k] for k in self._batch_selected if k in self._by_id]), issues=count))
         self.batch_adopt.setEnabled(bool(count))
         self.batch_ignore.setEnabled(bool(self._batch_selected))
+        # 2026-11-13: nothing chosen → only 全选当前列表; chosen → the count,
+        # 采用所选 / 忽略所选 and 清空选择 in one pill.
+        chosen = bool(self._batch_selected)
+        self.batch_all.setVisible(not chosen)
+        for widget in (self.batch_count, self.batch_adopt, self.batch_ignore, self.batch_clear):
+            widget.setVisible(chosen)
+        if hasattr(self, "columns_header"):
+            self.columns_header.sync_selection()
         self.list.selected_rows = self._batch_selected
         self.list.update()
 
@@ -4466,9 +5718,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._batch_update()
 
     def _batch_toggle_row(self, cue_id):
-        if cue_id not in self._batch_eligible_ids():
+        eligible = self._batch_eligible_ids()
+        row = self._by_id.get(cue_id)
+        members = set(row.get('group_fields',(cue_id,))) & eligible if row else set()
+        if not members:
             return
-        self._batch_selected.symmetric_difference_update({cue_id})
+        if members <= self._batch_selected:
+            self._batch_selected.difference_update(members)
+        else:
+            self._batch_selected.update(members)
         self._batch_update()
 
     def _batch_ignore(self):
@@ -4478,7 +5736,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         project, studio = self._live_project()
         if project is None:
             return
-        current = {c.id: c.text for c in project.cues}
+        current = {key: entry.text for key, entry in self._text_lookup(project).items()}
         wanted = self._batch_selected & self._batch_eligible_ids()
         decisions, skipped, total = {}, [], 0
         for cue_id in wanted:
@@ -5063,6 +6321,46 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._set_status(tr("已忽略本行 {count} 处建议（{number}，保留当前文字）· 可撤销", count=len(unresolved), number=row["number"]))
         self._apply_filter(cue_ids={cue_id})
 
+    def _ignore_group(self, cue_id, index):
+        """✕ in one bubble: ignore that group only; the whole caption when it
+        was the last open one (then it leaves this round like 忽略本行建议)."""
+        self.list.commit_pending_edit()
+        row = self._by_id.get(cue_id)
+        if row is None or row.get('review_dismissed'):
+            return
+        group = group_of(row, index, self.list.terms, self.stutter_toggle.isChecked())
+        unresolved = self._unresolved(row)
+        chosen = [issue for issue in unresolved if group is not None
+                  and any(issue is row["issues"][part] for part in group["parts"])]
+        if not chosen:
+            return
+        if len(chosen) == len(unresolved):
+            self._dismiss_group(cue_id, index)
+            return
+        from .proofread_rules import DECISIONS_KEY, decision_for
+        from .proofread_decisions import IgnoreProofreadGroupCommand
+        project, studio = self._live_project()
+        if project is None or next((c.text for c in project.cues if c.id == cue_id), row["base"]) != row["base"]:
+            self._sync_from_project()
+            return
+        previous = (project.studio_state.get(DECISIONS_KEY) or {}).get(cue_id, ())
+        decisions = [*previous, *(decision_for(row, issue) for issue in chosen)]
+        page = studio if studio is not None else self._standalone
+        if page is None:
+            self._standalone = page = _StandalonePage(project)
+            self._bind_stack(page.session.undo_stack)
+        self._writing = True
+        try:
+            page.session.undo_stack.push(IgnoreProofreadGroupCommand(project, cue_id, decisions,
+                changed=page._changed, label=tr("忽略 {number} 的一处建议", number=row["number"])))
+        finally:
+            self._writing = False
+        self._cue_versions[cue_id] = self._cue_versions.get(cue_id, 0) + 1
+        self._apply_decisions(row, {})
+        self._persist_soon(project, studio)
+        self._set_status(tr("已忽略 {number} 的 {count} 处建议，保留当前文字 · 可撤销", number=row["number"], count=len(chosen)))
+        self._apply_filter(cue_ids={cue_id})
+
     def _manual_group(self, cue_id, index):
         """手动改写: the editor opens with the group's whole word selected."""
         row = self._by_id.get(cue_id)
@@ -5372,6 +6670,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             text = tr("无结果")
         elif key in keys:
             text = tr("第 {index} / {total} 处", index=keys.index(key) + 1, total=len(keys))
+            matched = self._by_id.get(key[0])
+            if matched is not None:text += ' · ' + matched.get('layer_label','')
         else:
             text = tr("{total} 处", total=len(keys))
         self.hit_label.setText(text)
@@ -5683,7 +6983,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
     def _speakers(self):
         """[(speaker id, name, colour, captions)] in order of first appearance."""
         found = {}
+        seen = set()
         for row in self._rows:
+            if row.get('group_id', row['cue_id']) in seen:
+                continue
+            seen.add(row.get('group_id', row['cue_id']))
             key = row.get("speaker_id", "")
             if key not in found:
                 name, color = row["speaker"]
@@ -5915,7 +7219,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self.target_note.setText(tr("将新建词库「{name}」", name=identity))
         else:
             self.target_note.setText(tr("新词会加入「{name}」", name=self._target_name()) if identity else "")
+        # The draft keeps one quiet line (加到 … · 分类); the note only shows
+        # when it warns about something.
+        self.target_note.setVisible(bool(self.target_note.text())
+                                    and not self.target_note.text().startswith(tr("新词会加入「{name}」", name="").split("「")[0]))
         self.add_button.setEnabled(bool(identity))
+        if not self.target_combo.lineEdit().hasFocus():
+            self.target_combo.lineEdit().setCursorPosition(0)  # the name's start, not its clipped end
         self.list.remember_targets = {"name": self._target_name()}
         self.list.update()
 
@@ -5959,7 +7269,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             bind_text(self.library_summary, '未选择词库')
             bind_text(self.library_summary, '未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。',
                       property='toolTip')
-            self._set_library_note(tr('未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。'))
+            self._set_library_note('')  # one explanation in the scope banner
             return
         live, _studio = self._live_project()
         recorded = recorded_revisions(live) if live is not None else {}
@@ -5993,14 +7303,31 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self.library_note.setVisible(bool(text))
 
     def _fit_library_list(self):
-        """Up to four whole rows, never a half-cut one (2026-10-23, user)."""
+        """Up to six whole rows, never a half-cut one (2026-10-23, user; six
+        since the draft of 2026-11-13)."""
         lst = self.library_list
-        rows = min(4, lst.count())
-        height = (sum(lst.sizeHintForRow(row) for row in range(rows)) if rows
+        rows = min(6, lst.count())
+        height = (sum(lst.sizeHintForRow(row) + 2 * lst.spacing() for row in range(rows)) if rows
                   else lst.fontMetrics().height() + 12)
         lst.setFixedHeight(height + 2 * lst.frameWidth())
+        self._tint_libraries()
+
+    def _tint_libraries(self):
+        """The chosen libraries: tinted and bold, as in the draft."""
+        lst = self.library_list
+        lst.blockSignals(True)
+        try:
+            for row in range(lst.count()):
+                item = lst.item(row)
+                chosen = item.checkState() == Qt.CheckState.Checked
+                font = item.font()
+                font.setBold(chosen)
+                item.setFont(font)
+        finally:
+            lst.blockSignals(False)
 
     def _libraries_changed(self, *_args):
+        self._tint_libraries()
         self._sync_target()
         self._store_term_settings(source_ids=self._selected_ids())
 
@@ -6423,7 +7750,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         has_translation_terms = policy_of(live)['enabled'] and any(e.target.layer == 'translation' for e in self._text_entries(live))
         if not use_ai and (self._snapshot is None or (not self._selected_ids() and not has_translation_terms)):
             self._clear_term_issues(cue_ids)
-            self._set_status(tr("未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。"))
+            self._set_status(tr('可直接进行 AI 校对'))
             self._apply_filter()
             return
         if self._snapshot is None:
@@ -6451,6 +7778,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         from ..subtitle_rules.subtitle_translation import translation_revisions
         revisions_at_run = dict(translation_revisions(live))
         view = review_project(_review_copy(live), entries)
+        view._proofread_edit_policy = self._effective_edit_policy()
+        view._frozen_translation_policy = term_policy_at_run
         worker = _ReviewThread(view, wanted, review_snapshot, settings, bool(use_ai), self,
                                stand_in=self.ai_stand_in if use_ai else None)
         self._worker, self._worker_ai, self._worker_scope_all = worker, bool(use_ai), scope is None
@@ -6566,13 +7895,15 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if hit.source != 'translation_ai':
                 target_resolver = resolver
                 if targets[hit.cue_id].target.layer == 'translation':
-                    from .translation_review import language_snapshot
-                    from .terminology import TermResolver
+                    from .terminology import TermResolver, GlossarySnapshot, GlossaryLibrary, TermEntry
                     language=targets[hit.cue_id].target.language
-                    if language not in language_resolvers:
-                        language_resolvers[language]=TermResolver(language_snapshot(
-                            resolver.snapshot if resolver is not None else self._snapshot,language)) if self._snapshot else None
-                    target_resolver=language_resolvers[language]
+                    if hit.cue_id not in language_resolvers:
+                        rules = next((s.get('target_error_rules', []) for s in receipt.get('segments', ())
+                                      if s.get('cue_id') == hit.cue_id), [])
+                        target_snapshot = GlossarySnapshot((GlossaryLibrary('target-rules', '译文错误规则', '',
+                            tuple(TermEntry(r['target'], (r['source'],)) for r in rules)),))
+                        language_resolvers[hit.cue_id] = TermResolver(target_snapshot)
+                    target_resolver=language_resolvers[hit.cue_id]
                 hit = normalize_occurrence(hit, current[hit.cue_id], target_resolver)
             if hit is None:
                 continue
@@ -6580,6 +7911,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             reason = hit.reason or ""
             issue = _issue(kind, hit.span, hit.original, hit.replacement, checked=False, reason=reason, hit=hit,
                            evidence="；".join(v for v in (hit.evidence, hit.missing_evidence) if v))
+            issue['content_evidence_verified'] = bool(getattr(hit, 'content_evidence_verified', False))
+            issue['_allow_punctuation'] = self._effective_edit_policy()['punctuation']
             # A known whole-word alias remains a glossary correction even
             # when its spelling contains a repeated character.
             from ..subtitle_rules.chinese_script import fold
@@ -6700,9 +8033,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 status = tr("AI 校对没有成功（{reason}）；下面只有本地匹配和口吃整理的结果",
                             reason="；".join(errors)[:160])
             elif fallback:
-                status = tr('AI 校对部分完成：{ok} 条已核对 · {fallback} 条可局部重试', ok=ok, fallback=fallback)
+                status = tr('AI 校对部分完成：{ok} 段文本已核对 · {fallback} 段可局部重试', ok=ok, fallback=fallback)
             else:
-                status = tr("AI 校对完成：{ok} 条已核对 · {fallback} 条未完成（保留当前文本）", ok=ok, fallback=fallback)
+                status = tr("AI 校对完成：{ok} 段文本已核对 · {fallback} 段未完成（保留当前文本）", ok=ok, fallback=fallback)
             if scope is not None and self._hidden_speakers:
                 status += tr(" · 隐藏的说话人没有送去校对")
             self._ai_status = status
@@ -6762,7 +8095,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     # audio ------------------------------------------------------------
     def _play(self, cue_id):
-        if self._player.cue_id and getattr(self,'_playing_row_key',self._player.cue_id) == cue_id:
+        row = self._by_id.get(cue_id)
+        play_key = row.get('group_fields',(cue_id,))[0] if row else cue_id
+        if self._player.cue_id and getattr(self,'_playing_row_key',self._player.cue_id) == play_key:
             if self._player.state == "paused":
                 self._player.resume()
                 return
@@ -6773,11 +8108,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if live is None:
             self._set_status(tr("工程已关闭或被替换，无法试听"))
             return
-        row = self._by_id.get(cue_id)
-        self._playing_row_key = cue_id
-        self._player.play(live, row['target'].cue_id if row and row.get('target') else cue_id)
+        self._playing_row_key = play_key
+        self._player.play(live, row.get('audio_cue_id', row['target'].cue_id) if row and row.get('target') else cue_id)
 
     def _playing_changed(self, cue_id, state):
+        owner = next((r for r in self._rows if r.get('audio_cue_id') == cue_id), None)
+        if owner is not None:self._playing_row_key = owner.get('group_fields',(owner['cue_id'],))[0]
         self.list.playing = (getattr(self, '_playing_row_key', cue_id), state) if state else ("", "")
         if state in {"loading", "playing", "paused"}:
             self._audio_status_text = tr({"loading": "正在准备这一句的音频…（可点击暂停）",

@@ -21,6 +21,7 @@ from .theme_manager import theme_key
 from .ui_theme import (THEME_FAMILIES, ThemeDefinition, blend_hex, ordered_themes, theme_definition,
                        theme_display_label, theme_family_label)
 from ..app.ui_zoom import px
+from .typography import weighted_font
 
 CARD_MIN_WIDTH = 164
 CARD_GAP = 12
@@ -187,7 +188,7 @@ class ThemeCard(QAbstractButton):
     def _name_font(self) -> QFont:
         name_font = QFont(self.font())
         name_font.setPixelSize(px(14))
-        name_font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(name_font, QFont.Weight.DemiBold)
         return name_font
 
     def _text_height(self) -> int:

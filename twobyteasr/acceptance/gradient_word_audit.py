@@ -185,7 +185,9 @@ def exercise_controls(page, out, pump, report):
     page.style_shadow_distance.setValue(18);page.style_shadow_opacity.setValue(75);page._commit_style_now()
     disc=page.style_shadow_angle
     report['directions']=[]
-    for angle,point in ((0,QPoint(65,36)),(90,QPoint(36,65)),(180,QPoint(7,36)),(270,QPoint(36,7))):
+    # 2026-11-13: the stage. 31 px from its centre is the 18 px distance set above.
+    centre=disc.rect().center()
+    for angle,point in ((0,centre+QPoint(31,0)),(90,centre+QPoint(0,31)),(180,centre-QPoint(31,0)),(270,centre-QPoint(0,31))):
         count=page.undo_stack.index()
         QTest.mousePress(disc,Qt.LeftButton,pos=point);QTest.mouseRelease(disc,Qt.LeftButton,pos=point)
         pump(.3)
@@ -194,7 +196,7 @@ def exercise_controls(page, out, pump, report):
         check(f'drag_single_undo_{angle}',page.undo_stack.index()==count+1)
         report['directions'].append(dict(angle=angle,shadow=snapshot.shadow))
         capture_window(page,out/f'direction-{angle}.png',pump)
-    scroll.ensureWidgetVisible(page.style_shadow_spread,0,20);pump(.1)
+    scroll.ensureWidgetVisible(page.style_shadow_sliders['spread'],0,20);pump(.1)
     color=page.style_shadow_button;alpha=page.style_shadow_opacity
     report['control_geometry']={name:dict(rect=list(control.geometry().getRect()),
         top=control.mapToGlobal(QPoint()).y(),bottom=control.mapToGlobal(QPoint(0,control.height())).y())

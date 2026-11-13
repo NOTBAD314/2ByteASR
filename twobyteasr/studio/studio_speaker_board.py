@@ -19,6 +19,7 @@ from ..design.studio_theme import _active_theme
 from ..design.themed_icons import themed_icon
 from ..design.ui_theme import blend_hex
 from ..i18n import bind_text, tr
+from ..design.typography import emphasized, weighted_font
 
 SPEAKER_MIME = "application/x-2byteasr-speakers"
 BOX_TITLES = {"main": "主要角色", "secondary": "次要角色", "game": "游戏声", "ignore": "已忽略"}
@@ -32,6 +33,7 @@ def short_label(name: str, key: str) -> str:
     return match.group(1)[-2:] if match else text[:1]
 
 
+@emphasized
 def build_speaker_board_qss(t) -> str:
     accent_tint = blend_hex(t.surface, t.accent, 0.2)
     hover = blend_hex(t.surface_elevated, t.selected, 0.55)
@@ -155,7 +157,7 @@ class SpeakerAvatar(QWidget):
         painter.setBrush(QColor(blend_hex(theme.surface_elevated, color.name(), 0.3)))
         painter.drawEllipse(rect.adjusted(0.75, 0.75, -0.75, -0.75))
         font = QFont(self.font())
-        font.setBold(True)
+        weighted_font(font, 700)
         font.setPixelSize(max(9, int(size * (0.4 if len(self._text) < 2 else 0.36))))
         painter.setFont(font)
         painter.setPen(QColor(blend_hex(theme.text, color.name(), 0.62)))
@@ -214,7 +216,7 @@ class ColorStack(QWidget):
         if self._more:
             painter.setPen(QColor(theme.text_muted))
             font = QFont(self.font())
-            font.setBold(True)
+            weighted_font(font, 700)
             font.setPixelSize(11)
             painter.setFont(font)
             left = 2 + step * (len(self._colors) - 1) + self._dot + 4
@@ -355,7 +357,13 @@ class SpeakerTile(QFrame):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.avatar = SpeakerAvatar(36 if main else 28, self)
-        self.name_label = QLabel(self)
+        if main:
+            # 2026-11-13 (user): a narrow two-column card squeezed the row and cut
+            # the avatar ring; long names and stats now end in "…" instead.
+            from ..design.elided_label import ElidedLabel
+            self.name_label = ElidedLabel(parent=self, mode=Qt.TextElideMode.ElideRight, minimum=40)
+        else:
+            self.name_label = QLabel(self)
         self.name_label.setObjectName("speakerTileName")
         self.play_button = QToolButton(self)
         self.play_button.setObjectName("speakerTilePlay")
@@ -391,11 +399,12 @@ class SpeakerTile(QFrame):
         column.setSpacing(8)
         top = QHBoxLayout()
         top.setSpacing(10)
-        top.addWidget(self.avatar)
+        top.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignTop)
         names = QVBoxLayout()
         names.setSpacing(0)
         names.addWidget(self.name_label)
-        self.meta_label = QLabel(self)
+        from ..design.elided_label import ElidedLabel as _Elided
+        self.meta_label = _Elided(parent=self, mode=Qt.TextElideMode.ElideRight, minimum=40)
         self.meta_label.setObjectName("speakerTileMeta")
         names.addWidget(self.meta_label)
         top.addLayout(names)
@@ -527,7 +536,7 @@ class SpeakerTile(QFrame):
 def drag_pixmap(text: str) -> QPixmap:
     theme = _active_theme(None)
     font = QFont(QApplication.font())
-    font.setBold(True)
+    weighted_font(font, 700)
     font.setPixelSize(13)
     from PySide6.QtGui import QFontMetrics
     width = QFontMetrics(font).horizontalAdvance(text) + 30

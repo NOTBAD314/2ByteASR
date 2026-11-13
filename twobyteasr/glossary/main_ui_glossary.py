@@ -20,7 +20,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -75,6 +75,7 @@ from ..i18n import bind_text
 
 from ..i18n import tr
 from ..app.lazy_pages import existing_page
+from ..design.typography import emphasis_qss
 
 
 class _SheetDim(QFrame):
@@ -138,6 +139,8 @@ def preview_term_import(text, existing=(), *, mapping_mode=False):
     raw = str(text or "").strip(' \r\n')
     if raw.startswith(("{", "[")):
         payload = json.loads(raw)
+        if isinstance(payload, dict) and 'concepts' in payload:
+            raise ValueError('这是完整多语言词库，请点击“导入多语言…”以保留语言状态与概念关联')
         items = payload if isinstance(payload, list) else payload.get("mappings", payload.get("terms", []))
         if isinstance(payload, dict) and isinstance(payload.get("games"), dict):
             items = [row for entry in payload["games"].values() if isinstance(entry, dict) for row in entry.get("mappings", [])]
@@ -234,6 +237,10 @@ class TermGameListRow(QFrame):
         self.name_label.setToolTip(name)
         self.icon_label.setText(str(name or "?")[:1])
         self.icon_label.setStyleSheet(avatar_style(name))
+        if count == '…' or reference_count == '…':
+            # 2026-11-13 (user): 「… 已确认 · … 参考」 read as cut-off text.
+            bind_text(self.count_label, '正在统计…')
+            return
         (bind_text(self.count_label, f'{count} confirmed · {reference_count} references') if current_language() == 'en' else bind_text(self.count_label, '{value0} 已确认 · {value1} 参考', value0=count, value1=reference_count))
 
     def set_in_use(self, in_use: bool):
@@ -292,8 +299,8 @@ class _TermMappingsModel(QAbstractTableModel):
         # Background preparation owns these immutable row dictionaries.
         # Ordinary callers keep the existing defensive-copy contract.
         rows = list(items) if prepared else deepcopy(items) if items else []
-        old_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in self._rows]
-        new_keys = [(row.get('target'), row.get('source'), row.get('status')) for row in rows]
+        old_keys = [row.get('concept_id') or (row.get('target'), row.get('source'), row.get('status')) for row in self._rows]
+        new_keys = [row.get('concept_id') or (row.get('target'), row.get('source'), row.get('status')) for row in rows]
         if old_keys == new_keys:
             changed = [i for i, row in enumerate(rows) if row != self._rows[i]]
             self._rows = rows
@@ -495,6 +502,21 @@ def _reference_category_label(raw: str) -> str:
     return _REFERENCE_CATEGORY_LABELS.get(key, str(raw or "其他").strip() or "其他")
 
 
+class _DrawerFrame(QFrame):
+    """Right-side drawer of 「名称与译名」 (2026-11-13). It takes the height the
+    cards have and scrolls inside; its word-wrapped content must not report a
+    height-for-width that would make the page taller than the window."""
+
+    def hasHeightForWidth(self):  # noqa: N802 - Qt API
+        return False
+
+    def sizeHint(self):  # noqa: N802 - Qt API
+        return QSize(self.minimumWidth(), 0)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt API
+        return QSize(self.minimumWidth(), 0)
+
+
 class TermLibraryDialog(QWidget):
     """术语库与学习记录（C 轮重排）。
 
@@ -600,6 +622,8 @@ class TermLibraryDialog(QWidget):
             )
         }
         self._build(games)
+        from .multilingual_terms_ui import install
+        install(self)
         for entry in getattr(self.legacy, "glossary_catalog", lambda: [])():
             self.add_game_item(entry["name"], library_id=entry["id"])
         self.libraries_changed.connect(self._notify_owner_library_changed)
@@ -958,6 +982,8 @@ class TermLibraryDialog(QWidget):
         self._tab_group.addButton(self.my_tab_button)
         self._tab_group.addButton(self.hub_tab_button)
         heading.addWidget(tab_bar, 1, Qt.AlignmentFlag.AlignBottom)
+        self._page_title = title
+        self._align_heading()
         layout.addSpacing(12)
         # The library count once lived in a badge; the 「我的词库」 tab shows it now.
         self.library_badge = QLabel(self)
@@ -1097,6 +1123,7 @@ class TermLibraryDialog(QWidget):
         name_row.addWidget(self.selected_title)
         self.selected_type = QLabel()
         self.selected_type.setObjectName("termTypeTag")
+        self.selected_type.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.selected_type.hide()
         name_row.addWidget(self.selected_type, 0, Qt.AlignmentFlag.AlignVCenter)
         title_column.addLayout(name_row)
@@ -1106,6 +1133,8 @@ class TermLibraryDialog(QWidget):
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(10)
         name_row.addWidget(self.header_meta)
+        name_row.addStretch(1)  # keeps the type tag beside the name when meta wraps (2026-11-13)
+        self.selected_title.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self._header_name_row, self._header_title_column = name_row, title_column
         self._header_narrow = False
         meta_row.addSpacing(2)
@@ -1136,6 +1165,7 @@ class TermLibraryDialog(QWidget):
         selected_row.addWidget(self.use_game, 0, Qt.AlignmentFlag.AlignVCenter)
         self.batch_toggle = self.use_game  # name before the redesign
         selected_row.addSpacing(6)
+        self._header_row = selected_row  # library actions join it below (2026-11-13)
         self.share_button = AnimatedButton("分享")
         self.share_button.setObjectName("termToolButton")
         bind_text(self.share_button, '把这个词库投稿到线上词库：先检查，再打开 GitHub 或 GitCode 的投稿页', property='toolTip')
@@ -1166,6 +1196,14 @@ class TermLibraryDialog(QWidget):
         self.more_popup.add_separator()
         self.more_popup.add_button(self.delete_game_button, danger=True)
         content_header_layout.addLayout(selected_row)
+        from ..studio.studio_toolbar_layout import CommandBar, CommandFlowLayout
+        self._header_actions_bar = CommandBar()
+        self._header_actions_flow = CommandFlowLayout(self._header_actions_bar)
+        self._header_actions_flow.setContentsMargins(0, 0, 0, 0)
+        self._header_actions_flow.setSpacing(8)
+        self._header_actions_flow.stretch_after = set()
+        self._header_actions_bar.hide()
+        content_header_layout.addWidget(self._header_actions_bar)
 
         # 分享提示：已确认词够多、这个游戏线上还没有词库时提示一次（可关掉）。
         self.share_nudge = QFrame()
@@ -1217,9 +1255,10 @@ class TermLibraryDialog(QWidget):
             label = bind_text(QLabel(), text) if text else QLabel()
             label.setObjectName("termAddHeadLabel")
             head_labels.append(label)
-        composer = QFrame()
+        composer = CommandBar()
+        composer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         composer.setObjectName("termComposer")
-        composer.setFixedHeight(48)
+        composer.setMinimumHeight(48)
         composer_row = add_grid(composer)
         plus = QLabel("+")
         plus.setObjectName("termAddPlus")
@@ -1227,13 +1266,18 @@ class TermLibraryDialog(QWidget):
         plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.term_editor = QLineEdit()
         self.term_editor.setObjectName("termComposerInput")
-        bind_text(self.term_editor, '新词，如「倾泻」', property='placeholderText')
+        bind_text(self.term_editor, '正确写法，如「倾泻」', property='placeholderText')
         self.term_editor.setAccessibleName('规范写法 / 最终输出')
         self.term_editor.setToolTip('字幕里最终要出现的写法，大小写原样保留')
         self.term_editor.returnPressed.connect(self.add_single_term)
         self.term_alias_editor = QLineEdit()
+        # The names drawer reduces the content allocation. Keep fixed actions
+        # reachable while the two editable fields share the remaining space.
+        self.term_editor.setMinimumWidth(150)
+        self.term_alias_editor.setMinimumWidth(150)
         self.term_alias_editor.setObjectName("termComposerInput")
-        bind_text(self.term_alias_editor, '倾斜、清线（多个用顿号）', property='placeholderText')
+        bind_text(self.term_alias_editor, '常被听成（可不填）', property='placeholderText')
+        bind_text(self.term_alias_editor, '常被听成（可不填，多个用顿号）', property='toolTip')
         self.term_alias_editor.setAccessibleName('别名 / 常见错词')
         self.term_alias_editor.returnPressed.connect(self.add_single_term)
         self.term_category = FramelessPopupCombo()
@@ -1280,6 +1324,15 @@ class TermLibraryDialog(QWidget):
         self.term_try_toggle.clicked.connect(self._toggle_try_panel)
         hint_row.addWidget(self.term_try_toggle)
         quick_add.addWidget(hint_box)
+        # 2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): one row.
+        # The column names became placeholders, the two-way hint a tooltip, and
+        # 批量映射 / 试一句 sit at the end of the same row.
+        for link in (self.quick_mapping_button, self.term_try_toggle):
+            hint_row.removeWidget(link)
+            composer_row.addWidget(link)
+        bind_text(composer, '只写正确写法 → 帮识别写对；再写常被听成 → 识别成那样时自动改过来', property='toolTip')
+        add_head.hide()
+        hint_box.hide()
         self.term_parse_preview = QLabel("规范词原样保存；只有已确认的别名才用于纠错。")
         self.term_parse_preview.setObjectName("termHint")
         self.term_parse_preview.setWordWrap(True)
@@ -1363,19 +1416,30 @@ class TermLibraryDialog(QWidget):
         self.search.textChanged.connect(self.apply_filter)
         term_tools.addWidget(self.search, 1)
         term_tools.addStretch(1)
-        self.ai_menu_button = AnimatedButton("AI 更新 ▾")
+        # 2026-11-13 (user, option A of tmp/glossary-ai-menu-20261113): one
+        # 「AI 帮忙 ▾」 grouped by what you want (找新词 / 加外语名), each entry
+        # in plain words with one line on what it does; whether the chosen AI
+        # can go online sits beside it, and entries that need it say so.
+        from .glossary_page_parts import AIMenuEntry
+        self.ai_menu_button = AnimatedButton("AI 帮忙 ▾")
         self.ai_menu_button.setObjectName("termToolButton")
         bind_text(self.ai_menu_button, 'AI 联网查资料，建立或更新这个词库', property='toolTip')
         term_tools.addWidget(self.ai_menu_button)
-        self.ai_update_button = AnimatedButton("日常增量更新")
+        self.ai_update_button = AIMenuEntry(icon="fa5s.seedling", tone="new")
+        bind_text(self.ai_update_button, '补上最近版本的新词')
+        bind_text(self.ai_update_button, '已有词库：查最近更新里新出现的词', property='subtitle')
         bind_text(self.ai_update_button, '版本增量：检索最近版本新增与高频术语（单轮，适合已建库词库）', property='toolTip')
         self.ai_update_button.clicked.connect(lambda: self._start_ai_update("incremental"))
-        self.ai_full_button = AnimatedButton("AI 完整建库")
+        self.ai_full_button = AIMenuEntry(icon="fa5s.book-open", tone="full")
+        bind_text(self.ai_full_button, '从零整理一整个词库')
+        bind_text(self.ai_full_button, '新词库或想大扫除：查资料、AI 梳理去重，你勾选后加入', property='subtitle')
         bind_text(self.ai_full_button, '查询资料与有效缓存 → AI 提取和梳理 → 补充核对 → 去重与实用筛选 → 选择应用；保留已确认写法', property='toolTip')
         self.ai_full_button.clicked.connect(lambda: self._start_ai_update("full"))
-        self.smart_build_button = AnimatedButton("智能建词")
+        self.smart_build_button = AIMenuEntry(icon="fa5s.paste", tone="text")
+        bind_text(self.smart_build_button, '从一段文字里挑词')
+        bind_text(self.smart_build_button, '粘贴攻略、wiki 或用内置资料挑出专有名词，不用上网', property='subtitle')
         self.smart_build_button.clicked.connect(self.open_smart_build)
-        self.ai_batch_button = AnimatedButton("批量更新…")
+        self.ai_batch_button = AnimatedButton("一次更新多个词库…")
         self.ai_batch_button.clicked.connect(self._open_batch_update)
         self.ai_history_button = AnimatedButton("更新记录")
         self.ai_history_button.clicked.connect(self._open_update_history)
@@ -1386,16 +1450,39 @@ class TermLibraryDialog(QWidget):
         self.ai_model_combo.setEditable(True)
         self.ai_model_combo.currentIndexChanged.connect(self._refresh_ai_capability_label)
         self.ai_capability_label = QLabel()
-        self.ai_capability_label.setObjectName("termHint")
-        self.ai_popup = ActionPopup(self.ai_menu_button, min_width=280)
-        for button in (self.ai_update_button, self.ai_full_button, self.smart_build_button,
-                       self.ai_batch_button, self.ai_history_button):
-            self.ai_popup.add_button(button)
+        self.ai_capability_label.setObjectName("termAiCapability")
+        self.ai_capability_label.setWordWrap(False)
+        self.ai_popup = ActionPopup(self.ai_menu_button, min_width=380)
+        self.ai_popup.setMaximumWidth(420)
+        self.ai_popup.add_caption("找新词")
+        for entry in (self.ai_update_button, self.ai_full_button, self.smart_build_button):
+            self.ai_popup.add_entry(entry)
         self.ai_popup.add_separator()
-        self.ai_popup.add_caption("使用的 AI")
-        self.ai_popup.add_widget(self.ai_service_combo)
-        self.ai_popup.add_widget(self.ai_model_combo)
-        self.ai_popup.add_widget(self.ai_capability_label)
+        # 加外语名 (查外语官方名 / 确认译名) is added by multilingual_terms_ui.install.
+        self.ai_names_caption = self.ai_popup.add_caption("加外语名")
+        self.ai_bar = QFrame()
+        self.ai_bar.setObjectName("termAiBar")
+        self.ai_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        bar = QVBoxLayout(self.ai_bar)
+        bar.setContentsMargins(10, 8, 10, 10)
+        bar.setSpacing(6)
+        bar_caption = bind_text(QLabel(), "使用的 AI")
+        bar_caption.setObjectName("termAiBarCaption")
+        bar.addWidget(bar_caption)
+        bar.addWidget(self.ai_service_combo)
+        bar.addWidget(self.ai_model_combo)
+        bar.addWidget(self.ai_capability_label)
+        self.ai_popup.add_widget(self.ai_bar)
+        links = QHBoxLayout()
+        links.setContentsMargins(4, 0, 4, 2)
+        links.setSpacing(2)
+        for button in (self.ai_batch_button, self.ai_history_button):
+            button.setObjectName("termPopupLink")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(self.ai_popup.hide)
+            links.addWidget(button)
+        links.addStretch(1)
+        self.ai_popup._layout.addLayout(links)
         self.import_terms = AnimatedButton("导入")
         self.import_terms.setObjectName("termToolButton")
         bind_text(self.import_terms, '一次导入多条：粘贴文字，或选 .json / .csv / .txt 文件', property='toolTip')
@@ -1432,22 +1519,30 @@ class TermLibraryDialog(QWidget):
         self.filter_status.currentIndexChanged.connect(self._sync_status_segment)
         self.filter_status.setParent(content_body)
         self.filter_status.hide()
+        # 2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): one row —
+        # search, category and status on the left; the card display language
+        # (``term_actions``, filled by multilingual_terms_ui.install) on the
+        # right, wrapping below on narrow widths. Library actions (confirm all,
+        # AI 更新, 导入) moved into the header row next to 分享.
         self.term_filter_pair = QWidget()
         self.term_filter_pair.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         pair_layout = QHBoxLayout(self.term_filter_pair)
         pair_layout.setContentsMargins(0, 0, 0, 0)
         pair_layout.setSpacing(6)
-        for control in (self.search, self.filter_category): term_tools.removeWidget(control)
+        for control in (self.search, self.filter_category, self.status_segment):
+            term_tools.removeWidget(control)
         pair_layout.addWidget(self.search, 1)
         pair_layout.addWidget(self.filter_category)
-        pair_layout.addStretch(1)
+        term_tools.insertWidget(0, self.term_filter_pair, 1)
+        term_tools.insertWidget(1, self.status_segment)
+        for action in (self.confirm_all_button, self.ai_menu_button, self.import_terms):
+            term_tools.removeWidget(action)
+            self._header_row.insertWidget(self._header_row.indexOf(self.share_button), action, 0, Qt.AlignmentFlag.AlignVCenter)
         self.term_actions = QWidget()
         actions_row = QHBoxLayout(self.term_actions)
         actions_row.setContentsMargins(0, 0, 0, 0)
         actions_row.setSpacing(6)
-        for action in (self.confirm_all_button, self.ai_menu_button, self.import_terms):
-            term_tools.removeWidget(action)
-            actions_row.addWidget(action)
+        self.term_actions_layout = actions_row
         term_tools.addWidget(self.term_actions)
         self.term_toolbar = QWidget()
         self.term_toolbar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1456,7 +1551,6 @@ class TermLibraryDialog(QWidget):
         self.term_toolbar_stack.setSpacing(4)
         self.term_toolbar_stack.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.term_toolbar_stack.addLayout(term_tools)
-        self.term_toolbar_stack.addWidget(self.term_filter_pair)
         self._term_toolbar_narrow = False
         content_body_layout.addWidget(self.term_toolbar)
         content_body_layout.addWidget(quick_add_panel)
@@ -1514,6 +1608,13 @@ class TermLibraryDialog(QWidget):
         self.learning_toggle = self.learning_panel.toggle
         self.learning_accept_button = self.learning_panel.accept
         self.learning_ignore = self.learning_panel.ignore
+        # 2026-11-13: reference terms waiting to be kept join the 待处理 strip.
+        from .glossary_page_parts import StripChip
+        self.reference_chip = StripChip(tone="warning")
+        self.reference_chip.setToolTip("只显示参考词；在卡片上点「收下」，或用标题栏的「全部确认参考词」")
+        self.reference_chip.clicked.connect(lambda _c: self._choose_status_filter("reference"))
+        self.reference_chip.hide()
+        self.learning_panel.chip_layout.addWidget(self.reference_chip)
         content_body_layout.addWidget(self.learning_panel)
 
         # 选了词条才出现：确认 / 隐藏 / 删除。
@@ -1578,6 +1679,19 @@ class TermLibraryDialog(QWidget):
         card_stage_layout = QGridLayout(card_stage)
         card_stage_layout.setContentsMargins(0, 0, 0, 0)
         card_stage_layout.addWidget(self.listing, 0, 0)
+        # 2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): 「名称与译名」
+        # opens here, beside the cards, instead of a separate window.
+        self.names_drawer = _DrawerFrame()
+        self.names_drawer.setObjectName("termNamesDrawer")
+        self.names_drawer.setFixedWidth(440)
+        # Never let the drawer's content set the page height; it scrolls inside.
+        self.names_drawer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Ignored)
+        self.names_drawer.setMinimumHeight(0)
+        drawer_layout = QVBoxLayout(self.names_drawer)
+        drawer_layout.setContentsMargins(0, 0, 0, 0)
+        drawer_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.names_drawer.hide()
+        # Placed beside the whole library panel (full height) further below.
         content_body_layout.addWidget(card_stage, 3)
         # 空态：没有词条时给两个起点（线上词库 / 自己整理）；筛选后没词时只说明
         self.listing_empty = QWidget()
@@ -1676,7 +1790,7 @@ class TermLibraryDialog(QWidget):
         self.batch_status.setWordWrap(True)
         self.batch_status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         footer_layout.addWidget(self.batch_status, 1)
-        self.card_hint = bind_text(QLabel(), '绿勾 = 正式已确认 · 边框高亮 = 选中 · 点卡片可编辑')
+        self.card_hint = bind_text(QLabel(), '✓ = 译名已确认 · 虚线框 = 参考词 · 点卡片在右侧编辑名称与译名')
         self.card_hint.setObjectName("termHint")
         footer_layout.addWidget(self.card_hint)
         if not self.page_mode:
@@ -1691,6 +1805,7 @@ class TermLibraryDialog(QWidget):
         self.library_content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.library_content_scroll.setWidget(content)
         body.addWidget(self.library_content_scroll, 1)
+        body.addWidget(self.names_drawer)
 
         self.refresh_learning_suggestions()
         self._refresh_ai_choices()
@@ -1817,7 +1932,7 @@ class TermLibraryDialog(QWidget):
         for value, button in self.status_buttons.items():
             label = translate(str(button.property("statusLabel") or ""), current_language())
             button.setText(f"{label} {counts.get(value, 0)}")
-            button.setMinimumWidth(button.sizeHint().width())
+            button.setMinimumWidth(max(button.sizeHint().width(), button.fontMetrics().horizontalAdvance(button.text()) + 32))
 
     def _refresh_term_guide(self):
         from . import glossary_hub as hub
@@ -1941,19 +2056,41 @@ class TermLibraryDialog(QWidget):
                 self._queue_term_toolbar()
         header_required = (self.selected_title.sizeHint().width() + self.selected_type.sizeHint().width()
                            + self.header_meta.sizeHint().width() + self.use_game.sizeHint().width()
-                           + self.share_button.sizeHint().width() + self.more_button.width() + 100)
+                           + sum(button.sizeHint().width() for button in (self.confirm_all_button, self.ai_menu_button, self.import_terms)
+                                 if not button.isHidden())
+                           + self.share_button.sizeHint().width() + self.more_button.width() + 130)
         header_narrow = self.library_content.width() < header_required
         if header_narrow != self._header_narrow:
             self._header_narrow = header_narrow
+            actions = (self.use_game, self.confirm_all_button, self.ai_menu_button,
+                       self.import_terms, self.share_button, self.more_button)
             if header_narrow:
                 self._header_name_row.removeWidget(self.header_meta)
                 self._header_title_column.addWidget(self.header_meta)
+                for action in actions:
+                    self._header_row.removeWidget(action)
+                    self._header_actions_flow.addWidget(action)
+                self._header_actions_bar.show()
             else:
                 self._header_title_column.removeWidget(self.header_meta)
-                self._header_name_row.addWidget(self.header_meta)
+                self._header_name_row.insertWidget(self._header_name_row.indexOf(self.selected_type) + 1, self.header_meta)
+                for action in actions:
+                    self._header_actions_flow.removeWidget(action)
+                    self._header_row.addWidget(action, 0, Qt.AlignmentFlag.AlignVCenter)
+                self._header_actions_bar.hide()
         status_width = max(self.status_segment.sizeHint().width(),
                            self.status_segment.minimumSizeHint().width())
-        required = status_width + self.term_actions.sizeHint().width() + 18
+        required = (self.term_filter_pair.minimumSizeHint().width() + status_width
+                    + self.term_actions.sizeHint().width() + 30)
+        split_filters = self.term_toolbar.width() < self.term_filter_pair.minimumSizeHint().width() + status_width + 12
+        if split_filters != getattr(self, '_term_filters_split', False):
+            self._term_filters_split = split_filters
+            if split_filters:
+                self.term_tools_layout.removeWidget(self.status_segment)
+                self.term_toolbar_stack.insertWidget(1, self.status_segment)
+            else:
+                self.term_toolbar_stack.removeWidget(self.status_segment)
+                self.term_tools_layout.insertWidget(1, self.status_segment)
         narrow = self.term_toolbar.width() < required
         if narrow == self._term_toolbar_narrow:
             return
@@ -1969,14 +2106,41 @@ class TermLibraryDialog(QWidget):
         if not self._toolbar_timer.isActive():
             self._toolbar_timer.start(0)
 
+    def _align_heading(self):
+        """Put 「术语库」 on the same baseline as the tab labels (2026-11-13).
+
+        A tab draws its label at the top and its underline 14px lower, while
+        the title sits on the bottom of the row; without this the tab labels
+        float about 12px above the title's baseline."""
+        title, tab = getattr(self, '_page_title', None), getattr(self, 'my_tab_button', None)
+        if title is None or tab is None:
+            return
+        title.ensurePolished()
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        label_font, _small = tab._fonts()
+        tab_from_bottom = tab.sizeHint().height() - (QFontMetrics(label_font).ascent() + 2)
+        bottom = max(0, tab_from_bottom - QFontMetrics(title.font()).descent())
+        if title.contentsMargins().bottom() != bottom:
+            title.setContentsMargins(0, 0, 0, bottom)
+
     def apply_ui_zoom(self, _factor):
+        self._align_heading()
         if hasattr(self, 'term_toolbar'):
             self._queue_term_toolbar()
             self.listing.request_layout('zoom')
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._align_heading()
         if hasattr(self, 'term_toolbar'):
+            # 2026-11-13 (user): re-wrap now, not only after the event loop;
+            # Qt paints before a 0 ms timer, so every resize step showed the
+            # old one-row toolbar squeezed (cut words, dark-on-dark segment).
+            # The queued pass still follows for sizes that settle later.
+            layout = self.layout()
+            if layout is not None:
+                layout.activate()
+            self._sync_term_toolbar()
             self._queue_term_toolbar()
         # P0 Resize: do NOT force fixed width on sidebar; let it keep a comfortable min and let content grow.
         # The sidebar has a reasonable initial fixed in _build; here we only ensure minimums for usability.
@@ -2254,6 +2418,14 @@ class TermLibraryDialog(QWidget):
                 ])),
                 "searchable": " ".join([name, *aliases, entry.get("category", ""), entry.get("source", "")]).lower(),
             })
+        # Keep builtin reference behavior; learned concepts replace their legacy
+        # display rows. Stable concept IDs prevent homonym cards merging.
+        from .multilingual_terms import read_concepts, card_rows
+        concepts = read_concepts(self.legacy, self._library_key(game_name))
+        represented = {n['name'] for c in concepts for n in c['names'].values()}
+        represented.update(k[1] for c in concepts for k in c.get('legacy_keys', ()))
+        rows = [r for r in rows if r.get('raw') is None and r.get('target') not in represented]
+        rows.extend(card_rows(concepts))
         return rows
 
     @staticmethod
@@ -2268,6 +2440,9 @@ class TermLibraryDialog(QWidget):
         groups: dict[str, list[dict]] = {}
         order: list[object] = []
         for row in rows:
+            if row.get('concept_id'):
+                order.append(row)
+                continue
             if row.get("status") == "confirmed" and row.get("raw") is not None:
                 key = quote_normalize_term(str(row.get("target") or ""))
                 if key not in groups:
@@ -2328,6 +2503,10 @@ class TermLibraryDialog(QWidget):
         busy = self._confirming_references
         self.confirm_all_button.setText('正在确认…' if busy else f'全部确认参考词（{count}）')
         self.confirm_all_button.setEnabled(bool(self.state.get('game') and count and not busy))
+        self.confirm_all_button.setVisible(bool(count or busy))
+        if hasattr(self, 'reference_chip'):
+            self.reference_chip.setText(f'{count} 条参考词可确认')
+            self.reference_chip.setVisible(bool(count))
 
     def _confirm_reference_rows(self, rows, *, library_key=None):
         references = [dict(row.get('reference') or {}, name=(row.get('reference') or {}).get('name') or row.get('source', ''))
@@ -2463,7 +2642,18 @@ class TermLibraryDialog(QWidget):
             self.filter_category.blockSignals(False)
         category_filter = str(self.filter_category.currentData() or "")
         status_filter = str(self.filter_status.currentData() or "")
-        key = (self._library_key(), query, category_filter, status_filter, current_language(), id(cards))
+        display_language = self.term_display_language.currentData() if hasattr(self, 'term_display_language') else ''
+        language_filter = self.term_language_filter.currentData() if hasattr(self, 'term_language_filter') else ''
+        self.listing.set_translation_line(bool(display_language))
+        from .multilingual_terms import translation_state
+        if display_language:
+            presentation_key = (id(cards), display_language)
+            if getattr(self, '_language_cards_key', None) != presentation_key:
+                from .multilingual_terms import card_rows
+                self._language_cards = [card_rows([r['concept']], display_language)[0] if r.get('concept') else r for r in cards]
+                self._language_cards_key = presentation_key
+            cards = self._language_cards
+        key = (self._library_key(), query, category_filter, status_filter, current_language(), id(cards), display_language, language_filter)
         if key == self._filter_key:
             return
         self._filter_key = key
@@ -2475,9 +2665,15 @@ class TermLibraryDialog(QWidget):
             self._library_stats_cache[self._library_key()] = dict(self._card_stats)
         self._update_confirm_all_button()
         for row in cards:
+            if row.get('concept'):
+                if language_filter == 'missing' and (not display_language or display_language in row['languages']): continue
+                if language_filter == 'has' and display_language and display_language not in row['languages']: continue
+                if language_filter == 'pending' and (
+                        translation_state(row['concept'], display_language) not in ('pending', 'candidate')
+                        if display_language else not row.get('pending_languages')): continue
             if query and query not in str(row.get("searchable", "")):
                 continue
-            if category_filter and str(row.get("category", "")) != category_filter:
+            if category_filter and category_filter not in row.get('categories', [str(row.get("category", ""))]):
                 continue
             if status_filter and str(row.get("status", "")) != status_filter:
                 continue
@@ -2503,6 +2699,15 @@ class TermLibraryDialog(QWidget):
             if query or category_filter or status_filter:
                 title += f"，当前显示 {len(items_for_model)} 条"
         self.learned_title.setText(title)
+        if any(row.get('concept') for row in cards):
+            names_count = sum(len(row.get('languages', ())) for row in cards)
+            pending_count = sum(row.get('pending_name_count', 0) for row in cards)
+            self.learned_title.setText(title + f' · {names_count} 个语言名称 · {pending_count} 个待确认译名')
+            if hasattr(self, 'name_counts'):
+                self.name_counts.setText(f'· {names_count} 个语言名称')
+        if hasattr(self, 'translation_chips'):
+            from .multilingual_terms_ui import update_pending
+            update_pending(self, cards, display_language)
         self._update_status_counts(self._card_stats)
         self._queue_term_toolbar()
         has_rows = len(items_for_model) > 0
@@ -2837,6 +3042,10 @@ class TermLibraryDialog(QWidget):
                 print(f"[perf] Term select_game handler enter game={game_name!r}")
         except Exception:
             pass
+        if hasattr(self, 'term_input_language'):
+            from .multilingual_terms import default_language
+            code = default_language(self.legacy, self._library_key())
+            self.term_input_language.setCurrentIndex(max(0, self.term_input_language.findData(code)))
         QTimer.singleShot(0, self.refresh_current_game)
 
     def apply_filter(self, _text=""):
@@ -3108,7 +3317,7 @@ class TermLibraryDialog(QWidget):
             q = bind_text(QLabel(), '要删除《{game_name}》以及它的术语吗？', game_name=game_name)
             detail = bind_text(QLabel(), '{count} 条术语会一起删除，删除后不能撤销。', count=own_terms)
         q.setWordWrap(True)
-        q.setStyleSheet("font-weight:600;")
+        q.setStyleSheet(emphasis_qss("font-weight:600;"))
         lay.addWidget(q)
         detail.setWordWrap(True)
         detail.setObjectName("termHint")
@@ -3120,8 +3329,8 @@ class TermLibraryDialog(QWidget):
         cancel.setObjectName("workshopSecondary")
         do_del = QPushButton("删除")
         do_del.setStyleSheet(
-            "QPushButton { background:#f6e9e5; color:#8a5a4c; border:1px solid #e3c9c2; border-radius:10px; padding:6px 14px; font-weight:700; }"
-            "QPushButton:hover { background:#f3e0db; }"
+            emphasis_qss("QPushButton { background:#f6e9e5; color:#8a5a4c; border:1px solid #e3c9c2; border-radius:10px; padding:6px 14px; font-weight:700; }"
+            "QPushButton:hover { background:#f3e0db; }")
         )
         row.addWidget(cancel)
         row.addWidget(do_del)
@@ -3199,6 +3408,27 @@ class TermLibraryDialog(QWidget):
 
     @glossary_write_errors
     def add_single_term(self):
+        if hasattr(self, 'term_input_language'):
+            from .multilingual_terms import concept, save_concept, read_concepts
+            from .multilingual_terms_ui import refresh
+            target, mishearings = self._parsed_quick_terms()
+            if not target: self._show_toast('请填写正确写法'); return False
+            identity = getattr(self, '_quick_draft_library_id', '') or self._library_key() or '通用词库'
+            value = concept(target, self.term_input_language.currentData(), category=str(self.term_category.currentData() or '其他'))
+            name = next(iter(value['names'].values()))
+            name.update(mishearings=mishearings, user_modified=True, sources=['手动'])
+            code = self.term_input_language.currentData()
+            for existing in read_concepts(self.legacy, identity):
+                old = existing['names'].get(code)
+                if old and old['name'] != target and any(a.casefold() in {s.casefold() for s in (old['name'], *old.get('mishearings', ()))} for a in mishearings):
+                    self._show_toast('误听写法已指向另一个词条；请在详情中检查冲突或关联。输入已保留。')
+                    return False
+            try:
+                save_concept(self.legacy, identity, value, input_language=self.term_input_language.currentData())
+                self.term_editor.clear(); self.term_alias_editor.clear(); refresh(self)
+                self._show_toast('已保存；在“名称与译名”中补充其他语言。')
+                return True
+            except Exception as exc: self._show_toast(str(exc)); return False
         # 2026-09-02：未选择游戏/内容时不再静默返回（表现为"没办法添加词语"）——
         # 落到「通用词库」并提示；输入为空也给 toast 反馈。
         draft_id = getattr(self, '_quick_draft_library_id', '') or self._library_key()
@@ -3389,10 +3619,10 @@ class TermLibraryDialog(QWidget):
         sheet = QFrame(self)
         sheet.setObjectName("termEditSheet")
         sheet.setStyleSheet(
-            f"QFrame#termEditSheet {{ background:{theme.surface}; border:1.5px solid {theme.accent}; border-radius:14px; }}"
+            emphasis_qss(f"QFrame#termEditSheet {{ background:{theme.surface}; border:1.5px solid {theme.accent}; border-radius:14px; }}"
             f"QFrame#termEditSheet QLabel {{ background: transparent; border: 0; }}"
             f"QLabel#termEditLabel {{ color:{theme.text_muted}; font-size:12px; font-weight:600; }}"
-            f"QLabel#termEditSource {{ color:{theme.text_muted}; font-size:12px; }}"
+            f"QLabel#termEditSource {{ color:{theme.text_muted}; font-size:12px; }}")
         )
         sheet.setAutoFillBackground(True)
 
@@ -3402,7 +3632,7 @@ class TermLibraryDialog(QWidget):
 
         title_row = QHBoxLayout()
         title = bind_text(QLabel(), '修改「{term}」', term=current)
-        title.setStyleSheet("font-weight:700; font-size:14px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:14px;"))
         title_row.addWidget(title)
         title_row.addStretch(1)
         source_note = bind_text(QLabel(), '来源：{origin}', origin=self._mapping_origin(mapping))
@@ -3675,7 +3905,7 @@ class TermLibraryDialog(QWidget):
 
         q = bind_text(QLabel(), '确定删除「{label}」吗？', label=label)
         q.setWordWrap(True)
-        q.setStyleSheet("font-weight:600;")
+        q.setStyleSheet(emphasis_qss("font-weight:600;"))
         lay.addWidget(q)
 
         row = QHBoxLayout()
@@ -3685,8 +3915,8 @@ class TermLibraryDialog(QWidget):
         do_del = QPushButton("删除")
         # low-saturation danger
         do_del.setStyleSheet(
-            "QPushButton { background:#f6e9e5; color:#8a5a4c; border:1px solid #e3c9c2; border-radius:10px; padding:6px 14px; font-weight:700; }"
-            "QPushButton:hover { background:#f3e0db; }"
+            emphasis_qss("QPushButton { background:#f6e9e5; color:#8a5a4c; border:1px solid #e3c9c2; border-radius:10px; padding:6px 14px; font-weight:700; }"
+            "QPushButton:hover { background:#f3e0db; }")
         )
         row.addWidget(cancel)
         row.addWidget(do_del)
@@ -3731,6 +3961,10 @@ class TermLibraryDialog(QWidget):
         self._del_cleanup = _cleanup
 
     def edit_mapping(self, mapping: dict, anchor: QRect | None = None, members: list[dict] | None = None):
+        if mapping.get('concept_id'):
+            from .multilingual_terms_ui import open_editor
+            open_editor(self, mapping['concept_id'])
+            return
         self._show_edit_sheet(mapping, anchor=anchor, members=members)
 
     def delete_mapping(self, key):
@@ -3738,6 +3972,16 @@ class TermLibraryDialog(QWidget):
 
     def remove_selected_terms(self):
         """Delete user-confirmed mappings; builtin reference rows revert to 参考 status."""
+        identities = [self._term_model.data_for_row(i.row()).get('concept_id')
+                      for i in self.listing.selectionModel().selectedRows(0)]
+        identities = [i for i in identities if i]
+        if identities:
+            if QMessageBox.question(self, '删除概念词条', f'删除所选 {len(identities)} 个词条及其所有语言名称？') == QMessageBox.StandardButton.Yes:
+                from .multilingual_terms import delete_concept
+                from .multilingual_terms_ui import refresh
+                for identity in identities: delete_concept(self.legacy, self._library_key(), identity)
+                refresh(self)
+            return
         game_name = self.state["game"]
         if not game_name:
             return
@@ -3774,6 +4018,9 @@ class TermLibraryDialog(QWidget):
 
     def _run_row_action(self, rd: dict):
         """The row's primary action: edit a confirmed term, 收下 a reference, 恢复 a hidden one."""
+        if rd.get('concept_id'):
+            from .multilingual_terms_ui import open_editor
+            open_editor(self, rd['concept_id']); return
         status = str(rd.get("status", ""))
         if status == "confirmed" and rd.get("raw"):
             self.edit_mapping(rd["raw"], members=rd.get("members"))
@@ -3827,7 +4074,7 @@ class TermLibraryDialog(QWidget):
         lay.setSpacing(8)
 
         title = bind_text(QLabel(), '批量导入术语｜{game_name}', game_name=game_name)
-        title.setStyleSheet("font-weight:700; font-size:14px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:14px;"))
         lay.addWidget(title)
 
         mode = QComboBox()
@@ -3997,10 +4244,10 @@ class TermLibraryDialog(QWidget):
     @glossary_write_errors
     def _export_library_to(self, path):
         library_id = self._library_key()
-        data = {"library_id": library_id, "name": self.state.get('game', ''),
-                "mappings": self.legacy.user_confirmed_mappings_for_game(library_id)}
+        from .multilingual_terms import export_library
+        data = export_library(self.legacy, library_id)
         Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-        self._show_toast("已导出规范写法与已确认映射。")
+        self._show_toast("已导出完整多语言名称、候选、规则与概念关联。")
 
     def use_selected_game(self):
         if not self.prepare_for_task():
@@ -4222,12 +4469,35 @@ class TermLibraryDialog(QWidget):
         from .glossary_skill import detect_search_capability
 
         capability = detect_search_capability(self._ai_update_settings())
+        self._ai_capability = capability
+        # 2026-11-13 (user): say in plain words what the chosen AI can do, and
+        # mark the entries that need it, instead of one "无服务端搜索" line.
         if capability["provider_search"]:
             bind_text(self.ai_capability_label, '● 支持联网检索')
             self.ai_capability_label.setToolTip(capability["reason"])
+        elif capability.get("tool_search"):
+            bind_text(self.ai_capability_label, '● 支持联网：用 DeepSeek 搜索查外语名')
+            self.ai_capability_label.setToolTip(capability["reason"])
         else:
-            bind_text(self.ai_capability_label, '○ 无服务端搜索')
+            bind_text(self.ai_capability_label, '○ 不能上网：查新词和外语名要换一个 AI')
             bind_text(self.ai_capability_label, '{value0}；AI 完整建库仍可抓取资料并调用模型整理文本。', property='toolTip', value0=capability['reason'])
+        web = bool(capability["provider_search"] or capability.get("tool_search"))
+        self.ai_bar.setProperty("web", "yes" if web else "no")
+        self.ai_bar.style().unpolish(self.ai_bar)
+        self.ai_bar.style().polish(self.ai_bar)
+        if capability["provider_search"]:
+            self.ai_update_button.set_badge("")
+        else:
+            bind_text(self.ai_update_button, '🔒 需换 AI',
+                      property='badge')
+            self.ai_update_button.set_badge(self.ai_update_button.badge.text(), "warn")
+        names = getattr(self, "name_completion_button", None)
+        if names is not None and hasattr(names, "set_badge"):
+            if web:
+                names.set_badge("")
+            else:
+                bind_text(names, '🔒 不能上网，只会猜', property='badge')
+                names.set_badge(names.badge.text(), "warn")
 
     def _ai_update_needs_key(self, settings) -> bool:
         """The chosen AI service has no key: explain before a task is queued (2026-10-15)."""
@@ -4401,13 +4671,13 @@ class TermLibraryDialog(QWidget):
             # 只改同模式按钮；另一模式仍可发起（提交后进队列）
             if pending.mode == "full":
                 self.ai_full_button.setText(label)
-                bind_text(self.ai_update_button, '日常增量更新')
+                bind_text(self.ai_update_button, '补上最近版本的新词')
             else:
                 self.ai_update_button.setText(label)
-                bind_text(self.ai_full_button, 'AI 完整建库')
+                bind_text(self.ai_full_button, '从零整理一整个词库')
         else:
-            bind_text(self.ai_update_button, '日常增量更新')
-            bind_text(self.ai_full_button, 'AI 完整建库')
+            bind_text(self.ai_update_button, '补上最近版本的新词')
+            bind_text(self.ai_full_button, '从零整理一整个词库')
 
     def _start_ai_update(self, mode: str = "incremental", *, execution_mode='full'):
         from .glossary_skill import detect_search_capability
@@ -4427,8 +4697,8 @@ class TermLibraryDialog(QWidget):
         capability = detect_search_capability(settings)
         if mode != 'full' and not capability["provider_search"]:
             self._show_toast(
-                "当前 AI 不支持联网检索（缺少服务端搜索）。"
-                "请在左侧选择 Grok/Antigravity CLI 或百炼；或使用智能建词的本地资料整理。"
+                "「补上最近版本的新词」要用能自己联网的 AI：在「AI 帮忙」底部换成百炼、Grok 或 Antigravity；"
+                "也可以用「从一段文字里挑词」。"
             )
             return
         service_label = self.ai_service_combo.currentText() or str(capability.get("service") or "")
@@ -4448,7 +4718,7 @@ class TermLibraryDialog(QWidget):
             elif task is not None:
                 self._open_task_candidates(task)
             return
-        mode_label = "AI 完整建库" if mode == "full" else "日常增量更新"
+        mode_label = "从零整理一整个词库" if mode == "full" else "补上最近版本的新词"
         self._show_toast(tr('「{value0}」{value1}已提交。切到其它词库也能在任务栏看到进度。', value0=game_name, value1=tr(mode_label)))
         self._on_task_structure_changed()
 

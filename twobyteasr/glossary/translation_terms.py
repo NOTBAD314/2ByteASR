@@ -15,7 +15,7 @@ from ..diagnostics.text_work import measured, count
 
 KEY = 'translation_terminology'
 SOURCE_ENABLED = 'source_glossary_enabled'
-MATCH_VERSION = 'nfkc-longest-cue-v3-context-review'
+MATCH_VERSION = 'concept-direction-v4-language-confirmation'
 
 
 def match_text(text):
@@ -82,14 +82,31 @@ def normalize(value):
                 context=str(row.get('context') or '').strip()))
         libraries.append(dict(id=identity, name=str(library.get('name') or identity),
             source_language=str(library.get('source_language') or ''),
-            target_language=str(library.get('target_language') or ''), terms=terms))
+            target_language=str(library.get('target_language') or ''), terms=terms,
+            concepts=copy.deepcopy(library.get('concepts', [])), shared_concepts=bool(library.get('shared_concepts')),
+            revision=str(library.get('revision', ''))))
     selected = value.get('selected_ids', ())
     return dict(version=1, enabled=bool(value.get('enabled', False)),
+                _frozen_concepts=bool(value.get('_frozen_concepts', False)),
+                source_locale=str(value.get('source_locale', '')),
+                concept_library_ids=list(dict.fromkeys(str(i) for i in value.get('concept_library_ids', ()))),
+                preferred_libraries=copy.deepcopy(value.get('preferred_libraries', {})),
                 selected_ids=list(dict.fromkeys(str(i) for i in selected if str(i) in seen)) if isinstance(selected, (list, tuple)) else [], libraries=libraries)
 
 
 def policy_of(project):
-    return normalize((getattr(project, 'generation_metadata', None) or {}).get(KEY))
+    frozen = getattr(project, '_frozen_translation_policy', None)
+    if frozen is not None: return normalize(frozen)
+    from .multilingual_terms import hydrate_policy
+    value = hydrate_policy((getattr(project, 'generation_metadata', None) or {}).get(KEY))
+    if value.get('concept_library_ids'):
+        from ..subtitle_rules.segmentation_profiles import project_language_tag
+        code = project_language_tag(project)
+        if language(code) == 'zh':
+            from ..subtitle_rules.chinese_script import project_script
+            code = project_script(project)
+        value['source_locale'] = code
+    return value
 
 
 def language(code):
@@ -152,18 +169,37 @@ def _index(serialized, source_language, target_language):
     rows, surfaces = [], {}
     if policy['enabled']:
         for lib in policy['libraries']:
-            if (lib['id'] not in policy['selected_ids'] or not lib['source_language'] or not lib['target_language']
-                    or language(lib['source_language']) != language(source_language)
-                    or lib['target_language'] != target_language):
+            if lib.get('shared_concepts'):
+                if lib['id'] not in policy['selected_ids']: continue
+                from .multilingual_terms import direction_terms
+                source_locale = policy.get('source_locale', '')
+                if language(source_locale) != language(source_language): source_locale = source_language
+                terms = direction_terms(lib, source_locale, target_language)
+            else:
+                terms = lib['terms']
+                if (not lib['source_language'] or not lib['target_language']
+                        or language(lib['source_language']) != language(source_language)
+                        or lib['target_language'] != target_language):
+                    continue
+            if lib['id'] not in policy['selected_ids']:
                 continue
-            for term in lib['terms']:
+            for term in terms:
                 if not term.get('confirmed', True) or not term.get('enabled', True):
                     continue
                 row = dict(term, library_id=lib['id'], library_name=lib['name'],
-                           source_language=lib['source_language'], target_language=lib['target_language'])
+                           source_language=source_language, target_language=target_language)
                 rows.append(row)
                 for surface in (term['source'], *term['aliases']):
                     surfaces.setdefault(match_text(surface), []).append(len(rows)-1)
+    # Resolve explicit user priorities before matching, never file-read order.
+    for surface, indices in list(surfaces.items()):
+        preferred = policy.get('preferred_libraries', {}).get(surface)
+        if preferred:
+            chosen = [i for i in indices if rows[i]['library_id'] == preferred]
+            if chosen: surfaces[surface] = chosen
+        indices = surfaces[surface]
+        if len({(rows[i].get('concept_id', rows[i]['target']), rows[i]['target']) for i in indices}) > 1:
+            for i in indices: rows[i]['conflict'] = True
     boundary = r'[A-Za-z0-9_]' if language(source_language) in {'ja', 'zh', 'ko'} else r'[\w]'
     return rows, surfaces, _literal_pattern(surfaces, boundary) if surfaces else None
 
@@ -249,6 +285,7 @@ def review_warnings(translation, terms):
 
 def validation_issues(source_text, translation, terms):
     """Conditional names require a valid choice or review, never a silent pass."""
+    terms = [row for row in terms if not row.get('conflict')]
     issues = violations(source_text, translation, terms)
     groups = {}
     for row in terms:
@@ -268,5 +305,6 @@ def validation_issues(source_text, translation, terms):
 
 
 PROMPT = '''用户配置的 translation_terminology 是本次语言方向的译名约定，优先于联网核验、通行译名、上下文旧译文和一般参考词。
+conflict=true 表示用户尚未解决的同名冲突，不作为强制约束，不得按顺序随意选用。mistranslations 是错误译法，不是源语别名；target_aliases 是合法目标称呼。
 每项 source/aliases 指源语词，target 是指定译名；context 为语境限制。结合整句和上下文判别同形异义，不把普通词机械当专名。
 明确命中且语境符合时必须采用 target；有多个不同目标的同形词时按 context 选择，无法判定则保留并说明。绝不据此改写源文。'''

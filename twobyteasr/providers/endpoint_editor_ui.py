@@ -46,6 +46,7 @@ from .llm_config import (
     update_active_profile, validate_endpoint,
 )
 from .provider_registry import GLOBAL_PROVIDER_REGISTRY
+from ..design.typography import emphasis_qss
 
 
 class _CurrentPageStack(QStackedWidget):
@@ -518,7 +519,7 @@ class EndpointEditor(QFrame):
         layout.setContentsMargins(14, 12, 14, 13)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("endpointTitle")
-        self.title_label.setStyleSheet(f"color: {accent}; font-size: 15px; font-weight: 700;")
+        self.title_label.setStyleSheet(emphasis_qss(f"color: {accent}; font-size: 15px; font-weight: 700;"))
         layout.addWidget(self.title_label)
         self._layout = layout
         # 2026-10-22 (design B): the service, key and test come first in plain
@@ -1172,7 +1173,7 @@ class EndpointEditor(QFrame):
     def refresh_theme_palette(self) -> None:
         theme = _active_theme_definition()
         accent = theme.primary_role if self.stage == "polish" else theme.secondary_role
-        self.setStyleSheet(f"""
+        self.setStyleSheet(emphasis_qss(f"""
             QFrame#endpointCard {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 12px; }}
             QFrame#endpointCard[bare="true"] {{ background: transparent; border: 0; }}
             QFrame#endpointCard QLabel#endpointKeyNote {{ color: {theme.text_muted}; font-size: 12px; }}
@@ -1215,7 +1216,7 @@ class EndpointEditor(QFrame):
             QFrame#endpointCard QPushButton#endpointPrimary:disabled {{ background: {theme.control_background}; color: {theme.text_muted}; border-color: {theme.border}; }}
             QFrame#endpointCard QWidget#endpointApiPage, QFrame#endpointCard QWidget#endpointCliPage,
             QFrame#endpointCard QStackedWidget#endpointSettingsStack {{ background: transparent; border: 0; }}
-        """)
+        """))
         self.title_label.setObjectName("endpointTitle")
         self.title_label.style().unpolish(self.title_label)
         self.title_label.style().polish(self.title_label)

@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from twobyteasr.local_models.model_languages import (  # noqa: E402
-    BADGE_LANGUAGES, LANGUAGE_SUPPORT, TIERS, language_support, more_text,
+    BADGE_LANGUAGES, LANGUAGE_SUPPORT, TIERS, WORKSHOP_LANGUAGES, language_support, more_text,
 )
 
 
@@ -26,7 +26,7 @@ def test_every_catalog_model_has_language_data_with_known_tiers():
         assert tuple(support["tiers"]) == BADGE_LANGUAGES
         assert set(support["tiers"].values()) <= set(TIERS), model.key
     for key, record in LANGUAGE_SUPPORT.items():
-        assert set(record.get("tiers", {})) <= set(BADGE_LANGUAGES), key
+        assert set(record.get("tiers", {})) <= set(WORKSHOP_LANGUAGES), key
         # Every rated model names the official source it was checked against.
         assert not record.get("tiers") or record["source"].startswith("https://"), key
 

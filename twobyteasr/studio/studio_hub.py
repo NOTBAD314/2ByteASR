@@ -1113,7 +1113,8 @@ class StudioHubMixin:
         pixmap.fill(QColor(active.panel))
         painter = QPainter(pixmap)
         painter.setPen(QColor(active.accent))
-        painter.setFont(QFont("Microsoft YaHei UI", max(15, min(28, width // 12)), QFont.Weight.Bold))
+        from ..design.typography import heavy_font
+        painter.setFont(heavy_font(QFont("Microsoft YaHei UI", max(15, min(28, width // 12)))))
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "CC")
         painter.end()
         return pixmap

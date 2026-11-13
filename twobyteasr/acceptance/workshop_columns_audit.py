@@ -5,7 +5,8 @@ def start(window,out):
     from PySide6.QtCore import QPoint,Qt,QTimer
     from PySide6.QtWidgets import QApplication,QLabel,QScrollArea
     from ..design.theme_manager import apply_theme
-    from ..app.ui_zoom import px,effective_factor
+    from ..app.ui_zoom import px,effective_factor,zoom_factor,zoom_percent
+    from ..design.ui_navigation import SIDEBAR_WIDTH
     from ..i18n import current_language,translate,save_language,apply_ui_language
     app=QApplication.instance();checks=[];geometry=[]
     def check(name,value,detail=None):checks.append(dict(name=name,passed=bool(value),detail=detail))
@@ -20,6 +21,11 @@ def start(window,out):
         p=widget.mapTo(host,QPoint());return [p.x(),p.y(),widget.width(),widget.height()]
     def measure(page,tag):
         scroll=page.findChild(QScrollArea,'workshopScroll');host=scroll.widget()
+        expected_factor=zoom_factor()
+        check(tag+' workshop follows user zoom',abs(effective_factor(page)-expected_factor)<.0001,dict(user_percent=zoom_percent(),effective_factor=effective_factor(page),page_width=page.width()))
+        check(tag+' home and workshop share zoom',effective_factor(page)==effective_factor(window))
+        if page.sidebar.isVisible():
+            check(tag+' shared sidebar scale',page.sidebar.width()==round(SIDEBAR_WIDTH*expected_factor),dict(actual=page.sidebar.width(),expected=round(SIDEBAR_WIDTH*expected_factor)))
         names={'language':'支持语言','accuracy':'准确度','speed':'速度','action':'操作'}
         heads={key:next(w for w in page.list_header.findChildren(QLabel) if w.text()==translate(text,current_language())) for key,text in names.items()}
         cells={key:rect(w,host) for key,w in heads.items()};rows=[]
@@ -31,11 +37,12 @@ def start(window,out):
                 if key in ('accuracy','speed') and card.metrics_host.isHidden():continue
                 actual=row[key];expected=cells[key]
                 check(tag+' '+card.model.key+' '+key+' aligned',abs(actual[0]-expected[0])<=1 and abs(actual[2]-expected[2])<=1,dict(actual=actual,header=expected))
-            badges=[rect(b,host) for b in card.language_row.badges.values()]
+            shown={code:b for code,b in card.language_row.badges.items() if not b.isHidden()}
+            badges=[rect(b,host) for b in shown.values()]
             row['badges']=badges
             for i,b in enumerate(badges):
                 check(tag+' '+card.model.key+' badge '+str(i)+' contained',b[0]>=row['language'][0] and b[0]+b[2]<=row['language'][0]+row['language'][2]+1)
-            for code,badge in card.language_row.badges.items():
+            for code,badge in shown.items():
                 check(tag+' '+card.model.key+' '+code+' text fits',badge.fontMetrics().horizontalAdvance(badge.text())+px(18,card)+2<=badge.width(),dict(text=badge.text(),width=badge.width()))
             if card.metrics_host.isHidden():
                 metrics=rect(card.metrics_host,host)
@@ -49,18 +56,19 @@ def start(window,out):
         if page._responsive_detail.isVisible():
             gap=page._responsive_detail.mapTo(page,QPoint()).x()-(scroll.mapTo(page,QPoint()).x()+scroll.width())
             check(tag+' scrollbar beside detail',0<=gap<=4, gap)
-        geometry.append(dict(tag=tag,headers=cells,rows=rows,viewport=scroll.viewport().width(),window_width=window.width(),reading_factor=effective_factor(page)))
+        geometry.append(dict(tag=tag,headers=cells,rows=rows,viewport=scroll.viewport().width(),window_width=window.width(),page_width=page.width(),user_percent=zoom_percent(),reading_factor=effective_factor(page),sidebar_width=page.sidebar.width()))
     def run():
         error=None
         try:
-            window._ensure_recognition_page();window._return_to_settings();window.resize(2000,1100)
-            app._ui_zoom_controller.request(120);settle(.55)
+            window._ensure_recognition_page();window._return_to_settings();window.resize(3800,1600)
             window._open_model_workshop();page=window.workshop_page;wait(lambda:page._ui_built and len(page._cards)>5);settle(.4)
+            measure(page,'cold-100');check('screenshot cold-100',window.grab().save(str(out/'cold-100.png')))
+            app._ui_zoom_controller.request(120);settle(.55)
             scroll=page.findChild(QScrollArea,'workshopScroll')
             quick=os.environ.get('TWOBYTEASR_COLUMNS_QUICK')=='1'
             for theme in (('warm',) if quick else ('warm','grape')):
                 apply_theme(theme,app);settle(.15)
-                cases=((3800,100),(2200,150),(2200,100)) if quick else ((3800,100),(2200,100),(2000,120),(2200,150),(1440,100))
+                cases=((3800,100),(2200,150),(1920,100)) if quick else ((3800,100),(1920,100),(1366,100),(2000,120),(2200,150),(3800,100))
                 for width,zoom in cases:
                     window.resize(min(width,window.screen().availableGeometry().width()),min(1600 if width==3800 else 1100,window.screen().availableGeometry().height()));app._ui_zoom_controller.request(zoom);settle(.55)
                     for role in (('primary',) if quick else ('primary','timeline','review','api')):
@@ -80,6 +88,11 @@ def start(window,out):
                         tag=f'{theme}-{width}-{zoom}-{role}'
                         measure(page,tag)
                         if role=='primary':check('screenshot '+tag,window.grab().save(str(out/(tag+'.png'))))
+                    if theme=='warm' and zoom==100:
+                        window._return_to_settings();settle(.2)
+                        check('screenshot home '+tag,window.grab().save(str(out/(f'home-{width}-100.png'))))
+                        window._open_model_workshop();settle(.25)
+                        check(tag+' reentry retains user scale',effective_factor(page)==zoom/100.)
             save_language('en');apply_ui_language(window,'en');app._ui_zoom_controller.apply_all();settle(.4)
             page._set_role('primary');settle(.25);measure(page,'english-100')
             check('screenshot english',window.grab().save(str(out/'english-100.png')))

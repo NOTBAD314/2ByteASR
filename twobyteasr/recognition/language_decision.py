@@ -26,6 +26,10 @@ def initialise(context):
 def bind(context,texts,*,asr_detected=None):
     language,evidence=resolve_task_language(context.requested_language,texts,asr_detected=asr_detected)
     context.task_language=language;context.language_mode=evidence['mode']
+    all_terms = getattr(context, 'glossary_all_languages', None)
+    if all_terms is not None:
+        from ..glossary.multilingual_terms import source_snapshot
+        context.glossary_snapshot = source_snapshot(all_terms, context.chinese_script if language == 'zh' else language)
     context.language_evidence={**context.language_evidence,**evidence}
     if not context.language_evidence.get('remote_language_control'):
         from ..providers.asr_language_control import policy

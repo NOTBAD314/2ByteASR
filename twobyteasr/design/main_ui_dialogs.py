@@ -235,7 +235,45 @@ class SpringDialog(QDialog):
             self._modal_backdrop.setStyleSheet(
                 f"background: {theme.media}; border: 0;"
             )
+        if self.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+            self._apply_native_window_style(theme)
         self._applied_theme_key = applied_theme_key
+
+    def _apply_native_window_style(self, theme=None) -> None:
+        """Round the window and switch off the Windows show/hide fade.
+
+        2026-11-13: the dialog square corners read as sharp, and DWM's own
+        fade made opening feel like a choppy three-frame darken. The window
+        manager rounds the native window (Windows 11) and the dialog appears
+        in one step; Qt motion (ENTRY/EXIT_ANIMATED) stays the only animation.
+        """
+        app = QApplication.instance()
+        if app is None or app.platformName() != 'windows':
+            return
+        theme = theme or _active_theme()
+        try:
+            import ctypes
+            from ctypes import wintypes
+            hwnd = wintypes.HWND(int(self.winId()))
+            if getattr(self, '_native_transitions_hwnd', None) != hwnd.value:
+                disable = wintypes.BOOL(True)
+                DWMWA_TRANSITIONS_FORCEDISABLED = 3
+                status = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
+                    ctypes.byref(disable), ctypes.sizeof(disable))
+                self._native_transitions_status = status
+                if status == 0:
+                    self._native_transitions_hwnd = hwnd.value
+        except (OSError, AttributeError, ValueError):
+            pass
+        # 2026-11-13 (user): a RoundedWindow (translucent, its own rounded
+        # content and shadow) drew a second, square-ish frame: DWM rounds and
+        # borders the whole window, shadow margin included. Those draw their own.
+        if self.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+            self._native_rounding_applied = False
+            return
+        from .popup_corners import round_native_window
+        self._native_rounding_applied = round_native_window(self, theme.border)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -286,7 +324,11 @@ class SpringDialog(QDialog):
             backdrop.mouseReleaseEvent = _release_backdrop
             backdrop.show()
             backdrop.raise_()
+            # Paint the whole dim now, before the dialog window is mapped, so
+            # the darkening lands in one frame instead of trailing behind it.
+            backdrop.repaint()
             self._modal_backdrop = backdrop
+        self._apply_native_window_style()
         super().showEvent(event)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.update()

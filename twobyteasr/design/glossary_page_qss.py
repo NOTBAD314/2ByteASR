@@ -10,6 +10,7 @@ page rules in ``main_ui_theme.APP_QSS``.
 from __future__ import annotations
 
 from .ui_theme import ThemeDefinition, hex_luminance
+from .typography import emphasized
 
 
 def _mix(first: str, second: str, amount: float) -> str:
@@ -18,6 +19,7 @@ def _mix(first: str, second: str, amount: float) -> str:
     return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
 
 
+@emphasized
 def build_glossary_page_qss(theme: ThemeDefinition) -> str:
     t = theme
     hair = _mix(t.surface, t.border, 0.55)
@@ -27,6 +29,22 @@ def build_glossary_page_qss(theme: ThemeDefinition) -> str:
     accent_edge = _mix(t.accent_soft, t.accent, 0.45)
     # A calm fill one step off the card: elevated on dark themes, the input tone on light ones.
     notice = t.input_surface if t.is_light else t.surface_elevated
+    from .typography import TITLE_FONT_STACK
+    title_stack = TITLE_FONT_STACK
+    # Translation state blue (draft C): soft fill, ink and a faint row wash.
+    info = "#2b5c9a" if t.is_light else "#7aa7e0"
+    # Near-white "paper" for boxes inside the drawer and the strip (draft C).
+    paper = _mix(t.surface, "#ffffff", 0.82) if t.is_light else t.surface_elevated
+    info_base = "#ffffff" if t.is_light else t.surface
+    info_soft = _mix(info_base, info, 0.13 if t.is_light else 0.22)
+    info_wash = _mix(info_base, info, 0.05 if t.is_light else 0.10)
+    info_ink = _mix(info, t.text, 0.25)
+    pending_ink = _mix(t.warning, t.text, 0.4)
+    foot = _mix(t.panel, t.border, 0.25)
+    strip_edge = _mix(t.accent_soft, t.accent, 0.28)
+    strip_dash = _mix(t.accent_soft, t.accent, 0.45)
+    pending_title = _mix(t.accent, t.text, 0.3)
+    pending_hint = _mix(t.text_muted, t.accent, 0.3)
     return f"""
 QLabel#termPageIntro {{ color: {t.text_muted}; font-size: 14px; padding-bottom: 4px; background: transparent; }}
 QFrame#termTabBar {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
@@ -69,7 +87,7 @@ QLabel#termTableTitle {{ color: {t.text_secondary}; font-size: 12px; font-weight
 QFrame#termQuickAdd {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 14px; }}
 QWidget#termAddHead, QWidget#termAddHint {{ background: transparent; border: 0; }}
 QLabel#termAddHeadLabel {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
-QFrame#termComposer {{ background: {t.accent_soft}; border: 0; border-radius: 0; }}
+QWidget#termComposer {{ background: {t.accent_soft}; border: 0; border-radius: 0; }}
 QLabel#termAddPlus {{
     background: {t.accent}; color: {on_accent}; border-radius: 9px; font-size: 16px; font-weight: 700;
 }}
@@ -89,6 +107,7 @@ QPushButton#termSegmentButton {{
     padding: 0 12px; min-height: 28px; font-size: 13px; font-weight: 600;
 }}
 QPushButton#termSegmentButton:hover {{ color: {t.text}; }}
+QPushButton#termSegmentButton::menu-indicator {{ image: none; width: 0; }}
 QPushButton#termSegmentButton:checked {{ background: {t.accent}; color: {on_accent}; }}
 QPushButton#termSegmentButton:disabled {{ color: {t.disabled}; }}
 QFrame#termGuide {{ background: transparent; border: 1px dashed {accent_edge}; border-radius: 12px; }}
@@ -151,6 +170,170 @@ QFrame#termNotice QLabel {{ background: transparent; color: {t.text}; }}
 QFrame#termNotice QLabel#termHint {{ color: {t.text_muted}; }}
 QLabel#termNoticeStrong {{ color: {t.text}; font-size: 13px; font-weight: 600; background: transparent; }}
 QFrame#termNotice QLabel#termDot {{ background: {t.accent}; border-radius: 4px; }}
+QFrame#termPendingStrip {{ background: {t.accent_soft}; border: 0; border-radius: 12px; }}
+QFrame#termPendingStrip QLabel {{ background: transparent; color: {t.text}; }}
+QFrame#termPendingChips {{ background: transparent; border: 0; }}
+QLabel#termPendingTitle {{ color: {pending_title}; font-size: 13px; font-weight: 700; padding: 0 4px 0 2px; }}
+QLabel#termPendingHint {{ color: {pending_hint}; font-size: 12px; }}
+QFrame#termStripChip {{ background: {paper}; border: 1px solid {strip_edge}; border-radius: 8px; }}
+QFrame#termStripChip:hover {{ border-color: {t.accent}; }}
+QFrame#termStripChip[dashed="true"] {{ border: 1px dashed {strip_dash}; }}
+QFrame#termStripChip[checked="true"] {{ background: {t.accent}; border-color: {t.accent}; }}
+QFrame#termPendingStrip QLabel#termStripChipText {{ color: {t.text}; font-size: 13px; background: transparent; }}
+QFrame#termStripChip[checked="true"] QLabel#termStripChipText {{ color: {on_accent}; font-weight: 600; }}
+QFrame#termPendingStrip QLabel#termStripDot {{ border-radius: 3px; background: {t.accent}; }}
+QFrame#termPendingStrip QLabel#termStripDot[tone="info"] {{ background: {info}; }}
+QFrame#termPendingStrip QLabel#termStripDot[tone="warning"] {{ background: {t.warning}; }}
+QFrame#termStripChip[checked="true"] QLabel#termStripDot {{ background: {on_accent}; }}
+QFrame#termPendingStrip QLabel#termPendingChip {{
+    background: {t.surface}; color: {t.text}; border: 1px solid {accent_edge}; border-radius: 8px;
+    padding: 0 10px; min-height: 28px; font-size: 13px;
+}}
+QPushButton#termPendingFilter {{
+    background: {t.surface}; color: {t.text}; border: 1px solid {accent_edge}; border-radius: 8px;
+    padding: 0 10px; min-height: 28px; font-size: 13px;
+}}
+QPushButton#termPendingFilter:hover {{ border-color: {t.accent}; }}
+QPushButton#termPendingFilter:checked {{ background: {t.accent}; color: {on_accent}; border-color: {t.accent}; font-weight: 600; }}
+QPushButton#termPendingAction {{
+    background: {t.accent}; color: {on_accent}; border: 0; border-radius: 8px;
+    padding: 0 14px; min-height: 30px; font-size: 13px; font-weight: 600;
+}}
+QPushButton#termPendingAction:hover {{ background: {t.accent_hover}; }}
+QPushButton#termPendingAction:disabled {{ background: {t.surface_elevated}; color: {t.disabled}; }}
+QComboBox#termDisplayLanguage {{
+    background: {t.input_surface}; color: {t.text}; border: 1px solid {t.border}; border-radius: 8px;
+    padding: 0 10px; min-height: 30px; font-size: 13px;
+}}
+QComboBox#termDisplayLanguage:hover {{ border-color: {t.border_strong}; }}
+QComboBox#termInputLanguage {{
+    background: {t.surface}; border: 1px solid {accent_edge}; border-radius: 10px; color: {t.text_secondary};
+    padding: 0 10px; min-height: 32px; font-size: 13px;
+}}
+QFrame#termNamesDrawer {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 18px; }}
+QDialog#multilingualNamesEditor {{ background: {t.panel}; }}
+QDialog#multilingualNamesEditor[embedded="true"] {{ background: transparent; }}
+QWidget#termDrawerHead {{ background: transparent; border: 0; border-bottom: 1px solid {t.border}; }}
+QDialog#multilingualNamesEditor QWidget#termDrawerBody, QScrollArea#termDrawerScroll {{ background: transparent; border: 0; }}
+QLabel#termDrawerCaption {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
+QPushButton#termDrawerNav {{
+    background: {t.surface}; color: {t.text_secondary}; border: 1px solid {t.border}; border-radius: 8px;
+    padding: 0; font-size: 15px;
+}}
+QPushButton#termDrawerNav:hover {{ border-color: {t.border_strong}; color: {t.text}; }}
+QLabel#termDrawerTitle {{ color: {t.text}; font-family: {title_stack}; font-size: 27px; font-weight: 800; background: transparent; }}
+QPushButton#termDrawerCategory {{ border: 0; border-radius: 9px; padding: 2px 10px; font-size: 12px; font-weight: 600; }}
+QPushButton#termDrawerCategory::menu-indicator {{ width: 0; image: none; }}
+QWidget#termDrawerBanner {{ background: {info_soft}; border: 0; border-radius: 10px; }}
+QWidget#termDrawerBanner[state="confirmed"] {{ background: {notice}; }}
+QLabel#termDrawerBannerText {{ color: {info_ink}; font-size: 13px; background: transparent; }}
+QWidget#termDrawerBanner[state="confirmed"] QLabel#termDrawerBannerText {{ color: {t.text_secondary}; }}
+QPushButton#termDrawerBannerButton {{
+    background: {info_ink}; color: #ffffff; border: 0; border-radius: 8px; padding: 0 14px; min-height: 32px;
+    font-size: 13px; font-weight: 600;
+}}
+QPushButton#termDrawerBannerButton:hover {{ background: {info}; }}
+QLabel#termDrawerSection {{ color: {t.text_muted}; font-size: 13px; font-weight: 700; background: transparent; }}
+QLabel#termDrawerCount {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
+QLabel#termDrawerBadge {{
+    background: {t.accent}; color: {on_accent}; border-radius: 8px; padding: 0 7px; font-size: 11px; font-weight: 700;
+}}
+QLabel#termDrawerChipLabel {{ color: {t.text_muted}; font-size: 13px; background: transparent; padding: 0 4px 0 0; }}
+QPushButton#termDrawerChip {{
+    background: {paper}; color: {t.text}; border: 1px solid {t.border}; border-radius: 7px;
+    padding: 0 12px; font-size: 13px;
+}}
+QPushButton#termDrawerChip:hover {{ border-color: {t.danger}; color: {t.danger}; text-decoration: line-through; }}
+QPushButton#termDrawerChipAdd {{
+    background: transparent; color: {t.text_muted}; border: 1px dashed {t.border_strong}; border-radius: 7px;
+    padding: 0; font-size: 14px;
+}}
+QPushButton#termDrawerChipAdd:hover {{ color: {accent_text}; border-color: {t.accent}; }}
+QLineEdit#termDrawerInlineInput, QLineEdit#termDrawerField, QLineEdit#termStandardName, QLineEdit#termDrawerNote {{
+    background: {paper}; color: {t.text}; border: 1px solid {t.border}; border-radius: 8px;
+    padding: 0 10px; min-height: 30px; font-size: 13px;
+}}
+QLineEdit#termDrawerInlineInput:focus, QLineEdit#termDrawerField:focus, QLineEdit#termStandardName:focus,
+QLineEdit#termDrawerNote:focus {{ border-color: {t.accent}; }}
+QFrame#termDrawerList {{ background: {paper}; border: 1px solid {t.border}; border-radius: 12px; }}
+QFrame#termDrawerRow {{ background: {paper}; border: 0; border-top: 1px solid {hair}; }}
+QFrame#termDrawerRow[first="true"] {{ border-top: 0; border-top-left-radius: 11px; border-top-right-radius: 11px; }}
+QFrame#termDrawerRow[last="true"] {{ border-bottom-left-radius: 11px; border-bottom-right-radius: 11px; }}
+QFrame#termDrawerRow[display="true"] {{ background: {info_wash}; }}
+QFrame#termDrawerRow[selected="true"] {{ background: {t.selected}; }}
+QFrame#termDrawerRow:hover {{ background: {hover}; }}
+QFrame#termDrawerRow QLabel {{ background: transparent; }}
+QLabel#termDrawerTag {{ color: {t.text_muted}; font-size: 11px; font-weight: 700; }}
+QLabel#termDrawerTagSource {{ color: {accent_text}; font-size: 11px; font-weight: 700; }}
+QLabel#termDrawerTagShown {{ color: {info_ink}; font-size: 11px; font-weight: 700; }}
+QLabel#termDrawerRowSource {{ color: {t.text}; font-size: 15px; font-weight: 700; }}
+QLabel#termDrawerRowName {{ color: {t.text}; font-size: 15px; }}
+QLabel#termDrawerRowEmpty {{ color: {t.text_muted}; font-size: 14px; }}
+QLabel#termDrawerRowLang {{ color: {t.text_muted}; font-size: 11px; }}
+QLabel#termDrawerCheck {{ color: {t.success}; font-size: 15px; font-weight: 800; }}
+QLabel#termDrawerPending {{ background: {t.warning_soft}; color: {pending_ink}; border-radius: 8px; padding: 1px 7px; font-size: 11px; font-weight: 600; }}
+QLabel#termDrawerAI {{ background: {info_soft}; color: {info_ink}; border-radius: 8px; padding: 1px 7px; font-size: 11px; font-weight: 600; }}
+QPushButton#termDrawerSmall {{
+    background: {paper}; color: {t.text}; border: 1px solid {t.border}; border-radius: 7px;
+    padding: 0 10px; min-height: 26px; font-size: 12px;
+}}
+QPushButton#termDrawerSmall:hover {{ border-color: {t.border_strong}; }}
+QFrame#termDrawerEdit {{ background: {paper}; border: 1px solid {t.border_strong}; border-radius: 10px; }}
+QFrame#termDrawerEdit QLabel {{ background: transparent; color: {t.text_secondary}; font-size: 12px; }}
+QLabel#termDrawerEditTitle {{ color: {t.text}; font-size: 13px; font-weight: 700; }}
+QPushButton#termDrawerLink {{
+    background: transparent; color: {accent_text}; border: 0; padding: 2px 0; font-size: 13px; font-weight: 600; text-align: left;
+}}
+QPushButton#termDrawerLink:hover {{ text-decoration: underline; }}
+QFrame#termDrawerCandidate {{ background: {paper}; border: 1px solid {t.border}; border-radius: 10px; }}
+QFrame#termDrawerCandidate QLabel {{ background: transparent; }}
+QLabel#termDrawerCandidateName {{ color: {t.text}; font-size: 14px; }}
+QLabel#termDrawerCandidateNote {{ color: {t.text_muted}; font-size: 12px; }}
+QWidget#termDrawerFoot {{
+    background: {foot}; border: 0; border-top: 1px solid {t.border};
+    border-bottom-left-radius: 18px; border-bottom-right-radius: 18px;
+}}
+QLabel#termDrawerStatus {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
+QFrame#termPendingStrip {{ background: {t.accent_soft}; border: 0; border-radius: 12px; }}
+QFrame#termPendingStrip QLabel {{ background: transparent; color: {t.text}; }}
+QFrame#termPendingChips {{ background: transparent; border: 0; }}
+QLabel#termPendingTitle {{ color: {pending_title}; font-size: 13px; font-weight: 700; padding: 0 4px 0 2px; }}
+QLabel#termPendingHint {{ color: {pending_hint}; font-size: 12px; }}
+QFrame#termStripChip {{ background: {paper}; border: 1px solid {strip_edge}; border-radius: 8px; }}
+QFrame#termStripChip:hover {{ border-color: {t.accent}; }}
+QFrame#termStripChip[dashed="true"] {{ border: 1px dashed {strip_dash}; }}
+QFrame#termStripChip[checked="true"] {{ background: {t.accent}; border-color: {t.accent}; }}
+QLabel#termStripChipText {{ color: {t.text}; font-size: 13px; background: transparent; }}
+QFrame#termStripChip[checked="true"] QLabel#termStripChipText {{ color: {on_accent}; font-weight: 600; }}
+QLabel#termStripDot {{ border-radius: 3px; background: {t.accent}; }}
+QLabel#termStripDot[tone="info"] {{ background: {info}; }}
+QLabel#termStripDot[tone="warning"] {{ background: {t.warning}; }}
+QFrame#termStripChip[checked="true"] QLabel#termStripDot {{ background: {on_accent}; }}
+QFrame#termPendingStrip QLabel#termPendingChip {{
+    background: {t.surface}; color: {t.text}; border: 1px solid {accent_edge}; border-radius: 8px;
+    padding: 0 10px; min-height: 28px; font-size: 13px;
+}}
+QPushButton#termPendingFilter {{
+    background: {t.surface}; color: {t.text}; border: 1px solid {accent_edge}; border-radius: 8px;
+    padding: 0 10px; min-height: 28px; font-size: 13px;
+}}
+QPushButton#termPendingFilter:hover {{ border-color: {t.accent}; }}
+QPushButton#termPendingFilter:checked {{ background: {t.accent}; color: {on_accent}; border-color: {t.accent}; font-weight: 600; }}
+QPushButton#termPendingAction {{
+    background: {t.accent}; color: {on_accent}; border: 0; border-radius: 8px;
+    padding: 0 14px; min-height: 30px; font-size: 13px; font-weight: 600;
+}}
+QPushButton#termPendingAction:hover {{ background: {t.accent_hover}; }}
+QPushButton#termPendingAction:disabled {{ background: {t.surface_elevated}; color: {t.disabled}; }}
+QComboBox#termDisplayLanguage {{
+    background: {t.input_surface}; color: {t.text}; border: 1px solid {t.border}; border-radius: 8px;
+    padding: 0 10px; min-height: 30px; font-size: 13px;
+}}
+QComboBox#termDisplayLanguage:hover {{ border-color: {t.border_strong}; }}
+QComboBox#termInputLanguage {{
+    background: {t.surface}; border: 1px solid {accent_edge}; border-radius: 10px; color: {t.text_secondary};
+    padding: 0 10px; min-height: 32px; font-size: 13px;
+}}
 QListWidget#termLearningList {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 8px; }}
 
 QTableView#termMappingTable {{
@@ -284,4 +467,32 @@ QPushButton#termPopupItem:hover, QPushButton#termPopupItemDanger:hover {{ backgr
 QPushButton#termPopupItem:disabled, QPushButton#termPopupItemDanger:disabled {{ color: {t.disabled}; background: transparent; }}
 QLabel#termPopupCaption {{ color: {t.text_muted}; font-size: 12px; padding: 4px 8px 0 8px; background: transparent; }}
 QFrame#termPopupSeparator {{ background: {t.border}; border: 0; margin: 4px 2px; }}
+QPushButton#termAiEntry {{ background: transparent; border: 0; border-radius: 12px; text-align: left; padding: 0; }}
+QPushButton#termAiEntry:hover {{ background: {t.selected}; }}
+QPushButton#termAiEntry QLabel {{ background: transparent; }}
+QLabel#termAiEntryIcon {{ border-radius: 11px; background: {_mix(t.surface_elevated, t.accent, 0.12)}; }}
+QLabel#termAiEntryIcon[tone="new"] {{ background: {_mix(t.surface_elevated, t.success, 0.16)}; }}
+QLabel#termAiEntryIcon[tone="full"] {{ background: {_mix(t.surface_elevated, '#7b5aa6', 0.16)}; }}
+QLabel#termAiEntryIcon[tone="text"] {{ background: {_mix(t.surface_elevated, t.warning, 0.18)}; }}
+QLabel#termAiEntryIcon[tone="lang"] {{ background: {_mix(t.surface_elevated, '#3d6b8f', 0.16)}; }}
+QLabel#termAiEntryIcon[tone="ok"] {{ background: {t.accent_soft}; }}
+QLabel#termAiEntryTitle {{ color: {t.text}; font-size: 14px; font-weight: 700; }}
+QLabel#termAiEntrySub {{ color: {t.text_secondary}; font-size: 12px; }}
+QLabel#termAiEntryTitle[dim="true"], QLabel#termAiEntrySub[dim="true"] {{ color: {t.disabled}; }}
+QLabel#termAiEntryBadge {{ border-radius: 9px; padding: 1px 8px; font-size: 11px; font-weight: 700;
+    color: {t.warning}; background: {t.warning_soft}; }}
+QLabel#termAiEntryBadge[tone="count"] {{ color: {t.text_on_accent if hasattr(t, 'text_on_accent') else '#ffffff'};
+    background: {t.accent}; }}
+QFrame#termAiBar {{ background: {t.warning_soft}; border: 0; border-radius: 12px; }}
+QFrame#termAiBar[web="yes"] {{ background: {_mix(t.surface_elevated, t.success, 0.13)}; }}
+QFrame#termAiBar QLabel {{ background: transparent; }}
+QLabel#termAiBarCaption {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; }}
+QLabel#termAiCapability {{ color: {t.text_secondary}; font-size: 12px; }}
+QPushButton#termPopupLink {{ background: transparent; border: 0; border-radius: 8px; padding: 4px 8px;
+    color: {t.text_secondary}; font-size: 12px; }}
+QPushButton#termPopupLink:hover {{ background: {t.selected}; color: {t.text}; }}
+QPushButton#termPopupLink:disabled {{ color: {t.disabled}; }}
+QPushButton#termStripAction {{ background: {t.accent}; color: white; border: 0; border-radius: 10px;
+    padding: 5px 12px; font-size: 13px; font-weight: 700; min-height: 20px; }}
+QPushButton#termStripAction:hover {{ background: {t.accent_hover}; }}
 """

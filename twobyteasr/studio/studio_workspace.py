@@ -60,6 +60,7 @@ from ..design.components import StatusBadge
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import weighted_font
 
 # Candidate row of the review strip: one ReviewCandidateCard (min 86 px).
 REVIEW_DOCK_ROW_HEIGHT = 92
@@ -118,7 +119,7 @@ class CountChip(QPushButton):
         pill_text = count
         pill_font = self.font()
         pill_font.setPixelSize(max(10, self.font().pixelSize() - 2) if self.font().pixelSize() > 0 else 11)
-        pill_font.setBold(True)
+        weighted_font(pill_font, 700)
         from PySide6.QtGui import QFontMetrics
         pill_metrics = QFontMetrics(pill_font)
         pill_width = pill_metrics.horizontalAdvance(pill_text) + 12 if pill_text else 0

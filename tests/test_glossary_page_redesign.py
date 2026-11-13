@@ -125,6 +125,40 @@ def test_rarely_used_actions_live_in_menus(make_page, monkeypatch):
     page.ai_popup.hide()
 
 
+def test_ai_menu_groups_entries_by_goal_and_marks_what_needs_internet(make_page, monkeypatch):
+    """2026-11-13 (user, option A): 找新词 then 加外语名, each entry in plain
+    words with a line on what it does; without a searching AI the entries that
+    need one say so, and the AI line says it cannot go online."""
+    from twobyteasr.glossary import glossary_skill
+    page = make_page()
+    _new_library(page, rows=1)
+    layout = page.ai_popup._layout
+    order = [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget() is not None]
+    texts = [w.text() for w in order if hasattr(w, "text")]
+    assert texts.index("找新词") < texts.index("补上最近版本的新词") < texts.index("从零整理一整个词库") \
+        < texts.index("从一段文字里挑词") < texts.index("加外语名") < texts.index("查外语官方名…") \
+        < texts.index("确认 AI 找到的译名")
+    assert page.ai_full_button.subtitle() and page.name_completion_button.subtitle()
+    rows = [page.ai_popup._layout.itemAt(i).widget() for i in range(page.ai_popup._layout.count())]
+    assert rows.index(page.ai_bar) > rows.index(page.name_review_button)
+    monkeypatch.setattr(glossary_skill, "detect_search_capability",
+                        lambda _s: {"provider_search": False, "tool_search": False, "reason": "无"})
+    page._refresh_ai_capability_label()
+    assert page.ai_update_button.badge.text() == "🔒 需换 AI" and page.name_completion_button.badge.text()
+    assert page.ai_capability_label.text().startswith("○ 不能上网")
+    monkeypatch.setattr(glossary_skill, "detect_search_capability",
+                        lambda _s: {"provider_search": False, "tool_search": True, "reason": "DeepSeek"})
+    page._refresh_ai_capability_label()
+    assert "DeepSeek" in page.ai_capability_label.text() and "支持联网" in page.ai_capability_label.text()
+    assert page.name_completion_button.badge.isHidden() and page.ai_update_button.badge.text() == "🔒 需换 AI"
+    page.ai_menu_button.click()
+    APP.processEvents()
+    bar = page.ai_bar
+    assert bar.height() >= bar.minimumSizeHint().height()
+    assert page.ai_popup.height() >= page.ai_popup._needed_height()
+    page.ai_popup.hide()
+
+
 def test_selection_bar_appears_only_with_selected_terms(make_page):
     page = make_page()
     _new_library(page, rows=3)

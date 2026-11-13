@@ -59,6 +59,14 @@ class IgnoreProofreadRowCommand(QUndoCommand):
         self._apply(self.before)
 
 
+class IgnoreProofreadGroupCommand(IgnoreProofreadRowCommand):
+    """✕ in one proposal bubble (2026-11-13): only that group's proposals are
+    marked ignored; the caption stays in this round's list with its others."""
+    def __init__(self, project, cue_id, decisions, *, changed=None, label="忽略这处建议"):
+        super().__init__(project, cue_id, decisions, changed=changed, label=label)
+        self.review_after = dict(self.review_before)
+
+
 class IgnoreProofreadRowsCommand(QUndoCommand):
     """One document transaction/save notification for all selected rows."""
     def __init__(self, project, decisions, *, changed=None, label="忽略所选建议"):

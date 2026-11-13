@@ -237,6 +237,7 @@ from twobyteasr.diagnostics.startup_trace import mark as _startup_mark
 from twobyteasr.app import ui_zoom
 from twobyteasr.app.ui_recognition import home_plan_height
 from twobyteasr.app.lazy_pages import existing_page
+from ..design.typography import emphasis_qss, weighted_font
 
 # Work that must not delay the first window; run on the GUI thread about
 # 2.5 s after it is interactive (MainWindow._warm_studio_module).
@@ -3392,10 +3393,15 @@ class MainWindow(QWidget):
             self._choose_plan_in_tutorial()
             self._tutorial_plan_chosen = True
 
+        required = bool(self.__dict__.get("_first_run_required"))
+
         def done(completed):
-            onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
+            # A fresh install's tutorial counts only when finished (2026-11-13).
+            if completed or not required:
+                onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
+                self._first_run_required = False
             self._tutorial_finish(completed)
-        start_home_tour(self, done, part)
+        start_home_tour(self, done, part, required=required)
 
     def _current_plan_key(self) -> str:
         """Which quick-chooser plan the saved roles are: cloud, local, apple, light or '' (custom)."""
@@ -5409,6 +5415,7 @@ class MainWindow(QWidget):
             self.ai_grouping.setChecked(True)
         dialog = SpringDialog(self)
         dialog.ENTRY_ANIMATED = False
+        dialog.EXIT_ANIMATED = False   # 2026-11-13: open and close in one step, no fade
         from .settings_lifecycle import retain, trace
         retain(self, dialog, 'ai')
         dialog.setObjectName("aiSettingsDialog")
@@ -5734,7 +5741,7 @@ class MainWindow(QWidget):
         page = QWidget()
         page.setObjectName("progressPage")
         self.progress_page_root = page
-        page.setStyleSheet(progress_page_qss(_active_theme_definition()))
+        page.setStyleSheet(emphasis_qss(progress_page_qss(_active_theme_definition())))
         layout = QVBoxLayout(page)
         layout.setContentsMargins(28, 18, 28, 14)
         layout.setSpacing(14)
@@ -6300,7 +6307,7 @@ class MainWindow(QWidget):
     def _restyle_progress_page(self):
         root = getattr(self, 'progress_page_root', None)
         if root is not None:
-            root.setStyleSheet(progress_page_qss(_active_theme_definition()))
+            root.setStyleSheet(emphasis_qss(progress_page_qss(_active_theme_definition())))
         lines = getattr(self, '_console_lines', None)
         levels = getattr(self, '_console_levels', None)
         if lines and hasattr(self, 'console_log'):
@@ -7970,7 +7977,7 @@ class MainWindow(QWidget):
             self.media_type_icon.setPixmap(
                 qta.icon("fa5s.file-import", color=theme.accent_text).pixmap(QSize(glyph, glyph)))
         self.media_name.setStyleSheet(
-            f"font-size: {16 if ready else 19}px; font-weight: 600; color: {theme.text};"
+            emphasis_qss(f"font-size: {16 if ready else 19}px; font-weight: 600; color: {theme.text};")
         )
         self.media_drop_hint.setStyleSheet(
             f"color: {theme.text_secondary}; font-size: 13px;"
@@ -7978,7 +7985,7 @@ class MainWindow(QWidget):
         self._style_home_icons()
         if hasattr(self, "media_origin_label"):
             self.media_origin_label.setStyleSheet(
-                f"color:{theme.accent}; font-size:12px; font-weight:700;"
+                emphasis_qss(f"color:{theme.accent}; font-size:12px; font-weight:700;")
             )
 
     def _refresh_media_summary(self):
@@ -9122,7 +9129,7 @@ class MainWindow(QWidget):
         pop = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         pop.setObjectName("apiHelpPopover")
         pop.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        pop.setStyleSheet(api_help_popover_qss(theme_definition(theme_key())))
+        pop.setStyleSheet(emphasis_qss(api_help_popover_qss(theme_definition(theme_key()))))
 
         v = QVBoxLayout(pop)
         v.setContentsMargins(12, 10, 12, 10)
@@ -11205,8 +11212,8 @@ class MainWindow(QWidget):
                 self._subtitle_language_options(), studio_context, _ai_unlocked(self))
             options = RunOptions(
                 **language_options,
-                translation_terminology_json=json.dumps(studio_context.get('translation_terminology',
-                    self.legacy.RUNTIME_SETTINGS.get('glossary', {}).get('translation_terminology', {})), ensure_ascii=False),
+                translation_terminology_json=json.dumps(__import__('twobyteasr.glossary.multilingual_terms', fromlist=['task_policy']).task_policy(
+                    studio_context.get('translation_terminology', self.legacy.RUNTIME_SETTINGS.get('glossary', {}).get('translation_terminology', {})), self.legacy), ensure_ascii=False),
                 source_glossary_selection=tuple(studio_context.get('enabled_glossary_ids', self._enabled_glossary_ids())),
                 settings_snapshot_json=json.dumps(self._run_settings_snapshot(), ensure_ascii=False),
                 glossary_snapshot_json=json.dumps(
@@ -13026,7 +13033,7 @@ def run_desktop_app(
         warm_font = QFont(app.font())
         warm_font.setFamilies(list(families))
         warm_font.setPixelSize(size)
-        warm_font.setWeight(weight)
+        weighted_font(warm_font, weight)
         QFontMetrics(warm_font).horizontalAdvance('兔白字幕 最近编辑 0123456789 ABC')
     from ..design.mascot_assets import provider as mascot_assets
     assets = mascot_assets()
@@ -13189,11 +13196,19 @@ def _offer_first_run_setup(window) -> None:
         return
     from . import onboarding
     state = onboarding.ensure_state()
-    if not state.get("fresh") or state.get("setup_offered"):
+    # 2026-11-13 (user): a fresh install must choose and then go through the
+    # tutorial; an unfinished tutorial starts again at the next launch.
+    if not onboarding.first_run_required(state):
         return
-    onboarding.save_state(dict(state, setup_offered=True))
-    if _open_quick_setup(window):
+    window._first_run_required = True
+    if not state.get("setup_offered"):
+        if not _open_quick_setup(window, required=True):
+            return
         window._refresh_asr_summary()
+        onboarding.save_state(dict(onboarding.load_state(), setup_offered=True))
+    else:
+        window._quick_setup_chosen = True  # resume the tutorial after its confirmed plan
+    window._quick_setup_tour = True
     window._refresh_next_step()
     window._after_quick_setup()
 
@@ -13207,7 +13222,7 @@ def _ai_unlocked(owner) -> bool:
     return getattr(owner, "__dict__", {}).get("_ai_gate_state", "ready") == "ready"
 
 
-def _open_quick_setup(parent, *, compare: bool = False):
+def _open_quick_setup(parent, *, compare: bool = False, required: bool = False):
     """Big cards: cloud / local / light (Mac: cloud / Apple chip / light). ``自己选择模型…`` opens the detailed dialog.
 
     2026-10-22 ``compare``: the tutorial's plan step. Only cloud and local, each with
@@ -13218,24 +13233,34 @@ def _open_quick_setup(parent, *, compare: bool = False):
         from . import onboarding
         from .quick_setup import QuickSetupDialog
         extra = dict(compare=True, current=parent._current_plan_key()) if compare else {}
-        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends),
-                                  spoken=_home_spoken_language(parent), **extra)
-        if onboarding.load_state().get("tour_done"):
-            dialog.tour_check.setChecked(False)   # reopened later: no tutorial unless asked for
-        accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        if not compare:
-            parent._quick_setup_tour = dialog.tour_check.isChecked()
-        if not accepted or dialog.choice is None:
-            return "" if compare else False
-        # 2026-10-24: the language picked above the cards is the home page's 视频里说的话.
-        _apply_spoken_language(parent, getattr(dialog, "spoken", ""))
-        if not compare:
-            parent._quick_setup_chosen = True   # the tutorial that follows does not ask again
-        if compare:
-            _apply_plan_for_tutorial(parent, dialog)
-            return dialog.choice
-        if dialog.choice == "custom":
-            return _open_guided_setup(parent)
+        if required and not compare:
+            extra["required"] = True
+        while True:
+            dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends),
+                                      spoken=_home_spoken_language(parent), **extra)
+            if onboarding.load_state().get("tour_done"):
+                dialog.tour_check.setChecked(False)   # reopened later: no tutorial unless asked for
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            if not compare:
+                parent._quick_setup_tour = dialog.tour_check.isChecked()
+            if not accepted or dialog.choice is None:
+                return "" if compare else False
+            # 2026-10-24: the language picked above the cards is the home page's 视频里说的话.
+            _apply_spoken_language(parent, getattr(dialog, "spoken", ""))
+            if not compare:
+                parent._quick_setup_chosen = True   # the tutorial that follows does not ask again
+            if compare:
+                _apply_plan_for_tutorial(parent, dialog)
+                return dialog.choice
+            if dialog.choice != "custom":
+                break
+            if _open_guided_setup(parent):
+                return True
+            parent._quick_setup_chosen = False
+            if not required:
+                return False
+            # Cancelling detailed configuration is not a confirmed first plan.
+            # Return to the required chooser without marking setup complete.
         primary, timeline, review = dialog.backends
         if dialog.choice == "cloud":
             # 2026-10-21: MOSS Pro in the cloud + the timeline model on this computer.

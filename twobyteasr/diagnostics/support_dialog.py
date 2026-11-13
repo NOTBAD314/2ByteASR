@@ -47,6 +47,7 @@ PAGE_ROWS = 100
 
 
 def open_support_dialog(owner, page=None):
+    from ..design.typography import weighted_font
     from PySide6.QtCore import QObject, Signal, Qt, QDateTime, QUrl, QTimer, QEvent, QStandardPaths
     from PySide6.QtGui import QDesktopServices, QFontMetrics
     from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDateTimeEdit, QDialog,
@@ -567,7 +568,7 @@ def open_support_dialog(owner, page=None):
             bind_text(self.only_problems,tr("只看问题 {count}",count=problems))
             bind_text(self.all_rows,tr("全部 {count}",count=f"{len(self._rows):,}"))
             for button in (self.only_problems,self.all_rows):
-                font=button.font();font.setBold(True)
+                font=button.font();weighted_font(font, 700)
                 button.setMinimumWidth(QFontMetrics(font).horizontalAdvance(button.text())+34)
             level=self.level.currentData() or "";keyword=self.keyword.text().strip().casefold()
             if keyword.startswith("#"):keyword='"sequence": '+keyword[1:]

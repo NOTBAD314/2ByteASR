@@ -64,6 +64,10 @@ def test_create_add_and_multi_enable_announce_real_result(dialog):
     assert {(r['from'], r['to']) for r in legacy.learned_mappings_for_game('瓦罗兰特')} == {
         ('BerLIN', 'BerLIN'), ('Borlin', 'BerLIN')}
     dialog.use_selected_game()
+    from PySide6.QtTest import QTest
+    for _ in range(60):
+        if '有效' in dialog.batch_status.text(): break
+        QTest.qWait(25)
     assert '有效' in dialog.batch_status.text()
     create(dialog, '另一个库')
     dialog.use_selected_game()
@@ -83,6 +87,13 @@ def test_quick_arrow_parse_and_filtered_bulk_scope(dialog):
     dialog.apply_filter()
     dialog.listing.selectAll()
     assert len(dialog._selected_rows_by_status()['confirmed']) == 1
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    def confirm_owned_fixture_deletion():
+        popup = APP.activeModalWidget()
+        assert isinstance(popup, QMessageBox)
+        popup.button(QMessageBox.StandardButton.Yes).click()
+    QTimer.singleShot(0, confirm_owned_fixture_deletion)
     dialog.remove_selected_terms()
     assert [r['to'] for r in legacy.learned_mappings_for_game('测试')] == ['S0PP']
 
@@ -114,9 +125,9 @@ def test_import_preview_preserves_confirmed_spelling_export_and_rename(dialog, t
     assert dialog.state['game'] == '新显示名'
     target = tmp_path / 'export.json'
     dialog._export_library_to(target)
-    from twobyteasr.glossary.main_ui_glossary import preview_term_import
-    rows = preview_term_import(target.read_text('utf8'))
-    assert {row['to'] for row in rows} == {'BerLIN', 'S0PP'}
+    from twobyteasr.glossary.multilingual_terms import parse_import
+    rows = parse_import(target.read_text('utf8'))
+    assert {name['name'] for row in rows for name in row['names'].values()} == {'BerLIN', 'S0PP'}
 
 
 def test_try_sentence_uses_real_shared_resolver(dialog):

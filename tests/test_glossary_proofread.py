@@ -873,7 +873,7 @@ def test_interface_zoom_scales_the_list_and_returns_exactly(tmp_path):
         ui_zoom.set_zoom_percent(150)
         ui_zoom.apply_to(page)
         APP.processEvents()
-        assert page.list.body.pixelSize() == round(19 * 1.5)
+        assert page.list.body.pixelSize() == round(page.list.BODY_PX * 1.5)
         assert sum(page.list.heights) > sum(heights) and page.local_button.minimumHeight() == round(button * 1.5)
         assert page.list._top_anchor()[0] == anchor  # the same caption stays at the top
         assert page.left_panel.width() <= page.width() * 0.34 + 1
@@ -1399,14 +1399,16 @@ def test_find_steps_through_hits_and_replaces_one_at_a_time(tmp_path):
 
 
 def test_a_plain_caption_is_one_line_high(tmp_path):
-    """2026-10-23: number · time · play · speaker share the caption's line."""
+    """2026-11-13 (bilingual design A): box · number · time over play ·
+    speaker; a plain caption is exactly that high, and 已写回 · 还原这句 adds
+    one line under its text."""
     page, _path = _speaker_page(tmp_path, [("c1", 0, 1000, "三十天", "S01")], [("S01", "主播")])
     try:
         lst = page.list
-        assert lst.heights == [lst.PAD + lst.LINE + lst.PAD]
+        assert lst.heights == [lst.PAD + lst.LINE + lst.META_LINE + lst.PAD]
         page._write({"c1": "三十一天"}, label="改一句", manual=True)
-        assert lst._meta_lines(_row(page, "c1")) == 2  # 已写回 · 还原这句 on one line under it
-        assert lst.heights[0] >= lst.PAD + lst.LINE + lst.META_LINE + lst.PAD
+        assert lst._meta_lines(_row(page, "c1")) == 2
+        assert lst.heights[0] >= lst.PAD + lst.LINE + lst.ISSUE + lst.PAD
     finally:
         _close(page)
 

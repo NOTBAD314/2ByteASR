@@ -166,3 +166,20 @@ def test_all_dialog_bindings_retranslate(context, monkeypatch):
                         assert source in i18n._TRANSLATIONS[language], source
                     expected = i18n.translate(source, language).format(**arguments)
                     assert getattr(widget, prop)() == expected
+
+
+def test_letter_lines_and_stamps_get_their_full_height(context):
+    # 2026-11-13: the painted letter lines were squeezed 4 px (their ruled
+    # line fell outside) and the shared button rules shrank the stamps.
+    from twobyteasr.app.support_letter import StampButton, _PaintedText
+    from twobyteasr.app.ui_zoom import px
+    dialog = support.SupportDialog(None)
+    dialog.show()
+    QTest.qWait(50)
+    labels = dialog.findChildren(_PaintedText)
+    assert len(labels) >= 5
+    for label in labels:
+        assert label.height() >= label.heightForWidth(label.width()), label.text()
+    for stamp in dialog.channel_buttons:
+        assert isinstance(stamp, StampButton) and stamp.height() >= px(100)
+    assert [stamp.caption() for stamp in dialog.channel_buttons] == ['海外 · 银行卡', '国内 · 微信 / 支付宝']

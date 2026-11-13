@@ -54,6 +54,13 @@ def repetition_cleanup(issue, text=''):
 
 def issue_enabled(issue, cleanup=True, text=''):
     """Already-applied edits stay visible; the switch never reverts text."""
+    from .proofread_constraints import punctuation_change_only
+    if not issue.get('_allow_punctuation') and punctuation_change_only(issue.get('original',''),issue.get('replacement','')):
+        return False
+    if text and not issue.get('checked'):
+        from .proofread_constraints import issue_allowed
+        if not issue_allowed(issue, text, dict(cleanup=cleanup, punctuation=bool(issue.get('_allow_punctuation')))):
+            return False
     if issue.get('kind') != 'suspect' and not issue.get('checked') and text:
         from ..subtitle_rules.machine_text_policy import machine_text_allowed
         span = issue.get('span')

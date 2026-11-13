@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButt
 
 from ..i18n import bind_text, tr
 from ..i18n_widgets import user_text
+from ..design.typography import emphasis_qss
 
 
 def default_choice(rows, *, selected_lanes=(), remembered=()) -> list[str]:
@@ -306,7 +307,7 @@ class AudioTrackPicker(QWidget):
         palette = theme_definition(theme_key())
         light = hex_luminance(palette.surface) > 0.5
         self.setStyleSheet(
-            f"QWidget#audioTrackPicker QLabel#audioTrackPickerIntro {{ color: {palette.text};"
+            emphasis_qss(f"QWidget#audioTrackPicker QLabel#audioTrackPickerIntro {{ color: {palette.text};"
             f" font-size: {TYPE_SCALE['body']}px; }}"
             f"QScrollArea#audioTrackPickerScroll, QWidget#audioTrackPickerBody,"
             f" QScrollArea#audioTrackPickerScroll > QWidget#qt_scrollarea_viewport {{ background: transparent; border: 0; }}"
@@ -327,7 +328,7 @@ class AudioTrackPicker(QWidget):
             f"QWidget#audioTrackPicker QLabel#audioTrackCount {{ color: {palette.text};"
             f" font-size: {TYPE_SCALE['small']}px; font-weight: 700; }}"
             f"QWidget#audioTrackPicker QLabel#audioTrackNote, QWidget#audioTrackPicker QLabel#audioTrackImpact"
-            f" {{ color: {palette.accent_text}; font-size: {TYPE_SCALE['small']}px; font-weight: 600; }}"
+            f" {{ color: {palette.accent_text}; font-size: {TYPE_SCALE['small']}px; font-weight: 600; }}")
         )
 
 

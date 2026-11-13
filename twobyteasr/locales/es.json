@@ -8707,5 +8707,14 @@
   "查看完整说明": "Notas completas",
   "套用时": "Al aplicar",
   "{count} 项待确认": "{count} por confirmar",
-  "还合入：{items}。": "También incluye: {items}."
+  "还合入：{items}。": "También incluye: {items}.",
+  "开启或关闭填充；关闭后文字是透明的，只留描边": "Activa o desactiva el relleno; desactivado, el texto es transparente y solo queda el contorno",
+  "开启或关闭描边": "Activar o desactivar el contorno",
+  "阴影不透明度": "Opacidad de la sombra",
+  "拖一拖影子": "Arrastra la sombra",
+  "来自兔白的一张小纸条": "Una notita de 2ByteASR",
+  "再确认一下下": "Solo para confirmar",
+  "— 兔白": "— 2ByteASR",
+  "海外 · 银行卡": "Internacional · Tarjeta",
+  "国内 · 微信 / 支付宝": "China · WeChat / Alipay"
 }

@@ -2,6 +2,7 @@
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont
 from ..design.themed_icons import paint_cached_icon
+from ..design.typography import weighted_font
 
 HEADER_WIDTH = 228
 BUTTON_SIZE = 24
@@ -38,7 +39,7 @@ def paint_button(painter, palette, kind, action, row, icon, *, active=False, dis
         painter.setBrush(QColor('#3867c8' if solo else palette.header_hover))
         painter.drawRoundedRect(box, 4, 4)
     if icon == 'S':
-        font = QFont(painter.font()); font.setPixelSize(14); font.setBold(True); font.setItalic(False)
+        font = QFont(painter.font()); font.setPixelSize(14); weighted_font(font, 700); font.setItalic(False)
         painter.setFont(font)
         painter.setPen(QColor('#ffffff' if solo else palette.header_icon))
         painter.drawText(box, Qt.AlignCenter, 'S')

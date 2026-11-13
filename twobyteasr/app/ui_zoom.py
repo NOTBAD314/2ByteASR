@@ -192,7 +192,10 @@ def set_sheet(widget: QWidget, sheet: str) -> None:
     """A widget's own style sheet written in logical px, applied at the
     current zoom right away. The first zoom pass over a lazily built page then
     finds nothing to change, instead of replacing (and re-polishing the whole
-    subtree under) a large page sheet a second time (2026-10-12)."""
+    subtree under) a large page sheet a second time (2026-10-12).
+    Weighted rules get their bundled face here too (emphasis_qss, 2026-11-13)."""
+    from ..design.typography import emphasis_qss
+    sheet = emphasis_qss(sheet)
     factor = effective_factor(widget)
     if abs(factor - 1.0) < 1e-6 and not _state["touched"]:
         widget.setStyleSheet(sheet)
@@ -624,11 +627,12 @@ class ZoomController(QObject):
         from ..i18n import tr
         from ..design.ui_theme import theme_definition
         from ..design.theme_manager import theme_key
+        from ..design.typography import emphasis_qss
         theme = theme_definition(theme_key())
-        self._toast.setStyleSheet(
+        self._toast.setStyleSheet(emphasis_qss(
             f"QLabel#uiZoomToast {{ background: {theme.surface_elevated}; color: {theme.text};"
             f" border: 1px solid {theme.border_strong}; border-radius: 10px; padding: 8px 16px;"
-            f" font-size: 15px; font-weight: 600; }}")
+            f" font-size: 15px; font-weight: 600; }}"))
         self._toast.setText(tr("界面大小 {percent}%  ·  {key} 恢复默认", percent=percent, key=self._reset_key_text()))
         self._toast.adjustSize()
         self._toast.move(max(0, (window.width() - self._toast.width()) // 2), 72)

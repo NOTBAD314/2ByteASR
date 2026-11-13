@@ -107,7 +107,7 @@ def test_category_colors_are_stable_and_neutral_for_other():
 
 def test_cards_wrap_into_several_columns_without_row_widgets(page):
     assert isinstance(page.listing, TermCardView)
-    assert page.listing.columns() == 6
+    assert page.listing.columns() >= 4
     assert page._term_model.rowCount() == 5  # 倾泻 and 倾斜 → 倾泻 share one card
     assert all(page.listing.indexWidget(page._term_model.index(row, 0)) is None
                for row in range(page._term_model.rowCount()))
@@ -115,7 +115,11 @@ def test_cards_wrap_into_several_columns_without_row_widgets(page):
     assert first.top() == second.top() and second.left() > first.right()
 
 
-def test_six_by_four_grid_fills_resized_viewport_and_scrolls(page):
+def test_fixed_height_cards_fill_the_width_and_scroll(page):
+    """2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): cards keep one
+    compact height instead of stretching to a quarter of the viewport; the
+    width decides the columns (at most eight)."""
+    from twobyteasr.glossary.glossary_term_cards import TermCardDelegate
     view = page.listing
     original = page._term_model.data_for_row(0)
     rows = [dict(original, target=f"词条{i}") for i in range(90)]
@@ -123,16 +127,22 @@ def test_six_by_four_grid_fills_resized_viewport_and_scrolls(page):
     for width, height in ((1280, 900), (1680, 1080), (1440, 960)):
         page.resize(width, height)
         QTest.qWait(30)
-        assert view.columns() == 6
-        rects = [view.visualRect(page._term_model.index(i, 0)) for i in range(25)]
+        margins = view.viewportMargins()
+        budget = view.contentsRect().width() - margins.left() - margins.right() - view.verticalScrollBar().sizeHint().width() - 1
+        columns = max(1, min(view.COLUMNS, budget // (view.MIN_CARD_WIDTH + view.GAP)))
+        assert view.columns() == columns and columns >= 4
+        rects = [view.visualRect(page._term_model.index(i, 0)) for i in range(columns * 2)]
         assert len({r.size().toTuple() for r in rects}) == 1
-        assert len({r.top() for r in rects[:24]}) == 4, (view.viewport().size().toTuple(), view.gridSize().toTuple(), [r.getRect() for r in rects[:7]])
-        assert len({r.left() for r in rects[:6]}) == 6
-        assert all(view.viewport().rect().contains(r) for r in rects[:24])
-        assert rects[24].top() >= view.viewport().height() - 4
-        assert view.viewport().width() - rects[5].right() <= view.GAP + 6
-        assert view.viewport().height() - rects[23].bottom() <= view.GAP + 4
+        assert rects[0].height() == TermCardDelegate.CARD_HEIGHT
+        assert len({r.left() for r in rects[:columns]}) == columns
+        assert rects[columns].top() - rects[0].bottom() <= view.GAP + 2
+        assert view.viewport().width() - rects[columns - 1].right() <= view.GAP + 6
         assert view.verticalScrollBar().maximum() > 0
+    view.set_translation_line(True)
+    QTest.qWait(30)
+    assert view.visualRect(page._term_model.index(0, 0)).height() == TermCardDelegate.TRANSLATION_HEIGHT
+    view.set_translation_line(False)
+    QTest.qWait(30)
     view.verticalScrollBar().setValue(view.verticalScrollBar().maximum())
     APP.processEvents()
     assert view.viewport().rect().contains(view.visualRect(page._term_model.index(89, 0)))
@@ -142,7 +152,7 @@ def test_six_by_four_grid_fills_resized_viewport_and_scrolls(page):
     assert not view.verticalScrollBar().isVisible()
     margins = view.viewportMargins()
     budget = view.contentsRect().width() - margins.left() - margins.right() - view.verticalScrollBar().sizeHint().width() - 1
-    assert view.gridSize().width() == budget // 6
+    assert view.gridSize().width() == budget // view.columns()
 
 
 def test_filtered_cards_settle_at_scrollbar_boundary(page, monkeypatch):
@@ -154,7 +164,7 @@ def test_filtered_cards_settle_at_scrollbar_boundary(page, monkeypatch):
     before = page.listing.layout_diagnostics()
     QTest.qWait(350)
     assert page.listing.layout_diagnostics() == before
-    assert page.listing.columns() == 6
+    assert page.listing.columns() >= 3
 
 
 def test_unchanged_refresh_keeps_model_selection_scroll_and_search_cursor(page):
@@ -215,7 +225,7 @@ def test_grid_converges_across_column_and_scrollbar_boundaries(width, count):
     before = view.layout_diagnostics()
     QTest.qWait(200)
     assert view.layout_diagnostics() == before
-    assert view.columns() in (5, 6)
+    assert view.columns() in (3, 4)
     view.close()
 
 
@@ -239,24 +249,23 @@ def test_card_slots_stay_inside_uniform_geometry_for_long_content(page):
         assert header.bottom() < word.top() and word.bottom() < footer.top()
 
 
-def test_text_badges_and_actions_grow_with_the_card(page):
+def test_card_text_keeps_readable_fixed_sizes_and_translation_line(page):
+    """Wider cells do not inflate the text (the old cards grew with the cell)."""
     from PySide6.QtCore import QRect
     delegate = page.listing.card_delegate
-    small = QRect(0, 0, 101, 77)
-    large = QRect(0, 0, 208, 122)
-    compact_metrics, large_metrics = (delegate.metrics(rect) for rect in (small, large))
-    # The approved compact card keeps readable 15/11/12px type. Enlarging only
-    # the container while leaving its contents unchanged is a regression.
-    assert [compact_metrics.px(size) for size in (15, 11, 12)] == [15, 11, 12]
-    assert all(large_metrics.px(size) >= compact_metrics.px(size) * 1.5 for size in (15, 11, 12, 18))
+    small, large = QRect(0, 0, 170, 62), QRect(0, 0, 320, 62)
+    assert [delegate.metrics(r).px(15) for r in (small, large)] == [15, 15]
     parts = card_parts({"status": "reference", "target": "参考词"})
-    for compact_slot, large_slot in zip(delegate.content_rects(small, parts), delegate.content_rects(large, parts)):
-        assert large_slot.height() >= compact_slot.height() * 1.5
+    assert [slot.height() for slot in delegate.content_rects(small, parts)][::2] == \
+        [slot.height() for slot in delegate.content_rects(large, parts)][::2]
     page._term_model.set_data([{"status": "reference", "target": "参考词"}])
     index = page._term_model.index(0, 0)
-    small_button, large_button = (delegate.button_rect(rect, index) for rect in (small, large))
-    assert large_button.height() >= small_button.height() * 1.5
-    assert large_button.width() >= small_button.width() * 1.5
+    assert delegate.button_rect(small, index).size() == delegate.button_rect(large, index).size()
+    translated = card_parts({"status": "confirmed", "target": "玳龟", "translation_code": "EN",
+                             "translation": "Daigui", "translation_state": "pending", "heard": ["带龟"]})
+    assert (translated["translation"], translated["translation_state"], translated["chips"]) == ("Daigui", "pending", ["带龟"])
+    top, middle, bottom = delegate.content_rects(QRect(0, 0, 200, 84), translated)
+    assert top.bottom() < middle.top() and middle.bottom() < bottom.top() and middle.height() > 10
 
 
 def test_hover_contains_full_word_category_and_every_heard_spelling(page):
@@ -421,3 +430,48 @@ def test_batch_switch_sits_in_the_title_row_and_marks_the_library_in_use(page):
     assert row.in_use_label.isVisibleTo(row)
     page.use_game.click()
     assert not row.in_use_label.isVisibleTo(row)
+
+
+def test_name_keeps_priority_over_the_category_tag():
+    """2026-11-13 (user): names like 彩虹独角兽 and tags like game_term were cut
+    off. The tag stays on the name's line only when both fit whole; otherwise
+    it moves to the line with room, and a long name shrinks before eliding."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QFontMetrics, QStandardItem, QStandardItemModel
+    from twobyteasr.glossary.glossary_term_cards import TermCardDelegate
+
+    class Model(QStandardItemModel):
+        def __init__(self, rows):
+            super().__init__()
+            self.rows = rows
+            for _row in rows:
+                self.appendRow(QStandardItem())
+
+        def data_for_row(self, row):
+            return self.rows[row]
+
+    rows = [dict(target="倾泻", category="game_term", status="confirmed", translation_code="EN",
+                 translation_state="missing"),
+            dict(target="彩虹独角兽", category="game_term", status="confirmed", translation_code="EN",
+                 translation_state="missing", heard=["抽之", "抽支"]),
+            dict(target="彩虹独角兽", category="game_term", status="confirmed", heard=["抽之", "抽支"])]
+    model = Model(rows)
+    delegate = TermCardDelegate(None)
+    font = APP.font()
+    wide = QRect(0, 0, 400, TermCardDelegate.TRANSLATION_HEIGHT)
+    short = delegate.category_rect(wide, model.index(0, 0), font)
+    assert delegate.tag_on_top(wide, card_parts(rows[0]), font)
+    assert delegate.content_rects(wide, card_parts(rows[0]))[0].contains(short)
+    assert short.width() == delegate._tag_width(font, card_parts(rows[0]))
+    card = QRect(0, 0, 170, TermCardDelegate.TRANSLATION_HEIGHT)
+    top, middle, bottom = delegate.content_rects(card, card_parts(rows[1]))
+    long = delegate.category_rect(card, model.index(1, 0), font)
+    assert not delegate.tag_on_top(card, card_parts(rows[1]), font) and middle.contains(long.center())
+    assert long.width() == min(delegate._tag_width(font, card_parts(rows[1])), (middle.right() - middle.x()) * 2 // 3)
+    plain = QRect(0, 0, 170, TermCardDelegate.CARD_HEIGHT)
+    moved = delegate.category_rect(plain, model.index(2, 0), font)
+    assert delegate.content_rects(plain, card_parts(rows[2]))[2].contains(moved.center())
+    word = delegate.word_font(font, 60, "彩虹独角兽长名字")
+    assert word.pixelSize() == TermCardDelegate.WORD_SIZES[-1]
+    assert delegate.word_font(font, 400, "倾泻").pixelSize() == TermCardDelegate.WORD_SIZES[0]
+    assert QFontMetrics(delegate.word_font(font, 146, "彩虹独角兽")).horizontalAdvance("彩虹独角兽") <= 146

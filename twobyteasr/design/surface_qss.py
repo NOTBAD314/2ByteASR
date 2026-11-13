@@ -1,8 +1,10 @@
 """Token-authored application surfaces. No warm-literal substitution."""
 from .tokens import RADIUS_SCALE, TYPE_SCALE, WEIGHT_SCALE
 from .typography import TITLE_FONT_STACK, UI_FONT_STACK
+from .typography import emphasized
 
 
+@emphasized
 def build_surface_qss(t):
     from .semantic_qss import build_semantic_qss
     from .home_qss import build_home_qss

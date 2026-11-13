@@ -5376,14 +5376,10 @@ def process_media(
 
     from twobyteasr.glossary.terminology import apply_to_segments, runtime_snapshot
     term_snapshot = runtime_snapshot(legacy)
-    if japanese_task or english_task or korean_task or european_task:
-        # Glossaries hold Chinese alias -> canonical spellings; applying them
-        # would rewrite Japanese words that merely share kanji (or a Latin alias
-        # inside an English or Korean word).
-        legacy.record_run_event("terminology_skipped", reason=audio_reason,
-                                libraries=[library.id for library in term_snapshot.libraries])
-    else:
-        segments = apply_to_segments(segments, term_snapshot, legacy)
+    # The frozen snapshot is now language-scoped. Foreign source passes see
+    # only explicitly labelled names, never the old und/Chinese alias table.
+    from twobyteasr.glossary.multilingual_terms import apply_source_terms
+    segments = apply_source_terms(segments, legacy, snapshot=term_snapshot)
 
     if text_plan.polish:
         stage_index += 1
@@ -5414,8 +5410,7 @@ def process_media(
     segments = legacy.apply_editorial_segment_rules(segments)
     # Cloud/cached polishing and editorial formatting may alter casing. The
     # authoritative local pass runs before grouping and its word alignment.
-    if not english_task and not korean_task and not european_task:
-        segments = apply_to_segments(segments, term_snapshot, legacy)
+    segments = apply_source_terms(segments, legacy, snapshot=term_snapshot)
     save_speaker_evidence(speaker_audit_root, "polished", legacy.serialize_segments(segments))
     # Segmentation conserves the adopted post-proofread source. Its legal
     # spelling/terminology edits are traced separately from later text loss.

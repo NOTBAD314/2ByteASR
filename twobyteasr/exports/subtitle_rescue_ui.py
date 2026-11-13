@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFormLayout, 
                               QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout)
 
 from .subtitle_rescue import BUILD_ID, RescueExportError, rescue_subtitles
+from ..design.typography import emphasis_qss
 
 
 class RescueWorker(QThread):
@@ -60,7 +61,7 @@ class SubtitleRescueDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 22, 24, 22)
         title = QLabel("取回已保存的字幕")
-        title.setStyleSheet("font-size:23px;font-weight:600;")
+        title.setStyleSheet(emphasis_qss("font-size:23px;font-weight:600;"))
         layout.addWidget(title)
         note = QLabel("读取工程或自动保存副本，按目前时间轴导出全部说话人的 SRT。\n无需视频、播放器或重新识别；原工程与原有输出会保留。")
         note.setWordWrap(True)
@@ -80,7 +81,7 @@ class SubtitleRescueDialog(QDialog):
         form.addRow("保存位置", row)
         layout.addLayout(form)
         self.run_button = QPushButton("检查并导出字幕")
-        self.run_button.setStyleSheet("background:#2855a6;color:white;font-weight:600;padding:12px;")
+        self.run_button.setStyleSheet(emphasis_qss("background:#2855a6;color:white;font-weight:600;padding:12px;"))
         self.run_button.clicked.connect(self.start_export)
         layout.addWidget(self.run_button)
         self.status = QLabel("支持已保存工程。尚未保存的编辑不会出现在这个文件中。")

@@ -50,6 +50,10 @@ def language_snapshot(snapshot, language):
         for term in library.terms:
             if not term.confirmed or not term.correction_enabled:
                 continue
+            if term.language and term.language != 'und':
+                from .multilingual_terms import locale
+                if term.language == locale(language): terms.append(term)
+                continue
             script = _script(term.canonical)
             if script not in permitted:
                 continue
@@ -70,11 +74,14 @@ source_reference 仅用于理解句意，不是写入目标；不能修改原文
 same_language_terms 是可用规范词/别名；cross_language_pairs 只在有可靠方向对应时提供。reference_terms 只作参考，缺少可靠译名时给出需人工判断的建议并说明不确定。
 dialogue_context 是按工程时间排序、跨说话人的只读邻文；只写回targets。原文是转写校对；译文须结合source_reference检查错译、漏译、否定、指代、语气和固定译法。保留正常语气词、助词、口语省略和重复。
 所有建议由用户确认。只返回 JSON：{"changes":[{"target_id":"输入ID","original":"完整target_text快照","replacement":"建议全文","reason":"修改原因及不确定性"}],"suspects":[{"target_id":"输入ID","original":"完整target_text快照","reason":"具体证据与需试听判断之处"}]}。
+target_terminology仅为当前译文实际命中的目标语言名称/错误写法参考，不是源语到译语的对应关系。只校对已有目标文字，不凭此补入没有命中的名字；合法别名默认保留，ambiguous表示与合法名称冲突，须结合句意提出待确认建议。保留称谓和自然语序。
 没有需要修改的文本返回空 changes。original 必须逐字等于输入；replacement 不得为空。"""
 
 
 def preview_language_correction(project, entries, snapshot, settings, *, token, use_ai=True, progress=None):
     from .studio_glossary_service import GlossaryReviewPreview
+    from .proofread_constraints import policy_of as edit_policy_of, request_rule, constrain_text, quoted_evidence, policy_key, local_reference_support
+    edit_policy = edit_policy_of(project)
     from ..studio.studio_text_tools import cue_locked
     from ..providers.ai_providers import provider_for_stage
     token.raise_if_cancelled()
@@ -89,23 +96,38 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         "failed_cues": [], "request_errors": [], "ai_requested": bool(use_ai), "missing_associations": 0,
         "rejected_changes": 0, "automatic_changes": 0, "confirmation_changes": 0, "terminology_conflicts": []}
     filtered = {language: language_snapshot(snapshot, language) for language in {e.target.language for e in entries}}
-    from .translation_terms import policy_of, relevant, validation_issues as violations, effective_policy, PROMPT as TERM_PROMPT
+    from .translation_terms import policy_of, relevant, validation_issues as violations, effective_policy, freeze, PROMPT as TERM_PROMPT
     from ..subtitle_rules.subtitle_translation import _translation_language
     from ..subtitle_rules.subtitle_translation import normalize_glossary
-    policy = policy_of(project)
+    policy = freeze(policy_of(project))
     inline_pairs = normalize_glossary(project.generation_metadata.get("translation_glossary", ()))
     source_language = _translation_language(project)
     terms_by_key = {entry.key: relevant(effective_policy(policy, inline_pairs, entry.source_language or source_language, entry.target.language),
                     entry.source_language or source_language, entry.target.language, entry.source_text)
                     if entry.target.layer == 'translation' and entry.source_cue_id else [] for entry in entries}
-    drafts, hits = {}, []
+    drafts, hits, target_references = {}, [], {}
     for entry in entries:
+        token.raise_if_cancelled()
         # Pre-existing projects retain their same-language proofreading.
         # This never supplies translation-generation pairs; an explicit new
         # translation configuration (including disabled) ends that fallback.
         legacy_review = 'translation_terminology' not in project.generation_metadata
         resolver = TermResolver(filtered[entry.target.language] if entry.target.layer == 'original' or legacy_review else GlossarySnapshot())
         resolution = resolver.resolve(entry.text)
+        rules = []
+        target_references[entry.key] = []
+        if entry.target.layer == 'translation':
+            from .multilingual_terms import target_rules, target_candidates
+            from .terminology import TermEntry, GlossaryLibrary
+            rules = target_rules(policy, entry.target.language, entry.text, entry.source_text,
+                                 entry.source_language or source_language)
+            target_references[entry.key] = target_candidates(policy, entry.target.language, entry.text)
+            # Only wrong translations are compiled here; ASR mishearings and
+            # legal aliases are never supplied to this target-language resolver.
+            target_snapshot = GlossarySnapshot((GlossaryLibrary('target-rules', '译文错误规则', '',
+                tuple(TermEntry(r['target'], (r['source'],)) for r in rules)),))
+            resolver = TermResolver(target_snapshot)
+            resolution = resolver.resolve(entry.text)
         drafts[entry.key] = resolution.text
         cue = SimpleNamespace(id=entry.key, text=entry.text, start_ms=entry.start_ms)
         from .proofread_rules import normalize_occurrence
@@ -116,6 +138,8 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         receipt["segments"].append({"cue_id": entry.key, "target": entry.target.to_dict(),
             "original_baseline": entry.text, "source_reference": entry.source_text, "input_text": entry.text,
             "local_draft": resolution.text, "translation_terminology": terms_by_key[entry.key],
+            "target_error_rules": rules,
+            "target_terminology": target_references[entry.key],
             "terminology_warnings": violations(entry.source_text, entry.text, terms_by_key[entry.key])})
     batches = []
     dialogue = sorted(getattr(project,'_review_dialogue_cues',project.cues), key=lambda cue:(cue.start_ms,cue.end_ms,cue.id))
@@ -138,8 +162,13 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
             receipt["request_errors"].append(str(exc))
             receipt["fallback_cues"] = len(entries)
     schema = {"type": "object", "properties": {"changes": {"type": "array", "items": {
-        "type": "object", "properties": {key: {"type": "string"} for key in ("target_id", "original", "replacement", "reason")},
+        "type": "object", "properties": {key: {"type": "string"} for key in (
+            "target_id", "original", "replacement", "reason", "edit_type", "evidence_source", "evidence_quote")},
         "required": ["target_id", "original", "replacement", "reason"]}}}, "required": ["changes"]}
+    schema['properties']['suspects'] = {'type':'array','items':{'type':'object',
+        'properties':{**{key:{'type':'string'} for key in ('target_id','original','reason','evidence_source','evidence_quote')},
+                      'issue_type':{'type':'string','enum':['spelling','proper_name','translation_conflict','missing_word','truncated_content']}},
+        'required':['target_id','original','reason','issue_type']}}
     for number, batch in enumerate(batches if provider else [], 1):
         token.raise_if_cancelled()
         if callable(progress):
@@ -147,10 +176,12 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         from ..subtitle_rules.subtitle_translation import normalize_glossary, container_target
         pairs = normalize_glossary(project.generation_metadata.get("translation_glossary", ()))
         languages = {entry.target.language for entry in batch}
-        payload = {"targets": [{"target_id": entry.key, **entry.target.to_dict(), "target_language": entry.target.language or 'und',
+        payload = {"edit_policy": edit_policy, "review_input_key": policy_key(edit_policy, batch),
+            "targets": [{"target_id": entry.key, **entry.target.to_dict(), "target_language": entry.target.language or 'und',
                     "target_text": entry.text, "source_reference": entry.source_text,
                     "source_language": entry.source_language if entry.target.layer == 'translation' else entry.target.language,
-                    "translation_terminology": terms_by_key[entry.key]} for entry in batch],
+                    "translation_terminology": terms_by_key[entry.key],
+                    "target_terminology": target_references[entry.key]} for entry in batch],
             "same_language_terms": {language: filtered[language].evidence() for language in languages
                                     if any(e.target.layer == 'original' and e.target.language == language for e in batch)},
             "cross_language_pairs": [{"source": source, "target": target, "target_language": container_target(project)}
@@ -169,12 +200,12 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
         try:
             from ..providers.subtitle_request_policy import provider_policy
             policy = provider_policy(provider)
-            raw = provider.complete([{"role": "system", "content": SYSTEM + '\n' + TERM_PROMPT},
+            raw = provider.complete([{"role": "system", "content": SYSTEM + '\n' + TERM_PROMPT + request_rule(edit_policy)},
                                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 max_tokens=policy["max_output_tokens"], temperature=.1, timeout=(10, 90),
                 enable_thinking=policy["enable_thinking"], thinking_protocol=policy["thinking_protocol"],
                 response_format={"type": "json_object"}, stage="studio_translation_proofread",
-                structured_retry_system_prompt=SYSTEM, json_schema=schema, cancel_check=token.raise_if_cancelled)
+                structured_retry_system_prompt=SYSTEM + request_rule(edit_policy), json_schema=schema, cancel_check=token.raise_if_cancelled)
             token.raise_if_cancelled()
             parsed = json.loads(raw) if isinstance(raw, str) else raw
             changes = parsed.get("changes") if isinstance(parsed, dict) else None
@@ -190,6 +221,8 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 if (entry is None or suspect.get('original') != entry.text
                         or not isinstance(suspect.get('reason'),str) or not suspect['reason'].strip()):
                     receipt['rejected_changes'] += 1
+                    continue
+                if suspect.get('issue_type') not in {'spelling','proper_name','translation_conflict','missing_word','truncated_content'}:
                     continue
                 receipt['pending_rows'].append({'cue_id':entry.key,'state':'speech_review',
                     'span':[0,len(entry.text)],'surface':entry.text,'reason':suspect['reason']})
@@ -236,11 +269,19 @@ def preview_language_correction(project, entries, snapshot, settings, *, token, 
                 seen.add(entry.key)
                 if new == entry.text:
                     continue
+                sources = {'source_reference': entry.source_text,
+                           'dialogue_context': '\n'.join(row['original'] for row in payload['dialogue_context'])}
+                grounded = quoted_evidence(change, sources) and (change.get('evidence_source') == 'source_reference'
+                    or local_reference_support(entry.text,new,[change.get('evidence_quote','')]))
+                new = constrain_text(entry.text, new, edit_policy, evidence=grounded)
+                if new == entry.text:
+                    continue
                 cue = SimpleNamespace(id=entry.key, text=entry.text, start_ms=entry.start_ms)
                 term_reason = '; '.join(f"{row['source']} → {row['target']}" for row in terms_by_key[entry.key])
                 for hit in diff_occurrences(cue, new, reason=str(change.get("reason") or "AI 目标语言校对；请确认") + (' · ' + term_reason if term_reason else ''),
-                                           source="translation_ai", selected=False, missing="请核对句意与译名对应"):
-                    hits.append(bind_occurrence(hit, entry))
+                                           source="translation_ai", selected=False, missing="请核对句意与译名对应",
+                                           evidence=(f"{change.get('evidence_source')} 文字引用：{change.get('evidence_quote')}；未核验原音" if grounded else '')):
+                    hits.append(bind_occurrence(replace(hit, content_evidence_verified=grounded), entry))
             receipt["successful_cues"] += len(batch) - len(rejected)
             hits = [hit for hit in hits if hit.source != 'translation_ai' or hit.target_key not in rejected]
             receipt["fallback_cues"] += len(rejected)

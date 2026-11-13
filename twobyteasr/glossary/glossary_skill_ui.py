@@ -48,6 +48,7 @@ from ..design.ui_widgets import AnimatedButton
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import emphasis_qss
 
 
 def list_ai_services(settings: Mapping[str, Any]) -> list[dict]:
@@ -61,9 +62,9 @@ def list_ai_services(settings: Mapping[str, Any]) -> list[dict]:
             continue  # 无固定密钥语义，跟随全局即可
         transport = str(spec.get("transport") or "")
         has_key = False
+        base_url = str(spec.get("base_url") or "")
         if not transport.endswith("_cli"):
             provider = str(spec.get("provider") or service_id)
-            base_url = str(spec.get("base_url") or "")
             try:
                 key, _source = read_scoped_api_key(provider, base_url)
             except Exception:
@@ -74,8 +75,10 @@ def list_ai_services(settings: Mapping[str, Any]) -> list[dict]:
                 "service": service_id,
                 "label": str(spec.get("label") or service_id),
                 "transport": transport,
+                # 2026-11-13: DeepSeek's own Search API counts (used for 查外语官方名).
                 "search": transport in {"grok_cli", "antigravity_cli"}
-                or str(spec.get("provider")) == "bailian",
+                or str(spec.get("provider")) == "bailian"
+                or (str(spec.get("provider") or service_id) == "deepseek" and "api.deepseek.com" in base_url),
                 "ready": has_key or transport.endswith("_cli"),
             }
         )
@@ -582,7 +585,7 @@ class GlossaryUpdateReviewDialog(QWidget):
         head = QHBoxLayout()
         mode = str(result.get("mode") or "incremental")
         title = bind_text(QLabel(), '{value0}预览｜{value1}', value0=tr('完整建库') if mode == 'full' else tr('更新'), value1=self.game_name)
-        title.setStyleSheet("font-weight:700; font-size:15px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:15px;"))
         title.setTextFormat(Qt.TextFormat.PlainText)
         head.addWidget(title, 0, Qt.AlignmentFlag.AlignTop)
         meta_bits = []
@@ -960,7 +963,7 @@ class GlossaryTaskCandidatesDialog(QWidget):
         layout.setSpacing(8)
         head = QHBoxLayout()
         title = QLabel(f"{task.game} · {task.mode_label}")
-        title.setStyleSheet("font-weight:700; font-size:15px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:15px;"))
         head.addWidget(title, 1)
         self.count_label = QLabel("")
         self.count_label.setObjectName("muted")
@@ -1058,7 +1061,7 @@ class GlossaryUpdateHistoryDialog(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         title = bind_text(QLabel(), '更新记录｜{value0}', value0=self.game_name)
-        title.setStyleSheet("font-weight:700; font-size:15px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:15px;"))
         layout.addWidget(title)
         self.list = QListWidget()
         self.list.setMinimumHeight(260)
@@ -1129,7 +1132,7 @@ class BatchUpdateDialog(QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
         title = QLabel("批量检查更新")
-        title.setStyleSheet("font-weight:700; font-size:15px;")
+        title.setStyleSheet(emphasis_qss("font-weight:700; font-size:15px;"))
         layout.addWidget(title)
         hint = QLabel("按队列逐个游戏联网检查（不并行调用）；取消立即停止后续调度，已完成结果保留。")
         hint.setObjectName("muted")
@@ -1356,7 +1359,7 @@ class GlossaryTaskStrip(QWidget):
         dot.setStyleSheet(f"color:{self.STATUS_COLORS.get(task.status, '#8a8f98')}; font-size:10px;")
         row_layout.addWidget(dot)
         title = QLabel("")
-        title.setStyleSheet("font-weight:600;")
+        title.setStyleSheet(emphasis_qss("font-weight:600;"))
         row_layout.addWidget(title, 0)
         progress = QLabel("")
         progress.setObjectName("muted")

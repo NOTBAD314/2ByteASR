@@ -17,19 +17,36 @@ class LearningReviewPanel(QFrame):
         self.owner = owner
         self.store = owner._learning_store
         self.entries = {}
-        self.setObjectName("termNotice")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 10, 8)
+        # 2026-11-13 (plan 2026-11-13-glossary-library-redesign-c): one 待处理
+        # strip. Subtitle candidates first; multilingual_terms_ui adds the
+        # translation chips to ``header_layout``.
+        self.setObjectName("termPendingStrip")
         header = QHBoxLayout()
-        self.count = QLabel()
-        self.count.setObjectName("termNoticeStrong")
-        header.addWidget(self.count)
-        hint = QLabel("字幕已修改。候选仅在明确加入术语库后生效。")
-        hint.setWordWrap(True)
-        header.addWidget(hint, 1)
-        self.toggle = QPushButton("审核候选")
+        header.setSpacing(8)
+        self.header_layout = header
+        title = QLabel("待处理")
+        title.setObjectName("termPendingTitle")
+        header.addWidget(title)
+        from .glossary_page_parts import FlowLayout, StripChip
+        # Chips wrap onto a second line when the panel is narrow (drawer open).
+        chips = QFrame(); chips.setObjectName("termPendingChips")
+        self.chip_layout = FlowLayout(chips, spacing=8)
+        self.count = StripChip(tone="accent")
+        self.count.setToolTip("字幕已修改。候选仅在明确加入术语库后生效。")
+        self.count.clicked.connect(lambda _checked: self._toggle())
+        self.chip_layout.addWidget(self.count)
+        header.addWidget(chips, 1)
+        self.hint = QLabel("字幕已改，候选需确认后才进词库")
+        self.hint.setObjectName("termPendingHint")
+        header.addWidget(self.hint)
+        self.toggle = QPushButton("开始审核")
+        self.toggle.setObjectName("termPendingAction")
         self.toggle.clicked.connect(self._toggle)
         header.addWidget(self.toggle)
         self.history = QPushButton("检查历史条目")
+        self.history.setObjectName("termGhostButton")
         self.history.clicked.connect(self.open_history)
         self.history.setToolTip("检查来源不明的旧条目，由你选择移至待确认或忽略")
         header.addWidget(self.history)
@@ -67,9 +84,17 @@ class LearningReviewPanel(QFrame):
         self.box.hide()
         layout.addWidget(self.box)
 
+    def _fit_hint(self):
+        """The hint is the first thing to go when the strip is narrow."""
+        self.hint.setVisible(getattr(self, '_pending', False) and self.width() >= 1000)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._fit_hint()
+
     def _toggle(self):
         self.box.setVisible(self.box.isHidden())
-        self.toggle.setText("收起" if not self.box.isHidden() else "审核候选")
+        self.toggle.setText("收起" if not self.box.isHidden() else "开始审核")
 
     def _libraries(self):
         games = self.owner.legacy.load_learned_term_payload(strict=True).get("games", {})
@@ -136,8 +161,15 @@ class LearningReviewPanel(QFrame):
             if row['id'] in current:
                 self.listing.setCurrentItem(item)
         self.listing.blockSignals(False)
-        self.count.setText(f"待确认 {len(pending)} 条")
+        self.count.setText(f"{len(pending)} 条字幕候选")
         self.toggle.setEnabled(bool(pending))
+        # Nothing waiting: keep only the history check in the strip.
+        self.count.setVisible(bool(pending))
+        self.toggle.setVisible(bool(pending))
+        self._pending = bool(pending)
+        self._fit_hint()
+        if not pending and not self.box.isHidden():
+            self._toggle()
         self.listing.setFixedHeight(min(max(len(pending), 1), 5) * 34 + 8)
         self._actions()
         self.show()  # Historical inspection remains available even with no new candidates.

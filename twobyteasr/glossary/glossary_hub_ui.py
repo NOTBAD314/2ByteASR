@@ -54,6 +54,7 @@ from PySide6.QtGui import QColor
 from ..i18n import bind_text, tr, user_text
 from . import glossary_hub as hub
 from .glossary_lint import BLOCK, WARN, blocking, findings_by_row, lint_rows
+from ..design.typography import emphasis_qss
 
 _STATUS_TEXT = {"none": "未安装", "installed": "已安装", "update": "有更新"}
 _ROW_NOTES = {
@@ -166,7 +167,7 @@ class _ResizeWatcher(QObject):
 
 def _title(text: str, **arguments) -> QLabel:
     label = bind_text(QLabel(), text, **arguments)
-    label.setStyleSheet("font-weight:700; font-size:15px;")
+    label.setStyleSheet(emphasis_qss("font-weight:700; font-size:15px;"))
     return label
 
 

@@ -41,16 +41,8 @@ class _PreviewThread(QThread):
         started = time.perf_counter()
         row = {"event": "proofread_preview_prepare", **self.plan.diagnostic()}
         try:
-            from .recognition_audio_preview import cached_recognition_pcm
-            payload = cached_recognition_pcm(self.plan)
-            if self._cancelled:
-                raise InterruptedError("superseded")
-            if payload:
-                row.update(outcome="decoded", source="recognition_pcm_cache", pcm_bytes=len(payload),
-                           graph_ready_ms=0., elapsed_ms=round((time.perf_counter()-started)*1000, 2))
-                record_preview(row)
-                self.decoded.emit(self.request_id, payload)
-                return
+            # Recognition's 16 kHz mono PCM is analysis input, never audition
+            # audio. Interpolating it cannot restore bandwidth or stereo.
             command, receipts = preview_command(self.plan, ffmpeg_executable(), cancelled=lambda: self._cancelled)
             row.update(layers=self.plan.diagnostic()["layers"],
                        source_clocks={k: {"kind": v.get("kind"), "path": v.get("path")} for k, v in receipts.items()},
@@ -67,7 +59,9 @@ class _PreviewThread(QThread):
                 raise InterruptedError("superseded")
             if self._process.returncode or not payload:
                 raise PreviewUnavailable(errors.decode("utf-8", "replace").strip()[-240:] or "解码器没有返回声音")
-            row.update(outcome="decoded", pcm_bytes=len(payload), elapsed_ms=round((time.perf_counter()-started)*1000, 2))
+            row.update(outcome="decoded", source="original_media_graph", format="s16le", sample_rate=48000,
+                       channels=2, pcm_frames=len(payload)//4, pcm_bytes=len(payload),
+                       elapsed_ms=round((time.perf_counter()-started)*1000, 2))
             record_preview(row)
             self.decoded.emit(self.request_id, payload)
         except InterruptedError:
@@ -96,6 +90,7 @@ class CuePlayer(QObject):
         super().__init__(parent)
         self._sink = self._buffer = self._thread = None
         self._threads = set()
+        self._pending_plan = None
         self.request_id = self.cue_id = self.state = ""
         self.last_plan = None
         self.volume = 1.0
@@ -162,6 +157,13 @@ class CuePlayer(QObject):
             self._cache.move_to_end(self._key)
             self._start(self.request_id, payload)
             return
+        if self._thread is not None and self._thread.isRunning():
+            self._pending_plan = (plan, key)
+            self._thread.cancel()
+            return
+        self._decode_plan(plan)
+
+    def _decode_plan(self, plan):
         thread = _PreviewThread(plan.request_id, plan, self)
         thread.decoded.connect(self._start)
         thread.failed.connect(self._decode_failed)
@@ -172,9 +174,15 @@ class CuePlayer(QObject):
 
     def _thread_finished(self, thread):
         self._threads.discard(thread)
-        if self._thread is thread:
+        owns_decoder = self._thread is thread
+        if owns_decoder:
             self._thread = None
         thread.deleteLater()
+        if not owns_decoder:
+            return  # an older queued finished signal cannot consume a newer pending request
+        pending, self._pending_plan = self._pending_plan, None
+        if pending is not None and pending[0].request_id == self.request_id:
+            self._decode_plan(pending[0])
 
     def _fail(self, message):
         self._trace("proofread_preview_failed", error=message)
@@ -266,9 +274,10 @@ class CuePlayer(QObject):
             return
         from PySide6.QtMultimedia import QAudio
         sink = self._sink
-        played = sink.processedUSecs()/1000
-        state = sink.state() if hasattr(sink, "state") else None
-        error = sink.error() if hasattr(sink, "error") else QAudio.Error.NoError
+        snapshot = sink.output_snapshot() if hasattr(sink, 'output_snapshot') else None
+        played = (snapshot[0] if snapshot else sink.processedUSecs())/1000
+        state = snapshot[1] if snapshot else sink.state() if hasattr(sink, "state") else None
+        error = snapshot[2] if snapshot else sink.error() if hasattr(sink, "error") else QAudio.Error.NoError
         if error not in (QAudio.Error.NoError, QAudio.Error.UnderrunError):
             self._fail(f"音频输出失败（{error.name}），请检查默认输出设备")
             return
@@ -280,7 +289,10 @@ class CuePlayer(QObject):
             if time.perf_counter() >= self._drain_deadline:
                 self._finish_naturally()
             return
-        if state == QAudio.State.IdleState or played >= self._expected_ms:
+        # An initial/transient Idle or an underrun is not EOF. Observe the
+        # worker-owned finite PCM buffer as well as actual sink progress.
+        consumed = bool(snapshot and snapshot[5] > 0 and snapshot[4] >= snapshot[5])
+        if played >= self._expected_ms or state == QAudio.State.IdleState and consumed:
             # EOF means the backend has accepted the last samples, not that
             # the physical queue has played them. reset() here cut ~50ms in
             # the output loopback. Let this finite cue drain naturally; only
@@ -351,10 +363,10 @@ class CuePlayer(QObject):
         self._wants_play = False
         self._drain_deadline = self._drain_remaining = None
         self.request_id = ""  # fence before cancelling any asynchronous work
+        self._pending_plan = None
         self._end_timer.stop()
         if self._thread is not None:
             self._thread.cancel()
-            self._thread = None
         self._reset_output()
         if self._buffer is not None:
             self._buffer.close()

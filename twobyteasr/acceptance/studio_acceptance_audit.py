@@ -76,6 +76,14 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-integrity':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'multilingual-terms':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-model-settings':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -531,6 +539,11 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-integrity':
+        from .proofread_integrity_audit import start
+        output = audit_directory()
+        if output is not None:start(window,output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'vm2-model-settings':
         from .vm2_model_settings_audit import start
         output = audit_directory()
@@ -1236,6 +1249,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None:
             start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'multilingual-terms':
+        from .multilingual_terms_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-search-stability':
         from .glossary_search_stability_audit import start

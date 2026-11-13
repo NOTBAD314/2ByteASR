@@ -16,6 +16,7 @@ from ..timeline.studio_edit_sequence import sequence_of
 from ..timeline.studio_media_pool import asset_by_id
 from ..projects.project_range import clock_text, range_points, effective_range
 from ..i18n import tr
+from ..design.typography import weighted_font
 
 
 @dataclass(frozen=True)
@@ -227,7 +228,7 @@ class TimelineFeedbackMixin:
         label = '✂ ' + clock_text(cut.split_ms)
         if cut.snap:
             label += ' · ' + tr('吸附') + ' ' + cut.snap
-        font = QFont(self.font()); font.setPointSize(9); font.setBold(True)
+        font = QFont(self.font()); font.setPointSize(9); weighted_font(font, 700)
         painter.setFont(font)
         width = min(self._content_right() - self.TRACK_HEADER_WIDTH - 4,
                     QFontMetrics(font).horizontalAdvance(label) + 18)
@@ -376,7 +377,7 @@ class TimelineFeedbackMixin:
             label = ('I ' + tr('入点')) if index == 0 else ('O ' + tr('出点'))
             if offscreen:
                 label = ('‹ ' if offscreen < 0 else '') + label + ' ' + clock_text(value) + (' ›' if offscreen > 0 else '')
-            font = QFont(self.font()); font.setPointSize(8); font.setBold(True)
+            font = QFont(self.font()); font.setPointSize(8); weighted_font(font, 700)
             width = min(165, QFontMetrics(font).horizontalAdvance(label) + 12)
             left = x if index == 0 else x - width
             left = min(self._content_right() - width, max(self.TRACK_HEADER_WIDTH, left))
@@ -469,7 +470,7 @@ class TimelineFeedbackMixin:
             painter.fillRect(QRectF(left, self.RULER_HEIGHT-9, right-left, 9), tint)
             painter.setPen(QPen(colors[0], 2))
             painter.drawLine(QPointF(left, self.RULER_HEIGHT-2), QPointF(right, self.RULER_HEIGHT-2))
-        font = QFont(self.font()); font.setPointSize(8); font.setBold(True); painter.setFont(font)
+        font = QFont(self.font()); font.setPointSize(8); weighted_font(font, 700); painter.setFont(font)
         for index, value, x, rect, label, offscreen in self._range_handles():
             color = colors[index]
             if index == getattr(self, '_range_hover', None):

@@ -107,12 +107,21 @@ def detect_search_capability(settings: Mapping[str, Any]) -> dict[str, Any]:
         reason = "百炼 generation 接口支持 forced_search"
     else:
         reason = f"当前服务（{values.get('service', service_id)} / {transport or '未知通道'}）不支持服务端搜索"
+    # 2026-11-13 (user): DeepSeek's own Search API (same key). The chat model
+    # does not search; the app searches first and hands it the results, so
+    # this is a separate capability from provider_search.
+    from ..providers.deepseek_tools import supports as _deepseek_search
+    tool_search = (not provider_search) and _deepseek_search(endpoint)
+    if tool_search:
+        reason = "DeepSeek 搜索 API：软件先搜索，再把结果交给模型核对（每 1000 次搜索约 0.75 美元）"
     return {
         "service": values.get("service", service_id),
         "transport": transport,
         "provider": provider,
         "model": str(values.get("model") or endpoint.get("model") or ""),
         "provider_search": provider_search,
+        "tool_search": tool_search,
+        "web": provider_search or tool_search,
         "url_fetch": True,  # fetch_web_text + SSRF 防护始终可用
         "reason": reason,
         "endpoint": {

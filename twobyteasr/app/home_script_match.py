@@ -343,11 +343,13 @@ def open_home_script_match(window) -> None:
         return row
 
     pages = QStackedWidget()
+    pages.setObjectName('scriptWizardPages')  # transparent: no grey-brown band behind the steps
     layout.addWidget(pages, 1)
     accent = theme_definition(theme_key()).accent
 
     # ① 选素材
     media_page = QWidget()
+    media_page.setObjectName('scriptWizardPage')
     first = QVBoxLayout(media_page)
     first.setContentsMargins(0, 6, 0, 0)
     first.setSpacing(14)
@@ -384,6 +386,7 @@ def open_home_script_match(window) -> None:
 
     # ② 贴文稿
     script_page = QWidget()
+    script_page.setObjectName('scriptWizardPage')
     second = QVBoxLayout(script_page)
     second.setContentsMargins(0, 6, 0, 0)
     second.setSpacing(12)

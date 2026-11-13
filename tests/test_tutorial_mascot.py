@@ -239,7 +239,7 @@ def test_tutorial_opens_the_comparison_before_step_one(app, monkeypatch):
         return 'cloud'
     window._choose_plan_in_tutorial = compare
     monkeypatch.setattr(home_tour, 'start_home_tour',
-                        lambda w, done, part: order.append(('tour', bool(w.__dict__.get('_tutorial_plan_chosen')))))
+                        lambda w, done, part, **_kw: order.append(('tour', bool(w.__dict__.get('_tutorial_plan_chosen')))))
     MainWindow._start_home_tour(window)
     assert order == [('compare', False), ('tour', True)]               # the window first, then step ①
     order.clear()

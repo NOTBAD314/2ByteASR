@@ -292,3 +292,66 @@ def test_tutorial_steps_let_clicks_through_the_outline_and_move_on_when_done():
     assert tour.index == 1 and tour.mask().isEmpty()             # moved on by itself; centred card, no hole
     tour.close_tour(True)
     window.close()
+
+
+def test_fresh_install_must_choose_and_finish_the_tutorial(monkeypatch):
+    """2026-11-13 (user): people who just downloaded asked whether there is a
+    tutorial. A fresh install picks a way of working (no 稍后再说, Esc or click
+    outside) and goes through the tutorial (no box to untick, no 跳过教学 / Esc);
+    an unfinished tutorial comes back, unless subtitles were already made."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+    from twobyteasr.app.home_tour import GuidedTour, TourStep
+    from twobyteasr.app.quick_setup import QuickSetupDialog
+    app = QApplication.instance() or QApplication([])
+    assert onboarding.first_run_required({'fresh': True})
+    assert not onboarding.first_run_required({'fresh': True, 'tour_done': True})
+    assert not onboarding.first_run_required({'fresh': True, 'first_task_done': True})
+    assert not onboarding.first_run_required({'fresh': False})
+
+    dialog = QuickSetupDialog(plan_keys=['local', 'cloud', 'light'], size_of=lambda _b: 1.0, required=True)
+    dialog.show()
+    app.processEvents()
+    assert dialog.later_button.isHidden() and dialog.tour_check.isHidden() and dialog.tour_check.isChecked()
+    assert not dialog.required_note.isHidden()
+    dialog.reject()
+    QApplication.sendEvent(dialog, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    # SpringDialog animates rejected closure; an immediate isVisible() check
+    # misses a real close after its animation finishes.
+    import time
+    until = time.monotonic() + 0.7
+    while time.monotonic() < until:
+        app.processEvents()
+        time.sleep(0.005)
+    assert dialog.isVisible() and dialog.result() == 0
+    dialog.choice = 'cloud'
+    dialog.reject()
+    assert dialog.isVisible()             # preselection still needs confirmation
+    dialog.accept()                       # the confirm action can close it
+    _until(app, lambda: not dialog.isVisible())
+    plain = QuickSetupDialog(plan_keys=['local', 'cloud'], size_of=lambda _b: 1.0)
+    assert not plain.required and not plain.later_button.isHidden() and not plain.tour_check.isHidden()
+    plain.close()
+
+    window = QWidget()
+    window.resize(1200, 800)
+    target = QPushButton('目标', window)
+    target.setGeometry(60, 300, 160, 44)
+    window.show()
+    finished = []
+    tour = GuidedTour(window, [TourStep('点目标', lambda: target), TourStep('完成')])
+    tour.finished.connect(finished.append)
+    tour.set_required(True)
+    tour.start()
+    assert tour.skip.isHidden() and tour.chip_end.isHidden()
+    tour._user_close()
+    assert tour.mode != 'closed' and finished == []
+    tour.close_tour(True)
+    assert finished == [True]
+    other = GuidedTour(window, [TourStep('完成')])
+    other.start()
+    assert not other.skip.isHidden()
+    other._user_close()
+    assert other.mode == 'closed'
+    window.close()

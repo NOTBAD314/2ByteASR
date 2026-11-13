@@ -7,10 +7,11 @@ import time
 
 from PySide6.QtCore import QEvent, QObject, QSettings
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QComboBox, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QWidget
 
 from .ui_theme import DEFAULT_THEME_KEY, THEMES, ThemeDefinition, theme_definition
 from ..app.lazy_pages import existing_page
+from .typography import emphasized
 
 
 def _trace_mark(label: str, start: float | None = None) -> float:
@@ -56,6 +57,8 @@ class _ThemeRootFilter(QObject):
                         widget.setStyleSheet(getattr(widget, "_theme_root_local_sheet", ""))
                     del widget._theme_root_sheet
                     widget._theme_root_local_sheet = ""
+        if event_type == _SHOW and isinstance(widget, QAbstractButton) and widget.isCheckable():
+            _follow_checked_emphasis(widget)
         if event_type == _SHOW and isinstance(widget, QWidget):
             if widget.__dict__.get('_theme_icon_pending', False):
                 from .themed_icons import refresh_widget_icons
@@ -125,6 +128,30 @@ class _ThemeRootFilter(QObject):
                 if os.environ.get('TWOBYTEASR_THEME_TRACE') == '1':
                     print(f'[theme-root] {widget.metaObject().className()} {widget.objectName()!r} '
                           f'{(time.perf_counter()-started)*1000:.3f}ms', flush=True)
+
+
+def _follow_checked_emphasis(button: QAbstractButton) -> None:
+    """Re-polish a button whose sheet makes it Heavy when checked (once hooked).
+
+    Qt only resolves a widget's font while polishing it; see
+    typography.CHECKED_EMPHASIS for the ``[checked="true"]`` mirror rules.
+    """
+    if button.__dict__.get('_checked_emphasis_hooked', False):
+        return
+    from .typography import wants_checked_emphasis
+    if not wants_checked_emphasis(button):
+        return
+    button._checked_emphasis_hooked = True
+
+    def repolish(_checked=False, target=button):
+        style = target.style()
+        style.unpolish(target)
+        style.polish(target)
+        target.updateGeometry()
+        target.update()
+
+    button.toggled.connect(repolish)
+    repolish()
 
 
 def _fit_tooltip(label: QWidget) -> None:
@@ -204,6 +231,7 @@ def _palette(theme: ThemeDefinition) -> QPalette:
     return palette
 
 
+@emphasized
 def _global_qss(theme: ThemeDefinition) -> str:
     """Override semantic surfaces while retaining existing component geometry."""
     from .tokens import WEIGHT_SCALE
@@ -428,7 +456,8 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
         app.setPalette(_palette(theme))
         t = _trace_mark("app.setPalette", t)
         from .glossary_page_qss import build_glossary_page_qss
-        sheet = (
+        from .typography import emphasis_qss
+        sheet = emphasis_qss(
             retheme_qss(APP_QSS, theme)
             + _global_qss(theme)
             + build_secondary_surface_qss(theme)

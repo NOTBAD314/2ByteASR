@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ui_theme import blend_hex, contrast_ratio
+from .typography import emphasized
 
 _ICON_DIR = Path(tempfile.gettempdir()) / "2byteasr-qss-icons"
 
@@ -143,6 +144,7 @@ def _sel(scopes, *parts) -> str:
     return ",\n".join(f"{scope} {part}".strip() for scope in scopes for part in parts)
 
 
+@emphasized
 def build_soft_studio_qss(t) -> str:
     k = soft_tokens(t)
     icon = control_icons(t)
@@ -451,6 +453,7 @@ QTabWidget#contextDrawer QTabBar::tab:selected {{
 """
 
 
+@emphasized
 def build_soft_popup_qss(t) -> str:
     """Dropdown lists and menus opened from Studio (A): a raised sheet,
     rounded rows, the chosen row in the accent wash."""

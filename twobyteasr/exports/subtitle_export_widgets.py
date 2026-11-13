@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from ..design.presentation import button_role
 from ..design.themed_icons import themed_icon
 from ..i18n import bind_text, tr
+from ..design.typography import emphasized
 
 FORMAT_CARDS = (
     ("srt", "SRT", "最通用：剪映、Premiere、播放器都能读"),
@@ -33,6 +34,7 @@ LANGUAGE_CHOICES = (("original", "原文"), ("translation", "译文"), ("bilingu
 _PREVIEW_ROWS = 8
 
 
+@emphasized
 def build_subtitle_export_qss(theme) -> str:
     return f"""
         QLabel#exportSectionLabel {{ color: {theme.text_muted}; font-size: 12px; font-weight: 700; background: transparent; }}

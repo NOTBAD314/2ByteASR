@@ -23,6 +23,7 @@ from ..design.main_ui_popup import FramelessPopupCombo
 from ..design.ui_widgets import AnimatedButton
 from ..i18n import LANGUAGE_NATIVE_NAMES, bind_text, current_language, save_language, tr
 from ..system.hardware import detect_cuda_runtime
+from ..design.typography import emphasis_qss
 
 
 class _CudaProbeRelay(QObject):
@@ -87,7 +88,7 @@ class GuidedSetupDialog(SpringDialog):
         header = QHBoxLayout()
         title_box = QVBoxLayout()
         title = QLabel("先选择一套字幕识别组合")
-        title.setStyleSheet("font-size: 21px; font-weight: 700;")
+        title.setStyleSheet(emphasis_qss("font-size: 21px; font-weight: 700;"))
         title_box.addWidget(title)
         hint = QLabel("随时可以在模型工坊替换。这里不会偷偷下载任何模型。")
         hint.setObjectName("muted")
@@ -102,7 +103,7 @@ class GuidedSetupDialog(SpringDialog):
         layout.addLayout(header)
 
         preset_heading = QLabel("① 先选择一种使用方式")
-        preset_heading.setStyleSheet("font-size: 15px; font-weight: 700;")
+        preset_heading.setStyleSheet(emphasis_qss("font-size: 15px; font-weight: 700;"))
         layout.addWidget(preset_heading)
         preset_hint = QLabel("选中的方案会用绿色边框标出；下方仍可逐项调整模型。")
         preset_hint.setObjectName("muted")

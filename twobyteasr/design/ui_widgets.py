@@ -44,6 +44,7 @@ from twobyteasr.design.ui_theme import (
 )
 
 from ..i18n import bind_text
+from .typography import weighted_font
 
 TRACK = "#e8e2d8"
 
@@ -211,7 +212,7 @@ class SwitchControl(QAbstractButton):
         painter.drawEllipse(knob)
 
         font = painter.font()
-        font.setWeight(QFont.Weight.DemiBold)
+        weighted_font(font, QFont.Weight.DemiBold)
         painter.setFont(font)
         painter.setPen(label_color)
         painter.drawText(QRectF(58, 0, self.width() - 58, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text())

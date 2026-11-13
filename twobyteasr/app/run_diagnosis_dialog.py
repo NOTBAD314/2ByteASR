@@ -31,6 +31,7 @@ from ..i18n import bind_text, current_language, tr, translate
 from ..i18n_widgets import user_text
 from ..recognition.diagnosis_catalog import ACTION_LABELS
 from ..recognition.run_diagnosis import CONFIDENCE_LABELS, SEVERITY_LABELS
+from ..design.typography import emphasis_qss
 
 SEVERITY_TONES = {"blocker": "danger", "problem": "warn", "quality": "info", "tip": "accent"}
 # Actions that only make sense on the completion page of this very task.
@@ -660,7 +661,7 @@ class RunDiagnosisDialog(SpringDialog):
         super().refresh_theme_palette()
         from ..design.theme_manager import theme_key
         from ..design.ui_theme import theme_definition
-        self.setStyleSheet(self.styleSheet() + "\n" + diagnosis_qss(theme_definition(theme_key())))
+        self.setStyleSheet(emphasis_qss(self.styleSheet() + "\n" + diagnosis_qss(theme_definition(theme_key()))))
 
     def report_text(self) -> str:
         from ..recognition.diagnosis_prompt import plain_report

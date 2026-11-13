@@ -29,6 +29,7 @@ PRE_ROLL_MS = 0
 POST_ROLL_MS = 0
 SAMPLE_RATE = 48000
 CHANNELS = 2
+MAX_PREVIEW_MS = 60_000
 
 
 class PreviewUnavailable(RuntimeError):
@@ -119,6 +120,8 @@ def plan_cue_preview(project, cue_id, *, pre_roll_ms=PRE_ROLL_MS, post_roll_ms=P
     cue, (start, end), domain = caption_timeline_range(project, cue_id)
     if end <= start:
         raise PreviewUnavailable("这条字幕没有有效的时间范围")
+    if end-start > MAX_PREVIEW_MS:
+        raise PreviewUnavailable('这条字幕的试听范围超过60秒，请在工作台检查时间范围或分段试听')
     request = uuid.uuid4().hex[:12]
     revision = _revision(project, cue)
     if domain == "source":
@@ -245,7 +248,7 @@ def preview_cache_key(plan):
             files.append((str(path.resolve()), stat.st_size, stat.st_mtime_ns))
         except OSError as exc:
             raise PreviewUnavailable(f"找不到或无法读取素材文件：{path}") from exc
-    value = {"project": plan.project_id, "cue": plan.cue_id, "clock": plan.clock,
+    value = {"decoder_policy": "original-graph-v2", "project": plan.project_id, "cue": plan.cue_id, "clock": plan.clock,
              "range": plan.play_range_ms, "layers": plan.layers, "files": files,
              "recognition_identity": plan.recognition_identity,
              "format": [SAMPLE_RATE, CHANNELS, "s16le"]}

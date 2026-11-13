@@ -66,6 +66,7 @@ class TranslationTermsDialog(QDialog):
         self.setWindowTitle(tr('翻译／译文术语库'))
         self.resize(900, 600)
         self.policy = normalize(value)
+        self.policy['libraries'] = [lib for lib in self.policy['libraries'] if not lib.get('shared_concepts')]
         self._current = None
         layout = QVBoxLayout(self)
         self.enabled = QCheckBox(tr('启用翻译／译文术语库（独立于原文校对）'))
@@ -106,6 +107,9 @@ class TranslationTermsDialog(QDialog):
         remove = QPushButton(tr('移除所选术语')); remove.clicked.connect(self.remove_rows)
         self.add_term_button, self.remove_term_button = add, remove
         actions.addWidget(add); actions.addWidget(remove); layout.addLayout(actions)
+        from .multilingual_terms_ui import SharedLibrariesPanel
+        self.shared_panel = SharedLibrariesPanel(self.policy, self)
+        layout.addWidget(self.shared_panel)
         self.note = QLabel(tr('勾选参与翻译的词库。语境说明用于区分同形异义；旧原文纠错库不会自动变成翻译库。可导入本窗口JSON，或按当前方向导入两列TSV。'))
         self.note.setWordWrap(True); layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -155,6 +159,9 @@ class TranslationTermsDialog(QDialog):
         for control in (self.name, self.source, self.target, self.table, self.add_term_button,
                         self.remove_term_button, self.export_button, self.delete_button):
             control.setEnabled(self._current is not None)
+        # Shared concepts need a conflict-inspection direction even when no
+        # older directional library has been created in this dialog.
+        self.source.setEnabled(True); self.target.setEnabled(True)
         if self._current is None:
             self.name.clear(); self.table.setRowCount(0)
             return
@@ -220,6 +227,7 @@ class TranslationTermsDialog(QDialog):
 
     def value(self):
         self.store_current()
+        self.shared_panel.store()
         self.policy['enabled'] = self.enabled.isChecked()
         self._sync_checks()
         return normalize(self.policy)
@@ -337,20 +345,25 @@ class TranslationTermsDialog(QDialog):
 
 
 class TranslationTermsWidget(QWidget):
-    def __init__(self, read, commit, parent=None):
+    def __init__(self, read, commit, parent=None, *, compact=False):
         super().__init__(parent)
         self.read, self.commit = read, commit
+        self.compact = compact
         layout = QHBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0)
         self.summary = QLabel(); self.summary.setWordWrap(True); layout.addWidget(self.summary, 1)
-        self.manage = QPushButton(tr('选择／编辑翻译词库…')); self.manage.clicked.connect(self.edit)
+        self.manage = QPushButton(tr('选择／编辑词库…' if compact else '选择／编辑翻译词库…')); self.manage.clicked.connect(self.edit)
         layout.addWidget(self.manage); self.refresh()
 
     def refresh(self):
         value = normalize(self.read())
         from ..projects.subtitle_import import language_label
         chosen = [lib for lib in value['libraries'] if lib['id'] in value['selected_ids']]
-        detail = '、'.join(f"{lib['name']}（{language_label(lib['source_language'])} → {language_label(lib['target_language'])}）" for lib in chosen)
-        self.summary.setText(tr('翻译／译文术语库') + '：' + (detail if value['enabled'] and detail else tr('已关闭／未选择')))
+        detail = '、'.join(f"{lib['name']}（多语言）" if lib.get('shared_concepts') else f"{lib['name']}（{language_label(lib['source_language'])} → {language_label(lib['target_language'])}）" for lib in chosen)
+        if not detail and value.get('concept_library_ids'):
+            import subtitle_core as legacy
+            detail = '、'.join(legacy.glossary_display_name(i) + '（多语言）' for i in value['concept_library_ids'])
+        self.summary.setText(tr('译文词库' if self.compact else '翻译／译文术语库') + '：' + (detail if value['enabled'] and detail else tr('已关闭／未选择')))
+        self.summary.setToolTip(self.summary.text())
 
     def edit(self):
         dialog = TranslationTermsDialog(self.read(), self)

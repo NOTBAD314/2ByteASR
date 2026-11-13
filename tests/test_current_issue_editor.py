@@ -89,12 +89,15 @@ def test_diagnostic_optional_and_hard_problem_have_one_exclusive_count():
                                   issue('b', 'line_too_long'))})
     view = current_issue_view(p)
     assert view.counts() == {'priority': 0, 'critical': 1}
-    assert not view.for_cue('a') and len(view.for_cue('b')) == 2
+    assert not view.for_cue('a') and len(view.for_cue('b')) == 1
+    assert any(row.kind=='line_too_long' and row.disposition=='retired_rule' for row in view.diagnostics['b'])
     assert len(view.diagnostics['a']) == 2
     assert current_issue_view(p) is view  # ordinary projects have no decisions key
     p.cues[0].end_ms=20_000
     p._qc_result=QCResult({'a':(issue('a','long_duration',category=QCCategory.TIMELINE),)})
-    assert current_issue_view(p).level('a')=='high'  # extreme timing is never hidden with soft advice
+    assert current_issue_view(p).level('a')=='confident'  # a valid long interval alone is not a content fault
+    p._qc_result=QCResult({'a':(issue('a','invalid_time',QCSeverity.CRITICAL,QCCategory.TIMELINE),)})
+    assert current_issue_view(p).level('a')=='high'  # real data anomalies remain actionable
 
 
 def test_cached_issue_view_can_be_cloned_and_exported_without_decisions(tmp_path):

@@ -1424,8 +1424,14 @@ def learned_mappings_for_game(game_name=None):
     seen = set()
     for identity in ids:
         entry = payload.get(_glossary_entry_key(identity, payload), {})
-        mappings = entry.get("mappings", []) if isinstance(entry, dict) else []
+        from twobyteasr.glossary.multilingual_terms import legacy_projection, locale
+        mappings = legacy_projection(entry) if isinstance(entry, dict) else []
         for item in mappings:
+            if not game_name and item.get('language'):
+                context = get_runtime_context()
+                code = locale(getattr(context, 'task_language', '') or getattr(context, 'requested_language', '') or 'zh')
+                if item['language'] != code and not (item['language'] == 'und' and code.startswith('zh')):
+                    continue
             if not (isinstance(item, dict) and item.get("from") and item.get("to")):
                 continue
             key = (str(item["from"]), str(item["to"]))
@@ -1789,6 +1795,8 @@ def edit_learned_mapping(game_name, old_key, source, target, *, category="其他
     identity = _glossary_entry_key(game_name, games)
     entry = games.get(identity, {})
     records = entry.get("mappings", [])
+    if any(tuple(old_key) in {tuple(k) for k in c.get('legacy_keys', ())} for c in entry.get('concepts', ())):
+        raise ValueError('此词条已使用概念和语言名称管理，请在“名称与译名”中编辑，避免旧映射覆盖多语言内容。')
     old = next((row for row in records if (row.get("from"), row.get("to")) == tuple(old_key)), None)
     if old is None:
         return False

@@ -156,12 +156,31 @@ def start(window,output):
         check(theme+' undo restores pending review strip',not page.confirm_all_reviews_strip.isHidden())
         page.context_drawer.setCurrentIndex(1);settle(.15)
         check(theme+' selection summary is shown on style tab',page.style_scope_summary.isVisible())
-        check(theme+' shadow uses opacity without visible switch',page.style_shadow_switch.isHidden())
+        # 2026-11-13 (user): every appearance row has a switch; a row with more
+        # to set ends its capsule with a round chevron (填充 opens a dialog: right).
+        check(theme+' every appearance row has a visible switch',all(not switch.isHidden() for switch in
+            (page.style_fill_switch,page.style_outline_switch,page.style_background,page.style_shadow_switch,page.style_glow)))
+        from PySide6.QtGui import QColor
+        from ..caption_style.style_resolution import resolve_cue_visual
+        style=lambda:resolve_cue_visual(page.session.project,page.session._cue_lookup['a']).style
+        before_color=style().primary_color
+        before_steps=page.undo_stack.index()
+        QTest.mouseClick(page.style_fill_switch,Qt.MouseButton.LeftButton);settle(.1)
+        check(theme+' actual fill switch makes fill transparent',QColor(style().primary_color).alpha()==0)
+        check(theme+' fill toggle is one undo',page.undo_stack.index()==before_steps+1)
+        QTest.mouseClick(page.style_fill_switch,Qt.MouseButton.LeftButton);settle(.1)
+        check(theme+' actual fill switch restores original color',QColor(style().primary_color)==QColor(before_color))
+        page.undo_stack.undo();page.undo_stack.undo();settle(.1)
+        check(theme+' undo keeps original fill',QColor(style().primary_color)==QColor(before_color))
         from ..design.theme_manager import theme_key
         from ..design.themed_icons import colored_icon
         from ..design.ui_theme import theme_definition
-        expected_icon=colored_icon('fa5s.sliders-h',theme_definition(theme_key()).accent_text).pixmap(15,15).toImage()
-        check(theme+' appearance icons follow current theme',all(row.chevron.pixmap().toImage()==expected_icon for row in page._appearance_rows.values()))
+        muted=theme_definition(theme_key()).text_muted
+        expected_icons={name:colored_icon(icon,muted).pixmap(10,10).toImage() for name,icon in
+            (('fill','fa5s.chevron-right'),('outline','fa5s.chevron-down'),('shadow','fa5s.chevron-down'))}
+        for row in page._appearance_rows.values():row.set_expanded(False)
+        check(theme+' appearance icons follow current theme',all(page._appearance_rows[name].chevron.pixmap().toImage()==icon
+            for name,icon in expected_icons.items()))
         for width in [351,420]:
             page.context_panel.setFixedWidth(width);settle(.2)
             scope=page.style_scope

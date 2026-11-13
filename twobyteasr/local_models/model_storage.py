@@ -37,6 +37,7 @@ from ..design.ui_theme import theme_definition
 from ..i18n import bind_text
 
 from ..i18n import tr
+from ..design.typography import emphasized
 
 
 def format_bytes(value: int) -> str:
@@ -771,6 +772,7 @@ class ModelStorageDialog(QDialog):
         QMessageBox.information(self, tr('下载残留清理结果'), text)
 
 
+@emphasized
 def build_storage_qss() -> str:
     theme = theme_definition(theme_key())
     return f"""

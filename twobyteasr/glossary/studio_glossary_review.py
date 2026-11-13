@@ -16,7 +16,10 @@ def format_only_change(original, replacement):
     if ''.join(str(original).split()) == ''.join(str(replacement).split()):
         return True
     from ..subtitle_rules.text_rules import clean_subtitle_text
-    return clean_subtitle_text(original) == clean_subtitle_text(replacement)
+    from .proofread_constraints import PUNCTUATION
+    def content(value):
+        return ''.join(c for c in clean_subtitle_text(value) if not c.isspace() and c not in PUNCTUATION)
+    return content(original) == content(replacement)
 
 
 def _clean_to_raw_spans(raw, clean):
@@ -32,7 +35,7 @@ def _clean_to_raw_spans(raw, clean):
     return starts, ends
 
 
-def transplant_model_edits(raw, edited):
+def transplant_model_edits(raw, edited, *, punctuation=False):
     """Re-apply a correction-service result onto the editable cue text.
 
     The correction service validates edits on ``clean_subtitle_text(raw)``
@@ -47,14 +50,17 @@ def transplant_model_edits(raw, edited):
     """
     from ..subtitle_rules.text_rules import clean_subtitle_text
     raw, edited = str(raw), str(edited)
-    baseline = clean_subtitle_text(raw)
-    if edited in (raw, baseline):
+    from .proofread_constraints import PUNCTUATION
+    def normalized(value):
+        value = ' '.join(clean_subtitle_text(value).split())
+        return value if punctuation else ''.join(c for c in value if c not in PUNCTUATION)
+    baseline = normalized(raw)
+    edited_view = normalized(edited)
+    if edited == raw or edited_view == baseline:
         return raw
-    if clean_subtitle_text(edited) != edited:
-        return edited
     starts, ends = _clean_to_raw_spans(raw, baseline)
     pieces, cursor = [], 0
-    for tag, a, b, c, d in SequenceMatcher(None, baseline, edited, autojunk=False).get_opcodes():
+    for tag, a, b, c, d in SequenceMatcher(None, baseline, edited_view, autojunk=False).get_opcodes():
         if tag == 'equal':
             continue
         if a < b:
@@ -63,11 +69,11 @@ def transplant_model_edits(raw, edited):
             low = high = ends[a - 1] if a else (starts[0] if baseline else 0)
         if low < cursor:
             return None
-        pieces.extend((raw[cursor:low], edited[c:d]))
+        pieces.extend((raw[cursor:low], edited_view[c:d]))
         cursor = high
     pieces.append(raw[cursor:])
     result = ''.join(pieces)
-    return result if clean_subtitle_text(result) == edited else None
+    return result if normalized(result) == edited_view else None
 
 
 def diff_occurrences(cue, final, *, reason, source, selected=True, evidence='', missing='',

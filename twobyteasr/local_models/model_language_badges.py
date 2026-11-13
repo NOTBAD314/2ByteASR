@@ -15,7 +15,9 @@ from PySide6.QtGui import QPainter, QPalette, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..i18n import bind_text, current_language, tr, translate
-from .model_languages import BADGE_LANGUAGES, LANGUAGE_NAMES, LEGEND, TIER_COLORS, TIER_NAMES, more_text, short_name
+from .model_languages import (BADGE_LANGUAGES, GRID_NAMES, LANGUAGE_NAMES, LEGEND, TIER_COLORS, TIER_NAMES,
+                              more_text, short_name)
+from ..design.typography import emphasis_qss
 
 
 # Traffic-light hues, fixed across themes so green / orange / red always read
@@ -99,6 +101,21 @@ class _Badge(QLabel):
         painter.end()
 
 
+def grid_label(code: str, ui_language: str, languages: tuple[str, ...] = BADGE_LANGUAGES) -> str:
+    """Label of one badge in a grid row.
+
+    The ten-language workshop grid (2026-11-13) keeps full names only in the
+    Chinese interfaces, where every name is two characters (西语 for 西班牙语);
+    elsewhere the names are too long for five columns and the short labels
+    are used (EN, FR, 仏 …). The tooltip always has the full name.
+    """
+    if len(languages) > len(BADGE_LANGUAGES):
+        if ui_language not in GRID_NAMES:
+            return short_name(code, ui_language)
+        return GRID_NAMES[ui_language].get(code) or translate(LANGUAGE_NAMES[code], ui_language)
+    return translate(LANGUAGE_NAMES[code], ui_language)
+
+
 def _theme():
     from ..design.theme_manager import theme_key
     from ..design.ui_theme import theme_definition
@@ -116,10 +133,13 @@ class LanguageBadgeRow(QWidget):
     """
 
     def __init__(self, parent=None, *, short: bool = False, caption: bool = False, grid_columns: int = 0,
-                 fill: bool = False, show_more: bool = True):
+                 fill: bool = False, show_more: bool = True, languages: tuple[str, ...] = BADGE_LANGUAGES):
         super().__init__(parent)
         self.setObjectName("languageBadgeRow")
         self.short = bool(short)
+        # Which badges, in order; grid rows only (the workshop list passes
+        # model_languages.WORKSHOP_LANGUAGES).
+        self.languages = tuple(languages) if grid_columns else BADGE_LANGUAGES
         # grid_columns > 0 (model list column, 2026-11-11): the badges wrap
         # into rows of that many, full names, no caption.
         self.grid_columns = max(0, int(grid_columns))
@@ -165,7 +185,7 @@ class LanguageBadgeRow(QWidget):
         self.caption = None
         self.badges = {}
         position = 0
-        for code in BADGE_LANGUAGES:
+        for code in self.languages:
             badge = self._badge()
             badge.setProperty("grid", True)
             if self.fill:
@@ -188,6 +208,33 @@ class LanguageBadgeRow(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.set_support(None)
         self.refresh_theme_palette()
+
+    def set_grid_languages(self, languages: tuple[str, ...], columns: int) -> None:
+        """Show ``languages`` (badges built at construction) in ``columns`` columns.
+
+        The workshop list switches between ten languages in five columns and
+        the six main ones in three when the list is narrow (2026-11-13).
+        """
+        languages = tuple(code for code in languages if code in self.badges)
+        if not self.grid_columns or (languages == self.languages and columns == self.grid_columns):
+            return
+        layout = self.layout()
+        for badge in self.badges.values():
+            layout.removeWidget(badge)
+        layout.removeWidget(self.more)
+        for column in range(max(self.grid_columns, columns) + 1):
+            layout.setColumnStretch(column, 0)
+        self.languages, self.grid_columns = languages, max(1, int(columns))
+        for position, code in enumerate(languages):
+            layout.addWidget(self.badges[code], position // self.grid_columns, position % self.grid_columns)
+        for code, badge in self.badges.items():
+            badge.setVisible(code in languages)
+        position = len(languages)
+        layout.addWidget(self.more, position // self.grid_columns, position % self.grid_columns,
+                         1, self.grid_columns - position % self.grid_columns, Qt.AlignmentFlag.AlignLeft)
+        for column in range(self.grid_columns):
+            layout.setColumnStretch(column, 1)
+        self.retranslate_ui()
 
     def _badge(self) -> QLabel:
         badge = _Badge()
@@ -222,7 +269,12 @@ class LanguageBadgeRow(QWidget):
         short = self.short or self._compact
         for code, badge in self.badges.items():
             name = LANGUAGE_NAMES[code]
-            label = short_name(code, language) if short else translate(name, language)
+            if short:
+                label = short_name(code, language)
+            elif self.grid_columns:
+                label = grid_label(code, language, self.languages)
+            else:
+                label = translate(name, language)
             if self.fill and TIER_COLORS.get(str(badge.property("tier"))) == "yes":
                 label = "✓ " + label
             badge.setText(label)
@@ -240,7 +292,7 @@ class LanguageBadgeRow(QWidget):
             self.more.hide()
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(language_badge_qss(_theme()))
+        self.setStyleSheet(emphasis_qss(language_badge_qss(_theme())))
 
     def full_names_width(self) -> int:
         """Width the row needs with full language names (badge padding included)."""
@@ -315,4 +367,4 @@ class LanguageLegend(QWidget):
         self.refresh_theme_palette()
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(language_badge_qss(_theme()))
+        self.setStyleSheet(emphasis_qss(language_badge_qss(_theme())))

@@ -29,6 +29,8 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     from ..recognition.service import CancellationToken
     token = cancel_token or CancellationToken()
     token.raise_if_cancelled()
+    from .proofread_constraints import policy_of, policy_key, constrain_text, local_reference_support
+    edit_policy = policy_of(project)
     supplied = getattr(project, '_review_text_entries', None)
     if supplied is None:
         entries = text_entries(project, mode='original', cue_ids=cue_ids)
@@ -41,10 +43,13 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     other = [entry for entry in entries if entry.key not in original_keys]
     results = []
     if original:
+        from .multilingual_terms import source_snapshot
+        from ..subtitle_rules.chinese_script import project_script
+        original_snapshot = source_snapshot(snapshot, project_script(project) or 'zh-Hans')
         view = __import__('copy').copy(project)
         wanted = {entry.key for entry in original}
         view.cues = [cue for cue in project.cues if cue.id in wanted]
-        result = _preview_original_glossary_correction(view, wanted, snapshot, settings,
+        result = _preview_original_glossary_correction(view, wanted, original_snapshot, settings,
                     cancel_token=token, use_ai=use_ai, progress=progress)
         lookup = {entry.key: entry for entry in original}
         results.append(GlossaryReviewPreview(tuple(bind_occurrence(hit, lookup[hit.cue_id]) for hit in result.hits), result.receipt))
@@ -62,12 +67,57 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         for key in ('segments','pending_rows','failed_cues','request_errors','terminology_conflicts'):
             receipt[key] = [*receipt.get(key, ()), *result.receipt.get(key, ())]
     receipt['text_targets'] = [{'key': entry.key, **entry.target.to_dict(), 'baseline': entry.text} for entry in entries]
+    receipt['edit_policy'] = edit_policy
+    receipt['review_input_key'] = policy_key(edit_policy, entries)
+    # A final shared gate also covers the established Chinese/ASR pipeline.
+    lookup = {entry.key: entry for entry in entries}
+    accepted = []
+    for result in results:
+        for hit in result.hits:
+            entry = lookup.get(hit.target_key)
+            if entry is None:
+                continue
+            a, b = hit.span
+            if not 0 <= a <= b <= len(entry.text) or entry.text[a:b] != hit.original:
+                continue
+            candidate = entry.text[:a] + hit.replacement + entry.text[b:]
+            lexical = hit.source == 'local_confirmed'
+            evidence = bool(getattr(hit, 'content_evidence_verified', False))
+            if not evidence and entry.target.layer == 'original':
+                from ..recognition.cue_evidence_slice import cue_evidence
+                owner = next((c for c in project.cues if c.id == entry.key), None)
+                if owner is not None:
+                    references = {field:cue_evidence(project,owner,field) for field in ('firered_text','qwen_asr_text')}
+                    support = [f'{field} 文字稿：{text}' for field,text in references.items()
+                               if local_reference_support(entry.text,candidate,[text])]
+                    evidence = bool(support)
+                    if evidence:
+                        from dataclasses import replace
+                        hit = replace(hit, content_evidence_verified=True,
+                            evidence='；'.join(filter(None,(hit.evidence,*support,'未核验原音'))))
+            if constrain_text(entry.text, candidate, edit_policy, lexical=lexical, evidence=evidence) == candidate:
+                accepted.append(hit)
+    receipt['proposed_changes'] = len(accepted)
+    receipt['proposed_cues'] = len({hit.target.cue_id if hit.target else hit.cue_id for hit in accepted})
+    receipt['automatic_changes'] = sum(hit.default_selected for hit in accepted)
+    receipt['confirmation_changes'] = sum(not hit.default_selected for hit in accepted)
+    for segment in receipt.get('segments', ()):
+        segment['final_diff'] = [dict(span=list(h.span), **{'from':h.original, 'to':h.replacement}, source=h.source)
+                                 for h in accepted if h.target_key == segment.get('cue_id')]
+        entry = lookup.get(segment.get('cue_id'))
+        if entry is not None:
+            final = entry.text
+            for hit in sorted((h for h in accepted if h.target_key==entry.key),key=lambda h:h.span,reverse=True):
+                a,b=hit.span;final=final[:a]+hit.replacement+final[b:]
+            if 'final_text' in segment and segment['final_text'] != final:
+                segment['candidate_before_edit_policy']=segment['final_text']
+            segment['final_text']=final
     receipt['run_state'] = ('not_run' if not use_ai else 'partial' if receipt.get('fallback_cues') and receipt.get('successful_cues')
                             else 'failed' if receipt.get('request_errors') or receipt.get('fallback_cues')
                             else 'completed')
-    receipt['empty_state'] = ('request_failed' if receipt.get('request_errors') else
+    receipt['empty_state'] = ('request_failed' if receipt.get('request_errors') or receipt['run_state']=='failed' else
                               'needs_confirmation' if receipt.get('confirmation_changes') else
-                              'changes_ready' if any(result.hits for result in results) else receipt.get('empty_state', 'no_changes'))
+                              'changes_ready' if accepted else 'needs_confirmation' if receipt.get('pending_rows') else 'no_changes')
     import uuid
     receipt.setdefault('job_id', uuid.uuid4().hex)
     from ..runtime_paths import user_data_root
@@ -82,7 +132,7 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         register_cache(diagnostic, 'log', producer='studio_glossary_review', rebuild='local')
     except OSError as exc:
         receipt['diagnostic_error'] = str(exc)
-    return GlossaryReviewPreview(tuple(hit for result in results for hit in result.hits), receipt)
+    return GlossaryReviewPreview(tuple(accepted), receipt)
 
 
 def _preview_original_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_token=None, use_ai=True, progress=None):
@@ -116,6 +166,8 @@ def _preview_original_glossary_correction(project, cue_ids, snapshot, settings, 
     saved_language=(project.generation_metadata.get('language') or {}).get('code','')
     context.task_language=saved_language or detect_language([cue.text for cue in project.cues])[0]
     context.requested_language=context.task_language
+    from .proofread_constraints import policy_of
+    context.proofread_edit_policy = policy_of(project)
     from ..recognition.content_scene import resolve_content_scene
     previous_scene = (project.generation_metadata.get('runtime_profile') or {}).get('resolved_context') or {}
     if previous_scene.get('source') == 'user_selected':
@@ -255,7 +307,7 @@ def _preview_original_glossary_correction(project, cue_ids, snapshot, settings, 
         # collapsed/stripped, ordinary punctuation deleted) even when the model
         # made no edit or the request fell back. Only the model's own edits,
         # re-applied onto the editable text, may become an AI proposal.
-        ai_draft=transplant_model_edits(segment.text,model_text)
+        ai_draft=transplant_model_edits(segment.text,model_text,punctuation=policy_of(project)['punctuation'])
         transplanted=ai_draft is not None
         if ai_draft is None:ai_draft=model_text
         # A model's unchanged/failed response cannot erase confirmed local normalization.

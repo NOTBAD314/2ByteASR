@@ -38,6 +38,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollBar, QToolTip, QWidget
+from ..design.typography import weighted_font
 
 
 def _paint_geometry(method):
@@ -3032,7 +3033,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             painter.drawLine(QPointF(10.5, rect.center().y()), QPointF(16.5, rect.center().y()))
             painter.restore()
         header_font = painter.font()
-        header_font.setBold(True)
+        weighted_font(header_font, 700)
         header_font.setPointSize(9)
         painter.setFont(header_font)
         painter.setPen(QColor(palette.waveform_header_text))
@@ -3049,7 +3050,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             painter.drawText(top, Qt.AlignmentFlag.AlignVCenter if not two_lines else
                              Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, audio_id)
             small = QFont(header_font)
-            small.setBold(False)
+            weighted_font(small, 400)
             small.setPointSize(8)
             painter.setFont(small)
             metrics = QFontMetrics(small)
@@ -3078,7 +3079,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                               palette.header_icon, icon_box, state='hover' if hovered else 'normal')
             count_font = QFont(painter.font())
             count_font.setPointSize(8)
-            count_font.setBold(True)
+            weighted_font(count_font, 700)
             painter.setFont(count_font)
             painter.setPen(QColor(palette.header_icon))
             painter.drawText(QRectF(toggle.left() + 16, toggle.top(), toggle.width() - 18, toggle.height()),
@@ -3522,7 +3523,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.setPen(QColor(palette.header_name))
         font = painter.font()
         title = tr("次要角色 · {count}", count=len(members))
-        font.setBold(True)
+        weighted_font(font, 700)
         # The count must stay readable in the narrow header column.
         for size in ((10, 9) if kind == "group_header" else (12, 11, 10, 9)):
             font.setPointSize(size)
@@ -3532,7 +3533,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.drawText(QRectF(34, rect.top(), CONTROL_LEFT - 40, rect.height()), Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 40))
         if kind == "group" and rect.height() >= 52:
-            font.setBold(False)
+            weighted_font(font, 400)
             font.setPointSize(9)
             painter.setFont(font)
             painter.setPen(QColor(palette.header_letter))
@@ -3914,7 +3915,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 painter.setPen(QColor(palette.header_name))
                 name_font = painter.font()
                 name_font.setPointSize(14 if rect.height() < 84 else 16)
-                name_font.setBold(True)
+                weighted_font(name_font, 700)
                 painter.setFont(name_font)
                 imported = self.project.generation_metadata.get("subtitle_imports", {}).get("tracks", {}).get(speaker_id)
                 if imported and " · " in name and rect.height() >= 34:
@@ -3924,14 +3925,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     painter.drawText(QRectF(55, rect.center().y() - 17, CONTROL_LEFT - 61, 18), Qt.AlignVCenter,
                         painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 61))
                     name_font.setPointSize(9)
-                    name_font.setBold(False)
+                    weighted_font(name_font, 400)
                     painter.setFont(name_font)
                     painter.drawText(QRectF(55, rect.center().y() + 1, CONTROL_LEFT - 61, 17), Qt.AlignVCenter,
                         painter.fontMetrics().elidedText(language, Qt.ElideRight, CONTROL_LEFT - 61))
                 else:
                     painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
                                      painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
-                name_font.setBold(False)
+                weighted_font(name_font, 400)
                 painter.setFont(name_font)
                 self._paint_subtitle_header_buttons(painter, palette, "speaker", speaker_id, rect)
             if speaker_id in self.hidden_speakers or (self.project and not
@@ -4093,7 +4094,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             painter.drawEllipse(QRectF(14, translation_rect.center().y() - 5, 10, 10))
             painter.setPen(QColor(palette.header_name))
             translation_font = painter.font()
-            translation_font.setBold(True)
+            weighted_font(translation_font, 700)
             painter.setFont(translation_font)
             painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, str(tr("翻译")))
             from ..caption_style.subtitle_visibility import translation_key
@@ -4101,7 +4102,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             hidden=not self.project.studio_state.get('subtitle_track_visibility',{}).get(key,True)
             paint_button(painter,palette,'subtitle','visibility',translation_rect,
                          'fa5s.eye-slash' if hidden else 'fa5s.eye',active=hidden)
-            translation_font.setBold(False)
+            weighted_font(translation_font, 400)
             painter.setFont(translation_font)
             if isinstance(translations, dict):
                 translation_cues = [cue for cue in visible_cues if self._subtitle_cue_visible(cue, 'translation')]
@@ -4232,7 +4233,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.drawRoundedRect(label_rect, 4, 4)
         painter.setPen(QColor(palette.playhead_label_text))
         label_font = painter.font()
-        label_font.setBold(True)
+        weighted_font(label_font, 700)
         label_font.setPointSize(8)
         painter.setFont(label_font)
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, playhead_label)

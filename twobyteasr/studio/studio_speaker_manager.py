@@ -220,6 +220,10 @@ class SpeakerManagerDialog(QDialog):
                         self._voiceprint_report = report
                         bind_text(self.voiceprint_button, '查看声纹候选')
         self.refresh()
+        # 2026-11-13 (user): open on the first speaker's details, not an empty column.
+        order = self._visible_order()
+        if order and not self._selection:
+            self._tile_clicked(order[0], Qt.KeyboardModifier.NoModifier)
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
         page.undo_stack.indexChanged.connect(self._undo_index_changed)

@@ -18,10 +18,12 @@ from PySide6.QtWidgets import (
 from ..design.studio_theme import _active_theme, create_studio_menu
 from ..design.themed_icons import themed_icon
 from ..i18n import bind_text, tr
+from ..design.typography import emphasized
 
 ROLE_BUTTONS = (("main", "主要"), ("game", "游戏声"), ("ignore", "忽略"))
 
 
+@emphasized
 def build_speaker_manager_qss(theme) -> str:
     """Card, banner and segment rules; appended to the dialog's own sheet."""
     return f"""

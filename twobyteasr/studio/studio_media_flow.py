@@ -31,6 +31,7 @@ from ..timeline.audio_stream_lanes import (split_waveform_job, stream_time_mappi
 from ..i18n import bind_text
 
 from ..i18n import tr, user_text
+from ..design.typography import emphasis_qss
 
 class StudioMediaFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
@@ -833,7 +834,7 @@ class StudioMediaFlowMixin:
         palette = theme_definition(theme_key())
         light = hex_luminance(palette.surface) > 0.5
         sheet.setStyleSheet(
-            f"QWidget#studioRecognitionSheet QLabel#recognitionStepTitle {{ color: {palette.text};"
+            emphasis_qss(f"QWidget#studioRecognitionSheet QLabel#recognitionStepTitle {{ color: {palette.text};"
             f" font-size: {TYPE_SCALE['heading2']}px; font-weight: 700; background: transparent; }}"
             f"QWidget#studioRecognitionSheet QFrame#recognitionSummary {{"
             f" background: {blend_hex(palette.surface, palette.accent, 0.12 if light else 0.11)};"
@@ -856,7 +857,7 @@ class StudioMediaFlowMixin:
             f" font-size: {TYPE_SCALE['caption']}px; }}"
             f"QWidget#studioRecognitionSheet QLabel#recognitionProblem {{ color: {palette.warning};"
             f" font-size: {TYPE_SCALE['small']}px; font-weight: 600; }}"
-            + role_row_rules(palette, light, RADIUS_SCALE['surface'], TYPE_SCALE)
+            + role_row_rules(palette, light, RADIUS_SCALE['surface'], TYPE_SCALE))
         )
 
         # 2026-10-23（用户：比例臃肿、右边不对称）：两张对称的卡片，等高、同样的内边距、

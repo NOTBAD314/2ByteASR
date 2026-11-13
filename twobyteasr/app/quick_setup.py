@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePol
 
 from ..i18n import LANGUAGE_NATIVE_NAMES, bind_text, current_language, save_language, tr
 from ..design.main_ui_dialogs import SpringDialog
+from ..design.typography import emphasis_qss
 
 # Fixed identity colours: each way of working keeps its colour in every theme.
 PLAN_COLORS = {'local': '#3FBF8F', 'cloud': '#F2B33D', 'light': '#5B9DF0', 'apple': '#A98BF2'}
@@ -693,8 +694,12 @@ class QuickSetupDialog(SpringDialog):
     cuda_ready = Signal(object)
 
     def __init__(self, parent=None, *, plan_keys: list[str] | None = None, size_of=None, compare: bool = False,
-                 current: str = '', spoken: str = ''):
+                 current: str = '', spoken: str = '', required: bool = False):
         super().__init__(parent)
+        # 2026-11-13 (user): ``required`` is a fresh install's first opening:
+        # a way of working must be picked (no 稍后再说, Esc or outside click)
+        # and the tutorial follows (no box to untick).
+        self.required = bool(required) and not compare
         # 2026-10-22: ``compare`` is the tutorial's plan step: cloud and local side by side with
         # what each is good for, the saved plan (``current``) chosen; no tutorial box, no language.
         self.compare = bool(compare)
@@ -719,7 +724,7 @@ class QuickSetupDialog(SpringDialog):
         self.spoken = default_spoken(spoken, current_language())
         theme = theme_definition(theme_key())
         self._theme = theme
-        self.setStyleSheet(card_qss(theme))
+        self.setStyleSheet(emphasis_qss(card_qss(theme)))
         self.setMinimumWidth(760)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(36, 30, 36, 26)
@@ -793,6 +798,14 @@ class QuickSetupDialog(SpringDialog):
             self.tour_check.setChecked(False)
             self.tour_check.hide()
             self.lang_combo.hide()
+        if self.required:  # first opening: the tutorial always follows
+            self.tour_check.setChecked(True)
+            self.tour_check.hide()
+            self.required_note = QLabel()
+            self.required_note.setObjectName('quickSetupRequired')
+            self.required_note.setWordWrap(True)
+            bind_text(self.required_note, '第一次打开：先选一种方式，选好后兔白会带你走一遍新手教学（约 6 分钟）。以后随时可以在模型工坊里换。')
+            outer.addWidget(self.required_note)
         footer = QHBoxLayout()
         custom = QPushButton()
         bind_text(custom, '自己选择模型…')
@@ -813,6 +826,7 @@ class QuickSetupDialog(SpringDialog):
         bind_text(self.later_button, '先不换' if self.compare else '稍后再说')
         self.later_button.clicked.connect(self.reject)
         footer.addWidget(self.later_button)
+        self.later_button.setVisible(not self.required)
         self.go_button = button_role(QPushButton(), 'primary', size='large')
         self.go_button.setObjectName('quickSetupGo')
         self.go_button.setMinimumWidth(220)
@@ -1074,6 +1088,16 @@ class QuickSetupDialog(SpringDialog):
     def _explain_api_key(self) -> None:
         from .api_key_explainer import open_api_key_explainer
         open_api_key_explainer(self, offer_setup=False)
+
+    def reject(self) -> None:  # noqa: D401 - Qt override
+        """Esc, a click outside or Alt+F4 do not close a required first opening (2026-11-13)."""
+        # A recommended card is preselected before the person confirms it.
+        # Only accept() (the main button or detailed chooser) may close this.
+        if getattr(self, 'required', False):
+            if hasattr(self, 'go_button'):
+                self.go_button.setFocus()
+            return
+        super().reject()
 
     def _choose_custom(self) -> None:
         self.choice = 'custom'

@@ -342,13 +342,14 @@ class TimelineStrip(QWidget):
         painter.drawLine(QPointF(x, top), QPointF(x, bottom))
 
     def _zoom_lanes(self, painter, theme, palette, x0, width, z0, z1, y, rect):
+        from ..design.typography import weighted_font
         span = z1 - z0
         lane_h, gap = 28.0, 4.0
         labels = [tr("问题"), tr("卡顿"), tr("操作")]
         font = QFont(self.font())
         font.setPixelSize(11)
         bold = QFont(font)
-        bold.setBold(True)
+        weighted_font(bold, 700)
         metrics = QFontMetricsF(font)
 
         def zx(t):
@@ -509,6 +510,7 @@ class StepDelegate(QStyledItemDelegate):
         return QSize(300, 36 if data.get("marker") else (52 if data.get("chips") or data.get("issues") else 44))
 
     def paint(self, painter, option, index):
+        from ..design.typography import weighted_font
         data = index.data(STEP_ROLE) or {}
         theme = active_theme()
         palette = tones(theme)
@@ -559,7 +561,7 @@ class StepDelegate(QStyledItemDelegate):
         text_right = rect.right() - 10 - (chip_w + 8 if chips else 0)
         name_font = QFont(base)
         name_font.setPixelSize(14 if data.get("marker") else 13)
-        name_font.setBold(bool(data.get("marker") or data.get("tone", "ok") != "ok"))
+        weighted_font(name_font, 700 if bool(data.get("marker") or data.get("tone", "ok") != "ok") else 400)
         painter.setFont(name_font)
         name_metrics = QFontMetricsF(name_font)
         sub = data.get("sub", "")

@@ -19,7 +19,7 @@ APP = QApplication.instance() or QApplication([])
 
 
 @pytest.fixture
-def review(tmp_path):
+def review(tmp_path,monkeypatch):
     QSettings.setDefaultFormat(QSettings.IniFormat)
     QSettings.setPath(QSettings.IniFormat,QSettings.UserScope,str(tmp_path/'qt'))
     p = SubtitleProject(StudioMedia('',duration_ms=20000),cues=[
@@ -35,8 +35,9 @@ def review(tmp_path):
     w._standalone = _StandalonePage(p)
     w._bind_stack(w._standalone.session.undo_stack)
     w._build_rows(p,start_checks=False)
+    monkeypatch.setattr(w,'_schedule_local_checks',lambda *_a,**_k:None)
     w.stutter_toggle.setChecked(True)
-    for identity,span,original in [('you',(5,7),'有点'),('it',(0,1),'它'),('then',(0,1),'那'),('mixed',(0,1),'那')]:
+    for identity,span,original in [('you',(4,6),'有点'),('it',(0,1),'它'),('then',(0,1),'那'),('mixed',(0,1),'那')]:
         w._by_id[identity]['issues'] = [_issue('merge',span,original,'',checked=False)]
     w._by_id['mixed']['issues'].append(_issue('term',(3,5),'古龙','骨龙',checked=False))
     w._snapshot = snapshot_from_pairs([('古龙','骨龙')])
@@ -110,7 +111,7 @@ def test_applied_cleanup_stays_in_text_after_disable(review):
 def test_policy_classifies_the_actual_edit(text,span,old,new,kind,expected):
     issue = _issue(kind,span,old,new,checked=False)
     assert repetition_cleanup(issue,text) is expected
-    assert issue_enabled(issue,False,text) is (not expected)
+    assert issue_enabled(issue,False,text) is (not expected and bool(new))
 
 
 def test_late_local_callback_cannot_add_cleanup_while_disabled(review):
