@@ -183,11 +183,19 @@ def test_ai_page_late_results_manual_edit_and_edit_undo_are_rejected(review):
     w, p = review
     w.text_targets.mode.setCurrentIndex(1)
     w.text_targets.track.setCurrentIndex(w.text_targets.track.findData('translation-records:zh-Hans'))
+    from twobyteasr.glossary import multilingual_terms as m
+    from twobyteasr.glossary.translation_review import preview_language_correction
+    from twobyteasr.recognition.service import CancellationToken
+    concept = m.concept('Neuvillette', 'en')
+    concept['names']['zh-Hans'] = m.name_record('那维莱特', mistranslations=['那维来特'])
+    p.generation_metadata['translation_terminology'] = dict(enabled=True, selected_ids=['fixture'],
+        libraries=[dict(id='fixture', name='明确双语名称', concepts=[concept], terms=[])])
     w._snapshot = snapshot_from_pairs([('那维来特', '那维莱特')])
     entries = w._text_entries(p)
     texts = {e.key: e.text for e in entries}
     revisions = dict(st.translation_revisions(p))
-    result = preview_glossary_correction(review_project(p, entries), list(texts), w._snapshot, {}, use_ai=False)
+    result = preview_language_correction(p, entries, w._snapshot, {}, token=CancellationToken(), use_ai=False)
+    assert {hit.target.cue_id for hit in result.hits} == {'source-a', 'source-b'}
     before, _ = st.set_manual(p, 'source-a', '手动新译文')
     st.restore_snapshot(p, before)
     w._show_result(result, p, True, texts, revisions_at_run=revisions)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import re
+import sys
 
 from ..caption_style.font_system import SOURCE_HAN_FAMILY_ALIASES
 
@@ -150,6 +151,13 @@ def _declarations(body: str) -> str:
     if weight is None:
         return body
     family = _FAMILY.search(body)
+    first = family.group(1).split(",")[0].strip().strip("'\"").casefold() if family else ""
+    # CoreText groups Medium and Heavy under one family. At 600 its nearest
+    # real face is Medium (500); request the bundled Heavy's actual 900 weight.
+    ui_face = not family or first in _BODY_FAMILIES or first in {n.casefold() for n in TITLE_FONT_FAMILIES}
+    if sys.platform == "darwin" and weight >= EMPHASIS_WEIGHT and ui_face:
+        body = _WEIGHT.sub(lambda m: m.group(0).replace(m.group(1), "900"), body)
+        family = _FAMILY.search(body)
     stack = TITLE_FONT_STACK if weight >= EMPHASIS_WEIGHT else UI_FONT_STACK
     if family is None:
         end = len(body.rstrip())

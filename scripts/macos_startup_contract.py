@@ -9,9 +9,10 @@ from pathlib import Path
 
 def probe(app: Path, profile: Path, log: Path, *, finder: bool, environment: dict, cwd: Path) -> dict:
     output=profile/'startup-smoke'
-    env=dict(environment, TWOBYTEASR_TEST_ROOT=str(profile))
+    env=dict(environment, TWOBYTEASR_TEST_ROOT=str(profile), TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1')
     command=(["/usr/bin/open","-n","-W","--env","PATH="+env['PATH'],
-              "--env","TWOBYTEASR_TEST_ROOT="+str(profile),str(app),"--args"]
+              "--env","TWOBYTEASR_TEST_ROOT="+str(profile),
+              "--env","TWOBYTEASR_SKIP_FIRST_RUN_WIZARD=1",str(app),"--args"]
              if finder else [str(app/'Contents/MacOS/2ByteASR')])
     command += ['--macos-startup-smoke',str(output)]
     record=dict(passed=False,route='launch-services' if finder else 'relocated-executable',

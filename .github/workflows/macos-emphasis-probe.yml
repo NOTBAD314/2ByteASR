@@ -1,0 +1,29 @@
+name: Native CoreText emphasis probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-font:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - name: Install pinned Qt only and run real font controls
+        run: |
+          python -m venv "$RUNNER_TEMP/font-runtime"
+          "$RUNNER_TEMP/font-runtime/bin/python" -m pip install PySide6==6.9.2
+          "$RUNNER_TEMP/font-runtime/bin/python" scripts/verify_macos_emphasis.py --output "$RUNNER_TEMP/tmp/font-control"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-font-control
+          path: ${{ runner.temp }}/tmp/font-control/
+          retention-days: 1
+          if-no-files-found: error
