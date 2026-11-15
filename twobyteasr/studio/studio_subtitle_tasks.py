@@ -146,7 +146,11 @@ class StudioSubtitleTaskMixin:
         cue_id = next((key for key in row.get('output_ids', row.get('cue_ids', ())) if key in existing), '')
         if cue_id:
             self.select_cue(cue_id)
-            self._seek(int(row.get('start_ms') or 0) / 1000.)
+            if task.kind == '字词对齐':
+                current=next((cue for cue in self.project.cues if cue.id==cue_id),None)
+                self._seek(current.start_ms/1000. if current is not None else int(row.get('start_ms') or 0)/1000.)
+            else:
+                self._seek(int(row.get('start_ms') or 0) / 1000.)
             if getattr(task, 'result', None) is not None:
                 self._show_reasr_result(task.result)
 
@@ -159,6 +163,10 @@ class StudioSubtitleTaskMixin:
             self.run_sentence_refine(whole_project=False, retry_ids=ids)
         elif task.kind == '单条重新识别' and ids:
             self._reasr_current(cue_id=ids[0])
+        elif task.kind == '字词对齐':
+            self._subtitle_task_panel().hide()
+            from .studio_realign import start_realign
+            start_realign(self,ids)
         elif task.kind == '工程重新识别':
             self._subtitle_task_panel().hide()
             self._open_recognition_sheet()

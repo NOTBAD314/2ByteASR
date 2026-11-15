@@ -8,20 +8,26 @@ stand out; a click on the bunny makes it say something about subtitles and
 video encoding, or just something friendly.
 
 Marks in a tutorial line: ``**control**`` in the accent colour (as before),
-``==what matters==`` on a bright marker. Characters not typed yet stay in
-the text, transparent, so lines never re-wrap while the words appear.
+``==what matters==`` on a bright marker. 2026-11-14 (「问问兔白」, user: jokes,
+different sizes and shaking words): ``~~struck words~~`` crossed out,
+``^^big^^``, ``__small__`` (a whisper) and ``%%shaking%%`` (drawn by
+``MarkedLabel``). Characters not typed yet stay in the text, transparent, so
+lines never re-wrap while the words appear.
 """
 from __future__ import annotations
 
 import html
+import math
 import random
 import re
 import time
 from functools import lru_cache
 
-from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
+from PySide6.QtCore import QIODevice, QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import QLabel
 
-MARK = re.compile(r'(\*\*|==)')
+MARK = re.compile(r'(\*\*|==|~~|\^\^|__|%%)')
+_STYLE_OF = {'**': 'em', '==': 'hi', '~~': 'del', '^^': 'big', '__': 'small', '%%': 'shake'}
 PAUSES = {**dict.fromkeys('，、；：,;:', 110), **dict.fromkeys('。！？!?…', 200)}
 QUIET = set(' \t\n，、；：,;:。！？!?…「」『』“”"\'()（）[]【】<>《》·-—/／+→0123456789')
 
@@ -71,13 +77,12 @@ def plain(text: str) -> str:
 
 
 def marked_segments(text: str) -> list[tuple[str, str]]:
-    """``[(words, style)]``; style is '' (plain), 'em' (**…**) or 'hi' (==…==)."""
+    """``[(words, style)]``; style is '' (plain), 'em' (**…**), 'hi' (==…==), 'del' (~~…~~),
+    'big' (^^…^^), 'small' (__…__) or 'shake' (%%…%%)."""
     segments, style = [], ''
     for part in MARK.split(str(text)):
-        if part == '**':
-            style = '' if style == 'em' else 'em'
-        elif part == '==':
-            style = '' if style == 'hi' else 'hi'
+        if part in _STYLE_OF:
+            style = '' if style == _STYLE_OF[part] else _STYLE_OF[part]
         elif part:
             segments.append((part, style))
     return segments
@@ -95,15 +100,87 @@ def marker_colors(theme) -> dict:
                 mark_text='#4a3300' if light else '#2a1c00')
 
 
-def segments_html(segments, colors: dict, shown: int | None = None) -> str:
-    """Rich text for the first ``shown`` characters (all when None); the rest is kept, transparent."""
-    out, left = [], (10 ** 9 if shown is None else max(0, int(shown)))
+WORD_JOINER = '⁠'
+_KEEP_MARKED = 8             # a marked run up to this long never breaks inside
+_KEEP_WORD = 6               # nor a word up to this long
+_words_ready = None
+
+
+def warm_words() -> None:
+    """Load jieba's dictionary off the GUI thread (about 0.8 s the first time)."""
+    global _words_ready
+    if _words_ready is not None:
+        return
+    import threading
+    _words_ready = threading.Event()
+
+    def load():
+        try:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                import jieba
+                jieba.setLogLevel(60)
+                jieba.initialize()
+        except Exception:  # noqa: BLE001 - without jieba only marked runs stay whole
+            pass
+        finally:
+            _words_ready.set()
+    threading.Thread(target=load, name='bunny-words', daemon=True).start()
+
+
+@lru_cache(maxsize=256)
+def _joints(plain_text: str, marked_runs: tuple) -> frozenset:
+    """Positions after which a line must not break (2026-11-14, user: words cut in half look bad).
+
+    Inside a Chinese word that jieba finds (新手|引导, 显卡, 时间轴) and inside a short marked run
+    (**新手引导**). Qt's line breaker honours U+2060 WORD JOINER; ``white-space: nowrap`` it does not.
+    """
+    joints = set()
+    for start, end in marked_runs:
+        if 1 < end - start <= _KEEP_MARKED:
+            joints.update(range(start, end - 1))
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            import jieba
+            jieba.setLogLevel(60)
+            words = jieba.lcut(plain_text)
+    except Exception:  # noqa: BLE001
+        words = []
+    at = 0
+    for word in words:
+        if 1 < len(word) <= _KEEP_WORD and not word.isspace():
+            joints.update(range(at, at + len(word) - 1))
+        at += len(word)
+    return frozenset(joints)
+
+
+def segments_html(segments, colors: dict, shown: int | None = None, keep_words: bool = False) -> str:
+    """Rich text for the first ``shown`` characters (all when None); the rest is kept, transparent.
+
+    ``keep_words``: words and short marked runs never break across lines (「问问兔白」 bubbles).
+    """
+    joints = frozenset()
+    if keep_words:
+        runs, at = [], 0
+        for words, style in segments:
+            if style:
+                runs.append((at, at + len(words)))
+            at += len(words)
+        joints = _joints(''.join(words for words, _style in segments), tuple(runs))
+    out, left, position = [], (10 ** 9 if shown is None else max(0, int(shown))), 0
     for words, style in segments:
         visible, hidden = words[:left], words[left:]
         left -= len(visible)
         for chunk, seen in ((visible, True), (hidden, False)):
             if not chunk:
                 continue
+            start, position = position, position + len(chunk)
+            if joints:
+                chunk = ''.join(char + (WORD_JOINER if start + index in joints else '')
+                                for index, char in enumerate(chunk))
             safe = html.escape(chunk)
             if style == 'em':
                 color = colors['accent'] if seen else 'transparent'
@@ -114,13 +191,206 @@ def segments_html(segments, colors: dict, shown: int | None = None) -> str:
                                f' font-weight:700;">{safe}</span>')
                 else:
                     out.append(f'<span style="color:transparent; font-weight:700;">{safe}</span>')
+            elif style == 'del':
+                # The line takes the text colour, so words not typed yet carry an invisible line too.
+                # ``StrikeLabel`` draws it itself where the font's own line is too thin to see.
+                color = '' if seen else ' color:transparent;'
+                out.append(f'<span style="{STRIKE_CSS}{color}">{safe}</span>')
+            elif style == 'big':
+                color = '' if seen else ' color:transparent;'
+                out.append(f'<span style="font-size:x-large; font-weight:700;{color}">{safe}</span>')
+            elif style == 'small':
+                color = '' if seen else ' color:transparent;'
+                out.append(f'<span style="font-size:small;{color}">{safe}</span>')
+            elif style == 'shake':
+                # ``MarkedLabel`` paints these itself, trembling; any other label shows them bold.
+                out.append(f'<span style="{SHAKE_SEEN if seen else SHAKE_HIDDEN}">{safe}</span>')
             else:
                 out.append(safe if seen else f'<span style="color:transparent;">{safe}</span>')
     return ''.join(out)
 
 
-def marked_html(text: str, colors: dict) -> str:
-    return segments_html(marked_segments(text), colors)
+def marked_html(text: str, colors: dict, keep_words: bool = False) -> str:
+    return segments_html(marked_segments(text), colors, keep_words=keep_words)
+
+
+def _layout_lines(doc) -> list:
+    out = []
+    block = doc.begin()
+    while block.isValid():
+        layout = block.layout()
+        out += [(layout.lineAt(i).textStart(), layout.lineAt(i).textLength()) for i in range(layout.lineCount())]
+        block = block.next()
+    return out
+
+
+def balanced_width(rich_text: str, font, max_width: int) -> int:
+    """The narrowest width that keeps ``rich_text`` on as few lines as ``max_width`` allows (2026-11-14).
+
+    User: lines broke oddly, with a last line of only two characters. Wrapping at the widest
+    width fills every line but the last; this shrinks the box until one more line would be
+    needed, so the lines come out about even and nothing is left dangling.
+    """
+    from PySide6.QtGui import QTextDocument
+    doc = QTextDocument()
+    doc.setDefaultFont(font)
+    doc.setDocumentMargin(0)
+    doc.setHtml(rich_text)
+    doc.setTextWidth(-1)
+    natural = math.ceil(doc.idealWidth())
+    if natural <= max_width:
+        return max(1, natural)
+    doc.setTextWidth(max_width)
+    lines = len(_layout_lines(doc))
+    low, high = max(1, max_width // max(1, lines) - 1), max_width
+    while low < high:
+        middle = (low + high) // 2
+        doc.setTextWidth(middle)
+        if len(_layout_lines(doc)) > lines:
+            low = middle + 1
+        else:
+            high = middle
+    doc.setTextWidth(low)
+    return min(max_width, math.ceil(doc.idealWidth()) + 1)
+
+
+STRIKE_CSS = 'text-decoration:line-through;'
+# Shaking words carry an overline in the source only, to be found again in the laid-out text;
+# the label shows them transparent (keeping their place) and paints them itself, jittering.
+SHAKE_SEEN = 'text-decoration:overline; font-weight:700;'
+SHAKE_HIDDEN = SHAKE_SEEN + ' color:transparent;'
+_SHAKE_SHOWN = 'font-weight:700; color:transparent;'
+
+
+class MarkedLabel(QLabel):
+    """A rich-text label that draws ``~~crossed out~~`` and ``%%shaking%%`` words itself (2026-11-14).
+
+    Crossed out: on Windows the bundled Source Han Sans reports a strike-out line about 0.6 px
+    thick and Qt's own line does not show at all (it does offscreen, through FreeType), so the
+    label paints a line of a readable thickness across the same words. Shaking: rich text cannot
+    move single characters, so those words are shown transparent and painted here with a small
+    jitter while the label is visible. Both are placed with a QTextDocument laid out like the
+    label's own text; words not typed yet (transparent) get neither, so they follow the typing.
+    """
+
+    SHAKE_MS = 40
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.source_html = ''
+        self._shake = QTimer(self)
+        self._shake.setInterval(self.SHAKE_MS)
+        self._shake.timeout.connect(self.update)
+        self._started = time.perf_counter()
+
+    def setText(self, text):  # noqa: N802 - Qt override
+        self.source_html = str(text)
+        shown = self.source_html.replace(STRIKE_CSS, '').replace(SHAKE_HIDDEN, _SHAKE_SHOWN)
+        super().setText(shown.replace(SHAKE_SEEN, _SHAKE_SHOWN))
+        self._sync_shake()
+
+    def _sync_shake(self):
+        from ..design.ui_motion import reduced_motion
+        wanted = SHAKE_SEEN in self.source_html and self.isVisible() and not reduced_motion()
+        if wanted and not self._shake.isActive():
+            self._shake.start()
+        elif not wanted:
+            self._shake.stop()
+
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._sync_shake()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt override
+        super().hideEvent(event)
+        self._shake.stop()
+
+    def _runs(self):
+        """(strikes [(x1, x2, y)], shaking characters [(char, x, baseline, font)]) in label coordinates."""
+        strikes, shakes = [], []
+        if STRIKE_CSS not in self.source_html and SHAKE_SEEN not in self.source_html:
+            return strikes, shakes
+        from PySide6.QtGui import QTextDocument
+        rect = self.contentsRect()
+        margin = self.margin()
+        doc = QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setDocumentMargin(0)
+        doc.setHtml(self.source_html)
+        doc.setTextWidth(max(1, rect.width() - 2 * margin) if self.wordWrap() else -1)
+        left, top = rect.x() + margin, rect.y() + margin
+        block = doc.begin()
+        while block.isValid():
+            layout = block.layout()
+            origin = doc.documentLayout().blockBoundingRect(block).topLeft()
+            text = block.text()
+            it = block.begin()
+            while not it.atEnd():
+                fragment = it.fragment()
+                fmt = fragment.charFormat()
+                struck, shaking = fmt.fontStrikeOut(), fmt.fontOverline()
+                if (struck or shaking) and fmt.foreground().color().alpha() > 0:
+                    start = fragment.position() - block.position()
+                    end = start + fragment.length()
+                    font = fmt.font().resolve(self.font())
+                    font.setOverline(False)
+                    for index in range(layout.lineCount()):
+                        line = layout.lineAt(index)
+                        a, b = max(start, line.textStart()), min(end, line.textStart() + line.textLength())
+                        if a >= b:
+                            continue
+                        if struck:
+                            x1, _ = line.cursorToX(a)
+                            x2, _ = line.cursorToX(b)
+                            strikes.append((left + origin.x() + x1, left + origin.x() + x2,
+                                            top + origin.y() + line.y() + line.ascent() * 0.62))
+                        if shaking:
+                            baseline = top + origin.y() + line.y() + line.ascent()
+                            for position in range(a, b):
+                                x, _ = line.cursorToX(position)
+                                shakes.append((text[position], left + origin.x() + x, baseline, font))
+                it += 1
+            block = block.next()
+        return strikes, shakes
+
+    def strike_lines(self) -> list:
+        return self._runs()[0]
+
+    def shaking_chars(self) -> list:
+        return self._runs()[1]
+
+    def paintEvent(self, event):  # noqa: N802 - Qt override
+        super().paintEvent(event)
+        strikes, shakes = self._runs()
+        if not strikes and not shakes:
+            return
+        import math
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QPainter, QPen
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        color = self.palette().color(self.foregroundRole())
+        size = self.font().pixelSize() if self.font().pixelSize() > 0 else 15
+        if shakes:
+            painter.setPen(color)
+            moving = self._shake.isActive()
+            t = time.perf_counter() - self._started
+            amp = max(1.0, size / 11.0)
+            for index, (char, x, baseline, font) in enumerate(shakes):
+                dx = math.sin(t * 29 + index * 1.7) * amp * 0.6 if moving else 0.0
+                dy = math.cos(t * 34 + index * 2.3) * amp if moving else 0.0
+                painter.setFont(font)
+                painter.drawText(QPointF(x + dx, baseline + dy), char)
+        if strikes:
+            pen = QPen(color, max(1.5, size / 8.0))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            for x1, x2, y in strikes:
+                painter.drawLine(QPointF(x1, y), QPointF(x2, y))
+
+
+StrikeLabel = MarkedLabel   # the name it had for a day
 
 
 def char_delay(char: str) -> int:
@@ -157,6 +427,27 @@ SYLLABLE_S = 0.072
 SOFT_TOP_HZ = 3200.0                      # harmonics above this are softened
 LOUDNESS = 0.075                          # RMS of one syllable
 
+# 2026-11-14 (「问问兔白」, user: every click sounded the same short blip; the voice should follow her
+# mood and the words): (semitones, length factor, extra glide, vibrato depth, loudness factor).
+# '' is the tutorial's voice, unchanged.
+VOICE_MOODS = {
+    '': (0, 1.0, 0.0, 0.0, 1.0),
+    'happy': (2, 0.95, 0.05, 0.0, 1.05),
+    'excited': (4, 0.86, 0.09, 0.0, 1.12),
+    'teasing': (1, 1.0, 0.12, 0.0, 1.0),
+    'surprised': (5, 0.92, 0.14, 0.0, 1.12),
+    'thinking': (-1, 1.12, -0.04, 0.0, 0.9),
+    'sorry': (-3, 1.16, -0.1, 0.0, 0.85),
+    'shy': (1, 0.9, 0.0, 0.0, 0.7),
+    'comfort': (-2, 1.2, -0.05, 0.0, 0.85),
+    # the words themselves: **bold** / ==marker==, ^^big^^, __whisper__, %%trembling%%
+    'bright': (1, 1.0, 0.04, 0.0, 1.18),
+    'big': (3, 1.12, 0.06, 0.0, 1.32),
+    'whisper': (-1, 0.92, -0.02, 0.0, 0.5),
+    'tremble': (3, 1.05, 0.0, 0.045, 1.05),
+}
+STYLE_VOICE = {'em': 'bright', 'hi': 'bright', 'big': 'big', 'small': 'whisper', 'shake': 'tremble'}
+
 
 def _resonance(f, F, B):
     x = f / F
@@ -164,20 +455,24 @@ def _resonance(f, F, B):
 
 
 @lru_cache(maxsize=None)
-def syllable_pcm(consonant: str, vowel: str, spread: int = 2, glide: int = 2) -> bytes:
-    """One babble syllable as 48 kHz stereo int16 PCM (b'' without numpy)."""
+def syllable_pcm(consonant: str, vowel: str, spread: int = 2, glide: int = 2, mood: str = '') -> bytes:
+    """One babble syllable as 48 kHz stereo int16 PCM (b'' without numpy); ``mood``: a ``VOICE_MOODS`` key."""
     try:
         import numpy as np
     except Exception:  # noqa: BLE001
         return b''
     locus, f1_factor, onset_ms = CONSONANTS.get(consonant, CONSONANTS[''])
     rng = np.random.default_rng([ord(c) for c in consonant + vowel] + [spread, glide])   # the same every run
-    n = int(RATE * SYLLABLE_S)
+    semitones, stretch, bend, vibrato, loud = VOICE_MOODS.get(mood, VOICE_MOODS[''])
+    length = SYLLABLE_S * stretch
+    n = int(RATE * length)
     t = np.arange(n) / RATE
-    start = BASE_HZ * 2 ** (SPREAD[spread % len(SPREAD)] / 12)
-    end = start * (1 + GLIDES[glide % len(GLIDES)])
-    k = t / SYLLABLE_S
+    start = BASE_HZ * 2 ** ((SPREAD[spread % len(SPREAD)] + semitones) / 12)
+    end = start * (1 + GLIDES[glide % len(GLIDES)] + bend)
+    k = t / length
     f0 = start + (end - start) * (k * k * (3 - 2 * k))
+    if vibrato:
+        f0 = f0 * (1 + vibrato * np.sin(2 * np.pi * 19.0 * t))
     f0 = f0 * (1 + 0.004 * rng.standard_normal(n).cumsum() / np.sqrt(np.arange(1, n + 1)))   # a little life
     target = [f * FORMANT_SCALE for f in VOWELS[vowel]]
     move = np.clip((t - onset_ms / 1000) / 0.022, 0, 1) ** 0.8
@@ -197,8 +492,8 @@ def syllable_pcm(consonant: str, vowel: str, spread: int = 2, glide: int = 2) ->
     freqs = np.fft.rfftfreq(n, 1 / RATE)
     breath = np.fft.irfft(noise * np.exp(-((freqs - 2460) / 1800) ** 2), n)
     voice += 0.04 * breath / (np.max(np.abs(breath)) + 1e-9)
-    voice *= np.clip((t - onset_ms / 1000) / 0.007, 0, 1) * np.clip((SYLLABLE_S - t) / 0.022, 0, 1) ** 1.4
-    voice *= LOUDNESS / (np.sqrt(np.mean(voice ** 2)) + 1e-9)
+    voice *= np.clip((t - onset_ms / 1000) / 0.007, 0, 1) * np.clip((length - t) / 0.022, 0, 1) ** 1.4
+    voice *= LOUDNESS * loud / (np.sqrt(np.mean(voice ** 2)) + 1e-9)
     mono = (np.clip(voice, -0.95, 0.95) * 32767).astype('<i2')
     return np.repeat(mono, 2).tobytes()
 
@@ -327,8 +622,10 @@ class MascotVoice(QObject):
         consonant = '' if lower in self.VOWELS else names[(code >> 3) % len(names)].strip()
         return consonant, vowel, (code >> 7) % len(SPREAD), (code >> 11) % len(GLIDES)
 
-    def say(self, char: str) -> bool:
-        """A syllable for ``char`` (punctuation and spaces are silent); True when one starts."""
+    def say(self, char: str, mood: str = '') -> bool:
+        """A syllable for ``char`` (punctuation and spaces are silent); True when one starts.
+
+        ``mood`` (「问问兔白」): a ``VOICE_MOODS`` key; '' is the tutorial's voice."""
         if not char or char in QUIET:
             return False
         now = time.perf_counter()
@@ -337,7 +634,7 @@ class MascotVoice(QObject):
         self._last = now
         if not self.enabled:
             return True   # the mouth still moves
-        pcm = syllable_pcm(*self.syllable_for(char))
+        pcm = syllable_pcm(*self.syllable_for(char), mood if mood in VOICE_MOODS else '')
         if pcm and self._output() is not None:
             self._stream.push(pcm)
         return True
@@ -349,6 +646,7 @@ class Typewriter(QObject):
     """Types marked lines into labels, one character at a time; ``spoke`` fires per syllable."""
 
     spoke = Signal(str)
+    spoke_marked = Signal(str, str)   # the character and the mark it is in ('' plain, 'em', 'big'...)
     finished = Signal()
 
     def __init__(self, parent=None):
@@ -360,6 +658,9 @@ class Typewriter(QObject):
         self._colors = {}
         self._index = 0
         self._shown = 0
+        self.keep_words = False   # 「问问兔白」: words never break across lines
+        self.pace = 1.0           # 「问问兔白」: slower for long (sad, gentle) syllables, so sound and words stay together
+        self._styles = []
 
     @property
     def running(self) -> bool:
@@ -370,10 +671,11 @@ class Typewriter(QObject):
         self.stop()
         self._colors = colors
         self._parts = [[label, marked_segments(text), plain(text)] for label, text in parts if text]
+        self._styles = [[style for words, style in segments for _char in words] for _label, segments, _c in self._parts]
         self._index = 0
         self._shown = 0
         for label, segments, _chars in self._parts:
-            label.setText(segments_html(segments, colors, 0))
+            label.setText(segments_html(segments, colors, 0, keep_words=self.keep_words))
 
     def start(self) -> None:
         if self.running and not self._timer.isActive():
@@ -393,9 +695,11 @@ class Typewriter(QObject):
             return
         char = chars[self._shown]
         self._shown += 1
-        label.setText(segments_html(segments, self._colors, self._shown))
+        label.setText(segments_html(segments, self._colors, self._shown, keep_words=self.keep_words))
         self.spoke.emit(char)
-        self._timer.start(char_delay(char))
+        styles = self._styles[self._index] if self._index < len(self._styles) else []
+        self.spoke_marked.emit(char, styles[self._shown - 1] if self._shown - 1 < len(styles) else '')
+        self._timer.start(max(20, round(char_delay(char) * self.pace)))
 
     def finish(self) -> None:
         """Everything at once (a click on the words, a window resize)."""
@@ -404,7 +708,7 @@ class Typewriter(QObject):
         self._timer.stop()
         was_running = self.running
         for label, segments, _chars in self._parts:
-            label.setText(segments_html(segments, self._colors))
+            label.setText(segments_html(segments, self._colors, keep_words=self.keep_words))
         self._index = len(self._parts)
         if was_running:
             self.finished.emit()
@@ -426,5 +730,5 @@ def speaking_ms(text: str) -> int:
     return sum(char_delay(char) for char in str(text))
 
 
-__all__ = ['CHAT_LINES', 'GREETING', 'MascotVoice', 'Typewriter', 'marked_html', 'marked_segments',
+__all__ = ['CHAT_LINES', 'GREETING', 'STYLE_VOICE', 'VOICE_MOODS', 'MascotVoice', 'Typewriter', 'marked_html', 'marked_segments',
            'marker_colors', 'next_chat_line', 'plain', 'segments_html', 'syllable_pcm', 'voice_enabled']

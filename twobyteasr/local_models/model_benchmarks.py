@@ -699,7 +699,7 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
             ["https://huggingface.co/facebook/omniASR-LLM-7B"]),
         "unsupported": {}, "gap": "",
     },
-    ("qwen_aligner", "accuracy"): {
+    ("qwen_official_compat", "accuracy"): {
         "scenes": {
             "align": _ref(100, "direct", "Qwen 官方同表",
                 "AAS 中文 33.1ms，同表最佳（NFA 109.8 / Monotonic-Aligner 161.1）",
@@ -710,7 +710,7 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
         "unsupported": {},
         "gap": "非从零转写模型：准确度不适用（对齐模型）",
     },
-    ("qwen_aligner", "speed"): {
+    ("qwen_official_compat", "speed"): {
         "scenes": {},
         "default": None, "unsupported": {},
         "gap": "无公开对齐速度数据（AAS 表未含吞吐）",

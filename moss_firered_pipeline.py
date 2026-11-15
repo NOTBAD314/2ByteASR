@@ -702,8 +702,11 @@ def check_runtime(legacy):
                 (legacy.FIRERED_MODEL_DIR, "FireRedASR2-AED 模型"),
             ]
         )
-    elif legacy.FIRERED_ASR_BACKEND == "qwen_aligner":
+    elif legacy.FIRERED_ASR_BACKEND in {"qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"}:
         required.append((legacy.resolve_qwen_aligner_local_source(), "Qwen3 ForcedAligner 模型"))
+        if legacy.FIRERED_ASR_BACKEND == 'qwen_ultra_head':
+            from twobyteasr.recognition.alignment_backend import head_directory
+            required.append((head_directory() or '', 'Ultra Local Head（需在模型工坊准备）'))
     elif legacy.FIRERED_ASR_BACKEND == "mlx_qwen_aligner":
         from twobyteasr.recognition.mlx_backend import ALIGNER_KEY, model_dir as mlx_model_dir
         required.append((str(mlx_model_dir(ALIGNER_KEY) or "MLX Qwen3-ForcedAligner（未安装）"), "MLX Qwen3 ForcedAligner 模型"))
@@ -762,8 +765,11 @@ def check_runtime(legacy):
         verify_model_files("firered_vad", resolve_model_dir("FireRedVAD"))
     if legacy.FIRERED_ASR_BACKEND == "local":
         verify_model_files("firered_aed", legacy.FIRERED_MODEL_DIR)
-    elif legacy.FIRERED_ASR_BACKEND == "qwen_aligner":
-        verify_model_files("qwen_aligner", legacy.resolve_qwen_aligner_local_source())
+    elif legacy.FIRERED_ASR_BACKEND in {"qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"}:
+        verify_model_files("qwen_ultra_aligner" if legacy.FIRERED_ASR_BACKEND in {"qwen_ultra_aligner", "qwen_ultra_head"} else "qwen_aligner", legacy.resolve_qwen_aligner_local_source())
+        if legacy.FIRERED_ASR_BACKEND == 'qwen_ultra_head':
+            from twobyteasr.recognition.alignment_backend import head_directory
+            verify_model_files('qwen_ultra_head', head_directory() or '')
     elif legacy.FIRERED_ASR_BACKEND == "whisper_turbo":
         verify_model_files("whisper_turbo", legacy.resolve_whisper_local_source())
     elif legacy.FIRERED_ASR_BACKEND == "paraformer":
@@ -4445,6 +4451,9 @@ def process_media(
     def run_firered_stage():
         audit_branch("firered")
         timeline_backend = str(getattr(legacy, "FIRERED_ASR_BACKEND", "local"))
+        requested_aligner_backend = timeline_backend
+        if timeline_backend in {"qwen_ultra_aligner", "qwen_ultra_head"}:
+            timeline_backend = "qwen_aligner"
         if timeline_backend == "mlx_qwen_aligner":
             # Same aligner and receipts; run_qwen_aligner_worker routes it to MLX.
             timeline_backend = "qwen_aligner"
@@ -4483,8 +4492,8 @@ def process_media(
             if use_mfa:
                 from twobyteasr.recognition import mfa_aligner as _mfa
             return _run_audited_model_stage(
-                legacy, model_id="mfa_aligner" if use_mfa else "qwen_aligner", role="timeline_alignment",
-                backend="mfa_aligner" if use_mfa else timeline_backend, media_path=media_path,
+                legacy, model_id="mfa_aligner" if use_mfa else requested_aligner_backend if requested_aligner_backend in {"qwen_ultra_aligner", "qwen_ultra_head"} else "qwen_aligner", role="timeline_alignment",
+                backend="mfa_aligner" if use_mfa else requested_aligner_backend if requested_aligner_backend in {"qwen_ultra_aligner", "qwen_ultra_head"} else timeline_backend, media_path=media_path,
                 worker=_mfa.WORKER if use_mfa else paths["qwen_aligner_worker"],
                 runtime=str(_mfa.runtime_python() or "") if use_mfa else paths["main_python"],
                 runner=lambda: legacy.run_timed_stage(
@@ -4604,9 +4613,9 @@ def process_media(
             gate_worker = gate_runtime = ""
         return _run_audited_model_stage(
             legacy,
-            model_id="mfa_aligner" if mfa_selected else "firered" if timeline_backend == "local" else timeline_backend,
+            model_id="mfa_aligner" if mfa_selected else requested_aligner_backend if requested_aligner_backend in {"qwen_ultra_aligner", "qwen_ultra_head"} else "firered" if timeline_backend == "local" else timeline_backend,
             role="independent_text_and_timing" if timeline_backend == "local" else "timeline_alignment",
-            backend="mfa_aligner" if mfa_selected else timeline_backend,
+            backend="mfa_aligner" if mfa_selected else requested_aligner_backend if requested_aligner_backend in {"qwen_ultra_aligner", "qwen_ultra_head"} else timeline_backend,
             media_path=media_path,
             worker=gate_worker,
             runtime=gate_runtime,
@@ -5639,17 +5648,7 @@ def process_media(
         if snapped:
             print(f"   [{'中文切点' if chinese_aligned else '英语切点' if english_task else '日语切点'}] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
                   f"{sorted(c['old_ms'] - c['new_ms'] for c in snapped)[len(snapped) // 2]} ms）。")
-        # Line starts placed by the optional CTC aligner when they agree within
-        # 80 ms with an independent reference (aligner-measured start, else the
-        # current start). Ends are never taken from it.
-        from twobyteasr.recognition.ctc_alignment import apply_to_runtime_cues as refine_starts
-        refined = refine_starts(cues, shared_audio, legacy, fps=timeline_fps) if japanese_task else []  # the CTC model is Japanese-only
-        if japanese_task:
-            timing_ledger.checkpoint("ctc_starts", cues, reason="Japanese line starts from the CTC aligner (agreeing within 80 ms)",
-                                     receipts=refined)
-        if refined:
-            print(f"   [日语句首] {len(refined)} 条字幕的开头按 CTC 对齐模型校正（与参考相差 80 ms 内）。")
-        # Both refinements run after the frame quantizing and short-gap
+        # Pause refinements run after the frame quantizing and short-gap
         # bridging; put the result back under the same rules (2026-10-18:
         # a start moved 12 ms later showed a blank frame between two lines).
         legacy.relock_display_timing(cues, audio_seconds, timeline_fps, stage="after_word_refinements")

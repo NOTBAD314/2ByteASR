@@ -32,6 +32,26 @@ class SentenceRefineWorker(QThread):
 
             from ..diagnostics.event_log import context
             with context(**getattr(self,"_diagnostic",{})), process_action_scope("studio.sentence-refine"):
+                from ..subtitle_rules.segmentation_profiles import project_language_tag, measure
+                from ..subtitle_rules.sentence_refine_ranges import input_version
+                from ..recognition.cue_word_alignment import cue_words
+                original_state = copy.deepcopy(self._project.studio_state)
+                aligned = {}
+                from ..subtitle_rules.english_refine_constraints import effective_language
+                if effective_language([cue.text for cue in self._cues], project_language_tag(self._project)).split('-')[0] == 'en' and not self._project.studio_state.get('_refine_translation_projection'):
+                    missing = [cue.id for cue in self._cues if measure(cue.text,'en')>40 and not cue_words(self._project,cue)[0]]
+                    if missing and not self.isInterruptionRequested():
+                        for cue in self._cues:
+                            if cue.id in missing:
+                                self.progress.emit(dict(range_id=cue.id, cue_ids=[cue.id], phase='测量此条局部词时间', status='running'))
+                        try:
+                            from .studio_realign import measure as align, RealignWordsCommand
+                            results = align(self._project, missing, language='English', cancelled=self.isInterruptionRequested)
+                            aligned = RealignWordsCommand(self._project, results).after
+                            from ..timeline.studio_caption_timeline import KEY
+                            self._project.studio_state.setdefault(KEY, {}).setdefault('instances', {}).update(aligned)
+                        except Exception as exc:
+                            self._alignment_error = str(exc)[:300]
                 outcome = refine_cues_with_llm(
                     self._cues,
                     project=self._project,
@@ -40,6 +60,14 @@ class SentenceRefineWorker(QThread):
                     on_progress=self.progress.emit,
                     boundary_only=True,
                 )
+                outcome.alignment_receipts = aligned
+                # The task's input guard is the live pre-alignment state; new
+                # measured receipts only travel with accepted replacements.
+                self._project.studio_state = original_state
+                for unit in outcome.ranges:
+                    outcome.results[unit.cue.id]['input_version'] = input_version(unit.originals, self._project)
+                    if getattr(self, '_alignment_error', ''):
+                        outcome.results[unit.cue.id]['alignment_error'] = self._alignment_error
         except Exception as exc:  # LLM/网络/解析失败：保留原文，真实上报
             from ..diagnostics.event_log import emit, exception_info
             emit("background.failure",level="ERROR",result="failed",exception=exception_info(exc),**getattr(self,"_diagnostic",{}))
@@ -76,7 +104,9 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
         return [settings.get('models', {}), project_language_tag(self.project),
                 profile_for(project_language_tag(self.project)).fingerprint, custom_grouping_guidance(project_language_tag(self.project)),
                 list(self.project.glossary_ids), refine_glossary_snapshot(self.project).digest,
-                audio_graph_signature(self.project)[1:], self.project.media.path, self.project.media.duration_ms]
+                audio_graph_signature(self.project)[1:], self.project.media.path, self.project.media.duration_ms,
+                copy.deepcopy(self.project.styles), copy.deepcopy(self.project.style_recipes),
+                copy.deepcopy(self.project.render_settings), profile_for('en').fingerprint]
 
     def _mark_refined_cue_ids(self, cue_ids, *, configuration=None) -> None:
         if not self.project or not cue_ids:
@@ -132,6 +162,9 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
         if getattr(self, "_refine_worker", None) is not None and self._refine_worker.isRunning():
             bind_text(self.save_state, tr('AI 断句进行中…'))
             return
+        if getattr(self.timeline, 'active_subtitle_layer', 'original') == 'translation':
+            from .translation_sentence_refine import start
+            return start(self, whole_project=whole_project, retry_ids=retry_ids)
         cues = self._collect_refine_scope(whole_project)
         if retry_failed:
             failed = set((self.project.studio_state.get('ai_sentence_refine') or {}).get('failed_cue_ids', ()))
@@ -320,6 +353,10 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
         replacements = []
         planned = []
         kept_ids = []
+        replacement_project = copy.copy(self.project)
+        replacement_project.studio_state = copy.deepcopy(self.project.studio_state)
+        from ..timeline.studio_caption_timeline import KEY
+        replacement_project.studio_state.setdefault(KEY, {}).setdefault('instances', {}).update(outcome.alignment_receipts)
         for unit in outcome.ranges:
             record = dict(outcome.results[unit.cue.id])
             originals = [current.get(cue.id) for cue in unit.originals]
@@ -340,14 +377,17 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
                                   final_texts=[cue.text for cue in originals])
                     kept_ids.extend(cue.id for cue in originals)
                 else:
-                    replacement = build_range_replacement(unit, action, self.project, used_ids)
+                    replacement = build_range_replacement(unit, action, replacement_project, used_ids)
                     if not replacement:
                         raise RefineError('没有可写回的有效字幕，保留原文', 'writeback_error')
                     if ([(cue.text, cue.start_ms, cue.end_ms) for cue in replacement]
                             == [(cue.text, cue.start_ms, cue.end_ms) for cue in originals]):
-                        record.update(status='unchanged', phase='已校验，无需调整',
-                                      final_texts=[cue.text for cue in originals])
-                        kept_ids.extend(cue.id for cue in originals)
+                        if action.alignment_pending:
+                            record.update(status='applied', alignment_pending=True,
+                                phase='已有换行；仍待可靠词时间后拆条', final_texts=[cue.text for cue in originals])
+                        else:
+                            record.update(status='unchanged', phase='已校验，无需调整', final_texts=[cue.text for cue in originals])
+                            kept_ids.extend(cue.id for cue in originals)
                     else:
                         replacements.append((positions[originals[0].id], len(originals), replacement))
                         record.update(status='validated', phase='写回工程',
@@ -361,9 +401,9 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
         if replacements:
             try:
                 from ..timeline.sentence_refine_command import RefineCuesCommand
-                self.undo_stack.push(RefineCuesCommand(self.project, replacements, self._changed))
+                self.undo_stack.push(RefineCuesCommand(self.project, replacements, self._changed, receipt_project=replacement_project))
                 for record in planned:
-                    record.update(status='applied', phase='已校验并写回')
+                    record.update(status='applied', phase='已换行；等待可靠词时间后拆条' if record.get('alignment_pending') else '已校验并写回')
                     task.update(record)
             except Exception as exc:
                 for record in planned:
@@ -377,7 +417,7 @@ class StudioSentenceRefineMixin(StudioSubtitleTaskMixin):
         state.update(last_status='cancelled' if task.cancelled else 'partial' if failures else 'completed',
                      failed_cue_ids=failures, last_error=outcome.llm_error,
                      requests=outcome.requests, range_results=list(task.rows.values()), elapsed_seconds=task.elapsed)
-        processed = [*kept_ids, *(key for record in planned if record['status'] == 'applied'
+        processed = [*kept_ids, *(key for record in planned if record['status'] == 'applied' and not record.get('alignment_pending')
                                  for key in record.get('output_ids', ()))]
         self._mark_refined_cue_ids(processed, configuration=getattr(task, 'configuration', None))
         self.save_state.setText(task.summary() + ' · 点击任务进度查看详情')

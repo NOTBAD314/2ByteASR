@@ -121,3 +121,14 @@ Remotion4.0.513已回复：**所请求覆盖GPL下游的特殊豁免已拒绝**�
 - 模型（C，首次下载）：日语 CTC 对齐模型 `jonatasgrosman/wav2vec2-large-xlsr-53-japanese`（Apache-2.0，固定版本 `cf031e02…`；国内来源 ModelScope 固定提交 `18a6b597…`），模型卡原文见 `licenses/materials/models/ja_ctc_aligner/`，[模型表](licenses/MODELS.md)记录其基础模型与训练数据条款待核。
 
 这一节只登记新增组件及其原文；0.7.0 的公开分发结论与仍缺的对应源码材料见[分发状态](licenses/DISTRIBUTION-STATUS.md)。PR #2 贡献者已对其贡献的代码给予与作者相同的 Remotion/GSAP 附加许可（见 `PROJECT_LICENSE.md`）。这不表示组合已获法律核实。
+
+## Qwen3-ForcedAligner-Ultra and optional Local Head (2026-11-14)
+
+- Model repository: https://huggingface.co/17slever17/Qwen3-ForcedAligner-Ultra
+- Audited revision: 765dc1d714e4c80196782a5df5bfbcb3e1416736.
+- Base weights SHA256: e6fcf5be2c11b265f7217ba6102917a7fe64438506357be6999f6ad5a707cb5f.
+- Optional head weights SHA256: 50a70d6ed969446770fb9dc1063f5f4e6e4c86eac05fd3efb637492407d0e2ac.
+- The model repository declares Apache-2.0. Base and head are optional downloads in separate directories; original Qwen weights are not replaced or relabelled.
+- Optional Python companion qwen-fa-ultra 0.1.1 comes from the same revision. Its wheel and head/config/normalizer hashes are independently pinned in dependencies.lock.json. Its wheel contains no separate LICENSE file or License metadata; the upstream repository's Apache-2.0 declaration is the available licensing evidence. This distinction must remain visible in future distribution review.
+- 2ByteASR adapter code remains under this project's GPL-3.0-only license. The companion is loaded from its verified wheel in the external model worker; it is not vendored into the GUI. No CrispASR native/GGUF code is bundled by this integration.
+- qwen-asr remains pinned at 0.0.6. Local Head is experimental and does not inherit an accuracy guarantee from its source repository.

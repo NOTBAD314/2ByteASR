@@ -36,7 +36,7 @@ def settings_summary(window):
     result={"models":{k:scalar(models.get(k),k) for k in allowed},
             "language":scalar(language.get("recognition_language"),'recognition_language'),
             "switches":{k:scalar(switches.get(k),k) for k in
-                        ("use_ai_grouping","use_ai_polish","subtitle_punctuation","use_ja_ctc_aligner")}}
+                        ("use_ai_grouping","use_ai_polish","subtitle_punctuation")}}
     if missing:result['_missing']=missing
     return result
 

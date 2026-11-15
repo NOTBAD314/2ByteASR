@@ -34,6 +34,9 @@ POLICIES={
     'numeric_patch':InputPolicy(6000,4096,12288,0,0,0,128_000),
     'visual_feedback':InputPolicy(8000,6000,16384,1,960,120_000,400_000),
     'general':InputPolicy(32768,16384,65536,3,768,160_000,1_500_000),
+    # 2026-11-16: 兔白's chat: a long fixed prefix (persona, tools, manual; cached by the provider) plus a
+    # few turns. Text only; DeepSeek's context is far larger than this.
+    'bunny_chat':InputPolicy(49152,16384,98304,0,0,0,1_500_000),
     'polish':InputPolicy(20000,262144,32768,0,0,0,180_000),
     'domain_terms':InputPolicy(18000,8192,32768,0,0,0,160_000),
     # 联网词库更新：64 词条 × 全证据字段（sources/evidence）≈ 9-12k 输出；
@@ -98,7 +101,7 @@ def measure(messages,schema,max_tokens,operation,images,scope=None):
         payload_utf8_bytes=len(compact(messages).encode('utf8'))+schema_bytes,
         input_token_estimate=estimate,image_token_reserve=image_tokens,output_token_reserve=int(max_tokens),
         combined_token_reserve=estimate+int(max_tokens),token_method='ceil(text+schema UTF8/3) + conservative pixel tiles; not billing',
-        source_scope=scope or {'kind':'full_request' if operation in ('general','generate') else 'unspecified'})
+        source_scope=scope or {'kind':'full_request' if operation in ('general','generate','bunny_chat') else 'unspecified'})
 
 
 def prepare_input(messages, *, schema=None, max_tokens=3500, operation='general', scope=None, crops=None, comparison=False,

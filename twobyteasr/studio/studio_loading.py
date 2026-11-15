@@ -655,11 +655,20 @@ class StudioLoadingSession(QObject):
             self.destroyed.connect(self.view.deleteLater)
 
     def _record(self, event, **fields):
-        row = dict(event=event, generation=self.generation, elapsed_ms=round((time.perf_counter()-self.started)*1000, 3), **fields)
+        moment = time.perf_counter()
+        phase = fields.get('stage')
+        measured_phase = getattr(self, '_diagnostic_phase', None)
+        phase_started = getattr(self, '_diagnostic_phase_started', self.started)
+        phase_ms = round((moment-phase_started)*1000, 3)
+        if phase and phase != getattr(self, '_diagnostic_phase', None):
+            self._diagnostic_phase, self._diagnostic_phase_started = phase, moment
+        request_id = f'load-{id(self):x}-{self.generation}'
+        row = dict(event=event, generation=self.generation, elapsed_ms=round((moment-self.started)*1000, 3),
+                   phase_name=measured_phase, phase_elapsed_ms=phase_ms, **fields)
         self.events.append(row)
         from ..diagnostics.event_log import emit
         emit('studio.loading', result=event, component='studio_loading',
-             request_id=f'load-{id(self):x}-{self.generation}', **row)
+             operation_id=request_id, request_id=request_id, **row)
         self.changed.emit()
 
     def attach_surface(self, video):
@@ -845,6 +854,8 @@ class StudioLoadingSession(QObject):
         self.path = str(path or '')
         self.state, self.active = 'preparing', True
         self.started = time.perf_counter()
+        self._diagnostic_phase = None
+        self._diagnostic_phase_started = self.started
         self._elapsed_timer.start()
         self.completed = set()
         self.events.clear()

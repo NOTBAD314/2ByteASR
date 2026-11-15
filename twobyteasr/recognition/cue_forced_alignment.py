@@ -23,7 +23,10 @@ import bisect
 CUE_ALIGNMENT_PREFIX = "cue-align:"
 UNIT_FIELDS = ("text", "char_start", "char_end", "kind", "word_index", "raw_start_ms", "raw_end_ms",
                "start_ms", "end_ms", "start_basis", "end_basis", "start_p", "end_p",
-               "start_local", "end_local", "start_spread_ms", "end_spread_ms")
+               "start_local", "end_local", "start_spread_ms", "end_spread_ms",
+               "base_start_ms", "base_end_ms", "refined_start_ms", "refined_end_ms",
+               "refinement_status", "refinement_reason", "sample_id", "pass_id", "unit_id",
+               "start_slot", "end_slot", "posterior_available")
 WINDOW_PAD_MS = 300
 # Same-speaker cues closer than this share one alignment run.
 RUN_GAP_MS = 2 * WINDOW_PAD_MS
@@ -36,7 +39,7 @@ RUN_SEPARATOR = " "
 RUN_PAUSE_BREAK_MS = 700
 # Timelines that are forced aligners. FireRed, Paraformer and Whisper
 # timelines time Chinese characters themselves (and Qwen3 may be absent).
-ALIGNER_TIMELINES = frozenset({"qwen_aligner", "mlx_qwen_aligner", "mfa_aligner"})
+ALIGNER_TIMELINES = frozenset({"qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner"})
 
 
 def chinese_final_alignment(task_language, timeline_backend) -> bool:
@@ -73,10 +76,11 @@ def plan_runs(rows, *, pad_ms=WINDOW_PAD_MS):
     """
     order = sorted((row for row in rows if int(row["end_ms"]) > int(row["start_ms"]) and str(row["text"]).strip()),
                    key=lambda row: (int(row["start_ms"]), int(row["end_ms"])))
+    from .alignment_items import can_join
     runs = []
     for row in order:
         last = runs[-1] if runs else None
-        if (last and last["speaker"] == row["speaker"] and int(row["start_ms"]) - last["end_ms"] <= RUN_GAP_MS
+        if (last and can_join(last["members"][-1],row) and last["speaker"] == row["speaker"] and int(row["start_ms"]) - last["end_ms"] <= RUN_GAP_MS
                 and not row.get("break_before")
                 and len(last["members"]) < RUN_MAX_CUES and int(row["end_ms"]) - last["start_ms"] <= RUN_MAX_MS
                 and last['characters'] + len(str(row['text'])) + len(RUN_SEPARATOR) <= RUN_MAX_CHARACTERS):
@@ -166,10 +170,20 @@ def split_run_row(row, run, *, edge_shift_ms=0):
                                           int(member["end_ms"]) - edge_shift_ms)
         stats = dict(row.get("stats") or {})
         stats["run"] = {"members": len(run["members"]), "offset": start, "edge_pieces_split": crossing}
-        out.append({"text": row["text"][start:end], "segments": pieces,
+        part={"text": row["text"][start:end], "segments": pieces,
                     "stats": stats, "word_units": _units_in(row.get("word_units"), start, end),
                     "char_units": (_units_in(row.get("char_units"), start, end)
-                                   if row.get("char_units") is not None else None)})
+                                   if row.get("char_units") is not None else None)}
+        if row.get('measurement'):
+            from .alignment_measurements import sentence_measurement
+            valid=row.get('actual_measurement_range_ms') or [row.get('window_start_ms',0),row.get('window_end_ms',10**15)]
+            pm=sentence_measurement(part['text'],part['word_units'],part['char_units'],valid)
+            for side,eligible in [('start',start==0),('end',end==len(row['text']))]:
+                point=row['measurement']['accepted'][side]
+                if eligible and point['value_ms'] is not None:pm[side]=copy.deepcopy(point)
+            part['measurement']=dict(accepted=pm,primary=pm,state='complete' if all(p['value_ms'] is not None for p in pm.values()) else 'partial' if any(p['value_ms'] is not None for p in pm.values()) else 'unmeasured',
+                parent_original_text_span=[start,end],parent_measurement_source=row['measurement'].get('state'),old_model_fallback=row['measurement'].get('old_model_fallback',False))
+        out.append(part)
     return out
 
 
@@ -221,6 +235,8 @@ def alignment_jobs(cues, *, language="Japanese", pad_ms=WINDOW_PAD_MS, speech_re
              "end_ms": int(round(float(getattr(cue, "end", 0.0)) * 1000)),
              "speaker": str(getattr(cue, "speaker", "") or "S00"), "text": str(getattr(cue, "text", "") or "")}
             for index, cue in enumerate(cues, 1)]
+    from .alignment_items import annotate_row,run_provenance
+    rows=[dict(annotate_row(r,getattr(c,'source_spans',None)),source_clock_verified=True) for r,c in zip(rows,cues)]
     if speech_regions:
         speech = _SpeechIntervals(speech_regions)
         ordered = sorted(rows, key=lambda row: (row["start_ms"], row["end_ms"]))
@@ -230,7 +246,7 @@ def alignment_jobs(cues, *, language="Japanese", pad_ms=WINDOW_PAD_MS, speech_re
                 right["break_before"] = speech.longest_silence(middle, right["start_ms"] + 150) >= RUN_PAUSE_BREAK_MS
     runs = plan_runs(rows, pad_ms=pad_ms)
     jobs = [{"id": f"run-{number}", "window_start_ms": run["window_start_ms"], "window_end_ms": run["window_end_ms"],
-             "text": run["text"], "language": language} for number, run in enumerate(runs, 1)]
+             "text": run["text"], "language": language,**run_provenance(run)} for number, run in enumerate(runs, 1)]
     return jobs, runs
 
 
@@ -275,8 +291,9 @@ def local_alignment_jobs(cues, reused_keys, *, language="English", speech_region
             runs.append({'speaker': full['speaker'], 'members': subset, 'start_ms': start, 'end_ms': end,
                          'window_start_ms': left, 'window_end_ms': right,
                          'text': RUN_SEPARATOR.join(texts), 'spans': spans})
+    from .alignment_items import run_provenance
     jobs = [{'id': f'run-{index}', 'window_start_ms': run['window_start_ms'],
-             'window_end_ms': run['window_end_ms'], 'text': run['text'], 'language': language}
+             'window_end_ms': run['window_end_ms'], 'text': run['text'], 'language': language,**run_provenance(run)}
             for index, run in enumerate(runs, 1)]
     return jobs, runs, targets
 
@@ -284,7 +301,7 @@ def local_alignment_jobs(cues, reused_keys, *, language="English", speech_region
 def attach_results(cues, runs, payload, *, target_keys=None):
     """Attach each cue's part of its run result as ``cue.forced_alignment``."""
     by_id = {str(row.get("id")): row for row in payload.get("results") or ()}
-    meta = {key: payload.get(key) for key in ("model", "model_revision", "code", "unit_policy", "dtype", "torch_version")}
+    meta = {key: payload.get(key) for key in ("model", "model_revision", "code", "unit_policy", "dtype", "torch_version", "alignment_identity", "execution_identity")}
     attached = 0
     for number, run in enumerate(runs, 1):
         row = by_id.get(f"run-{number}")
@@ -296,11 +313,29 @@ def attach_results(cues, runs, payload, *, target_keys=None):
             cue = cues[member["key"] - 1]
             if part["text"] != str(getattr(cue, "text", "")):
                 continue
+            if row.get('status') != 'aligned' or not part['segments']:
+                attempt = dict(meta, status='unaligned' if not part['segments'] else row.get('status') or 'unaligned',
+                               reason=row.get('failure_reason') or 'no_usable_measured_cue_span')
+                previous = getattr(cue, 'forced_alignment', None)
+                if isinstance(previous, dict) and previous.get('text') == cue.text and previous.get('segments'):
+                    cue.forced_alignment = dict(previous, degraded=True, last_alignment_attempt=attempt)
+                else:
+                    cue.forced_alignment = dict(attempt, text=cue.text, segments=[], degraded=True)
+                continue
+            from .alignment_measurements import effective_metadata
+            previous=getattr(cue,'forced_alignment',None)
+            if (part.get('measurement',{}).get('state') in {'partial','unmeasured'} and isinstance(previous,dict)
+                    and previous.get('text')==cue.text and previous.get('segments')):
+                cue.forced_alignment=dict(previous,degraded=True,display_origin='previous_reliable',
+                    last_alignment_attempt=dict(effective_metadata(payload,row),measurement=copy.deepcopy(part['measurement']),status='partial'))
+                continue
             cue.forced_alignment = {
-                **meta, "language": row.get("language"), "status": row.get("status"), "mapping": row.get("mapping"),
+                **effective_metadata(payload,row), "language": row.get("language"), "status": row.get("status"), "mapping": row.get("mapping"),
                 "text": part["text"], "window_start_ms": row.get("window_start_ms"),
                 "window_end_ms": row.get("window_end_ms"),
                 "run": {"id": f"run-{number}", "members": len(run["members"]), "text": run["text"]},
+                "alignment_item":copy.deepcopy(row.get("alignment_item")),
+                "measurement":copy.deepcopy(part.get("measurement")),"actual_measurement_range_ms":copy.deepcopy(row.get("actual_measurement_range_ms")),"pure_configured_attempt":copy.deepcopy(row.get("pure_configured_attempt")),"display_boundary_source":{side:"model" if part["segments"][0 if side=="start" else -1].get(side+"_basis")=="model" else "asr_parent_or_existing_cue" for side in ("start","end")},
                 "segments": copy.deepcopy(part["segments"]), "stats": copy.deepcopy(part["stats"]),
                 "tokenizer_words": list(row.get("tokenizer_words") or []),
                 "units_word": _compact(part["word_units"]), "units_char": _compact(part["char_units"]),
@@ -377,6 +412,7 @@ def _align_final_cues(cues, audio, legacy, *, language="Japanese", speech_region
             and evidence.get('job_id') == context.job_id
             and str(evidence.get('language', '')).casefold() == str(language).casefold()):
         from .word_evidence_reuse import audio_sha256, plan_reuse
+        from .alignment_backend import cache_identity
         try:
             preparation=getattr(context,'streaming_preparation',None)
             streaming=preparation is not None and preparation.owns(audio)
@@ -384,7 +420,8 @@ def _align_final_cues(cues, audio, legacy, *, language="Japanese", speech_region
                 audio_digest=None if streaming else audio_sha256(audio),cancel_check=require_current,
                 audio=audio if streaming else None,
                 audio_clock_identity=preparation.clock_identity if streaming else None,
-                valid_samples=preparation.valid_samples if streaming else None)
+                valid_samples=preparation.valid_samples if streaming else None,
+                expected_identity=cache_identity(context.asr_settings_snapshot))
         except CancelledError:
             raise
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -604,7 +641,7 @@ def evidence_row(cue_id, start_ms, end_ms, speaker_id, alignment):
         "primary_source": source, "final_timing_owner": owner,
         "final_text_owner": "current caption text",
         "cue_alignment": {key: alignment.get(key) for key in (
-            "model", "model_revision", "code", "unit_policy", "language", "status", "mapping", "stats",
+            "model", "model_revision", "code", "unit_policy", "alignment_identity", "execution_identity", "language", "status", "mapping", "stats",
             "window_start_ms", "window_end_ms", "run")} | {"cue_id": str(cue_id)} | {
             key: alignment[key] for key in ("script_remapped", "aligned_text") if key in alignment},
         "words": [{k: p[k] for k in ("text", "start_ms", "end_ms")} for p in pieces],

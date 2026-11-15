@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace, field
 from pathlib import Path
 
 from .run_context import ContextExecutor, local_runtime_context
+from .alignment_backend import cache_identity
 
 VERSION = 'ready-native-shards-v6-scored-vad-translation-names'
 STRIDE = 1_000_000
@@ -51,7 +52,7 @@ def eligible(context, legacy, seconds):
     if str(getattr(legacy,'QWEN_ASR_BACKEND','off')) != 'off' and getattr(legacy,'USE_QWEN_ASR_REFERENCE',False):
         return False, 'independent_asr_review_not_shard_ready'
     timeline=str(getattr(legacy,'FIRERED_ASR_BACKEND',''))
-    if timeline not in {'qwen_aligner','mlx_qwen_aligner','mfa_aligner','off','local'}:
+    if timeline not in {'qwen_aligner','qwen_ultra_aligner','qwen_ultra_head','mlx_qwen_aligner','mfa_aligner','off','local'}:
         return False, 'selected_timeline_requires_its_own_acoustic_evidence'
     if context.requested_language=='zh':
         import os
@@ -212,6 +213,7 @@ class LongMediaPipeline:
             grouping_prompts=self.context.asr_settings_snapshot.get('grouping_prompts'),
             switches=self.context.asr_settings_snapshot.get('switches'),
             timing_policy=getattr(self.legacy,'TIMING_LOGIC_VERSION',None),
+            alignment_identity=cache_identity(self.context.asr_settings_snapshot),
             vad_mode='owned-shard-v1' if self.piece_vad else 'full-stage-v1',
             game_name=self.context.game_name,
             glossary=getattr(self.context.glossary_snapshot,'digest',None),
@@ -527,9 +529,6 @@ class LongMediaPipeline:
                                  speech_regions=speech,evidence_dir=evidence)
                 from .cue_boundary_refine import apply_to_runtime_cues
                 apply_to_runtime_cues(cues,self.audio,self.legacy,fps=self.fps)
-                if context.task_language=='ja':
-                    from .ctc_alignment import apply_to_runtime_cues as ctc
-                    ctc(cues,self.audio,self.legacy,fps=self.fps)
                 self.legacy.relock_display_timing(cues,shard_end,self.fps,stage='ready_shard_word_refinements')
             self._step(index,'final-alignment','最终字级对齐及切点复核',final_alignment)
             meta=self._step(index,'translation','等待本片翻译',lambda:translation.result(cues) if translation else {})

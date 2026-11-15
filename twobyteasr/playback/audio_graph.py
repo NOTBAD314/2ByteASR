@@ -17,7 +17,7 @@ def audio_graph_signature(project):
         for t in (*project.video_tracks,*project.audio_tracks))
     return (id(project),tracks,tuple((a.asset_id,a.canonical_source,a.offline,repr(a.audio_metadata),repr(a.video_metadata)) for a in project.media_pool),
         tuple((g.video_track_id,g.audio_track_id,g.linked) for g in project.av_track_groups),
-        tuple(sorted(state.get('audio_track_gain_db',{}).items())),
+        tuple(sorted(state.get('audio_track_gain_db',{}).items())), state.get('project_gain_db', 0.),
         tuple(sorted(solo_track_ids(project))),
         tuple((k,repr(v)) for k,v in state.items() if k.startswith('audio_') or k in {'selected_video_track_id','clip_transitions'}))
 
@@ -32,6 +32,7 @@ def _stream_start_ms(asset, ordinal):
 
 
 def capture_audio_graph(project):
+    from .project_loudness import project_gain_db
     from ..timeline.studio_media_pool import effective_audio_master_track_id, primary_video_track_id
     assets = {a.asset_id:a for a in project.media_pool}
     associated = {g.video_track_id for g in project.av_track_groups}
@@ -59,7 +60,8 @@ def capture_audio_graph(project):
             timeline_in_ms=geometry.get('timeline_in_ms',clip.timeline_in_ms),timeline_out_ms=geometry.get('timeline_out_ms',clip.timeline_out_ms),
             source_in_ms=geometry.get('source_in_ms',clip.source_in_ms),source_out_ms=geometry.get('source_out_ms',clip.source_out_ms),
             audio_envelopes=envelopes,
-            playback_rate=float(getattr(clip,'playback_rate',1.)),gain_db=track_gain_db(project,track.id) + float(getattr(linked_clip,'gain_db',0.)),
+            playback_rate=float(getattr(clip,'playback_rate',1.)),gain_db=track_gain_db(project,sound.id) + float(getattr(linked_clip,'gain_db',0.)),
+            project_gain_db=project_gain_db(project),
             # A linked waveform is the video's audio component, never a
             # fallback source when its owning video is disabled or has a gap.
             audio_enabled=bool(track.enabled and clip.enabled and sound.enabled and linked_clip.enabled

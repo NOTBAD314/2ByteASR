@@ -1,0 +1,407 @@
+"""「问问兔白」 chat card (2026-11-14): greeting, asking the AI, pointing, 「带我去」, closing."""
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def no_saved_chats():
+    """2026-11-16: each project's chat is kept; a test never inherits another test's chat."""
+    from twobyteasr.app import bunny_memory
+    bunny_memory.clear_chats()
+    yield
+    bunny_memory.clear_chats()
+
+
+@pytest.fixture
+def app():
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def _until(app, condition, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    return condition()
+
+
+@pytest.fixture
+def chat_env(app, monkeypatch):
+    from PySide6.QtWidgets import QPushButton, QWidget
+    from twobyteasr.app import bunny_chat
+    monkeypatch.setattr(bunny_chat.BunnyChat, 'FLOATING', False)
+    window = QWidget()
+    window.resize(1100, 720)
+    calls = []
+    window.model_workshop_button = QPushButton('模型工坊', window)
+    window.model_workshop_button.setGeometry(900, 10, 90, 28)
+    window.help_button = QPushButton('说明', window)
+    window._open_model_workshop = lambda: calls.append('workshop')
+    window._open_ai_settings_dialog = lambda: calls.append('ai_settings')
+    window.show()
+    app.processEvents()
+    yield bunny_chat, window, calls
+    chat = getattr(window, '_bunny_chat', None)
+    if chat is not None:
+        chat.close_chat()
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def _plain(text):
+    return str(text).replace('\u2060', '')    # word joiners keep words on one line
+
+
+def _ready(monkeypatch, bunny_chat, ready=True):
+    monkeypatch.setattr(bunny_chat, 'ai_readiness', lambda settings: (ready, 'DeepSeek · deepseek-chat' if ready else ''))
+
+
+def _shown_lines(chat):
+    return chat.last_reply_html()
+
+
+def test_without_ai_she_greets_and_offers_the_ai_settings(app, chat_env, monkeypatch):
+    bunny_chat, window, calls = chat_env
+    _ready(monkeypatch, bunny_chat, False)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    assert chat.isVisible() and window._bunny_chat is chat
+    assert '找功能在哪里' in ''.join(_shown_lines(chat))
+    assert chat.go_button.isVisible() and '文字 AI' in chat.go_button.text()
+    chat.go_button.click()
+    assert calls == ['ai_settings']
+    assert bunny_chat.open_bunny_chat(window) is chat          # the open card is reused
+
+    chat.input.setText('标点怎么关掉')
+    chat.send()
+    chat.reveal_all()
+    assert '首页' in ''.join(_shown_lines(chat))
+    assert not chat.busy
+
+
+def test_the_first_ai_greeting_says_where_the_words_go_once(app, chat_env, monkeypatch):
+    from twobyteasr.app.onboarding import load_state, save_state
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    save_state({key: value for key, value in load_state().items() if key != bunny_chat.NOTICE_KEY})   # a first time
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    assert 'DeepSeek' in ''.join(_shown_lines(chat))
+    assert load_state().get(bunny_chat.NOTICE_KEY) is True
+    chat.close_chat()
+    again = bunny_chat.open_bunny_chat(window)
+    again.reveal_all()
+    assert 'DeepSeek' not in ''.join(_shown_lines(again))
+
+
+def test_first_notice_is_complete_in_the_initial_dialog_before_send(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    from twobyteasr.app.onboarding import load_state, save_state
+    save_state(dict(load_state(), **{bunny_chat.NOTICE_KEY: False}))
+    _ready(monkeypatch, bunny_chat)
+    chat = bunny_chat.open_bunny_chat(window)
+    assert chat.mode == 'dialog'
+    # Neither advance() nor reveal_all(): inspect what the user first sees.
+    shown = _plain(chat.box.label.source_html)
+    assert 'DeepSeek' in shown
+    assert '额度' in shown and '字幕原文' in shown and '关闭' in shown
+    assert not chat.typer.running
+
+
+def test_an_answer_is_typed_points_at_the_place_and_offers_to_go(app, chat_env, monkeypatch):
+    bunny_chat, window, calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    sent = []
+
+    def fake_run(worker):
+        sent.append(worker._messages)
+        worker.answered.emit(json.dumps({'lines': ['哇！在上面的 **模型工坊**', '~~兔白才没偷懒~~'],
+                                         'point_to': 'model_workshop', 'offer_open': 'model_workshop',
+                                         'mood': 'excited'}, ensure_ascii=False))
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', fake_run)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('模型去哪里下载')
+    chat.send()
+    assert chat.busy and not chat.send_button.isEnabled()
+    assert _until(app, lambda: not chat.busy)
+    chat.reveal_all()
+    lines = _shown_lines(chat)
+    assert len(lines) == 2 and '模型工坊' in lines[0] and 'line-through' in lines[1]
+    assert chat.spotlight.isVisible()
+    assert chat.spotlight.target.topLeft() == window.model_workshop_button.pos()
+    assert chat.go_button.isVisible() and chat.go_button.text().endswith('模型工坊')
+    chat.go_button.click()
+    assert calls == ['workshop']
+    messages = sent[0]
+    assert messages[0]['role'] == 'system' and messages[-1]['content'].endswith('模型去哪里下载')
+    assert '模型工坊' in messages[-1]['content']                    # the world book entry went along
+
+    chat.input.setText('谢谢兔白')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    history = sent[1]
+    assert [m['role'] for m in history[1:]] == ['user', 'assistant', 'user']
+    assert history[1]['content'] == '模型去哪里下载'
+    assert json.loads(history[2]['content'])['point_to'] == 'model_workshop'
+
+
+def test_a_failed_request_is_said_kindly_and_forgotten(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', lambda worker: worker.failed.emit('余额不足'))
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('你好')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    chat.reveal_all()
+    assert '余额不足' in ''.join(_shown_lines(chat))
+    assert chat._history == []
+    assert chat.input.isEnabled()
+
+
+def test_closing_stops_everything_and_frees_the_window(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    chat = bunny_chat.open_bunny_chat(window)
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    app.sendEvent(chat, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert window._bunny_chat is None
+    assert not chat.isVisible()
+
+
+def test_the_state_names_the_page_and_never_more(app, chat_env):
+    from PySide6.QtWidgets import QStackedWidget, QWidget
+    bunny_chat, window, _calls = chat_env
+    window.pages = QStackedWidget(window)
+    home, progress, result = QWidget(), QWidget(), QWidget()
+    for page in (home, progress, result):
+        window.pages.addWidget(page)
+    window.settings_scroll = home
+    window.pages.setCurrentWidget(result)
+    state = bunny_chat.app_state(window, True)
+    assert state['page'] == '识别完成的结果页' and state['text_ai_ready'] is True
+    assert set(state) <= set(__import__('twobyteasr.app.bunny_persona', fromlist=['x']).STATE_FIELDS)
+
+
+def test_the_help_menu_entry_opens_the_chat(app, monkeypatch):
+    from twobyteasr.app.ui import MainWindow
+    opened = []
+    monkeypatch.setattr('twobyteasr.app.bunny_chat.open_bunny_chat', lambda window: opened.append(window) or 'chat')
+    fake = object()
+    assert MainWindow._open_bunny_chat(fake) == 'chat' and opened == [fake]
+
+
+def test_she_looks_up_the_last_task_before_answering(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_lookup
+    monkeypatch.setattr(bunny_lookup, 'run_check', lambda name, ai_ready=None, **_kw: '状态：失败；问题：显存不足')
+    sent = []
+
+    def fake_run(worker):
+        # 2026-11-15: the older ``check`` is a background tool now; its read rides with the next request.
+        sent.append(list(worker._messages))
+        if worker._background:
+            from twobyteasr.app import bunny_persona
+            from twobyteasr.app.bunny_tools import run_background
+            turn = bunny_persona.tool_results_message(run_background(worker._background), '（状态）')
+            worker._messages.append(turn)
+            worker.looked_up.emit(turn)
+            sent[-1] = list(worker._messages)
+            worker.answered.emit(json.dumps({'lines': ['上次是 ==显存不足== 停下来的。'], 'mood': 'comfort'}, ensure_ascii=False))
+        else:
+            worker.answered.emit(json.dumps({'lines': ['我去看看你上一次的识别记录～'], 'check': 'last_task'}, ensure_ascii=False))
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', fake_run)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('为什么识别出错了')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    chat.reveal_all()
+    assert '显存不足' in ''.join(_shown_lines(chat))
+    assert len(sent) == 2
+    assert sent[1][-1]['content'].startswith('【兔白操作结果】') and '显存不足' in sent[1][-1]['content']
+    roles = [m['role'] for m in chat._history]
+    assert roles == ['user', 'assistant', 'user', 'assistant']
+    assert json.loads(chat._history[1]['content'])['check'] == 'last_task'
+
+
+def test_the_dialog_box_says_one_sentence_at_a_time(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_persona
+    from twobyteasr.app.tour_mascot import MascotVoice
+    chat = bunny_chat.open_bunny_chat(window)
+    assert chat.mode == 'dialog' and chat.box.isVisible() and not chat.thread.isVisible()
+    assert isinstance(chat.voice, MascotVoice)                         # the tutorial's own voice
+    chat.reveal_all()
+    chat.say(bunny_persona.BunnyReply(lines=['第一句。', '第二句。', '第三句。']))
+    chat.typer.finish()
+    assert '第一句' in _plain(chat.box.label.source_html) and chat.box.more and chat.box.count.text() == '1 / 3'
+    chat.advance()                                                     # a click on the box
+    chat.typer.finish()
+    assert '第二句' in _plain(chat.box.label.source_html) and chat.box.count.text() == '2 / 3'
+    chat.input.clear()
+    chat.send()                                                        # Enter with nothing typed goes on too
+    chat.typer.finish()
+    assert '第三句' in _plain(chat.box.label.source_html) and not chat.box.more
+    assert chat.box.label.font().family() == bunny_chat.chat_font_family()
+
+
+def test_cancelled_lookup_does_not_start_an_ai_request(app, monkeypatch):
+    from twobyteasr.app import bunny_chat, bunny_lookup
+    from twobyteasr.providers import ai_providers
+    worker = bunny_chat.BunnyChatWorker({}, [], lookup='last_task')
+    cancelled = {'value': False}
+    monkeypatch.setattr(worker, 'isInterruptionRequested', lambda: cancelled['value'])
+    def lookup(*args, **kwargs):
+        cancelled['value'] = True
+        return '状态：完成'
+    monkeypatch.setattr(bunny_lookup, 'run_check', lookup)
+    def unexpected(*args, **kwargs):
+        raise AssertionError('cancelled lookup started a provider')
+    monkeypatch.setattr(ai_providers, 'provider_for_stage', unexpected)
+    failures = []
+    worker.failed.connect(failures.append)
+    worker.run()
+    assert cancelled['value'] and not failures
+
+
+def test_the_thread_keeps_every_line_and_switching_keeps_the_talk(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_persona
+    from twobyteasr.app.onboarding import load_state
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    chat.transcript.append(('user', '<b>你好</b>'))
+    chat.say(bunny_persona.BunnyReply(lines=['你好呀。', '今天也做字幕吗？']))
+    chat.set_mode('thread')
+    app.processEvents()
+    assert load_state().get(bunny_chat.MODE_KEY) == 'thread'
+    assert chat.thread.isVisible() and not chat.box.isVisible()
+    from twobyteasr.app.tour_mascot import MarkedLabel
+    labels = [label for label in chat.thread.body.findChildren(MarkedLabel)]
+    texts = [_plain(label.source_html) for label in labels]
+    assert any('&lt;b&gt;你好' in text for text in texts)                # the user's words, escaped
+    assert any('今天也做字幕吗' in text for text in texts)
+    # 兔白 stands beside the panel, never over its words
+    assert not chat.thread.geometry().intersects(
+        chat.mascot.geometry().adjusted(chat.mascot.pad_x, 0, -chat.mascot.pad_x, 0)) or chat.mascot is None
+    chat.set_mode('dialog')
+    assert '今天也做字幕吗' in _plain(chat.box.label.source_html)
+    chat.close_chat()
+    reopened = bunny_chat.open_bunny_chat(window)
+    assert reopened.mode == 'dialog'
+
+
+def test_a_poke_gets_a_real_line_in_its_own_voice(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    moods = []
+    real_say = chat.voice.say
+    monkeypatch.setattr(chat.voice, 'say', lambda char, mood='': moods.append(mood) or real_say(char, mood))
+    chat.poke()
+    import html as html_lib
+    import re
+    from twobyteasr.app.tour_mascot import plain
+    said = html_lib.unescape(re.sub(r'<[^>]+>', '', _plain(chat.last_reply_html()[-1])))
+    assert said in [plain(line) for line, _mood in bunny_chat.POKE_LINES]
+    chat.reveal_all()
+    while chat.typer.running:
+        chat.typer.finish()
+    assert all('字幕' not in line for line, _mood in bunny_chat.POKE_LINES)
+
+
+def _mouse(kind, widget, local, global_point):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    button = Qt.MouseButton.LeftButton
+    buttons = Qt.MouseButton.NoButton if kind.name == 'MouseButtonRelease' else button
+    return QMouseEvent(kind, QPointF(local), QPointF(global_point), button if kind.name != 'MouseMove' else Qt.MouseButton.NoButton,
+                       buttons, Qt.KeyboardModifier.NoModifier)
+
+
+def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_puck
+    monkeypatch.setattr(bunny_puck, 'REST_BEFORE_HOME_MS', 50)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    puck = chat.puck
+    if puck is None:
+        pytest.skip('no mascot pictures in this build')
+    hits = []
+    monkeypatch.setattr(puck, '_edge_hit', lambda side, power: hits.append(side))
+    puck.undock()
+    assert not puck.docked and not chat.mascot_docked and chat.mascot.parent() is puck.carrier
+    from PySide6.QtCore import QPointF
+    import time as _time
+    puck.velocity = QPointF(-3000, -1800)
+    puck.started = puck.last = _time.perf_counter()
+    puck.timer.start()
+    assert _until(app, lambda: puck.docked, seconds=12)
+    assert hits and set(hits) <= {'left', 'right', 'top', 'bottom'}
+    assert chat.mascot.parent() is chat and chat.mascot_docked
+    limits = puck.limits()
+    assert limits.width() > 0 and limits.height() > 0
+
+
+def test_a_click_without_moving_is_still_a_poke(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from PySide6.QtCore import QEvent, QPointF
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    if chat.puck is None:
+        pytest.skip('no mascot pictures in this build')
+    pokes = []
+    monkeypatch.setattr(chat, 'poke', lambda: pokes.append(1))
+    mascot = chat.mascot
+    at = QPointF(40, 60)
+    origin = QPointF(mascot.mapToGlobal(at.toPoint()))
+    assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonPress, mascot, at, origin))
+    assert chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, mascot, at, origin))
+    assert pokes == [1] and chat.puck.docked
+
+
+def test_she_drifts_beside_the_place_and_does_only_what_is_pressed(app, chat_env, monkeypatch):
+    bunny_chat, window, calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from PySide6.QtWidgets import QComboBox
+    from twobyteasr.app import bunny_puck
+    monkeypatch.setattr(bunny_puck, 'DRIFT_MS', 60)
+    combo = QComboBox(window)
+    for label, value in (('自动识别语言', 'auto'), ('英语', 'en')):
+        combo.addItem(label, value)
+    combo.setGeometry(100, 300, 160, 30)
+    combo.show()
+    window.recognition_language = combo
+    window._return_to_settings = lambda: calls.append('home')
+    answer = json.dumps({'lines': ['要我帮你改成英语吗？'], 'do': {'action': 'set_spoken_language', 'value': 'en'}},
+                        ensure_ascii=False)
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', lambda worker: worker.answered.emit(answer))
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('帮我把语言改成英语')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    chat.reveal_all()
+    assert chat.do_button.isVisible() and '英语' in chat.do_button.text()
+    assert combo.currentData() == 'auto'                                   # nothing changed yet
+    chat.do_button.click()
+    assert _until(app, lambda: combo.currentData() == 'en', seconds=5)
+    assert 'home' in calls
+    if chat.puck is not None:
+        spot = chat.puck.spot_beside(combo)
+        assert abs(chat.puck.pos.x() - spot.x()) < 2 and abs(chat.puck.pos.y() - spot.y()) < 2
+    chat.reveal_all()
+    assert '视频里说的话' in _plain(''.join(chat.last_reply_html())) and not chat.do_button.isVisible()

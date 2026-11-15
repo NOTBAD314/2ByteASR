@@ -8716,5 +8716,7 @@
   "再确认一下下": "Juste pour être sûr",
   "— 兔白": "— 2ByteASR",
   "海外 · 银行卡": "International · Carte",
-  "国内 · 微信 / 支付宝": "Chine · WeChat / Alipay"
+  "国内 · 微信 / 支付宝": "Chine · WeChat / Alipay",
+  "「在画面中拖动字幕」已关闭，打开它就能直接拖动": "« Faire glisser les sous-titres sur l’image » est désactivé. Activez-le pour les déplacer directement.",
+  "这条字幕的位置还在计算，稍等一下再拖": "La position de ce sous-titre est encore en cours de calcul. Réessayez dans un instant."
 }

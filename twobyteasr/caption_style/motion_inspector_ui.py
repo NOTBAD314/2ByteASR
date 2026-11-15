@@ -39,9 +39,9 @@ HINTS = {**{(m.stage, m.key): m.hint for items in _SPECS.values() for m in items
          **{('words', key): hint for key, _, _, hint in WORDS}}
 STRENGTHS = [('low', '轻'), ('medium', '标准'), ('high', '强')]
 ARROWS = [('left', '←'), ('right', '→'), ('up', '↑'), ('down', '↓')]
-# 2026-11-09 (user, redesign A): smaller tiles, four per row in the normal
-# 300px+ panel, so a whole category is visible without scrolling.
-TILE_HEIGHT, PREVIEW_HEIGHT = 64, 40
+# 2026-11-15 (user's pick A, timeline): three tiles per row with larger names
+# instead of 2026-11-09's four small ones, so each preset is told apart.
+TILE_HEIGHT, PREVIEW_HEIGHT = 70, 44
 TILE_MIN_WIDTH = 62
 # 2026-10-23 (user's design A): the stage track, chips, segments and tiles are
 # styled with the other soft controls in design/soft_qss.py (theme colours).
@@ -142,78 +142,7 @@ class MotionPanel(QWidget):
         super().resizeEvent(event)
         preview = getattr(self, 'responsive_preview', None)
         if preview is not None:
-            preview.setVisible(self.height() >= 420)
-
-
-class StageButton(QPushButton):
-    """Stage name over the current choice, painted directly so app-wide
-    label rules cannot clip or recolour the second line."""
-    def __init__(self, title, parent):
-        super().__init__(parent)
-        self.setObjectName('motionStage')
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(38)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.title_text, self.value_text, self.active = tr(title), '', False
-        self.setAccessibleName(self.title_text)
-
-    def set_value(self, text, active):
-        self.value_text, self.active = text, active
-        self.setToolTip(f'{self.title_text}：{text}')
-        self.setAccessibleDescription(text)
-        self.update()
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-        rect = self.rect().adjusted(5, 3, -5, -4)
-        color = self.palette().color(self.foregroundRole())
-        muted = QColor(color); muted.setAlphaF(.58)
-        title_font = QFont(self.font()); title_font.setPixelSize(11); title_font.setWeight(QFont.Normal)
-        value_font = QFont(self.font()); value_font.setPixelSize(13); value_font.setWeight(QFont.DemiBold)
-        half = rect.height()//2
-        painter.setFont(title_font); painter.setPen(muted)
-        painter.drawText(QRect(rect.left(), rect.top(), rect.width(), half), Qt.AlignHCenter | Qt.AlignBottom, self.title_text)
-        painter.setFont(value_font); painter.setPen(color if self.active else muted)
-        value = QFontMetrics(value_font).elidedText(self.value_text, Qt.ElideRight, rect.width())
-        painter.drawText(QRect(rect.left(), rect.top()+half+1, rect.width(), rect.height()-half-1),
-                         Qt.AlignHCenter | Qt.AlignTop, value)
-        painter.end()
-
-
-class StageBar(QWidget):
-    """Four stages, each showing what is currently chosen for it."""
-    currentChanged = Signal(int)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # One filled track; the open stage is the raised chip (design A).
-        self.setObjectName('motionStageBar')
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        row = QHBoxLayout(self); row.setContentsMargins(3, 3, 3, 3); row.setSpacing(2)
-        self.buttons = []
-        for i, stage in enumerate(STAGES):
-            button = StageButton(STAGE_TITLES[stage], self)
-            button.clicked.connect(lambda _=False, i=i: self.setCurrentIndex(i))
-            row.addWidget(button)
-            self.buttons.append(button)
-        self._index = -1
-        self.setCurrentIndex(0)
-
-    def count(self): return len(self.buttons)
-    def currentIndex(self): return self._index
-    def tabText(self, index): return self.buttons[index].title_text
-    def setTabToolTip(self, index, text): self.buttons[index].setToolTip(text)
-
-    def setCurrentIndex(self, index):
-        index = max(0, min(len(self.buttons)-1, int(index)))
-        for i, button in enumerate(self.buttons):
-            button.setChecked(i == index)
-        if index != self._index:
-            self._index = index
-            self.currentChanged.emit(index)
+            preview.setVisible(self.height() >= 470)
 
 
 class MotionEffectTile(QPushButton):
@@ -341,14 +270,20 @@ class MotionInspector(QWidget):
         self.directions = {'entry': None, 'exit': None}
         self.columns = 0
         self._register_choices()
-        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(10)
-        self.tabs = StageBar(self)
+        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(7)
+        # 2026-11-15 (user's pick A): the stage tabs are a timeline in playback
+        # order; its handles drag the entry/exit duration as one undo step.
+        from .motion_timeline_ui import MotionTimeline
+        self.tabs = MotionTimeline(self)
         self.tabs.setAccessibleName(tr('动效分类'))
+        self.tabs.durationDragStarted.connect(lambda _stage: workflow.begin_gesture())
+        self.tabs.durationDragged.connect(self.drag_duration)
+        self.tabs.durationDragFinished.connect(lambda _stage: workflow.end_gesture())
         layout.addWidget(self.tabs)
         # Parameters for the stage in front, in one card (design A): duration,
         # strength, direction, the word colour and what the stage does.
         from ..design.soft_widgets import UnitField, soft_card
-        self.params_card, params = soft_card(margins=(12, 10, 12, 10), spacing=8)
+        self.params_card, params = soft_card(margins=(12, 8, 12, 8), spacing=6)
         self.duration_row = QWidget(); row = QHBoxLayout(self.duration_row); row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         self.duration_label = QLabel(tr('持续时间')); self.duration_label.setObjectName('softLabel')
@@ -362,24 +297,30 @@ class MotionInspector(QWidget):
         self.seconds_field.setFixedWidth(92)
         row.addWidget(self.seconds_field)
         params.addWidget(self.duration_row)
-        self.tuning_row = QWidget(); tuning = QHBoxLayout(self.tuning_row)
-        tuning.setContentsMargins(0, 0, 0, 0); tuning.setSpacing(8)
+        # 2026-11-15: strength and direction are two groups in a wrapping row; a
+        # narrow panel moves 方向 to a second line instead of clipping the card.
+        self.tuning_row = QWidget(); FlowLayout(self.tuning_row, spacing=10)
+        strength_group = QWidget(self.tuning_row); tuning = QHBoxLayout(strength_group)
+        tuning.setContentsMargins(0, 0, 0, 0); tuning.setSpacing(6)
+        self.tuning_row.layout().addWidget(strength_group)
         self.strength_label = QLabel(tr('强度')); self.strength_label.setObjectName('softLabel')
         tuning.addWidget(self.strength_label)
-        strength_track = QFrame(self.tuning_row); strength_track.setObjectName('softSegmented')
+        strength_track = QFrame(strength_group); strength_track.setObjectName('softSegmented')
         track_row = QHBoxLayout(strength_track); track_row.setContentsMargins(3, 3, 3, 3); track_row.setSpacing(2)
         self.strength_buttons = {}
         for value, text in STRENGTHS:
             button = _chip(text, strength_track, 'motionSegment')
-            button.setMinimumWidth(44)
+            button.setMinimumWidth(36)  # 2026-11-15: strength + four arrows fit a ~360 px panel
             button.clicked.connect(lambda _=False, value=value: self.set_strength(value))
             track_row.addWidget(button); self.strength_buttons[value] = button
         tuning.addWidget(strength_track)
-        tuning.addStretch(1)
+        self.direction_group = QWidget(self.tuning_row); tuning = QHBoxLayout(self.direction_group)
+        tuning.setContentsMargins(0, 0, 0, 0); tuning.setSpacing(6)
+        self.tuning_row.layout().addWidget(self.direction_group)
         self.direction_label = QLabel(tr('方向')); self.direction_label.setObjectName('softLabel'); tuning.addWidget(self.direction_label)
         self.direction_buttons = {}
         for value, text in ARROWS:
-            button = _chip(text, self.tuning_row, 'motionDirection')
+            button = _chip(text, self.direction_group, 'motionDirection')
             button.setAccessibleName(tr({'left': '从左', 'right': '从右', 'up': '从上', 'down': '从下'}[value]))
             button.clicked.connect(lambda _=False, value=value: self.set_direction(value))
             tuning.addWidget(button); self.direction_buttons[value] = button
@@ -389,25 +330,27 @@ class MotionInspector(QWidget):
         color_label = QLabel(tr('强调颜色')); color_label.setObjectName('softLabel')
         color_layout.addWidget(color_label); color_layout.addWidget(self.page.motion_word_color, 1)
         params.addWidget(self.color_row)
+        # What the stage does is the timeline segment's tooltip (2026-11-15);
+        # the label is kept for callers but no longer takes a row.
         self.explanation = QLabel(); self.explanation.setObjectName('softMeta'); self.explanation.setWordWrap(True)
-        params.addWidget(self.explanation)
-        # 2026-11-09 (redesign A): the parameter card sits below the tiles so
-        # the effect choices come first; added after the scroll area below.
+        self.explanation.hide()
+        # 2026-11-15 (pick A): the parameters of the stage being edited sit
+        # right under the timeline instead of below every tile.
         # Category chips and the card grid share one scroll area per stage.
         self.stack = QStackedWidget()
         self.cards_scroll = QScrollArea(); self.cards_scroll.setWidgetResizable(True)
         self.cards_scroll.setFrameShape(QFrame.NoFrame)
         self.cards_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.cards_scroll.setMinimumHeight(TILE_HEIGHT+40)
+        # In short workspaces the fixed timeline and footer still fit. Parameters
+        # scroll before the tiles rather than shrinking/overlapping the timeline.
+        self.cards_scroll.setMinimumHeight(TILE_HEIGHT + 16)  # retain one themed tile plus border/scale rounding
         self.cards_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # The parameters scroll with the tiles (below them): outside the
-        # scroll area a short window squeezed both and clipped the fields.
         scroll_content = QWidget()
         scroll_column = QVBoxLayout(scroll_content)
         scroll_column.setContentsMargins(0, 0, 0, 0)
         scroll_column.setSpacing(10)
-        scroll_column.addWidget(self.stack)
         scroll_column.addWidget(self.params_card)
+        scroll_column.addWidget(self.stack)
         scroll_column.addStretch(1)
         self.cards_scroll.setWidget(scroll_content)
         layout.addWidget(self.cards_scroll, 1)
@@ -519,7 +462,7 @@ class MotionInspector(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.reflow(4 if self.width() >= 290 else 3 if self.width() >= 214 else 2)
+        self.reflow(3 if self.width() >= 214 else 2)
         QTimer.singleShot(0, self.fit_stack)
 
     def filter(self, stage, category):
@@ -599,6 +542,17 @@ class MotionInspector(QWidget):
         return getattr(self.page, {'entry': 'effect_duration', 'exit': 'effect_out_duration',
                                   'loop': 'effect_loop_duration'}.get(self.stages[self.tabs.currentIndex()], 'effect_duration'))
 
+    def drag_duration(self, stage, milliseconds):
+        """A timeline handle moved: the same edit as typing the duration."""
+        control = self.page.effect_duration if stage == 'entry' else self.page.effect_out_duration
+        control.setValue(int(milliseconds))
+        self.sync()
+
+    def timeline_durations(self):
+        entry, leave = self.selected('entry'), self.selected('exit')
+        return (self.page.effect_duration.value() if entry not in {'none', 'visual_graph'} else 0,
+                self.page.effect_out_duration.value() if leave != 'none' else 0)
+
     def duration_changed(self, seconds):
         control = self.duration_control()
         control.setValue(round(seconds*1000))
@@ -641,9 +595,13 @@ class MotionInspector(QWidget):
         direction = self.direction(stage) if stage in self.directions else None
         for widget in (self.direction_label, *self.direction_buttons.values()):
             widget.setVisible(direction is not None)
+        self.direction_group.setVisible(direction is not None)
+        self.tuning_row.layout().invalidate()
         for value, button in self.direction_buttons.items():
             button.setChecked(value == direction)
         self.color_row.setVisible(stage == 'words' and current not in {'none', 'word_reveal', 'word_pop'})
+        self.params_card.setVisible(timed or not self.color_row.isHidden())
+        self.tabs.set_durations(*self.timeline_durations())
         hint = HINTS.get((stage, current), '')
         self.explanation.setText(tr({'entry': '字幕开始时播放', 'exit': '字幕结束前播放', 'loop': '入场后循环，出场前收起',
                                     'words': '跟随语音中的字词时间'}[stage]) + (' · '+tr(hint) if hint and current != 'none' else ''))

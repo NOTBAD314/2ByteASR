@@ -20,6 +20,8 @@ from pathlib import Path
 
 import qtawesome as qta
 from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, QProcessEnvironment, QRect, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from .model_loading_surface import ModelListReveal as _CardViewport
+
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import QFrame  # for dim backdrop on technical dialog
 from PySide6.QtWidgets import (
@@ -343,12 +345,6 @@ except Exception:  # pragma: no cover - data invariant guard
 
 
 def _auto_stage_enabled(model, runtime_settings) -> bool:
-    """Installed helpers run unless the user turned them off (2026-10-14)."""
-    if model.key == "ja_ctc_aligner":
-        from ..recognition.ctc_alignment import enabled
-        settings = runtime_settings if isinstance(runtime_settings, dict) else {}
-        return (enabled(settings)
-                and settings.get("models", {}).get("firered_asr_backend", "local") != "off")
     return True
 
 
@@ -378,14 +374,12 @@ def _spoken_timeline_state(runtime_settings, model, role: str, state: str) -> st
     timeline = str(settings.get("models", {}).get("firered_asr_backend", "local"))
     mfa_keeps = timeline == MFA_TIMELINE and spoken in MFA_LANGUAGES
     if backend == "qwen_aligner" and timeline not in LANGUAGE_ALIGNERS | {"off"} and not mfa_keeps:
-        return "selected"
+        return "installed"
     return state
 
 
 def _set_auto_stage_enabled(model, value: bool, runtime_settings) -> None:
-    if model.key == "ja_ctc_aligner":
-        from ..recognition.ctc_alignment import set_enabled
-        set_enabled(value, runtime_settings)
+    return None
 
 
 @dataclass(frozen=True)
@@ -790,17 +784,17 @@ MODELS = (
     WorkshopModel(
         "qwen_aligner",
         "timeline",
-        "Qwen3-ForcedAligner 0.6B",
+        "Qwen3 对齐 · Ultra",
         "Qa",
         "11 种语言 · 字/词级强制对齐",
         "本地 · NVIDIA CUDA 或 CPU（较慢）",
         "约 1.8 GB",
-        "官方字词时间戳 · 已接入",
-        "Qwen 官方强制对齐模型，可根据已有文字（MOSS、本地或云端识别）生成字级或词级时间戳；可直接替换 FireRed 作为多语种时间轴后端。没有 NVIDIA 显卡时用 CPU 运行，结果相同但更慢。",
-        (("字词对齐", 94), ("多语言", 76), ("运行速度", 72)),
+        "本地字词时间戳 · 已接入",
+        "根据识别后的原文测量字词时间，支持多语言字幕。Ultra 为 Qwen 对齐入口的基础实现；模型验证通过后才升级，旧工程不会自动改写。",
         (),
-        ("qwen_aligner",),
-        "qwen_aligner",
+        (),
+        ("qwen_ultra_aligner",),
+        "qwen_ultra_aligner",
         runtime_available=True,
         logo_asset="qwen.png",
         icon_name="fa5s.magic",
@@ -810,28 +804,6 @@ MODELS = (
         recommended=True,  # 2026-11-11 (user): Qwen3 0.6B 对齐也是时间轴推荐
         asr_capabilities=("ALIGNMENT",),
         adapter_bindings=(("timeline", "qwen_aligner"),),
-    ),
-    WorkshopModel(
-        "ja_ctc_aligner",
-        "timeline",
-        "日语 CTC 对齐模型",
-        "Ja",
-        "日语 · 句首时间校正",
-        "本地 · ModelScope / Hugging Face",
-        "约 1.3 GB",
-        "日语识别自动使用 · 已接入",
-        "wav2vec2 日语字符 CTC 模型，用于强制对齐日语字幕的句首：只在它与 Qwen 对齐器的实测起点相差 80 毫秒内时采用，句尾不改。安装后识别日语时自动执行，也可在字幕工作台时间轴右键对整个工程校正。",
-        (("句首对齐", 80), ("日语", 85), ("运行速度", 80)),
-        (),
-        ("ja_ctc_aligner",),
-        "ja_ctc_aligner",
-        runtime_available=True,
-        icon_name="fa5s.ruler-horizontal",
-        icon_color="#ffffff",
-        icon_background="#5f7fbf",
-        languages=("日本語",),
-        asr_capabilities=("ALIGNMENT",),
-        auto_stage="已安装 · 日语识别时自动使用",
     ),
     # 2026-10-19: Montreal Forced Aligner, an experimental 字幕时间轴 for Chinese
     # and Japanese (recognition/mfa_aligner.py; own conda runtime, Windows only).
@@ -980,6 +952,9 @@ def _adapter_backend(model: WorkshopModel, role: str) -> str | None:
 
 def model_for_backend(role: str, backend: str, provider: str = "") -> WorkshopModel | None:
     """The catalog model a saved role backend runs (``api``: the provider's card)."""
+    if role=='timeline':
+        from ..recognition.qwen_family import canonical_backend
+        backend=canonical_backend(backend)
     for candidate in MODELS:
         if _adapter_backend(candidate, role) != backend:
             continue
@@ -1054,7 +1029,7 @@ def _local_timeline_supported(model: WorkshopModel) -> bool:
         and model.install_keys
         and _capability_supports_role(model.asr_capabilities, "timeline")
         and ((backend and backend not in {"api", "off"})
-             or (model.key == "ja_ctc_aligner" and model.auto_stage))
+)
     )
 
 
@@ -1153,7 +1128,8 @@ CANONICAL_MODEL_ORDER = (
     "whisper",
     "funasr_nano",
     "qwen_aligner",
-    "ja_ctc_aligner",
+    "qwen_ultra_aligner",
+    "qwen_ultra_head",
     "mfa_aligner",
     "mlx_qwen3_asr_0_6b",
     "mlx_qwen3_asr_1_7b",
@@ -1612,6 +1588,8 @@ def _metric_evidence(
     REFERENCE_INDEX_VERSION 的固定参照目录，搜索/筛选/安装态不影响。
     对齐类模型（ALIGNMENT）的 accuracy 走对齐场景（AAS），不与 CER/WER 混算。
     """
+    if model.key in {'qwen_aligner','qwen_ultra_aligner','qwen_ultra_head'}:
+        return dict(available=False,value='',note='',score=None,tooltip='',caption='',group_id='')
     language = current_language()
     scene_key = model_metric_scene(model, str(scene or _DEFAULT_BENCHMARK_SCENE))
     task = task_for(model.asr_capabilities, model.model_type)
@@ -2008,7 +1986,7 @@ def _registry_fingerprint(registry) -> tuple:
     """What a refresh shows from a registry scan (health and location)."""
     if registry is None:
         return ()
-    return (str(registry.error), tuple(sorted(
+    return (str(registry.error), tuple(sorted(getattr(registry,'pending_keys',()))), json.dumps(getattr(registry,'alignment_readiness',{}),sort_keys=True,ensure_ascii=False), tuple(sorted(
         (key, record.health.value, str(record.installation_path), tuple(record.missing_files))
         for key, record in registry.records.items())))
 
@@ -3027,8 +3005,8 @@ class ModelCard(QFrame):
     api_configure_requested = Signal(str)
 
     def set_action_state(self, text, enabled):
-        self.action.setText(text)
-        self.action.setEnabled(enabled)
+        bind_text(self.action, text)
+        if self.action.isEnabled()!=bool(enabled):self.action.setEnabled(bool(enabled))
 
     def __init__(self, model: WorkshopModel, parent=None):
         super().__init__(parent)
@@ -3187,17 +3165,17 @@ class ModelCard(QFrame):
         action_controls.setContentsMargins(0, 0, 0, 0)
         action_controls.setSpacing(5)
         action_controls.addStretch(1)
-        self.action = QPushButton()
+        self.action = QPushButton(self.action_controls)
         self.action.setObjectName("workshopAction")
         self.action.setMinimumWidth(82)
         self.action.clicked.connect(lambda: self.action_requested.emit(model.key))
         action_controls.addWidget(self.action)
-        self.download = bind_text(QPushButton(), "下载")
+        self.download = bind_text(QPushButton(self.action_controls), "下载")
         self.download.setObjectName("workshopAction")
         self.download.clicked.connect(lambda: self.download_requested.emit(model.key))
         self.download.setVisible(bool(model.variants))
         action_controls.addWidget(self.download)
-        self.uninstall = QPushButton("卸载")
+        self.uninstall = QPushButton("卸载", self.action_controls)
         self.uninstall.setObjectName("workshopCardUninstall")
         bind_text(self.uninstall, '永久删除已确认归属的模型文件；再次使用需要下载', property='toolTip')
         self.uninstall.clicked.connect(lambda: self.uninstall_requested.emit(model.key))
@@ -3205,7 +3183,7 @@ class ModelCard(QFrame):
         action_controls.addWidget(self.uninstall)
         # 三十四轮：API 卡加显式「配置」入口——配置完成后用户没有任何办法
         # 再次打开 key/模型/地址编辑窗（"使用"已不再弹窗）。
-        self.configure = QPushButton("配置")
+        self.configure = QPushButton("配置", self.action_controls)
         self.configure.setObjectName("workshopCardUninstall")
         bind_text(self.configure, '打开该服务的模型、地址与 API Key 配置窗口', property='toolTip')
         self.configure.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3240,6 +3218,9 @@ class ModelCard(QFrame):
         set_layout(self._root,margins=(12,8,12,8),spacing=6)
         set_layout(self._row,margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
         set_layout(self.info_host.layout(),margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+        if os.environ.get('TWOBYTEASR_WORKSHOP_COLUMNS_ONLY') == '1':
+            from ..app.ui_zoom import effective_factor
+            self._column_sync_sample = dict(factor=effective_factor(self),language=self.language_row.width(),metrics=self.metrics_host.width(),action=self.action_host.width())
 
     def apply_ui_zoom(self,factor):
         self._set_wide_languages(_workshop_wide_languages(self.width()/factor))
@@ -3247,6 +3228,23 @@ class ModelCard(QFrame):
         self._apply_compact_layout(self.width()/factor<760)
         if getattr(self,'_logo_factor',None)!=factor:
             self._logo_factor=factor;self._paint_monogram()
+
+    def _queue_owner_columns(self):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_owner_columns()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, 'language_row') and event.type() in (QEvent.Type.StyleChange, QEvent.Type.FontChange):
+            self._queue_owner_columns()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3261,6 +3259,7 @@ class ModelCard(QFrame):
         from ..app.ui_zoom import logical
         self._set_wide_languages(_workshop_wide_languages(logical(self.width(),self)))
         self._apply_compact_layout(logical(available_width,self) < 760)
+        self._sync_column_sizes()
 
     def _set_wide_languages(self, wide: bool):
         if wide == self._wide_languages:
@@ -3348,6 +3347,12 @@ class ModelCard(QFrame):
 
     def refresh_theme_palette(self):
         self._paint_monogram()
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
 
     def set_state_badge(self, text: str, tone: str = "muted"):
         label = str(text or "").strip()
@@ -3357,7 +3362,7 @@ class ModelCard(QFrame):
             return
         self._state_badge_state = state
         self.state_badge.setProperty("tone", normalized_tone)
-        self.state_badge.setText(label)
+        bind_text(self.state_badge,label)
         self.state_badge.setVisible(bool(label))
         self.state_badge.style().unpolish(self.state_badge)
         self.state_badge.style().polish(self.state_badge)
@@ -3479,10 +3484,13 @@ class ModelDownloadDialog(QDialog):
         *,
         download_keys: tuple[str, ...] | list[str] | None = None,
         display_name: str | None = None,
+        operation: str = "prepare",
     ):
         super().__init__(parent)
         self.root = root
         self.model = model
+        self.operation = operation
+        self._operation_timeout = False
         requested = download_keys or ([model.download_key] if model.download_key else [])
         self.download_keys = tuple(dict.fromkeys(str(key) for key in requested if key))
         self.display_name = display_name or model.name
@@ -3823,7 +3831,8 @@ class ModelDownloadDialog(QDialog):
     def _rebuild_runtime(self):
         if self.process.state() != QProcess.ProcessState.NotRunning:
             return
-        self._repair_requested = True
+        self.operation='prepare'
+        self._repair_requested = self.model.key!='mfa_aligner'
         self._finished_ok = False
         self.start()
 
@@ -3946,6 +3955,7 @@ class ModelDownloadDialog(QDialog):
             return
         self._finished_ok = False
         import time
+        self._operation_timeout=False
         self._started_at = time.monotonic()
         from .download_activity import ProcessTreeProbe
         self._activity.reset(self._started_at, time.time())
@@ -4029,11 +4039,34 @@ class ModelDownloadDialog(QDialog):
             environment.insert(RUNTIME_ROOT_ENV, str(get_runtime_paths().managed_runtime_root))
         except Exception:
             pass
+        try:
+            if self.operation=='verify':
+                from ..recognition.asr import _main_worker_python
+                program=str(_main_worker_python()) if self.model.key!='mfa_aligner' else ''
+                if self.model.key=='mfa_aligner':
+                    from ..recognition import mfa_aligner
+                    program=str(mfa_aligner.runtime_python() or '')
+                    if not program:raise RuntimeError('MFA 独立环境未准备完成')
+                    activated=mfa_aligner.runtime_environment(mfa_aligner.runtime_prefix(),{k:environment.value(k) for k in environment.keys()})
+                    for k,v in activated.items():environment.insert(k,str(v))
+                arguments=['-I','-X','utf8',str(self.root/'scripts/validate_prepared_model.py'),'--root',str(self.root),'--model',str(self.model.download_key)]
+                self._phase='loading'
+                bind_text(self.headline,'验证 {value0}',value0=self.display_name)
+                bind_text(self.progress_status,'正在验证本机可用性…')
+                self.source_combo.setVisible(False)
+        except (OSError,RuntimeError,ValueError) as exc:
+            self._finish_with_error(str(exc));return
         self.process.setProcessEnvironment(environment)
         self.process.start(program, arguments)
+        if not hasattr(self,'_deadline_timer'):
+            self._deadline_timer=QTimer(self);self._deadline_timer.setSingleShot(True)
+            self._deadline_timer.timeout.connect(self._operation_timed_out)
+        self._deadline_timer.start(600000 if self.operation=='verify' else 7200000)
         if not self.process.waitForStarted(5000):
             self._finish_with_error("无法启动模型下载器。请运行“配置或修复 2ByteASR”后重试。")
         else:
+            from .model_state_events import task_transition
+            task_transition(self,self.download_keys,self._phase,active=True,operation=self.operation)
             self._refresh_view()  # not "未开始" until the 1-second clock ticks (2026-10-22)
 
     def _start_macos_mlx(self):
@@ -4157,6 +4190,9 @@ class ModelDownloadDialog(QDialog):
                 vertical.setValue(previous)
 
     def _refresh_activity_clock(self):
+        from .model_state_events import task_transition
+        if self.process.state()!=QProcess.ProcessState.NotRunning:
+            task_transition(self,self.download_keys,self._phase,active=True,operation=getattr(self,'operation','prepare'))
         if not self._started_at:
             return
         import time
@@ -4926,7 +4962,15 @@ class ModelDownloadDialog(QDialog):
         )
         return f"{error.message}\n{error.next_action}"
 
+    def _operation_timed_out(self):
+        if self.process.state()==QProcess.ProcessState.NotRunning:return
+        self._operation_timeout=True
+        self._failure_text='模型准备任务已超时；已有文件保留，可重试。'
+        self.process.kill()
+
     def _finished_v2(self, exit_code: int, _status):
+        if hasattr(self,'_deadline_timer'):self._deadline_timer.stop()
+        if self._operation_timeout:exit_code=124
         self._read_output()
         ok = exit_code == 0 and not self._paused
         if self._journal:
@@ -4966,6 +5010,9 @@ class ModelDownloadDialog(QDialog):
         self._refresh_view(self._finished_at)
         if not self._paused:
             self._notify_result_sound(ok)
+        from .model_state_events import notify,task_transition
+        task_transition(self,self.download_keys,self._phase,active=False,operation=getattr(self,'operation','prepare'),outcome='cancelled' if self._paused else 'timeout' if self._operation_timeout else 'success' if ok else 'failure')
+        notify(self.download_keys,'cancelled' if self._paused else 'timeout' if self._operation_timeout else 'success' if ok else 'failure')
         self.completed.emit(ok, message)
         if self._resume_with_source:
             # "改用其他来源继续": the stop above was ours; restart with the new source.
@@ -4996,6 +5043,9 @@ class ModelDownloadDialog(QDialog):
         self.completed.emit(ok, message)
 
     def _finish_with_error(self, message: str):
+        if hasattr(self,'_deadline_timer'):self._deadline_timer.stop()
+        from .model_state_events import task_transition
+        task_transition(self,self.download_keys,'failed',active=False,operation=getattr(self,'operation','prepare'),outcome='failure')
         self._finished_ok = False
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -5844,7 +5894,7 @@ class _DeferredModelCard(QFrame):
         return self._card
 
     def _make_card(self):
-        return ModelCard(self.model)
+        return ModelCard(self.model, self)
 
     def __getattr__(self, name):
         if name in {'action','download','uninstall','configure','accuracy_bar','speed_bar',
@@ -5853,6 +5903,7 @@ class _DeferredModelCard(QFrame):
         raise AttributeError(name)
 
     def _apply(self, method, *args):
+        if self._pending.get(method)==args:return
         self._pending[method] = args
         if self._card is not None: getattr(self._card, method)(*args)
 
@@ -5868,39 +5919,6 @@ class _DeferredModelCard(QFrame):
         self._apply('set_selected', selected)
     def refresh_theme_palette(self):
         if self._card is not None: self._card.refresh_theme_palette()
-
-
-class _CardViewport(QObject):
-    """At most one additional card per turn, only while visible."""
-    def __init__(self, scroll, cards):
-        super().__init__(scroll)
-        self.scroll, self.cards = scroll, cards
-        self.timer = QTimer(self)
-        self.timer.setSingleShot(True)
-        self.timer.setInterval(16)
-        self.timer.timeout.connect(self._next)
-        scroll.viewport().installEventFilter(self)
-        scroll.verticalScrollBar().valueChanged.connect(self.schedule)
-        scroll.verticalScrollBar().rangeChanged.connect(self.schedule)
-
-    def eventFilter(self, _obj, event):
-        if event.type() in (QEvent.Type.Show, QEvent.Type.Resize): self.schedule()
-        elif event.type() == QEvent.Type.Hide: self.timer.stop()
-        return False
-
-    def schedule(self, *_):
-        if self.scroll.isVisible() and not self.timer.isActive(): self.timer.start()
-
-    def _next(self):
-        if not self.scroll.isVisible(): return
-        viewport = self.scroll.viewport()
-        for card in self.cards.values():
-            if card.isHidden() or card._card is not None: continue
-            rect = QRect(card.mapTo(viewport, QPoint()), card.size())
-            if rect.intersects(viewport.rect().adjusted(0, -40, 0, 120)):
-                card.materialize()
-                self.timer.start()
-                break
 
 
 class _ToolStripPlacer(QObject):
@@ -5971,8 +5989,9 @@ class _DragScroll(QObject):
         self._pressed = None
         app = QApplication.instance()
         if app is not None:
-            app.installEventFilter(self)
-            scroll.destroyed.connect(lambda *_: app.removeEventFilter(self))
+            from ..design.app_events import listen, unlisten
+            listen(self, (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease))
+            scroll.destroyed.connect(lambda *_: unlisten(self))
 
     def _inside(self, obj) -> bool:
         if not isinstance(obj, QWidget) or not self.scroll.isVisible():
@@ -6020,8 +6039,8 @@ class _DeferredPickerCard(_DeferredModelCard):
     """Keep the card wall's state and filters without constructing offscreen cards."""
     diarize_toggled = Signal(bool)
 
-    def __init__(self, model, role, **options):
-        super().__init__(model)
+    def __init__(self, model, role, *, parent=None, **options):
+        super().__init__(model, parent)
         from .model_picker_copy import picker_copy
         self.role = role
         self._options = options
@@ -6034,7 +6053,7 @@ class _DeferredPickerCard(_DeferredModelCard):
 
     def _make_card(self):
         from .model_picker_cards import PickerCard
-        return PickerCard(self.model, self.role, **self._options)
+        return PickerCard(self.model, self.role, parent=self, **self._options)
 
     def __getattr__(self, name):
         if name in {'summary_label', 'state_badge', 'diarize'}:
@@ -6066,6 +6085,8 @@ class ModelWorkshopPage(QWidget):
     removal_planned = Signal(object)
     mac_cpu_runtime_checked = Signal(object)
     registry_checked = Signal(object)
+    selection_checked = Signal(object)
+    ultra_base_requested = Signal()
 
     def __init__(self, root: Path, runtime_settings: dict, parent=None, *, defer_ui=False):
         super().__init__(parent)
@@ -6081,7 +6102,14 @@ class ModelWorkshopPage(QWidget):
         self._last_refresh_signature = None
         self._refresh_count = 0
         self._registry = None
+        self._selection_pending = {}
+        self._selection_failures = {}
+        self._selection_serial = 0
+        self.selection_checked.connect(self._selection_check_done)
+        from .model_state_events import bus
+        bus().changed.connect(self._state_changed)
         self._registry_check_running = False
+        self._registry_check_failed = False
         self._shown_once = False
         self.registry_checked.connect(self._registry_check_done)
         self._cards: dict[str, ModelCard] = {}
@@ -6144,6 +6172,7 @@ class ModelWorkshopPage(QWidget):
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
+        self._queue_column_sync()
 
 
     def _mac_cpu_runtime_checked(self, result):
@@ -6231,12 +6260,36 @@ class ModelWorkshopPage(QWidget):
         self.role_subtitle.setVisible(self.height() >= 480)
 
     def apply_ui_zoom(self,factor):
+        self._queue_column_sync()
         if hasattr(self,'detail_monogram'):
             model=next((m for m in MODELS if m.key==self.detail_model_key),None)
             if model is not None:
                 edge=round((38 if model.logo_asset else 24)*factor)
                 size=QSize(edge,edge)
                 self.detail_monogram.setPixmap(_model_logo(model,size).pixmap(size))
+
+    def _queue_column_sync(self):
+        # Native style repolishing can restore old fixed widths after the
+        # zoom traversal. Finish the shared table geometry after that pass.
+        if getattr(self, '_column_sync_pending', False):
+            return
+        self._column_sync_pending = True
+        QTimer.singleShot(0, self._sync_list_columns)
+
+    def _sync_list_columns(self):
+        from shiboken6 import isValid
+        if not isValid(self):
+            return
+        self._column_sync_pending = False
+        header = getattr(self, 'list_header', None)
+        if header is None:
+            return
+        from ..app.ui_zoom import effective_factor
+        header.apply_ui_zoom(effective_factor(self))
+        for wrapper in getattr(self, '_cards', {}).values():
+            card = wrapper.__dict__.get('_card')
+            if card is not None and isValid(card):
+                card._sync_column_sizes()
 
     def _show_compact_details(self):
         if self._responsive_detail.parentWidget() is not self._responsive_split:
@@ -6617,7 +6670,7 @@ class ModelWorkshopPage(QWidget):
             model = by_key.get(key)
             if model is None:
                 continue
-            card = (_DeferredModelCard if self._async_status else ModelCard)(model)
+            card = (_DeferredModelCard if self._async_status else ModelCard)(model, host)
             card.selected.connect(self._select_model)
             card.action_requested.connect(self._perform_action)
             card.download_requested.connect(self._download_card)
@@ -6889,12 +6942,15 @@ class ModelWorkshopPage(QWidget):
         if self._registry_check_running:
             if force and self._async_status:
                 from .model_status_cache import request_registry
-                request_registry(self.root, self.registry_checked.emit, force=True)
+                request_registry(self.root, self.registry_checked.emit, force=True,
+                                 progress_callback=self.registry_checked.emit)
             return
         self._registry_check_running = True
+        self._registry_check_failed = False
         if self._async_status:
             from .model_status_cache import request_registry
-            request_registry(self.root, self.registry_checked.emit, force=force)
+            request_registry(self.root, self.registry_checked.emit, force=force,
+                             progress_callback=self.registry_checked.emit)
             return
         root = Path(self.root)
         signal = self.registry_checked
@@ -6917,16 +6973,22 @@ class ModelWorkshopPage(QWidget):
             from .model_status_cache import registry_is_current
             if not registry_is_current(self.root, registry):
                 return  # invalidated after emit but before this queued GUI callback
-        self._registry_check_running = False
+        self._registry_check_running = bool(getattr(registry,'pending_keys',()))
         if registry is None:
+            self._registry_check_failed = True
+            self.refresh(registry=self._registry, check_status=False)
             return
         if _registry_fingerprint(registry) != _registry_fingerprint(self._registry):
             self.refresh(registry=registry)
 
     def _realize_first_cards(self):
+        viewport = getattr(self, '_card_viewport', None)
+        if viewport is not None:
+            viewport.schedule()
+            return
         if self._async_status and not self.isVisible():
             return  # the viewport's Show schedules bounded creation after shell paint
-        for card in [card for card in self._cards.values() if not card.isHidden()][:2]:
+        for card in [card for card in self._cards.values() if not card.isHidden()]:
             if isinstance(card, _DeferredModelCard): card.materialize()
         viewport = getattr(self, '_card_viewport', None)
         if viewport is not None: viewport.schedule()
@@ -7040,7 +7102,7 @@ class ModelWorkshopPage(QWidget):
         )
         self.set_health(installed_count, len(local_models))
         if self._registry is None:
-            self.health_summary.setText(tr('正在检查模型文件…'))
+            self.health_summary.setText(tr('模型检查失败，重新打开模型列表可重试。' if self._registry_check_failed else '正在检查模型文件…'))
         if self._registry is not None and self._registry.error:
             self.health_summary.setText(self._registry.error)
             self.health_summary.setWordWrap(True)
@@ -7049,7 +7111,7 @@ class ModelWorkshopPage(QWidget):
             model = card.model
             state = self._model_state(model, self.browser_role)
             text, enabled = self._action_text(model, state)
-            card.set_action_state(translate(text, language), enabled)
+            card.set_action_state(text, enabled)
             card.sync_configure_button(state)
             card.set_selected(state == "selected")
             manageable = self._has_managed_local_files(model)
@@ -7064,21 +7126,35 @@ class ModelWorkshopPage(QWidget):
                     "ready" if ready else "missing",
                 )
             else:
-                ready = state in {"selected", "installed", "downloaded", "language_unused"}
+                ready = state in {"selected", "installed", "language_unused"}
                 badge_text = (
                     "下载中"
                     if state == "downloading"
-                    else ("已安装" if ready else "未安装")
+                    else ("当前使用" if state=="selected" else "已就绪" if ready else "未安装")
                 )
-                if state=='checking':badge_text='检查独立环境'
+                if state=='checking':badge_text='检查可用性'
+                if state=='check_failed':badge_text='模型检查失败'
                 if state=='runtime_missing':badge_text='权重已安装 · 环境未就绪'
-                if state=='inference_pending':badge_text='模型已加载 · 人声推理待验证'
-                if state=='load_failed':badge_text='文件已校验 · 加载未通过'
+                if state=='inference_pending':badge_text='文件完整 · 待验证'
+                if state=='load_failed':badge_text='验证未通过'
+                if state=='selection_failed':badge_text='状态检查超时'
+                if state=='unsupported_role':badge_text='此用途不支持'
+                if state=='experiment_unready':badge_text='基础可用 · 实验精修待验证'
+                if ready and model.key=='qwen_aligner':
+                    from ..recognition.qwen_family import route_note
+                    note=route_note(self.runtime_settings)
+                    if note:
+                        brief=('用于日语、英语等' if 'FireRed' in note else '用于英语等回退' if 'MFA' in note else note)
+                        badge_text += ' · '+brief
                 if state=='partial':badge_text='权重不完整'
                 if state=='unreadable':badge_text='目录无法读取'
                 if state=='platform_unverified':badge_text='当前平台未验证'
                 if state=='platform_unavailable' and (model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS):
                     badge_text='仅限 Apple Silicon Mac'
+                if state=='downloading':
+                    dialog=self._active_download_dialog(model.download_key)
+                    badge_text=('正在验证' if getattr(dialog,'operation','prepare')=='verify' else
+                                '正在配置环境' if getattr(dialog,'_phase','') in {'runtime_installing','environment','dependencies_installing','interpreter_preparing'} else '正在准备文件')
                 card.set_state_badge(
                     translate(badge_text, language),
                     "ready"
@@ -7122,6 +7198,7 @@ class ModelWorkshopPage(QWidget):
             bindings = dict(model.adapter_bindings)
             if any(bindings.get(role) == backend for role, backend in selected.items()):
                 current.add(model.key)
+                current.update(model.install_keys)
         return current
 
     def _show_storage_manager(self):
@@ -7164,6 +7241,26 @@ class ModelWorkshopPage(QWidget):
         if role == "timeline" and not _local_timeline_supported(model):
             return "unsupported_role"
         models = self.runtime_settings.get("models", {})
+        if model.key in {'qwen_aligner','mfa_aligner'}:
+            if role != 'timeline':return 'unsupported_role'
+            if not model_platform_available(model):return 'platform_unavailable'
+            if model.key in self._selection_pending:return 'checking'
+            if model.key in self._selection_failures:return 'selection_failed'
+            if model.download_key and self._active_download_dialog(model.download_key):return 'downloading'
+            registry=getattr(self,'_registry',None)
+            snapshots=getattr(registry,'alignment_readiness',None)
+            if snapshots is None:
+                if self._async_status:return 'checking'
+                from .alignment_readiness import inspect
+                snapshots=inspect(registry) if registry else {}
+                if registry is not None:registry.alignment_readiness=snapshots
+            from .alignment_readiness import effective_snapshot
+            snapshot=effective_snapshot(registry,model.key,self.runtime_settings)
+            state=snapshot.get('state','checking')
+            if state!='installed':return state
+            from ..recognition.qwen_family import canonical_backend,head_requested
+            selected=canonical_backend(models.get('firered_asr_backend','local'))==model.key
+            return 'selected' if selected else 'installed'
         if not model_platform_available(model):
             return 'platform_unavailable'
         mac_gpu = sys.platform == 'darwin' and model.download_key in MAC_GPU_DOWNLOAD_KEYS
@@ -7177,11 +7274,13 @@ class ModelWorkshopPage(QWidget):
         if model.download_key and self._active_download_dialog(model.download_key):
             return "downloading"
         registry = getattr(self, '_registry', None)
+        if self._async_status and registry is None and model.install_keys:
+            return 'check_failed' if self._registry_check_failed else 'checking'
+        if registry is not None and any(key in getattr(registry,'pending_keys',()) for key in model.install_keys):
+            return 'checking'
         if registry and registry.error and model.install_keys:
             return 'unreadable'
         records = [registry.record(key) for key in model.install_keys] if registry else []
-        if self._async_status and registry is None and model.install_keys:
-            return 'checking'
         if any(record and record.health.value == 'UNREADABLE' for record in records):
             return 'unreadable'
         if any(record and record.health.value in {'PARTIAL', 'CORRUPT'} for record in records):
@@ -7265,9 +7364,18 @@ class ModelWorkshopPage(QWidget):
         if not _runtime_role_available(model, role):
             if model.auto_stage and _readiness_status(model.download_key) in {'FAIL', 'BLOCKED'}:
                 return 'load_failed'
-            return "downloaded"
+            return "unsupported_role"
         if _readiness_status(model.download_key) in {'FAIL','BLOCKED'}:
             return 'load_failed'
+        if model.key in {'qwen_aligner','qwen_ultra_head'}:
+            from ..recognition.alignment_backend import readiness_matches
+            from ..runtime_paths import user_data_root
+            try:
+                readiness = json.loads((user_data_root() / 'model-readiness' / (str(model.download_key)+'.json')).read_text('utf8'))
+            except (OSError, ValueError):
+                readiness = {}
+            if not readiness_matches(model.key, readiness):
+                return 'inference_pending'
         setting_key = {
             "primary": "primary_asr_backend",
             "timeline": "firered_asr_backend",
@@ -7296,13 +7404,16 @@ class ModelWorkshopPage(QWidget):
         if state == 'partial': return '补齐缺失文件', True
         if state == 'unreadable': return '请检查目录权限', False
         if state=='checking':return '检查独立环境…',False
-        if state=='runtime_missing':return '安装 / 修复独立环境',True
-        if state=='inference_pending':return '选择样本验证推理',True
-        if state=='load_failed':return '重试加载验证',True
+        if state=='check_failed':return '检查失败，请重新打开重试',False
+        if state=='runtime_missing':return '配置环境',True
+        if state=='inference_pending':return '验证可用性',True
+        if state=='experiment_unready':return '使用基础Ultra',True
+        if state=='load_failed':return '修复 / 重试',True
+        if state=='selection_failed':return '重试检查',True
         if state == "planned":
             return "尚未接入", False
         if state == "missing":
-            return "下载", True
+            return "下载并准备", True
         if state == "downloading":
             return "查看进度", True
         if state == "downloaded":
@@ -7310,7 +7421,7 @@ class ModelWorkshopPage(QWidget):
                 # 2026-10-14: an installed helper (日语 CTC) is the user's to turn
                 # off and on, like any selected model.
                 return ("取消使用" if _auto_stage_enabled(model, self.runtime_settings) else "使用"), True
-            return "已下载 · 接入中", False
+            return "此用途不支持", False
         if state == "configure":
             return "配置", True
         if state == "configured":
@@ -7325,6 +7436,24 @@ class ModelWorkshopPage(QWidget):
         # Reaching "installed" means the selected role has a verified adapter;
         # _model_state already maps capability-only downloads to "downloaded".
         return "使用", True
+
+    def _alignment_combo_value(self, key):
+        """The sidebar describes the same effective state as its common card."""
+        model = next(m for m in MODELS if m.key == key)
+        state = self._model_state(model, 'timeline')
+        from ..recognition.qwen_family import head_requested
+        name = 'Qwen3 Ultra' if key == 'qwen_aligner' else 'MFA（实验）'
+        if key == 'qwen_aligner' and head_requested(self.runtime_settings):
+            name = 'Ultra（精修）'
+        status = {
+            'selected':'当前使用', 'installed':'已就绪', 'missing':'未安装',
+            'partial':'文件不完整', 'runtime_missing':'缺运行环境',
+            'inference_pending':'待验证', 'load_failed':'验证失败',
+            'unreadable':'文件无法读取', 'checking':'检查中',
+            'downloading':'任务进行中', 'experiment_unready':'实验精修待验证',
+        }.get(state)
+        if status is None:status = self._action_text(model, state)[0]
+        return name, status, state in {'selected','installed'}
 
     def _refresh_combo(self):
         models = self.runtime_settings.get("models", {})
@@ -7347,22 +7476,15 @@ class ModelWorkshopPage(QWidget):
         else:
             self._moss_env_abnormal = False
         primary_backend = models.get("primary_asr_backend", "moss")
-        firered_backend = models.get("firered_asr_backend", "local")
+        from ..recognition.qwen_family import canonical_backend, head_requested
+        firered_backend = canonical_backend(models.get("firered_asr_backend", "local"))
         firered_ready = "firered_aed" in self._installed
-        aligner_ready = "qwen_aligner" in self._installed
         whisper_ready = "whisper_turbo" in self._installed
         paraformer_ready = "paraformer" in self._installed
         qwen_backend = models.get("qwen_asr_backend", "api")
 
-        mfa_ready = {"mfa_aligner", "mfa_aligner_ja"} <= set(self._installed)
-        if firered_backend == "qwen_aligner":
-            timeline_value = (
-                "Qwen ForcedAligner",
-                "已安装" if aligner_ready else "未安装",
-                aligner_ready,
-            )
-        elif firered_backend == "mfa_aligner":
-            timeline_value = ("MFA（实验）", "已安装" if mfa_ready else "未安装", mfa_ready)
+        if firered_backend in {"qwen_aligner", "mfa_aligner"}:
+            timeline_value = self._alignment_combo_value(firered_backend)
         elif firered_backend == "paraformer":
             timeline_value = (
                 "Paraformer",
@@ -7465,9 +7587,12 @@ class ModelWorkshopPage(QWidget):
         if firered_backend == "local":
             add_missing("firered_aed", "FireRed 约 4.4 GB")
         elif firered_backend == "qwen_aligner":
-            add_missing("qwen_aligner", "Qwen ForcedAligner 约 1.8 GB")
+            add_missing("qwen_ultra_aligner", "Qwen3 Ultra 约 1.8 GB")
+            if head_requested(self.runtime_settings):
+                add_missing("qwen_ultra_head", "Ultra 可选精修文件约 1.7 MB")
         elif firered_backend == "mfa_aligner":
             add_missing("mfa_aligner", "MFA（实验）约 2.2 GB")
+            add_missing("mfa_aligner_ja", "MFA 日语文件")
         elif firered_backend == "whisper_turbo":
             add_missing("whisper_turbo", "Whisper Turbo 约 1.6 GB")
         elif firered_backend == "paraformer":
@@ -7498,8 +7623,7 @@ class ModelWorkshopPage(QWidget):
             replacement = next((model.key for model in MODELS if role in _browser_groups(model)), None)
             if replacement:
                 self.detail_model_key = replacement
-        self._apply_filter()
-        self._view_model(self.detail_model_key)
+        self.refresh(registry=self._registry, check_status=False)
 
     def _refresh_role_subtitle(self):
         label = getattr(self, "role_subtitle", None)
@@ -7660,6 +7784,31 @@ class ModelWorkshopPage(QWidget):
         if state in {"selected", "installed", "configured", "unsupported_role"}:
             self._request_model_selection(model, state, role=effective_role)
 
+    def _set_workflow_steps(self, steps):
+        # Keep both widgets and QLayoutItem wrappers for the page lifetime.
+        # Repeated takeAt/deleteLater on role/status transitions exposed a
+        # native wrapper-lifetime failure with the pinned PySide runtime.
+        units = getattr(self, '_workflow_units', None)
+        if units is None:units = self._workflow_units = []
+        while len(units) < len(steps):
+            unit = QWidget(self.detail_workflow_host)
+            row = QHBoxLayout(unit);row.setContentsMargins(0,0,0,0);row.setSpacing(3)
+            arrow = QLabel('→', unit);arrow.setObjectName('workshopFlowArrow');row.addWidget(arrow)
+            chip = QLabel(unit);row.addWidget(chip)
+            units.append((unit,arrow,chip))
+            self.detail_workflow_flow.addWidget(unit)
+        for index,(unit,arrow,chip) in enumerate(units):
+            visible = index < len(steps)
+            if visible:
+                bind_text(chip,steps[index])
+                name = 'workshopFlowChipLast' if index==len(steps)-1 else 'workshopFlowChip'
+                if chip.objectName()!=name:
+                    chip.setObjectName(name);chip.style().unpolish(chip);chip.style().polish(chip)
+                arrow.setVisible(index>0)
+            unit.setVisible(visible)
+        self.detail_workflow_flow.invalidate()
+        self.detail_workflow_host.updateGeometry()
+
     def _refresh_detail(self):
         model = self._cards[self.detail_model_key].model
         language = current_language()
@@ -7675,11 +7824,15 @@ class ModelWorkshopPage(QWidget):
             "partial": "权重不完整 · 保留已有文件",
             "unreadable": "模型目录无法读取",
             "downloading": "正在下载",
-            "downloaded": "已下载 · 接入中",
+            "downloaded": "此用途不支持",
+            "experiment_unready": "基础可用 · 实验精修待验证",
+            "unsupported_role": "此用途不支持",
+            "selection_failed": "状态检查超时，可重试",
             "planned": "规划中",
             "checking": "正在检查独立环境",
+            "check_failed": "模型检查失败，重新打开模型列表可重试。",
             "runtime_missing": "权重已安装 · 环境未就绪",
-            "inference_pending": "模型已加载 · 人声推理待验证",
+            "inference_pending": "文件完整 · 待验证可用性",
             "load_failed": "文件与运行库已准备 · 加载或设备验证未通过",
             "platform_unavailable": "尚未适配 macOS",
             "platform_unverified": "当前平台未验证",
@@ -7700,114 +7853,107 @@ class ModelWorkshopPage(QWidget):
         self.detail_badge.setProperty("tone", badge_tone)
         self.detail_badge.style().unpolish(self.detail_badge)
         self.detail_badge.style().polish(self.detail_badge)
-        bind_text(self.detail_title, model.name)
-        card = self._cards[self.detail_model_key]
-        pixmap = card.monogram.pixmap()
-        if pixmap is not None and not pixmap.isNull():
-            self.detail_monogram.setPixmap(pixmap)
-        self.detail_monogram.setStyleSheet(emphasis_qss(card.monogram.styleSheet()))
-        from .model_languages import language_support
-        self.detail_languages.set_support(language_support(model.key))
-        is_online = model_is_online(model)
-        size_heading = "本地磁盘占用" if is_online else "本地磁盘占用（预计）"
-        size_value = "无需本地下载" if is_online else _install_size_label(model.size)
-        self.install_size_card.setText(translate(size_value, language))
-        self.install_size_card.setToolTip(translate(size_heading, language) + "\n" + translate(SIZE_NOTE, language))
-        self.detail_run.setText(translate(model_mode_text(model), language))
-        if model.download_key:
-            source = "ModelScope → Hugging Face → 镜像 · 可断点续传"
-        elif model.api_preset:
-            source = "在线服务 · 需要 API Key"
-        else:
-            source = "内置"
-        self.detail_source.setText(translate(source, language))
-        self.detail_description.setText(model_scene(model))
-        self.detail_task.setText(" · ".join(model_task_badges(model)))
-        workflow = model_workflow(model)
-        self.detail_workflow.setText(workflow)
-        self.detail_workflow_host.setToolTip(workflow)
-        while self.detail_workflow_flow.count():
-            item = self.detail_workflow_flow.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        steps = [" ".join(part.split()).replace(" + ", "+") for part in workflow.splitlines()[0].split("→")
-                 if part.strip()]
-        # Keep it on one line: when the steps would not fit, leave out the
-        # input step (音频), which every model starts from.
-        metrics = self.detail_title.fontMetrics()
-        available = max(260, self.detail.width() - 44)
-        needed = sum(metrics.horizontalAdvance(step) * 1.1 + 14 for step in steps) + 22 * (len(steps) - 1)
-        if len(steps) > 2 and needed > available:
-            steps = steps[1:]
-        for index, step in enumerate(steps):
-            # An arrow and the step after it wrap together: never a lone arrow.
-            unit = QWidget()
-            unit_row = QHBoxLayout(unit)
-            unit_row.setContentsMargins(0, 0, 0, 0)
-            unit_row.setSpacing(3)
-            if index:
-                arrow = QLabel("→")
-                arrow.setObjectName("workshopFlowArrow")
-                unit_row.addWidget(arrow)
-            chip = QLabel(step)
-            chip.setObjectName("workshopFlowChipLast" if index == len(steps) - 1 else "workshopFlowChip")
-            unit_row.addWidget(chip)
-            self.detail_workflow_flow.addWidget(unit)
-        is_rec = bool(getattr(model, "recommended", False))
-        self.detail_rec_note.setVisible(is_rec)
-        self.detail_rec_reason.setVisible(is_rec)
-        self.detail_metric_section.setVisible(True)
-        if is_rec:
-            rationale = {
-                "mosi_moss_pro": "免安装、不占显卡，云端完成多人转写与说话人区分，适合作为主力转写首选。",
-                "moss": "中文长音频与说话人区分，适合作为第一阶段主力转写。",
-                "firered": "字级时间轴精度适合作为第二阶段字幕时间轴。",
-                "qwen_local": "多语言与专名复核适合作为第三阶段文字复核。",
-                "qwen_aligner": "11 种语言的字/词级对齐，没有 NVIDIA 显卡也能用 CPU 运行，适合作为字幕时间轴。",
-                "mlx_qwen_aligner": "11 种语言的字/词级对齐，在 Apple Silicon 上本机运行，适合作为字幕时间轴。",
-            }.get(model.key, "适合当前 2ByteASR 工作流角色。")
-            self.detail_rec_reason.setText(translate(rationale, language))
-        detail_evidence = (
-            _metric_evidence(
-                model, "accuracy", self.browser_role, self._benchmark_scene,
-                self._api_model_for(model),
-            ),
-            _metric_evidence(
-                model, "speed", self.browser_role, self._benchmark_scene,
-                self._api_model_for(model),
-            ),
-        )
-        bind_text(self.detail_metric_section, translate('2ByteASR 参考指数', language) + ' · ' + _benchmark_scene_label(model_metric_scene(model, self._benchmark_scene), language))
-        for bar, evidence in zip(self.capability_rows, detail_evidence):
-            bar.set_evidence(evidence)
-            bar._track.show()
-        if is_online and not detail_evidence[1].get("available"):
-            self.capability_rows[1].show_word("云端")
-        compatibility = ""
-        if model.download_key:
-            if model.auto_stage:
-                compatibility = translate('安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。', language)
-            elif not _runtime_role_available(model, self.browser_role):
-                compatibility = translate('模型文件可先下载；当前角色适配尚未完成，不会替换现有后端。', language)
-        self.detail_install.setText(compatibility)
-        registry = getattr(self, '_registry', None)
-        records = [registry.record(key) for key in model.install_keys] if registry else []
-        issues = []
-        complete_issues = []
-        for record in records:
-            if not record or not record.missing_files: continue
-            missing = record.missing_files
-            summary = '、'.join(missing[:8])
-            if len(missing) > 8:
-                summary += str(tr('…另有 {count} 项（悬停查看完整路径与清单）', count=len(missing)-8))
-            issues.append(f'{record.installation_path}：' + summary)
-            complete_issues.append(str(record.installation_path)+'\n'+'\n'.join(missing))
-        self.detail_install.setToolTip('\n\n'.join(complete_issues))
-        if issues:
-            self.detail_install.setText((compatibility + '\n' if compatibility else '') + '\n'.join(issues))
-        if registry and registry.error:
-            self.detail_install.setText(registry.error)
-        self.detail_install.setVisible(bool(self.detail_install.text().strip()))
+        content_signature=(model.key,language,self.browser_role,self._benchmark_scene,self._api_model_for(model))
+        if getattr(self,'_detail_content_signature',None)!=content_signature:
+            self._detail_content_signature=content_signature
+            bind_text(self.detail_title, model.name)
+            card = self._cards[self.detail_model_key]
+            pixmap = card.monogram.pixmap()
+            if pixmap is not None and not pixmap.isNull():
+                self.detail_monogram.setPixmap(pixmap)
+            self.detail_monogram.setStyleSheet(emphasis_qss(card.monogram.styleSheet()))
+            from .model_languages import language_support
+            self.detail_languages.set_support(language_support(model.key))
+            is_online = model_is_online(model)
+            size_heading = "本地磁盘占用" if is_online else "本地磁盘占用（预计）"
+            size_value = "无需本地下载" if is_online else _install_size_label(model.size)
+            self.install_size_card.setText(translate(size_value, language))
+            self.install_size_card.setToolTip(translate(size_heading, language) + "\n" + translate(SIZE_NOTE, language))
+            self.detail_run.setText(translate(model_mode_text(model), language))
+            if model.download_key:
+                source = "ModelScope → Hugging Face → 镜像 · 可断点续传"
+            elif model.api_preset:
+                source = "在线服务 · 需要 API Key"
+            else:
+                source = "内置"
+            self.detail_source.setText(translate(source, language))
+            self.detail_description.setText(model_scene(model))
+            self.detail_task.setText(" · ".join(model_task_badges(model)))
+            workflow = model_workflow(model)
+            self.detail_workflow.setText(workflow)
+            self.detail_workflow_host.setToolTip(workflow)
+            steps = [" ".join(part.split()).replace(" + ", "+") for part in workflow.splitlines()[0].split("→")
+                     if part.strip()]
+            # Keep it on one line: when the steps would not fit, leave out the
+            # input step (音频), which every model starts from.
+            metrics = self.detail_title.fontMetrics()
+            available = max(260, self.detail.width() - 44)
+            needed = sum(metrics.horizontalAdvance(step) * 1.1 + 14 for step in steps) + 22 * (len(steps) - 1)
+            if len(steps) > 2 and needed > available:
+                steps = steps[1:]
+            self._set_workflow_steps(steps)
+            is_rec = bool(getattr(model, "recommended", False))
+            self.detail_rec_note.setVisible(is_rec)
+            self.detail_rec_reason.setVisible(is_rec)
+            self.detail_metric_section.setVisible(True)
+            if is_rec:
+                rationale = {
+                    "mosi_moss_pro": "免安装、不占显卡，云端完成多人转写与说话人区分，适合作为主力转写首选。",
+                    "moss": "中文长音频与说话人区分，适合作为第一阶段主力转写。",
+                    "firered": "字级时间轴精度适合作为第二阶段字幕时间轴。",
+                    "qwen_local": "多语言与专名复核适合作为第三阶段文字复核。",
+                    "qwen_aligner": "11 种语言的字/词级对齐，没有 NVIDIA 显卡也能用 CPU 运行，适合作为字幕时间轴。",
+                    "mlx_qwen_aligner": "11 种语言的字/词级对齐，在 Apple Silicon 上本机运行，适合作为字幕时间轴。",
+                }.get(model.key, "适合当前 2ByteASR 工作流角色。")
+                self.detail_rec_reason.setText(translate(rationale, language))
+            detail_evidence = (
+                _metric_evidence(
+                    model, "accuracy", self.browser_role, self._benchmark_scene,
+                    self._api_model_for(model),
+                ),
+                _metric_evidence(
+                    model, "speed", self.browser_role, self._benchmark_scene,
+                    self._api_model_for(model),
+                ),
+            )
+            bind_text(self.detail_metric_section, translate('2ByteASR 参考指数', language) + ' · ' + _benchmark_scene_label(model_metric_scene(model, self._benchmark_scene), language))
+            for bar, evidence in zip(self.capability_rows, detail_evidence):
+                bar.set_evidence(evidence)
+                bar._track.show()
+            if is_online and not detail_evidence[1].get("available"):
+                self.capability_rows[1].show_word("云端")
+            compatibility = ""
+            if model.download_key:
+                if model.auto_stage:
+                    compatibility = translate('安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。', language)
+                elif not _runtime_role_available(model, self.browser_role):
+                    compatibility = translate('模型文件可先下载；当前角色适配尚未完成，不会替换现有后端。', language)
+            self.detail_install.setText(compatibility)
+            registry = getattr(self, '_registry', None)
+            records = [registry.record(key) for key in model.install_keys] if registry else []
+            issues = []
+            complete_issues = []
+            for record in records:
+                if not record or not record.missing_files: continue
+                missing = record.missing_files
+                summary = '、'.join(missing[:8])
+                if len(missing) > 8:
+                    summary += str(tr('…另有 {count} 项（悬停查看完整路径与清单）', count=len(missing)-8))
+                issues.append(f'{record.installation_path}：' + summary)
+                complete_issues.append(str(record.installation_path)+'\n'+'\n'.join(missing))
+            self.detail_install.setToolTip('\n\n'.join(complete_issues))
+            if issues:
+                self.detail_install.setText((compatibility + '\n' if compatibility else '') + '\n'.join(issues))
+            if registry and registry.error:
+                self.detail_install.setText(registry.error)
+            self.detail_install.setVisible(bool(self.detail_install.text().strip()))
+        if model.key in {'qwen_aligner','mfa_aligner'}:
+            snapshot=getattr(self._registry,'alignment_readiness',{}).get(model.key,{})
+            reason=snapshot.get('reason') if state not in {'installed','selected'} else ''
+            if model.key=='qwen_aligner' and state in {'installed','selected'}:
+                from ..recognition.qwen_family import route_note
+                reason=route_note(self.runtime_settings)
+            bind_text(self.detail_description,model_scene(model)+('\n\n'+reason if reason else ''))
         action_text, enabled = self._action_text(model, state)
         if state == "missing":
             action_text = f"{translate('下载', language)} {model.name}"
@@ -7827,6 +7973,78 @@ class ModelWorkshopPage(QWidget):
         self.detail_repair.setEnabled(manageable and state != "downloading" and model.key not in self._removing)
         self.detail_uninstall.setVisible(bool(model.download_key))
         self.detail_uninstall.setEnabled(manageable and not self._model_is_current(model) and model.key not in self._removing)
+
+    def _state_changed(self, event):
+        if event.get('reason') in {'selection_changed','task_phase'}:
+            self.refresh(registry=self._registry,check_status=False);return
+        keys=set(event.get('keys',()))
+        if keys:
+            from ..runtime_paths import user_data_root
+            for key in keys:
+                _READINESS_STATUS.pop(str(user_data_root()/'model-readiness'/(str(key)+'.json')),None)
+        self._check_registry_in_background(force=True)
+
+    def _begin_selection_check(self, model, state, role):
+        if model.key in self._selection_pending:return
+        self._selection_failures.pop(model.key,None)
+        self._selection_serial += 1
+        serial=self._selection_serial
+        token=json.dumps(self.runtime_settings.get('models',{}),sort_keys=True)
+        self._selection_pending[model.key]=(serial,token)
+        from .model_state_events import task_transition
+        task_transition('selection:'+str(id(self))+':'+model.key,[model.download_key],'checking',active=True,operation='check')
+        self.refresh(registry=self._registry,check_status=False)
+        from .model_status_cache import request_registry
+        signal=self.selection_checked
+        def complete(registry):
+            try:signal.emit((model.key,serial,token,role,state,registry))
+            except RuntimeError:pass
+        request_registry(self.root,complete,force=True)
+        QTimer.singleShot(30000,lambda:self._selection_timeout(model.key,serial))
+
+    def _selection_timeout(self,key,serial):
+        pending=self._selection_pending.get(key)
+        if pending and pending[0]==serial:
+            self._selection_pending.pop(key,None)
+            from .model_state_events import task_transition
+            task_transition('selection:'+str(id(self))+':'+key,[('qwen_ultra_aligner' if key=='qwen_aligner' else key)],'timeout',active=False,operation='check',outcome='timeout')
+            self._selection_failures[key]='状态检查超时，已有文件与选择保留。'
+            self.refresh(registry=self._registry,check_status=False)
+
+    def _selection_check_done(self, payload):
+        key,serial,token,role,previous,registry=payload
+        if self._selection_pending.get(key)!=(serial,token):return
+        from .model_status_cache import registry_is_current, request_registry
+        if (registry is not None
+                and token==json.dumps(self.runtime_settings.get('models',{}),sort_keys=True)
+                and not registry_is_current(self.root,registry)):
+            # Another consumer may publish a newer scan after this final
+            # snapshot was queued. Keep this user request and its original
+            # timeout; wait for the latest FINAL result without invalidating
+            # the shared scan again. Progress snapshots still cannot select.
+            signal=self.selection_checked
+            def latest_ready(value):
+                try:signal.emit((key,serial,token,role,previous,value))
+                except RuntimeError:pass
+            request_registry(self.root,latest_ready)
+            return
+        self._selection_pending.pop(key,None)
+        from .model_state_events import task_transition
+        task_transition('selection:'+str(id(self))+':'+key,[('qwen_ultra_aligner' if key=='qwen_aligner' else key)],'checked',active=False,operation='check',outcome='completed')
+        if token!=json.dumps(self.runtime_settings.get('models',{}),sort_keys=True):
+            self.refresh(registry=self._registry,check_status=False);return
+        if registry is None:
+            self._selection_failures[key]='无法完成当前状态检查，可重试。'
+            self.refresh(registry=self._registry,check_status=False);return
+        if registry is not None:self._registry=registry;self._installed=registry.installed_keys()
+        model=next((m for m in MODELS if m.key==key),None)
+        state=self._model_state(model,role) if model else 'missing'
+        if model and state in {'selected','installed'}:
+            self._request_model_selection(model,state,role=role)
+        else:
+            snapshot=getattr(registry,'alignment_readiness',{}).get(key,{})
+            QMessageBox.information(self,tr('模型尚不可用'),snapshot.get('reason') or tr('当前状态未通过可用性检查，请先配置或验证。'))
+        self.refresh(registry=self._registry,check_status=False)
 
     def _perform_action(self, key: str, *, role: str | None = None):
         model = next((m for m in MODELS if m.key == key), None)
@@ -7848,6 +8066,15 @@ class ModelWorkshopPage(QWidget):
         if state == "downloading":
             self._show_active_download(model.download_key)
             return
+        if state=='selection_failed':
+            self._selection_failures.pop(model.key,None)
+            self._begin_selection_check(model,'installed',effective_role);return
+        if state=='experiment_unready':
+            self.ultra_base_requested.emit();return
+        if model.key in {'qwen_aligner','mfa_aligner'} and state in {'selected','installed'}:
+            self._begin_selection_check(model,state,effective_role);return
+        if state in {'inference_pending','load_failed'} and model.key in {'qwen_aligner','mfa_aligner'}:
+            self.download_combination([model.download_key],model.name,operation='verify',auto_start=True);return
         if state in {"missing","partial","runtime_missing","inference_pending","load_failed"} and model.download_key:
             self._download(model)
             return
@@ -7857,18 +8084,6 @@ class ModelWorkshopPage(QWidget):
             return
         if state == "downloaded" and model.auto_stage:
             enable = not _auto_stage_enabled(model, self.runtime_settings)
-            if (enable and model.key == "ja_ctc_aligner"
-                    and self.runtime_settings.get("models", {}).get("firered_asr_backend") == "off"):
-                # CTC is a second pass within the timeline stage. Turning its
-                # switch on while that stage stays off would never run it.
-                aligner = next(m for m in MODELS if m.key == 'qwen_aligner')
-                if self._model_state(aligner, "timeline") not in {"installed", "selected"}:
-                    QMessageBox.information(self, tr("需要安装时间轴模型"),
-                                            tr("日语 CTC 用于校正句首。请先安装并启用 Qwen3-ForcedAligner，再使用日语 CTC。"))
-                    return
-                self.backend_requested.emit("firered", "qwen_aligner")
-                if self.runtime_settings.get("models", {}).get("firered_asr_backend") == "off":
-                    return  # The main window could not save/activate the dependency.
             try:
                 _set_auto_stage_enabled(model, enable, self.runtime_settings)
             except (OSError, RuntimeError, ValueError) as exc:
@@ -7994,6 +8209,7 @@ class ModelWorkshopPage(QWidget):
         *,
         auto_start=False,
         source_mode="AUTO",
+        operation="prepare",
     ):
         keys = tuple(dict.fromkeys(str(key) for key in download_keys if key))
         if not keys:
@@ -8004,7 +8220,10 @@ class ModelWorkshopPage(QWidget):
         for existing in self._download_dialogs:
             same_keys = (existing.download_keys == keys)
             running = (existing.process.state() != QProcess.ProcessState.NotRunning)
-            if same_keys or running:
+            if same_keys or (running and operation!='verify' and getattr(existing,'operation','prepare')!='verify'):
+                if same_keys and not running:
+                    existing.operation=operation
+                    existing.source_combo.setVisible(operation!='verify')
                 # P0-7: Surface even if previously hidden (download continues in background)
                 existing.showNormal()
                 existing.raise_()
@@ -8027,6 +8246,7 @@ class ModelWorkshopPage(QWidget):
             self,
             download_keys=keys,
             display_name=display_name,
+            operation=operation,
         )
         dialog.source_combo.setCurrentIndex(max(0, dialog.source_combo.findData(source_mode)))
         dialog._launch_origin = 'first_use_preset' if auto_start else 'user_model_workshop'
@@ -8280,12 +8500,12 @@ class ModelWorkshopPage(QWidget):
             QTimer.singleShot(0, lambda: self._uninstall_model(key))
 
     def _download_completed(self, dialog: ModelDownloadDialog, ok: bool, message: str):
-        self._mac_cpu_probe_result=None
-        from ..system.environment import reset_preflight_cache
-        from ..system.runtime_registry import reset_runtime_registry_cache
-        reset_runtime_registry_cache()
-        reset_preflight_cache()
-        self.refresh()
+        if getattr(dialog,'operation','prepare')!='verify':
+            self._mac_cpu_probe_result=None
+            from ..system.runtime_registry import reset_runtime_registry_cache
+            reset_runtime_registry_cache()
+        self._check_registry_in_background(force=True)
+        self.refresh(registry=self._registry,check_status=False)
         self._sync_download_activity()
         if ok:
             # 2026-10-16 (user: runtimes 17 GB): drop the superseded runtime and
@@ -8461,6 +8681,10 @@ class ModelPickerPanel(QWidget):
     def begin_session(self) -> None:
         """Reset temporary pinning when the cached picker is opened again."""
         self._pinned_keys.clear()
+        selected = (self.controller._selected_model_key_for_role(self.role)
+                    if hasattr(self.controller, '_selected_model_key_for_role') else None)
+        if selected in self.cards:
+            self._pinned_keys.append(selected)
         self.refresh()
         self.scroll.verticalScrollBar().setValue(0)
 
@@ -8475,16 +8699,16 @@ class ModelPickerPanel(QWidget):
         header.setSpacing(12)
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        self.title = QLabel()
+        self.title = QLabel(self)
         self.title.setObjectName("pickerTitle")
         title_box.addWidget(self.title)
-        self.current_badge = QLabel()
+        self.current_badge = QLabel(self)
         self.current_badge.setObjectName("pickerCurrent")
         title_box.addWidget(self.current_badge)
-        self.breadcrumb = QLabel()   # kept for callers; the title names the role now
+        self.breadcrumb = QLabel(self)   # kept for callers; the title names the role now
         self.breadcrumb.hide()
         header.addLayout(title_box, 1)
-        self.close_button = QPushButton("×")
+        self.close_button = QPushButton("×", self)
         self.close_button.setObjectName("pickerClose")
         self.close_button.setAutoDefault(False)
         bind_text(self.close_button, "关闭", property="toolTip")
@@ -8499,7 +8723,7 @@ class ModelPickerPanel(QWidget):
         self.filter_group.setExclusive(True)
         self.filter_buttons: dict[str, QPushButton] = {}
         for key, label in FILTERS.get(self.role, FILTERS["primary"]):
-            chip = bind_text(QPushButton(), label)
+            chip = bind_text(QPushButton(self), label)
             chip.setObjectName("pickerFilter")
             chip.setCheckable(True)
             chip.setAutoDefault(False)
@@ -8511,14 +8735,14 @@ class ModelPickerPanel(QWidget):
             chips.addWidget(chip)
         chips.addStretch(1)
         layout.addLayout(chips)
-        self.scope_note = bind_text(QLabel(), "字幕时间戳仅支持本地模型，须具备时间戳或对齐能力。")
+        self.scope_note = bind_text(QLabel(self), "字幕时间戳仅支持本地模型，须具备时间戳或对齐能力。")
         self.scope_note.setObjectName("pickerFooterNote")
         self.scope_note.setWordWrap(True)
         self.scope_note.setVisible(self.role == "timeline")
         layout.addWidget(self.scope_note)
         # 2026-10-18: why the Chinese timing models are not used for the
         # spoken language chosen on home (shown for Japanese/English only).
-        self.language_note = QLabel()
+        self.language_note = QLabel(self)
         self.language_note.setObjectName("workshopLanguageNote")
         self.language_note.setWordWrap(True)
         self.language_note.hide()
@@ -8548,7 +8772,7 @@ class ModelPickerPanel(QWidget):
                 continue
             online = model_is_online(model)
             card = (_DeferredPickerCard if getattr(self.controller, '_async_status', False) else PickerCard)(
-                model, self.role, recommended=key in recommended, logo=_paint_picker_logo(model),
+                model, self.role, parent=host, recommended=key in recommended, logo=_paint_picker_logo(model),
                 accuracy=_metric_evidence(model, "accuracy", self.role),
                 online=online,
                 size_text="" if online else ui_literal(_install_size_label(model.size), language),
@@ -8572,7 +8796,7 @@ class ModelPickerPanel(QWidget):
 
         footer = QHBoxLayout()
         footer.setSpacing(10)
-        self.footer_note = QLabel()
+        self.footer_note = QLabel(self)
         self.footer_note.setObjectName("pickerFooterNote")
         footer.addWidget(self.footer_note)
         footer.addStretch(1)
@@ -8661,7 +8885,7 @@ class ModelPickerPanel(QWidget):
                     self._pinned_keys.append(key)
             elif state == "missing":
                 text = "下载并安装"
-            card.set_action_state(translate(text, language), enabled)
+            card.set_action_state(text, enabled)
             card.sync_configure_button(state)
             card.set_selected(state == "selected")
             card.set_diarize(diarize)
@@ -8675,7 +8899,7 @@ class ModelPickerPanel(QWidget):
                 ready = state in {"selected", "installed", "downloaded", "language_unused"}
                 badge_text = {'partial': '权重不完整', 'unreadable': '目录无法读取',
                               'runtime_missing': '环境未就绪',
-                              'checking': '检查运行库', 'inference_pending': '推理待验证',
+                              'checking': '正在检查', 'check_failed': '检查失败', 'inference_pending': '推理待验证',
                               'load_failed': '加载未通过'}.get(state, "已安装" if ready else "未安装")
                 card.set_state_badge(translate(badge_text, language), "ready" if ready else "missing")
         selected_key = self.controller._selected_model_key_for_role(self.role) \

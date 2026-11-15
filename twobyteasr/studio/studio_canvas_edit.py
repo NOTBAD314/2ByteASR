@@ -25,9 +25,17 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         if not hasattr(self, "position_overlay"):
             return
         if enabled and (not self.project or not self.selected_cue_id):
-            self.position_edit_button.setChecked(False)
+            # 2026-11-14: stay on. Turning it off here (nothing selected yet)
+            # left the picture undraggable for the rest of the session.
             return
         self.ensure_active_subtitle_renderer(reason="transform_toggle")
+
+    def _canvas_caption_press_controller(self):
+        controller = getattr(self, "_canvas_caption_press", None)
+        if controller is None:
+            from .canvas_caption_press import CanvasCaptionPress
+            controller = self._canvas_caption_press = CanvasCaptionPress(self)
+        return controller
 
     def _sync_transform_visual_overlay(self) -> None:
         """Compatibility hook: the interaction overlay is the sole visual."""
@@ -533,7 +541,8 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
                 if self.undo_stack.index() == expected_index and self.undo_stack.canUndo():
                     self.undo_stack.undo()
                 self.select_cue(previous_id)
-                self.position_edit_button.setChecked(False)
+                # Hide only: unchecking the toggle here turned dragging off
+                # for good after one cancelled new caption (2026-11-14).
                 self.position_overlay.hide()
             elif self.position_edit_button.isChecked() and self.selected_cue_id:
                 self._toggle_position_edit(True)

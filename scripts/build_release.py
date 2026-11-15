@@ -21,6 +21,7 @@ EXCLUDED = {'.git', '__pycache__', '.pytest_cache', '.mimosa', '.cache', 'tmp',
             'logs', 'reports', '.venv', '.venv-main', '.venv-moss'}
 BAD_EXT = {'.pyc', '.pyo', '.log', '.2byteasr', '.2byteproj', '.mp4', '.mp3',
            '.mov', '.flv', '.wav', '.safetensors', '.ckpt', '.pt', '.pth'}
+PUBLIC_DIAGNOSTIC_AUDIO = {'assets/diagnostics/speech_zh.wav': '92fadad02200d5a9295f16c4e904855efd7771fc2cb7ab73935af2bf69a9b557'}
 PUBLIC_RENDERER_AUDIO = {
     'renderer/node_modules/@remotion/studio-server/web/beep.wav':
         '3cf5b39164b9f8282b10705ecff18d5c73d4e2efb8193a1e6e7ad8f53fc34d24',
@@ -61,7 +62,7 @@ def validate_renderer_audio(root):
 def release_input_allowed(relative):
     return (relative.name.lower() not in {'secrets.json', 'secrets.dat', '.env'}
             and (relative.suffix.lower() not in BAD_EXT
-                 or relative.as_posix() in PUBLIC_RENDERER_AUDIO))
+                 or relative.as_posix() in PUBLIC_RENDERER_AUDIO or relative.as_posix() in PUBLIC_DIAGNOSTIC_AUDIO))
 
 
 def main():
@@ -75,6 +76,8 @@ def main():
         raise ValueError('Choose a NEW directory under repository tmp; existing outputs are never overwritten')
     validate_renderer_fonts(ROOT)
     validate_renderer_audio(ROOT)
+    for rel,expected in PUBLIC_DIAGNOSTIC_AUDIO.items():
+        if digest(ROOT/rel)!=expected:raise ValueError('Diagnostic audio mismatch: '+rel)
     # Build fixed renderer code before freezing. End-user exports only provide
     # props; a missing/changed developer build can still be built persistently.
     sys.path.insert(0,str(ROOT))

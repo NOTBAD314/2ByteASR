@@ -54,8 +54,26 @@ def canonical(table: dict[str, str]) -> str:
 
 
 def write(language: str, table: dict[str, str]) -> None:
-    with (LOCALE_DIR / f"{language}.json").open("w", encoding="utf-8", newline="\n") as stream:
+    # Keep the file's own line endings (en/ja are CRLF, the rest LF): writing
+    # LF over a CRLF file turned a two-key change into a whole-file diff.
+    path = LOCALE_DIR / f"{language}.json"
+    newline = "\r\n" if path.is_file() and b"\r\n" in path.read_bytes()[:4096] else "\n"
+    with path.open("w", encoding="utf-8", newline=newline) as stream:
         stream.write(canonical(table))
+
+
+def key_mismatch(tables: dict[str, dict[str, str]], *, shown: int = 5) -> list[str]:
+    """Name the keys each required catalog lacks, not only that they differ."""
+    union = set().union(*(set(table) for table in tables.values()))
+    found = []
+    for language, table in tables.items():
+        absent = [key for key in union if key not in table]
+        if absent:
+            absent.sort()
+            more = f" (+{len(absent) - shown} more)" if len(absent) > shown else ""
+            found.append(f"{language}.json lacks {len(absent)} key(s) the other catalog has: "
+                         + ", ".join(repr(key) for key in absent[:shown]) + more)
+    return found
 
 
 def fields(text: str):
@@ -74,8 +92,7 @@ def problems() -> list[str]:
     if len(tables) != len(LANGUAGES):
         return found
     keys = [set(table) for table in tables.values()]
-    if any(names != keys[0] for names in keys[1:]):
-        found.append("catalogs do not carry the same keys")
+    found.extend(key_mismatch(tables))
     for language, table in tables.items():
         if (LOCALE_DIR / f"{language}.json").read_text(encoding="utf-8") != canonical(table):
             found.append(f"{language}.json is not in canonical form (run add with an empty batch)")
@@ -179,6 +196,7 @@ def add(batch_path: Path) -> int:
     batch = json.loads(batch_path.read_text(encoding="utf-8"), object_pairs_hook=_pairs_without_duplicates)
     tables = {language: load(language) for language in LANGUAGES + OPTIONAL_LANGUAGES
               if language in LANGUAGES or (LOCALE_DIR / f"{language}.json").is_file()}
+    changed: set[str] = set()
     for source, pair in batch.items():
         if (not isinstance(pair, dict) or not set(LANGUAGES) <= set(pair)
                 or not set(pair) <= set(LANGUAGES + OPTIONAL_LANGUAGES)):
@@ -189,9 +207,15 @@ def add(batch_path: Path) -> int:
                 raise SystemExit(f"{source!r}: empty {language}")
             if fields(source) != fields(value):
                 raise SystemExit(f"{source!r}: {language} placeholders differ")
-            tables.setdefault(language, {})[source] = value
+            table = tables.setdefault(language, {})
+            if table.get(source) != value:
+                table[source] = value
+                changed.add(language)
     for language, table in tables.items():
-        write(language, table)
+        path = LOCALE_DIR / f"{language}.json"
+        # An empty batch still canonicalizes every catalog (see `check`).
+        if language in changed or not batch or not path.is_file() or path.read_text(encoding="utf-8") != canonical(table):
+            write(language, table)
     return len(batch)
 
 

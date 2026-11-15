@@ -470,7 +470,8 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
         app._theme_window_qss = sheet
         if not hasattr(app, "_theme_root_filter"):
             app._theme_root_filter = _ThemeRootFilter(app)
-            app.installEventFilter(app._theme_root_filter)
+            from .app_events import listen
+            listen(app._theme_root_filter, (QEvent.Type.Paint, _PARENT_CHANGE, _SHOW))
             app.setStyleSheet("/* Window-owned theme sheets; see _ThemeRootFilter. */")
         for root in app.topLevelWidgets():
             if root.parentWidget() is None and root.objectName() != "subtitleStudio" and root.isVisible():

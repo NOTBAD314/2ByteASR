@@ -196,12 +196,24 @@ class TimedUnit:
     end_basis: str
     # Slot posterior within the window: peak class probability, mass within
     # one class of the peak, standard deviation of the time distribution.
-    start_p: float = 0.0
-    end_p: float = 0.0
-    start_local: float = 0.0
-    end_local: float = 0.0
-    start_spread_ms: float = 0.0
-    end_spread_ms: float = 0.0
+    start_p: float | None = None
+    end_p: float | None = None
+    start_local: float | None = None
+    end_local: float | None = None
+    start_spread_ms: float | None = None
+    end_spread_ms: float | None = None
+    base_start_ms: int | None = None
+    base_end_ms: int | None = None
+    refined_start_ms: float | None = None
+    refined_end_ms: float | None = None
+    refinement_status: str | None = None
+    refinement_reason: str | None = None
+    sample_id: str | None = None
+    pass_id: str | None = None
+    unit_id: int | None = None
+    start_slot: int | None = None
+    end_slot: int | None = None
+    posterior_available: bool = False
 
 
 def timed_units(units, raw_ms, fixed_ms, offset_ms: int, posterior=None, window_ms=None) -> list[TimedUnit]:
@@ -219,18 +231,30 @@ def timed_units(units, raw_ms, fixed_ms, offset_ms: int, posterior=None, window_
             if kinds[slot] == "model" and (float(value) <= 0.0 or float(value) >= float(window_ms) - ALIGNER_STEP_MS):
                 kinds[slot] = "window_edge"
     posterior = posterior or {}
-    p_max = list(posterior.get("p_max") or [0.0] * len(raw_ms))
-    local = list(posterior.get("p_local") or [0.0] * len(raw_ms))
-    spread = list(posterior.get("spread_ms") or [0.0] * len(raw_ms))
+    p_max = list(posterior.get("p_max") or [None] * len(raw_ms))
+    local = list(posterior.get("p_local") or [None] * len(raw_ms))
+    spread = list(posterior.get("spread_ms") or [None] * len(raw_ms))
+    refinement = posterior.get('refinement') or {}
+    base = refinement.get('base_fixed_ms') or list(fixed_ms)
+    slots = refinement.get('slots') or [dict(input_position=x) for x in posterior.get('slot_positions',[])]
+    def number(value):
+        return None if value is None else float(value)
     out = []
     for index, unit in enumerate(units):
         a, b = 2 * index, 2 * index + 1
         out.append(TimedUnit(unit.text, unit.char_start, unit.char_end, unit.kind, unit.word_index,
                              int(round(float(raw_ms[a]))), int(round(float(raw_ms[b]))),
-                             int(round(float(fixed_ms[a]))) + int(offset_ms),
-                             int(round(float(fixed_ms[b]))) + int(offset_ms), kinds[a], kinds[b],
-                             float(p_max[a]), float(p_max[b]), float(local[a]), float(local[b]),
-                             float(spread[a]), float(spread[b])))
+                             int(round(float(fixed_ms[a])+float(offset_ms))),
+                             int(round(float(fixed_ms[b])+float(offset_ms))), kinds[a], kinds[b],
+                             number(p_max[a]), number(p_max[b]), number(local[a]), number(local[b]),
+                             number(spread[a]), number(spread[b]),
+                             int(round(float(base[a])+float(offset_ms))), int(round(float(base[b])+float(offset_ms))),
+                             float(fixed_ms[a]) + float(offset_ms) if refinement else None,
+                             float(fixed_ms[b]) + float(offset_ms) if refinement else None,
+                             refinement.get('status'), refinement.get('reason'), refinement.get('sample_id',posterior.get('sample_id')),
+                             refinement.get('pass_id',posterior.get('pass_id')), index,
+                             slots[a]['input_position'] if slots else None, slots[b]['input_position'] if slots else None,
+                             bool(posterior.get('p_max'))))
     return out
 
 
@@ -331,6 +355,8 @@ def reliable_segments(words: list[TimedUnit], chars: list[TimedUnit] | None = No
                     reject("char_pass_disagrees_with_word_span")
                 elif not (_measured(left.end_basis) and _measured(right.start_basis)):
                     reject("repaired_slot")
+                elif left.end_local is None or right.start_local is None:
+                    reject("posterior_unavailable")
                 elif min(left.end_local, right.start_local) < MIN_CHAR_CUT_LOCAL_MASS:
                     reject("low_posterior")
                 elif not (left.end_ms - left.start_ms > 0 and right.end_ms - right.start_ms > 0):

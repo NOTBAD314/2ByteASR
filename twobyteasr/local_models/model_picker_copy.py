@@ -45,6 +45,8 @@ PICKER_COPY = {
     'openai_api': PickerCopy('通用多语言，可加提示词。', tags=('multilingual',)),
     'mai_latest': PickerCopy('微软 MAI 云端转写，带字级时间。', tags=('multilingual',)),
     'custom_asr_api': PickerCopy('接你自己的转写服务。'),
+    'qwen_ultra_aligner': PickerCopy('给已有原文配时间；日语替换精度待人工标注验收。', tags=('multilingual',)),
+    'qwen_ultra_head': PickerCopy('在 Ultra 边界附近精修；额外开销与效果独立评测。'),
     'qwen_aligner': PickerCopy('给已有字幕配字词时间，支持 11 种语言。', tags=('multilingual',)),
     'ja_ctc_aligner': PickerCopy('日语句首校正，跟在时间轴后面运行。'),
     'mfa_aligner': PickerCopy('实验：经典强制对齐，只用 CPU。'),

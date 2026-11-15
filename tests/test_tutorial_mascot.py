@@ -204,6 +204,7 @@ def test_the_help_menu_keeps_five_round_entries(app, monkeypatch):
     calls = []
     window = QWidget()
     window.help_button = QPushButton('说明', window)
+    window._open_bunny_chat = lambda: calls.append('bunny')
     window._start_home_tour = lambda: calls.append('tour')
     window._open_sample_project = lambda: calls.append('sample')
     window._next_step_action = lambda action: calls.append(action)
@@ -212,6 +213,7 @@ def test_the_help_menu_keeps_five_round_entries(app, monkeypatch):
     MainWindow._show_help_menu(window)
     menu = shown[0]
     rows = [a for a in menu.actions() if isinstance(a, help_menu.CuteMenuAction)]
+    # 2026-11-14: 「问问兔白」 moved to its own header button beside 设置.
     assert [a.text() for a in rows] == ['新手教学', '打开范例工程', '选择识别方式…', '回报问题／导出诊断…',
                                         '重新显示工作台操作提示']
     texts = ' '.join(a.text() for a in menu.actions())

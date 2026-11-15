@@ -166,7 +166,7 @@ def repair_chinese_range(unit, action, project, *, fallback=False):
     return repaired, [dict(reason='local_minimal_fallback' if fallback else 'ai_accepted', before=boundaries, after=final)]
 
 
-def validate_quality(unit, action, language, *, hard_limit=None):
+def validate_quality(unit, action, language, *, hard_limit=None, project=None):
     if action.action == "keep":
         pieces = [cue.text for cue in unit.originals] if not unit.owner_id else [unit.cue.text]
         cursor = 0
@@ -181,7 +181,10 @@ def validate_quality(unit, action, language, *, hard_limit=None):
             raise RefineError("建议断点位于词语、专名、数字单位或 Unicode 字形内部", "semantic_boundary")
         bounds = [0, *(index + 1 for index in offsets), len(unit.cue.text)]
         pieces = [unit.cue.text[a:b] for a, b in zip(bounds, bounds[1:])]
-    if hard_limit:
+    if hard_limit and language.split('-')[0] == 'en':
+        from .english_refine_constraints import validate_piece
+        for piece in pieces: validate_piece(piece, unit.cue, project)
+    elif hard_limit:
         _preferred, _hard, length = refinement_limits(language)
         if any(length(piece) > hard_limit for piece in pieces):
             raise RefineError(f"结果超过单条字幕硬限制 {hard_limit}，需要重新选择完整词语之间的断点", "constraint_conflict")
@@ -235,6 +238,12 @@ def build_range_replacement(unit, action, project, used_ids):
     if action.action == "keep":
         # keep means keep the input boundaries, including a multi-cue range.
         return []
+    if action.action == 'wrap':
+        from .english_refine_constraints import layout_text
+        result = copy.deepcopy(unit.originals)
+        for cue in result:
+            cue.text = action.layout_text if len(result) == 1 and action.layout_text else layout_text(cue, project)[0].text
+        return result
     if action.action != "split":
         from .sentence_refine import build_replacement_cues
         return build_replacement_cues(unit.cue, action, project=project, used_ids=used_ids)
@@ -281,4 +290,9 @@ def build_range_replacement(unit, action, project, used_ids):
         result.append(clone)
     if "".join(cue.text for cue in result) != text:
         raise RefineError("写回前逐字符校验失败", "text_fidelity_error")
+    from .segmentation_profiles import project_language_tag
+    from .english_refine_constraints import effective_language
+    if project is not None and effective_language([unit.cue.text], project_language_tag(project)).split('-')[0] == 'en':
+        from .english_refine_constraints import validate_piece
+        for cue in result: cue.text = validate_piece(cue.text, cue, project)
     return result

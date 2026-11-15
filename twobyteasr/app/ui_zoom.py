@@ -314,6 +314,12 @@ def protect_studio(page: QWidget | None, factor: float | None = None) -> None:
     with the unscaled window sheet whenever the zoom is not 100%."""
     if page is None:
         return
+    if page.__dict__.get('_theme_component_scope', False):
+        # Managed Studio's complete, unscaled sheet includes the window rules
+        # exactly once, regardless of Home zoom. theme_scopes owns its update.
+        from ..design.theme_scopes import apply_scope
+        apply_scope(page)
+        return
     factor = zoom_factor() if factor is None else float(factor)
     app = QApplication.instance()
     window_sheet = getattr(app, "_theme_window_qss", "") if app is not None else ""
@@ -321,7 +327,11 @@ def protect_studio(page: QWidget | None, factor: float | None = None) -> None:
     base = page.property("_uiZoomStudioBase")
     if base is None or current != page.property("_uiZoomStudioLast"):
         base = current  # Studio or the theme manager set a new sheet
-    target = (window_sheet + base) if abs(factor - 1.0) > 1e-6 and window_sheet else base
+    # theme_scopes.apply_scope already prefixes the unscaled window sheet.
+    # Prefixing it again restyled the whole Studio a second time on every
+    # zoom step and theme refresh, with the window sheet twice (2026-11-14).
+    prefixed = bool(window_sheet) and base.startswith(window_sheet)
+    target = (window_sheet + base) if abs(factor - 1.0) > 1e-6 and window_sheet and not prefixed else base
     page.setProperty("_uiZoomStudioBase", base)
     page.setProperty("_uiZoomStudioLast", target)
     if target != current:
