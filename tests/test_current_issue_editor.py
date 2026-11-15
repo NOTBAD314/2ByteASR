@@ -52,6 +52,7 @@ def test_adoption_remembers_only_the_chosen_span_and_roundtrips(tmp_path,monkeyp
         initial=page._caption_draft.suggestions
         assert len(initial)==(2 if legacy else 1)
         chosen=initial[0];expected=chosen.apply(before)
+        page.caption_suggestion_text.selected=(0,0)
         assert page._apply_editor_suggestion()
         assert p.cues[0].text==before
         assert page.subtitle_edit_input.toPlainText()==expected
@@ -163,12 +164,12 @@ def test_editor_binding_draft_cancel_layer_undo_and_pronoun_focus(tmp_path, monk
         assert page.subtitle_edit_input.toPlainText() == '😀他们弹吉他，她看其他人'
         cursor = page.subtitle_edit_input.textCursor(); cursor.setPosition(qt_position(cursor.document().toPlainText(), 1))
         page.subtitle_edit_input.setTextCursor(cursor)
-        page._flip_editor_pronoun()
-        assert page.subtitle_edit_input.toPlainText() == '😀她们弹吉他，他看其他人'
+        page._replace_editor_pronoun('她')
+        assert page.subtitle_edit_input.toPlainText() == '😀她们弹吉他，她看其他人'
         assert page.project.generation_metadata['translations']['a'] == '😀他们弹吉他，她看其他人'
         page.select_cue('b')  # a bound draft must not move with selection
         assert page._end_caption_editor(keep_open=False)
-        assert page.project.generation_metadata['translations']['a'] == '😀她们弹吉他，他看其他人'
+        assert page.project.generation_metadata['translations']['a'] == '😀她们弹吉他，她看其他人'
         assert page._cue_lookup['a'].text == "l'altro è qui"
         page.undo_stack.undo(); assert page.project.generation_metadata['translations']['a'] == '😀他们弹吉他，她看其他人'
         page.undo_stack.redo(); assert page.project.generation_metadata['translations']['a'].startswith('😀她们')
@@ -241,13 +242,13 @@ def test_precise_pronouns_plural_words_and_input_focus(tmp_path, monkeypatch):
         editor.setPlainText('他们弹吉他，她看其他人')
         cursor = editor.textCursor(); cursor.setPosition(0); cursor.setPosition(8, QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(cursor)
-        assert page._flip_editor_pronoun()
-        assert editor.toPlainText() == '她们弹吉他，他看其他人'
-        cursor.setPosition(0); editor.setTextCursor(cursor)
-        assert page._flip_editor_pronoun()
-        assert editor.toPlainText() == '他们弹吉他，她看其他人'
+        assert not page._replace_editor_pronoun('她')
+        cursor.setPosition(0);cursor.setPosition(1,QTextCursor.MoveMode.KeepAnchor);editor.setTextCursor(cursor)
+        assert page._replace_editor_pronoun('她')
+        assert editor.toPlainText() == '她们弹吉他，她看其他人'
         QTest.mouseClick(page.caption_pronoun_button,Qt.MouseButton.LeftButton)
-        assert editor.toPlainText()=='她们弹吉他，他看其他人'
+        assert editor.toPlainText()=='她们弹吉他，她看其他人'
+        assert [o.text for o in page.caption_suggestion_text.current_row().row.options]==list('他她它')
         page._cancel_canvas_inline_edit()
     finally:
         page.close_page(); page.deleteLater()

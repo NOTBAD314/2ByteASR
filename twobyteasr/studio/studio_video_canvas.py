@@ -202,9 +202,33 @@ class MpvCanvas(QFrame):
         self._sync_timer.setInterval(150)
         self._sync_timer.timeout.connect(self._reconcile_position)
 
+    def _caption_press(self):
+        """The page's press-to-drag controller; None for source monitors."""
+        page = self._studio_page()
+        factory = getattr(page, '_canvas_caption_press_controller', None) if page is not None else None
+        return factory() if callable(factory) else None
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        press = self._caption_press()
+        if press is not None and press.press(event):
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        press = self._caption_press()
+        if press is not None and press.move(event):
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        press = self._caption_press()
+        if press is not None and press.release(event):
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         from .canvas_visibility import visible_object_at

@@ -198,8 +198,10 @@ class ApplicationSettingsDialog(SpringDialog):
             saving.addWidget(ChoiceChips(self.interval,prefix='每隔',suffix='保存一次'))
             self.interval.setEnabled(self.auto_save.isChecked());self.auto_save.toggled.connect(self.interval.setEnabled)
             self.recovery_policy=field_width(StudioComboBox(),'preferred')
-            for label,value in [('每次询问','ask'),('恢复较新的自动保存','auto'),('打开正式保存','official')]:self.recovery_policy.addItem(label,value)
-            self.recovery_policy.setCurrentIndex(max(0,self.recovery_policy.findData(str(preferences.get('recovery_policy','ask')))))
+            # 2026-11-15 (user): opening the newer autosave is the default; asking is a choice here.
+            from .application_settings import effective_recovery_policy
+            for label,value in [('恢复较新的自动保存','auto'),('每次询问','ask'),('打开正式保存','official')]:self.recovery_policy.addItem(label,value)
+            self.recovery_policy.setCurrentIndex(max(0,self.recovery_policy.findData(effective_recovery_policy(preferences))))
             stacked(saving,'打开工程时',ChoiceChips(self.recovery_policy))
             project.addStretch()
 
@@ -348,6 +350,45 @@ class ApplicationSettingsDialog(SpringDialog):
             self._section_builders.append(('高级设置',build_advanced))
         else:
             self.advanced_controls = {}
+        def build_bunny():
+            # 2026-11-15 (user): how much 问问兔白 may do and read, and how hard she thinks.
+            from . import bunny_permissions
+            from .bunny_chat import REASONING_CHIPS, REASONING_KEY, REASONING_LEVELS
+            from .onboarding import load_state
+            values = bunny_permissions.load()
+            bunny = page('兔白权限', '决定「问问兔白」能帮你做多少、能看哪些东西。上传、删除、开始识别或导出，兔白都不会替你按；会计费的 AI 补救默认也先问你。')
+            doing = section(bunny)
+            self.bunny_level = field_width(StudioComboBox(), 'preferred')
+            for value in bunny_permissions.LEVELS:
+                self.bunny_level.addItem(bunny_permissions.CHIP_LABELS[value], value)
+            self.bunny_level.setCurrentIndex(max(0, self.bunny_level.findData(values['level'])))
+            stacked(doing, '兔白能做多少', ChoiceChips(self.bunny_level),
+                    '只指路：只看、只讲，不动手。修改先问我：换页面、跳播放头、选字幕、设入出点、开面板和窗口直接做，'
+                    '整体偏移、改说话人名字、改样式、首页语言设置要你按「帮我做」。能撤销的直接做：这些修改也直接做，事后可以一键撤销。')
+            reading = section(bunny)
+            self.bunny_read_subtitles = toggle(values['read_subtitles'])
+            bind_text(self.bunny_read_subtitles, '让兔白读字幕原文', property='accessibleName')
+            row(reading, '让兔白读字幕原文', self.bunny_read_subtitles, '查问题时一次读一小段，会发给你设置的文字 AI')
+            self.bunny_read_diagnostics = toggle(values['read_diagnostics'])
+            bind_text(self.bunny_read_diagnostics, '让兔白读诊断和识别记录', property='accessibleName')
+            row(reading, '让兔白读诊断和识别记录', self.bunny_read_diagnostics, '已经隐藏 Key 和个人路径，帮她找出错原因')
+            self.bunny_allow_paid = toggle(values['allow_paid'])
+            bind_text(self.bunny_allow_paid, '会计费的 AI 处理也直接做', property='accessibleName')
+            row(reading, '会计费的 AI 处理也直接做', self.bunny_allow_paid,
+                '例如重跑失败的 AI 断句、补做没跑完的 AI 校对；用你自己的 Key 计费。只在「能撤销的直接做」时生效，关着就每次先问你')
+            self._build_bunny_memory(bunny, section, row, toggle, values)
+            thinking = section(bunny)
+            self.bunny_reasoning = field_width(StudioComboBox(), 'preferred')
+            for value in REASONING_LEVELS:
+                self.bunny_reasoning.addItem(REASONING_CHIPS[value], value)
+            current = load_state().get(REASONING_KEY, 'high')
+            self.bunny_reasoning.setCurrentIndex(max(0, self.bunny_reasoning.findData(current)))
+            stacked(thinking, '思考深度', ChoiceChips(self.bunny_reasoning),
+                    '快速：不思考，回得最快。深思（默认）：先想再答。最深：难题用，会慢一点；难的问题兔白也会自己换成最深。'
+                    '聊天框输入栏右边的小按钮也能换')
+            bunny.addStretch()
+
+        self._section_builders.append(('兔白权限', build_bunny))
         self._section_builders+=[('快捷键',self._build_shortcut_page),
                                  ('外部 AI（MCP）',lambda:self._build_mcp_page(page, section, row, toggle, parent)),
                                  ('关于',build_about)]
@@ -899,7 +940,125 @@ class ApplicationSettingsDialog(SpringDialog):
             return
         if not self._save_shortcuts():
             return
+        self._save_bunny_permissions()
         super().accept()
+
+    def _build_bunny_memory(self, lay, section, row, toggle, values):
+        """兔白's memory of the user and the user's knowledge base for her (2026-11-15). Entries are
+        added and removed at once (like the MCP page's actions); the on/off switch saves with the page."""
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem, QPlainTextEdit
+        from . import bunny_memory
+        rows = section(lay)
+        self.bunny_remember = toggle(values['remember'])
+        bind_text(self.bunny_remember, '让兔白记住我的习惯', property='accessibleName')
+        row(rows, '让兔白记住我的习惯', self.bunny_remember,
+            '她会把你的长期习惯和喜好记成一句话，下次也照着配合你；和知识库一起发给你设置的文字 AI。不记密钥、密码和账号')
+        self.bunny_memory_list = QListWidget()
+        self.bunny_memory_list.setObjectName('bunnyMemoryList')
+        self.bunny_memory_list.setMinimumHeight(140)
+        self.bunny_memory_list.setWordWrap(True)
+        rows.addWidget(self.bunny_memory_list)
+
+        def refresh():
+            self.bunny_memory_list.clear()
+            entries = bunny_memory.load()
+            for entry in entries:
+                kind = tr({'memory': '兔白记的', 'knowledge': '知识库', 'recipe': '配方'}.get(entry['kind'], '知识库'))
+                item = QListWidgetItem(f'[{kind}] {entry["text"]}')
+                item.setData(Qt.ItemDataRole.UserRole, entry['id'])
+                item.setToolTip(entry['text'])
+                self.bunny_memory_list.addItem(item)
+            if not entries:
+                placeholder = QListWidgetItem(tr('还没有记忆，也还没教过兔白什么。'))
+                placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.bunny_memory_list.addItem(placeholder)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        remove = button_role(QPushButton(), 'secondary')
+        bind_text(remove, '删掉选中的')
+        clear_memory = button_role(QPushButton(), 'secondary')
+        bind_text(clear_memory, '清空兔白记的')
+        actions.addWidget(remove)
+        actions.addWidget(clear_memory)
+        actions.addStretch(1)
+        rows.addLayout(actions)
+        # 2026-11-16: each project's chat stays on this computer and comes back with the project.
+        self.bunny_keep_chat = toggle(values.get('keep_chat', True))
+        bind_text(self.bunny_keep_chat, '每个工程的聊天留在这台电脑上', property='accessibleName')
+        row(rows, '每个工程的聊天留在这台电脑上', self.bunny_keep_chat,
+            '聊天保存在本机；最近几轮会和新问题一起发送给文字 AI。关闭记忆或此开关后不再保存和恢复')
+        clear_chats = button_role(QPushButton(), 'secondary')
+        bind_text(clear_chats, '清空保存的聊天')
+        chats_line = QHBoxLayout()
+        chats_line.addWidget(clear_chats)
+        chats_line.addStretch(1)
+        rows.addLayout(chats_line)
+        self.bunny_clear_chats = clear_chats
+        clear_chats.clicked.connect(lambda: (bunny_memory.clear_chats(), self.bunny_teach_status.setText(tr('保存的聊天清空了。'))))
+        teach_title = QLabel()
+        bind_text(teach_title, '教兔白一件事（知识库）')
+        teach_title.setObjectName('settingsRowTitle')
+        rows.addWidget(teach_title)
+        self.bunny_teach = QPlainTextEdit()
+        self.bunny_teach.setObjectName('bunnyTeach')
+        self.bunny_teach.setFixedHeight(72)
+        bind_text(self.bunny_teach, '例如：我的频道叫二字节，主播叫阿明，嘉宾叫小雨；字幕统一用黄色字黑色描边', property='placeholderText')
+        rows.addWidget(self.bunny_teach)
+        add = button_role(QPushButton(), 'primary')
+        bind_text(add, '加进知识库')
+        self.bunny_teach_status = QLabel()
+        self.bunny_teach_status.setObjectName('settingsDescription')
+        self.bunny_teach_status.setWordWrap(True)
+        line = QHBoxLayout()
+        line.addWidget(add)
+        line.addWidget(self.bunny_teach_status, 1)
+        rows.addLayout(line)
+
+        def add_entry():
+            try:
+                bunny_memory.add(self.bunny_teach.toPlainText(), 'knowledge', source='user')
+            except ValueError as exc:
+                self.bunny_teach_status.setText(str(exc))
+                return
+            self.bunny_teach.clear()
+            self.bunny_teach_status.setText(tr('加好了，兔白下次回答就会照着来。'))
+            refresh()
+
+        def remove_selected():
+            for item in self.bunny_memory_list.selectedItems():
+                bunny_memory.remove(item.data(Qt.ItemDataRole.UserRole))
+            refresh()
+
+        def clear_hers():
+            bunny_memory.clear('memory')
+            refresh()
+        add.clicked.connect(add_entry)
+        remove.clicked.connect(remove_selected)
+        clear_memory.clicked.connect(clear_hers)
+        self.bunny_memory_add, self.bunny_memory_remove, self.bunny_memory_clear = add, remove, clear_memory
+        refresh()
+
+    def _save_bunny_permissions(self):
+        """「兔白权限」, when its page was opened (2026-11-15)."""
+        level = self.__dict__.get('bunny_level')
+        if level is None:
+            return
+        from . import bunny_permissions
+        from .bunny_chat import REASONING_KEY
+        from .onboarding import load_state, save_state
+        bunny_permissions.save({'level': level.currentData(), 'read_subtitles': self.bunny_read_subtitles.isChecked(),
+                                'read_diagnostics': self.bunny_read_diagnostics.isChecked(),
+                                'allow_paid': self.bunny_allow_paid.isChecked(),
+                                'remember': self.bunny_remember.isChecked(),
+                                'keep_chat': self.bunny_keep_chat.isChecked()})
+        reasoning = self.bunny_reasoning.currentData()
+        if reasoning:
+            save_state(dict(load_state(), **{REASONING_KEY: reasoning}))
+        chat = getattr(self.parentWidget().window() if self.parentWidget() else None, '_bunny_chat', None)
+        if chat is not None and reasoning:
+            chat.reasoning = reasoning
+            chat._sync_reasoning_button()
 
     def _repair_project_association(self):
         from PySide6.QtWidgets import QMessageBox

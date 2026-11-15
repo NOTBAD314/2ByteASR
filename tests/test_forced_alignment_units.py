@@ -90,6 +90,11 @@ def test_adjacent_cues_of_one_speaker_are_aligned_as_one_run():
             dict(key=2, start_ms=19770, end_ms=21230, speaker="S01", text="言ってたのにね"),
             dict(key=3, start_ms=21300, end_ms=22000, speaker="S02", text="おはよう"),
             dict(key=4, start_ms=22100, end_ms=23000, speaker="S01", text="いやー")]
+    from twobyteasr.recognition.alignment_items import annotate_row
+    n=len(rows[0]['text'])
+    for i,(a,b) in enumerate([(0,n),(n,n+len(rows[1]['text']))]):
+        rows[i]=annotate_row(rows[i],[dict(source_id='same-asr-parent',char_start=a,char_end=b,
+            raw_text=rows[i]['text'],source_time=[18.518,21.230])])
     runs = plan_runs(rows)
     assert [[m["key"] for m in run["members"]] for run in runs] == [[1, 2], [3], [4]]
     first, second, third = runs
@@ -127,6 +132,8 @@ def test_a_real_pause_ends_a_run_even_when_display_times_touch():
     assert longest_silence_ms(regions, 1500, 3150) == 1000
     cues = [SimpleNamespace(start=1.0, end=2.7, speaker="S01", text="一つ目"),      # display end bridged to 2.7
             SimpleNamespace(start=2.7, end=4.2, speaker="S01", text="二つ目")]
+    for i,cue in enumerate(cues):
+        cue.source_spans=[dict(source_id='one-parent',char_start=i*3,char_end=(i+1)*3,raw_text=cue.text,source_time=[1.,4.2])]
     _jobs, joined = alignment_jobs(cues)
     assert [len(run["members"]) for run in joined] == [2]
     _jobs, split = alignment_jobs(cues, speech_regions=regions)

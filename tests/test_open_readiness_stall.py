@@ -94,13 +94,14 @@ def test_captions_prepared_one_by_one_count_as_progress():
 
 
 def test_recovery_prompt_time_is_not_counted(monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QMessageBox, QWidget
+    from PySide6.QtWidgets import QWidget
+    from twobyteasr.projects.project_recovery_dialog import RecoveryDialog     # 2026-11-15: 「两张卡片」
     gate = SimpleNamespace(last_progress=time.perf_counter(), profile={})
     page = QWidget()
     page._readiness = SimpleNamespace(user_wait=lambda: StudioReadiness.user_wait(gate))
     controller = object.__new__(StudioProjectController)
     controller.page = page
-    monkeypatch.setattr(QMessageBox, "exec", lambda self: time.sleep(0.2) or 0)
+    monkeypatch.setattr(RecoveryDialog, "exec", lambda self: time.sleep(0.2) or 0)
     before = gate.last_progress
     assert controller._recovery_choice(tmp_path / "missing.2byteproj") == "cancel"
     assert gate.last_progress - before >= 0.19

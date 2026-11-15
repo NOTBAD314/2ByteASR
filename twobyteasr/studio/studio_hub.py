@@ -996,6 +996,7 @@ class StudioHubMixin:
         key = (str(cover), round(width*dpr), round(height*dpr))
         stamp = (record.get('cover_mtime_ns'), record.get('cover_size'))
         label._library_cover_request = key
+        label._library_cover_record = dict(record)
         if getattr(label,'_library_cover_stamp',None)!=stamp:label._library_cover_rechecked=None
         label._library_cover_stamp=stamp
         label._library_cover_dpr = dpr
@@ -1064,7 +1065,19 @@ class StudioHubMixin:
         key = (str(path), int(width), int(height))
         getattr(self, '_library_cover_queued', set()).discard(key)
         if not isinstance(image, QImage) or image.isNull():
-            getattr(self, '_library_cover_labels', {}).pop(key, None)
+            labels = getattr(self, '_library_cover_labels', {}).pop(key, [])
+            from collections import OrderedDict
+            retries = self.__dict__.setdefault('_cover_decode_retries', OrderedDict())
+            for label in labels:
+                record = getattr(label, '_library_cover_record', {})
+                stamp = (record.get('cover_mtime_ns'), record.get('cover_size'))
+                if (record.get('path') and retries.get(str(path)) != stamp
+                        and not getattr(self, '_close_requested', False)):
+                    retries[str(path)] = stamp
+                    retries.move_to_end(str(path))
+                    while len(retries) > 128:
+                        retries.popitem(last=False)
+                    self._queue_project_cover_backfill(record)
             return
         from collections import OrderedDict
         try:
@@ -1742,10 +1755,11 @@ class StudioHubMixin:
         app=QApplication.instance()
         gate=getattr(self,'_readiness',None)
         if app is not None:
+            from ..design.app_events import listen, unlisten
             if hub and getattr(self,'_event_filter_installed',False):
-                app.removeEventFilter(self);self._event_filter_installed=False
+                unlisten(self);self._event_filter_installed=False
             elif not hub and not getattr(gate,'active',False) and not getattr(self,'_event_filter_installed',False):
-                app.installEventFilter(self);self._event_filter_installed=True
+                listen(self,self._APP_EVENT_TYPES);self._event_filter_installed=True
         layers = getattr(self, "workspace_layers", None)
         if layers is not None:
             layers.setCurrentWidget(self.studio_empty if hub else self.workspace_splitter)

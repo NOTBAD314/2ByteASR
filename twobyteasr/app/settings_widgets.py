@@ -43,6 +43,7 @@ SECTION_ICONS = {
     '高级设置': ('fa5s.sliders-h', '#3f7a44'),
     '快捷键': ('fa5s.keyboard', '#9a5444'),
     '外部 AI（MCP）': ('fa5s.plug', '#5560a8'),
+    '兔白权限': ('fa5s.user-shield', '#b05a7a'),
     '关于': ('fa5s.info-circle', '#7a6c5e'),
 }
 

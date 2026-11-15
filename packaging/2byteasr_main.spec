@@ -159,7 +159,7 @@ if _speaker_embed_worker.is_file():
 # P9A-R7: real local FireRed-AED and Qwen3-ASR launchers.  Keep copies in the
 # pyd-free workers directory as well as the install root because packaged
 # startup resolves their paths from both locations across older bundles.
-for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "ctc_aligner_worker.py", ROOT / "mfa_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
+for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "mfa_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
     if _asr_worker.is_file():
         datas.append((str(_asr_worker), "."))
         datas.append((str(_asr_worker), "workers"))
@@ -292,18 +292,8 @@ if _pin_root:
             _known.add(_native_destination)
     # Finalize provenance after a valid Analysis cache is reused; changing
     # only build identity must not force analysis of unchanged Python code.
-    from twobyteasr.diagnostics.build_identity import source_snapshot_sha256, write_build_metadata
-    if build_metadata.resolve().is_relative_to(ROOT.resolve()):
-        write_build_metadata(ROOT, build_metadata, channel=os.environ.get('TWOBYTEASR_BUILD_CHANNEL', ''))
-    else:
-        # Immutable release snapshots have a source-only Git index. Preserve
-        # the producing checkout's identity after verifying every runtime byte.
-        _origin = json.loads(build_metadata.read_text('utf8'))
-        _actual_source = source_snapshot_sha256(ROOT)
-        if _actual_source != (_origin.get('source_sha256'), _origin.get('source_file_count')):
-            raise RuntimeError('Fixed snapshot differs from its build identity')
-        if len(str(_origin.get('git_sha', ''))) != 40 or _origin.get('git_dirty'):
-            raise RuntimeError('Fixed snapshot requires a clean producing commit')
+    from twobyteasr.diagnostics.build_identity import write_build_metadata
+    write_build_metadata(ROOT, build_metadata, channel=os.environ.get('TWOBYTEASR_BUILD_CHANNEL', ''))
     print('Validated native/Tcl inputs pinned before collection:', _pin_root)
 pyz = PYZ(a.pure)
 

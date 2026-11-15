@@ -10,7 +10,7 @@ import re
 from .english_text import RULES
 from .english_segmentation import split_tokens, break_scores
 
-CUE_RULES = replace(RULES, max_chars=84, preferred_chars=60)
+CUE_RULES = replace(RULES, max_chars=40, preferred_chars=40)
 LONG_PAUSE = .8
 
 

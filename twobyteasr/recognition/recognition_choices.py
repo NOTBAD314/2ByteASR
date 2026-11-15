@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 CUDA_TIMELINE = {'local'}             # FireRed AED
 CUDA_REVIEW = {'local', 'firered_llm'}
-CPU_TIMELINE = {'qwen_aligner', 'whisper_turbo', 'paraformer', 'mfa_aligner'}
+CPU_TIMELINE = {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head', 'whisper_turbo', 'paraformer', 'mfa_aligner'}
 # 2026-10-19: Montreal Forced Aligner (experimental): Chinese and Japanese only,
 # CPU, a Windows conda runtime. Other languages are aligned by Qwen3 instead.
 MFA_TIMELINE = 'mfa_aligner'
@@ -36,7 +36,7 @@ REVIEW_LABELS = {'api': '云端识别服务', 'whisper_turbo': 'Whisper', 'sense
 # timing tools here and are rerouted (moss_firered_pipeline.run_firered_stage).
 # The home card, the model picker, the workshop and the pre-run summary name
 # the stage through language_timeline so they never disagree.
-LANGUAGE_ALIGNERS = frozenset({'qwen_aligner', 'mlx_qwen_aligner'})
+LANGUAGE_ALIGNERS = frozenset({'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head', 'mlx_qwen_aligner'})
 ALIGNED_LANGUAGES = ('ja', 'en', 'ko', 'es', 'de', 'fr', 'pt', 'it', 'ru')
 TIMELINE_LABELS = {'local': 'FireRedASR2-AED', 'whisper_turbo': 'Whisper', 'paraformer': 'Paraformer'}
 
@@ -97,6 +97,8 @@ def unavailable_on_host(role: str, backend: str, host: HostProfile | None = None
     """
     host = host or host_profile()
     needs_cuda = {'primary': CUDA_PRIMARY, 'timeline': CUDA_TIMELINE, 'review': CUDA_REVIEW}.get(role, set())
+    if backend in {'qwen_ultra_aligner','qwen_ultra_head'} and host.system == 'darwin':
+        return 'Ultra 尚未完成 Mac 独立验收；请使用现有 MLX 或官方兼容版'
     if backend in needs_cuda and not host.cuda_possible:
         if host.system == 'darwin' and backend in {'primary': APPLE_GPU_PRIMARY,
                                                    'timeline': APPLE_GPU_TIMELINE}.get(role, set()):
@@ -118,10 +120,12 @@ def cloud_followups(models: dict, installed: set, host: HostProfile) -> tuple[di
     """
     patch, notes = {}, []
     timeline = str(models.get('firered_asr_backend', 'local'))
-    needs = {'local': 'firered_aed', 'qwen_aligner': 'qwen_aligner', 'whisper_turbo': 'whisper_turbo',
+    needs = {'qwen_ultra_aligner':'qwen_ultra_aligner', 'qwen_ultra_head':'qwen_ultra_head', 'local': 'firered_aed', 'qwen_aligner': 'qwen_aligner', 'whisper_turbo': 'whisper_turbo',
              'paraformer': 'paraformer', 'mlx_qwen_aligner': 'mlx_qwen_aligner', MFA_TIMELINE: 'mfa_aligner'}
+    ultra=models.get('qwen_alignment_profile')=='ultra-v5'
+    if ultra:needs['qwen_aligner']='qwen_ultra_aligner'
     mlx_aligner_ready = 'mlx_qwen_aligner' in installed and host.apple_silicon and host.mlx_runtime
-    aligner_ready = 'qwen_aligner' in installed and host.main_runtime
+    aligner_ready = ('qwen_ultra_aligner' if ultra else 'qwen_aligner') in installed and host.main_runtime
     firered_on_mac = host.apple_silicon and 'firered_aed' in installed and host.main_runtime
     if timeline in CUDA_TIMELINE and not host.cuda_possible and not firered_on_mac:
         fallback = 'mlx_qwen_aligner' if mlx_aligner_ready else 'qwen_aligner' if aligner_ready else 'off'
@@ -256,20 +260,15 @@ def language_timeline(timeline: str, spoken: str, settings: dict) -> dict | None
     timeline = str(timeline or 'off')
     if spoken not in ALIGNED_LANGUAGES or timeline == 'off':
         return None
-    ctc = False
-    if spoken == 'ja':
-        try:
-            from .ctc_alignment import enabled, model_dir
-            ctc = bool(enabled(settings) and model_dir())
-        except Exception:  # noqa: BLE001 - the stage is still named by the aligner
-            ctc = False
+    ctc = False  # legacy result field; the dedicated Japanese CTC stage is retired
     if timeline == MFA_TIMELINE:
         if spoken in MFA_LANGUAGES:
             return {'spoken': spoken, 'rerouted': False, 'ctc': ctc,
                     'name': 'MFA（实验）+ 日语 CTC' if ctc else 'MFA（实验）'}
         return {'spoken': spoken, 'rerouted': True, 'ctc': False, 'name': 'Qwen3 对齐'}
+    name = {'qwen_aligner':'Qwen3 对齐 · Ultra' if (settings.get('models') or {}).get('qwen_alignment_profile')=='ultra-v5' else 'Qwen3 对齐（兼容）','qwen_ultra_aligner':'Qwen3 Ultra 对齐', 'qwen_ultra_head':'Qwen3 Ultra + Local Head（实验）'}.get(timeline, 'Qwen3 对齐')
     return {'spoken': spoken, 'rerouted': timeline not in LANGUAGE_ALIGNERS, 'ctc': ctc,
-            'name': 'Qwen3 对齐 + 日语 CTC' if ctc else 'Qwen3 对齐'}
+            'name': name + (' + 日语 CTC' if ctc else '')}
 
 
 def run_disclosure(settings: dict) -> dict:
@@ -334,7 +333,7 @@ def run_disclosure(settings: dict) -> dict:
         info['timestamps'] = ('本地 MFA（实验）实测的中文 / 日语字词时间，其他语言用 Qwen3 对齐（对不上的地方保留'
                               + native + '并标为估算）')
         info['local'].append('MFA 对齐（实验，CPU）')
-    elif timeline in {'qwen_aligner', 'mlx_qwen_aligner'}:
+    elif timeline in {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head', 'mlx_qwen_aligner'}:
         info['timestamps'] = '本地 Qwen3 对齐模型实测的字/词时间（对不上的地方保留' + native + '并标为估算）'
         info['local'].append('Qwen3 对齐模型（Apple Silicon 用 MLX）' if timeline == 'mlx_qwen_aligner'
                              else 'Qwen3 对齐模型（无 NVIDIA 显卡时用 CPU）')

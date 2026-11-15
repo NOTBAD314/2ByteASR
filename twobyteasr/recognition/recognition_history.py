@@ -149,6 +149,8 @@ _TIMELINE_NAMES = {
     "local": "FireRed",
     "firered": "FireRed",
     "qwen_aligner": "Qwen Aligner",
+    "qwen_ultra_aligner": "Qwen Ultra",
+    "qwen_ultra_head": "Qwen Ultra + Local Head",
     "mfa_aligner": "MFA（实验）",
     "whisper_turbo": "Whisper Turbo",
     "paraformer": "Paraformer",

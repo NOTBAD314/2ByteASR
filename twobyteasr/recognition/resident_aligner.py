@@ -20,17 +20,18 @@ class ResidentAligner:
         self.readers = []
         self.stopping = threading.Event()
         self.requests = 0
+        self.loaded_signature = None
 
-    def _reader(self, pipe, kind):
+    def _reader(self, pipe, kind, incoming, stopping):
         try:
             for line in iter(pipe.readline, ''):
-                while not self.stopping.is_set():
+                while not stopping.is_set():
                     try:
-                        self.lines.put((kind, line), timeout=.1)
+                        incoming.put((kind, line), timeout=.1)
                         break
                     except queue.Full:
                         pass
-                if self.stopping.is_set():
+                if stopping.is_set():
                     break
         finally:
             pipe.close()
@@ -43,16 +44,24 @@ class ResidentAligner:
             check()
         try:
             check()
-            reuse = self.process is not None and self.process.poll() is None
+            from .alignment_backend import fingerprint
+            request = json.loads(Path(manifest).read_text(encoding='utf-8'))
+            command_identity = [str(value) for value in command]
+            for flag in ('--manifest', '--output'):
+                index = command_identity.index(flag)
+                command_identity[index+1] = '<request-file>'
+            signature = fingerprint(dict(command=command_identity, identity=request.get('policy', {}).get('alignment_identity')))
+            reuse = self.process is not None and self.process.poll() is None and signature == self.loaded_signature
             if not reuse:
                 self._close_locked()
-                self.stopping.clear()
+                self.stopping = threading.Event()
                 self.lines = queue.Queue(maxsize=256)
                 self.process = popen_hidden_subprocess([*command, '--resident'],
-                    purpose='Qwen3 resident forced aligner', process_factory=subprocess.Popen,
+                    purpose='Qwen3 resident forced aligner', process_factory=subprocess.Popen, own_process_tree=True,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding='utf-8', errors='replace', bufsize=1)
-                self.readers = [threading.Thread(target=self._reader, args=(pipe, kind), daemon=True)
+                self.loaded_signature = signature
+                self.readers = [threading.Thread(target=self._reader, args=(pipe, kind, self.lines, self.stopping), daemon=True)
                     for pipe, kind in ((self.process.stdout, 'stdout'), (self.process.stderr, 'stderr'))]
                 for reader in self.readers:
                     reader.start()
@@ -90,7 +99,8 @@ class ResidentAligner:
                 if not line.startswith(MARKER):
                     continue
                 detail = json.loads(line[len(MARKER):])
-                record_run_event('alignment_progress', engine='QWEN3-ALIGNER', label='Qwen3 字级对齐',
+                record_run_event('alignment_progress', engine='QWEN3-ALIGNER',
+                    label='Qwen3 词级对齐' if detail.get('pass_id')=='word' else 'Qwen3 字级对齐',
                     worker_pid=self.process.pid, worker_state=detail.get('event'),
                     **{key:value for key,value in detail.items() if key not in ('event','output')})
                 if detail.get('event') == 'request_completed' and Path(detail['output']) == Path(output):
@@ -99,30 +109,45 @@ class ResidentAligner:
                     payload['model_load_count'] = 0 if reuse else 1
                     return payload
         except BaseException:
-            self._close_locked()
+            self._close_locked(force=True)
             raise
         finally:
             self.lock.release()
 
-    def _close_locked(self):
+    def _close_locked(self, *, force=False):
         from ..system.processes import stop_process_tree
-        process, self.process = self.process, None
-        if process is not None:
-            if process.poll() is None:
-                try:
+        process = self.process
+        self.loaded_signature = None
+        if process is None:
+            return
+        owned_job = getattr(process, '_request_job', None)
+        # Windows Python venv redirectors can exit before their actual model
+        # child releases mmap handles. The existing Job owns every descendant.
+        if force and owned_job is not None:
+            owned_job.close(timeout=3)
+            process.wait(timeout=3)
+        elif process.poll() is None:
+            try:
+                if force:
+                    stop_process_tree(process)
+                else:
                     process.stdin.write('{"shutdown":true}\n')
                     process.stdin.flush()
                     process.stdin.close()
                     process.wait(timeout=5)
-                except (OSError, ValueError, subprocess.TimeoutExpired):
-                    stop_process_tree(process)
-            self.stopping.set()
-            for reader in self.readers:
-                reader.join(timeout=2)
-            from .cache import record_run_event
-            record_run_event('asr_worker_exited', model_id='qwen_aligner', backend='qwen3-aligner',
-                pid=process.pid, returncode=process.poll(), resident=True,
-                readers_stopped=not any(reader.is_alive() for reader in self.readers))
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                stop_process_tree(process)
+        if owned_job is not None:
+            owned_job.close(timeout=3)  # also after redirector/root exit
+        self.stopping.set()
+        for reader in self.readers:
+            reader.join(timeout=2)
+        from .cache import record_run_event
+        record_run_event('asr_worker_exited', model_id='qwen_aligner', backend='qwen3-aligner',
+            pid=process.pid, returncode=process.poll(), resident=True, forced=force,
+            owned_descendants_released=owned_job is not None,
+            readers_stopped=not any(reader.is_alive() for reader in self.readers))
+        self.process = None
         self.readers = []
 
     def close(self):
@@ -134,7 +159,7 @@ def run_resident(command, manifest, output, *, check):
     from .run_context import get_runtime_context
     context = get_runtime_context()
     # The queue owns this dictionary/lock, including contexts of local shards.
-    key = ('qwen3', str(command[0]), str(command[-1]))
+    key = ('qwen3',)
     with context.media_identity_lock:
         session = context.aligner_sessions.setdefault(key, ResidentAligner())
     return session.run(command, manifest, output, check=check)

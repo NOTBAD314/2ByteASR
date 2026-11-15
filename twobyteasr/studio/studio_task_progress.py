@@ -86,11 +86,19 @@ class SubtitleTask:
         counts["total"] = len(self.cue_ids)
         return counts
 
+    def headline(self, counts=None):
+        counts = counts or self.counts()
+        phase = self.phase
+        if self.ended is not None and counts["failed"]:
+            phase = "任务已结束，部分范围失败"
+        elif self.ended is not None and counts['review']:
+            phase = '任务已结束，含需检查范围'
+        alignment = getattr(self, 'alignment_progress', None)
+        if self.ended is not None and alignment:
+            phase += f" · 窗口 {alignment['done']}/{alignment['total']} · 缓存 {alignment['cached']} · 局部重算 {alignment['local']}"
+        return phase
+
     def summary(self):
         counts = self.counts()
-        phase = self.phase
-        if self.ended and counts["failed"]:
-            phase = "任务已结束，部分范围失败"
-        elif self.ended and counts['review']:
-            phase = '任务已结束，含需检查范围'
-        return f"{self.kind} · {counts['processed']}/{counts['total']} {self.unit_label} · {phase} · {self.elapsed:.0f} 秒"
+        return (f"{self.kind} · {counts['processed']}/{counts['total']} {self.unit_label} · "
+                f"{self.headline(counts)} · {self.elapsed:.0f} 秒")

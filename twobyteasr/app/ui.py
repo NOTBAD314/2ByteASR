@@ -397,12 +397,28 @@ REVIEW_MODEL_CHOICES = (
 )
 TIMELINE_MODEL_CHOICES = (
     ("FireRed 字幕时间轴（字级，推荐）", "local", {"firered_aed"}),
-    ("Qwen3 ForcedAligner 字幕时间轴（多语种强制对齐）", "qwen_aligner", {"qwen_aligner"}),
+    ("Qwen3 对齐 · Ultra", "qwen_aligner", {"qwen_ultra_aligner"}),
     ("Whisper 字幕时间轴（多语种，短块级）", "whisper_turbo", {"whisper_turbo"}),
     ("Paraformer 字幕时间轴（中文时间戳）", "paraformer", {"paraformer"}),
     ("Qwen3 ForcedAligner 字幕时间轴（Apple Silicon · MLX）", "mlx_qwen_aligner", {"mlx_qwen_aligner"}),
     ("MFA 字幕时间轴（实验 · 中文 / 日语）", "mfa_aligner", {"mfa_aligner", "mfa_aligner_ja"}),
 )
+
+
+def _set_combo_item_enabled(combo, row, enabled):
+    """Set pinned QStandardItemModel flags without exposing an item wrapper.
+
+    PySide 6.9 retains item() return wrappers after clear() (PYSIDE-3143).
+    Qt's own QStandardItem::setFlags stores flags at UserRole-1. Using the
+    index API avoids stale Python QStandardItem wrappers and keeps the gate.
+    """
+    model = combo.model()
+    index = model.index(row, combo.modelColumn(), combo.rootModelIndex())
+    if not index.isValid():return False
+    current = model.flags(index)
+    flags = current | Qt.ItemFlag.ItemIsEnabled if enabled else current & ~Qt.ItemFlag.ItemIsEnabled
+    if flags == current:return True
+    return bool(model.setData(index, flags.value, int(Qt.ItemDataRole.UserRole)-1))
 
 
 def populate_available_asr_choices(primary, review, timeline, settings, root=APP_ROOT, *, installed=None):
@@ -416,20 +432,39 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
 
     def fill(combo, local_choices, trailing, setting_key, fallback):
         wanted = str(desired.get(setting_key, fallback))
-        combo.blockSignals(True)
-        combo.clear()
-        for label, value, required in local_choices:
-            if required <= installed and value not in unavailable_backends:
-                combo.addItem(label, value)
-        for label, value in trailing:
-            combo.addItem(label, value)
-        index = combo.findData(wanted)
-        if index < 0:
-            if wanted not in {value for _label, value in trailing}:
-                missing.append((setting_key, wanted))
-            index = combo.findData(fallback)
-        combo.setCurrentIndex(max(0, index))
-        combo.blockSignals(False)
+        if setting_key=='firered_asr_backend':
+            from ..recognition.qwen_family import canonical_backend
+            wanted=canonical_backend(wanted)
+        rows=[]
+        for label,value,required in local_choices:
+            if setting_key=='firered_asr_backend' and value in {'qwen_aligner','mfa_aligner'} and value not in unavailable_backends:
+                from ..local_models.model_status_cache import cached_registry
+                from ..local_models.alignment_readiness import effective_snapshot
+                snapshot=effective_snapshot(cached_registry(root),value,settings)
+                ready=bool(snapshot.get('ready'))
+                suffix='' if ready else ' · '+({'runtime_missing':'配置环境','inference_pending':'待验证','load_failed':'验证失败','partial':'文件不完整','missing':'未下载','experiment_unready':'精修待验证'}.get(snapshot.get('state'),'检查中'))
+                rows.append((label+suffix,value,ready))
+            elif required <= installed and value not in unavailable_backends:
+                rows.append((label,value,True))
+        rows.extend((label,value,True) for label,value in trailing)
+        blocked=combo.blockSignals(True)
+        try:
+            # Readiness/task progress changes only text/flags. Preserve the
+            # existing model rows, popup position and current selection.
+            same=combo.count()==len(rows) and all(combo.itemData(i)==value for i,(_,value,_) in enumerate(rows))
+            if not same:
+                combo.clear()
+                for label,value,_ in rows:combo.addItem(label,value)
+            for row,(label,_,ready) in enumerate(rows):
+                if combo.itemText(row)!=label:combo.setItemText(row,label)
+                if not _set_combo_item_enabled(combo,row,ready):
+                    raise RuntimeError('无法更新模型选项的可用状态')
+            index = combo.findData(wanted)
+            if index < 0:
+                if wanted not in {value for _label,value in trailing}:missing.append((setting_key,wanted))
+                index=combo.findData(fallback)
+            combo.setCurrentIndex(max(0,index))
+        finally:combo.blockSignals(blocked)
 
     fill(
         primary,
@@ -912,7 +947,7 @@ def persist_asr_configuration(
         "mosi_transcriptions",
     }:
         raise RuntimeError("ASR API 协议选项无效。")
-    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"}:
+    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"}:
         raise RuntimeError("字幕时间轴后端选项无效。")
     missing_keys = []
     if models["qwen_asr_backend"] == "api" or models["primary_asr_backend"] == "api":
@@ -1042,7 +1077,10 @@ def _bind_home_shortcuts(window, owner):
                     "home.open_studio": studio, "app.open_settings": settings})
 
 
-class MainWindow(QWidget):
+from .background_recognition import BackgroundRecognitionMixin
+
+
+class MainWindow(BackgroundRecognitionMixin, QWidget):
     # 2026-10-13: background results for the home "现在先做什么" card and the example project.
     _onboarding_facts_ready = Signal(object)
     _sample_ready = Signal(object)
@@ -1316,6 +1354,7 @@ class MainWindow(QWidget):
             page.api_preset_requested.connect(self._apply_asr_api_preset)
             page.api_configure_requested.connect(self._open_api_setup_guide)
             page.backend_requested.connect(self._apply_workshop_backend)
+            page.ultra_base_requested.connect(self._use_ultra_base)
             page.auto_stage_changed.connect(self._timeline_helper_changed)
             page.models_refreshed.connect(self._on_model_inventory_refreshed)
             if self._density_comfortable is not None:
@@ -1599,6 +1638,14 @@ class MainWindow(QWidget):
         self.return_recognition_button.clicked.connect(self._return_to_settings)
         self.return_recognition_button.hide()
         row.addWidget(self.return_recognition_button)
+        # 2026-11-14 (user): 「问问兔白」 leaves the 说明 menu for its own button left of
+        # 设置, in a colour that stands out (draft A: terracotta, breathing halo).
+        from .ask_bunny_button import AskBunnyButton
+        self.ask_bunny_button = AskBunnyButton()
+        bind_text(self.ask_bunny_button, "问问兔白")
+        bind_text(self.ask_bunny_button, '不懂就问，也能陪你聊聊天', property='toolTip')
+        self.ask_bunny_button.clicked.connect(self._open_bunny_chat)
+        row.addWidget(self.ask_bunny_button)
         self.app_settings_button = AnimatedButton("设置")
         self.app_settings_button.setObjectName("softAction")
         install_themed_icon(self.app_settings_button, "fa5s.cog", "accent")
@@ -1651,6 +1698,7 @@ class MainWindow(QWidget):
         from .help_menu import CuteMenu
         menu = CuteMenu(self)
         menu.add_hello()
+        # 2026-11-14 (user): 「问问兔白」 gets its own entry, first: an AI plays 兔白 and answers.
         menu.add_row("新手教学", "兔白带你做出第一份字幕", "fa5s.graduation-cap", self._start_home_tour)
         menu.add_row("打开范例工程", "看看做好的字幕长什么样", "fa5s.folder-open", self._open_sample_project)
         menu.add_row("选择识别方式…", "云端还是本机，随时能换", "fa5s.cloud",
@@ -2949,6 +2997,16 @@ class MainWindow(QWidget):
         self._switch_page(self.history_page)
 
     @navigation_timed('home.asr_choices')
+    def _cached_home_model_keys(self):
+        """Static Home construction never scans weights or waits for a disk."""
+        from ..local_models.model_status_cache import cached_registry, request_registry
+        registry = cached_registry(APP_ROOT)
+        if registry is not None:
+            self._home_installed_model_keys = set(registry.installed_keys())
+        else:
+            request_registry(APP_ROOT)
+        return set(self.__dict__.get('_home_installed_model_keys') or ())
+
     def _refresh_available_asr_choices(self):
         """Refresh selectors after a model workshop install or uninstall."""
         if not hasattr(self, "primary_asr_backend"):
@@ -2974,11 +3032,7 @@ class MainWindow(QWidget):
                 **current_models,
             }
         }
-        from ..local_models.model_status_cache import cached_registry
-        registry = cached_registry(APP_ROOT)
-        installed = registry.installed_keys() if registry is not None else self.__dict__.get('_home_installed_model_keys')
-        if installed is None:
-            installed = installed_model_keys(APP_ROOT)
+        installed = self._cached_home_model_keys()
         self._home_installed_model_keys = set(installed)
         self._missing_saved_asr_backends = populate_available_asr_choices(
             self.primary_asr_backend,
@@ -2993,11 +3047,12 @@ class MainWindow(QWidget):
         page = self.built_page('workshop')
         if page is None or page._registry is None:
             return
-        if page._installed == self.__dict__.get('_home_installed_model_keys'):
-            return
-        self._home_installed_model_keys = set(page._installed)
-        if self.pages.currentWidget() is self.settings_scroll:
-            self._refresh_available_asr_choices()
+        from ..local_models.model_state_events import active_task
+        status_token=(frozenset(page._installed),repr(getattr(page._registry,'alignment_readiness',{})),repr([active_task(k) for k in ['qwen_ultra_aligner','mfa_aligner']]))
+        if status_token==self.__dict__.get('_home_model_status_token'):return
+        self._home_model_status_token=status_token
+        self._home_installed_model_keys=set(page._installed)
+        self._refresh_available_asr_choices()
 
     def _open_terms_from_workshop(self):
         self._manage_terms()
@@ -3216,7 +3271,52 @@ class MainWindow(QWidget):
     def _timeline_helper_changed(self):
         self._refresh_asr_summary()
 
+    def _commit_alignment_choice(self, value, *, base_only=False, disable=False):
+        import copy
+        from ..local_models.model_status_cache import cached_registry
+        from ..storage.settings import save_runtime_settings
+        from ..recognition.qwen_upgrade import activate_if_ready
+        registry=cached_registry(APP_ROOT)
+        from ..local_models.alignment_readiness import effective_snapshot
+        snapshot=effective_snapshot(registry,value,self.legacy.RUNTIME_SETTINGS,base_only=base_only)
+        if not snapshot.get('ready'):
+            QMessageBox.information(self,tr('模型尚不可用'),snapshot.get('reason') or tr('请先完成本机可用性验证。'))
+            return False
+        settings=copy.deepcopy(self.legacy.RUNTIME_SETTINGS)
+        if value=='qwen_aligner' and not activate_if_ready(settings,persist=False):
+            QMessageBox.information(self,tr('模型尚不可用'),tr('Ultra验证回执与当前文件或运行环境不匹配，请重新验证。'))
+            return False
+        models=settings.setdefault('models',{})
+        old=models.get('firered_asr_backend')
+        if base_only:
+            models['qwen_alignment_head']=False
+        else:
+            models['firered_asr_backend']='off' if disable else value
+        try:save_runtime_settings(settings)
+        except (OSError,ValueError,RuntimeError) as exc:
+            QMessageBox.warning(self,tr('无法保存设置'),str(exc));return False
+        self.legacy.RUNTIME_SETTINGS.clear();self.legacy.RUNTIME_SETTINGS.update(settings)
+        self.legacy.FIRERED_ASR_BACKEND=models.get('firered_asr_backend')
+        studio=self.built_page('studio')
+        if studio is not None:studio.runtime_settings=copy.deepcopy(settings)
+        self._refresh_available_asr_choices()
+        self._refresh_asr_summary()
+        page=self.built_page('workshop')
+        if page is not None:page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+        from ..local_models.model_state_events import notify
+        notify(['qwen_ultra_aligner'] if value=='qwen_aligner' else ['mfa_aligner'],'selection_changed')
+        return True
+
+    def _use_ultra_base(self):
+        return self._commit_alignment_choice('qwen_aligner',base_only=True)
+
     def _apply_workshop_backend(self, role: str, value: str):
+        if role in {'timeline','firered'} and value=='off' and self.legacy.RUNTIME_SETTINGS.get('models',{}).get('firered_asr_backend') in {'qwen_aligner','mfa_aligner'}:
+            self._commit_alignment_choice(self.legacy.RUNTIME_SETTINGS['models']['firered_asr_backend'],disable=True)
+            return
+        if role in {'timeline','firered'} and value in {'qwen_aligner','mfa_aligner'}:
+            self._commit_alignment_choice(value)
+            return
         if role == 'speaker':
             self.speaker_source.setCurrentIndex(max(0,self.speaker_source.findData(value)))
             if self._save_asr_configuration(show_feedback=False):
@@ -3372,6 +3472,11 @@ class MainWindow(QWidget):
             self._refresh_next_step()
         elif action == "tour":
             self._start_home_tour()
+
+    def _open_bunny_chat(self):
+        """「问问兔白」 (2026-11-14): 兔白's chat card at the window's lower right."""
+        from .bunny_chat import open_bunny_chat
+        return open_bunny_chat(self)
 
     def _start_home_tour(self, part: str = "all"):
         """Point at the real page parts one by one (2026-10-14).
@@ -4513,6 +4618,7 @@ class MainWindow(QWidget):
             self.qwen_asr_backend,
             self.firered_asr_backend,
             settings,
+            installed=self._cached_home_model_keys(),
         )
         asr_form.addRow("主力转写模型", self.primary_asr_backend)
         asr_form.addRow("文字复核模型", self.qwen_asr_backend)
@@ -5311,10 +5417,9 @@ class MainWindow(QWidget):
         model = combo.model()
         for index in range(combo.count()):
             value = str(combo.itemData(index) or "")
-            item = model.item(index) if hasattr(model, "item") else None
-            if value == "original" or item is None:
+            if value == "original":
                 continue
-            item.setEnabled(ready)
+            _set_combo_item_enabled(combo,index,ready)
             label = labels.get(value, combo.itemText(index))
             combo.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（文字服务未就绪）", value0=tr(label))))
         saved = str(((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {}).get("output") or "original")
@@ -7578,6 +7683,7 @@ class MainWindow(QWidget):
                           (self.subtitle_studio_button, "字幕工作台"),
                           (self.model_workshop_button, "模型工坊"),
                           (self.return_recognition_button, "返回字幕识别"),
+                          (self.ask_bunny_button, "问问兔白"),
                           (self.app_settings_button, "设置"))
             # Measure the current language, theme and visible controls before
             # compacting. A fixed threshold alone clips longer translations.
@@ -8562,12 +8668,6 @@ class MainWindow(QWidget):
                 self._set_backend_combo(self.primary_asr_backend, primary)
                 self._set_backend_combo(self.firered_asr_backend, timeline)
                 self._set_backend_combo(self.qwen_asr_backend, review)
-                if plan.language == "ja":
-                    try:
-                        from ..recognition.ctc_alignment import set_enabled
-                        set_enabled(True, self.legacy.RUNTIME_SETTINGS)
-                    except (OSError, RuntimeError, ValueError):
-                        pass  # the plan's backends still apply; the workshop card shows the switch
                 if plan.api_provider and self.__dict__.get("qwen_asr_api_provider") is not None:
                     provider_index = self.qwen_asr_api_provider.findData(plan.api_provider)
                     if provider_index >= 0:
@@ -9011,17 +9111,9 @@ class MainWindow(QWidget):
             except Exception:
                 aligner_missing = False
         if not timeline_enabled and options["recognition_language"] not in ("zh", "auto"):
-            hints.append("字幕时间轴已关闭；不会运行字词对齐或日语 CTC 句首校正。")
+            hints.append("字幕时间轴已关闭；不会运行字词对齐。")
         if timeline_enabled and options["recognition_language"] == "ja":
-            try:
-                from ..recognition.ctc_alignment import enabled as ctc_enabled, model_dir as ctc_model_dir
-                timeline = self.__dict__.get("firered_asr_backend")
-                ctc_runs = bool((timeline is None or str(timeline.currentData()) != "off")
-                                and ctc_enabled(self.legacy.RUNTIME_SETTINGS) and ctc_model_dir())
-            except Exception:  # noqa: BLE001
-                ctc_runs = False
-            hints.append("日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐，句首再由日语 CTC 对齐模型校正。"
-                         if ctc_runs else "日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐。")
+            hints.append("日语：字词时间由本地 Qwen3 对齐入口测量。")
         if timeline_enabled and options["recognition_language"] == "en":
             hints.append("英语：按单词断句，单词之间保留空格；单词时间由 Qwen3-ForcedAligner 对齐。")
         if timeline_enabled and options["recognition_language"] == "ko":
@@ -9470,7 +9562,7 @@ class MainWindow(QWidget):
             # 2026-10-19: the experimental MFA aligner runs Japanese itself;
             # (2026-10-28) the Apple Silicon aligner runs every language
             # (run_qwen_aligner_worker), so its own files are what count.
-            runs_itself = firered_backend in {"mfa_aligner", "mlx_qwen_aligner"} and not language_stage["rerouted"]
+            runs_itself = firered_backend in {"mfa_aligner", "mlx_qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"} and not language_stage["rerouted"]
             timeline_backend = firered_backend if runs_itself else "qwen_aligner"
             if language_stage["rerouted"]:
                 from ..subtitle_rules.european_text import LABELS as european_labels
@@ -9483,11 +9575,7 @@ class MainWindow(QWidget):
                                            spoken, "字幕语言是英语，{value0} 只用于中文"), value0=timeline_name)
             timeline_name = translate(language_stage["name"], language)
         timeline_short = dict(timeline_short, **{timeline_backend: timeline_name})
-        from ..local_models.model_status_cache import cached_registry
-        registry = cached_registry(APP_ROOT)
-        installed = registry.installed_keys() if registry is not None else self.__dict__.get('_home_installed_model_keys')
-        if installed is None:
-            installed = installed_model_keys(APP_ROOT)
+        installed = self._cached_home_model_keys()
         self._home_installed_model_keys = set(installed)
         # The files each choice needs, from the selectors' own lists. A copy
         # kept here lacked the Apple Silicon (MLX) choices, so on a Mac the
@@ -9633,6 +9721,10 @@ class MainWindow(QWidget):
         - touch model logos/icons (qta + bundled) to prime font/icon caches
         No heavy widget creation or 650-term loads here.
         """
+        if not self.__dict__.get('_qwen_upgrade_scheduled',False):
+            self._qwen_upgrade_scheduled=True
+            from .qwen_upgrade_ui import schedule as schedule_qwen_upgrade
+            QTimer.singleShot(5000,self,lambda:schedule_qwen_upgrade(self))
         studio = self.built_page("studio")
         if studio is not None and self.pages.currentWidget() is studio:
             return  # Home-only caches are irrelevant to Studio's first paint.
@@ -11365,6 +11457,7 @@ class MainWindow(QWidget):
         self.workflow.set_active(0)
         if not getattr(self, '_studio_recognition_context', None):
             self._switch_page(1)
+        self._begin_background_queue(job_id)
         self.worker.start()
         self._retry_cached_failed = False
 
@@ -12099,6 +12192,7 @@ class MainWindow(QWidget):
         active_job = getattr(self, '_active_job_id', '')
         if active_job and str(getattr(event, 'job_id', '') or '') != active_job:
             return
+        self._receive_background_event(event)
         event_job = str(getattr(event, 'job_id', '') or '')
         if event_job and (event_job in getattr(self, '_committed_job_ids', set())
                 or event_job in getattr(self, '_cancelled_job_ids', set())):
@@ -12573,13 +12667,15 @@ class MainWindow(QWidget):
         committed = getattr(self, '_committed_job_ids', set())
         if job_id and job_id in committed:
             return
-        if job_id in getattr(self, '_cancelled_job_ids', set()) and result.successes:
+        if (job_id in getattr(self, '_cancelled_job_ids', set()) and result.successes
+                and not getattr(self, '_background_ready', {})):
             self._committed_job_ids = committed | {job_id}
             self._handle_unexpected_error('任务已取消，迟到的识别结果未自动载入；可从识别记录检查已保存输出。')
             return
         if job_id:
             self._committed_job_ids = committed | {job_id}
         self._release_run_state()
+        self._finish_background_queue(result=result)
         self._progress_timer.stop()
         self.result_exit_code = result.exit_code
         if getattr(result, "successes", None) and not getattr(self, "_tutorial_demo_result", False):
@@ -12588,6 +12684,12 @@ class MainWindow(QWidget):
                 mark_first_task_done()  # the welcome guide has done its job
             except Exception:
                 pass
+            chat = getattr(self, "_bunny_chat", None)   # 2026-11-14: an open 「问问兔白」 cheers
+            if chat is not None:
+                try:
+                    chat.task_finished(len(result.successes))
+                except Exception:
+                    pass
         self._active_stages.clear()
         if hasattr(self, '_progress_motion'):
             self._progress_motion.stop()
@@ -12622,7 +12724,7 @@ class MainWindow(QWidget):
                         from ..recognition.recognition_result import verify_result_reference
                         if str(getattr(item, 'job_id', '')) != job_id:
                             raise ValueError('素材结果不属于当前识别任务。')
-                        project = verify_result_reference(getattr(item, 'result_ref_json', ''), project_path=item.project_path)
+                        project = verify_result_reference(self._background_reference(item), project_path=item.project_path)
                     else:
                         project = load_project(item.project_path)
                 except (OSError, ValueError, TypeError) as exc:
@@ -12690,11 +12792,12 @@ class MainWindow(QWidget):
         history = self.built_page("history")
         if history is not None:
             history.refresh()
-        if not studio_context:
+        foreground_progress = self.pages.currentWidget() is self.pages.widget(1)
+        if not studio_context and foreground_progress:
             self._switch_page(2)
         if hasattr(self, "open_studio_result_button"):
             self.open_studio_result_button.setVisible(True)
-        if not studio_context and not getattr(self, "_tutorial_demo_result", False):
+        if not studio_context and foreground_progress and not getattr(self, "_tutorial_demo_result", False):
             self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
         elif studio_context and (failure_count or cancel_count or queue_outcome.core_status in {'needs_recovery', 'empty_result'}):
             self.studio_page.fail_recognition_runtime(
@@ -12723,6 +12826,8 @@ class MainWindow(QWidget):
                 self._switch_page(2)
 
     def _handle_unexpected_error(self, message: str):
+        self._finish_background_queue(error='后台任务异常中止；已交付工程保留')
+        background = self.pages.currentWidget() is not self.pages.widget(1)
         active_job = getattr(self, '_active_job_id', '')
         interrupted=False
         try:
@@ -12775,9 +12880,11 @@ class MainWindow(QWidget):
         history=self.__dict__.get('_history_page_instance')
         if history is not None and self.pages.currentWidget() is history:
             history.refresh()
-        else:
+        elif not background:
             self._switch_page(2)
         apply_ui_language(self, getattr(self, "_ui_language", "zh"))
+        if background:
+            return
         self._show_task_notification(
             "字幕任务异常中止",
             "任务未能正常完成，请查看结果页和运行日志。",
@@ -12868,12 +12975,7 @@ class MainWindow(QWidget):
                 if answer != QMessageBox.StandardButton.Yes:
                     return False
             guard = getattr(getattr(studio, 'project_controller', None), 'dirty_guard', None)
-            prepared = getattr(self, '_pending_update', None)
-            def resume_close():
-                if prepared is not None:
-                    self._pending_update = prepared
-                self.close()
-            return guard is None or guard.confirm('退出应用', on_saved=resume_close)
+            return guard is None or guard.confirm('退出应用', on_saved=self.close)
 
     def closeEvent(self, event):
         if self.__dict__.get('_studio_entry_discarding', False):
@@ -13080,6 +13182,12 @@ def run_desktop_app(
     from .ui_zoom import install as _install_ui_zoom
     window._ui_zoom = _install_ui_zoom(app, window)
     _startup_mark("MAIN_WINDOW_CREATED")
+    # Apply the complete owner sheet while the window is still hidden. The
+    # Show event filter then observes an already-current theme instead of
+    # repolishing a hierarchy that Qt is making visible and laying out.
+    from ..design.theme_scopes import refresh as _prepare_window_theme
+    _prepare_window_theme(window)
+    _startup_mark("MAIN_WINDOW_THEME_READY")
 
     class _FirstPaintProbe(QObject):
         def eventFilter(self, watched, event):

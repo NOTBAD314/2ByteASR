@@ -131,8 +131,8 @@ def test_loading_guard_does_not_swallow_recovery_buttons(tmp_path):
     lease.acquire(root, cover)
     received = []
     def click():
-        box = next(x for x in APP.topLevelWidgets() if isinstance(x, QMessageBox) and x.isVisible())
-        button = next(b for b in box.buttons() if b.text() == '恢复自动保存')
+        box = next(x for x in APP.topLevelWidgets() if x.objectName() == 'projectRecoveryChoice' and x.isVisible())
+        button = next(b for b in box.buttons() if b.objectName() == 'recovery_recover')   # 「两张卡片」的自动恢复卡
         button.clicked.connect(lambda: received.append(True))
         QTest.mouseClick(button, Qt.LeftButton)
         if box.isVisible():
@@ -191,12 +191,17 @@ def test_submission_distinguishes_success_unchanged_conflict_missing(page):
     assert p.cues[1].text == '其他编辑'
 
 
+# 2026-11-15: an autosave opens without asking by default; these walk the question, so they ask.
+def ASK_FOR_RECOVERY():  # noqa: N802 - stands in for page._studio_preferences
+    return {'recovery_policy': 'ask', 'recovery_policy_chosen': True}
+
+
 @pytest.mark.parametrize('choice, recovered, exists', [('recover', True, True), ('saved', False, True), ('ignore', False, False)])
 def test_recovery_decision_preserves_ownership_and_files(tmp_path, choice, recovered, exists):
     from tests.test_project_recovery_inspection import fixture
     from twobyteasr.projects.studio_project_controller import StudioProjectController
     path, official, candidate = fixture(tmp_path)
-    page = SimpleNamespace(_studio_trace=lambda *a, **k: None, _studio_preferences=lambda: {})
+    page = SimpleNamespace(_studio_trace=lambda *a, **k: None, _studio_preferences=ASK_FOR_RECOVERY)
     controller = StudioProjectController(page, SimpleNamespace())
     steps = controller._resolve_project_recovery_steps(path, official, single_shot_fn=lambda *a: None)
     request = next(steps)
@@ -216,7 +221,7 @@ def test_recovery_delete_failure_can_retry_or_cancel(tmp_path, monkeypatch):
     from twobyteasr.projects.studio_project_controller import StudioProjectController
     from twobyteasr.projects.project_recovery_dialog import RecoveryCancelled
     path, official, candidate = fixture(tmp_path)
-    page = SimpleNamespace(_studio_trace=lambda *a, **k: None, _studio_preferences=lambda: {})
+    page = SimpleNamespace(_studio_trace=lambda *a, **k: None, _studio_preferences=ASK_FOR_RECOVERY)
     controller = StudioProjectController(page, SimpleNamespace())
     steps = controller._resolve_project_recovery_steps(path, official, single_shot_fn=lambda *a: None)
     request = next(steps)

@@ -209,7 +209,8 @@ class InputHostLease(QObject):
             # Preserve the host's own setting rather than an ancestor's modal
             # disabled state. False is a real original value, not a sentinel.
             self._restore = (weakref.ref(host), not host.testAttribute(Qt.WidgetAttribute.WA_ForceDisabled))
-            QApplication.instance().installEventFilter(self)
+            from .app_events import listen
+            listen(self, self._input_types)
         # Do not toggle the entire editor's enabled state: that repolishes
         # thousands of descendants on both entry and exit (seconds on Windows).
         # The native cover owns mouse input; this lease also blocks keyboard,
@@ -220,5 +221,6 @@ class InputHostLease(QObject):
         restore, self._restore = self._restore, None
         self._dialogs.clear()
         if restore is not None and QApplication.instance() is not None:
-            QApplication.instance().removeEventFilter(self)
+            from .app_events import unlisten
+            unlisten(self)
 

@@ -67,6 +67,7 @@ def compile_audio_mix(ffmpeg, job, layers, *, input_offset=1, sample_rate=48000,
         labels.append(f'[{label}]')
     if not labels:
         return [], [], None
+    master = next((float(x.get('project_gain_db', 0.)) for x in layers), 0.)
     filters.append(''.join(labels)+f'amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,'
-                   f'apad,asetpts=N/SR/TB,atrim=duration={duration:.6f}[audio]')
+                   f'volume={gain_amplitude(master):.12f},apad,asetpts=N/SR/TB,atrim=duration={duration:.6f}[audio]')
     return inputs, filters, '[audio]'

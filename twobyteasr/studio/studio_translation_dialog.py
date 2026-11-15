@@ -911,7 +911,8 @@ class SubtitleTranslationDialog(QDialog):
             from ..subtitle_rules.subtitle_translation import translate
             try:
                 from ..providers.usage_ledger import usage_scope
-                with usage_scope(project_id=source.project_id, task_id=self._usage_task_id):
+                with usage_scope(project_id=source.project_id, task_id=self._usage_task_id,
+                                 task_label=getattr(getattr(self.project, 'media', None), 'display_name', '')):
                     result = translate(source, ids, provider, cancel_check=self._cancel.is_set,
                                        progress=progress, cache=cache, suggest_for_manual=True,
                                        event=record, **options)

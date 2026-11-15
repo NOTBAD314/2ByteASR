@@ -514,7 +514,7 @@ LOCAL_PRIMARY = {
     "moss", "firered", "qwen_local", "firered_llm", "whisper_turbo",
     "sensevoice", "paraformer", "funasr_nano", "glm_asr_nano", "canary_qwen",
 }
-LOCAL_TIMELINE = {"local", "qwen_aligner", "paraformer", "whisper_turbo"}
+LOCAL_TIMELINE = {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "paraformer", "whisper_turbo"}
 LOCAL_REVIEW = {"local", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano"}
 
 

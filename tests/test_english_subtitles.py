@@ -57,9 +57,9 @@ def test_long_sentences_break_between_words_at_good_places():
             "and then we push into the boss room before the timer runs out")
     lines = _lines(text)
     assert " ".join(lines) == text                                   # nothing added, lost or split inside a word
-    # 2026-10-21: a subtitle holds two lines (84 characters), so 141 characters make two, not 3–4 scraps.
+    # 2026-11-14: forty is a whole-cue bound; two display lines do not double it.
     assert all(en.display_length(line) <= en.RULES.cue_max_chars for line in lines)
-    assert len(lines) == 2
+    assert len(lines) >= 4
     endings = {en.word_core(line.split()[-1]) for line in lines[:-1]}
     assert not endings & (seg.DETERMINERS | seg.PREPOSITIONS | {"and", "is"})
     assert any(line.endswith("map,") for line in lines)              # the comma wins
@@ -80,7 +80,7 @@ def test_cue_times_come_from_aligned_words():
     words = "So we go left here and then we take the big bridge over the river to reach the castle gate".split()
     tokens = [{"text": word, "start": 1.0 + i * 0.3, "end": 1.0 + i * 0.3 + 0.25} for i, word in enumerate(words)]
     cues = seg.group_english([segment(1, 1.0, 1.0 + len(words) * 0.3, " ".join(words))], tokens)
-    assert len(cues) >= 2 and " ".join(cue.text for cue in cues) == " ".join(words)
+    assert len(cues) >= 2 and "".join(cue.text for cue in cues) == " ".join(words)
     first_word_of_second = cues[1].text.split()[0]
     index = words.index(first_word_of_second, len(cues[0].text.split()))
     assert cues[1].start == pytest.approx(tokens[index]["start"])
@@ -88,16 +88,16 @@ def test_cue_times_come_from_aligned_words():
 
 
 def test_ai_breaks_are_used_only_when_valid():
-    text = "Alright everyone welcome back to the stream today we are finally going to beat the final boss together"
+    text = "We finished the battle today. We will return tomorrow."
     tokens = en.words(text)
-    good = [7]           # a new subtitle after "today"
-    expected = [(0, 8), (8, len(tokens))]
+    good = [4]           # after today.; both complete clauses fit forty characters
+    expected = [(0, 5), (5, len(tokens))]
     assert seg.pieces_from_breaks(tokens, good) == expected
     assert seg.pieces_from_breaks(tokens, [99]) is None
     assert seg.pieces_from_breaks(tokens, []) is None                 # one piece would be too long
     # 2026-10-21: a break after a word that must not end a line is refused ("the", "are").
-    assert seg.pieces_from_breaks(tokens, [14]) is None
-    assert seg.pieces_from_breaks(tokens, [9]) is None
+    assert seg.pieces_from_breaks(tokens, [2]) is None
+    assert seg.pieces_from_breaks(tokens, [6]) is None
     local = [" ".join(tokens[a:b]) for a, b in seg.split_tokens(tokens)]
 
     def fake(answer):
@@ -107,12 +107,13 @@ def test_ai_breaks_are_used_only_when_valid():
             return '{"breaks": {"1": %s}}' % answer
         return complete
     cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[7]"))
-    assert [cue.text for cue in cues] == [" ".join(tokens[a:b]) for a, b in expected]
+    assert [cue.text.strip() for cue in cues] == [" ".join(tokens[a:b]) for a, b in expected]
+    assert ''.join(cue.text for cue in cues) == text
     # Sound breaks that chop finer than the rules need fall back to the rules.
     cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[3, 7]"))
-    assert [cue.text for cue in cues] == local
+    assert [cue.text.strip() for cue in cues] == local
     cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=lambda _m: "not json")
-    assert " ".join(cue.text for cue in cues) == text and all(len(cue.text) <= 84 for cue in cues)
+    assert "".join(cue.text for cue in cues) == text and all(en.display_length(cue.text) <= 40 for cue in cues)
 
 
 def test_cleanup_inside_an_english_task_keeps_punctuation_chinese_unchanged():

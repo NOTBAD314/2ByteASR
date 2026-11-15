@@ -36,6 +36,12 @@ def provider_policy(provider):
                 thinking_protocol=endpoint.get("thinking_protocol", "auto"))
 
 
+# 2026-11-15 (问问兔白, user: "默认推理等级 high，难的改 max"): ``enabled`` may also name a depth.
+# The official DeepSeek endpoint was checked on 2026-11-15: thinking enabled plus reasoning_effort
+# high / max are accepted (max thinks longer); its own list is none … high, xhigh, ultra, max.
+EFFORT_LEVELS = ("low", "medium", "high", "max")
+
+
 def thinking_control(provider, base_url, enabled, protocol="auto"):
     """Return a single wire dialect and an honest compatibility description."""
     host = (urlsplit(str(base_url)).hostname or "").lower()
@@ -44,12 +50,19 @@ def thinking_control(provider, base_url, enabled, protocol="auto"):
                     "enable_thinking" if host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} else "unknown")
     if enabled is None:
         return {}, "provider_default", "not_requested"
+    level = enabled if isinstance(enabled, str) and enabled in EFFORT_LEVELS else None
+    if isinstance(enabled, str):
+        enabled = level is not None
     if protocol == "deepseek":
-        return {"thinking": {"type": "enabled" if enabled else "disabled"}}, "enabled" if enabled else "disabled", "requested_unverified"
+        controls = {"thinking": {"type": "enabled" if enabled else "disabled"}}
+        if level:
+            controls["reasoning_effort"] = level
+        return controls, f"enabled_{level}" if level else "enabled" if enabled else "disabled", "requested_unverified"
     if protocol == "enable_thinking":
         return {"enable_thinking": bool(enabled)}, "enabled" if enabled else "disabled", "requested_unverified"
     if protocol == "reasoning_effort":
-        return {"reasoning_effort": "high" if enabled else "none"}, "enabled" if enabled else "disabled", "requested_unverified"
+        return ({"reasoning_effort": (level or "high") if enabled else "none"},
+                f"enabled_{level}" if level else "enabled" if enabled else "disabled", "requested_unverified")
     return {}, "provider_default", "unsupported_or_unknown"
 
 
@@ -58,7 +71,9 @@ def apply_thinking(body, *, provider, base_url, enabled, protocol="auto", extra_
     if api == "responses":
         host = (urlsplit(str(base_url)).hostname or "").lower()
         if enabled is not None and (host == 'api.deepseek.com' or protocol == 'reasoning_effort'):
-            controls = {'reasoning': {'effort':'high' if enabled else 'none'}}
+            level = enabled if isinstance(enabled, str) and enabled in EFFORT_LEVELS else None
+            enabled = bool(level) if isinstance(enabled, str) else enabled
+            controls = {'reasoning': {'effort': (level or 'high') if enabled else 'none'}}
             mode, compatibility = ('enabled' if enabled else 'disabled'), 'requested_unverified'
         else:
             controls, mode, compatibility = {}, 'provider_default', 'unsupported_or_unknown' if enabled is not None else 'not_requested'

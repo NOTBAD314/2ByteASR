@@ -80,7 +80,7 @@ def main():
     from twobyteasr.runtime_paths import get_runtime_paths,user_data_root
     from twobyteasr.system.runtime_registry import resolve_runtime_python
     contract=json.loads((root/'dependencies.lock.json').read_text('utf8'))
-    model=args.model
+    model='qwen_ultra_aligner' if args.model=='qwen_aligner' else args.model
     if model == 'omni_asr_llm_7b':
         print('[2BYTEASR_PHASE] '+json.dumps(dict(phase='weights_ready',model=model)),flush=True)
         print('[仅权重] Windows 推理适配尚不可用，文件准备完成不代表模型可执行。',flush=True)
@@ -92,14 +92,14 @@ def main():
     if blas_threads is None:os.environ.pop('OPENBLAS_NUM_THREADS')
     else:os.environ['OPENBLAS_NUM_THREADS']=blas_threads
     from twobyteasr.recognition import asr
-    sample=root/'assets/diagnostics/speech_en.wav'
+    sample=root/('assets/diagnostics/speech_zh.wav' if model=='mfa_aligner' else 'assets/diagnostics/speech_en.wav')
     with wave.open(str(sample),'rb') as stream:
         rate=stream.getframerate()
         audio=np.frombuffer(stream.readframes(stream.getnframes()),dtype='<i2').astype(np.float32)/32768
     duration=len(audio)/rate
     role={'moss':'moss','firered_llm':'firered_llm','glm_asr_nano':'glm_asr','canary_qwen':'canary'}.get(model,'main')
     # 2026-10-14: on an Apple Silicon Mac MOSS and FireRed AED run on the Apple GPU (MPS).
-    hardware=probe_device()
+    hardware=dict(cuda=False,device='cpu') if model=='mfa_aligner' else probe_device()
     cuda=hardware['cuda'];device=hardware['device']
     if sys.platform=='darwin' and model in {'sensevoice','paraformer','funasr_nano'}:
         # These workers select CUDA or CPU, never MPS. A host capability label
@@ -108,6 +108,8 @@ def main():
     code_hash=hashlib.sha256()
     for path in [Path(__file__),root/'twobyteasr/recognition/asr.py',
                  root/'twobyteasr/recognition/qwen_runtime_compat.py',
+                 root/'twobyteasr/recognition/alignment_backend.py',
+                 root/'twobyteasr/recognition/ultra_local_head.py', root/'twobyteasr/forced_alignment.py',
                  root/'twobyteasr/recognition/native_tokenizer_paths.py',
                  sample,*sorted(root.glob('*_worker.py'))]:
         code_hash.update(path.read_bytes())
@@ -116,6 +118,20 @@ def main():
         device=device,validator_code=code_hash.hexdigest()),sort_keys=True).encode()).hexdigest()
     receipts=user_data_root()/'model-readiness';receipts.mkdir(parents=True,exist_ok=True)
     receipt=receipts/(model+'.json')
+    availability_identity=None
+    if model in {'qwen_ultra_aligner','qwen_ultra_head','mfa_aligner'}:
+        from twobyteasr.local_models.alignment_readiness import validation_identity
+        try:
+            availability_identity=validation_identity(model,root)
+            if model=='mfa_aligner':
+                from twobyteasr.model_integrity import verify_model_files
+                for key,info in availability_identity['files'].items():verify_model_files(key,Path(info['directory']))
+            signature=hashlib.sha256(json.dumps(availability_identity,sort_keys=True).encode()).hexdigest()
+        except Exception as exc:
+            failed=dict(model=model,status='FAIL',inference_verified=False,files_verified=False,runtime_ready=False,category='preparation_changed',message=str(exc),error=str(exc),started=time.time())
+            pending=receipt.with_suffix('.pending');pending.write_text(json.dumps(failed,ensure_ascii=False),'utf8');os.replace(pending,receipt)
+            print('[2BYTEASR_INSTALL_ERROR] '+json.dumps(dict(phase='model_loading',message=str(exc)),ensure_ascii=False),flush=True)
+            return 1
     try:previous=json.loads(receipt.read_text('utf8')) if receipt.is_file() else {}
     except (ValueError,OSError):previous={}
     if not args.force and previous.get('signature')==signature and previous.get('inference_verified'):
@@ -128,7 +144,7 @@ def main():
         print('[2BYTEASR_PHASE] '+json.dumps(dict(phase='model_loading',model=model)),flush=True)
         if model in {'moss','firered_aed'} and not cuda and sys.platform=='darwin':
             pass  # Apple GPU (MPS), or the CPU when PyTorch cannot use it; the workers pick the device
-        elif model in {'moss','qwen_asr','qwen_aligner','firered_aed','firered_llm'} and not cuda:
+        elif model in {'moss','qwen_asr','firered_aed','firered_llm'} and not cuda:
             raise RuntimeError('hardware_unsupported: 此模型的当前正式适配需要可用的 NVIDIA CUDA；权重与运行库已保留。')
         chunks=[dict(audio=(audio,rate),start=0.,end=duration)]
         if model in {'sensevoice','paraformer','funasr_nano'}:
@@ -140,27 +156,31 @@ def main():
             with tempfile.TemporaryDirectory(prefix='qwen_readiness_') as evidence_root:
                 output=asr._transcribe_qwen_worker(audio,chunks,asr.resolve_qwen_asr_local_source(),
                                                    context='',evidence_root=evidence_root)
-        elif model=='qwen_aligner':
+        elif model in {'qwen_aligner','qwen_ultra_aligner','qwen_ultra_head'}:
             import subtitle_core
-            subtitle_core.FIRERED_ASR_BACKEND='qwen_aligner'
-            output=asr.transcribe_qwen_aligner_reference(audio,[dict(start=0.,end=duration,
-                text='Hello this is a local speech recognition test the weather is sunny today')],raise_errors=True)
+            subtitle_core.FIRERED_ASR_BACKEND=model
+            from twobyteasr.recognition.run_context import get_runtime_context
+            get_runtime_context().asr_settings_snapshot={'models':{'firered_asr_backend':model}}
+            payload = asr.run_qwen_aligner_worker(audio, [dict(id='readiness',window_start_ms=0,
+                window_end_ms=round(duration*1000), language='English',
+                text='Hello this is a local speech recognition test the weather is sunny today')])
+            output = asr.aligner_tokens(payload)
+            result['alignment_receipt'] = {key:payload.get(key) for key in
+                ('model','model_revision','code','unit_policy','alignment_identity','execution_identity')}
             if not output or not all(0<=x['start']<x['end']<=duration+.2 for x in output):
                 raise RuntimeError('对齐 worker 没有返回有效时间戳')
-        elif model=='ja_ctc_aligner':
-            from twobyteasr.recognition import ctc_alignment
-            payload=ctc_alignment.run_worker(audio,[dict(id='readiness',text='こんにちはきょうはいいてんきです',
-                window_start_ms=0,window_end_ms=int(duration*1000))])
-            output=payload['results'][0]
-            chars=output.get('chars') or []
-            if output.get('status')!='aligned' or not chars or not all(0<=c['start_ms']<c['end_ms']<=duration*1000+200 for c in chars):
-                raise RuntimeError('CTC 对齐 worker 没有返回有效字符时间')
+            if model=='qwen_ultra_aligner':
+                from twobyteasr.recognition.qwen_upgrade import receipt_from_payload
+                proof=receipt_from_payload(payload)
+                result.update({k:proof[k] for k in ('ultra_directory','ultra_file_stats','runtime_python','quality_claim')})
         elif model=='mfa_aligner':
             # 2026-10-19: experimental MFA (own conda runtime): it loads and aligns a Chinese and a Japanese line.
             from twobyteasr.recognition import mfa_aligner
             window=dict(window_start_ms=0,window_end_ms=int(duration*1000))
-            payload=mfa_aligner.run_aligner(audio,[dict(id='readiness-zh',text='你好今天天气很好',language='Chinese',**window),
-                dict(id='readiness-ja',text='こんにちはきょうはいいてんきです',language='Japanese',**window)])
+            exec(mfa_aligner.CHECK_IMPORTS,{})
+            payload=mfa_aligner.run_aligner(audio,[dict(id='readiness-zh',text='你好今天的天气很好',language='Chinese',**window)])
+            result['languages_executed']=['Chinese']
+            result['quality_claim']=None
             output=payload['results']
             if not any(row.get('status')=='aligned' for row in output):
                 raise RuntimeError('MFA 对齐 worker 没有对上任何一句')
@@ -198,6 +218,10 @@ def main():
                 if model=='firered_vad' and not output.get('regions'):
                     raise RuntimeError('VAD 没有返回语音区间')
         if not output:raise RuntimeError('正式 adapter 返回空结果')
+        if availability_identity is not None:
+            if availability_identity!=validation_identity(model,root):raise RuntimeError('验证过程中模型或环境发生变化，拒绝缓存过期结果')
+            result['availability_identity']=availability_identity
+            result['runtime_python']=availability_identity['runtime']['python']
         result.update(model_loaded=True,inference_verified=True,output=output,status='PASS')
         print('[2BYTEASR_PHASE] '+json.dumps(dict(phase='ready',model=model)),flush=True)
     except Exception as exc:

@@ -29,6 +29,7 @@ def start(window, output: Path) -> None:
     from PySide6.QtGui import QUndoCommand
     from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPlainTextEdit, QPushButton
     from ..app.updater import current_version, last_result
+    from .question_boxes import question_boxes
 
     plan = json.loads(os.environ.get("UPDATE_FLOW_PLAN") or "{}")
     version = current_version()
@@ -88,7 +89,7 @@ def start(window, output: Path) -> None:
     def texts(widget):
         parts = [w.text() for w in widget.findChildren(QLabel)]
         parts += [w.toPlainText() for w in widget.findChildren(QPlainTextEdit)]
-        if isinstance(widget, QMessageBox):
+        if isinstance(widget, question_boxes()):
             parts += [widget.windowTitle(), widget.text(), widget.informativeText()]
         return "\n".join(p for p in parts if p)
 
@@ -219,7 +220,7 @@ def start(window, output: Path) -> None:
                     goto("await_save_prompt" if plan.get("dirty_project") else "handing_off")
                     press(box, QMessageBox.StandardButton.Yes)
             elif name == "await_save_prompt":
-                box = modal(QMessageBox)
+                box = modal(question_boxes())
                 if box and box.button(QMessageBox.StandardButton.Save) is not None:
                     if not state["cancelled"]:
                         state["cancelled"] = True
@@ -231,7 +232,7 @@ def start(window, output: Path) -> None:
                         goto("handing_off")
                         press(box, QMessageBox.StandardButton.Save)
             elif name == "after_cancel":
-                if modal(QMessageBox) is None and waited > 1:
+                if modal(question_boxes()) is None and waited > 1:
                     step("cancel_kept_program", window_visible=window.isVisible(),
                          pending=getattr(window, "_pending_update", None) is not None,
                          prepared_kept=getattr(window, "_prepared_update", None) is not None)

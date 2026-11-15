@@ -136,17 +136,8 @@ class CaptionEditorWindow(QWidget):
         panel.layout().activate(); panel.place_bubble()
         centre = panel.editor.mapTo(self, QPoint(0, panel.editor.height()//2)).y()
         ideal = int(subtitle_center-centre)
-        # Retain the session direction. Flip only when the complete anchored
-        # component cannot fit and the opposite orientation really can.
-        if not bounds.top() <= ideal <= bounds.bottom()-height+1:
-            old = panel.strip_above()
-            displacement = panel.strip.height()-panel.lane.height()
-            alternate = int(subtitle_center-(centre-displacement if old else centre+displacement))
-            if bounds.top()+6 <= alternate and alternate+height <= bounds.bottom()-5:
-                panel.set_strip_above(not old)
-                panel.prepare_geometry(width-side, bounds.height()-margins.top()-margins.bottom())
-                self.layout().activate(); panel.layout().activate()
-                ideal = int(subtitle_center-panel.editor.mapTo(self,QPoint(0,panel.editor.height()//2)).y())
+        # The semantic order is invariant. Move the complete measured window
+        # into bounds; never invert the controls and the word suggestions.
         x = max(bounds.left(), min(int(top_left.x()+content.left()+content.width()*getattr(self, '_anchor_x_fraction', .5)-width/2), bounds.right()-width+1))
         y = max(bounds.top(), min(ideal, bounds.bottom()-height+1))
         self.setProperty('workspaceFallback', fallback)

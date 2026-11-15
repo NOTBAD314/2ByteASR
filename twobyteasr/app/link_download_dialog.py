@@ -54,6 +54,7 @@ class NoticeLabel(QLabel):
 class LinkDownloadDialog(QDialog):
     def __init__(self, controller, parent):
         super().__init__(parent)
+        self.setObjectName('linkDownloadDialog')
         self.controller = controller
         self.catalog = None
         self.thumbnail = b""
@@ -76,7 +77,7 @@ class LinkDownloadDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.root = QWidget()
+        self.root = QWidget(self)
         self.root.setObjectName("linkRoot")
         outer.addWidget(self.root)
         layout = QVBoxLayout(self.root)
@@ -88,7 +89,7 @@ class LinkDownloadDialog(QDialog):
         self.message = NoticeLabel()
         notice.addWidget(self.message)
         layout.addLayout(notice)
-        self.pages = QStackedWidget()
+        self.pages = QStackedWidget(self.root)
         layout.addWidget(self.pages, 1)
         self.pages.addWidget(self._build_home())
         self.pages.addWidget(self._build_queue())

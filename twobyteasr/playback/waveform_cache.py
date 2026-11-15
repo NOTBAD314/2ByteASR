@@ -199,6 +199,21 @@ def _write_metadata(path: Path, metadata: WaveformMetadata) -> None:
             pass
 
 
+def _cached_levels_valid(root: Path, metadata: WaveformMetadata) -> bool:
+    """A matching metadata file alone cannot validate a truncated float cache."""
+    if not metadata.levels:
+        return False
+    try:
+        for level in metadata.levels:
+            path = root / level.file
+            if (Path(level.file).name != level.file or level.frames < 0
+                    or not path.is_file() or path.stat().st_size < level.frames * 2 * 4):
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def _reduce_level(source_path: Path, source_frames: int, target_path: Path) -> int:
     source = np.memmap(source_path, dtype=np.float32, mode="r", shape=(source_frames, 2))
     target_frames = (source_frames + LOD_FACTOR - 1) // LOD_FACTOR
@@ -546,11 +561,12 @@ def generate_waveform_cache_incremental(
                     and str(Path(existing.source_path).resolve()) == str(media)
                     and _stream_origin_ok(existing, audio_stream, time_mapping)
                 )
-                if identity_ok and not existing.incomplete:
+                if identity_ok and not existing.incomplete and _cached_levels_valid(target, existing):
                     return target
                 if (
                     identity_ok
                     and existing.incomplete
+                    and _cached_levels_valid(target, existing)
                     and decode_path is not None
                     and Path(decode_path).resolve() != media
                 ):
@@ -876,7 +892,7 @@ def _generate_waveform_variant(
                 and metadata.window_samples == int(window_samples)
                 and all(key in json.loads(metadata_path.read_text(encoding="utf-8"))
                         for key in ("source_start_ms", "stream_start_ms", "sample_timeline_origin_ms"))
-                and all((target / item.file).is_file() for item in metadata.levels)
+                and _cached_levels_valid(target, metadata)
                 and _stream_origin_ok(metadata, audio_stream, time_mapping)
             ):
                 return target

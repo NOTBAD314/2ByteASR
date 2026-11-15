@@ -203,28 +203,28 @@ class PickerCard(QFrame):
             line.addWidget(self.diarize)
             root.addLayout(line)
 
-        self.accuracy_bar = _AccuracyBar()
+        self.accuracy_bar = _AccuracyBar(self)
         score = accuracy.get('score') if accuracy.get('available') else None
         self.accuracy_bar.set_score(score, str(accuracy.get('tooltip') or ''))
         root.addWidget(self.accuracy_bar)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        self.action = QPushButton()
+        self.action = QPushButton(self)
         self.action.setObjectName('pickerAction')
         self.action.setCursor(Qt.CursorShape.PointingHandCursor)
         self.action.clicked.connect(lambda: self.action_requested.emit(model.key))
-        self.download = bind_text(QPushButton(), '下载')
+        self.download = bind_text(QPushButton(self), '下载')
         self.download.setObjectName('pickerSecondary')
         self.download.clicked.connect(lambda: self.download_requested.emit(model.key))
         self.download.setVisible(bool(getattr(model, 'variants', ())))
-        self.configure = bind_text(QPushButton(), '配置 Key')
+        self.configure = bind_text(QPushButton(self), '配置 Key')
         self.configure.setObjectName('pickerSecondary')
         bind_text(self.configure, '打开该服务的模型、地址与 API Key 配置窗口', property='toolTip')
         self.configure.setCursor(Qt.CursorShape.PointingHandCursor)
         self.configure.clicked.connect(lambda: self.api_configure_requested.emit(model.api_preset or ''))
         self.configure.setVisible(bool(model.api_preset))
-        self.uninstall = QPushButton()   # never shown in the picker; kept for shared callers
+        self.uninstall = QPushButton(self)   # never shown in the picker; kept for shared callers
         self.uninstall.hide()
         for button in (self.action, self.download, self.configure):
             button.setAutoDefault(False)
@@ -236,7 +236,8 @@ class PickerCard(QFrame):
     def set_action_state(self, text, enabled):
         text, enabled = str(text), bool(enabled)
         if self.action.text() != text:
-            self.action.setText(text)
+            from ..i18n import bind_text
+            bind_text(self.action,text)
         if self.action.isEnabled() != enabled:
             self.action.setEnabled(enabled)
 
@@ -262,7 +263,8 @@ class PickerCard(QFrame):
         tone = tone if tone in {'ready', 'missing', 'muted', 'current'} else 'muted'
         if (self.state_badge.text(), self.state_badge.property('tone')) == (text, tone):
             return
-        self.state_badge.setText(str(text or ''))
+        from ..i18n import bind_text
+        bind_text(self.state_badge,str(text or ''))
         self.state_badge.setProperty('tone', tone)
         self.state_badge.setVisible(bool(text))
         self._repolish(self.state_badge)

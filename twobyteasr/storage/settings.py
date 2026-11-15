@@ -45,6 +45,8 @@ DEFAULT_SETTINGS = {
         # 有 Bucket、没有 AccessKey 的开始前停下说明。provider_temporary / own_oss 为用户明确选择。
         "filetrans_upload": "auto",
         "firered_asr_backend": "local",
+        "qwen_alignment_head": False,  # advanced experiment, never enabled by installed files
+        "qwen_alignment_profile": "official-v1",  # migrated only after current Ultra inference proof
         "polish_transport": "openai_compatible",
         "polish_protocol": "auto",
         "polish_provider": "bailian",
@@ -92,7 +94,7 @@ DEFAULT_SETTINGS = {
         "subtitle_punctuation": "original",
         # 2026-10-14：已安装的日语 CTC 对齐模型是否用于日语识别的句首校正。
         # 默认使用（与之前安装即自动使用一致）；模型工坊卡片「使用 / 取消使用」切换。
-        "use_ja_ctc_aligner": True,
+        "use_ja_ctc_aligner": False,  # legacy read compatibility; no automatic stage
     },
     "cache": {
         "force_refresh_polish": False,
@@ -340,8 +342,9 @@ def _merge_known_settings(defaults, payload):
         "qwen_asr_backend": {
             "api", "local", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
         },
-        "firered_asr_backend": {"local", "qwen_aligner", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"},
+        "firered_asr_backend": {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"},
     }
+    allowed_backends["qwen_alignment_profile"]={"official-v1","ultra-v5"}
     for key, allowed in allowed_backends.items():
         value = result["models"][key]
         if value not in allowed:
@@ -349,6 +352,11 @@ def _merge_known_settings(defaults, payload):
             warnings.append(
                 f"models.{key} must be one of {sorted(allowed)}; default was used"
             )
+    from ..recognition.qwen_family import normalize_models
+    if not isinstance(result['models'].get('qwen_alignment_head'), bool):
+        result['models']['qwen_alignment_head']=False
+        warnings.append('models.qwen_alignment_head must be boolean')
+    normalize_models(result['models'])
     from ..subtitle_rules.language_rules import SUPPORTED_REQUESTS,normalize_language
     from ..subtitle_rules.segmentation_profiles import language_tag
     from ..subtitle_rules.subtitle_translation import TARGETS

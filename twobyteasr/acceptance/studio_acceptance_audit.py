@@ -76,6 +76,39 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'model-loading':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        if os.environ.get('TWOBYTEASR_MODEL_SINGLE_SLOW')=='1':
+            from ..local_models import model_registry
+            original_record = model_registry._scan_model_record
+            slow_key = [None]
+            def one_slow_record(model_id, *args):
+                if slow_key[0] is None: slow_key[0]=model_id
+                if model_id==slow_key[0]:
+                    import time
+                    time.sleep(6)
+                return original_record(model_id,*args)
+            model_registry._scan_model_record=one_slow_record
+        if float(os.environ.get('TWOBYTEASR_MODEL_PROBE_DELAY','0')) or os.environ.get('TWOBYTEASR_MODEL_PROBE_FAIL')=='1':
+            from ..local_models import model_registry
+            original_scan = model_registry.scan_model_registry
+            def delayed_registry(*args, **kwargs):
+                import time
+                time.sleep(float(os.environ.get('TWOBYTEASR_MODEL_PROBE_DELAY','0')))
+                if os.environ.get('TWOBYTEASR_MODEL_PROBE_FAIL')=='1':
+                    raise OSError('Controlled unavailable model directory')
+                return original_scan(*args, **kwargs)
+            model_registry.scan_model_registry = delayed_registry
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')=='workshop-readiness':
+        from .workshop_readiness_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'usage-candy':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-integrity':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -221,7 +254,7 @@ def isolate_acceptance_settings() -> None:
         from .update_reminder_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'fill-editor', 'export-follow', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'fill-editor', 'export-follow', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'ultra-alignment','ultra-upgrade', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -300,7 +333,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'subtitle-navigation', 'timeline-cue-pill', 'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces', 'theme-loading'}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'editor-download', 'english-track-loudness', 'subtitle-navigation', 'timeline-cue-pill', 'navigation-performance', 'studio-loading', 'caption-first-display', 'loading-faces', 'theme-loading'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -324,7 +357,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'editor-integrity','subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'editor-integrity','subtitle-reliability','macos-edit-save','macos-waveform-stability','macos-caption-caret-split','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -539,6 +572,31 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'model-loading':
+        from .model_loading_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')=='workshop-readiness':
+        from .workshop_readiness_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'usage-candy':
+        from .usage_dialog_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'task-candy':
+        from .task_panel_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bunny-chat':
+        from .bunny_chat_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-integrity':
         from .proofread_integrity_audit import start
         output = audit_directory()
@@ -853,6 +911,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'ultra-alignment','ultra-upgrade'}:
+        from .ultra_alignment_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-models':
         from .timeline_models_audit import start
         output = audit_directory()
@@ -905,6 +968,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'subtitle-navigation':
         from .subtitle_navigation_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'english-track-loudness':
+        from .english_track_loudness_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -1169,6 +1237,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario in {'macos-edit-save', 'macos-waveform-stability', 'macos-caption-caret-split'}:
+        from .macos_edit_save_entry import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'waveform-full':
         from .waveform_full_audit import start
         output = audit_directory()
@@ -1189,6 +1262,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None:
             start(window, output)
+        return
+    if scenario == 'editor-download':
+        from .editor_download_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if scenario == 'editor-integrity':
         from .editor_integrity_audit import start

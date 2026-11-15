@@ -28,6 +28,7 @@ def _queue_ai_provider_refresh(page):
 
 
 from ..design.themed_icons import install_themed_icon
+from ..design.app_events import listen as listen_app_events, unlisten as unlisten_app_events
 from PySide6.QtCore import (
     QEvent,
     QModelIndex,
@@ -810,10 +811,12 @@ class SubtitleStudioPage(
             self._workspace_steps.close()
             self._workspace_steps = None
         self._close_requested = True
+        from .project_loudness_panel import retire_gain_controls
+        retire_gain_controls(self)
         self._retire_library_work()
         app = QApplication.instance()
         if app is not None and self._event_filter_installed:
-            app.removeEventFilter(self)
+            unlisten_app_events(self)
             self._event_filter_installed = False
         if app is not None and self._focus_signal_connected:
             app.focusChanged.disconnect(self._restore_edit_card_focus)
@@ -897,7 +900,7 @@ class SubtitleStudioPage(
         self._install_shortcuts()
         app = QApplication.instance()
         if app is not None:
-            app.installEventFilter(self)
+            listen_app_events(self, self._APP_EVENT_TYPES)
             self._event_filter_installed = True
             app.focusChanged.connect(self._restore_edit_card_focus)
             self._focus_signal_connected = True
@@ -1073,6 +1076,16 @@ class SubtitleStudioPage(
 
     def _studio_trace(self, event: str, **fields: object) -> None:
         """Queue Studio diagnostics without filesystem work on the GUI thread."""
+        readiness = self.__dict__.get('_readiness')
+        loading = getattr(readiness, 'loading', None)
+        # This logger is also called by data workers: never query QWidget or
+        # a native handle here, and never label an explicitly stale callback
+        # as belonging to the new open request.
+        current_generation = fields.get('generation', getattr(readiness, 'generation', None))
+        if (loading is not None and current_generation == getattr(readiness, 'generation', None)
+                and (loading.active or event.startswith(('STUDIO_OPEN','STUDIO_READY')))):
+            fields.setdefault('operation_id', f'load-{id(loading):x}-{loading.generation}')
+            fields.setdefault('loading_generation', loading.generation)
         fields.setdefault("project_id", getattr(self.project, "project_id", None))
         fields.setdefault("revision", getattr(getattr(self.project, "_studio_state_runtime", None), "revision", None))
         GLOBAL_STUDIO_TRACE.emit(event, fields)
@@ -1263,7 +1276,6 @@ class SubtitleStudioPage(
             "review_adopt_4": lambda: self._adopt_review_candidate(3),
             "review_flip_pronoun": self._flip_review_pronouns,
             "adopt_suggestion": self._adopt_highlighted_suggestion,
-            "editor_flip_pronoun": self._flip_editor_pronoun,
         }
         # 2026-10-17: jump, zoom, nudge, export, panels... (one module, same registry).
         from .studio_shortcut_actions import extra_command_callbacks
@@ -1353,6 +1365,11 @@ class SubtitleStudioPage(
         QEvent.Type.ApplicationActivate,
         QEvent.Type.WindowDeactivate,
         QEvent.Type.WindowActivate,
+    })
+    # Every type eventFilter reads as the application-wide listener
+    # (design/app_events.py); all other events never reach Python for it.
+    _APP_EVENT_TYPES = _FILTERED_EVENT_TYPES | frozenset({
+        QEvent.Type.FocusIn, QEvent.Type.FocusOut, QEvent.Type.KeyRelease, QEvent.Type.MouseMove,
     })
 
     def eventFilter(self, watched, event) -> bool:
@@ -1449,7 +1466,7 @@ class SubtitleStudioPage(
         )
         follow_confirm = (getattr(self,'_caption_following',False) and isinstance(event,QKeyEvent) and (
             event.key() in {Qt.Key_Return,Qt.Key_Enter} and not event.modifiers() & Qt.ShiftModifier
-            or event.key() in {Qt.Key_R,Qt.Key_W,Qt.Key_A,Qt.Key_D,Qt.Key_P}
+            or event.key() in {Qt.Key_R,Qt.Key_W,Qt.Key_A,Qt.Key_D,Qt.Key_F,Qt.Key_E,Qt.Key_S}
                 and event.modifiers()==Qt.ShiftModifier
             or event.key() == Qt.Key_C
                 and event.modifiers() in {Qt.NoModifier, Qt.ShiftModifier}
@@ -1732,6 +1749,12 @@ class SubtitleStudioPage(
             command_id = self._shortcut_lookup.get(sequence)
         callback = self._command_callbacks.get(command_id or "")
         if callback is None:
+            return False
+        from .shortcut_registry import BY_ID
+        action=BY_ID.get(command_id)
+        if action is not None and action.scope=='studio.editor':
+            # Only the editor event path owns these keys, never the timeline
+            # or another field while a floating draft happens to be open.
             return False
         from ..diagnostics.event_log import operation, emit
         from ..diagnostics.studio_events import page_context
@@ -3317,6 +3340,9 @@ class SubtitleStudioPage(
             self.select_cue(cue_id)
         menu = create_studio_menu(self)
         if cue_id:
+            # 2026-11-16: ask 兔白 about this line (her chat opens with it in the question).
+            from ..app.bunny_chat import ask_about_cue
+            menu.addAction(_icon("fa5s.comment-dots"), tr("问兔白这条"), lambda: ask_about_cue(self.window(), cue_id))
             from .studio_translation_edit import edit_translation
             menu.addAction(tr("添加／编辑译文"), lambda: edit_translation(self, cue_id))
             menu.addSeparator()
@@ -3351,13 +3377,6 @@ class SubtitleStudioPage(
             from .studio_cut_refine import start_snap_cuts
             menu.addAction(_icon("fa5s.cut"), tr("按停顿校正日语切点（整个工程）"),
                            lambda: start_snap_cuts(self, None))
-            from ..recognition.ctc_alignment import model_dir as ctc_model_dir
-            from .studio_ctc_refine import start_refine_starts
-            ctc_action = menu.addAction(_icon("fa5s.ruler-horizontal"), tr("按 CTC 对齐模型校正日语句首（整个工程）"),
-                                        lambda: start_refine_starts(self, None))
-            if not ctc_model_dir():
-                ctc_action.setEnabled(False)
-                ctc_action.setToolTip(tr("需要日语 CTC 对齐模型：在模型工坊“字幕时间轴”中下载"))
         loop_menu = menu.addMenu("当前字幕试听")
         loop_menu.addAction("播放一次", lambda: self._seek((cue_by_id(self.project, self.selected_cue_id).start_ms - 250) / 1000.0) if self.project and self.selected_cue_id else None)
         loop_menu.addAction("循环播放", self._toggle_loop_current)
@@ -4030,7 +4049,7 @@ class SubtitleStudioPage(
         close_checkpoint("persistence_captured")
         app = QApplication.instance()
         if app is not None and self._event_filter_installed:
-            app.removeEventFilter(self)
+            unlisten_app_events(self)
             self._event_filter_installed = False
         if app is not None and self._focus_signal_connected:
             try:
