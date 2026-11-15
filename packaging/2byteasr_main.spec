@@ -159,7 +159,7 @@ if _speaker_embed_worker.is_file():
 # P9A-R7: real local FireRed-AED and Qwen3-ASR launchers.  Keep copies in the
 # pyd-free workers directory as well as the install root because packaged
 # startup resolves their paths from both locations across older bundles.
-for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "ctc_aligner_worker.py", ROOT / "mfa_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
+for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "mfa_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
     if _asr_worker.is_file():
         datas.append((str(_asr_worker), "."))
         datas.append((str(_asr_worker), "workers"))

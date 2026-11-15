@@ -64,6 +64,7 @@ class ModelRegistry:
     records: dict[str, ModelRecord] = field(default_factory=dict)
     lock_path: Path | None = None
     error: str = ''
+    pending_keys: frozenset[str] = field(default_factory=frozenset)
 
     def installed_keys(self) -> set[str]:
         return {
@@ -197,12 +198,15 @@ def scan_model_registry(
     paths: RuntimePaths | None = None,
     verify_hashes: bool = False,
     measure_size: bool = False,
+    on_progress=None,
+    workers: int = 1,
 ) -> ModelRegistry:
     from ..runtime_paths import single_scan
 
     with single_scan():
         return _scan_model_registry(install_root=install_root, model_root=model_root, paths=paths,
-                                    verify_hashes=verify_hashes, measure_size=measure_size)
+                                    verify_hashes=verify_hashes, measure_size=measure_size,
+                                    on_progress=on_progress, workers=workers)
 
 
 def _scan_model_registry(
@@ -212,6 +216,8 @@ def _scan_model_registry(
     paths: RuntimePaths | None,
     verify_hashes: bool,
     measure_size: bool,
+    on_progress=None,
+    workers: int = 1,
 ) -> ModelRegistry:
     runtime = paths or get_runtime_paths()
     install = Path(install_root) if install_root is not None else runtime.install_root
@@ -226,9 +232,43 @@ def _scan_model_registry(
         model_root=models_parent,
         lock_path=install / "dependencies.lock.json",
     )
-    for model_id, spec in specs.items():
-        if not isinstance(spec, dict):
-            continue
+    items=[(str(key),spec) for key,spec in specs.items() if isinstance(spec,dict)]
+    if on_progress is not None and workers > 1:
+        from queue import Queue, Empty
+        from threading import Thread
+        from dataclasses import replace
+        from ..runtime_paths import single_scan
+        jobs, results = Queue(), Queue()
+        for item in items: jobs.put(item)
+        def work():
+            with single_scan():
+                while True:
+                    try: model_id,spec=jobs.get_nowait()
+                    except Empty: return
+                    results.put((model_id,_scan_model_record(model_id,spec,install,models_parent,
+                                                           verify_hashes,measure_size)))
+        remaining={key for key,_ in items}
+        registry.pending_keys=frozenset(remaining)
+        on_progress(replace(registry,records={}))
+        # Daemon data readers: an uninterruptible external disk cannot hold
+        # application shutdown hostage. The shared coordinator owns one scan.
+        for i in range(min(2,workers,len(items))):
+            Thread(target=work,name=f'model-file-check-{i}',daemon=True).start()
+        while remaining:
+            model_id,record=results.get()
+            registry.records[model_id]=record
+            remaining.discard(model_id)
+            registry.pending_keys=frozenset(remaining)
+            if remaining:
+                on_progress(replace(registry,records=dict(registry.records)))
+        return registry
+    for model_id,spec in items:
+        registry.records[model_id]=_scan_model_record(model_id,spec,install,models_parent,verify_hashes,measure_size)
+    return registry
+
+
+def _scan_model_record(model_id, spec, install, models_parent, verify_hashes, measure_size):
+    try:
         spec_path = str(spec.get("path") or f"models/{model_id}")
         folder, source = _locate_model_folder(
             spec_path,
@@ -249,7 +289,7 @@ def _scan_model_registry(
             if measure_size and folder.is_dir() and health is not ModelHealth.MISSING
             else 0
         )
-        registry.records[str(model_id)] = ModelRecord(
+        return ModelRecord(
             model_id=str(model_id),
             version=str(spec.get("revision") or spec.get("version") or ""),
             installation_path=folder,
@@ -263,7 +303,10 @@ def _scan_model_registry(
             missing_files=missing,
             spec_path=spec_path,
         )
-    return registry
+    except Exception as exc:
+        return ModelRecord(str(model_id),'',models_parent/model_folder_name(str(spec.get('path') or model_id)),
+                           'unavailable',(),ModelHealth.UNREADABLE,0,0,'',True,
+                           missing_files=(type(exc).__name__,))
 
 
 def installed_model_keys(

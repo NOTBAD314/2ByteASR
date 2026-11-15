@@ -92,4 +92,5 @@ def install_rounded_popups(app, border_color: str | None) -> None:
         existing.border_color = border_color
         return
     app._rounded_popup_filter = RoundedPopupFilter(app, border_color)
-    app.installEventFilter(app._rounded_popup_filter)
+    from .app_events import listen
+    listen(app._rounded_popup_filter, (QEvent.Type.Show,))

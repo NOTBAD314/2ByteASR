@@ -1,0 +1,4 @@
+{
+  "zh": "· 问问兔白：用自然语言查功能、检查字幕和安排操作，修改按权限确认并可撤销。\n· 字幕与后台校对：按住画面字幕拖动，使用 Shift+F/A/D/E/S 切换候选，批量视频逐个完成即可校对。\n· 音量与响度：多轨推子共同试听，测量工程响度后选择目标并一次匹配。\n· 任务与费用：查看原文、模型分段和写回结果，按日期、任务与步骤筛选 API 用量。\n· 动效与保存：拖动入场、停留和出场时长；保存选择更清楚，自动恢复显示时间。",
+  "en": "Ask Bunny: find features, inspect subtitles and plan actions in natural language, with permission checks and undo. Subtitle editing: drag visible captions, use Shift+F/A/D/E/S for candidates, and proof completed videos while the batch continues. Audio: preview multiple track faders and match project loudness to a chosen target. Tasks and costs: compare source text, model segments and written results, and filter API usage. Motion and saving: adjust entrance, hold and exit durations, with clearer save choices and dated recovery."
+}

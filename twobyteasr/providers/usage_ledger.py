@@ -41,8 +41,11 @@ _errors = {}
 
 
 @contextmanager
-def usage_scope(*, project_id='', task_id='', media_fingerprint=''):
-    token = _scope.set(dict(project_id=str(project_id), task_id=str(task_id), media_fingerprint=str(media_fingerprint)))
+def usage_scope(*, project_id='', task_id='', media_fingerprint='', task_label=''):
+    # task_label (2026-11-14): a readable name (the media file) for the usage
+    # window's task list; rows written before it simply have none.
+    token = _scope.set(dict(project_id=str(project_id), task_id=str(task_id), media_fingerprint=str(media_fingerprint),
+                            task_label=str(task_label)))
     try:
         yield
     finally:
@@ -57,7 +60,8 @@ def context():
         from ..recognition.run_context import get_runtime_context
         ctx = get_runtime_context()
         if ctx.identity_task_active:
-            return dict(project_id='', task_id=ctx.job_id, media_fingerprint=str(ctx.media_identity.get('fingerprint', '')))
+            return dict(project_id='', task_id=ctx.job_id, media_fingerprint=str(ctx.media_identity.get('fingerprint', '')),
+                        task_label=Path(str(ctx.media_identity.get('path', ''))).name)
     except Exception:
         pass
     return dict(project_id='', task_id='')

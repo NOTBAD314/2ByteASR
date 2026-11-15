@@ -75,6 +75,7 @@ class SelectionGeometryController(QObject):
         self.page=page;self.overlay=page.position_overlay
         self.key=None;self.pending=None;self.worker=None;self.measurements=0
         self._last_data=None
+        self._measured_language=None
         self.overlay._requires_measured_bounds=True
         self.overlay.interaction_guard = self.interaction_valid
         self.completed.connect(self._accept)
@@ -84,6 +85,7 @@ class SelectionGeometryController(QObject):
     def invalidate(self):
         self.timer.stop()
         self.key = self.pending = self._last_data = None
+        self._measured_language=None
         self.overlay.clear_hit_region()
 
     def interaction_valid(self):
@@ -96,6 +98,11 @@ class SelectionGeometryController(QObject):
         from .canvas_visibility import layer_is_shown
         if not layer_is_shown(p, cue, language) or self.key[1] != cue.id:
             return False
+        if self.overlay._dragging:
+            # Previewing this captured gesture retires the previous scene token.
+            # Keep its measured geometry while the same visible target/layer is
+            # paused; the transform transaction still guards project/revision.
+            return bool(getattr(p.video, '_paused', True) and self._measured_language == language)
         scene = getattr(p, '_caption_scene', None)
         if scene is not None and scene.active:
             from ..caption_style.bilingual_layout import companion_id, settings_from_state
@@ -122,6 +129,7 @@ class SelectionGeometryController(QObject):
             return
         if self.overlay._dragging:
             return  # Only a still-visible target may keep gesture geometry.
+        self._measured_language=language
         scene=getattr(p,'_caption_scene',None)
         if scene is not None and scene.active:
             from ..caption_style.bilingual_layout import companion_id

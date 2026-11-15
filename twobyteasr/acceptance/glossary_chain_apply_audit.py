@@ -334,9 +334,10 @@ def start(window, profile):
             def close_controls():
                 if time.monotonic() > close_deadline:
                     return
+                from .question_boxes import question_boxes
                 current = QApplication.activeModalWidget()
                 current_path = Path(str(getattr(self.page, 'project_path', '') or '')).resolve()
-                if isinstance(current, QMessageBox) and current_path == project_path:
+                if isinstance(current, question_boxes()) and current_path == project_path:
                     button = current.button(QMessageBox.StandardButton.Discard)
                     if button is not None:
                         self.result['owned_copy_close_choice'] = 'normal Discard control'

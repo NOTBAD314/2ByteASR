@@ -23,6 +23,11 @@ def start(window, out):
     apply_theme = getattr(theme_manager, 'request_theme', theme_manager.apply_theme)
     theme_key = theme_manager.theme_key
 
+    if os.environ.get('TWOBYTEASR_LOADING_ZOOM'):
+        from ..app import ui_zoom
+        ui_zoom.set_zoom_percent(int(os.environ['TWOBYTEASR_LOADING_ZOOM']))
+        ui_zoom.apply_to(window)
+
     class Audit(QObject):
         def __init__(self):
             super().__init__(window)
@@ -176,9 +181,64 @@ def start(window, out):
             if not passed:
                 raise AssertionError(name)
 
+        def shared_event_checks(self):
+            from ..design import app_events
+            from ..i18n import current_language, save_language, language_table
+            from ..i18n_widgets import install_language_events
+            from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
+            app = QApplication.instance()
+            install_language_events()
+            shared = app_events.hub()
+            for name in ('_theme_root_filter', '_hover_hint_policy', '_rounded_popup_filter', '_i18n_events'):
+                owner = getattr(app, name, None)
+                if name == '_rounded_popup_filter' and owner is None:
+                    from ..design.popup_corners import _windows_supports_rounding
+                    self.check('native popup filter follows OS support', not _windows_supports_rounding())
+                else:
+                    self.check('shared hub owns ' + name, owner is not None and shared.listening(owner))
+            previous = current_language()
+            dialog = QDialog(window)
+            try:
+                save_language('ja')
+                dialog.setWindowTitle('日本語・モデルの案内')
+                layout = QVBoxLayout(dialog)
+                keys = ('本机模型', '此用途不支持', '无法选择模型',
+                    '字幕时间戳仅支持本地模型，须具备时间戳或对齐能力。',
+                    '字幕时间戳仅支持已接入的本地时间戳或对齐模型，请选择本地模型。',
+                    '此模型尚未接入当前用途，请更换模型。')
+                labels = []
+                for key in keys:
+                    label = QLabel(key, dialog)
+                    label.setWordWrap(True)
+                    layout.addWidget(label)
+                    labels.append(label)
+                dialog.resize(760, 380)
+                dialog.show()
+                yield .3
+                for key, label in zip(keys, labels):
+                    self.check('Japanese show-event translation: ' + key,
+                        label.text() == language_table('ja')[key], actual=label.text())
+                self.check('Japanese translation window captured', dialog.grab().save(str(out/'shared-events-japanese.png')))
+            finally:
+                dialog.close()
+                dialog.deleteLater()
+                save_language(previous)
+            yield .2
+
         def run(self):
+            if os.environ.get('TWOBYTEASR_APP_EVENTS_AUDIT') == '1':
+                yield from self.shared_event_checks()
             window.resize(1440, 900)
             yield .4
+            if os.environ.get('TWOBYTEASR_CLOSE_DURING_LOAD')=='1':
+                self.begin('close-during-workspace-load')
+                window.open_studio_project(str(out/'p12/project.2byteproj'))
+                self.check('close scheduled while loading',self.session().active)
+                self.result['passed']=True
+                self.save()
+                QTimer.singleShot(35,window,window.close)
+                yield 10
+                return
             for key in ('grape', 'sand', 'graphite', 'sand'):
                 from ..design.ui_theme import THEMES
                 if key not in THEMES:
@@ -217,10 +277,16 @@ def start(window, out):
                 self.end()
                 page = window.built_page('studio')
                 self.check(f'{count} captions retained', len(page.project.cues) == count)
+                if os.environ.get('TWOBYTEASR_APP_EVENTS_AUDIT') == '1':
+                    from ..design.app_events import hub
+                    self.check(f'{count} editor listener active', hub().listening(page))
                 page.undo_stack.setClean()
                 yield .15
                 if count == 12:
                     window.grab().save(str(out / 'editor.png'))
+                    if os.environ.get('TWOBYTEASR_CANDY_PROMPTS_AUDIT') == '1':
+                        from .candy_prompt_audit import prompt_checks
+                        yield from prompt_checks(window, page, out, self.check, self.ready)
                 for key in ('grape', 'sand'):
                     self.begin(f'theme-{count}-{key}')
                     identity = self.project_state(page)
@@ -234,6 +300,8 @@ def start(window, out):
                         self.project_state(page) == identity)
                 page.show_project_hub(skip_dirty_guard=True)
                 yield .2
+                if os.environ.get('TWOBYTEASR_APP_EVENTS_AUDIT') == '1':
+                    self.check(f'{count} hub retires editor listener', not hub().listening(page))
             if (out/'real/project.2byteproj').is_file():
                 path = out/'real/project.2byteproj'
                 self.begin('real-project')
@@ -287,6 +355,10 @@ def start(window, out):
             self.end()
             page = window.built_page('studio')
             self.check('resume reuses partial workspace', partial is None or page is partial)
+            if (out/'cache-recovery-fixtures.json').exists():
+                from PySide6.QtGui import QImage
+                yield lambda: not QImage(str(out/'p12/preview/project-cover.jpg')).isNull()
+                self.check('corrupt cover rebuilt by library worker',not QImage(str(out/'p12/preview/project-cover.jpg')).isNull())
             # A deliberately slow reader exercises the real loading view with
             # actual hydration/player work afterwards. It is not an external disk claim.
             from ..projects import studio_project as project_module
@@ -304,6 +376,18 @@ def start(window, out):
             self.end()
             project_module.load_project = original_load
             self.check('latest project owns callbacks', len(page.project.cues) == 2000 and page._readiness.path == str(target))
+            if (out/'cache-recovery-fixtures.json').exists():
+                broken=Path(json.loads((out/'cache-recovery-fixtures.json').read_text('utf8'))['waveform'])
+                yield lambda: broken.is_file() and broken.stat().st_size>1
+                self.check('truncated waveform rebuilt',broken.stat().st_size>1)
+                import hashlib
+                legacy=out/'legacy.2byteproj'
+                before=hashlib.sha256(legacy.read_bytes()).hexdigest()
+                page.undo_stack.setClean()
+                window.open_studio_project(str(legacy))
+                yield lambda: self.ready(legacy)
+                self.check('legacy project opens without rewriting input',len(page.project.cues)==12
+                    and hashlib.sha256(legacy.read_bytes()).hexdigest()==before)
             page.undo_stack.setClean()
             page.show_project_hub(skip_dirty_guard=True)
             yield .15
@@ -315,6 +399,14 @@ def start(window, out):
             session.view.grab().save(str(out/'missing-project.png'))
             QTest.mouseClick(session.view.back, Qt.MouseButton.LeftButton)
             yield lambda: not session.view.isVisible()
+            if (out/'corrupt-project.2byteproj').exists():
+                self.begin('corrupt-project-error')
+                window.open_studio_project(str(out/'corrupt-project.2byteproj'))
+                yield lambda: self.session().state=='failed'
+                self.end()
+                self.check('corrupt project has recoverable error',bool(session.view.label.text()))
+                QTest.mouseClick(session.view.back,Qt.MouseButton.LeftButton)
+                yield lambda: not session.view.isVisible()
             self.begin('missing-media')
             window.open_studio_project(str(out/'missing-media.2byteproj'))
             yield lambda: self.session().state == 'failed' or self.ready(out/'missing-media.2byteproj')
@@ -400,6 +492,10 @@ def start(window, out):
                 self.profiler.disable()
                 self.profiler.dump_stats(str(out / 'gui.prof'))
             self.result['normal_shutdown'] = True
+            if os.environ.get('TWOBYTEASR_CLOSE_DURING_LOAD')=='1':
+                loading=self.session()
+                self.result['close_loading_state']=dict(state=loading.state,active=loading.active)
+                self.result['passed']=bool(self.result['passed'] and not loading.active)
             self.result['frames'] = self.frames
             self.save()
 

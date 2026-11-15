@@ -93,6 +93,20 @@ def main():
         TWOBYTEASR_LOADING_RECORD='1' if args.record else '0', TWOBYTEASR_LOADING_MODE=args.mode,
         TWOBYTEASR_LOADING_PROFILE='1' if args.profile else '0')
     env.pop('TWOBYTEASR_STARTUP_OPEN_STUDIO', None)
+    if os.environ.get('TWOBYTEASR_CACHE_RECOVERY') == '1':
+        from twobyteasr.playback.waveform_cache import generate_waveform_cache
+        from twobyteasr.projects.studio_project import waveform_cache_root
+        cache=generate_waveform_cache(media,ROOT/'tools/ffmpeg/bin/ffmpeg.exe',cache_root=waveform_cache_root())
+        metadata=json.loads((cache/'metadata.json').read_text('utf8'))
+        broken=cache/metadata['levels'][0]['file']
+        broken.write_bytes(b'\0')
+        (out/'p12/preview/project-cover.jpg').write_bytes(b'controlled corrupt jpeg'*200)
+        legacy=json.loads((out/'p12/project.2byteproj').read_text('utf8'))
+        for key in ('media_pool','video_tracks','audio_tracks','av_track_groups','edit_sequence'):
+            legacy.pop(key,None)
+        (out/'legacy.2byteproj').write_text(json.dumps(legacy,ensure_ascii=False),encoding='utf8')
+        (out/'corrupt-project.2byteproj').write_text('{invalid json',encoding='utf8')
+        (out/'cache-recovery-fixtures.json').write_text(json.dumps(dict(waveform=str(broken))),encoding='utf8')
     from audit_launch_bridge import run_audit_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
     code = run_audit_on_desktop(command, cwd=ROOT, env=env, output=out, timeout=360, receipt=out / 'result.json')

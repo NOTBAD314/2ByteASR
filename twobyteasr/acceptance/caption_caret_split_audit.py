@@ -91,8 +91,9 @@ def start(window, output):
                 editor_bottom = card.editor.mapToGlobal(QPoint(0, card.editor.height())).y()
                 bubble_top = card.suggestions.mapToGlobal(QPoint()).y()
                 bubble_bottom = card.suggestions.mapToGlobal(QPoint(0, card.suggestions.height())).y()
-                check(f'candidate bubble clears draft strip_above={above}',
-                      bubble_top >= editor_bottom if above else bubble_bottom <= editor_top)
+                check(f'fixed candidate/body/action order requested_above={above}',
+                      not card.strip_above() and bubble_bottom <= editor_top and
+                      card.strip.mapToGlobal(QPoint()).y() >= editor_bottom)
             page.subtitle_edit_dock.fit_to_workspace()
             QTest.qWait(100)
             page.subtitle_edit_dock.grab().save(str(output/'candidate-card.png'))

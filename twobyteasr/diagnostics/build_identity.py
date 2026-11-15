@@ -105,7 +105,6 @@ _SOURCE_FILES = {
     "requirements-main.txt",
     "qwen_asr_worker.py",
     "qwen_aligner_worker.py",
-    "ctc_aligner_worker.py",
     "mfa_aligner_worker.py",
     "speaker_embed_worker.py",
 }

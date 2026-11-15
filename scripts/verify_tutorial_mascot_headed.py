@@ -93,8 +93,8 @@ def child(output: Path, theme: str) -> int:
         yield 0.4
         menu = menus[0]
         rows = [a.text() for a in menu.actions() if isinstance(a, CuteMenuAction)]
-        check('说明 has the five rows', rows == ['新手教学', '打开范例工程', '选择识别方式…', '回报问题／导出诊断…',
-                                              '重新显示工作台操作提示'], rows)
+        check('说明 has the six rows', rows == ['问问兔白', '新手教学', '打开范例工程', '选择识别方式…',
+                                             '回报问题／导出诊断…', '重新显示工作台操作提示'], rows)
         check('说明 is a translucent round card', menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
         shot('01-help-menu')
         shot('01-help-menu-card', menu)

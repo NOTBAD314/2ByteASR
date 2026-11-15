@@ -55,6 +55,40 @@ def read_studio_preferences() -> dict[str, object]:
     return _preferences_snapshot()[0]
 
 
+RECOVERY_POLICIES = ("auto", "ask", "official")
+
+
+def effective_recovery_policy(preferences) -> str:
+    """What happens when a project has a newer autosave than its saved file.
+
+    2026-11-15 (user): asking every time was too much; open the newer autosave by default, and
+    「设置 → 工程与保存 → 打开工程时」 can bring the question back. Before, "ask" was the default
+    and was written into settings on every save of the settings window, so a stored "ask" only
+    counts once the user picked it there again (``recovery_policy_chosen``)."""
+    if not isinstance(preferences, dict):
+        return "auto"
+    value = str(preferences.get("recovery_policy") or "auto")
+    if value not in RECOVERY_POLICIES:
+        return "auto"
+    if value == "ask" and not preferences.get("recovery_policy_chosen"):
+        return "auto"
+    return value
+
+
+def save_recovery_policy(policy: str) -> None:
+    """The recovery choice alone (「以后直接打开自动恢复」 in the recovery question, 2026-11-15)."""
+    value = policy if policy in RECOVERY_POLICIES else "auto"
+
+    def mutate(payload: dict) -> None:
+        preferences = payload.get("studio_preferences")
+        preferences = dict(preferences) if isinstance(preferences, dict) else {}
+        preferences["recovery_policy"] = value
+        preferences["recovery_policy_chosen"] = True
+        payload["studio_preferences"] = preferences
+
+    _write_settings_json(mutate)
+
+
 def update_reminder_enabled() -> bool:
     """Check for updates at every start and pop up a newer version (2026-10-24; on by default)."""
     return bool(read_studio_preferences().get("update_reminder", True))
@@ -108,7 +142,7 @@ def save_hub_preferences(
     recent_count: int,
     cover: bool,
     restore_layout: bool,
-    recovery_policy: str = "ask",
+    recovery_policy: str | None = None,
     reduce_motion: bool | None = None,
     startup_page: str | None = None,
     speaker_main_tracks: int | None = None,
@@ -131,11 +165,14 @@ def save_hub_preferences(
             "autosave_enabled": bool(auto_save), "autosave_interval_seconds": int(interval),
             "recent_project_count": int(recent_count), "auto_cover": bool(cover),
             "restore_layout": bool(restore_layout),
-            "recovery_policy": recovery_policy if recovery_policy in {"ask", "auto", "official"} else "ask",
+            "recovery_policy": (effective_recovery_policy(previous_preferences) if recovery_policy is None
+                                else recovery_policy if recovery_policy in RECOVERY_POLICIES else "auto"),
             "reduce_motion": (
                 previous_reduce_motion if reduce_motion is None else bool(reduce_motion)
             ),
         })
+        if recovery_policy is not None:
+            payload["studio_preferences"]["recovery_policy_chosen"] = True
         if speaker_main_tracks is not None:
             payload["studio_preferences"]["speaker_main_tracks"] = int(speaker_main_tracks)
         if startup_page is not None:
@@ -288,7 +325,7 @@ def open_application_settings(
         root_edit.text().strip(), bool(auto_save.isChecked()), int(interval.currentData() or 60),
         int(preferences.get("recent_project_count", 9) or 9),
         bool(chosen('cover', 'auto_cover', True)), bool(chosen('restore_layout_box', 'restore_layout', True)),
-        str(recovery_policy.currentData() or "ask"),
+        str(recovery_policy.currentData() or "auto"),
         reduce_motion,
         str(dialog.startup_page.currentData() or "recognition"),
         speaker_main_tracks=int(chosen('speaker_tracks', 'speaker_main_tracks', 2) or 2),

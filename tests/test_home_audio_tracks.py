@@ -343,3 +343,30 @@ def test_home_picker_only_for_multi_track_files_and_reports_the_ticked_tracks(me
     assert [lane for lane, box in picker.checks.items() if box.isChecked()] == ["A2"]
     picker.cancel_button.click()
     assert cancelled == [True] and len(done) == 1
+
+
+@needs_ffmpeg
+def test_multitrack_a_delivers_before_b_and_final_merge_cannot_overwrite_edit(media_env):
+    from twobyteasr.recognition.audio_stream_choice import request_json
+    from twobyteasr.recognition.service import RunOptions,run_media_queue
+    from twobyteasr.projects.studio_project import load_project,save_project
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    first=_two_tracks(media_env.folder);second=_stereo_only(media_env.folder)
+    delivered=[];saved=[]
+    class Pipeline(HearingPipeline):
+        def process_media(self,path,index,total,legacy,runtime_context=None):
+            if Path(path)==second:
+                assert len(delivered)==1 and Path(delivered[0]['project_path']).read_bytes()==saved[0]
+            return super().process_media(path,index,total,legacy,runtime_context=runtime_context)
+    def event(e):
+        if e.kind=='media_delivered':
+            delivered.append(e.payload['result'])
+            if len(delivered)==1:
+                target=delivered[0]['project_path'];project=load_project(target)
+                BatchReplaceTextCommand(project,{project.cues[0].id:'人工校对'},needle='人工').redo()
+                save_project(project,target);saved.append(Path(target).read_bytes())
+    request=request_json({str(first):[{'ordinal':0,'stream_index':1},{'ordinal':1,'stream_index':3}]})
+    result=run_media_queue([str(first),str(second)],RunOptions(job_id='early-multitrack',audio_streams_json=request),event,
+        _legacy=FakeLegacy(media_env.root),_pipeline=Pipeline(),_skip_environment_preflight=True)
+    assert len(result.successes)==2 and len(delivered)==2
+    assert Path(delivered[0]['project_path']).read_bytes()==saved[0]

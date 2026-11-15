@@ -256,6 +256,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     video_track_action_requested = Signal(str, str)
     video_track_reorder_requested = Signal(str, str)
     audio_track_action_requested = Signal(str, str)
+    track_gain_preview = Signal(str, float)
+    track_gain_committed = Signal(str, float)
+    track_gain_cancelled = Signal()
     # A source's further audio streams were folded or unfolded (video track id).
     stream_lanes_toggled = Signal(str)
     track_delete_requested = Signal(str, str)
@@ -1667,6 +1670,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         return True
 
     def event(self, event) -> bool:
+        if event.type() in {QEvent.Type.WindowDeactivate, QEvent.Type.Hide} and getattr(self, '_track_gain_drag', None):
+            from .timeline_track_gain import finish
+            finish(self, cancel=True)
         if (event.type() in {QEvent.Type.WindowDeactivate, QEvent.Type.UngrabMouse}
                 and getattr(self, '_scrub_drag', False)):
             # Hiding can deliver deactivate/ungrab before hideEvent. Let
@@ -1677,6 +1683,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     def set_project(self, project: SubtitleProject | None) -> None:
         new_project = project is not self.project
         if new_project:
+            from .timeline_track_gain import finish
+            finish(self, cancel=True)
             self.finish_scrub(commit=False)
             # Invalidate in-flight demand immediately, including while the
             # next project is hidden and has not painted its viewport yet.
@@ -3214,6 +3222,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             painter.setPen(QPen(mix(palette.grid_minor, palette.background, 0.4), 1))
             painter.drawLine(0, round(rect.bottom()), self._content_right(), round(rect.bottom()))
         painter.restore()
+        from .timeline_track_gain import paint
+        paint(self, painter)
         if self.waveform_state == "LOADING" and self.waveform_message:
             first_rect = next(iter(rects.values()), None)
             if first_rect is not None:
@@ -4606,6 +4616,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.restore()
 
     def mousePressEvent(self, event: QMouseEvent):
+        from .timeline_track_gain import press
+        if press(self, event):
+            event.accept()
+            return
         self._click_navigation = None
         self._thumbnails.note_activity()
         self._selection_before_press = self.clip_selection()
@@ -5361,6 +5375,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     @measured('mouse_move')
     def mouseMoveEvent(self, event: QMouseEvent):
+        from .timeline_track_gain import move, hit
+        if move(self, event):
+            event.accept(); return
+        if event.buttons() == Qt.NoButton and hit(self, event.position()):
+            self.setCursor(Qt.SizeVerCursor)
+            event.accept(); return
         click = getattr(self, '_click_navigation', None)
         if click is not None and (event.position() - click[3]).manhattanLength() >= QApplication.startDragDistance():
             self._click_navigation = (*click[:4], True)
@@ -5744,6 +5764,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.update()
 
     def cancel_selection_gesture(self) -> bool:
+        from .timeline_track_gain import finish
+        if finish(self, cancel=True): return True
         if self.finish_scrub():
             return True
         if self._razor_drag is not None:
@@ -5795,6 +5817,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         return bool(key) and normalize(pressed).casefold() == key.casefold()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        from .timeline_track_gain import finish
+        if event.key() == Qt.Key_Escape and finish(self, cancel=True):
+            event.accept(); return
         if event.key() == Qt.Key_Escape and self._range_release(cancel=True):
             event.accept()
             return
@@ -5881,6 +5906,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
 
     @measured('mouse_release')
     def mouseReleaseEvent(self, event: QMouseEvent):
+        from .timeline_track_gain import finish
+        if event.button() == Qt.LeftButton and finish(self):
+            event.accept(); return
         click, self._click_navigation = getattr(self, '_click_navigation', None), None
         changed = bool(self._drag and any(value != self._drag_originals[key]
                        for key, value in self._timing_preview.items()))

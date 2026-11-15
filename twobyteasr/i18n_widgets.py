@@ -343,7 +343,8 @@ def install_language_events():
 
     _SHOW = QEvent.Type.Show
     app._i18n_events = LanguageEvents()
-    app.installEventFilter(app._i18n_events)
+    from .design.app_events import listen
+    listen(app._i18n_events, (QEvent.Type.Show,))
 
 
 def refresh_application(language):

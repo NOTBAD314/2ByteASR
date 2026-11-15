@@ -82,8 +82,12 @@ class CaptionSuggestionView(QScrollArea):
         self._frames = []
         self._buttons = {}
         self._rows_generation = 0
+        self.dismissed = False
+        self.candidate_mode = False
 
     def reset(self):
+        self.dismissed = False
+        self.candidate_mode = False
         self._display = []
         self._text = self._expected_text = ""
         self._selection = None
@@ -141,6 +145,7 @@ class CaptionSuggestionView(QScrollArea):
         rows = tuple(rows)
         preserve = text == self._text or text == self._expected_text
         if not preserve:
+            self.candidate_mode = False
             self._display = []
             self._selection = None
         by_key = {_signature(row): row for row in rows}
@@ -175,6 +180,10 @@ class CaptionSuggestionView(QScrollArea):
         """Only a validated draft patch can carry old row locations forward."""
         from dataclasses import replace
         delta = len(replacement) - (end - start)
+        # Pronouns remain live selectors, including their current value.
+        # Do not retain an obsolete "applied" selector beside its new row.
+        self._display = [item for item in self._display if not
+                         (item.row.kind == 'pronoun' and item.row.start == start and item.row.end == end)]
         for item in self._display:
             row = item.row
             if row.start == start and row.end == end and item.status == "pending":
@@ -212,26 +221,23 @@ class CaptionSuggestionView(QScrollArea):
         return True
 
     def cycle(self, direction, *, from_body=False):
-        """Read-order candidates plus one body stop, shared by A and D."""
-        entries = [(index, option) for index, item in enumerate(self._display)
-                   for option in range(max(1, len(item.row.options)) if item.status == 'pending' else 1)]
-        if not entries:
+        """Cycle only the options visible in the current bubble, wrapping ends."""
+        mark, option = self.selected
+        if mark < 0:
             return False
-        if from_body:
-            target = entries[0] if direction > 0 else entries[-1]
-        else:
-            index = entries.index(self._selection) if self._selection in entries else 0
-            next_index = index + (1 if direction > 0 else -1)
-            if not 0 <= next_index < len(entries):
-                return False
-            target = entries[next_index]
-        self._selection = target
+        count = len(self._suggestions[mark].options)
+        if not count:
+            return False
+        self.selected = mark, (option + direction) % count
         self.focus_current()
         return True
 
     def focus_current(self):
         if self._selection is None:
             return
+        self.dismissed = False
+        self.candidate_mode = True
+        self.show()
         # Show the bubble row first: a hidden button cannot take focus.
         self._show_row(self._selection[0])
         target = self._buttons.get(self._selection) or self._frames[self._selection[0]]
@@ -249,6 +255,22 @@ class CaptionSuggestionView(QScrollArea):
     def candidate_button(self, mark, option):
         self.selected = mark, option
         return self._buttons.get(self._selection)
+
+    def select_at(self, position, anchor=None):
+        """Follow an explicit selection/caret without stealing keyboard focus."""
+        low, high = sorted((position, position if anchor is None else anchor))
+        pending = [(i, item.row) for i, item in enumerate(self._display) if item.status == 'pending']
+        hits = [(i, row) for i, row in pending if
+                (low != high and row.start == low and row.end == high)
+                or (low == high and row.start <= low < row.end)]
+        if not hits and low == high:
+            hits = [(i, row) for i, row in pending if row.end == low]
+        if hits:
+            index, row = hits[0]
+            if self._selection is None or self._selection[0] != index:
+                option = next((j for j,o in enumerate(row.options) if o.text == row.original), 0)
+                self._selection = index, option
+                self._paint_selection(); self.selected_changed.emit()
 
     def _choose(self, index, option):
         self._selection = index, option
@@ -289,7 +311,11 @@ class CaptionSuggestionView(QScrollArea):
             if item.status == "pending":
                 for option, value in enumerate(item.row.options):
                     button = QPushButton((value.text or "∅").replace('&', '&&'), frame)
-                    button._candidate_text = value.text if isinstance(value.text, str) else "候选不可用"
+                    label = value.text if isinstance(value.text, str) else "候选不可用"
+                    if item.row.kind == 'pronoun':
+                        label += (' ✓' if value.text == item.row.original else '')
+                    button._candidate_text = label
+                    button.setProperty('currentValue', value.text == item.row.original)
                     button.setObjectName("captionCandidateButton")
                     button.setAccessibleName(f"将{item.row.original}替换为{value.text}")
                     button.setToolTip(f"「{item.row.original}」→「{value.text}」 · 点击或空格采纳")
@@ -315,7 +341,7 @@ class CaptionSuggestionView(QScrollArea):
         self._paint_selection()
         self._fit_rows()
         self._schedule_fit()
-        self.setVisible(bool(count))
+        self.setVisible(bool(count) and not self.dismissed)
         self.selected_changed.emit()
         owner = self.window()
         if hasattr(owner, 'schedule_fit'):
@@ -344,7 +370,7 @@ class CaptionSuggestionView(QScrollArea):
         return next((frame for frame in self._frames if not frame.isHidden()), None)
 
     def set_budget(self, width, height):
-        budget = max(48, int(width)), max(38, int(height))
+        budget = max(48, int(width)-self.verticalScrollBar().sizeHint().width()), max(38, int(height))
         if budget != (self._maximum_width, self._maximum_height):
             self._maximum_width, self._maximum_height = budget
             self._fit_rows()
@@ -688,8 +714,7 @@ class CaptionEditorPanel(QFrame):
 
     Layout, top to bottom: a lane for the candidate bubble, the cream card
     face with the draft, then the perforated strip with the actions. When
-    there is no room under the subtitle the strip goes above the face and
-    the bubble below it (``set_strip_above``).
+    Bounds handling moves/resizes the whole component, preserving this order.
     """
     TEXT_PX = 22
     MIN_CARD = 380
@@ -830,8 +855,8 @@ class CaptionEditorPanel(QFrame):
 
         self.split_button = CaptionStripButton('切割', '⇧ C', 'fa5s.cut', self.strip_row)
         self.split_button.setToolTip('在文字光标处切开 · Shift+C')
-        self.pronoun_button = CaptionStripButton('他/她', '⇧ P', parent=self.strip_row)
-        self.pronoun_button.setToolTip("Shift+P · 切换当前草稿里的全部人称，不需要移动光标")
+        self.pronoun_button = CaptionStripButton('他 / 她 / 它', '⇧F', parent=self.strip_row)
+        self.pronoun_button.setToolTip("选中或将光标放到一个代词旁；Shift+F 循环选择 · Shift+E 采纳 · Shift+S 返回正文")
         self.more_button = CaptionStripButton(icon='fa5s.ellipsis-h', parent=self.strip_row)
         self.more_button.setToolTip('更多')
         self.more_menu = QMenu(self.more_button)
@@ -851,6 +876,12 @@ class CaptionEditorPanel(QFrame):
                        self.cancel_button, self.confirm_button, self.cut_status):
             controls.addWidget(widget)
         strip_layout.addWidget(self.strip_row)
+        self.candidate_hint = QLabel('Shift+F 代称循环　Shift+A/D 候选循环\nShift+E 采纳高亮　Shift+S 返回正文', self.strip)
+        self.candidate_hint.setObjectName('subtitleEditCardHint')
+        self.candidate_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self.candidate_hint.setWordWrap(True)
+        self.candidate_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        strip_layout.addWidget(self.candidate_hint)
 
         self.split_status = QLabel(self.strip)
         self.split_status.setObjectName('captionEditorMeta')
@@ -912,6 +943,8 @@ class CaptionEditorPanel(QFrame):
         self.split_playhead.toggled.connect(self.update_hint)
         self.split_status.installEventFilter(self)
         self.editor.cursorPositionChanged.connect(self._paint_marks)
+        self.editor.cursorPositionChanged.connect(self._follow_caret)
+        self.editor.updateRequest.connect(self._queue_place)
         self.split_playhead.toggled.connect(self._paint_marks)
         self.editor.textChanged.connect(self.resize_editor)
         self.editor.textChanged.connect(self._queue_place)
@@ -949,7 +982,8 @@ class CaptionEditorPanel(QFrame):
         return self._strip_above
 
     def set_strip_above(self, above):
-        above = bool(above)
+        # Kept as a compatibility API; direction is no longer a fit strategy.
+        above = False
         if above != self._strip_above:
             self._strip_above = above
             self._arrange()
@@ -989,9 +1023,13 @@ class CaptionEditorPanel(QFrame):
         self.resize_editor(max(80, width-2*self.FACE_GUTTER))
         self._card_layout.activate()
         content_height = self._card_layout.totalHeightForWidth(width) if self._card_layout.hasHeightForWidth() else self.card.sizeHint().height()
-        self.suggestions.set_budget(max(48, width-24), max(38, maximum_height-max(80, content_height)-24))
+        available = max(38, maximum_height-max(80, content_height)-24)
+        # Several readable rows, then scrolling. A large candidate array must
+        # not turn this subtitle editor into a window-height suggestion sheet.
+        readable_rows = self.suggestions.fontMetrics().lineSpacing()*5+16
+        self.suggestions.set_budget(max(48, width-24), min(available, max(38,readable_rows)))
         self.bubble.adjustSize()
-        lane = max(self.TAG_OVERHANG+1, self.bubble.sizeHint().height()+4) if self.suggestions.has_rows() else self.TAG_OVERHANG+1
+        lane = max(self.TAG_OVERHANG+1, self.bubble.sizeHint().height()+self.TAG_OVERHANG+9) if self.suggestions.has_rows() else self.TAG_OVERHANG+1
         if self.lane.height() != lane: self.lane.setFixedHeight(lane)
         self._outer.invalidate()
         self._outer.activate()
@@ -1003,7 +1041,7 @@ class CaptionEditorPanel(QFrame):
         self.close_button.move(self.face.width() - self.close_button.width() - 8, 8)
         self.close_button.raise_()
         self.tag.adjustSize()
-        tag_y = face.top() - self.TAG_OVERHANG if not self._strip_above else face.bottom() - self.tag.height() + self.TAG_OVERHANG
+        tag_y = face.top() - self.TAG_OVERHANG
         self.tag.move(face.left() + 16, tag_y)
         self.tag.raise_()
         row = self.suggestions.current_row() if self.suggestions.has_rows() else None
@@ -1031,13 +1069,16 @@ class CaptionEditorPanel(QFrame):
             below = viewport.mapTo(self, QPoint(int(centre), first.bottom()))
             self.bubble.adjustSize()
             width, height = self.bubble.width(), self.bubble.height()
+            # The tag already has its own vertical lane. Shifting the bubble
+            # sideways to avoid it would clamp the tail away from edge words.
             x = max(0, min(self.width() - width, above.x() - width // 2))
-            down = not self._strip_above
+            down = True
             self.bubble.set_tail(above.x() - x, down)
             # Reserve the complete measured bubble before window placement.
             # This is independent of the previous lane/window geometry.
-            lane = max(lane, height + 4)
-            y = face.top() - height + 2 if down else face.bottom() + 2
+            tag_space = self.TAG_OVERHANG+5
+            lane = max(lane, height + tag_space + 4)
+            y = face.top() - height - tag_space
             self.bubble.move(x, y)
             self.bubble.show()
             self.bubble.raise_()
@@ -1047,6 +1088,14 @@ class CaptionEditorPanel(QFrame):
             owner = self.window()
             if hasattr(owner, 'schedule_fit'):
                 owner.schedule_fit()
+
+    def _follow_caret(self):
+        if self.suggestions.owns_focus():
+            return
+        from .caption_editor import py_position
+        text = self.editor.toPlainText(); cursor = self.editor.textCursor()
+        self.suggestions.select_at(py_position(text,cursor.position()),py_position(text,cursor.anchor()))
+        self._queue_place()
 
     def _show_more_menu(self):
         self.more_menu.popup(self.more_button.mapToGlobal(QPoint(0, self.more_button.height() + 4)))
@@ -1157,13 +1206,8 @@ class CaptionEditorPanel(QFrame):
 
     def update_hint(self):
         self.split_mode.setToolTip('C 切割模式：' + ('开，按 C 在光标处切割' if self.split_mode.isChecked() else '关，c 正常输入'))
-        candidate_mode = self.suggestions.owns_focus()
-        if candidate_mode:
-            text = "Shift+A/D 候选↔正文 · Shift+W 上一行 · 空格采纳 · Shift+C 切割 · Shift+Enter 换行"
-        else:
-            text = "Shift+A/D 光标 · Shift+C 切割 · Shift+Enter 换行"
-            if self.suggestions.has_rows():
-                text = "Shift+A/D 候选↔正文 · Shift+W 候选 · Shift+C 切割 · Shift+Enter 换行"
+        text = "Shift+F 代称循环 · Shift+A/D 候选循环 · Shift+E 采纳高亮 · Shift+S 返回正文"
+        text += " · Shift+C 切割 · Shift+Enter 换行"
         if self.split_mode.isChecked():
             text += ' · C 切割（输入法选字时暂停）'
         navigation = self.property('navigationKey')

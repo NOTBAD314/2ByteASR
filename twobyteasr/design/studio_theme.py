@@ -482,11 +482,13 @@ def build_studio_qss(theme: ThemeDefinition | None = None) -> str:
     from .surface_qss import build_surface_qss
     from .studio_qss import build_studio_component_qss
     from .soft_qss import build_soft_popup_qss, build_soft_studio_qss
+    from .task_panel_qss import build_task_panel_qss
+    from .usage_dialog_qss import build_usage_dialog_qss
 
     # 2026-10-23: the soft filled controls the user picked go last and win.
     return _cached_qss(
         f"studio:{active.key}:soft",
-        lambda: retheme_qss(STUDIO_QSS, active) + _studio_theme_override(active) + build_control_qss(active) + build_surface_qss(active) + build_studio_component_qss(active) + build_soft_studio_qss(active) + build_soft_popup_qss(active),
+        lambda: retheme_qss(STUDIO_QSS, active) + _studio_theme_override(active) + build_control_qss(active) + build_surface_qss(active) + build_studio_component_qss(active) + build_soft_studio_qss(active) + build_soft_popup_qss(active) + build_task_panel_qss(active) + build_usage_dialog_qss(active),
     )
 
 

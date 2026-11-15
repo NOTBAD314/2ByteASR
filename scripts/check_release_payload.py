@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 PUBLIC_RENDERER_AUDIO = {
+    'assets/diagnostics/speech_zh.wav':'92fadad02200d5a9295f16c4e904855efd7771fc2cb7ab73935af2bf69a9b557',
     'renderer/node_modules/@remotion/studio-server/web/beep.wav':
         '3cf5b39164b9f8282b10705ecff18d5c73d4e2efb8193a1e6e7ad8f53fc34d24',
 }

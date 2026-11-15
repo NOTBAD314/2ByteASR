@@ -1015,6 +1015,7 @@ def _normalized_profile(profile: dict, key: str = "", language: str = "zh") -> d
 
 
 def get_profile(key: str, language: str = "zh") -> dict:
+    if key=="qwen_aligner":key="qwen_ultra_aligner"  # do not inherit the old checkpoint benchmark
     profile = _normalized_profile(_TECHNICAL_PROFILES.get(key, {}), key, language)
     if language != "en":
         return _localized_profile_copy(profile, language)
