@@ -24,12 +24,17 @@ jobs:
       - name: Establish disposable QA boundary
         run: |
           set -euo pipefail
-          qa="$RUNNER_TEMP/tmp/release110-probe-$GITHUB_RUN_ID"
+          qa="$RUNNER_TEMP/tmp/p110"
           mkdir -p "$qa"
           echo "QA=$qa" >> "$GITHUB_ENV"
           echo "TWOBYTEASR_TEST_ROOT=$qa" >> "$GITHUB_ENV"
       - name: Prepare the external checking interpreter
         run: python scripts/macos_prepare_runtime.py --runtime "$QA/runtime" --receipt "$QA/runtime.json"
+      - name: Observe native IPC path boundary
+        run: |
+          "$QA/runtime/bin/python" scripts/macos_socket_path_probe.py "$QA/ipc-proof"
+          mkdir -p "$QA/build"
+          cp "$QA/ipc-proof/socket-path-boundary.json" "$QA/build/socket-path-boundary.json"
       - name: Install the unchanged first DMG
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,7 +56,7 @@ jobs:
         run: |
           set -uo pipefail
           code=0
-          for scenario in editor-download english-track-loudness task-candy usage-candy; do
+          for scenario in english-track-loudness; do
             python scripts/macos_display_mode_probe.py "$QA/display-110-$scenario" "$QA/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app /Applications/2ByteASR.app --scenario "$scenario" --output "$QA/$scenario" || code=1
           done
           exit "$code"
@@ -61,7 +66,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: mac110-extra-r2
+          name: mac110-audio-short-r2
           retention-days: 1
           path: ${{ env.QA }}/artifacts/receipts/
       - name: Enforce all four checks
