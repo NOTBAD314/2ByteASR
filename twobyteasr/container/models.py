@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 SUPPORTED_MODELS = frozenset({"sensevoice", "paraformer", "funasr_nano",
-                              "qwen_aligner", "ja_ctc_aligner", "whisper_turbo"})
+                              "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "whisper_turbo"})
 
 def prepare(keys: list[str], source: str, destination: Path) -> None:
     unsupported = set(keys) - SUPPORTED_MODELS
@@ -14,6 +14,8 @@ def prepare(keys: list[str], source: str, destination: Path) -> None:
     from twobyteasr.repository_download import download_model
     from twobyteasr.runtime_paths import detect_install_root
     root = detect_install_root()
+    if 'qwen_ultra_head' in keys and 'qwen_ultra_aligner' not in keys:
+        keys = [*keys, 'qwen_ultra_aligner']
     for key in dict.fromkeys(keys):
         spec = locked_model(key, root=root)
         target = destination / Path(spec["path"].replace("\\", "/")).name

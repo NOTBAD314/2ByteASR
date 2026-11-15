@@ -13,7 +13,7 @@ from ..projects.studio_runtime_state import DirtyDomain, state_for
 
 
 class RefineCuesCommand(QUndoCommand):
-    def __init__(self, project, replacements, changed=None):
+    def __init__(self, project, replacements, changed=None, receipt_project=None):
         super().__init__("AI 断句")
         self.project = project
         self.changed = changed
@@ -66,7 +66,8 @@ class RefineCuesCommand(QUndoCommand):
                     parent = tail
             self.splices.append((index, index + delta, before, after))
             delta += len(after) - count
-            old, new = caption_replacement_receipts(project, before, after)
+            old, _ = caption_replacement_receipts(project, before, after)
+            _, new = caption_replacement_receipts(receipt_project or project, before, after)
             self.before_receipts.update(old or {})
             self.after_receipts.update(new or {})
         self.translations_after = translation.snapshot(shadow)

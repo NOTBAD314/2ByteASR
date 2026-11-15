@@ -154,8 +154,9 @@ def start(window, output):
             def click():
                 if self.pending_choice != button or self.choice_answered:return
                 if time.monotonic()>self.deadline:return
+                from .question_boxes import question_boxes
                 for widget in QApplication.instance().topLevelWidgets():
-                    if isinstance(widget,QMessageBox) and widget.isVisible():
+                    if isinstance(widget,question_boxes()) and widget.isVisible():
                         buttons = widget.standardButtons()
                         required = (QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard |
                                     QMessageBox.StandardButton.Cancel)

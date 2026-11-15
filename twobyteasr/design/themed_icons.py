@@ -15,7 +15,7 @@ import sys
 import weakref
 
 from PySide6.QtCore import QRect, QSize
-from PySide6.QtGui import QAction, QFontDatabase, QFontMetricsF, QIcon, QIconEngine, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QFontDatabase, QFontMetricsF, QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QAbstractButton, QTabWidget, QWidget
 
 import qtawesome as qta
@@ -149,15 +149,21 @@ def _colored_icon(name: str, color: str) -> QIcon:
 def colored_icon(name: str, color) -> QIcon:
     # Explicit colours are immutable; copies share the raster cache. Unknown
     # colour objects keep qtawesome's existing interpretation.
+    from .app_icons import app_icon, is_app_icon
+    if is_app_icon(name):
+        return app_icon(name, color if isinstance(color, str) else QColor(color).name())
     if isinstance(color, str):
         return QIcon(_colored_icon(str(name), color))
     return QIcon(_CachedIconEngine(qta.icon(name, color=color)))
 
 
 def themed_icon(name: str, role: str = "primary", theme: ThemeDefinition | None = None) -> QIcon:
-    _prime_platform_font_fallback()
     active = _active_theme(theme)
     color = icon_role_color(role, active)
+    from .app_icons import app_icon, is_app_icon
+    if is_app_icon(name):  # 2026-11-14: icons the font lacks (工程音量, 次要角色)
+        return app_icon(name, color, active.disabled)
+    _prime_platform_font_fallback()
     return QIcon(_CachedIconEngine(qta.icon(name, color=color, color_active=color, color_disabled=active.disabled,
                                             **_OPTICAL_OPTIONS.get(str(name), {}))))
 
@@ -172,6 +178,9 @@ def cached_icon_pixmap(
 ) -> QPixmap:
     """Synchronously rasterize an icon with a guaranteed normal fallback."""
 
+    from .app_icons import icon_pixmap, is_app_icon
+    if is_app_icon(name):
+        return icon_pixmap(name, color, size, device_pixel_ratio)
     _prime_platform_font_fallback()
     width, height = max(1, int(size.width())), max(1, int(size.height()))
     dpr_key = max(100, round(max(1.0, float(device_pixel_ratio)) * 100))

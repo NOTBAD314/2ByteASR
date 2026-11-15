@@ -276,10 +276,10 @@ def check_selected_worker_dependencies(legacy):
     selected = {str(legacy.PRIMARY_ASR_BACKEND), str(legacy.QWEN_ASR_BACKEND),
                 str(legacy.FIRERED_ASR_BACKEND)}
     packages = {}
-    if selected & {'qwen_local', 'local', 'qwen_aligner'}:
+    if selected & {'qwen_local', 'local', 'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head'}:
         # 'local' is Qwen only in the review slot; timeline 'local' is FireRed.
         if (legacy.PRIMARY_ASR_BACKEND == 'qwen_local' or legacy.QWEN_ASR_BACKEND == 'local'
-                or legacy.FIRERED_ASR_BACKEND == 'qwen_aligner'):
+                or legacy.FIRERED_ASR_BACKEND in {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head'}):
             packages['qwen-asr'] = 'qwen_asr'
     if 'whisper_turbo' in selected:
         packages['transformers'] = 'transformers'
@@ -527,27 +527,10 @@ def resolve_qwen_asr_local_source():
 
 
 def resolve_qwen_aligner_local_source():
-    """Return the pinned local Qwen forced-aligner directory only."""
-    env_dir = os.environ.get("2BYTEASR_QWEN3_ALIGNER_DIR", "").strip()
-    candidates = [os.path.expanduser(env_dir)] if env_dir else []
-    from twobyteasr.runtime_paths import iter_model_dir_candidates
-
-    candidates.extend(str(path) for path in iter_model_dir_candidates("Qwen3-ForcedAligner-0.6B"))
-    candidates.extend(
-        [
-            os.path.join(SCRIPT_DIR, "models", "Qwen3-ForcedAligner-0.6B"),
-            os.path.join(SCRIPT_DIR, "models", "Qwen", "Qwen3-ForcedAligner-0.6B"),
-        ]
-    )
-    seen = set()
-    for candidate in candidates:
-        normalized = os.path.normcase(os.path.abspath(candidate))
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        if os.path.isfile(os.path.join(candidate, "config.json")):
-            return candidate
-    return ""
+    """The selected profile has its own directory and override; no weight aliasing."""
+    from .alignment_backend import model_directory, selected_backend
+    settings = get_runtime_context().asr_settings_snapshot or _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
+    return model_directory(selected_backend(settings))
 
 
 def align_qwen_transcript_segments(aligner, audio, transcript_segments, *, sampling_rate=16000, batch_size=4):
@@ -639,6 +622,27 @@ ALIGNER_PROTOCOL = "qwen-aligner-units-v1"
 def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=8, engine=None):
     from .alignment_audio import bounded_jobs
     jobs=bounded_jobs(jobs)
+    from .alignment_items import rejection
+    rejected={str(j['id']):rejection(j) for j in jobs if rejection(j)}
+    if rejected:
+        valid=[j for j in jobs if str(j['id']) not in rejected]
+        if valid:
+            payload=run_qwen_aligner_worker(audio,valid,passes=passes,batch_size=batch_size,engine=engine)
+        else:
+            from .alignment_backend import profile
+            declared=profile()
+            payload=dict(declared,alignment_identity=declared,results=[],execution_skipped='parent_identity_rejected',
+                         load_ms=0.,inference_ms=0.,base_forward_attempts=0,model_load_count=0)
+        by_id={str(r['id']):r for r in payload['results']}
+        for j in jobs:
+            if str(j['id']) in rejected:
+                by_id[str(j['id'])]=dict(id=str(j['id']),text=j['text'],language=j['language'],
+                    window_start_ms=j['window_start_ms'],window_end_ms=j['window_end_ms'],status='parent_mapping_required',
+                    failure_reason=rejected[str(j['id'])],segments=[],word_units=[],char_units=[],
+                    declared_parent_ids=j.get('parent_ids'),model_executed=False)
+        payload['results']=[by_id[str(j['id'])] for j in jobs]
+        payload['parent_rejections']=len(rejected)
+        return payload
     from .run_context import get_runtime_context
     context = get_runtime_context()
     backend = str(((context.asr_settings_snapshot or {}).get('models') or {}).get('firered_asr_backend'))
@@ -650,12 +654,11 @@ def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=
             return _run_qwen_aligner_worker_once(audio,missing,passes=passes,batch_size=batch_size,engine=engine)
     if not context.alignment_checkpoint_dir or backend=='mlx_qwen_aligner' or (backend=='mfa_aligner' and engine!='qwen3'):
         return execute(jobs)
-    from ..forced_alignment import ALIGNER_REPO, ALIGNER_REVISION, ALIGNER_CODE, UNIT_POLICY_VERSION
+    from .alignment_backend import request_identity, selected_backend
     from .alignment_checkpoints import run_cached
-    return run_cached(audio, jobs, identity=dict(engine='qwen3', model=ALIGNER_REPO,
-        revision=ALIGNER_REVISION, code=ALIGNER_CODE, unit_policy=UNIT_POLICY_VERSION,
-        passes=list(passes), batch_size=batch_size, device=os.environ.get('TWOBYTEASR_ALIGNER_DEVICE', 'auto')),
-        runner=execute, check=_raise_if_queue_cancelled)
+    settings = context.asr_settings_snapshot or _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
+    identity = request_identity(selected_backend(settings), _main_worker_python(), passes=passes, batch_size=batch_size)
+    return run_cached(audio, jobs, identity=identity, runner=execute, check=_raise_if_queue_cancelled)
 
 
 def _run_qwen_aligner_worker_once(audio, jobs, *, passes=("word", "char"), batch_size=8, engine=None):
@@ -688,39 +691,80 @@ def _run_qwen_aligner_worker_once(audio, jobs, *, passes=("word", "char"), batch
     model_path = resolve_qwen_aligner_local_source()
     if not model_path:
         raise AlignerUnavailableError(
-            "Qwen3-ForcedAligner 0.6B 未安装：日语字级时间需要它。请在模型工坊下载“Qwen3 ForcedAligner 字幕时间轴”。")
+            "所选 Qwen3 对齐模型未安装。请在模型工坊下载并验证对应的官方版或 Ultra；不会代用另一套权重。")
     runtime = _main_worker_python()
     worker = os.path.join(os.path.abspath(SCRIPT_DIR), "qwen_aligner_worker.py")
     if not os.path.isfile(runtime) or not os.path.isfile(worker):
         raise RuntimeError(f"Qwen3-ForcedAligner worker runtime missing: python={runtime}, worker={worker}")
     policy = {"version": ALIGNER_PROTOCOL, "audio_format": "float32-mono-npy-v1", "sample_rate": AUDIO_SAMPLE_RATE,
               "batch_size": max(1, min(16, int(batch_size))), "passes": list(passes)}
+    from .alignment_backend import request_identity, selected_backend, head_directory
+    selected = selected_backend(task_settings)
+    identity = request_identity(selected, runtime, passes=passes, batch_size=batch_size)
+    policy['alignment_identity'] = identity
+    head_path = head_directory() if selected == 'qwen_ultra_head' else ''
+    if selected == 'qwen_ultra_head' and not head_path:
+        raise AlignerUnavailableError('Ultra Local Head 尚未配置，请在模型工坊准备可选 head 或选择 Ultra 基础版。')
     jobs = [dict(job, id=str(job["id"])) for job in jobs]
-    with tempfile.TemporaryDirectory(prefix="qwen_aligner_worker_") as temp_dir:
+    from .alignment_audio import alignment_scratch
+    with alignment_scratch() as temp_dir:
         from .alignment_audio import prepare_audio
         audio_spec = prepare_audio(audio, temp_dir, check=_raise_if_queue_cancelled,jobs=jobs)
+        from .alignment_audio import pcm_digest
+        from .alignment_items import sample_bounds
+        count=int(audio_spec.get('valid_samples',audio_spec['samples']))
+        hashes={}
+        for job in jobs:
+            a,b=sample_bounds(job,count)
+            hashes[str(job['id'])]=pcm_digest(audio[a:b],check=_raise_if_queue_cancelled)
+            job.setdefault('material_id',audio_spec.get('audio_clock_identity') or 'pcm-window:'+hashes[str(job['id'])])
+        audio_spec['window_hashes']=hashes
+        from .alignment_items import bind_jobs
+        jobs=bind_jobs(jobs,audio_spec)
         digest = audio_spec['sha256']
         manifest = os.path.join(temp_dir, "manifest.json")
         output = os.path.join(temp_dir, "results.json")
         Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": audio_spec}, ensure_ascii=False), encoding="utf-8")
         command = python_utf8_command([runtime, "-I", worker, "--manifest", manifest, "--output", output,
                                       "--model-dir", model_path])
+        if head_path:
+            command += ['--head-dir', head_path]
+        from .alignment_backend import official_compat_directory
+        compat_path=official_compat_directory() if identity.get('compatibility') else ''
+        if compat_path:command += ['--compat-dir',compat_path]
         if get_runtime_context().alignment_checkpoint_dir:
             from .resident_aligner import run_resident
             payload = run_resident(command, manifest, output, check=_raise_if_queue_cancelled)
         else:
-            payload = _run_isolated_asr_worker(command,
-                output, model_id="QWEN3-ALIGNER", audio_input="shared_audio", model_path=model_path,
-                entrypoint="qwen_aligner_worker.py")
+            # Readiness and one-shot Studio calls use the same owned IPC,
+            # without retaining a GPU model beyond this request.
+            from .resident_aligner import ResidentAligner
+            session = ResidentAligner()
+            try:
+                payload = session.run(command, manifest, output, check=_raise_if_queue_cancelled)
+            finally:
+                session.close()
     results = payload.get("results") if isinstance(payload, dict) else None
+    if isinstance(results,list):
+        for job,row in zip(jobs,results):
+            if row.get('alignment_item') != job['alignment_item']:
+                raise RuntimeError('对齐 worker 的 acoustic parent/原文/span/时间基准与请求不符')
     if not isinstance(results, list) or [str(row.get("id")) for row in results] != [job["id"] for job in jobs]:
         raise RuntimeError("对齐 worker 返回的任务缺失、重复或乱序")
+    from .alignment_backend import receipt_matches
+    if not receipt_matches(payload, identity):
+        raise RuntimeError('对齐 worker 实际模型或推理身份不符，拒绝采用结果')
     if (payload.get("policy") != policy or payload.get("audio_sha256") != digest
             or payload.get("protocol") != ALIGNER_PROTOCOL):
         raise RuntimeError("对齐 worker 回执与输入不一致")
     if audio_spec.get('audio_clock_identity'):
         payload.update(audio_clock_identity=audio_spec['audio_clock_identity'],window_hashes=audio_spec['window_hashes'])
     for job, row in zip(jobs, results):
+        expected_hash = audio_spec.get('window_hashes', {}).get(job['id'])
+        if expected_hash and row.get('audio_window_sha256') != expected_hash:
+            raise RuntimeError('对齐 worker 实际 PCM 窗口与请求不一致')
+        if any(row.get(key) != job.get(key) for key in ('language','window_start_ms','window_end_ms')):
+            raise RuntimeError('对齐 worker 时间基准或语言与请求不一致')
         if row.get("text") != job["text"]:
             raise RuntimeError("对齐 worker 改写了输入文字")
     return payload
@@ -731,14 +775,25 @@ def aligner_tokens(payload, *, source="qwen-forced-aligner"):
     tokens = []
     for row in payload.get("results") or ():
         text = str(row.get("text") or "")
+        if row.get('status') not in (None,'aligned'):
+            continue
         for piece in row.get("segments") or ():
             start, end = int(piece["start_ms"]), int(piece["end_ms"])
             fragment = text[int(piece["char_start"]):int(piece["char_end"])]
             if end <= start or not fragment.strip():
                 continue
             measured = piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
-            tokens.append({"text": fragment, "start": round(start / 1000.0, 3), "end": round(end / 1000.0, 3),
-                           "confidence": 0.9 if measured else 0.6, "source": source,
+            candidates = (row.get('word_units') or []) + (row.get('char_units') or [])
+            starts = [u.get('start_local') for u in candidates if u.get('start_ms') == start and u.get('start_local') is not None]
+            ends = [u.get('end_local') for u in candidates if u.get('end_ms') == end and u.get('end_local') is not None]
+            posterior = min(starts[0], ends[0]) if starts and ends else None
+            score = {'confidence': posterior} if posterior is not None else {}
+            tokens.append({"model":(row.get("effective_model_identity") or {}).get("model",payload.get("model")),
+                           "alignment_origin":"official_compatibility" if row.get("compatibility_fallback") else "configured_model",
+                           "text": fragment, "start": round(start / 1000.0, 3), "end": round(end / 1000.0, 3),
+                           **score, "source": source, "confidence_available": posterior is not None,
+                           "confidence_provenance": {"kind": "timestamp_slot_local_mass" if posterior is not None else "missing",
+                                                     "is_transcript_correctness": False},
                            "granularity": piece.get("granularity"), "start_basis": piece.get("start_basis"),
                            "end_basis": piece.get("end_basis"), "alignment_job": str(row.get("id")),
                            "alignment_key": str(row.get("id")).split("#", 1)[0]})
@@ -784,14 +839,17 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
     for row in transcript_segments or ():
         start_ms = int(round(float(row.get("start", 0.0)) * 1000))
         end_ms = int(round(float(row.get("end", 0.0)) * 1000))
-        text = str(row.get("text") or "").strip()
+        text = str(row.get("text") or "")
         if end_ms - start_ms < 180 or not content_only(text):
             continue
         key = segment_alignment_key(row.get("speaker"), row.get("start", 0.0), row.get("end", 0.0))
         seen[key] = seen.get(key, 0) + 1
         jobs.append({"id": key if seen[key] == 1 else f"{key}#{seen[key]}", "alignment_key": key,
                      "window_start_ms": max(0, start_ms - ALIGNER_WINDOW_PAD_MS),
-                     "window_end_ms": end_ms + ALIGNER_WINDOW_PAD_MS, "text": text, "language": language})
+                     "window_end_ms": end_ms + ALIGNER_WINDOW_PAD_MS, "text": text, "language": language,
+                     "parent_ids":[str(row.get("segment_id") or key)],"parent_pcm_range_ms":[start_ms,end_ms],
+                     "speaker":row.get("speaker"),"source_parts":[dict(source_id=row.get("segment_id") or key,char_start=0,char_end=len(text),raw_text=text,source_time=[start_ms/1000,end_ms/1000])],
+                     "material_contiguous":True,"source_clock_verified":True})
     if not jobs:
         return []
     engine = "Qwen3 ForcedAligner"
@@ -828,11 +886,20 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
         context.segment_alignment_evidence = {'audio': audio, 'payload': payload,
                                               'language': language, 'job_id': context.job_id}
     tokens = aligner_tokens(payload)
+    failed_rows = [row for row in payload.get('results') or () if row.get('status') != 'aligned']
+    if failed_rows or not tokens:
+        record_run_event('forced_alignment_degraded', stage='segments', model=payload.get('model'),
+                         failed_windows=len(failed_rows), total_windows=len(jobs),
+                         reason='no_usable_measured_span' if not tokens else 'partial_window_failure')
+        for row in failed_rows or [{'window_start_ms':0,'id':'all'}]:
+            add_review_item(float(row.get('window_start_ms',0))/1000, '时间轴对齐待检查',
+                '该窗口没有新的可靠声学时间，保留主力转写或已有可靠时间；可检查原文、音频范围后局部重试。',
+                priority=2,severity='warning')
     from .timing_evidence import save_aligner_payload
     saved = save_aligner_payload(evidence_dir, "segments", language, payload)
     record_run_event("forced_alignment", stage="segments", language=language, **summarize_aligner_payload(payload),
                      **({"evidence": saved} if saved else {}))
-    print(f"   [完成] {engine}：{len(tokens)} 个可靠时间片。")
+    print(f"   [{'降级' if failed_rows or not tokens else '完成'}] {engine}：{len(tokens)} 个可靠时间片。")
     return tokens
 
 

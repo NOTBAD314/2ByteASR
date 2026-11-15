@@ -12,7 +12,8 @@ def payload():
     pieces = [dict(char_start=a, char_end=b, start_ms=start, end_ms=end,
                    granularity='word', start_basis='model', end_basis='model')
               for a, b, start, end in spans]
-    return {'protocol': 'qwen-aligner-units-v1', 'model': ALIGNER_REPO,
+    from twobyteasr.recognition.alignment_backend import profile
+    return {'alignment_identity':profile('qwen_aligner'), 'protocol': 'qwen-aligner-units-v1', 'model': ALIGNER_REPO,
             'model_revision': ALIGNER_REVISION, 'code': ALIGNER_CODE, 'unit_policy': UNIT_POLICY_VERSION,
             'policy': {'version': 'qwen-aligner-units-v1', 'sample_rate': 16000, 'audio_format': 'float32-mono-npy-v1'},
             'audio_sha256': 'audio', 'results': [{'id': 'S01@0-1500', 'text': text,
@@ -90,13 +91,16 @@ def test_nearby_local_windows_do_not_overlap():
     values = [SubtitleCue(i + 1, i * .2, i * .2 + .19, f'word{i}', speaker='S01') for i in range(8)]
     jobs, runs, targets = local_alignment_jobs(values, {1, 3, 4, 5, 6, 8}, language='English')
     assert targets == {2, 7}
-    assert len(jobs) == 1
-    assert [member['key'] for member in runs[0]['members']] == list(range(1, 9))
+    assert len(jobs) == 2  # independent unknown parents are not joined by proximity
+    assert [[member['key'] for member in run['members']] for run in runs] == [[2],[7]]
+    assert jobs[0]['window_end_ms']<=jobs[1]['window_start_ms']
 
 
 def test_local_jobs_include_only_changed_cue_and_neighbors_as_context():
     from twobyteasr.recognition.cue_forced_alignment import local_alignment_jobs
     values = [SubtitleCue(i + 1, i * 2., i * 2. + 1.8, f'word{i}', speaker='S01') for i in range(7)]
+    for i,cue in enumerate(values):
+        cue.source_spans=[dict(source_id='confirmed-shared-parent',char_start=i*5,char_end=(i+1)*5,raw_text=cue.text,source_time=[0.,13.8])]
     jobs, runs, targets = local_alignment_jobs(values, {1, 2, 3, 5, 6, 7}, language='English')
     assert len(jobs) == 1 and targets == {4}
     assert [member['key'] for member in runs[0]['members']] == [3, 4, 5]
@@ -113,6 +117,8 @@ def test_complete_reuse_avoids_second_worker(monkeypatch):
     audio = np.zeros(16000 * 2, dtype=np.float32)
     data = payload()
     data['audio_sha256'] = audio_sha256(audio)
+    from twobyteasr.recognition import alignment_backend
+    monkeypatch.setattr(alignment_backend, 'cache_identity', lambda settings=None:data['alignment_identity'])
     values = cues()
     events = []
     legacy = SimpleNamespace(add_review_item=lambda *a, **k: None,
@@ -137,6 +143,8 @@ def test_changed_word_runs_local_alignment_without_replacing_reused_neighbor(mon
     audio = np.zeros(16000 * 2, dtype=np.float32)
     data = payload()
     data['audio_sha256'] = audio_sha256(audio)
+    from twobyteasr.recognition import alignment_backend
+    monkeypatch.setattr(alignment_backend, 'cache_identity', lambda settings=None:data['alignment_identity'])
     values = cues()
     values[0].text = 'Hello, planet!'
     seen, events = [], []
@@ -144,8 +152,8 @@ def test_changed_word_runs_local_alignment_without_replacing_reused_neighbor(mon
         seen.extend(jobs)
         text = jobs[0]['text']
         spans = [(text.index('Hello'), text.index('Hello') + 5, 100, 400),
-                 (text.index('planet'), text.index('planet') + 6, 450, 800),
-                 (text.index('again'), text.index('again') + 5, 850, 1200)]
+                 (text.index('planet'), text.index('planet') + 6, 450, 800)]
+        if 'again' in text:spans.append((text.index('again'),text.index('again')+5,850,1200))
         pieces = [dict(char_start=a, char_end=b, start_ms=x, end_ms=y, granularity='word',
                        start_basis='model', end_basis='model') for a, b, x, y in spans]
         return {'protocol':'qwen-aligner-units-v1', 'model':ALIGNER_REPO,
@@ -160,7 +168,7 @@ def test_changed_word_runs_local_alignment_without_replacing_reused_neighbor(mon
     context.segment_alignment_evidence = {'audio': audio, 'payload': data, 'language': 'English', 'job_id': context.job_id}
     with activate_runtime_context(context):
         assert alignment.align_final_cues(values, audio, legacy, language='English') == 2
-    assert len(seen) == 1 and seen[0]['text'] == 'Hello, planet! again'
+    assert len(seen) == 1 and seen[0]['text'] == 'Hello, planet!'
     assert values[1].forced_alignment['run']['source'] == 'source-word-evidence-v1'
     assert values[0].forced_alignment['text'] == 'Hello, planet!'
     assert values[0].forced_alignment['segments'][1]['char_start'] == 7

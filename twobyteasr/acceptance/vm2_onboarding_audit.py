@@ -43,7 +43,7 @@ def start(window, output):
             from ..glossary import multilingual_terms as m
             from ..glossary.glossary_term_cards import TermCardDelegate, card_parts
             from ..i18n import translate
-            check('normal Windows platform', app.platformName() == 'windows')
+            check('normal native platform', app.platformName() in ('windows', 'cocoa'))
             check('owned private profile', Path(os.environ['TWOBYTEASR_TEST_ROOT']).resolve().is_relative_to(output))
             window.showNormal()
             window.resize(1440, 900)

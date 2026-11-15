@@ -34,11 +34,17 @@ def audio_track_locked(project, track_id):
 
 def gain_amplitude(db):
     value = float(db)
-    return 10. ** (max(MIN_GAIN_DB, min(MAX_GAIN_DB, value)) / 20.) if math.isfinite(value) else 1.
+    # Each control is bounded; their sum is an audio chain, not another control.
+    return 10. ** (max(-240., min(120., value)) / 20.) if math.isfinite(value) else 1.
 
 
 def gain_command(project, track_id, value):
-    if audio_track_locked(project, track_id):
+    return gains_command(project, {track_id: value})
+
+
+def gains_command(project, values):
+    """One undo step for any number of tracks (the mixer applies them together)."""
+    if any(audio_track_locked(project, key) for key in values):
         raise ValueError('音轨或关联视频轨已锁定，请先解锁')
     from PySide6.QtGui import QUndoCommand
     from ..projects.studio_runtime_state import DirtyDomain, state_for
@@ -46,10 +52,10 @@ def gain_command(project, track_id, value):
     class TrackGainCommand(QUndoCommand):
         def __init__(self):
             super().__init__("调整轨道音量")
-            self.key = audio_track_id(project, track_id)
             self.before = dict(project.studio_state.get("audio_track_gain_db", {}))
             self.after = dict(self.before)
-            self.after[self.key] = max(MIN_GAIN_DB, min(MAX_GAIN_DB, float(value)))
+            for key, value in values.items():
+                self.after[audio_track_id(project, key)] = max(MIN_GAIN_DB, min(MAX_GAIN_DB, float(value)))
 
         def apply(self, values):
             with state_for(project).transaction(project, action_id=self.text(),
@@ -63,11 +69,18 @@ def gain_command(project, track_id, value):
     return TrackGainCommand()
 
 
+# A dot per track so the strips are easy to tell apart (fixed hues, both themes).
+TRACK_HUES = ("#c4532c", "#4a78a8", "#6b9a4a", "#8d6bc4", "#c99a1b", "#3f9a92", "#b5487a", "#7a7f8c")
+
+
 def show_track_gain(page, track_id=""):
-    from PySide6.QtWidgets import QDoubleSpinBox, QDialogButtonBox, QFormLayout, QLabel, QVBoxLayout
-    from ..design.main_ui_dialogs import SpringDialog, DialogSurface
-    from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme
-    from ..studio.studio_widgets import ScrubDoubleSpinBox
+    """轨道音量 as a small mixer (2026-11-14, user picked draft C).
+
+    Every audio track gets a vertical fader with its live level beside it, so
+    tracks can be balanced against each other. The track that was asked for is
+    marked 「当前」. Changes preview at once; 应用 saves all changed tracks as
+    one undo step, 取消 (or closing) restores the sound.
+    """
     project = page.project
     if project is None or not project.audio_tracks:
         return
@@ -85,71 +98,10 @@ def show_track_gain(page, track_id=""):
     if audio_track_locked(project, selected):
         bind_text(page.save_state, '音轨或关联视频轨已锁定，请先解锁')
         return
-    class GainDialog(SpringDialog):
-        def done(self, result):
-            # Cancel restores the sound immediately, before the exit fade.
-            restore(result)
-            super().done(result)
-    dialog = GainDialog(page, backdrop=False)
-    bind_text(dialog, '轨道音量', property='windowTitle')
-    dialog.setObjectName("trackGainDialog")
-    dialog.resize(450, 290)
-    apply_secondary_surface_theme(dialog)
-    layout = QVBoxLayout(dialog); layout.setContentsMargins(0, 0, 0, 0)
-    surface = DialogSurface(dialog, title="轨道音量", close_callback=dialog.reject)
-    layout.addWidget(surface)
-    form = QFormLayout(); surface.body_layout.addLayout(form)
-    tracks = StudioComboBox(); tracks.setObjectName("gainTrack")
-    for track in project.audio_tracks:
-        if audio_track_locked(project, track.id):
-            continue
-        label = f"{track.id} · {track.name}" if track.name and track.name != track.id else f"{track.id} 音轨"
-        tracks.addItem(label, track.id)
-    tracks.setCurrentIndex(max(0, tracks.findData(selected)))
-    gain = ScrubDoubleSpinBox(); gain.setObjectName("trackGainDb")
-    gain.setRange(MIN_GAIN_DB, MAX_GAIN_DB); gain.setDecimals(1); gain.setSingleStep(1.)
-    gain.setSuffix(" dB"); gain.setMinimumWidth(160)
-    def choose():
-        page._gain_preview_values = {}
-        key = str(tracks.currentData())
-        gain.blockSignals(True)
-        gain.setValue(track_gain_db(project, key))
-        gain.blockSignals(False)
-        page._refresh_audio_mix_only()
-    tracks.currentIndexChanged.connect(choose); choose()
-    form.addRow("轨道", tracks); form.addRow("增益", gain)
-    hint = QLabel("左右拖动数值实时试听；Shift 精细，Ctrl 粗调。\n点击可输入；应用后保存，取消恢复原音量。")
-    hint.setObjectName("settingsDescription"); surface.body_layout.addWidget(hint)
-    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-                               | QDialogButtonBox.StandardButton.Reset)
-    bind_text(buttons.button(QDialogButtonBox.StandardButton.Ok), '应用')
-    bind_text(buttons.button(QDialogButtonBox.StandardButton.Cancel), '取消')
-    bind_text(buttons.button(QDialogButtonBox.StandardButton.Reset), '重置为 0 dB')
-    buttons.button(QDialogButtonBox.StandardButton.Reset).clicked.connect(lambda: gain.setValue(0.))
-    def preview(value):
-        if page.project is project:
-            page._gain_preview_values = {str(tracks.currentData()):float(value)}
-            page._refresh_audio_mix_only()
-    gain.valueChanged.connect(preview)
-    def commit():
-        key = str(tracks.currentData())
-        page._gain_preview_values = {}
-        if page.project is project and gain.value() != track_gain_db(project, key):
-            try:
-                page.undo_stack.push(gain_command(project, key, gain.value()))
-            except ValueError as exc:
-                page.save_state.setText(str(exc))
-                dialog.reject()
-                return
-        dialog.accept()
-    def restore(_result):
-        gain._cancel_scrub()
-        page._gain_preview_values = {}
-        if page.project is project:
-            page._refresh_audio_mix_only()
-    buttons.accepted.connect(commit); buttons.rejected.connect(dialog.reject)
-    surface.footer_layout.addWidget(buttons)
+    from .track_gain_mixer import TrackGainMixer
+    dialog = TrackGainMixer(page, project, selected)
     page._track_gain_dialog = dialog
     dialog.finished.connect(dialog.deleteLater)
     dialog.finished.connect(lambda: setattr(page, "_track_gain_dialog", None))
-    dialog.open(); gain.setFocus(); gain.selectAll()
+    dialog.open()
+    dialog.focus_current()

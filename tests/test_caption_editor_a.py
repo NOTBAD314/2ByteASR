@@ -4,8 +4,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from types import SimpleNamespace
 import pytest
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QFont, QInputMethodEvent, QPalette, QTextCursor
+from PySide6.QtCore import Qt, QPoint, QEvent
+from PySide6.QtGui import QFont, QInputMethodEvent, QPalette, QTextCursor, QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -37,7 +37,7 @@ def seed_candidates(page, monkeypatch):
     from twobyteasr.studio import caption_editor as module
     monkeypatch.setattr(module, 'review_suggestions', lambda *args, **kwargs: [])
     monkeypatch.setattr(module, 'current_issue_view', lambda *args: SimpleNamespace(for_cue=lambda *a, **kw: ()))
-    monkeypatch.setattr(page, '_review_suggestions_for', lambda *args: ())
+    monkeypatch.setattr(page, '_review_suggestions_for', lambda *args, **kwargs: ())
     text = page.subtitle_edit_input.toPlainText()
     def row(word, *options):
         start = text.index(word)
@@ -62,52 +62,41 @@ def test_shift_r_in_draft_confirms_bound_caption_and_closes(page):
     assert page.project.cues[0].text == '原文已改好'
 
 
-def test_shift_ad_moves_one_unicode_character_without_selection(page):
+def test_shift_ad_is_uppercase_text_without_candidate_context(page):
     editor = page.subtitle_edit_input
     editor.setPlainText('甲😀乙\n丙')
-    cursor = editor.textCursor(); cursor.setPosition(0); editor.setTextCursor(cursor)
-    for position in (1, 3, 4, 5):
-        key(editor, Qt.Key.Key_D)
-        assert editor.textCursor().position() == position
-        assert not editor.textCursor().hasSelection()
-    key(editor, Qt.Key.Key_A)
-    assert editor.textCursor().position() == 4
-    assert editor.toPlainText() == '甲😀乙\n丙'
+    cursor=editor.textCursor();cursor.setPosition(0);editor.setTextCursor(cursor)
+    QApplication.sendEvent(editor,QKeyEvent(QEvent.KeyPress,Qt.Key_D,Qt.ShiftModifier,'D'))
+    QApplication.sendEvent(editor,QKeyEvent(QEvent.KeyPress,Qt.Key_A,Qt.ShiftModifier,'A'))
+    assert editor.toPlainText() == 'DA甲😀乙\n丙'
 
 
-@pytest.mark.parametrize('direction,expected', [(Qt.Key.Key_A, 0), (Qt.Key.Key_D, 3)])
-def test_shift_ad_collapses_existing_selection_towards_direction(page, direction, expected):
-    editor = page.subtitle_edit_input
-    editor.setPlainText('甲😀乙')
-    cursor = editor.textCursor();cursor.setPosition(0)
-    cursor.setPosition(3, QTextCursor.MoveMode.KeepAnchor);editor.setTextCursor(cursor)
-    key(editor, direction)
-    assert editor.textCursor().position() == expected and not editor.textCursor().hasSelection()
+@pytest.mark.parametrize('direction,letter', [(Qt.Key.Key_A, 'A'), (Qt.Key.Key_D, 'D')])
+def test_shift_ad_replaces_plain_text_selection_normally(page, direction, letter):
+    editor=page.subtitle_edit_input;editor.setPlainText('甲😀乙')
+    cursor=editor.textCursor();cursor.setPosition(0);cursor.setPosition(3,QTextCursor.KeepAnchor);editor.setTextCursor(cursor)
+    QApplication.sendEvent(editor,QKeyEvent(QEvent.KeyPress,direction,Qt.ShiftModifier,letter))
+    assert editor.toPlainText()==letter+'乙'
 
 
 def test_complete_left_hand_candidate_path_then_confirm(page, monkeypatch):
-    before = seed_candidates(page, monkeypatch)
-    view = page.caption_suggestion_text
-    key(page.subtitle_edit_input, Qt.Key.Key_W)
-    assert view.owns_focus() and view.selected == (0, 0)
-    key(QApplication.focusWidget(), Qt.Key.Key_D)
-    assert view.selected == (0, 1)
-    key(QApplication.focusWidget(), Qt.Key.Key_D)
-    assert view.selected == (1, 0)
-    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Space)
-    assert page._caption_draft is not None
-    assert page.subtitle_edit_input.toPlainText() == before.replace('吉它', '吉他')
-    assert page.project.cues[0].text == before
-    assert view.owns_focus() and len(page._caption_draft.suggestions) == 1
-    assert view.selected == (-1, -1)  # current row is handled, not the next proposal
-    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Space)
-    assert page.subtitle_edit_input.toPlainText() == before.replace('吉它', '吉他')
-    key(QApplication.focusWidget(), Qt.Key.Key_D)
-    assert page.subtitle_edit_input.hasFocus()
-    assert not page.subtitle_edit_input.textCursor().hasSelection()
-    key(page.subtitle_edit_input, Qt.Key.Key_R)
-    assert page._caption_draft is None and not page.subtitle_edit_dock.isVisible()
-    assert page.project.cues[0].text == before.replace('吉它', '吉他')
+    before=seed_candidates(page,monkeypatch);view=page.caption_suggestion_text
+    target=next(i for i,r in enumerate(page._caption_draft.suggestions) if r.original=='营第')
+    row=page._caption_draft.suggestions[target]
+    page._locate_caption_suggestion(row.start,row.end)
+    view.selected=target,0;view.focus_current()
+    key(QApplication.focusWidget(),Qt.Key.Key_A)
+    assert view.selected==(target,1)
+    key(QApplication.focusWidget(),Qt.Key.Key_D)
+    assert view.selected==(target,0)
+    key(QApplication.focusWidget(),Qt.Key.Key_D)
+    key(QApplication.focusWidget(),Qt.Key.Key_E)
+    assert page._caption_draft is not None and page.subtitle_edit_input.toPlainText()==before.replace('营第','营区')
+    assert page.project.cues[0].text==before
+    key(QApplication.focusWidget(),Qt.Key.Key_S)
+    assert page.subtitle_edit_input.hasFocus() and view.isHidden()
+    key(page.subtitle_edit_input,Qt.Key.Key_R)
+    assert page._caption_draft is None and page.project.cues[0].text==before.replace('营第','营区')
 
 
 def test_candidate_left_up_and_mouse_apply_stay_in_current_draft(page, monkeypatch):
@@ -119,12 +108,15 @@ def test_candidate_left_up_and_mouse_apply_stay_in_current_draft(page, monkeypat
     assert view.selected == (0, 0)
     key(QApplication.focusWidget(), Qt.Key.Key_D)
     key(QApplication.focusWidget(), Qt.Key.Key_D)
+    key(QApplication.focusWidget(), Qt.Key.Key_D)
+    key(QApplication.focusWidget(), Qt.Key.Key_D)
     key(QApplication.focusWidget(), Qt.Key.Key_W)
-    assert view.selected == (0, 0)
-    button = view.candidate_button(0, 1)
+    assert view.current_row().row.start == 0
+    target=next(i for i,r in enumerate(page._caption_draft.suggestions) if r.original=='营第')
+    button = view.candidate_button(target, 1)
     QTest.mouseClick(button, Qt.MouseButton.LeftButton)
     assert page.subtitle_edit_input.toPlainText() == before.replace('营第', '营区')
-    assert len(page._caption_draft.suggestions) == 1 and page.project.cues[0].text == before
+    assert len([r for r in page._caption_draft.suggestions if r.kind!='pronoun']) == 1 and page.project.cues[0].text == before
 
 
 def test_manual_text_cannot_apply_old_offsets_and_shift_r_confirms_current_text(page, monkeypatch):
@@ -213,15 +205,17 @@ def test_explicit_close_discards_composition_and_late_commit_has_no_model_target
     assert page.undo_stack.index()==index
 
 
-def test_pronoun_target_is_whole_draft_even_away_from_caret(page):
+def test_pronoun_target_is_local_and_old_p_is_text(page):
     editor = page.subtitle_edit_input
     editor.setPlainText('她在营地等其他人，吉他在门口。')
     editor.moveCursor(QTextCursor.MoveOperation.End)
     key(editor, Qt.Key.Key_P)
-    assert editor.toPlainText() == '他在营地等其他人，吉他在门口。'
+    assert editor.toPlainText().startswith('她在') and editor.toPlainText().lower().endswith('p')
     cursor = editor.textCursor();cursor.setPosition(qt_position(editor.toPlainText(), 0));editor.setTextCursor(cursor)
-    key(editor, Qt.Key.Key_P)
-    assert editor.toPlainText().startswith('她在')
+    key(editor, Qt.Key.Key_F)
+    key(QApplication.focusWidget(), Qt.Key.Key_D)
+    key(QApplication.focusWidget(), Qt.Key.Key_E)
+    assert editor.toPlainText().startswith('他在')
 
 
 def test_hidden_panel_supports_no_argument_theme_refresh_callback(page):
@@ -257,7 +251,8 @@ def test_first_pronoun_click_does_not_synchronously_scan_cold_suggestions(page,m
     def forbidden(*args,**kwargs):raise AssertionError('cold synchronous suggestion scan')
     monkeypatch.setattr(page,'_refresh_editor_suggestions',forbidden)
     page.caption_pronoun_button.click()
-    assert editor.toPlainText().startswith('他')
+    assert editor.toPlainText().startswith('她')
+    assert page.caption_suggestion_text.has_rows()
     # Deferred work is owned by the timer and is stopped before teardown.
     page._caption_suggestion_timer.stop()
 

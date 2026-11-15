@@ -28,7 +28,7 @@ def prepare(root):
 
 def apply_scope(widget):
     from shiboken6 import isValid
-    if not isValid(widget):
+    if not isValid(widget) or widget.__dict__.get('_theme_scope_busy', False):
         return
     if _covered_by_studio(widget):
         widget._theme_full_sheet_pending = True
@@ -41,19 +41,23 @@ def apply_scope(widget):
     if (widget.__dict__.get('_theme_component_key') == key
             and widget.styleSheet() == widget.__dict__.get('_theme_component_sheet')):
         return
-    if widget.objectName() == 'subtitleStudio':
-        sheet = getattr(app, '_theme_window_qss', '') + build_studio_qss(theme_definition(theme_key()))
-        if widget.styleSheet() != sheet:
-            widget.setStyleSheet(sheet)
-        widget.setProperty('_uiZoomStudioBase', sheet)
-        widget.setProperty('_uiZoomStudioLast', sheet)
-        ui_zoom.protect_studio(widget)
-    else:
-        # Preserve the unscaled base when interface zoom changes. Descendant
-        # inline sheets are never captured or concatenated into this sheet.
-        ui_zoom.set_sheet(widget, getattr(app, '_theme_window_qss', ''))
-    widget._theme_component_sheet = widget.styleSheet()
-    widget._theme_component_key = key
+    widget._theme_scope_busy = True
+    try:
+        if widget.objectName() == 'subtitleStudio':
+            # Studio already owns a complete unscaled sheet. Do not apply it
+            # and then prepend the same window rules for a second native
+            # polish when Home is zoomed. One owner, one native style pass.
+            sheet = getattr(app, '_theme_window_qss', '') + build_studio_qss(theme_definition(theme_key()))
+            if widget.styleSheet() != sheet:
+                widget.setStyleSheet(sheet)
+            widget.setProperty('_uiZoomStudioBase', sheet)
+            widget.setProperty('_uiZoomStudioLast', sheet)
+        else:
+            ui_zoom.set_sheet(widget, getattr(app, '_theme_window_qss', ''))
+        widget._theme_component_sheet = widget.styleSheet()
+        widget._theme_component_key = key
+    finally:
+        widget._theme_scope_busy = False
 
 
 def _covered_by_studio(root):

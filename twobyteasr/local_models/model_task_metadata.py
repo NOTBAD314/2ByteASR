@@ -71,6 +71,8 @@ MODEL_COPY = {
     "paraformer": ModelCopy("中文快速转写，并支持时间轴。", "中文快速转写和热词识别"),
     "whisper": ModelCopy("多语言通用转写，适合多种语言的视频字幕。"),
     "funasr_nano": ModelCopy("中文方言与多语言转写，可提供独立文字复核证据。"),
+    "qwen_ultra_aligner": ModelCopy("给已有原文配字词时间，日语替换精度尚待验收。", "独立 Ultra 候选；不改变转写原文"),
+    "qwen_ultra_head": ModelCopy("Ultra 的可选局部边界精修。", "实验；需基础模型和同源 Local Head", "不解决大幅错位，不默认启用"),
     "qwen_aligner": ModelCopy("已有字幕的高精度字词时间轴对齐。", "ASR 转写与纠错后的最终时间轴精修",
                               "不能独立转写，也不负责识别或纠正字幕内容", "先由 ASR 得到文字，再根据音频定位字词。"),
     # 2026-10-14: it sits under 字幕时间轴 but never replaces the timeline model; say so on the card.

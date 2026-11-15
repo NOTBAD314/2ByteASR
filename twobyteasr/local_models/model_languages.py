@@ -117,6 +117,8 @@ LANGUAGE_SUPPORT: dict[str, dict] = {
     "firered_llm": _FIRERED,
     "qwen_local": _QWEN3_ASR,
     "qwen_aligner": _QWEN3_ALIGNER,
+    "qwen_ultra_aligner": _QWEN3_ALIGNER,
+    "qwen_ultra_head": _QWEN3_ALIGNER,
     # Qwen-Audio-3.1: 30 languages + dialects; Qwen3-ASR-Flash lists 26.
     "qwen_cloud_filetrans": {
         "tiers": _tiers("zh:strong yue:strong dialects:strong en:strong ja:strong ko:strong" + _EU_STRONG),

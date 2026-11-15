@@ -23,5 +23,6 @@ def install_hover_hint_policy(app=None):
     policy = getattr(app, '_hover_hint_policy', None)
     if policy is None:
         policy = app._hover_hint_policy = HoverHintPolicy(app)
-        app.installEventFilter(policy)
+        from .app_events import listen
+        listen(policy, (QEvent.Type.ToolTip,))
     return policy

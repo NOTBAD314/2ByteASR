@@ -403,7 +403,8 @@ class StudioReadiness(QObject):
             # The loading surface owns input until reveal. Routing every
             # hidden control's layout/IME event through the editor here took
             # 0.6-1.2 s in the real long project's sampled GUI stacks.
-            app.removeEventFilter(page)
+            from ..design.app_events import unlisten
+            unlisten(page)
             page._event_filter_installed = False
             self._input_filter_suspended = True
         page.video._last_load_error = ''
@@ -918,7 +919,8 @@ class StudioReadiness(QObject):
         if navigate and self.page.project is not None:
             app = QApplication.instance()
             if app is not None and getattr(self, '_input_filter_suspended', False):
-                app.installEventFilter(self.page)
+                from ..design.app_events import listen
+                listen(self.page, self.page._APP_EVENT_TYPES)
                 self.page._event_filter_installed = True
                 self._input_filter_suspended = False
             self.page._project_view_state = 'open'
@@ -943,7 +945,8 @@ class StudioReadiness(QObject):
         callback, self.on_ready = self.on_ready, None
         app=QApplication.instance()
         if app is not None and not getattr(self.page,'_event_filter_installed',False):
-            app.installEventFilter(self.page);self.page._event_filter_installed=True
+            from ..design.app_events import listen
+            listen(self.page, self.page._APP_EVENT_TYPES);self.page._event_filter_installed=True
             self._input_filter_suspended = False
         if self.loading.state == 'ready':
             self.profile['loading_session'] = self.loading.snapshot()

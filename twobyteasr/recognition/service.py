@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -485,7 +485,22 @@ def _stream_project_path(entries, entry_streams, index, job_id) -> Path:
     return target.parent / "audio-tracks" / folder / target.name
 
 
-def _deliver_audio_streams(legacy, runtime_context, run_options, results, entries, entry_streams):
+def _publish_media_delivery(legacy, result):
+    """Publish only fully processed, atomically saved, editable videos."""
+    if result.status not in {'success', 'degraded_success', 'partial_recovery'} or not result.project_path:
+        return False
+    from .recognition_result import verify_result_reference
+    from ..timeline.studio_edit_sequence import projected_cues
+    project = verify_result_reference(result.result_ref_json, project_path=result.project_path)
+    cues = projected_cues(project)
+    if (not cues or not any(str(cue.text).strip() for cue in cues) or not Path(project.media.path).is_file()
+            or any(not cue.id or cue.start_ms < 0 or cue.end_ms <= cue.start_ms for cue in cues)):
+        return False
+    legacy.record_run_event('media_delivered', media_path=result.media_path, result=asdict(result))
+    return True
+
+
+def _deliver_audio_streams(legacy, runtime_context, run_options, results, entries, entry_streams, *, delivered_cache=None):
     """Combine each multi-track file's picked tracks into one result (2026-10-24).
 
     Every picked track ran as its own entry. Per file, the tracks that finished
@@ -495,6 +510,7 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
     track, so the completion page and 重试失败项 know exactly which one.
     """
     from .audio_stream_choice import base_projects, choice_label
+    delivered_cache = delivered_cache if delivered_cache is not None else {}
     tagged = [replace(item, audio_stream=int(choice["ordinal"])) if choice else item
               for item, choice in zip(results, entry_streams)]
     tagged.extend(results[len(entry_streams):])
@@ -510,8 +526,14 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
         if key in done:
             continue
         done.add(key)
-        rows = [(tagged[position - 1], entry_streams[position - 1])
-                for position in _stream_entries(entries, entry_streams, media_path)]
+        if key in delivered_cache:
+            delivered.extend(delivered_cache[key])
+            continue
+        positions = _stream_entries(entries, entry_streams, media_path)
+        if any(position > len(tagged) for position in positions):
+            continue  # this video's remaining tracks are still running
+        before = len(delivered)
+        rows = [(tagged[position - 1], entry_streams[position - 1]) for position in positions]
         finished = [(row, pick) for row, pick in rows
                     if row.status in {"success", "degraded_success"} and row.project_path]
         problems = [(row, pick) for row, pick in rows if all(row is not done_row for done_row, _p in finished)]
@@ -523,6 +545,7 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
                                     status=row.status, error=row.error)
         if not finished:
             delivered.extend(labelled)
+            delivered_cache[key] = delivered[before:]
             continue
         target = _stream_result_path(entries, entry_streams, media_path, runtime_context.job_id)
         base = bases.get(str(Path(media_path).resolve()), "")
@@ -538,6 +561,7 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
             delivered.extend(replace(row, error=f"{choice_label(pick)}：合并各音轨结果失败：{error}")
                              for row, pick in finished)
             delivered.extend(labelled)
+            delivered_cache[key] = delivered[before:]
             continue
         first = finished[0][0]
         status = ("success" if not problems and all(row.status == "success" for row, _pick in finished)
@@ -550,6 +574,7 @@ def _deliver_audio_streams(legacy, runtime_context, run_options, results, entrie
                                  elapsed_seconds=sum(row.elapsed_seconds for row, _pick in finished),
                                  error=note or first.error, audio_stream=-1))
         delivered.extend(labelled)
+        delivered_cache[key] = delivered[before:]
         legacy.record_run_event("audio_streams_combined", media_path=media_path, project_path=reference["path"],
                                 tracks=[pick["ordinal"] for _row, pick in finished],
                                 problems=[pick["ordinal"] for _row, pick in problems])
@@ -829,6 +854,14 @@ def _run_media_queue(
                 legacy.record_run_event("queue_failed", error=error)
                 return QueueResult(tuple(replace(r, job_id=runtime_context.job_id) for r in results), time.perf_counter() - queue_started, log_path, runtime_context.job_id)
 
+            stream_deliveries = {}
+            published_deliveries = set()
+            def publish_once(items):
+                for item in items:
+                    if item.project_path and item.project_path not in published_deliveries:
+                        if _publish_media_delivery(legacy, item):
+                            published_deliveries.add(item.project_path)
+
             for index, media_path in enumerate(normalized_paths, 1):
                 state.update(media_path=media_path, media_index=index)
                 runtime_context.media_path = media_path
@@ -955,6 +988,8 @@ def _run_media_queue(
                         media_fingerprint=str(reference.get("media_fingerprint") or runtime_context.media_identity.get("fingerprint") or ""),
                         result_ref_json=json.dumps(reference, ensure_ascii=False) if reference else "",
                     )
+                    if not lane_runs and not entry_streams:
+                        publish_once([result])
                     results.append(result)
                     durations.append(float(elapsed))
                     legacy.record_run_event(
@@ -996,6 +1031,9 @@ def _run_media_queue(
                         traceback=__import__("traceback").format_exc(),
                     )
 
+                if entry_streams and not token.is_cancelled:
+                    publish_once(_deliver_audio_streams(legacy, runtime_context, run_options, results,
+                        normalized_paths, entry_streams, delivered_cache=stream_deliveries))
                 if token.is_cancelled:
                     results.extend(
                         MediaResult(path, "cancelled", error="队列已取消。")
@@ -1017,7 +1055,9 @@ def _run_media_queue(
             if entry_streams:
                 runtime_context.audio_stream = {}
                 results = _deliver_audio_streams(legacy, runtime_context, run_options, results,
-                                                 normalized_paths, entry_streams)
+                                                 normalized_paths, entry_streams, delivered_cache=stream_deliveries)
+            if lane_runs or entry_streams:
+                publish_once(results)
             total_elapsed = time.perf_counter() - queue_started
             legacy.record_run_event(
                 "run_completed",

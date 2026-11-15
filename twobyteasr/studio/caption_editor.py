@@ -144,6 +144,13 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             self._caption_canvas_edit_target=(id(self.project),self.session.generation,target)
 
     def _edit_caption_from_canvas(self):
+        press=getattr(self,'_canvas_caption_press',None)
+        workshop_cue=press.claim_double_click() if press is not None else ''
+        if workshop_cue:
+            # Double-click on a caption that was not selected: the AI caption
+            # workshop, as before press-to-drag showed the box on the first click.
+            self.video.workshop_requested.emit(workshop_cue)
+            return
         panel=getattr(self,'caption_transform_panel',None)
         if panel is not None:
             self._remember_canvas_edit_target(self.selected_cue_id,panel.language.currentData())
@@ -165,7 +172,7 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self.caption_editor_tools = panel
         panel.suggestions.activated.connect(self._apply_editor_suggestion)
         panel.suggestions.location_requested.connect(self._locate_caption_suggestion)
-        panel.pronoun_button.clicked.connect(self._flip_editor_pronoun)
+        panel.pronoun_button.clicked.connect(self._show_editor_pronouns)
         panel.ignore_button.clicked.connect(self._ignore_editor_suggestion)
         panel.cancel_button.clicked.connect(self._cancel_canvas_inline_edit)
         panel.confirm_button.clicked.connect(lambda: self._caption_trigger_commit('button'))
@@ -630,9 +637,9 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                 from ..subtitle_rules.studio_qc import review_candidates
                 cue=draft.target.resolve(self.project)
                 if cue is not None:
-                    rows.extend(r for r in self._review_suggestions_for(cue,review_candidates(self.project,cue)) if r.kind!=PRONOUN)
+                    rows.extend(r for r in self._review_suggestions_for(cue,review_candidates(self.project,cue),complete=True) if r.kind!=PRONOUN)
         if draft.target.layer!='original' or text!=draft.target.read(self.project):
-            rows.extend(review_suggestions(text, resolver=self._review_term_resolver(), pronouns=False))
+            rows.extend(review_suggestions(text, resolver=self._review_term_resolver(), pronouns=False,max_marks=None))
         decisions = self.project.studio_state.get(DECISIONS, {})
         combined_decisions=ChainMap(draft.ignored,decisions)
         unique = {}
@@ -647,10 +654,36 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             if suggestion_handled(draft.target.__dict__,row,text,combined_decisions):
                 continue
             unique[key] = row
-        draft.suggestions = tuple(sorted(unique.values(), key=lambda r: (r.start, r.end)))
+        # Merge proposals for the same span, retaining every valid option and
+        # its evidence. Distinct occurrences are never deduplicated together.
+        merged = {}
+        for row in unique.values():
+            if row.kind == PRONOUN:
+                continue
+            key = (row.start,row.end,row.original,row.kind)
+            if key in merged:
+                prior=merged[key]; options=list(prior.options)
+                for option in row.options:
+                    found=next((i for i,o in enumerate(options) if (o.text,o.operation)==(option.text,option.operation)),None)
+                    if found is None:
+                        options.append(option)
+                    else:
+                        old=options[found]
+                        options[found]=replace(old,sources=tuple(dict.fromkeys((*old.sources,*option.sources))),
+                            provenance=old.provenance+tuple(p for p in option.provenance if p not in old.provenance))
+                row=replace(prior,options=tuple(options))
+            merged[key]=row
+        from ..subtitle_rules.review_suggestions import ReviewSuggestion, SuggestionOption
+        # This editor utility always includes the current value; generic
+        # machine-suggestion validation intentionally removes no-op options.
+        for at in pronoun_positions(text):
+            merged[(at,at+1,text[at],PRONOUN)]=ReviewSuggestion(at,at+1,text[at],
+                tuple(SuggestionOption(value) for value in '他她它'),PRONOUN)
+        draft.suggestions = tuple(sorted(merged.values(), key=lambda r: (r.start, r.end)))
         draft.suggestion_text = text
         self.caption_suggestion_text.update_rows(text, draft.suggestions)
-        self.caption_suggestion_text.setVisible(self.caption_suggestion_text.has_rows())
+        self.caption_suggestion_text.setVisible(self.caption_suggestion_text.has_rows() and not self.caption_suggestion_text.dismissed)
+        self.subtitle_edit_card._follow_caret()
         self.caption_ignore_button.setVisible(bool(draft.suggestions))
         self.caption_pronoun_button.setEnabled(True)
         self.subtitle_edit_card.update_hint()
@@ -658,6 +691,8 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
     def _apply_editor_suggestion(self, mark=None, option=None):
         draft = getattr(self, "_caption_draft", None)
         if not self._caption_owns_draft(draft) or getattr(self.subtitle_edit_input, '_preediting', False):
+            return False
+        if draft.target.resolve(self.project) is None or draft.target.read(self.project) is None:
             return False
         text = self.subtitle_edit_input.toPlainText()
         if text != draft.suggestion_text:
@@ -668,6 +703,9 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if not 0 <= int(mark) < len(draft.suggestions):
             return False
         row = draft.suggestions[int(mark)]
+        if row.kind == PRONOUN:
+            if not 0 <= int(option or 0) < len(row.options): return False
+            return self._replace_editor_pronoun(row.options[int(option or 0)].text,start=row.start)
         from ..recognition.asr_source_evidence import current_suggestion_option
         if not current_suggestion_option(self.project,draft.target.resolve(self.project),row,int(option or 0)):return False
         value = row.apply(text, int(option or 0))
@@ -694,6 +732,14 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if kind != 'pronoun' and not machine_text_allowed(text,value):return False
         self.caption_suggestion_text.stage_patch(start, end, replacement, value)
         delta=len(replacement)-(end-start)
+        saved = getattr(self, '_caption_candidate_return', None)
+        if saved and saved[0] is draft:
+            def mapped_cursor(position):
+                offset = py_position(text, position)
+                if offset > start:
+                    offset = offset + delta if offset >= end else start + len(replacement)
+                return qt_position(value, offset)
+            self._caption_candidate_return = (draft, mapped_cursor(saved[1]), mapped_cursor(saved[2]))
         def shifted(a,b):
             if a==b and a in {start,end}:return None
             if b<=start:return a,b
@@ -716,7 +762,10 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         draft.ignored=self._draft_patch_decisions(draft,value,only_ignored=True)
         cursor=editor.textCursor();cursor.setPosition(qt_position(text,start))
         cursor.setPosition(qt_position(text,end),QTextCursor.MoveMode.KeepAnchor)
-        cursor.insertText(replacement);editor.setTextCursor(cursor)
+        cursor.beginEditBlock()
+        cursor.insertText(replacement)
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
         return True
 
     @staticmethod
@@ -744,41 +793,113 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
             draft.ignored=self._draft_patch_decisions(draft,draft.suggestion_text,only_ignored=True)
             self._refresh_editor_suggestions()
 
-    def _flip_editor_pronoun(self, checked=False, *, event=None):
+    def _caption_pronoun_target(self):
+        """Python offset of exactly one selected/adjacent real pronoun."""
+        draft=getattr(self,'_caption_draft',None);editor=self.subtitle_edit_input
+        if not self._caption_owns_draft(draft) or getattr(editor,'_preediting',False):return None
+        cue = draft.target.resolve(self.project)
+        if cue is None or cue.speaker_id != draft.target.track_id or draft.target.read(self.project) is None:return None
+        text=editor.toPlainText();cursor=editor.textCursor();positions=pronoun_positions(text)
+        a,b=sorted((py_position(text,cursor.anchor()),py_position(text,cursor.position())))
+        if a!=b:return a if b==a+1 and a in positions else None
+        return a if a in positions else a-1 if a-1 in positions else None
+
+    def _show_editor_pronouns(self, checked=False):
+        self._remember_candidate_return()
+        at=self._caption_pronoun_target()
+        if at is None:
+            self.caption_editor_hint.setText('请选中一个 他 / 她 / 它，或将光标放到该字旁')
+            return False
+        # Opening this local selector must not force a cold project-wide QC
+        # scan on the GUI thread. The owned timer can deliver other proposals.
+        from ..subtitle_rules.review_suggestions import ReviewSuggestion,SuggestionOption
+        draft=self._caption_draft;text=self.subtitle_edit_input.toPlainText()
+        pending=tuple(r for r in draft.suggestions if r.kind!=PRONOUN) if draft.suggestion_text==text else ()
+        utility=tuple(ReviewSuggestion(i,i+1,text[i],tuple(SuggestionOption(v) for v in '他她它'),PRONOUN)
+                      for i in pronoun_positions(text))
+        draft.suggestions=tuple(sorted((*pending,*utility),key=lambda r:(r.start,r.end)))
+        draft.suggestion_text=text
+        self.caption_suggestion_text.update_rows(text,draft.suggestions)
+        for mark,row in enumerate(draft.suggestions):
+            if row.kind==PRONOUN and row.start==at:
+                self.caption_suggestion_text.selected=(mark,'他她它'.index(row.original))
+                self.caption_suggestion_text.focus_current()
+                return True
+        return False
+
+    def _replace_editor_pronoun(self, value, *, start=None, event=None):
         draft = getattr(self, '_caption_draft', None)
         editor = self.subtitle_edit_input
-        if not self._caption_owns_draft(draft) or getattr(editor, '_preediting', False):
+        if value not in ('他','她','它') or not self._caption_owns_draft(draft) or getattr(editor, '_preediting', False):
             return False
-        text, cursor = editor.toPlainText(), editor.textCursor()
-        positions = pronoun_positions(text)
-        if not positions:
-            self.caption_editor_hint.setText('当前这一层没有可切换的 他 / 她 / 他们 / 她们')
-            return False
+        text=editor.toPlainText()
+        at=self._caption_pronoun_target() if start is None else start
+        if at is None or at not in pronoun_positions(text):return False
+        if text[at]==value:return True  # consumed, without a document/undo mutation
         self._lock_caption_editor()
         item = editor._begin_input('pronoun', event)
-        anchor, position = cursor.anchor(), cursor.position()
-        vertical, horizontal = editor.verticalScrollBar().value(), editor.horizontalScrollBar().value()
-        blocker = QSignalBlocker(editor)
-        cursor.beginEditBlock()
         try:
-            # One existing whole-draft toggle, one document undo block and one
-            # notification. Do not rebuild candidates or serialize per word.
-            for at in reversed(positions):
-                self._stage_caption_patch(at, at+1, toggle_pronoun(text[at]),
-                    kind='pronoun', options=('他','她','它'))
+            changed=self._stage_caption_patch(at,at+1,value,kind='pronoun',options=('他','她','它'))
         finally:
-            cursor.endEditBlock()
-            cursor = editor.textCursor()
-            cursor.setPosition(anchor)
-            cursor.setPosition(position, QTextCursor.MoveMode.KeepAnchor)
-            editor.setTextCursor(cursor)
-            editor.verticalScrollBar().setValue(vertical)
-            editor.horizontalScrollBar().setValue(horizontal)
-            del blocker
             editor._input_active = None
-        editor.textChanged.emit()
+        cursor=editor.textCursor();cursor.setPosition(qt_position(editor.toPlainText(),at))
+        cursor.setPosition(qt_position(editor.toPlainText(),at+1),QTextCursor.MoveMode.KeepAnchor)
+        editor.setTextCursor(cursor)
+        self._refresh_editor_suggestions()
+        view = self.caption_suggestion_text
+        for mark, row in enumerate(draft.suggestions):
+            if row.kind == PRONOUN and row.start == at:
+                view.selected = (mark, '他她它'.index(value))
+                break
+        self._flush_caption_editor_preview()
         item['expected_text'] = editor.toPlainText()
         editor.viewport().update()
+        return changed
+
+    def _remember_candidate_return(self):
+        view = self.caption_suggestion_text
+        if not view.candidate_mode:
+            cursor = self.subtitle_edit_input.textCursor()
+            self._caption_candidate_return = (getattr(self, '_caption_draft', None), cursor.anchor(), cursor.position())
+
+    def _caption_candidate_row(self):
+        draft = getattr(self, '_caption_draft', None)
+        view = self.caption_suggestion_text
+        if not self._caption_owns_draft(draft) or view.dismissed:
+            return None
+        cue = draft.target.resolve(self.project)
+        if cue is None or cue.speaker_id != draft.target.track_id or draft.target.read(self.project) is None:
+            return None
+        text = self.subtitle_edit_input.toPlainText()
+        mark, option = view.selected
+        if text != draft.suggestion_text or not 0 <= mark < len(draft.suggestions):
+            return None
+        row = draft.suggestions[mark]
+        if not 0 <= option < len(row.options) or text[row.start:row.end] != row.original:
+            return None
+        cursor = self.subtitle_edit_input.textCursor()
+        a, b = sorted((py_position(text, cursor.anchor()), py_position(text, cursor.position())))
+        if (a, b) != (row.start, row.end) and not (a == b and row.start <= a <= row.end):
+            return None
+        return row
+
+    def _return_from_caption_candidates(self):
+        view = self.caption_suggestion_text
+        view.dismissed = True
+        view.candidate_mode = False
+        view.hide()
+        editor = self.subtitle_edit_input
+        saved = getattr(self, '_caption_candidate_return', None)
+        if saved and saved[0] is getattr(self, '_caption_draft', None):
+            cursor = editor.textCursor()
+            limit = editor.document().characterCount() - 1
+            cursor.setPosition(min(saved[1], limit))
+            cursor.setPosition(min(saved[2], limit), QTextCursor.MoveMode.KeepAnchor)
+            editor.setTextCursor(cursor)
+        QApplication.setActiveWindow(self.subtitle_edit_dock)
+        editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.subtitle_edit_card.place_bubble()
+        self.subtitle_edit_card.update_hint()
         return True
 
     def _caption_editor_key(self, event, *, text_focus=False):
@@ -813,8 +934,39 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                 editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
                 editor.insertPlainText(event.text() or ('C' if shifted else 'c'))
                 return True
-        if shifted and key == Qt.Key.Key_P and (composing or event.isAutoRepeat()):
-            return True  # reserve this command without inserting P or ending IME
+        if shifted and key in {Qt.Key.Key_F, Qt.Key.Key_A, Qt.Key.Key_D, Qt.Key.Key_E, Qt.Key.Key_S}:
+            if composing:
+                return False
+            view = self.caption_suggestion_text
+            row = self._caption_candidate_row()
+            if key == Qt.Key.Key_F:
+                if not view.candidate_mode or row is None or row.kind != PRONOUN:
+                    if self._caption_pronoun_target() is None:
+                        return False
+                    if not event.isAutoRepeat():
+                        self._show_editor_pronouns()
+                if not event.isAutoRepeat():
+                    view.cycle(1)
+                return True
+            if key == Qt.Key.Key_S:
+                if not view.candidate_mode and (row is None or view.isHidden()):
+                    return False
+                if not event.isAutoRepeat():
+                    self._remember_candidate_return()
+                    self._return_from_caption_candidates()
+                return True
+            if row is None:
+                # A stale floating selector must never leak E to a default
+                # button; ordinary text retains uppercase A/D/E input.
+                return view.owns_focus()
+            if event.isAutoRepeat():
+                return True
+            self._remember_candidate_return()
+            if key == Qt.Key.Key_E:
+                self._apply_editor_suggestion()
+            else:
+                view.cycle(1 if key == Qt.Key.Key_D else -1)
+            return True
         if getattr(editor, '_preediting', False):
             return False
         if (getattr(self, '_caption_split_session', None) is not None
@@ -840,30 +992,13 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
                 self._end_caption_editor(keep_open=False)
                 return True
             return False
-        if shifted and key in {Qt.Key.Key_A, Qt.Key.Key_D}:
-            right = key == Qt.Key.Key_D
-            if suggestions.has_rows():
-                if not suggestions.cycle(1 if right else -1, from_body=not candidate_focus):
-                    cursor = editor.textCursor(); cursor.clearSelection(); editor.setTextCursor(cursor)
-                    editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
-                    self.subtitle_edit_card.update_hint()
-            else:
-                cursor = editor.textCursor()
-                if cursor.hasSelection():
-                    cursor.setPosition(cursor.selectionEnd() if right else cursor.selectionStart())
-                else:
-                    cursor.movePosition(QTextCursor.MoveOperation.NextCharacter if right else QTextCursor.MoveOperation.PreviousCharacter)
-                editor.setTextCursor(cursor)
-                editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            return True
         if shifted and key == Qt.Key.Key_W:
+            if event.isAutoRepeat(): return True
+            self._remember_candidate_return()
             if candidate_focus:
                 suggestions.navigate(vertical=-1)
             else:
                 suggestions.select_first()
-            return True
-        if shifted and key == Qt.Key.Key_P:
-            self._flip_editor_pronoun(event=event)
             return True
         if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape}:
             if text_focus and key != Qt.Key.Key_Escape and mods & Qt.KeyboardModifier.ShiftModifier:

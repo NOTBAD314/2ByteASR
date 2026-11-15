@@ -303,11 +303,15 @@ class StudioProjectController:
         preview_dir = project_path.resolve().parent / "preview"
         cover = preview_dir / "project-cover.jpg"
         if cover.is_file() and cover.stat().st_size > 1024:
-            return cover
+            # This helper runs on the existing cover worker. QImage decoding
+            # is thread-safe; a large corrupt JPEG must not count as cached.
+            from PySide6.QtGui import QImage
+            if not QImage(str(cover)).isNull():
+                return cover
         media = Path(project.media.path)
         ffmpeg = Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
         if not media.is_file() or not ffmpeg.is_file():
-            return cover if cover.is_file() else None
+            return None
         preview_dir.mkdir(parents=True, exist_ok=True)
         seek_seconds = min(90.0, max(1.0, float(project.media.duration_ms or 0) / 100_000.0))
         import tempfile
@@ -1257,7 +1261,8 @@ class StudioProjectController:
         except (OSError, ProjectValidationError):
             page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(project_path), decision="official_invalid_autosave")
             return official, False
-        policy = str(page._studio_preferences().get("recovery_policy", "ask"))
+        from ..app.application_settings import effective_recovery_policy
+        policy = effective_recovery_policy(page._studio_preferences())   # 2026-11-15: "auto" unless chosen
         if policy == "auto":
             page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(candidate), decision="auto_recover")
             single_shot_fn(100, lambda: QToolTip.showText(QCursor.pos(), "已自动恢复较新的自动保存版本", page))

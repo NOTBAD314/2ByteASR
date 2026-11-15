@@ -264,13 +264,14 @@ foreach ($property in $Lock.models.PSObject.Properties) {
 $allowedOnlyNames = @(
     "moss", "firered_vad", "firered_aed", "qwen_asr", "speaker_embedding",
     "qwen_aligner", "whisper_turbo", "sensevoice", "paraformer", "funasr_nano",
-    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "ja_ctc_aligner", "mfa_aligner"
+    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "mfa_aligner", "qwen_ultra_aligner", "qwen_ultra_head"
 )
 $onlyNames = @(
     $Only -split ',' |
         ForEach-Object { ([string]$_).Trim() } |
         Where-Object { $_ }
 )
+$onlyNames = @($onlyNames | ForEach-Object { if ($_ -eq 'qwen_aligner') { 'qwen_ultra_aligner' } else { $_ } })
 $unsupportedOnlyNames = @($onlyNames | Where-Object { $_ -notin $allowedOnlyNames })
 if ($unsupportedOnlyNames.Count -gt 0) {
     throw "不支持的模型标识：$($unsupportedOnlyNames -join '、')"
@@ -278,6 +279,7 @@ if ($unsupportedOnlyNames.Count -gt 0) {
 if ("moss" -in $onlyNames) {
     $onlyNames += @("firered_vad", "speaker_embedding")
 }
+if ('qwen_ultra_head' -in $onlyNames) { $onlyNames += 'qwen_ultra_aligner' }
 if ('canary_qwen' -in $onlyNames) { $onlyNames += 'canary_qwen_tokenizer' }
 # 2026-10-19: MFA（实验）一次装好中文与日语两套模型。
 if ('mfa_aligner' -in $onlyNames) { $onlyNames += 'mfa_aligner_ja' }

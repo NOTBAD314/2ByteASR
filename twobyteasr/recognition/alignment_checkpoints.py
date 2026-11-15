@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-VERSION = 'acoustic-window-v1'
+VERSION = 'acoustic-window-v2-parent'
 
 
 def _digest(value):
@@ -49,7 +49,7 @@ def run_cached(audio, jobs, *, identity, runner, root=None, check=None):
     never converted into successful timestamps.
     """
     from .run_context import get_runtime_context
-    from .alignment_audio import pcm_digest
+    from .alignment_audio import pcm_digest, cached_pcm_digest
     from .cache import record_run_event
     owner = get_runtime_context()
     preparation=getattr(owner,'streaming_preparation',None)
@@ -73,17 +73,24 @@ def run_cached(audio, jobs, *, identity, runner, root=None, check=None):
 
     for job in jobs:
         current()
-        start = max(0, int(job['window_start_ms']) * 16)
-        end = min(valid_samples, int(job['window_end_ms']) * 16)
-        material = dict(version=VERSION, engine=identity,
+        from .alignment_items import sample_bounds
+        start,end=sample_bounds(job,valid_samples)
+        available=job.get('available_context_samples') or ([0,valid_samples] if job.get('material_contiguous') else [start,end])
+        lo=max(available[0],start-16000);hi=min(available[1],end+16000)
+        material = dict(acoustic_parent_ids=job.get('parent_ids') or job.get('parent_id'),context_audio_sha256=pcm_digest(audio[lo:hi],check=current),version=VERSION, engine=identity,
             audio_sha256=pcm_digest(audio[start:end], check=current),
-            **{name: job.get(name) for name in ('text', 'language', 'window_start_ms', 'window_end_ms')})
+            **{name: job.get(name) for name in ('text', 'language', 'window_start_ms', 'window_end_ms',
+                'artificial_padding_samples','window_samples','parent_ids','parent_pcm_range_ms','speaker','source_parts','original_text_members','material_id','available_context_samples','source_clock_verified')})
         key = keys[str(job['id'])] = _digest(material)
         materials[str(job['id'])] = material
         try:
             with gzip.open(root / (key + '.json.gz'), 'rt', encoding='utf-8') as stream:
                 saved = json.load(stream)
             row = saved.get('row')
+            if identity.get('implementation'):
+                from .alignment_backend import receipt_matches
+                if not receipt_matches(saved.get('metadata'), identity):
+                    raise ValueError('checkpoint actual backend identity mismatch')
             # Tuple-valued model parameters round-trip through JSON as lists.
             # Compare the same canonical wire identity used to name the file.
             if (_digest(saved.get('identity')) != key or saved.get('checksum') != _digest(row)
@@ -96,11 +103,18 @@ def run_cached(audio, jobs, *, identity, runner, root=None, check=None):
     current()
     record_run_event('alignment_checkpoint_plan', engine=str(identity.get('engine', '')),
         jobs=len(jobs), reused=len(reused), missing=len(missing), planning_seconds=round(time.perf_counter()-began,6))
+    record_run_event('pipeline_work_progress', work_id='alignment-cache-plan:'+owner.job_id+':'+str(getattr(owner,'shard_id','')),
+        label=f'对齐窗口：缓存 {len(reused)} / {len(jobs)}，局部重算 {len(missing)}',
+        state='completed', done=len(reused), total=len(jobs), checkpoint_hits=len(reused), local_recompute=len(missing))
     worker_jobs = [dict(job, _checkpoint=dict(root=str(root), key=keys[str(job['id'])],
                             identity=materials[str(job['id'])])) for job in missing]
     payload = runner(worker_jobs) if missing else dict(metadata or {}, results=[], load_ms=0., inference_ms=0.,
         model_load_count=0, resident_session_request=None, execution='checkpoint_reuse')
     current()
+    if identity.get('implementation'):
+        from .alignment_backend import receipt_matches
+        if not receipt_matches(payload, identity):
+            raise ValueError('alignment result backend identity mismatch')
     returned = payload.get('results') or []
     if len(returned) != len(missing) or {str(row.get('id')) for row in returned} != {str(job['id']) for job in missing}:
         raise ValueError('对齐检查点收到缺失或重复的任务。')
@@ -117,7 +131,7 @@ def run_cached(audio, jobs, *, identity, runner, root=None, check=None):
     rows = {**reused, **by_id}
     windows={str(job['id']):materials[str(job['id'])]['audio_sha256'] for job in jobs}
     return dict(payload, results=[copy.deepcopy(rows[str(job['id'])]) for job in jobs],
-                audio_sha256=None if preparation is not None else pcm_digest(audio, check=current),
+                audio_sha256=None if preparation is not None else cached_pcm_digest(audio, check=current),
                 audio_clock_identity=preparation.clock_identity if preparation is not None else None,
                 window_hashes=windows,
                 checkpoint_hits=len(reused), checkpoint_jobs=len(jobs))

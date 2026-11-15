@@ -126,8 +126,9 @@ def start(window, output):
             notification = getattr(window, '_completion_dialog', None)
             if notification and notification.isVisible():
                 QTest.mouseClick(notification.confirm_button, Qt.MouseButton.LeftButton)
+            from .question_boxes import question_boxes
             modal = QApplication.activeModalWidget()
-            if not isinstance(modal, QMessageBox):
+            if not isinstance(modal, question_boxes()):
                 return
             if modal.standardButtons() & QMessageBox.StandardButton.Save:
                 path = Path(str(getattr(window.studio_page, 'project_path', '') or '')).resolve()

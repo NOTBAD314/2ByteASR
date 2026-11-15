@@ -697,19 +697,19 @@ def start(window, output: Path):
         capture('R1-home-after-restart')
 
         def recovery(box):
-            # The first launch left unsaved edits: the app offers its recovery point.
-            result['recovery_prompt'] = dict(title=box.windowTitle(), text=box.text(),
-                                             buttons=[b.text() for b in box.buttons()])
-            grab(box, 'R2-recovery-offered')
-            saved = next(b for b in box.buttons() if b.text() == '打开正式保存')
-            QTest.mouseClick(saved, Qt.MouseButton.LeftButton)
+            # 2026-11-15: by default an autosave opens without asking; a question here is a fault.
+            result['recovery_prompt'] = dict(title=box.windowTitle(), text=box.informativeText(),
+                                             buttons=[b.objectName() for b in box.buttons()])
+            grab(box, 'R2-recovery-unexpected')
+            QTest.mouseClick(box.saved_button, Qt.MouseButton.LeftButton)
+        from ..projects.project_recovery_dialog import RecoveryDialog
         from ..projects.studio_project import studio_settings_path
         autosaves = list((studio_settings_path().parent / 'autosaves').glob('*.2byteproj'))
-        on_modal(QMessageBox, recovery, 'recovery', timeout=15)
+        on_modal(RecoveryDialog, recovery, 'recovery', timeout=15)
         window.open_studio_project(spec['project'], mode='edit', source='onboarding_audit')
         yield ready
-        check('restart: the project opens; an autosave left by the last session is offered, never forced',
-              bool(result.get('recovery_prompt')) == bool(autosaves),
+        check('restart: the project opens; an autosave left by the last session opens without asking',
+              not result.get('recovery_prompt'),
               dict(autosaves=len(autosaves), prompt=result.get('recovery_prompt')))
         yield 1.0
         page = studio()

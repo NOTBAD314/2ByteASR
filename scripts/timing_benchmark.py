@@ -339,8 +339,19 @@ def main() -> int:
     project = sub.add_parser("score-project")
     project.add_argument("--reference", required=True)
     project.add_argument("--project", required=True)
+    compare = sub.add_parser("compare-forced", help="A/B/C/D on identical transcript and common human boundaries")
+    compare.add_argument("--suite", required=True)
+    compare.add_argument("--out", required=True)
+    compare.add_argument("--device", choices=["auto","cuda","cpu"], default="auto")
+    compare.add_argument("--repeats", type=int, default=3)
+    compare.add_argument("--variants", default="AC")
+    compare.add_argument("--batch-size", type=int, default=8)
     args = parser.parse_args()
-    if args.command == "build-synthetic":
+    if args.command == "compare-forced":
+        sys.path.insert(0,str(ROOT))
+        from twobyteasr.acceptance.alignment_comparison import run_suite
+        run_suite(args.suite,args.out,device=args.device,repeats=args.repeats,variants=args.variants,batch_size=args.batch_size)
+    elif args.command == "build-synthetic":
         print(build_synthetic(Path(args.out)))
     elif args.command == "align":
         result = align(Path(args.reference), Path(args.out), device=args.device)

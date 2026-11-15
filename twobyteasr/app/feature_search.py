@@ -18,6 +18,9 @@ class Entry:
     keywords: tuple
     where: str
     run: Callable
+    # 2026-11-14 「问问兔白」: a stable name the chat AI may answer with to point at or open this
+    # place; the AI can only name keys listed here, never invent a button.
+    key: str = ''
 
 
 def _settings(window, section):
@@ -77,51 +80,74 @@ def entries(window) -> list[Entry]:
     open_workshop = getattr(window, '_open_model_workshop', lambda: None)
     return [
         Entry('字幕标点（新任务默认）', ('标点', '逗号', '句号', 'punctuation', '不加标点', '添加标点', '符号'),
-              '首页 → 字幕语言与输出', _focus_home(window, 'subtitle_punctuation')),
+              '首页 → 字幕语言与输出', _focus_home(window, 'subtitle_punctuation'), key='punctuation_new_task'),
         Entry('字幕标点（当前工程）', ('标点', 'punctuation', '导出标点', '预览标点'),
-              '字幕工作台 → 工具栏“标点”', _studio_punctuation(window)),
+              '字幕工作台 → 工具栏“标点”', _studio_punctuation(window), key='punctuation_project'),
         Entry('数学公式（$…$ 显示为 x²、∫ 等符号）', ('公式', '数学', 'math', 'latex', 'katex', '上标', '下标', '积分',
                                                      '分数', '根号'),
-              '字幕工作台 → 工具栏“标点” → 数学公式', _studio_math(window)),
+              '字幕工作台 → 工具栏“标点” → 数学公式', _studio_math(window), key='math_formula'),
         Entry('Qwen 官方 API（千问AI平台 / Qwen Cloud）', ('qwen', 'qwen cloud', '通义', '千问', '千问ai平台', 'qianwen',
                                                          '中国站', '国际站', 'qwen-audio', '3.1', 'api key', '官网'),
-              '申请与设置 API → Qwen 官方 API', _api(window, 'qwen_cloud_filetrans')),
+              '申请与设置 API → Qwen 官方 API', _api(window, 'qwen_cloud_filetrans'), key='api_qwen_cloud'),
         Entry('阿里云百炼 · 录音文件识别', ('百炼', 'bailian', 'dashscope', 'qwen', '阿里云', 'oss', 'workspace'),
-              '申请与设置 API → 阿里云百炼', _api(window, 'qwen31_filetrans')),
-        Entry('MOSS Pro 云端（MOSI）', ('moss', 'mosi', '云端', '说话人'), '申请与设置 API → MOSI', _api(window, 'mosi_moss_pro')),
+              '申请与设置 API → 阿里云百炼', _api(window, 'qwen31_filetrans'), key='api_bailian'),
+        Entry('MOSS Pro 云端（MOSI）', ('moss', 'mosi', '云端', '说话人'), '申请与设置 API → MOSI',
+              _api(window, 'mosi_moss_pro'), key='api_mosi'),
         Entry('申请与设置 API（所有服务商）', ('api', 'key', '密钥', '云端', '在线', '服务商', '测试连接'),
-              '申请与设置 API', _api(window)),
+              '申请与设置 API', _api(window), key='api_setup'),
         Entry('文字 AI（断句、校对、翻译）', ('ai', 'deepseek', 'openai', 'gemini', 'grok', 'claude', 'anthropic', '断句', '校对', '翻译', '文字ai'),
-              'AI 智能断句设置', lambda: window._open_ai_settings_dialog()),
+              'AI 智能断句设置', lambda: window._open_ai_settings_dialog(), key='text_ai'),
         Entry('识别方式（本机 / 云端 / 轻量）', ('方式', '方案', '识别', '模型', '显卡', 'cuda', 'nvidia', 'mac', 'cpu', '本机'),
-              '说明 → 选择识别方式', lambda: window._next_step_action('choose_plan')),
+              '说明 → 选择识别方式', lambda: window._next_step_action('choose_plan'), key='recognition_mode'),
         Entry('模型工坊（下载与管理模型）', ('模型', '下载', 'moss', 'firered', 'qwen', 'sensevoice', 'workshop'),
-              '顶栏 → 模型工坊', open_workshop),
+              '顶栏 → 模型工坊', open_workshop, key='model_workshop'),
         Entry('快捷键', ('快捷键', '按键', 'shortcut', 'hotkey', '键盘', 'q/w', 'q', 'w', '改键'),
-              '应用设置 → 快捷键', _settings(window, '快捷键')),
+              '应用设置 → 快捷键', _settings(window, '快捷键'), key='shortcuts'),
         Entry('外部 AI 连接（MCP）', ('mcp', 'claude', 'ai 助手', '外部 ai', 'chatgpt', 'cursor', '连接'),
-              '应用设置 → 外部 AI（MCP）', _settings(window, '外部 AI（MCP）')),
+              '应用设置 → 外部 AI（MCP）', _settings(window, '外部 AI（MCP）'), key='mcp'),
         Entry('字幕语言与翻译 / 双语', ('语言', '日语', '韩语', '西班牙语', '德语', '法语', '葡萄牙语', '意大利语', '俄语',
                                   '翻译', '双语', '繁体', '繁體', '简体', 'bilingual', 'translation', 'japanese',
                                   'korean', 'spanish', 'german', 'french', 'portuguese', 'italian', 'russian',
                                   'traditional'),
-              '首页 → 字幕语言与输出', _focus_home(window, 'recognition_language')),
+              '首页 → 字幕语言与输出', _focus_home(window, 'recognition_language'), key='subtitle_language'),
         Entry('范例工程', ('范例', '示例', 'sample', 'demo', '试用', '体验'), '说明 → 打开范例工程',
-              lambda: window._open_sample_project()),
+              lambda: window._open_sample_project(), key='sample_project'),
         Entry('新手引导', ('引导', '教程', '新手', 'guide', 'tutorial', '帮助', '开始'), '首页',
-              lambda: window._next_step_action('show_guide')),
+              lambda: window._next_step_action('show_guide'), key='tutorial'),
         Entry('界面主题与动画', ('主题', '外观', '深色', '浅色', 'theme', 'dark', '动画'), '应用设置 → 外观',
-              _settings(window, '外观')),
+              _settings(window, '外观'), key='theme'),
         Entry('工程位置与自动保存', ('工程', '保存', '自动保存', '位置', '目录', 'project', 'autosave'), '应用设置 → 工程与保存',
-              _settings(window, '工程与保存')),
+              _settings(window, '工程与保存'), key='project_save'),
         Entry('存储与缓存、模型目录', ('存储', '缓存', '清理', '磁盘', '空间', 'cache', '模型目录'), '应用设置 → 存储与缓存',
-              _settings(window, '存储与缓存')),
+              _settings(window, '存储与缓存'), key='storage_cache'),
         Entry('复制诊断信息（问题回报）', ('诊断', '问题', '回报', '日志', 'bug', 'report', '反馈'), '说明 → 复制诊断信息',
-              lambda: window._open_diagnostics_dialog()),
-        Entry('检查更新', ('更新', '版本', 'update', 'version'), '顶栏 → 检查更新', lambda: window._check_updates()),
+              lambda: window._open_diagnostics_dialog(), key='diagnostics'),
+        Entry('检查更新', ('更新', '版本', 'update', 'version'), '顶栏 → 检查更新', lambda: window._check_updates(), key='check_update'),
         Entry('词库与术语', ('词库', '术语', '专有名词', 'glossary', '规范词'), '首页 → 内容与术语',
-              lambda: window._manage_terms()),
+              lambda: window._manage_terms(), key='glossary'),
+        Entry('提 Issue 给作者（GitHub / GitCode）', ('issue', 'issues', 'github', 'gitcode', '提问题', '提建议', '建议',
+                                                   '联系作者', '作者', '反馈', '改进', '新功能', '许愿'),
+              '浏览器打开 2ByteASR 的 Issues 页面', open_issues_page, key='issues'),
     ]
+
+
+# 2026-11-14 (user): what 兔白 cannot solve goes to the author as an Issue. Mainland China
+# reaches GitCode faster, so Chinese interfaces open GitCode and the others GitHub.
+ISSUE_PAGES = {'gitcode': 'https://gitcode.com/Notbad314/2ByteASR/issues',
+               'github': 'https://github.com/NOTBAD314/2ByteASR/issues'}
+
+
+def issues_page_url(language: str | None = None) -> str:
+    if language is None:
+        from ..i18n import current_language
+        language = current_language()
+    return ISSUE_PAGES['gitcode' if str(language or '').lower().startswith('zh') else 'github']
+
+
+def open_issues_page() -> bool:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    return bool(QDesktopServices.openUrl(QUrl(issues_page_url())))
 
 
 def search(items: list[Entry], query: str) -> list[Entry]:

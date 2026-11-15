@@ -83,6 +83,8 @@ class StudioProjectFlowMixin:
         from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
         close_t0 = perf_counter()
+        from .project_loudness_panel import retire_gain_controls
+        retire_gain_controls(self)
         seek=getattr(self,'_caption_seek_preparation',None)
         if seek is not None:seek.cancel()
         preparation=getattr(self,'_caption_range_preparation',None)

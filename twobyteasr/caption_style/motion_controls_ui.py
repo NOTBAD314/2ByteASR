@@ -51,6 +51,9 @@ class MotionSample(QLabel):
         self.poster_ms = None
         #: (entry_ms, exit_ms) draws a timing strip: entry · hold · exit.
         self.phases = None
+        #: Called with (local_ms, duration_ms, phases) for each played frame;
+        #: the 动效 timeline moves its playhead with it.
+        self.frame_listener = None
         self.font_pixel_size = 22
 
     def set_corner_radius(self, radius):
@@ -112,6 +115,8 @@ class MotionSample(QLabel):
                 'word_echo':.28,'word_float':.875,'word_dust':.94}.get(mode,.88))
             if self.poster_fraction is not None: local = duration*self.poster_fraction
             if self.poster_ms is not None: local = min(duration-1, max(0, self.poster_ms))
+        if self.frame_listener is not None and self.phases is not None:
+            self.frame_listener(local, duration, self.phases)
         # Render at device pixels: high-DPI screens otherwise show soft cards.
         dpr = max(1., float(self.devicePixelRatioF()))
         logical_width, logical_height = max(100, self.width()), max(1, self.height())
@@ -198,7 +203,7 @@ class MotionWorkflow:
         # buttons, a rounded preview, the parameters in a card and the scope
         # with 应用 in a raised footer.
         layout.setContentsMargins(14, 6, 14, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
         title_row = QHBoxLayout()
         title_row.setSpacing(6)
         title = QLabel(tr('本条预览')); title.setObjectName('softLabel')
@@ -216,7 +221,7 @@ class MotionWorkflow:
         layout.addLayout(title_row)
         page.motion_sample = MotionSample(page)
         page.motion_sample.set_corner_radius(12)
-        page.motion_sample.setFixedHeight(84)
+        page.motion_sample.setFixedHeight(72)
         page.motion_panel.responsive_preview = page.motion_sample
         layout.addWidget(page.motion_sample)
         layout.addWidget(page.graph_motion_summary)
@@ -238,19 +243,30 @@ class MotionWorkflow:
         page.motion_apply.clicked.connect(self.apply)
         # Every pick and value change applies at once (draft_changed), so the
         # footer holds only the targets: 范围 and 语言层, captions inside.
-        from ..design.soft_widgets import CaptionField, soft_card
+        from ..design.soft_widgets import _flexible, soft_card, soft_popup
         footer, footer_layout = soft_card(margins=(10, 10, 10, 10), spacing=8)
         footer.setObjectName('motionFooter')
         page.motion_apply.setParent(footer)
         page.motion_apply.hide()
+        # 2026-11-15 (pick A): the targets read as one line,
+        # 「应用到 [已选字幕] 语言 [双语联动]」, instead of two captioned fields.
         scope_row = QHBoxLayout()
-        scope_row.setSpacing(8)
-        scope_row.addWidget(CaptionField('范围', page.motion_scope), 1)
-        scope_row.addWidget(CaptionField('语言层', page.motion_language), 1)
+        scope_row.setSpacing(6)
+        scope_row.setContentsMargins(0, 0, 0, 0)
+        for text, combo in (('应用到', page.motion_scope), ('语言', page.motion_language)):
+            caption = QLabel(tr(text)); caption.setObjectName('softMeta')
+            combo.setAccessibleName(tr('范围') if combo is page.motion_scope else tr('语言层'))
+            _flexible(combo); soft_popup(combo)  # plain combos are otherwise pinned to 180 px and overflow
+            scope_row.addWidget(caption)
+            scope_row.addWidget(combo, 1)
+            if combo is page.motion_scope:
+                scope_row.addSpacing(10)  # keep the combo's round arrow off the next caption
         from .motion_inspector_ui import MotionInspector
         page.motion_inspector = MotionInspector(self)
+        page.motion_sample.frame_listener = page.motion_inspector.tabs.set_time
         layout.addWidget(page.motion_inspector, 1)
-        footer_layout.addWidget(page.motion_status)
+        # Status scrolls with parameters, leaving the target row accessible in short windows.
+        page.motion_inspector.cards_scroll.widget().layout().insertWidget(0, page.motion_status)
         footer_layout.addLayout(scope_row)
         layout.addWidget(footer)
         page.motion_word_mode.currentIndexChanged.connect(self.draft_changed)
