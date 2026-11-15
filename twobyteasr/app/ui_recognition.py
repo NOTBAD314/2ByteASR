@@ -409,6 +409,18 @@ class RecognitionRoleCard(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # A native QLayout pass may be sizing the card while the window sheet
+        # is being polished. Changing child heights/visibility in that same
+        # resize callback can activate the parent layout again before it has
+        # returned (Windows startup stack overflow, 2026-11-14).
+        if getattr(self, "_resize_layout_pending", False):
+            return
+        self._resize_layout_pending = True
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self, self._settle_resize_layout)
+
+    def _settle_resize_layout(self):
+        self._resize_layout_pending = False
         self._sync_model_slot_height()
         self._layout_status()
 

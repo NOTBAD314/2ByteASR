@@ -54,9 +54,10 @@ def child(output, window=None):
         check('bounded background completion', predicate())
 
     media = output/'fixture.mp4'
-    run_hidden_subprocess([str(ROOT/'tools/ffmpeg/bin/ffmpeg.exe'), '-v', 'error', '-y',
+    run_hidden_subprocess([str(ROOT/'tools/ffmpeg/bin'/('ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')), '-v', 'error', '-y',
         '-f', 'lavfi', '-i', 'color=c=0x293540:s=1280x720:r=25:d=12',
-        '-c:v', 'libx264', '-preset', 'ultrafast', str(media)], check=True, purpose='acceptance.fixture')
+        '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12',
+        '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'ultrafast', str(media)], check=True, purpose='acceptance.fixture')
     cues = [StudioCue('outside', 0, 800, '范围外'),
             StudioCue('a', 1000, 2000, '他进我们罗隐的'), StudioCue('b', 2180, 3000, '斩杀线了'),
             StudioCue('c', 4500, 5500, '我们先走到前面'), StudioCue('d', 5850, 7000, '然后看一下情况'),
@@ -89,8 +90,6 @@ def child(output, window=None):
             page.run_sentence_refine(whole_project=False, retry_ids=['a', 'b'])
             wait(lambda: page._refine_task.ended is not None)
             check('qualified AI keep preserves all original boundaries', page.project.cues == before)
-            # In the current protocol keep retains source boundaries; an empty
-            # split list explicitly requests one complete range with no cut.
             model_action = 'split'
             page.run_sentence_refine(whole_project=False, retry_ids=['a', 'b'])
             wait(lambda: page._refine_task.ended is not None)

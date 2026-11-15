@@ -14,7 +14,8 @@ import re
 from itertools import accumulate
 from collections import Counter
 
-from ..forced_alignment import ALIGNER_CODE, ALIGNER_REPO, ALIGNER_REVISION, UNIT_POLICY_VERSION, content_char_map
+from ..forced_alignment import content_char_map
+from .alignment_backend import receipt_matches
 
 TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*")
 POLICY = 'source-word-evidence-v1'
@@ -25,9 +26,9 @@ MAX_CUE_PAD_MS = 50
 
 def audio_sha256(audio):
     """Same bytes the Qwen worker receives, without copying a long audio array."""
-    from .alignment_audio import pcm_digest
+    from .alignment_audio import cached_pcm_digest
     try:
-        return pcm_digest(audio)
+        return cached_pcm_digest(audio)
     except ValueError:
         return ''
 
@@ -74,7 +75,7 @@ def _remap_units(units, source_chars, mapping):
 
 
 def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
-               audio=None,audio_clock_identity=None,valid_samples=None):
+               audio=None,audio_clock_identity=None,valid_samples=None,expected_identity=None):
     """Return cue-index -> alignment plus explicit reasons for non-reuse.
 
     A changed token only invalidates matching cues; matching blocks are
@@ -86,8 +87,7 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
                 and payload.get('audio_clock_identity')==audio_clock_identity)
     if (str(language).casefold() not in {'english', 'japanese'} or not isinstance(payload, dict)
             or payload.get('protocol') != 'qwen-aligner-units-v1'
-            or payload.get('model') != ALIGNER_REPO or payload.get('model_revision') != ALIGNER_REVISION
-            or payload.get('code') != ALIGNER_CODE or payload.get('unit_policy') != UNIT_POLICY_VERSION
+            or not receipt_matches(payload, expected_identity)
             or not (per_window or bool(audio_digest) and payload.get('audio_sha256') == audio_digest)):
         return {}, {'evidence_unavailable': len(cues)}
     policy = payload.get('policy') or {}
@@ -101,6 +101,14 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
         return {}, {'invalid_receipt': len(cues)}
     verified={}
     def audio_matches(row):
+        retry=(row.get('measurement') or {}).get('retry')
+        if retry and retry.get('adopted_sides'):
+            lo,hi=retry['absolute_pcm_samples']
+            expected_retry=retry['input_processing']['input_pcm_sha256']
+            if audio is not None:
+                from .alignment_audio import pcm_digest
+                if pcm_digest(audio[lo:hi],check=cancel_check)!=expected_retry:return False
+            elif per_window:return False
         if not per_window:return True
         key=str(row['id'])
         if key not in verified:
@@ -133,7 +141,8 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
     target_by_cue = {}
     for index, item in enumerate(target):
         target_by_cue.setdefault(item[1], []).append(index)
-    meta = {key: payload.get(key) for key in ('model', 'model_revision', 'code', 'unit_policy', 'dtype', 'torch_version')}
+    from .alignment_measurements import effective_metadata
+    meta = {key: payload.get(key) for key in ('model', 'model_revision', 'code', 'unit_policy', 'dtype', 'torch_version', 'alignment_identity', 'execution_identity')}
     reusable = {}
     for cue_index, cue in enumerate(cues):
         if cancel_check is not None:
@@ -210,7 +219,7 @@ def plan_reuse(cues, payload, *, language, audio_digest, cancel_check=None,
             continue
         from .cue_forced_alignment import UNIT_FIELDS, _compact
         reusable[cue_index + 1] = {
-            **meta, 'language': language, 'status': 'aligned', 'mapping': row.get('mapping'),
+            **effective_metadata(payload,row), 'language': language, 'status': 'aligned', 'mapping': row.get('mapping'),
             'text': cue.text, 'window_start_ms': row.get('window_start_ms'),
             'window_end_ms': row.get('window_end_ms'),
             'run': {'id': str(row.get('id')), 'source': POLICY, 'audio_sha256': payload.get('audio_sha256'),
@@ -244,7 +253,8 @@ def _plan_japanese_reuse(cues, payload, audio_digest, cancel_check,audio_matches
         indexes[speaker] = (values, [int(row['window_start_ms']) for row in values],
                             list(accumulate((int(row['window_end_ms']) for row in values), max)))
     reusable, reasons = {}, Counter()
-    meta = {key: payload.get(key) for key in ('model', 'model_revision', 'code', 'unit_policy', 'dtype', 'torch_version')}
+    from .alignment_measurements import effective_metadata
+    meta = {key: payload.get(key) for key in ('model', 'model_revision', 'code', 'unit_policy', 'dtype', 'torch_version', 'alignment_identity', 'execution_identity')}
     for index, cue in enumerate(cues, 1):
         if cancel_check:
             cancel_check()
@@ -273,7 +283,7 @@ def _plan_japanese_reuse(cues, payload, audio_digest, cancel_check,audio_matches
                 if valid:
                     pieces.sort(key=lambda item: item['char_start'])
                     valid = all(item.get('start_basis') == item.get('end_basis') == 'model'
-                        and int(row['window_start_ms']) <= int(item['start_ms']) < int(item['end_ms']) <= int(row['window_end_ms'])
+                        and int((row.get('actual_measurement_range_ms') or [row['window_start_ms'],row['window_end_ms']])[0]) <= int(item['start_ms']) < int(item['end_ms']) <= int((row.get('actual_measurement_range_ms') or [row['window_start_ms'],row['window_end_ms']])[1])
                         and cue_start - MAX_CUE_PAD_MS <= int(item['start_ms']) < int(item['end_ms']) <= cue_end + MAX_CUE_PAD_MS
                         for item in pieces)
                     valid = valid and all(a['end_ms'] <= b['start_ms'] for a, b in zip(pieces, pieces[1:]))
@@ -290,7 +300,7 @@ def _plan_japanese_reuse(cues, payload, audio_digest, cancel_check,audio_matches
             continue
         row, pieces, words, chars = found[0]
         reusable[index] = {
-            **meta, 'language': 'Japanese', 'status': 'aligned', 'mapping': row.get('mapping'),
+            **effective_metadata(payload,row), 'language': 'Japanese', 'status': 'aligned', 'mapping': row.get('mapping'),
             'text': text, 'window_start_ms': row['window_start_ms'], 'window_end_ms': row['window_end_ms'],
             'run': {'id': str(row['id']), 'source': 'source-japanese-evidence-v1',
                     'audio_sha256':payload.get('audio_sha256'),'audio_clock_identity':payload.get('audio_clock_identity'),

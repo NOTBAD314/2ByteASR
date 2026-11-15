@@ -42,7 +42,8 @@ def dispose_studio_pages_after_each_test():
     for widget in tuple(app.allWidgets()):
         if isinstance(widget,SubtitleStudioPage):
             widget.close_page()
-            app.removeEventFilter(widget)
+            from twobyteasr.design.app_events import unlisten
+            unlisten(widget)
             widget.deleteLater()
     QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
 

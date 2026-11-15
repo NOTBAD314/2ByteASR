@@ -530,6 +530,9 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         "stage": stage,
         "version": version,
     }
+    if stage in {'firered', 'grouped', 'grouped_local', 'final_timing'}:
+        from .alignment_backend import cache_identity
+        base['forced_alignment_identity'] = cache_identity(runtime_context.asr_settings_snapshot)
     policy = (runtime_context.recognition_snapshot or {}).get('language_recovery_policy') or {}
     if str(stage).startswith('primary_'):
         if policy.get('force_cloud'):

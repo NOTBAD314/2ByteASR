@@ -1479,6 +1479,13 @@ class StudioWorkspaceBuilder:
         page.volume_slider.valueChanged.connect(page._set_volume)
         yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.volume_slider)
+        # 2026-11-14 (user, toolbar draft A): an icon and the predicted loudness, not the words.
+        from .toolbar_audio_buttons import LoudnessButton
+        page.project_loudness_button = LoudnessButton(page)
+        from .project_loudness_panel import show_project_loudness
+        page.project_loudness_button.clicked.connect(lambda: show_project_loudness(page))
+        page._refresh_loudness_button = page.project_loudness_button.refresh
+        timeline_toolbar.addWidget(page.project_loudness_button)
         page.audio_diagnostic_button=QPushButton('声音诊断', page)
         page.audio_diagnostic_button.hide()
         bind_text(page.audio_diagnostic_button, '启动最多 120 秒本应用状态诊断；再次点击标记异常，不录音', property='toolTip')
@@ -1553,10 +1560,10 @@ class StudioWorkspaceBuilder:
                                                     page._jump_current_subtitle_boundary, shortcut='jump_cue_boundary')
         page.cue_boundary_button.setParent(page)
         page.cue_boundary_button.hide()
-        page.secondary_group_button = QToolButton()
-        page.secondary_group_button.setText(tr('次要角色'))
+        # 2026-11-14 (user, toolbar draft A): a drawn icon that shows the group's state, and its size.
+        from .toolbar_audio_buttons import SecondaryRolesButton
+        page.secondary_group_button = SecondaryRolesButton(page)
         page.secondary_group_button.setAccessibleName(tr('次要角色：展开、收起或隐藏'))
-        page.secondary_group_button.setPopupMode(QToolButton.InstantPopup)
         secondary_menu = create_studio_menu(page.secondary_group_button)
         def update_secondary_menu():
             secondary_menu.clear()
@@ -1584,6 +1591,7 @@ class StudioWorkspaceBuilder:
                 action.toggled.connect(lambda shown,speaker=speaker:
                     page._subtitle_visibility_changed('speaker:'+speaker,shown))
         secondary_menu.aboutToShow.connect(update_secondary_menu)
+        secondary_menu.aboutToHide.connect(lambda: QTimer.singleShot(0, page.secondary_group_button.refresh))
         page.secondary_group_button.setMenu(secondary_menu)
         timeline_toolbar.addWidget(page.secondary_group_button)
         page.snap_toggle = QCheckBox("吸附")
@@ -1823,6 +1831,8 @@ class StudioWorkspaceBuilder:
         page.timeline.video_lock_toggled.connect(page._toggle_video_lock)
         page.timeline.video_track_action_requested.connect(page._video_track_action)
         page.timeline.audio_track_action_requested.connect(page._audio_track_action)
+        from .timeline_track_gain import connect as connect_track_gain
+        connect_track_gain(page)
         yield from _gui_slice.checkpoint()
         from ..timeline.studio_track_delete import delete_track, track_menu
         page.timeline.track_delete_requested.connect(lambda kind,track_id:delete_track(page,kind,track_id))

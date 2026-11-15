@@ -212,6 +212,10 @@ def test_no_first_frame_caption_retires_old_scene_and_explicitly_skips(monkeypat
     gate,scene,events,failures=caption_gate_fixture(monkeypatch,cue_start=None if target=='empty' else 1000 if target=='gap' else 0)
     if target=='hidden_track':
         gate.page.timeline.hidden_speakers={gate.page.project.cues[0].speaker_id}
+        # Visibility belongs to the persisted layer contract; the timeline
+        # set is a projection and no longer owns renderer visibility.
+        gate.page.project.studio_state['subtitle_track_visibility']={
+            'speaker:'+gate.page.project.cues[0].speaker_id:False}
     elif target=='placeholder':gate.page._empty_playback_state=True
     cues_before=list(gate.page.project.cues)
     StudioReadiness._tick(gate)

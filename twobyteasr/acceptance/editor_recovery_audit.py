@@ -43,12 +43,17 @@ def run(window, output):
                 wanted = '恢复到编辑框'
             if wanted:
                 for button in dialog.findChildren(QPushButton):
-                    if button.text() == wanted:
+                    # 2026-11-15: the recovery question is 「两张卡片」; its autosave card has no text.
+                    if button.text() == wanted or (wanted == '恢复自动保存' and button.objectName() == 'recovery_recover'):
                         _capture(dialog, output / f"dialog-{len(result['decisions'])}.png")
                         result['decisions'].append(wanted)
                         button.click()
                         return
     if phase == 'restore':
+        # 2026-11-15: the default now opens the autosave without asking; this audit walks the
+        # question itself, so it asks — in memory only, the profile's settings stay as they are.
+        preferences = dict(page._studio_preferences(), recovery_policy='ask', recovery_policy_chosen=True)
+        page._studio_preferences = lambda: dict(preferences)
         timer.timeout.connect(dialogs)
         timer.start()
     try:

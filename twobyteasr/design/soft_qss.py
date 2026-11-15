@@ -337,13 +337,6 @@ QFrame#softSegmented[collapsed="true"], {card} QFrame#softSegmented[collapsed="t
 {panel} QComboBox[softSize="lg"] {{ min-height: 38px; max-height: 38px; border-radius: 10px; }}
 
 /* ---- 动效 panel (A): stage track, chips, direction squares, tiles ---- */
-{panel} QWidget#motionStageBar {{ background: {k.fill}; border-radius: 12px; }}
-{panel} QPushButton#motionStage {{
-    background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
-    min-height: 38px; max-height: 38px; padding: 0;
-}}
-{panel} QPushButton#motionStage:hover {{ background: {k.fill_hover}; }}
-{panel} QPushButton#motionStage:checked {{ background: {k.raised}; color: {t.accent_text}; }}
 {panel} QPushButton#motionChip {{
     background: {k.fill}; color: {t.text_secondary}; border: 0; border-radius: 13px;
     min-height: 24px; max-height: 24px; padding: 0 9px; font-size: 11px; font-weight: 600;
@@ -352,17 +345,22 @@ QFrame#softSegmented[collapsed="true"], {card} QFrame#softSegmented[collapsed="t
 {panel} QPushButton#motionChip:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
 {panel} QPushButton#motionDirection {{
     background: {k.card_fill}; color: {t.text_secondary}; border: 0; border-radius: 8px;
-    min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; padding: 0; font-weight: 700;
+    min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; padding: 0; font-weight: 700;
 }}
 {panel} QPushButton#motionDirection:hover {{ background: {k.card_fill_hover}; color: {t.text}; }}
 {panel} QPushButton#motionDirection:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
+/* 2026-11-15 (pick A): the stage timeline paints itself; three larger tiles per row. */
+{_sel((panel,), "QPushButton#motionTimelineSegment", "QPushButton#motionTimelineSegment:hover",
+      "QPushButton#motionTimelineSegment:checked", "QPushButton#motionTimelineSegment:pressed")} {{
+    background: transparent; border: 0; padding: 0; min-height: 0; max-height: 16777215;
+}}
 {panel} QPushButton#motionEffectTile {{
-    background: {k.fill}; border: 2px solid transparent; border-radius: 9px; padding: 0;
-    min-height: 64px; max-height: 64px;
+    background: {k.fill}; border: 2px solid transparent; border-radius: 11px; padding: 0;
+    min-height: 70px; max-height: 70px;
 }}
 {panel} QPushButton#motionEffectTile:hover {{ background: {k.fill_hover}; }}
 {panel} QPushButton#motionEffectTile:checked {{ background: {k.chip}; border-color: {t.accent}; }}
-{panel} QLabel#motionTileLabel {{ background: transparent; color: {t.text}; font-size: 11px; font-weight: 600; }}
+{panel} QLabel#motionTileLabel {{ background: transparent; color: {t.text}; font-size: 12px; font-weight: 700; }}
 {panel} QLabel#motionTileLabel[selected="true"] {{ color: {t.accent_text}; font-weight: 700; }}
 {panel} QLabel#motionTileCheck {{ background: {t.accent}; border-radius: 8px; }}
 {panel} QLabel#motionBadge {{

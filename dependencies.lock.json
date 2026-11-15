@@ -353,55 +353,6 @@
       },
       "download_bytes": 4703055333
     },
-    "ja_ctc_aligner": {
-      "repository": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
-      "revision": "cf031e020336460d15a417eba710bbc5bb43be9a",
-      "modelscope_repository": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
-      "modelscope_revision": "18a6b5970be543c1171a30e5f2889c63878acd2e",
-      "path": "models/wav2vec2-large-xlsr-53-japanese",
-      "required_files": [
-        "config.json",
-        "preprocessor_config.json",
-        "special_tokens_map.json",
-        "vocab.json",
-        "pytorch_model.bin"
-      ],
-      "sha256": {
-        "config.json": "552b8c8c85c54a761899eb94b5eb3d58166e769df8e26cf515ab9da695772cd7",
-        "preprocessor_config.json": "c403ce09975b90dff0dd8302c42d422e9de1f166cd7772df23490069893cb0cf",
-        "special_tokens_map.json": "bb7068de1150661a10b55f9e4b12a0e77af8bf91f5e45e1b58afaf1d0e17f675",
-        "vocab.json": "9ffedf9c2da2617b01c4227a4db875d2dfd4e8c31fb9a13182d03c3280679ffe",
-        "pytorch_model.bin": "4f6821dcd79770fcd4c11487c4ee5c040b3a7e1863425224014ba5ea8fbc1b67"
-      },
-      "license": "Apache-2.0",
-      "integrity_provenance": {
-        "metadata_url": "https://huggingface.co/api/models/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a?recursive=true",
-        "files": {
-          "config.json": {
-            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
-            "upstream_oid": "18458ce9324d1e48c3957285a718584b5def32a8"
-          },
-          "preprocessor_config.json": {
-            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
-            "upstream_oid": "0886a48276922a77013d8aa4681192138ae90d90"
-          },
-          "special_tokens_map.json": {
-            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
-            "upstream_oid": "25bc39604f72700b3b8e10bd69bb2f227157edd1"
-          },
-          "vocab.json": {
-            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
-            "upstream_oid": "6987c9c0e3dca61b6158ceffdb70288a9d1393e6"
-          },
-          "pytorch_model.bin": {
-            "method": "upstream LFS SHA256",
-            "upstream_oid": "4f6821dcd79770fcd4c11487c4ee5c040b3a7e1863425224014ba5ea8fbc1b67"
-          }
-        }
-      },
-      "download_bytes": 1271563035,
-      "purpose": "Japanese line-start refinement (CTC forced alignment, optional; 2026-10-13)"
-    },
     "qwen_aligner": {
       "repository": "Qwen/Qwen3-ForcedAligner-0.6B",
       "revision": "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
@@ -1530,6 +1481,157 @@
       "download_bytes": 138656473,
       "purpose": "Montreal Forced Aligner Japanese models (downloaded with mfa_aligner; 2026-10-19)",
       "resource_only": true
+    },
+    "qwen_ultra_aligner": {
+      "repository": "17slever17/Qwen3-ForcedAligner-Ultra",
+      "revision": "765dc1d714e4c80196782a5df5bfbcb3e1416736",
+      "path": "models/Qwen3-ForcedAligner-Ultra",
+      "required_files": [
+        "added_tokens.json",
+        "chat_template.jinja",
+        "chat_template.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {
+        "added_tokens.json": "85afd03b7a7a9b0a97edf2b0e5dd9b0bf8770e05b0323268c0f1a3e5190cfa6f",
+        "chat_template.jinja": "a103579066642f0e035873f12de6046a1bbc909a7a2833732fda9fd6bc7c528d",
+        "chat_template.json": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+        "config.json": "a2521a05badbd1ab064dbc1645579b99e3ed5e31a317650753ded6a0bd4d1298",
+        "generation_config.json": "832bbd42924612ea75208679eb8306d28f47c5f05d742f4dcd77ae2654bf89e0",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "model.safetensors": "e6fcf5be2c11b265f7217ba6102917a7fe64438506357be6999f6ad5a707cb5f",
+        "preprocessor_config.json": "0443a40d411d3caad769e7b59971fa6eae75926ed4b7e337e60da909eb38c1f7",
+        "special_tokens_map.json": "7b376c510ccf9d88bb9bbee41dfc5052122e16e0dec1124a8d8983c59259a9f3",
+        "tokenizer.json": "90934377d8ceace196d3c8f872df96c8b48c6206f019b65e4ac631c04ee18f59",
+        "tokenizer_config.json": "bee4786e25db33d3e8acb4c7a37c4ccf8d5a3d843b9cafb75a91d4ba774ad38f",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/17slever17/Qwen3-ForcedAligner-Ultra/revision/765dc1d714e4c80196782a5df5bfbcb3e1416736?blobs=true",
+        "files": {
+          "added_tokens.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "2260146c63edadcbb1866d047165094422bc88d8"
+          },
+          "chat_template.jinja": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "5a49c7491040017bb9018327dc1fcc2d8a993798"
+          },
+          "chat_template.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "config.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "94089eb4621d355224f86a577daecbef18fa5689"
+          },
+          "generation_config.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "c7eb24bc528bdf201b7d66e6cf8f77a8b22150b2"
+          },
+          "merges.txt": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "e6fcf5be2c11b265f7217ba6102917a7fe64438506357be6999f6ad5a707cb5f"
+          },
+          "preprocessor_config.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "75e4c8b236a4eb03aff21b82e719030f3b0f8721"
+          },
+          "special_tokens_map.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "fca9909b535ff91b68474e5ee7258e1574e60d1e"
+          },
+          "tokenizer.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "90934377d8ceace196d3c8f872df96c8b48c6206f019b65e4ac631c04ee18f59"
+          },
+          "tokenizer_config.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "3e9114067ddc3de2213604e07f34e322a43984cd"
+          },
+          "vocab.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          }
+        }
+      },
+      "download_bytes": 1851446605,
+      "purpose": "Experimental Ultra word/character alignment; Japanese replacement quality not yet accepted",
+      "source_manifests": {
+        "modelscope": {
+          "compatible": false,
+          "reason": "No audited ModelScope copy for the pinned Ultra revision"
+        }
+      }
+    },
+    "qwen_ultra_head": {
+      "repository": "17slever17/Qwen3-ForcedAligner-Ultra",
+      "revision": "765dc1d714e4c80196782a5df5bfbcb3e1416736",
+      "path": "models/Qwen3-ForcedAligner-Ultra-LocalHead",
+      "required_files": [
+        "local_head/config.json",
+        "local_head/model.safetensors",
+        "local_head/normalizer.json",
+        "local_head/provenance.json",
+        "companion/dist/qwen_fa_ultra-0.1.1-py3-none-any.whl"
+      ],
+      "sha256": {
+        "local_head/config.json": "d3bb91b1c29742f4d5e71507d61e52754d8ee237dc3b2e92500e61c4aa0e3f8e",
+        "local_head/model.safetensors": "50a70d6ed969446770fb9dc1063f5f4e6e4c86eac05fd3efb637492407d0e2ac",
+        "local_head/normalizer.json": "24f6d4fa08dd78e12f7d15a75b0d8b0cd3172bbdfdaa7ae055ca2c64db660ae7",
+        "local_head/provenance.json": "8a00f4bd21da0ae37d97c859e13ac98c9a301d3669323db1293dd47ca7c071b0",
+        "companion/dist/qwen_fa_ultra-0.1.1-py3-none-any.whl": "ec483201d79bd634c3abcd78c011ab32c3b73e795470668bc009f6d2edc6baa1"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/17slever17/Qwen3-ForcedAligner-Ultra/revision/765dc1d714e4c80196782a5df5bfbcb3e1416736?blobs=true",
+        "files": {
+          "local_head/config.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "db97ab958c56f32ffd11083879a40afcb806ee7a"
+          },
+          "local_head/model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "50a70d6ed969446770fb9dc1063f5f4e6e4c86eac05fd3efb637492407d0e2ac"
+          },
+          "local_head/normalizer.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "200fd37180f0a1faff810c280d69edefce1b966f"
+          },
+          "local_head/provenance.json": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "f1efd935ca444b74793738daa80fa18c499bcebf"
+          },
+          "companion/dist/qwen_fa_ultra-0.1.1-py3-none-any.whl": {
+            "method": "computed SHA256 after verifying upstream Git blob SHA1",
+            "upstream_oid": "3b1bbe191a476ecb2a2ab75ac84b80996c34bac6"
+          }
+        }
+      },
+      "download_bytes": 1647772,
+      "purpose": "Optional Local Head with pinned companion 0.1.1; requires Ultra base; not default",
+      "source_manifests": {
+        "modelscope": {
+          "compatible": false,
+          "reason": "No audited ModelScope copy for the pinned Ultra revision"
+        }
+      },
+      "required_models": [
+        "qwen_ultra_aligner"
+      ]
     }
   },
   "environments": {

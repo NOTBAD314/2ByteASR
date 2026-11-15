@@ -155,7 +155,7 @@ def role_packages(contract, role, models):
     packages = dict(env_contract['packages']) if models else {}
     packages['requests'] = '2.33.0'
     if models & {'sensevoice', 'paraformer', 'funasr_nano'}: packages['funasr'] = '1.4.1'
-    if models & {'qwen_asr', 'qwen_aligner'}: packages['qwen-asr'] = '0.0.6'
+    if models & {'qwen_asr', 'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head'}: packages['qwen-asr'] = '0.0.6'
     if models & {'speaker_embedding', 'moss'}: packages['speechbrain'] = '1.0.3'
     if models & {'firered_vad', 'firered_aed'}: packages['sentencepiece'] = '0.2.2'
     if role == 'moss':

@@ -23,7 +23,7 @@ def validate(identity, managed):
         if installed!=version: problems.append(name+': '+installed+' != '+version)
     imports=['requests']
     if identity['torch']: imports+=['numpy','torch','torchaudio','transformers','soundfile']
-    if set(identity['models']) & {'qwen_asr','qwen_aligner'}:
+    if set(identity['models']) & {'qwen_asr','qwen_aligner','qwen_ultra_aligner','qwen_ultra_head'}:
         sys.path.append(str(Path(__file__).resolve().parents[1]))
         from twobyteasr.recognition.qwen_runtime_compat import prepare_qwen_import
         prepare_qwen_import()

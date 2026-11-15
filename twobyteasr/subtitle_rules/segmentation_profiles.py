@@ -70,6 +70,7 @@ for _code, (_name,_script,_guidance) in _SPECIFIC.items():
     # display graphemes including spaces, never a fixed number of words.
     PROFILES[_code] = LanguageProfile(_code,_name,_script,'space','graphemes_with_spaces',60,72,84,7.,2,42,17,20,25,_guidance)
 PROFILES['ru']=replace(PROFILES['ru'],preferred=56,soft_max=68,hard_max=78,line_max=39)
+PROFILES['en']=replace(PROFILES['en'],preferred=40,soft_max=40,hard_max=40,line_max=40)
 PROFILES['ru']=replace(PROFILES['ru'],line_preferred=30)
 PROFILES['ko']=replace(PROFILES['ko'],line_preferred=12,minimum_units=4)
 for _code,_name,_script,_strategy,_guidance in (
@@ -166,6 +167,9 @@ def graphemes(text):
 
 def measure(text, language):
     profile=profile_for(language)
+    if profile.code == 'en':
+        from .english_refine_constraints import visible_text
+        return len(graphemes(visible_text(text)))
     if profile.unit == 'content_exact_characters':
         from .text_rules import content_exact
         return len(content_exact(text))
@@ -264,8 +268,8 @@ def project_language_tag(project):
     if 'language' not in metadata:
         from .language_rules import detect_language
         detected, _ = detect_language([cue.text for cue in getattr(project, 'cues', ())])
-        if detected == 'zh':
-            return 'zh'
+        if detected:
+            return language_tag(detected)
     value=metadata.get('language') or {}
     if isinstance(value,dict):
         evidence=value.get('evidence') or {}

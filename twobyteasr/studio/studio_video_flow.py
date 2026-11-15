@@ -1655,7 +1655,10 @@ class StudioVideoFlowMixin:
                 if indexed and indexed != resolved:
                     layer['source_path'] = indexed
             if layer['audio_track_id'] in overrides:
-                layer['gain_db'] = overrides[layer['audio_track_id']]
+                from ..timeline.studio_track_gain import track_gain_db
+                layer['gain_db'] += overrides[layer['audio_track_id']] - track_gain_db(self.project, layer['audio_track_id'])
+            layer['gain_db'] += float(getattr(self, '_project_gain_preview', None)
+                if getattr(self, '_project_gain_preview', None) is not None else layer.get('project_gain_db', 0.))
         return layers
 
     def _refresh_audio_mix_only(self):

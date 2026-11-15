@@ -306,8 +306,9 @@ def start(window, output):
             QTimer.singleShot(0, invoke)
 
         def watch_modals(self):
+            from .question_boxes import question_boxes
             modal = QApplication.activeModalWidget()
-            if not isinstance(modal, QMessageBox):
+            if not isinstance(modal, question_boxes()):
                 return
             if self.finished and Path(str(self.page.project_path)).resolve() == project_path:
                 button = modal.button(QMessageBox.Discard)

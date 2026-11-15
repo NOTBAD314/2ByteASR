@@ -1177,7 +1177,7 @@ class StudioReviewMixin:
             self._refresh_review_summary_strip()
 
     # click-to-fix marks on card 1 (2026-10-15) ------------------------------
-    def _review_suggestions_for(self, cue: StudioCue, candidates) -> tuple:
+    def _review_suggestions_for(self, cue: StudioCue, candidates, *, complete=False) -> tuple:
         """Marks for the current caption: other recognizers' local differences,
         confirmed glossary aliases and (Chinese projects) 他/她/它."""
         from ..subtitle_rules.language_rules import EN, JA, project_language
@@ -1190,7 +1190,8 @@ class StudioReviewMixin:
                   if not candidate.context_only]
         try:
             rows = tuple(review_suggestions(cue.text, others, resolver=self._review_term_resolver(),
-                                             pronouns=language in ("", "zh")))
+                                             pronouns=language in ("", "zh"),
+                                             **({'max_marks':None} if complete else {})))
             from ..recognition.asr_source_evidence import annotate_suggestions
             rows = annotate_suggestions(self.project,cue,rows)
             from ..subtitle_rules.current_issues import unhandled_suggestion
@@ -1279,7 +1280,7 @@ class StudioReviewMixin:
 
     def _flip_review_pronouns(self) -> bool:
         if getattr(self, '_caption_draft', None) is not None:
-            return self._flip_editor_pronoun()
+            return self._show_editor_pronouns()
         target = self._resolve_caption_edit_target()
         if target is None:
             return False
@@ -1288,7 +1289,7 @@ class StudioReviewMixin:
         positions = pronoun_positions(text)
         if len(positions) != 1:
             self._open_caption_editor()
-            self.caption_editor_hint.setText('请选中一个人称，或将光标放到该人称旁，再按 Shift+P')
+            self.caption_editor_hint.setText('请选中一个人称，Shift+F 循环选择 · Shift+E 采纳 · Shift+S 返回正文')
             return False
         at = positions[0]
         value = text[:at] + toggle_pronoun(text[at]) + text[at+1:]

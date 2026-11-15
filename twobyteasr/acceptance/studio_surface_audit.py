@@ -116,8 +116,9 @@ def start(window, output):
     def shot(name, widget):
         widget.grab().save(str(output/(name+'.png'))); result['screenshots'].append(name)
     def answer(button):
+        from .question_boxes import question_boxes
         box=app.activeModalWidget()
-        if isinstance(box,QMessageBox):
+        if isinstance(box,question_boxes()):
             target=box.button(button)
             if target is not None:
                 result.setdefault('exit_answers',[]).append(int(button.value))

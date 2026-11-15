@@ -46,14 +46,27 @@ def _tokenize(aligner, text: str, language: str):
     return list(aligner.aligner_processor.tokenize_space_lang(text)), "space_lang"
 
 
-def _align_batch(aligner, audios, unit_lists, torch):
+def _align_batch(aligner, audios, unit_lists, torch, *, refiner=None, sample_ids=None, pass_id='word'):
     """``Qwen3ForcedAligner.align`` with caller-supplied units; returns raw and repaired slot times."""
     from twobyteasr.forced_alignment import slot_text
     inputs = aligner.processor(text=[slot_text(units) for units in unit_lists], audio=audios,
                                return_tensors="pt", padding=True)
     inputs = inputs.to(aligner.model.device).to(aligner.model.dtype)
     with torch.inference_mode():
-        logits = aligner.model.thinker(**inputs).logits
+        captured = []
+        handle = None
+        if refiner is not None:
+            def capture(_module, args):
+                captured.append(refiner.capture(args[0], inputs, unit_lists, aligner.timestamp_token_id))
+            handle = aligner.model.thinker.lm_head.register_forward_pre_hook(capture)
+        try:
+            aligner._twobyte_forward_attempts = getattr(aligner,'_twobyte_forward_attempts',0) + 1
+            logits = aligner.model.thinker(**inputs).logits
+        finally:
+            if handle is not None:
+                handle.remove()
+        if refiner is not None and len(captured) != 1:
+            raise RuntimeError('Local Head expected one forward capture')
         output_ids = logits.argmax(dim=-1)
         results = []
         step = float(aligner.timestamp_segment_time)
@@ -77,7 +90,33 @@ def _align_batch(aligner, audios, unit_lists, torch):
             posterior = {"p_max": [round(float(x), 4) for x in probs.max(dim=-1).values.cpu()],
                          "p_local": [round(float(x), 4) for x in local[:, 0].cpu()],
                          "spread_ms": [round(float(x), 1) for x in spread.cpu()]}
+            positions=mask.nonzero().flatten().detach().cpu().tolist()
+            posterior['slot_positions']=positions
+            posterior['sample_id']=str(sample_ids[row]) if sample_ids is not None else None
+            posterior['pass_id']=pass_id
+            extractor=getattr(aligner.processor,'feature_extractor',None)
+            feature_mask=inputs.get('feature_attention_mask')
+            posterior['input_metadata']=dict(timestamp_positions=positions,
+                input_shapes={k:list(v.shape) for k,v in inputs.items() if hasattr(v,'shape')},
+                attention_mask=inputs['attention_mask'][row].detach().cpu().tolist(),
+                feature_attention_mask=feature_mask[row].detach().cpu().tolist() if feature_mask is not None else None,
+                sampling_rate=getattr(extractor,'sampling_rate',16000),hop_length=getattr(extractor,'hop_length',None),n_fft=getattr(extractor,'n_fft',None),
+                device=str(aligner.model.device),dtype=str(aligner.model.dtype))
+            if refiner is not None:
+                base = [float(x) for x in fixed]
+                try:
+                    fixed, refinement = refiner.refine(audios[row], units, base, captured[0][row],
+                        sample_id=sample_ids[row], pass_id=pass_id)
+                except Exception as exc:
+                    if 'out of memory' in str(exc).lower():
+                        raise
+                    fixed = base
+                    refinement = dict(status='base_fallback', reason=f'{type(exc).__name__}: {exc}',
+                        sample_id=str(sample_ids[row]), pass_id=pass_id, base_fixed_ms=base,
+                        refined_ms=base, candidate_ms=None, slots=[], extra_base_forwards=0)
+                posterior['refinement'] = refinement
             results.append(([float(x) for x in raw], [float(x) for x in fixed], posterior))
+        captured.clear()
     return results
 
 
@@ -155,21 +194,37 @@ def _read_request(manifest_path, np):
     jobs = manifest.get('jobs') or []
     if not jobs:
         raise RuntimeError('Aligner manifest is empty')
+    from twobyteasr.recognition.alignment_items import verify_items
+    verify_items(jobs,audio)
     return manifest, pcm, jobs, policy
 
 
-def _infer_request(aligner, manifest, pcm, jobs, policy, output_path, torch, np, fa, device, dtype, load_ms):
+def _infer_request(aligner, manifest, pcm, jobs, policy, output_path, torch, np, fa, device, dtype, load_ms, refiner=None):
+    identity = policy['alignment_identity']
+    forward_start = getattr(aligner,'_twobyte_forward_attempts',0)
+    feature_start=(getattr(aligner,'_audio_feature_hits',0),getattr(aligner,'_audio_feature_misses',0))
+    compat_start=(getattr(getattr(aligner,'_twobyte_compat_model',None),'_twobyte_forward_attempts',0),getattr(aligner,'_twobyte_compat_loads',0))
+    from twobyteasr.recognition.audio_feature_reuse import reuse_audio_features
+    from contextlib import nullcontext
     sample_rate, batch_size = int(policy['sample_rate']), int(policy['batch_size'])
     passes = list(policy.get('passes') or ['word'])
     audio_spec = manifest['audio']
+    from twobyteasr.recognition.alignment_measurements import model_audio,decoded_units,sentence_measurement,accept_retry,display_segments,matching_anchors,ownership_conflict,retry_window
+    enhanced=identity['audio'].get('input_policy') not in {None,'preserve'}
+    prepared_inputs={}
     prepared = []
     results = {}
     for job in jobs:
         text = str(job.get("text") or "")
         language = str(job.get("language") or "Japanese")
-        start = max(0, int(job["window_start_ms"]) * sample_rate // 1000)
-        end = min(pcm.size,int(audio_spec.get('valid_samples',pcm.size)), int(job["window_end_ms"]) * sample_rate // 1000)
-        row = {"id": job["id"], "text": text, "language": language,
+        from twobyteasr.recognition.alignment_items import sample_bounds
+        start,end=sample_bounds(job,min(pcm.size,int(audio_spec.get('valid_samples',pcm.size))))
+        actual_window_hash = hashlib.sha256(memoryview(pcm[start:end]).cast('B')).hexdigest()
+        expected_hash = (audio_spec.get('window_hashes') or {}).get(str(job['id']))
+        expected_hash = expected_hash or (job.get('_checkpoint') or {}).get('identity', {}).get('audio_sha256')
+        if expected_hash and expected_hash != actual_window_hash:
+            raise RuntimeError('Aligner PCM window changed after manifest preparation')
+        row = {"alignment_item":job.get("alignment_item"),"audio_window_sha256":actual_window_hash, "id": job["id"], "text": text, "language": language,
                "window_start_ms": int(job["window_start_ms"]), "window_end_ms": int(job["window_end_ms"])}
         if end - start > fa.ALIGNER_MAX_SECONDS * sample_rate:
             row["status"] = "window_too_long"
@@ -189,34 +244,173 @@ def _infer_request(aligner, manifest, pcm, jobs, policy, output_path, torch, np,
                 row["mapping_error"] = str(exc)
             row["tokenizer_words"] = words
             row["status"] = "aligned"
-            prepared.append((row, np.ascontiguousarray(pcm[start:end], dtype=np.float32), word_units,
+            original=np.ascontiguousarray(pcm[start:end],dtype=np.float32)
+            encoded,shift,details=model_audio(original,job.get('artificial_padding_samples',(0,0)),enabled=enhanced)
+            details.update(absolute_original_pcm_samples=[start,end],absolute_feature_origin_samples=start+details['feature_origin_original_samples'])
+            prepared_inputs[str(row['id'])]=(encoded,details,start,end,job)
+            prepared.append((row, original, word_units,
                              fa.char_units(text, word_units) if "char" in passes else None))
         results[str(job["id"])] = row
     prepared.sort(key=lambda item: item[1].size)
     started = time.perf_counter()
     done = 0
+    oom_retries = 0
+    def infer_group(group):
+        nonlocal oom_retries
+        audios = [prepared_inputs[str(item[0]['id'])][0] for item in group]
+        ids = [item[0]['id'] for item in group]
+        try:
+            with (reuse_audio_features(aligner,torch) if refiner is None else nullcontext()):
+                _emit('pass_started', pass_id='word', jobs=len(group))
+                word_out = _align_batch(aligner, audios, [item[2] for item in group], torch,
+                                       refiner=refiner, sample_ids=ids, pass_id='word')
+                if 'char' in passes:
+                    _emit('pass_started', pass_id='char', jobs=len(group))
+                    char_out = _align_batch(aligner, audios, [item[3] for item in group], torch,
+                                           refiner=refiner, sample_ids=ids, pass_id='char')
+                else:
+                    char_out = [None] * len(group)
+            return [(group, word_out, char_out)]
+        except Exception as exc:
+            if not any(marker in str(exc).lower() for marker in ('out of memory', 'alloc_failed')) or len(group) == 1:
+                raise
+            word_out = char_out = None
+            oom_retries += 1
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            middle = len(group) // 2
+            _emit('oom_batch_reduced', previous=len(group), next=middle, retry=oom_retries)
+        # Leave the exception scope, releasing its traceback, before retry.
+        return infer_group(group[:middle]) + infer_group(group[middle:])
     for offset in range(0, len(prepared), batch_size):
         batch = prepared[offset:offset + batch_size]
         long_window = max(item[1].size for item in batch) > 60 * sample_rate
         groups = [[item] for item in batch] if long_window else [batch]
-        for group in groups:
-            audios = [item[1] for item in group]
-            word_out = _align_batch(aligner, audios, [item[2] for item in group], torch)
-            char_out = (_align_batch(aligner, audios, [item[3] for item in group], torch)
-                        if "char" in passes else [None] * len(group))
+        for group, word_out, char_out in [result for group in groups for result in infer_group(group)]:
+            retry_requests=[]
+            if enhanced:
+                for (rr,original,uu,cc),ww,cpair in zip(group,word_out,char_out):
+                    _,dd,aa,bb,jj=prepared_inputs[str(rr['id'])]
+                    wt0=fa.unit_rows(decoded_units(uu,ww,aa/16,len(original),dd,fa))
+                    ct0=fa.unit_rows(decoded_units(cc,cpair,aa/16,len(original),dd,fa)) if cpair is not None else []
+                    pp=sentence_measurement(rr['text'],wt0,ct0,[aa/16+dd['valid_original_samples'][0]/16,aa/16+dd['valid_original_samples'][1]/16])
+                    if not (any(v['value_ms'] is None for v in pp.values()) and any(v['value_ms'] is not None for v in pp.values())):continue
+                    av=jj['alignment_item']['available_context_samples'];lo,hi,window_kind=retry_window(jj,aa,bb,av)
+                    if (lo!=aa or hi!=bb) and hi-lo<=fa.ALIGNER_MAX_SECONDS*16000 and not any(jj.get('artificial_padding_samples',[0,0])):
+                        ra=np.ascontiguousarray(pcm[lo:hi],dtype=np.float32)
+                        re,_,rd=model_audio(ra,enabled=True)
+                        rd.update(absolute_original_pcm_samples=[lo,hi],absolute_feature_origin_samples=lo+rd['feature_origin_original_samples'],retry_window_kind=window_kind)
+                        retry_requests.append((str(rr['id']),re,rd,lo,hi,uu,cc))
+            def run_retry_batch(requests):
+                nonlocal oom_retries
+                if not requests:return {}
+                try:
+                    with reuse_audio_features(aligner,torch):
+                        rw=_align_batch(aligner,[r[1] for r in requests],[r[5] for r in requests],torch,sample_ids=[r[0] for r in requests],pass_id='word')
+                        rc=_align_batch(aligner,[r[1] for r in requests],[r[6] for r in requests],torch,sample_ids=[r[0] for r in requests],pass_id='char') if 'char' in passes else [None]*len(requests)
+                    return {r[0]:(w,c,r[2],r[3],r[4]) for r,w,c in zip(requests,rw,rc)}
+                except Exception as exc:
+                    if not any(x in str(exc).lower() for x in ('out of memory','alloc_failed')) or len(requests)==1:raise
+                    oom_retries+=1
+                gc.collect()
+                if torch.cuda.is_available():torch.cuda.empty_cache()
+                mid=len(requests)//2
+                return dict(run_retry_batch(requests[:mid]),**run_retry_batch(requests[mid:]))
+            retry_cache=run_retry_batch(retry_requests)
             for (row, audio, units, chars), (raw, fixed, posterior), char_pair in zip(group, word_out, char_out):
                 window_ms = round(audio.size * 1000 / sample_rate)
-                word_timed = fa.timed_units(units, raw, fixed, row["window_start_ms"], posterior, window_ms)
-                char_timed = (fa.timed_units(chars, char_pair[0], char_pair[1], row["window_start_ms"], char_pair[2],
-                                             window_ms) if char_pair is not None else None)
+                encoded,details,input_start,input_end,job=prepared_inputs[str(row['id'])]
+                row['input_processing']=dict(details,word_input=posterior.get('input_metadata'),char_input=char_pair[2].get('input_metadata') if char_pair else None,
+                    raw_word_model_ms=list(raw),fixed_word_model_ms=list(fixed),raw_char_model_ms=list(char_pair[0]) if char_pair else None,fixed_char_model_ms=list(char_pair[1]) if char_pair else None)
+                word_timed=decoded_units(units,(raw,fixed,posterior),input_start/16,len(audio),details,fa)
+                char_timed=decoded_units(chars,char_pair,input_start/16,len(audio),details,fa) if char_pair is not None else None
                 segments, stats = fa.reliable_segments(word_timed, char_timed)
                 row["word_units"] = fa.unit_rows(word_timed)
                 row["char_units"] = fa.unit_rows(char_timed) if char_timed is not None else None
                 row["segments"] = fa.unit_rows(fa.cover_display_span(row["text"], segments))
                 row["stats"] = stats
+                valid=[input_start/16+details['valid_original_samples'][0]/16,input_start/16+details['valid_original_samples'][1]/16]
+                primary=sentence_measurement(row['text'],row['word_units'],row['char_units'],valid)
+                accepted=primary
+                retry_record=None
+                if str(row['id']) in retry_cache:
+                    rw,rc,retry_details,lo,hi=retry_cache[str(row['id'])]
+                    retry_words=fa.unit_rows(decoded_units(units,rw,lo/16,hi-lo,retry_details,fa))
+                    retry_chars=fa.unit_rows(decoded_units(chars,rc,lo/16,hi-lo,retry_details,fa)) if chars is not None else []
+                    retried=sentence_measurement(row['text'],retry_words,retry_chars,[lo/16,hi/16])
+                    anchors=matching_anchors(row['word_units'],retry_words)
+                    accepted,used=accept_retry(primary,retried,source_range=[lo/16,hi/16],anchors=anchors)
+                    retry_record=dict(source='same_material_same_parent_same_text',absolute_pcm_samples=[lo,hi],
+                        input_processing=retry_details,word_units=retry_words,char_units=retry_chars,measurement=retried,
+                        adopted_sides=used,anchor_policy='opposite endpoint or two original-word spans within one80msgrid',internal_anchors=anchors,
+                        model=identity['model'],model_revision=identity['model_revision'],head=False)
+                row['measurement']=dict(primary=primary,accepted=accepted,retry=retry_record,
+                    state='complete' if all(p['value_ms'] is not None for p in accepted.values()) else 'partial' if any(p['value_ms'] is not None for p in accepted.values()) else 'unmeasured',
+                    old_model_fallback=False)
+                row['segments'],row['display_fallback']=display_segments(row['segments'],accepted,valid_range=valid)
+                row['raw_candidate_segments']=fa.unit_rows(fa.cover_display_span(row['text'],segments))
+                row['actual_measurement_range_ms']=[min(valid[0],retry_record['absolute_pcm_samples'][0]/16) if retry_record else valid[0],max(valid[1],retry_record['absolute_pcm_samples'][1]/16) if retry_record else valid[1]]
+                if ownership_conflict(accepted,job.get('parent_pcm_range_ms')):
+                    import copy
+                    ultra_attempt=copy.deepcopy({k:row[k] for k in ['measurement','word_units','char_units','segments','input_processing','stats']})
+                    row['measurement']['ownership_rejection']='accepted utterance lies outside the independent ASR parent; no endpoint clamp'
+                    row['measurement']['accepted']={side:dict(value_ms=None,reason='outside_parent_ownership') for side in ['start','end']}
+                    row['measurement']['state']='unmeasured'
+                    row['status']='unaligned';row['segments']=[];row['failure_reason']='outside_parent_ownership'
+                    ultra_attempt['pre_ownership_measurement']=ultra_attempt['measurement']
+                    ultra_attempt['measurement']=copy.deepcopy(row['measurement'])
+                    row['pure_configured_attempt']=ultra_attempt
+                    compat_dir=getattr(aligner,'_twobyte_compat_dir',None)
+                    if compat_dir:
+                        try:
+                            from twobyteasr.model_integrity import verify_model_files
+                            compat=getattr(aligner,'_twobyte_compat_model',None)
+                            if compat is None:
+                                verify_model_files('qwen_aligner',Path(compat_dir))
+                                _emit('compatibility_loading',model='Qwen/Qwen3-ForcedAligner-0.6B',reason='parent_ownership_conflict')
+                                compat,_loader=load_aligner(Path(compat_dir),device,dtype,torch)
+                                aligner._twobyte_compat_model=compat
+                                aligner._twobyte_compat_loads=getattr(aligner,'_twobyte_compat_loads',0)+1
+                            fallback_audio,_,fallback_details=model_audio(audio,job.get('artificial_padding_samples',(0,0)),enabled=False)
+                            with reuse_audio_features(compat,torch):
+                                fw=_align_batch(compat,[fallback_audio],[units],torch)[0]
+                                fc=_align_batch(compat,[fallback_audio],[chars],torch)[0] if chars is not None else None
+                            fwrows=fa.unit_rows(decoded_units(units,fw,input_start/16,len(audio),fallback_details,fa))
+                            fcrows=fa.unit_rows(decoded_units(chars,fc,input_start/16,len(audio),fallback_details,fa)) if chars is not None else []
+                            fm=sentence_measurement(row['text'],fwrows,fcrows,valid)
+                            if ownership_conflict(fm,job.get('parent_pcm_range_ms')):raise RuntimeError('official compatibility also conflicts with parent')
+                            # Complete independent item, never masquerading as a pure Ultra measurement.
+                            ft=decoded_units(units,fw,input_start/16,len(audio),fallback_details,fa)
+                            fct=decoded_units(chars,fc,input_start/16,len(audio),fallback_details,fa) if chars is not None else None
+                            fs,st=fa.reliable_segments(ft,fct)
+                            row['word_units']=fwrows;row['char_units']=fcrows;row['stats']=st
+                            row['measurement']=dict(primary=fm,accepted=fm,retry=None,state='complete' if all(p['value_ms'] is not None for p in fm.values()) else 'partial',old_model_fallback=True)
+                            row['segments'],row['display_fallback']=display_segments(fa.unit_rows(fa.cover_display_span(row['text'],fs)),fm,valid_range=valid)
+                            spec=identity['compatibility']
+                            effective=dict(identity,backend='qwen_official_compat',model_key='qwen_aligner',model=spec['repository'],model_revision=spec['revision'],files=spec['files'],local_head=None,compatibility=None,
+                                audio=dict(identity['audio'],input_policy='preserve',source_context_retry_ms=0))
+                            row['effective_model_identity']=dict(model=spec['repository'],model_revision=spec['revision'],alignment_identity=effective)
+                            row['compatibility_fallback']=dict(reason='parent_ownership_conflict',verified_files=True,model=spec['repository'],revision=spec['revision'],input_processing=fallback_details,head=False)
+                            row['actual_measurement_range_ms']=valid
+                            row['status']='aligned';row.pop('failure_reason',None)
+                        except Exception as exc:
+                            if 'out of memory' in str(exc).lower():
+                                if hasattr(aligner,'_twobyte_compat_model'):del aligner._twobyte_compat_model
+                                if torch.cuda.is_available():torch.cuda.empty_cache()
+                            row['compatibility_fallback_failed']=str(exc)
+                # Measurement and final display are separate, including rejected or compatibility cases.
+                if not any(piece['end_ms'] > piece['start_ms'] and
+                           (piece['start_basis'] == 'model' or piece['end_basis'] == 'model') for piece in row["segments"]):
+                    row['status'] = 'unaligned'
+                    row.setdefault('failure_reason','no_usable_measured_span')
+                    row['segments'] = []
+                row['refinement'] = {name: pair[2].get('refinement') for name, pair in
+                    (('word', (raw, fixed, posterior)), ('char', char_pair)) if pair is not None}
         from twobyteasr.recognition.alignment_checkpoints import save_worker_checkpoint
-        metadata = dict(protocol=PROTOCOL, policy=policy, model=fa.ALIGNER_REPO,
-            model_revision=fa.ALIGNER_REVISION, code=fa.ALIGNER_CODE, unit_policy=fa.UNIT_POLICY_VERSION,
+        metadata = dict(protocol=PROTOCOL, policy=policy, model=identity["model"],
+            model_revision=identity["model_revision"], code=identity["code"], unit_policy=identity["unit_policy"],
+            alignment_identity=identity, execution_identity=dict(device=device, dtype=str(dtype), torch_version=torch.__version__),
             dtype=str(dtype), torch_version=torch.__version__, device=device)
         by_job = {str(job['id']): job for job in jobs}
         for row, *_ in batch:
@@ -226,12 +420,27 @@ def _infer_request(aligner, manifest, pcm, jobs, policy, output_path, torch, np,
               range_start_ms=min(row['window_start_ms'] for row,*_ in batch),
               range_end_ms=max(row['window_end_ms'] for row,*_ in batch))
     inference_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        import psutil
+        memory = psutil.Process().memory_info()
+        peak_ram_mb = getattr(memory, 'peak_wset', memory.rss) / 1024**2
+    except Exception:
+        peak_ram_mb = None
+    peak_vram_mb = torch.cuda.max_memory_allocated() / 1024**2 if device.startswith('cuda') else None
     _atomic_write(Path(output_path), {
         "protocol": PROTOCOL, "policy": policy, "results": [results[str(job["id"])] for job in jobs],
         "audio_sha256": audio_spec.get("sha256"), "python": sys.executable, "pid": os.getpid(),
         "torch_version": torch.__version__, "dtype": str(dtype), "device": device,
-        "backend": "torch-cuda" if device.startswith("cuda") else "torch-cpu", "model": fa.ALIGNER_REPO,
-        "model_revision": fa.ALIGNER_REVISION, "code": fa.ALIGNER_CODE, "unit_policy": fa.UNIT_POLICY_VERSION,
+        "backend": "torch-cuda" if device.startswith("cuda") else "torch-cpu", "model": identity["model"],
+        "model_revision": identity["model_revision"], "code": identity["code"], "unit_policy": identity["unit_policy"],
+        "alignment_identity": identity, "execution_identity": dict(device=device, dtype=str(dtype), torch_version=torch.__version__),
+         "peak_ram_mb": peak_ram_mb, "peak_vram_mb": peak_vram_mb,
+        "base_forward_attempts": getattr(aligner, "_twobyte_forward_attempts", 0)-forward_start,
+        "compatibility_model_loads":getattr(aligner,"_twobyte_compat_loads",0)-compat_start[1],
+        "compatibility_rows":sum(bool(r.get("compatibility_fallback")) for r in results.values()),
+        "compatibility_forward_attempts":getattr(getattr(aligner,"_twobyte_compat_model",None),"_twobyte_forward_attempts",0)-compat_start[0],
+        "audio_feature_reuse":dict(hits=getattr(aligner,"_audio_feature_hits",0)-feature_start[0],misses=getattr(aligner,"_audio_feature_misses",0)-feature_start[1],scope="exact tensors+all kwargs, one word/char pair, same eval model only"),
+        "oom_retries": oom_retries, "timestamp_grid_ms": float(aligner.timestamp_segment_time),
         "load_ms": round(load_ms, 3), "inference_ms": round(inference_ms, 3)})
     _emit("completed", aligned=len(prepared), jobs=len(jobs), inference_ms=round(inference_ms, 3), device=device)
 
@@ -245,6 +454,8 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-dir")
+    parser.add_argument("--head-dir")
+    parser.add_argument("--compat-dir")
     parser.add_argument("--tag-only", action="store_true")
     parser.add_argument("--resident", action="store_true")
     args = parser.parse_args()
@@ -278,16 +489,39 @@ def main() -> None:
     jobs = manifest.get("jobs") or []
     if not jobs:
         raise RuntimeError("Aligner manifest is empty")
-    verify_model_files("qwen_aligner", Path(args.model_dir), root=root)
+    from twobyteasr.recognition.alignment_items import verify_items
+    verify_items(jobs,audio_spec)
+    from twobyteasr.recognition.alignment_backend import request_identity
+    identity = policy.get('alignment_identity') or {}
+    backend = identity.get('backend')
+    actual_identity = request_identity(backend, sys.executable, passes=passes, batch_size=batch_size)
+    if identity != actual_identity:
+        raise RuntimeError('Worker alignment identity differs from requested configuration/runtime')
+    if actual_identity['execution']['packages'].get('qwen-asr') != '0.0.6':
+        raise RuntimeError('The slot implementation requires qwen-asr==0.0.6')
+    _emit('verifying', model=actual_identity['model'], model_revision=actual_identity['model_revision'])
+    if actual_identity['execution']['packages'].get('nagisa') != '0.2.11':
+        raise RuntimeError('Unit mapping requires the pinned nagisa==0.2.11')
+    verify_model_files(actual_identity['model_key'], Path(args.model_dir), root=root)
+    if bool(args.head_dir) != bool(identity['local_head']):
+        raise RuntimeError('Local Head selection does not match requested profile')
     device, dtype = select_device(torch, os.environ.get("TWOBYTEASR_ALIGNER_DEVICE", "auto"))
+    if identity['execution']['resolved_execution']['device'] != device or identity['execution']['resolved_execution']['dtype'] != str(dtype):
+        raise RuntimeError('Actual device or precision changed after the request probe')
     load_started = time.perf_counter()
     _emit("loading", python=sys.executable, model_path=str(Path(args.model_dir).resolve()), pid=os.getpid(),
           jobs=len(jobs), device=device, dtype=str(dtype))
     aligner, weights_loader = load_aligner(Path(args.model_dir), device, dtype, torch)
     load_ms = (time.perf_counter() - load_started) * 1000.0
-    _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
+    refiner = None
+    if args.head_dir:
+        from twobyteasr.recognition.ultra_local_head import LocalHead
+        refiner = LocalHead(Path(args.head_dir), torch=torch)
+    load_ms = (time.perf_counter() - load_started) * 1000.0
+    aligner._twobyte_compat_dir=args.compat_dir
+    _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader, alignment_identity=actual_identity)
     try:
-        _infer_request(aligner, manifest, pcm, jobs, policy, args.output, torch, np, fa, device, dtype, load_ms)
+        _infer_request(aligner, manifest, pcm, jobs, policy, args.output, torch, np, fa, device, dtype, load_ms, refiner)
         pcm._mmap.close()
         if args.resident:
             _emit('request_completed', output=str(args.output), model_load_count=1)
@@ -296,7 +530,9 @@ def main() -> None:
                 if request.get('shutdown'):
                     break
                 manifest, pcm, jobs, policy = _read_request(request['manifest'], np)
-                _infer_request(aligner, manifest, pcm, jobs, policy, request['output'], torch, np, fa, device, dtype, 0.)
+                if policy.get('alignment_identity') != actual_identity:
+                    raise RuntimeError('Resident aligner request attempted to switch loaded identity')
+                _infer_request(aligner, manifest, pcm, jobs, policy, request['output'], torch, np, fa, device, dtype, 0., refiner)
                 pcm._mmap.close()
                 _emit('request_completed', output=str(request['output']), model_load_count=1)
     except Exception as exc:

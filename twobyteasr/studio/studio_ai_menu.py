@@ -61,6 +61,15 @@ def build_ai_menu(page, menu) -> None:
         menu, _icon("fa5s.globe"), tr("翻译所选字幕…"), tr("翻译或更新选中字幕的译文；已有译文会保留"),
         lambda: translate_selected(page))
 
+    # 2026-11-15 (user): after I / O, people look for re-recognizing the stretch here, not only in
+    # the timeline's right-click menu (studio_range_recognition).
+    menu.addSeparator()
+    add_header(menu, tr("入点到出点"))
+    from .studio_range_recognition import open_range_recognition, range_state
+    page.ai_range_reasr_action = add_rich(
+        menu, _icon("fa5s.redo-alt"), tr("只重新识别这一段字幕…"),
+        tr("只对入点到出点这一段重新识别，其他字幕不动，可一步撤销"), lambda: open_range_recognition(page))
+
     # Only in the menu while they mean something (a failed range / a running
     # job). Added and removed, not hidden: a hidden QWidgetAction still paints
     # its row at the menu's top-left corner.
@@ -93,6 +102,13 @@ def build_ai_menu(page, menu) -> None:
             action.setEnabled(bool(current and (button is None or button.isEnabled())))
         page.ai_refine_selection_action.setEnabled(selected)
         page.ai_translate_selected_action.setEnabled(selected)
+        try:
+            problem, _points = range_state(page)
+        except Exception as exc:  # noqa: BLE001 - a menu row must never break the menu
+            problem = str(exc) or "没有打开工程"
+        page.ai_range_reasr_action.setEnabled(not problem)
+        page.ai_range_reasr_action.setToolTip(tr(problem) if problem else
+                                              tr("只对入点到出点这一段重新识别，用新结果替换这一段的字幕"))
         failed = bool(has_project and (project.studio_state.get("ai_sentence_refine") or {}).get("failed_cue_ids"))
         worker = getattr(page, "_refine_worker", None)
         running = bool(worker is not None and worker.isRunning())

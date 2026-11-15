@@ -14,7 +14,7 @@ import time
 import uuid
 import weakref
 
-from PySide6.QtCore import QObject, QTimer, QUrl, QStandardPaths, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, QStandardPaths, Signal, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication
 
@@ -91,6 +91,8 @@ class LinkDownloadController(QObject):
         self.engine = engine or DownloadEngine()
         self.queue = DownloadQueue(storage or get_runtime_paths().user_data_root/"link-downloads/queue.json", self.engine)
         self.dialog = None
+        self._dialog_creating = False
+        self._pending_dialog_page = ''
         self.card = None
         self.popover = None
         self.toast = None
@@ -99,9 +101,11 @@ class LinkDownloadController(QObject):
         self._closed = False
         self._analysis_token = ""
         self._analysis_owner = "dialog"
+        self._analysis_request = None
         self._analysis_cancel = threading.Event()
         self._jobs = []
         self._preparing = set()
+        self._enqueue_requests = {}
         self._event_details = {}
         self._thumbnails = {}
         self._tools_error = ""
@@ -131,17 +135,32 @@ class LinkDownloadController(QObject):
 
     def _ensure_dialog(self):
         if self.dialog is None:
-            from .link_download_dialog import LinkDownloadDialog
-            self.dialog = LinkDownloadDialog(self, self.host)
+            # Own construction before any layout/theme callbacks can reenter.
+            if self._dialog_creating:return None
+            self._dialog_creating = True
+            try:
+                from .link_download_dialog import LinkDownloadDialog
+                self.dialog = LinkDownloadDialog(self, self.host)
+            finally:
+                self._dialog_creating = False
         return self.dialog
 
     def show(self, page_key=""):
+        if self._closed:return
+        if self._dialog_creating:
+            self._pending_dialog_page = page_key or self._pending_dialog_page
+            return
         dialog = self._ensure_dialog()
+        if dialog is None:return
         dialog.refresh_targets()
         dialog.update_tasks(self.queue.snapshots(), self._event_details)
+        page_key=self._pending_dialog_page or page_key
+        self._pending_dialog_page=''
         if page_key:
             dialog.show_page(page_key)
-        dialog.show()
+        if dialog.isMinimized():
+            dialog.setWindowState(dialog.windowState() & ~Qt.WindowMinimized)
+        if not dialog.isVisible():dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
@@ -202,7 +221,10 @@ class LinkDownloadController(QObject):
         thread.start()
 
     def analyze(self, url, proxy="", cookie_file="", owner="dialog"):
+        request=(str(url).strip(),str(proxy),str(cookie_file),owner)
+        if self._closed or request==self._analysis_request:return
         self.cancel_analysis()
+        self._analysis_request=request
         token = self._analysis_token = uuid.uuid4().hex
         self._analysis_owner = owner
         cancel = self._analysis_cancel = threading.Event()
@@ -234,6 +256,7 @@ class LinkDownloadController(QObject):
 
     def cancel_analysis(self):
         self._analysis_token = ""
+        self._analysis_request = None
         self._analysis_cancel.set()
 
     def _analysis_target(self):
@@ -264,6 +287,7 @@ class LinkDownloadController(QObject):
 
     # ----------------------------------------------------------------- tasks
     def enqueue(self, catalog, directory, options, *, proxy="", cookie_file="", thumbnail=b""):
+        options=dict(options)
         context = self.context()
         target = dict(context, kind=options.pop("destination"), clip_id=options.pop("clip_id", ""),
                       confirmed_media=options.pop("confirmed_media", False),
@@ -273,11 +297,29 @@ class LinkDownloadController(QObject):
         if target["kind"] == "current" and not context["project_id"]:
             raise ValueError("当前没有工程，请选择新建工程。")
         task = make_task(catalog, directory, target=target, **options)
+        # make_task allocates a fresh UUID, so queue.add's ID guard cannot
+        # coalesce repeated UI submissions of the same in-flight download.
+        active={row['task_id']:row for row in self.queue.snapshots()
+                if row.get('state') in {'queued','running','paused','pausing','cancelling'}}
+        self._enqueue_requests={key:value for key,value in self._enqueue_requests.items() if value in active}
+        import os
+        selection={k:v for k,v in task.items() if k not in {'task_id','directory','state','title'}}
+        # Playback advances between clicks; retain the first task's import
+        # position without treating that clock sample as a new user intent.
+        selection['target']={k:v for k,v in task['target'].items() if k!='position_ms'}
+        request=json.dumps(dict(directory=os.path.normcase(str(Path(directory).expanduser().resolve())),
+            selection=selection,
+            proxy=proxy,cookie_file=cookie_file),sort_keys=True,ensure_ascii=False)
+        existing=self._enqueue_requests.get(request)
+        if existing in active:
+            self._refresh_views()
+            return active[existing]
         if thumbnail:
             self._thumbnails[(catalog.get("platform", "Youtube"), catalog["video_id"])] = bytes(thumbnail)
             while len(self._thumbnails) > THUMBNAIL_LIMIT:
                 self._thumbnails.pop(next(iter(self._thumbnails)))
         self.queue.add(task, proxy=proxy, cookie_file=cookie_file)
+        self._enqueue_requests[request]=task['task_id']
         self._refresh_views()
         return task
 
@@ -542,6 +584,8 @@ class LinkDownloadController(QObject):
                 kind = "analyze"   # the analysis itself failed or was cancelled
             elif kind == "cover" and item.get("value") is None:
                 continue
+            if kind == 'analyze':
+                self._analysis_request = None
             if item.get("error") or item.get("cancelled"):
                 self._preparing.discard(token)
                 if kind == "analyze" and self.dialog and self._analysis_owner == "dialog":

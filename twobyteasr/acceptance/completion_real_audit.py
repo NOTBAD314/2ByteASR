@@ -78,6 +78,7 @@ def start(window, output):
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton, QWidget
     from .blank_project_audit import _capture
+    from .question_boxes import question_boxes
     from ..diagnostics.build_identity import load_build_identity
     from ..exports.completion_export import CompletionExportDialog
     from ..recognition.recognition_history import parse_recognition_report, RecognitionHistoryDetail
@@ -143,9 +144,9 @@ def start(window, output):
                 if getattr(self, 'modal_error', ''):
                     raise RuntimeError(self.modal_error)
                 modal = QApplication.activeModalWidget()
-                if isinstance(modal, QMessageBox) and self.save_owned_modal(modal):
+                if isinstance(modal, question_boxes()) and self.save_owned_modal(modal):
                     return
-                if isinstance(modal, QMessageBox):
+                if isinstance(modal, question_boxes()):
                     error = modal.text() + ' ' + modal.informativeText()
                     modal.reject()
                     raise RuntimeError(error)
@@ -201,7 +202,7 @@ def start(window, output):
 
         def close_save_dialog(self):
             modal = QApplication.activeModalWidget()
-            if isinstance(modal, QMessageBox):
+            if isinstance(modal, question_boxes()):
                 self.save_owned_modal(modal)
 
         def queue_click(self, button):

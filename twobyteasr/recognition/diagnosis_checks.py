@@ -20,7 +20,7 @@ PRIMARY_NAMES = {
     "glm_asr_nano": "GLM-ASR", "canary_qwen": "Canary", "mlx_qwen3_asr": "Qwen3-ASR (MLX)",
 }
 TIMELINE_NAMES = {
-    "local": "FireRedASR2-AED", "qwen_aligner": "Qwen3 对齐", "mlx_qwen_aligner": "Qwen3 对齐",
+    "local": "FireRedASR2-AED", "qwen_aligner": "Qwen3 对齐", "qwen_ultra_aligner": "Qwen3 Ultra 对齐", "qwen_ultra_head": "Qwen3 Ultra + Local Head", "mlx_qwen_aligner": "Qwen3 对齐",
     "mfa_aligner": "MFA（实验）", "paraformer": "Paraformer", "whisper_turbo": "Whisper", "off": "已关闭",
 }
 LANGUAGE_NAMES = {

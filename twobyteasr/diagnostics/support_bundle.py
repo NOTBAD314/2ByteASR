@@ -127,13 +127,33 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             except OSError as exc:missing.append(dict(session=p.name,reason=type(exc).__name__))
     except OSError as exc:missing.append(dict(stage='session_listing',reason=type(exc).__name__))
     directories=[p for _mtime,p in sorted(directories,key=lambda item:item[0],reverse=True)]
+    # Read metadata before spending the event budget. A long healthy current
+    # session must not crowd the last abnormal session out of the ZIP.
+    previous_id = None
+    metadata = {}
+    for directory in directories:
+        checkpoint()
+        try:
+            meta = json.loads((directory/'session.json').read_text('utf8'))
+            if not isinstance(meta, dict):
+                continue
+            if (meta.get('status') == 'running'
+                    and not (instance and directory == instance.directory) and not _alive(meta)):
+                meta['status'] = 'previous_not_cleanly_ended'
+            metadata[directory] = meta
+            if previous_id is None and meta.get('status') in {'previous_not_cleanly_ended','not_cleanly_ended'}:
+                previous_id = meta.get('session_id', directory.name)
+        except (OSError,ValueError,TypeError):
+            continue
+    directories.sort(key=lambda p: (0 if metadata.get(p,{}).get('session_id',p.name)==previous_id else
+                                   1 if instance and p==instance.directory else 2))
     for directory in directories:
         checkpoint()
         if consumed >= MAX_EXPORT_BYTES:
             missing.append(dict(reason="scan_limit",session=directory.name)); continue
         try:
             files=snapshot["files"] if snapshot and directory==instance.directory else _session_files(directory,missing)
-            meta=json.loads(files.get("session.json",b"{}"))
+            meta=metadata.get(directory) or json.loads(files.get("session.json",b"{}"))
             if not isinstance(meta,dict) or not meta:
                 missing.append(dict(session=directory.name,reason="missing_session_metadata"));continue
             if meta.get('session_id') is not None and not isinstance(meta['session_id'],str):
@@ -178,7 +198,9 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         except (OSError,ValueError,TypeError,UnicodeError) as exc:
             missing.append(dict(session=directory.name,reason=type(exc).__name__))
     events.sort(key=_event_order)
-    newest=sessions[0].get("session_id",sessions[0].get("directory")) if sessions else None
+    sessions.sort(key=lambda s:_stamp(s.get('started')) or 0, reverse=True)
+    newest=max(sessions,key=lambda s:_stamp(s.get('started')) or 0) if sessions else {}
+    newest=newest.get('session_id',newest.get('directory'))
     current_id=instance.session_id if snapshot else newest
     if scope=="session":
         selected=[e for e in events if e.get("session_id")==current_id]
@@ -201,6 +223,20 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         if e.get("project_id") in project_ids and e.get("task_id"):task_ids.add(e["task_id"])
     included={id(e) for e in selected}
     context=[]; context_bytes=0
+    if scope in {'recent','session'} and previous_id:
+        # Reserve bounded terminal context, independent of the user's current
+        # project/task and of the 15 minute range. Never invent an exit code.
+        tail=[e for e in events if e.get('session_id')==previous_id][-160:]
+        for e in reversed(tail):
+            if id(e) in included:
+                continue
+            size=len(json.dumps(e,ensure_ascii=False).encode('utf8','replace'))
+            if context_bytes+size>min(MAX_CONTEXT_BYTES,512*1024):
+                losses['previous_tail_omitted_by_budget']+=1
+                continue
+            context.append(dict(e,context_only=True,previous_abnormal_tail=True))
+            context_bytes+=size
+            included.add(id(e))
     for e in events:
         if id(e) not in included and ((e.get("project_id") and e.get("project_id") in project_ids) or (e.get("task_id") and e.get("task_id") in task_ids)):
             size=len(json.dumps(e,ensure_ascii=False).encode('utf8','replace'))
@@ -210,7 +246,11 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             context.append(dict(e,context_only=True));context_bytes+=size
     selected.sort(key=_event_order)
     used_ids={e.get("session_id") for e in selected+context}
-    selected_sessions=[s for s in sessions if s.get("session_id",s.get("directory")) in used_ids or s.get("session_id")==current_id]
+    selected_sessions=[s for s in sessions if s.get("session_id",s.get("directory")) in used_ids or s.get("session_id") in {current_id,previous_id}]
+    for meta in selected_sessions:
+        meta.setdefault('exit_code', 'unknown')
+        meta.setdefault('exit_code_source', 'not_observed')
+        meta.setdefault('native_dump_path', 'unknown')
     return dict(events=selected,context_events=context,sessions=selected_sessions,missing=missing[:128],missing_count=len(missing),
                 losses=dict(losses),cutoff_sequence=cutoff,scope=scope,upstream_task_ids=sorted(task_ids),
                 scanned_bytes=consumed,sanitizer=sanitizer)
@@ -296,7 +336,8 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
         important=(row.get('level') in {'ERROR','WARN'} or row.get('edit_session_id')
                    or row.get('event_name') in {'problem.marked','project.saved','project.save_failed'}
                    or str(row.get('event_name','')).startswith('video.export'))
-        return (bool(row.get('context_only')),not bool(important),-(_stamp(row.get('time')) or 0),-_event_order(row)[2])
+        return (not bool(row.get('previous_abnormal_tail')),bool(row.get('context_only')),
+                not bool(important),-(_stamp(row.get('time')) or 0),-_event_order(row)[2])
     for row in sorted([*data['events'],*data.get('context_events',[])],key=priority):
         try:raw=(json.dumps(row,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n').encode('utf8')
         except (ValueError,TypeError,UnicodeError):

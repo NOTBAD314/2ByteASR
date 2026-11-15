@@ -70,17 +70,48 @@ class SubtitleExportTask:
                     from ..system.process_job import RequestProcessJob
                     job = RequestProcessJob(process)
                 stage_name = 'worker_execute'
-                pending = data
-                while True:
-                    if self.cancel.is_set():
-                        cancel_path.touch(exist_ok=True)
+                if sys.platform != 'win32':
+                    # POSIX communicate() retries with input=None do not
+                    # re-register a partially written stdin. A cold worker
+                    # and a request larger than the pipe can then deadlock.
+                    # Keep one full transfer; cancellation uses its owned file.
+                    notification_finished = threading.Event()
+                    notification_errors = []
+                    def notify_cancellation():
+                        while not notification_finished.wait(.1):
+                            if self.cancel.is_set():
+                                try:
+                                    cancel_path.touch(exist_ok=True)
+                                except Exception as exc:
+                                    notification_errors.append(exc)
+                                    process.terminate()
+                                return
+                    notifier = threading.Thread(target=notify_cancellation,
+                        name='subtitle-cancel-' + self.work.task_id[:8], daemon=True)
+                    notifier.start()
                     try:
-                        stdout, stderr = process.communicate(input=pending, timeout=.1)
-                        break
-                    except subprocess.TimeoutExpired:
-                        pending = None
-                        if time.perf_counter() - began > 600:
-                            raise TimeoutError('字幕导出工作进程超时')
+                        try:
+                            stdout, stderr = process.communicate(input=data,
+                                timeout=max(.01, 600 - (time.perf_counter() - began)))
+                        except subprocess.TimeoutExpired as exc:
+                            raise TimeoutError('字幕导出工作进程超时') from exc
+                        if notification_errors:
+                            raise notification_errors[0]
+                    finally:
+                        notification_finished.set()
+                        notifier.join(timeout=1)
+                else:
+                    pending = data
+                    while True:
+                        if self.cancel.is_set():
+                            cancel_path.touch(exist_ok=True)
+                        try:
+                            stdout, stderr = process.communicate(input=pending, timeout=.1)
+                            break
+                        except subprocess.TimeoutExpired:
+                            pending = None
+                            if time.perf_counter() - began > 600:
+                                raise TimeoutError('字幕导出工作进程超时')
                 self.worker_exit = process.returncode
                 if process.returncode != 0:
                     self.details = stderr.decode('utf-8', 'replace')[-16384:]

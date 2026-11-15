@@ -163,6 +163,8 @@ class CueRefineAction:
     split_after_chars: list[int] = field(default_factory=list)
     space_after_chars: list[int] = field(default_factory=list)
     estimated_timing: bool = False
+    layout_text: str = ''
+    alignment_pending: bool = False
 
 
 @dataclass
@@ -175,6 +177,7 @@ class RefineOutcome:
     requests: list[dict] = field(default_factory=list)
     ranges: list = field(default_factory=list)
     results: dict[str, dict] = field(default_factory=dict)
+    alignment_receipts: dict = field(default_factory=dict)
 
 
 def _batch(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -417,6 +420,10 @@ def refine_payload(
         item['allowed_split_after_chars']=[position-1 for position in sorted(legal_raw_boundaries(cue.text,p.code))]
         item['index_unit']='zero_based_python_unicode_codepoint_after_character'
         item['language_policy']={'language':p.code,'fingerprint':p.fingerprint,'unit':p.unit}
+        if p.code == 'en':
+            from .english_refine_constraints import policy, layout_text
+            item['length_and_layout'] = policy(cue, project)
+            item['length_and_layout']['safe_width_px'] = layout_text(cue, project)[2]
         if cue.id in following_gaps:
             item["gap_to_next_cue_ms"] = int(following_gaps[cue.id])
         hints = pause_hints_for_cue(cue, words)
@@ -480,6 +487,8 @@ def refine_cues_with_llm(
     from .japanese_morphology import document_for_texts, phrase_scope
     from .segmentation_profiles import project_language_tag
     language = project_language_tag(project) if project is not None else "zh"
+    from .english_refine_constraints import effective_language
+    language = effective_language((cue.text for cue in cues), language)
     # Japanese: proposed breaks are checked against bunsetsu of the current
     # (possibly hand-edited) texts, as in recognition; heuristic only when the
     # tagger is unavailable.
@@ -714,7 +723,14 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         candidate_actions[unit.cue.id]=action
                         action, changes = repair_chinese_range(unit, action, project)
                         record['local_boundary_changes'] = changes
-                    pieces = validate_quality(unit, action, language, hard_limit=hard_limit if boundary_only else None)
+                    pieces = validate_quality(unit, action, language, hard_limit=hard_limit if boundary_only else None, project=project)
+                    if boundary_only and language.split('-')[0] == 'en':
+                        from .sentence_refine_ranges import build_range_replacement
+                        from .english_refine_constraints import validate_piece
+                        if action.action == 'keep' and any(validate_piece(cue.text, cue, project) != cue.text for cue in unit.originals):
+                            action = CueRefineAction(unit.cue.id, 'wrap')
+                        # Reject unavailable timing BEFORE calling this result validated.
+                        if action.action == 'split': build_range_replacement(unit, action, project, set())
                     record.update(parsed=row, validated_texts=pieces, phase='等待写回校验', status='validated',
                                   error='', category='')
                     outcome.actions.append(action)
@@ -793,12 +809,30 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         outcome.llm_status = 'cancelled'
     for unit in units:
         record = outcome.results[unit.cue.id]
+        if (boundary_only and language.split('-')[0] == 'en' and not cancelled()
+                and record['status'] == 'failed' and not unit.owner_id):
+            from .english_refine_constraints import local_action, wrap_action
+            from .sentence_refine_ranges import build_range_replacement
+            try:
+                local = local_action(unit, project)
+                try:
+                    replacement = build_range_replacement(unit, local, project, set())
+                except RefineError as exc:
+                    if exc.category != 'time_mapping_error': raise
+                    local = wrap_action(unit, project)
+                    replacement = build_range_replacement(unit, local, project, set())
+                outcome.actions.append(local)
+                record.update(status='validated', local_fallback=True, phase='仅换行，等待可靠词时间后拆条' if local.alignment_pending else '英文词边界补救已校验',
+                    alignment_pending=local.alignment_pending, validated_texts=[cue.text for cue in replacement],
+                    remote_error=record.get('error',''), error='', category='')
+            except RefineError as exc:
+                record.update(error=str(exc), category=exc.category)
         if (boundary_only and language.split('-')[0] == 'zh' and not cancelled()
                 and record['status'] == 'failed' and not unit.owner_id):
             from .sentence_refine_ranges import repair_chinese_range
             try:
                 local, changes = repair_chinese_range(unit, candidate_actions.get(unit.cue.id) or CueRefineAction(unit.cue.id, 'keep'), project, fallback=True)
-                pieces = validate_quality(unit, local, language, hard_limit=hard_limit)
+                pieces = validate_quality(unit, local, language, hard_limit=hard_limit, project=project)
             except RefineError:
                 pass  # The failed range retains its precise original failure.
             else:
@@ -854,7 +888,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         merged_action, changes = repair_chinese_range(root, merged_action, project)
                         record['local_boundary_changes'] = changes
                     pieces = validate_quality(root, merged_action, language,
-                        hard_limit=hard_limit)
+                        hard_limit=hard_limit, project=project)
                     actions[root.cue.id] = merged_action
                     record.update(status='validated', phase='窗口合并校验完成，等待写回', validated_texts=pieces)
                 except RefineError as exc:

@@ -175,7 +175,7 @@ def _overlaps(row: ReviewSuggestion, taken: list[ReviewSuggestion]) -> bool:
 
 
 def review_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[str]]] = (), *,
-                       resolver=None, scene=None, pronouns: bool = True) -> list[ReviewSuggestion]:
+                       resolver=None, scene=None, pronouns: bool = True, max_marks=MAX_MARKS) -> list[ReviewSuggestion]:
     """All marks for card 1, in text order; recognizer differences win overlaps,
     then glossary aliases, then pronoun toggles."""
     taken: list[ReviewSuggestion] = []
@@ -186,14 +186,14 @@ def review_suggestions(current: str, candidates: Iterable[tuple[str, Sequence[st
             if row is not None and not _overlaps(row, taken):
                 taken.append(row)
     taken.sort(key=lambda row: (row.start, row.end))
-    if len([row for row in taken if row.kind != PRONOUN]) > MAX_MARKS:
+    if max_marks is not None and len([row for row in taken if row.kind != PRONOUN]) > max_marks:
         # A caption with this many separate differences is a rewrite; keep the
         # first marks readable and leave the rest to the whole-candidate cards.
         kept, count = [], 0
         for row in taken:
             if row.kind != PRONOUN:
                 count += 1
-                if count > MAX_MARKS:
+                if count > max_marks:
                     continue
             kept.append(row)
         taken = kept
