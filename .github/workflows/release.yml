@@ -50,6 +50,21 @@ jobs:
           ditto "$QA/mount/2ByteASR.app" /Applications/2ByteASR.app
           hdiutil detach "$QA/mount"
           codesign --verify --deep --strict /Applications/2ByteASR.app
+      - name: Set an isolated user reduced-motion preference
+        run: |
+          cat > "$QA/reduced-check.py" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          from scripts import macos_caption_policy_smoke as check
+          original=check.blank_environment
+          def environment(output,invoker,target):
+              from twobyteasr.app.application_settings import save_hub_preferences
+              save_hub_preferences('',True,30,20,True,True,reduce_motion=True)
+              return original(output,invoker,target)
+          check.blank_environment=environment
+          raise SystemExit(check.main())
+          PY
       - name: Run every remaining scene independently
         id: scenes
         continue-on-error: true
@@ -57,7 +72,7 @@ jobs:
           set -uo pipefail
           code=0
           for scenario in english-track-loudness; do
-            python scripts/macos_display_mode_probe.py "$QA/display-110-$scenario" "$QA/runtime/bin/python" scripts/macos_caption_policy_smoke.py --app /Applications/2ByteASR.app --scenario "$scenario" --output "$QA/$scenario" || code=1
+            python scripts/macos_display_mode_probe.py "$QA/display-110-$scenario" "$QA/runtime/bin/python" "$QA/reduced-check.py" --app /Applications/2ByteASR.app --scenario "$scenario" --output "$QA/$scenario" || code=1
           done
           exit "$code"
       - name: Bound the evidence
@@ -66,7 +81,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: mac110-audio-short-r2
+          name: mac110-audio-reduced-r2
           retention-days: 1
           path: ${{ env.QA }}/artifacts/receipts/
       - name: Enforce all four checks
