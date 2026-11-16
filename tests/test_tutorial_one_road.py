@@ -352,7 +352,11 @@ def test_the_plan_follows_the_language_the_videos_speak():
 def test_the_plan_window_shows_and_returns_the_models_for_the_language(app, monkeypatch):
     from types import SimpleNamespace
     from twobyteasr.system import hardware
+    from twobyteasr.app import quick_setup
     from twobyteasr.app.quick_setup import QuickSetupDialog
+    # This case exercises the NVIDIA/FireRed Windows comparison. Apple policy
+    # has its own case below; keep the platform override local to this module.
+    monkeypatch.setattr(quick_setup, 'sys', SimpleNamespace(platform='win32'))
     monkeypatch.setattr(hardware, 'detect_cuda_runtime',
                         lambda: SimpleNamespace(ready=True, code='ok', gpu_name='NVIDIA RTX'))
     sizes = {('api', 'local', 'off'): 4.4, ('api', 'qwen_aligner', 'off'): 1.8,
@@ -388,7 +392,30 @@ def test_the_first_step_waits_when_the_plan_was_just_chosen():
     assert not hasattr(window, '_tutorial_plan_chosen')          # once
 
 
+def test_the_apple_cloud_plan_shows_its_mlx_download_without_cuda(app, monkeypatch):
+    from types import SimpleNamespace
+    from twobyteasr.app import quick_setup
+    from twobyteasr.recognition import mlx_backend
+    monkeypatch.setattr(quick_setup, 'sys', SimpleNamespace(platform='darwin'))
+    monkeypatch.setattr(mlx_backend, 'platform_supported', lambda: True)
+    seen = []
+    def size_of(backends):
+        seen.append(tuple(backends))
+        return 1.8 if tuple(backends) == ('api', 'mlx_qwen_aligner', 'off') else 0.0
+    dialog = quick_setup.QuickSetupDialog(compare=True, plan_keys=['cloud'], spoken='ja', size_of=size_of)
+    assert dialog._cuda is None and dialog.cloud_backends() == ('api', 'mlx_qwen_aligner', 'off')
+    assert '1.8 GB' in dialog.cards['cloud'].status.text()
+    dialog.set_spoken('zh')
+    assert dialog.cloud_backends() == ('api', 'mlx_qwen_aligner', 'off')
+    assert dialog.cards['cloud'].models.text() == 'MOSS Pro · Qwen3 对齐'
+    assert seen and seen[-1] == ('api', 'mlx_qwen_aligner', 'off')
+    dialog._go()
+    assert dialog.backends == ('api', 'mlx_qwen_aligner', 'off')
+    dialog.close()
+
+
 def test_the_workbench_teaches_cut_merge_ripple_and_a_new_line(monkeypatch):
+    from PySide6.QtGui import QKeySequence
     from twobyteasr.app import tour_motion
     from twobyteasr.app.home_tour import tutorial_steps
     from twobyteasr.studio import shortcut_registry
@@ -404,7 +431,8 @@ def test_the_workbench_teaches_cut_merge_ripple_and_a_new_line(monkeypatch):
                for name in ('razor', 'merge_tool', 'ripple', 'add_cue'))
     assert '**X**' in str(by['razor'].text()) and '点两下' in str(by['razor'].text())     # keys as set
     assert '**B**' in str(by['merge_tool'].text())
-    assert '**Alt+Q**' in str(by['ripple'].text()) and '**Shift+W**' in str(by['ripple'].text())
+    native = lambda text: QKeySequence(text).toString(QKeySequence.SequenceFormat.NativeText)
+    assert f'**{native("Alt+Q")}**' in str(by['ripple'].text()) and f'**{native("Shift+W")}**' in str(by['ripple'].text())
     assert '**T**' in str(by['add_cue'].text())
     assert by['merge_tool'].optional and by['ripple'].optional        # nothing left to merge: skipped
     tour_motion.refresh_keys()

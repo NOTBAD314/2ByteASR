@@ -63,7 +63,9 @@ from ..i18n import tr
 from ..design.typography import weighted_font
 
 # Candidate row of the review strip: one ReviewCandidateCard (min 86 px).
-REVIEW_DOCK_ROW_HEIGHT = 92
+# 2026-11-16 (user): the candy cards are compact (sentence on top, chips
+# under it), so the row is their height and no blank band is left below.
+REVIEW_DOCK_ROW_HEIGHT = 74
 
 
 class CountChip(QPushButton):
@@ -911,46 +913,80 @@ class StudioWorkspaceBuilder:
         page.review_summary_strip.setObjectName("reviewSummaryStrip")
         strip_layout = QVBoxLayout(page.review_summary_strip)
         yield from _gui_slice.checkpoint()
-        strip_layout.setContentsMargins(10, 4, 10, 4)
-        strip_layout.setSpacing(7)
+        # 2026-11-16 (user picked design A 糖果条): same layout, rounded parts.
+        # Status pill, one reason line, a progress capsule, pill buttons with
+        # their key, a round collapse button; keys as keycaps in one row.
+        strip_layout.setContentsMargins(14, 9, 14, 7)
+        strip_layout.setSpacing(8)
         strip_header = QHBoxLayout()
+        strip_header.setSpacing(8)
         # 2026-10-22: these texts elide (full text on hover); at their full
         # width the strip held the video column at 886 px, so the side
         # dividers could not move on a 1536 px wide (1080p 125%) window.
         from ..design.elided_label import ElidedLabel
+        from .review_strip_widgets import ReviewKeyLegend, ReviewPillButton
         yield from _gui_slice.checkpoint()
+        page.review_status_pill = QFrame()
+        page.review_status_pill.setObjectName("reviewStatusPill")
+        page.review_status_pill.setMaximumWidth(320)
+        status_layout = QHBoxLayout(page.review_status_pill)
+        status_layout.setContentsMargins(5, 4, 13, 4)
+        status_layout.setSpacing(7)
+        page.review_status_dot = QLabel()
+        page.review_status_dot.setObjectName("reviewStatusDot")
+        page.review_status_dot.setFixedSize(20, 20)
+        page.review_status_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_layout.addWidget(page.review_status_dot)
         page.review_summary_text = ElidedLabel("需要检查：-", mode=Qt.TextElideMode.ElideRight, minimum=80)
         page.review_summary_text.setObjectName("reviewIssueSummary")
-        strip_header.addWidget(page.review_summary_text, 1)
+        status_layout.addWidget(page.review_summary_text, 1)
+        for part in (page.review_status_pill, page.review_status_dot, page.review_summary_text):
+            part.setProperty("tone", "warn")
+        strip_header.addWidget(page.review_status_pill, 0)
         page.review_reason_label = ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=40)
         yield from _gui_slice.checkpoint()
         page.review_reason_label.setObjectName("reviewReason")
-        strip_header.addWidget(page.review_reason_label, 2)
+        strip_header.addWidget(page.review_reason_label, 1)
+        progress = QWidget()
+        progress.setObjectName("reviewProgressBox")
+        progress_layout = QVBoxLayout(progress)
+        progress_layout.setContentsMargins(0, 0, 4, 0)
+        progress_layout.setSpacing(3)
         page.review_queue_label = QLabel("需要检查  - / -")
         page.review_queue_label.setObjectName("reviewQueueCount")
         yield from _gui_slice.checkpoint()
-        page.review_queue_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        strip_header.addWidget(page.review_queue_label, 0)
-        review_confirm = QPushButton("当前正确")
-        review_confirm.setObjectName("studioPrimary")
+        page.review_queue_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        progress_layout.addWidget(page.review_queue_label)
+        page.review_progress = QProgressBar()
+        page.review_progress.setObjectName("reviewProgress")
+        page.review_progress.setTextVisible(False)
+        page.review_progress.setFixedHeight(6)
+        page.review_progress.setRange(0, 1)
+        page.review_progress.setValue(0)
+        progress_layout.addWidget(page.review_progress)
+        strip_header.addWidget(progress, 0)
+        review_confirm = ReviewPillButton("当前正确", "fa5s.check", key="Enter", primary=True)
+        page.review_confirm_button = review_confirm
         yield from _gui_slice.checkpoint()
         page._shortcut_tooltip(review_confirm, '确认当前字幕，不修改文本 ({key})', 'confirm_review')
         review_confirm.clicked.connect(page._confirm_current_review)
         strip_header.addWidget(review_confirm)
-        review_replay = QPushButton("重听")
+        review_replay = ReviewPillButton("重听", "fa5s.volume-up")
         yield from _gui_slice.checkpoint()
-        review_replay.setObjectName("studioButton")
+        page._shortcut_tooltip(review_replay, '再听一遍这一条 ({key})', 'review_play_context')
         review_replay.clicked.connect(page._play_review_context)
         strip_header.addWidget(review_replay)
-        review_details = QPushButton("详情")
+        review_details = ReviewPillButton("详情", "fa5s.info-circle")
         yield from _gui_slice.checkpoint()
-        review_details.setObjectName("studioButton")
+        bind_text(review_details, '来源、覆盖和格式记录', property='toolTip')
         review_details.clicked.connect(page._show_current_issue_details)
         strip_header.addWidget(review_details)
         review_collapse = QToolButton()
         yield from _gui_slice.checkpoint()
         review_collapse.setObjectName("reviewCollapseButton")
-        review_collapse.setText("⌃")
+        install_themed_icon(review_collapse, "fa5s.chevron-up", "secondary")
+        review_collapse.setIconSize(QSize(12, 12))
+        review_collapse.setFixedSize(32, 32)
         bind_text(review_collapse, '收起或展开审核面板', property='toolTip')
         review_collapse.setCheckable(True)
         yield from _gui_slice.checkpoint()
@@ -977,9 +1013,7 @@ class StudioWorkspaceBuilder:
         page.review_dock_scroll.setWidget(page.review_dock_candidates)
         strip_layout.addWidget(page.review_dock_scroll)
         yield from _gui_slice.checkpoint()
-        page.review_legend = ElidedLabel("[1–4] 采用并下一条   [W/D/↓] 下一条 [S/A/↑] 上一条   [Space] 重听   [E] 编辑   [Shift+R] 采纳建议 [P] 他/她   [R] 退出审核   [Enter] 当前正确",
-                                         mode=Qt.TextElideMode.ElideRight, minimum=120)
-        page.review_legend.setObjectName("reviewLegend")
+        page.review_legend = ReviewKeyLegend()
         strip_layout.addWidget(page.review_legend)
         page.review_summary_strip.hide()
         yield from _gui_slice.checkpoint()

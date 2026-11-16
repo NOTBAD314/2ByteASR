@@ -84,30 +84,31 @@ class ReviewCandidateCard(QFrame):
         self.setObjectName("reviewCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(86)
+        self.setMinimumHeight(60)
         # Ruby chips need a band above each marked line.
         self.setMaximumHeight(168 if self._suggestions else 124)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 9, 10, 9)
-        lay.setSpacing(9)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
 
         # Number badge
         num = QLabel(str(index + 1))
         num.setObjectName("reviewCardNum")
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        num.setFixedSize(30, 30)
+        num.setFixedSize(28, 28)
         lay.addWidget(num, 0, Qt.AlignmentFlag.AlignTop)
 
-        # Body
+        # Body: 2026-11-16 (user, design A) the sentence comes first and
+        # large, the sources sit under it as small chips.
         body = QVBoxLayout()
         # Card 1 with ruby chips keeps within the review row's fixed height.
-        body.setSpacing(3 if self._suggestions else 5)
+        body.setSpacing(2 if self._suggestions else 4)
 
         # Source row (badges)
         src_row = QHBoxLayout()
-        src_row.setSpacing(4)
+        src_row.setSpacing(5)
         for src in (candidate.sources or ("?",)):
             label = "当前" if str(src) == "Current" else str(src)
             badge = QLabel(label)
@@ -121,7 +122,6 @@ class ReviewCandidateCard(QFrame):
             self.setEnabled(False)
             self.setToolTip("包含未能精确对齐本条的原始段落，请结合原音编辑。")
         src_row.addStretch(1)
-        body.addLayout(src_row)
 
         # Text (readable size, not crushed)
         if self._suggestions:
@@ -134,10 +134,25 @@ class ReviewCandidateCard(QFrame):
             self.text_label = QLabel(self._markup())
             self.text_label.setTextFormat(Qt.TextFormat.RichText)
             self.text_label.setWordWrap(True)
-            self.text_label.setMinimumHeight(34)
+            self.text_label.setMinimumHeight(28)
             self.text_label.setMaximumHeight(62)
         self.text_label.setObjectName("reviewCandidateText")
         body.addWidget(self.text_label)
+        # Card 1 with ruby chips already spends a band above its sentence; its
+        # sources move to the tooltip so every card keeps the row's height
+        # (the selected colour and number badge still mark it as current).
+        self._sources_tip = ""
+        if self._suggestions and not candidate.context_only:
+            from ..i18n import tr
+            names = ["当前" if str(src) == "Current" else str(src) for src in (candidate.sources or ())]
+            self._sources_tip = tr("来源：{names}", names=" · ".join(names)) if names else ""
+            self.setToolTip(self._sources_tip)
+            while src_row.count():
+                item = src_row.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+        else:
+            body.addLayout(src_row)
 
         lay.addLayout(body, 1)
 
@@ -158,7 +173,11 @@ class ReviewCandidateCard(QFrame):
             if tag == "equal":
                 chunks.append(text)
             elif text:
-                chunks.append(f"<span style='background:{theme.warning_soft}; color:{theme.warning}; border-radius:3px; padding:1px 2px;'>{text}</span>")
+                # Design A: what this candidate writes differently is green;
+                # amber stays for the marks a click fixes on card 1.
+                from ..design.ui_theme import blend_hex
+                soft = blend_hex(theme.surface, theme.success, 0.18)
+                chunks.append(f"<span style='background:{soft}; color:{theme.success};'>{text}</span>")
         return "".join(chunks)
 
     def _markup(self) -> str:
@@ -211,7 +230,7 @@ class ReviewCandidateCard(QFrame):
             if hit != self._hover_hit:
                 self._hover_hit = hit
                 self.text_label.set_hover(hit)
-                self.setToolTip(self._mark_tip(*hit) if hit else "")
+                self.setToolTip(self._mark_tip(*hit) if hit else self._sources_tip)
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:

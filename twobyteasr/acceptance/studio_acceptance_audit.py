@@ -202,7 +202,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality','display-continuity'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'glossary-conflicts', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality','display-continuity'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -357,7 +357,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'editor-integrity','subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'editor-integrity','subtitle-reliability','macos-edit-save','macos-waveform-stability','macos-caption-caret-split','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -1237,6 +1237,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario in {'macos-edit-save', 'macos-waveform-stability', 'macos-caption-caret-split'}:
+        from .macos_edit_save_entry import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'waveform-full':
         from .waveform_full_audit import start
         output = audit_directory()
@@ -1341,6 +1346,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-card-layout':
         from .glossary_card_layout_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-conflicts':
+        from .glossary_conflict_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

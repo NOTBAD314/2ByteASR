@@ -28,6 +28,11 @@ def start(window,output):
         editor.setTextCursor(cursor);QApplication.setActiveWindow(editor.window());editor.setFocus();app.processEvents()
     def run():
         try:
+            if os.environ.get('TWOBYTEASR_TUTORIAL_CENTRE_AUDIT') == '1':
+                from .tutorial_centre_audit import run as tutorial_audit
+                tutorial_audit(window,output,check)
+                result['passed']=all(result['checks'].values());save();window.close();QTimer.singleShot(200,app.quit)
+                return
             from .synthetic_queue import FakeLegacy,FakePipeline
             from ..recognition import service
             from ..app import pipeline_worker
@@ -40,11 +45,17 @@ def start(window,output):
             page=window.built_page('studio')
             wait(lambda:not window._studio_loading_session.active and not page._readiness.overlay.isVisible())
             page.video.set_paused(True)
+            if os.environ.get('TWOBYTEASR_BUNNY_HARNESS_AUDIT') == '1':
+                from .bunny_harness_audit import run as check_harness
+                check_harness(window,page,output,check)
             if os.environ.get('TWOBYTEASR_BUNNY_AGENT_AUDIT') == '1':
                 from .bunny_agent_audit import run as check_agent
                 check_agent(window,page,output,check)
                 from .bunny_round4_audit import run as check_round4
                 check_round4(window,page,output,check)
+            if os.environ.get('TWOBYTEASR_BUNNY_VISION_OVERLAY_AUDIT') == '1':
+                from .bunny_vision_overlay_audit import run as check_overlay
+                check_overlay(window,page,output,check)
             if os.environ.get('TWOBYTEASR_MOTION_TIMELINE_AUDIT') == '1':
                 from .motion_timeline_audit import run as check_timeline
                 check_timeline(window,page,output,check)
