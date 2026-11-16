@@ -4,233 +4,157 @@
 
 # 兔白字幕 · 2ByteASR
 
-### 字幕剪辑翻译工作台
+### 免费的字幕软件，识别、校对、翻译、剪辑、导出一次做完
 
-识别、校对、翻译、剪辑、压制，在一个窗口里做完。<br>
-免费，可以全部在本机运行，也能接入你自己的云端服务。
+Windows 和 Mac 都能用，有 NVIDIA 显卡可以全程离线。
+
+[下载 1.1.0](#下载) · [功能](#功能) · [常见问题](#常见问题) · [使用指南](docs/product-guide.zh-CN.md)
 
 [English](README.md) · **中文** · [日本語](README_JA.md) · [한국어](README_KO.md)
 
 </div>
 
-<img src="docs/assets/readme/workbench-zh.png" width="100%" alt="兔白字幕 0.8.7 的字幕工作台：左边是字幕列表，中间是电影画面，下方同时显示英文原文和中文译文，右边是样式面板，下方时间轴有 Celia、Thom 两条字幕轨、一条译文轨、视频轨和音频波形">
+<img src="docs/assets/readme/workbench-zh.webp" width="100%" alt="奶白绿主题的字幕工作台：左边是字幕列表，中间是动画短片画面和中英双语字幕，下方时间轴上五个角色各占一条字幕轨">
 
-<sub>0.8.7 真实界面截图。示例影片：[Tears of Steel](https://mango.blender.org/) (© Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/))，由本机 MOSS + Qwen3-ForcedAligner + Qwen3-ASR 识别（NVIDIA 显卡）。说话人名称在说话人管理里输入，中文译文用工作台的手动补译写入，没有用 AI。</sub>
+<sub>示例影片：[Sprite Fright](https://studio.blender.org/films/sprite-fright/) © Blender Foundation · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)</sub>
+
+## 功能
 
 | 识别 | 校对 | 翻译 | 剪辑 | 导出 |
-| --- | --- | --- | --- | --- |
-| 本机或云端，分清谁在说话 | 多模型候选、术语库、AI 校对 | 原文译文两层，缺译双击补写 | 按字切分，一键删口播停顿 | 字幕文件，或压好字幕的成片 |
+| :---: | :---: | :---: | :---: | :---: |
+| 本机或云端 | 多模型对照 | 双语字幕 | 按字切分 | 字幕或成片 |
+
+<table>
+<tr>
+<td colspan="2" valign="top">
+<img src="docs/assets/readme/feature-review-zh.webp" width="100%" alt="审核模式：同一句列出 MOSS 写的“虚迷”和 FireRed 写的“须弥”，点选后字幕改成“须弥的风景真好看”">
+
+**几个模型写得不一样？点一下选对的**<br>
+不同的字会标出来，还能看到是哪个模型写的。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-razor-zh.webp" width="100%" alt="剃刀停在“If I have to hear”和“the Latin name”之间，把一句字幕切成两段">
+
+**剃刀只切在词和词之间**<br>
+不会把一个词切成两半，译文也跟着分开。
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-translate-zh.webp" width="100%" alt="播放中，画面上同时显示英文原文和中文译文">
+
+**一键翻译成双语字幕**<br>
+用你自己的文字 AI，漏译的句子双击就能补。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-style-zh.webp" width="100%" alt="动效预设库里鼠标移到卡片上就播放预览，套用“流星点读”后字幕逐词亮起">
+
+**几十种字幕动效**<br>
+鼠标移上去就能预览，时长拖一下就能改。
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-link-zh.webp" width="100%" alt="链接下载窗口，可以选视频＋字幕、仅视频、仅音频、仅字幕">
+
+**贴链接就能下载**<br>
+YouTube、B 站的视频连同字幕一起下载。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/workshop-zh.webp" width="100%" alt="模型工坊：MOSS、FireRedASR2、Qwen3-ASR 等模型的支持语言、准确度和速度，以及下载和使用按钮">
+
+**模型工坊：挑模型、一键安装**<br>
+每个模型支持哪些语言、准不准、快不快，一眼就能比较。
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/glossary-zh.webp" width="100%" alt="术语库：洛克王国、绝区零、原神等游戏词库，词条按角色、技能分类">
+
+**术语库：角色名不再写错**<br>
+自带多款游戏的词库，也能自己加词。识别和翻译时都会用上。
+</td>
+</tr>
+</table>
+
+<img src="docs/assets/readme/mg-more-zh.webp" width="100%" alt="还有：说话人分轨（每人一条字幕轨）、调音台（响度一键统一）、批量处理（做完一个先改一个）、用量记录（每笔 API 花费都有账）、15 套主题和 11 种界面语言">
+
+## 字幕为什么准
+
+<img src="docs/assets/readme/mg-accuracy-zh.webp" width="100%" alt="识别流程动画：术语库先交给模型；三个模型分别写出文字、给每个字标时间、再听一遍做对照；MOSS 写“虚迷”、另外两个模型都写“须弥”，自动改成“须弥”；另外两个模型写法不一致时，留在审核模式里让你选">
+
+## AI 做什么、不做什么
+
+<img src="docs/assets/readme/mg-ai-zh.webp" width="100%" alt="AI 断句只决定在哪里断开，不能改字；AI 校对改字要有其他模型作依据，没依据不改；翻译和兔白打开才用，只发送字幕文字，视频留在本机；不配置 AI 也能完整识别、编辑和导出">
+
+## 不会用就问兔白
+
+<img src="docs/assets/readme/bunny-zh.webp" width="100%" alt="兔白聊天卡片：用户问“怎么翻译字幕？”，兔白说明设置的位置，并给出“带我去”按钮">
+
+问她“怎么翻译字幕？”，她会告诉你在哪，还能直接带你过去。接上文字 AI 后，她还能帮你检查字幕、改字、批量替换。改之前她会先问你，改错了也能撤销。
+
+## 适合谁
+
+| 你在做 | 可以这样用 |
+| --- | --- |
+| 游戏实况、直播回放 | 每人一条字幕轨，术语库记住角色名，用弹幕找精彩片段 |
+| 外语视频配中文 | 贴链接下载，识别后翻译，导出双语字幕 |
+| 访谈、播客、网课 | 已有文稿直接对时间，一键删掉停顿 |
+| 已经有字幕 | 导入 SRT / ASS 改字、翻译、换样式，不用下载模型 |
 
 ## 下载
 
-当前版本：**Windows 与 Apple Silicon Mac 1.1.0**（2026-11-16）。
-
-| 你的电脑 | 下载 |
+| 你的电脑 | 下载 1.1.0 |
 | --- | --- |
-| Windows 10 1809及以上，64位 | [2ByteASR-Setup-1.1.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-Setup-1.1.0.exe)，约1165MB |
-| Apple Silicon Mac（M1及以上），macOS14及以上 | [2ByteASR-1.1.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-1.1.0-macos-arm64-Setup.dmg)，约591MB；**实验版**，不支持Intel Mac |
+| Windows 10 1809 及以上，64 位 | [2ByteASR-Setup-1.1.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-Setup-1.1.0.exe)（约 1165 MB） |
+| Apple 芯片 Mac，macOS 14 及以上 | [2ByteASR-1.1.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-1.1.0-macos-arm64-Setup.dmg)（约 591 MB，实验版） |
 
-先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新；Mac将应用拖入Applications覆盖。[本版变化、实测范围和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.0) · [GitCode大陆镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.0) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
+国内下载慢就用 [GitCode 镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.0)。[本版更新内容](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.0) · [安装说明](docs/product-guide.zh-CN.md#windows-安装) · [Linux Docker 版](README.docker.md)
 
-Linux可使用[Docker 0.8.1版](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)，见[构建与运行](README.docker.md)。
+装过旧版的话，Windows 在程序里点“检查更新”，Mac 直接覆盖安装，工程和设置都会保留。
 
-## 你要做的是…
+**上手只要三步：** 选识别方式 → 把视频拖进首页，点“开始生成字幕” → 在工作台里改好，导出。想先试试，打开“说明 → 新手教学”，不用下载模型。
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
-**游戏实况、直播回放**<br>
-多人对话每人一条字幕轨；术语库记住角色名和招式；结合 B 站弹幕 XML 找值得剪的片段。<br>
-→ [分清谁在说话](#能做什么) · [术语库](docs/product-guide.zh-CN.md#字幕工作台常用操作)
-
-</td>
-<td width="50%" valign="top">
-
-**外语视频配中文字幕**<br>
-贴 YouTube、B 站等链接，视频和原字幕一起下载进工程；识别日语、英语，用你的文字 AI 翻成中文，导出双语字幕。<br>
-→ [链接下载](#能做什么) · [翻译与双语](#能做什么)
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-**访谈、播客、网课**<br>
-已经有文稿时直接对上时间，不改写文字；一键删掉口播停顿；批量替换、简繁转换。<br>
-→ [字幕工作台常用操作](docs/product-guide.zh-CN.md#字幕工作台常用操作)
-
-</td>
-<td width="50%" valign="top">
-
-**手上已经有字幕**<br>
-导入 SRT / ASS，校对、翻译、换样式，再重新压进视频。不用先装识别模型。<br>
-→ [输入与输出](docs/product-guide.zh-CN.md#输入与输出)
-
-</td>
-</tr>
-</table>
-
-## 能做什么
-
-<table>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-translate-zh.webp" width="100%" alt="应用内实录：电影播放时，预览里同时显示英文原文和中文译文，播放头沿着说话人轨和译文轨移动">
-
-**翻译与双语**<br>
-用你的文字 AI 翻成简繁中文、英语、日语、韩语等；缺译的地方在译文轨上双击补写。原文和译文各有样式，可导出原文、译文或双语字幕。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-style-zh.webp" width="100%" alt="应用内实录：给全部字幕切换几种样式预设，再播放一句带“柔和弹入”入场动效的字幕">
-
-**样式、动效、压制**<br>
-字体、描边、位置和入场退场动效都有现成预设，不需要 AI；压进 MP4 / MKV / MOV，整段或只导出入点到出点。
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-razor-zh.webp" width="100%" alt="应用内实录：剃刀沿着一句字幕移动，显示每个词的时间块和切开后的前后两段，在词与词之间切开">
-
-**按字（词）切分，顺手剪视频**<br>
-每个字、每个词都有起止时间，剃刀停在字词之间；视频轨上可以分割、波纹删除，或检测口播停顿后一次删掉。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-review-zh.webp" width="100%" alt="应用内实录：审核模式下，同一句中文字幕列出 MOSS、FireRed 和 Qwen 的写法，不同的字被标出，点选后采用 Qwen 的写法">
-
-**同一句，对照几个模型的写法**<br>
-本机多模型方案会让几个模型各听一遍；写法不同的字标出来，看清来源后点一下（或按 1–4）采用。这里用的是中文示例：这一版只对中文字幕列出候选。
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-speakers-zh.webp" width="100%" alt="应用内实录：在说话人管理的卡片里输入 Celia 和 Thom 两个名字">
-
-**分清谁在说话**<br>
-支持说话人区分的方案会把每个人放进自己的字幕轨；改名、配色、默认样式在一处管理，分错的可以合并，都能撤销。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-link-zh.png" width="100%" alt="链接下载窗口：粘贴视频链接的输入框，下面是“视频＋字幕”“仅视频”“仅音频”“仅字幕”四个选项">
-
-**贴链接，视频和字幕一起进来**<br>
-YouTube、B 站和下载器（yt-dlp）支持的其他单个视频；在工作台按 Ctrl+V 就能下载到播放头位置。
-</td>
-</tr>
-</table>
-
-还有：术语库与 AI 校对、匹配已有文稿、按说话人分别导出、新手教学（范例工程，不用模型）、11 种界面语言和 15 套主题。详见[使用指南](docs/product-guide.zh-CN.md)。
-
-## 开始前先了解
-
-- **软件免费。** 官方版本免费提供，没有付费功能、注册或订阅。想支持开发，可以到[爱发电](#支持作者)赞助。
-- **本机识别需要先下载模型。** 安装程序不包含识别模型。第一次本机识别时，程序会按你选的方案在“模型工坊”下载模型和运行环境（例如 NVIDIA 高质量方案的模型约 11 GB，另加运行环境），之后可以离线识别，影音不离开电脑。
-- **云端识别和 AI 功能用你自己的账号。** 云端识别需要服务商账号和 API Key，按服务商的规则收费，音频会上传到你选的服务商。AI 断句、AI 校对、翻译和 AI 建词需要你自己的文字 AI 服务（只发送字幕文字）。不用这些，也能完成识别、编辑和导出。
-- **不是每台电脑都能跑每个模型。** 先看下表：
-
-| 你的电脑 | 推荐的识别方式 | 特点 |
-| --- | --- | --- |
-| Windows，有 NVIDIA 显卡 | **本机识别**：MOSS + FireRedASR2-AED + Qwen3-ASR | 免费、不上传；分说话人，有逐字时间，三个模型可对照 |
-| Windows，没有 NVIDIA 显卡 | **云端识别**（自备 API Key），或 **轻量本机**（SenseVoice，用 CPU） | 云端按用量收费、要上传音频；轻量本机免费但较慢，不分说话人 |
-| Mac，Apple 芯片（实验版） | **Mac 本机识别**（MLX）、**MOSS + FireRed**（Apple GPU），或云端 | 建议 16 GB 以上内存；比 NVIDIA 显卡慢 |
-
-云端服务里，MOSS Pro 云端和百炼 / Qwen Cloud 的 Qwen-Audio 3.1 能分说话人；云端识别和轻量本机都能加装本机的 Qwen3 对齐模型（可用 CPU），补上逐字时间。详细比较见[选择识别方式](docs/product-guide.zh-CN.md#选择识别方式)。
-
-## 快速开始
-
-1. **安装并启动。** 下载上方对应的安装程序。
-2. **选择识别方式。** 第一次启动时选“本机识别”“云端识别”或“轻量本机”，程序会带你下载需要的模型，或打开“申请与设置 API”填写 Key。
-3. **导入素材。** 把视频或音频拖进首页，或点“链接下载”贴视频链接；选好词库，点“开始生成字幕”。已有字幕的视频可以直接进工作台。
-4. **在字幕工作台里修改、翻译和导出。** 校对文字、切分合并、翻译、调整样式，再导出字幕或压制成片。
-
-想先熟悉界面，可以点右上角“说明 → 新手教学”，跟着范例工程走一遍。安装、费用、更新和常见问题见[使用指南](docs/product-guide.zh-CN.md)。
-
-## 进阶与文档
+## 常见问题
 
 <details>
-<summary><b>识别方案是怎么组成的（三种分工与模型列表）</b></summary>
+<summary><b>要钱吗？</b></summary>
 
-<br>
-
-一次识别最多有三种分工，按素材和设备组合：
-
-| 分工 | 做什么 | 代表方案 |
-| --- | --- | --- |
-| 主力转写 | 写出文字；MOSS 还会区分说话人 | MOSS、SenseVoice、Whisper、Qwen3-ASR、云端服务 |
-| 字幕时间轴 | 给每个字标上起止时间，断句和切分都沿着字的边界 | FireRedASR2-AED、Qwen3-ForcedAligner（可用 CPU）、Paraformer |
-| 文字复核 | 用另一个模型再听一遍，列出写法不同的地方 | Qwen3-ASR 等本地或在线方案 |
-
-- **本机模型：** MOSS-Transcribe-Diarize、FireRedASR2-AED、Qwen3-ASR 1.7B、SenseVoice Small、Paraformer Large、Whisper large-v3-turbo、Fun-ASR Nano、FireRedASR2-LLM、GLM-ASR-Nano、Canary-Qwen-2.5B（英语）、Qwen3-ForcedAligner 0.6B，以及 Mac 上的 MLX 版 Qwen3-ASR。在 Windows 上，MOSS、FireRedASR2-AED、Qwen3-ASR 1.7B 和 FireRedASR2-LLM 需要 NVIDIA 显卡。
-- **云端识别（自备账号）：** MOSS Pro 云端（MOSI）、阿里云百炼 / Qwen Cloud 录音文件识别、讯飞 Spark-ASR 2.0、Groq Whisper、OpenAI，以及 OpenRouter、Azure 和自定义兼容接口（进阶，未用真实密钥实测）。只回传句段时间的服务，字幕时间会标为“估算”。
-- 模型不随程序附带，在模型工坊按需下载，每个文件都核对 SHA-256，并遵守各自的许可（[模型许可表](licenses/MODELS.md)）。
+不要。没有付费功能，也不用注册。只有云端识别和 AI 功能会用到你自己的账号，按服务商的价格收费。
 
 </details>
 
 <details>
-<summary><b>一段录音是怎么变成字幕的（识别流程）</b></summary>
+<summary><b>视频会被上传吗？</b></summary>
 
-<br>
-
-下图是 Windows + NVIDIA 显卡的默认本机方案（MOSS + FireRedASR2-AED + Qwen3-ASR）；虚线是只有日语、英语素材才走的路线。
-
-```mermaid
-%%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
-flowchart TB
-    subgraph REC["① 识别：三个模型分工"]
-        direction TB
-        A["`视频或音频
-统一成 16 kHz`"] --> M["`**主力转写**
-MOSS
-写出文字
-分出说话人`"]
-        A --> V["`**人声检测**
-FireRedVAD
-找出有人声的区间`"]
-        M -->|中文| F["`**字幕时间轴**
-FireRedASR2-AED
-给每个字标上时间`"]
-        M -.->|日语、英语| Q["`**字幕时间轴**
-Qwen3-ForcedAligner
-把文字对齐到声音`"]
-        V --> R["`**文字复核**
-Qwen3-ASR
-再听一遍
-另写一份`"]
-    end
-    subgraph POST["② 比对、整理、输出"]
-        direction LR
-        D["`**合成主稿**
-比较三份写法
-分歧留作候选`"] --> T["`**整理与断句**
-术语库纠错
-AI 校对（可选）
-断句，锁定时间轴`"]
-        T --> P["`**字幕工作台**
-对照候选、翻译、剪辑
-导出字幕和成片`"]
-    end
-    REC --> POST
-```
-
-MOSS 先听完整段，写出文字并分出谁在说话；FireRedVAD 找出真正有人声的区间。FireRedASR2-AED 和 Qwen3-ASR 各自再听一遍，前者给每个字标上起止时间，后者写出另一份文字。软件以 MOSS 的句子和说话人为骨架比较三份写法：只有另外两个模型写法一致、改动又通过安全检查时才自动替换，其余不同的写法留在工作台的审核模式里由你决定。之后按术语库纠错，再交给你配置的文字 AI 校对（可选）；断句可以用本地规则或 AI，但 AI 只决定在哪里断开、不能改字。
-
-换成其他方案时，分工不变：云端识别由服务商写出文字，逐字时间可以用本机的 Qwen3-ForcedAligner 补上；轻量本机（SenseVoice）只做主力转写；Mac 用 MLX 版 Qwen3-ASR 加对齐模型，或在 Apple GPU 上跑 MOSS + FireRed。
+本机识别不会。用云端识别时，音频会发给你选的服务商；AI 功能只发字幕文字。
 
 </details>
 
-- [使用指南](docs/product-guide.zh-CN.md)：安装、第一次启动、选择识别方式、费用与隐私、工作台常用操作、更新、常见问题、从源码运行
-- [界面一览](docs/product-demo.zh-CN.md)：识别进度、完成页、模型工坊、导出、主题等更多截图（0.7.1 界面）
-- [申请与设置 API](docs/api-setup/README.md)：各家云端识别和文字 AI 的申请步骤与费用说明
-- [Mac 实验版说明](docs/deployment/macos-experimental.zh-CN.md) · [更新方式](UPDATING.md) · [0.8.7 发布说明](docs/releases/0.8.7.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
+<details>
+<summary><b>我的电脑能用吗？</b></summary>
 
-## 支持作者
+| 你的电脑 | 推荐 |
+| --- | --- |
+| Windows，有 NVIDIA 显卡 | 本机识别：分说话人，三个模型对照 |
+| Windows，没有 NVIDIA 显卡 | 云端识别，或用 CPU 跑的轻量本机识别 |
+| Apple 芯片 Mac | 本机识别或云端识别，建议 16 GB 以上内存 |
 
-如果兔白字幕帮到了你，可以在爱发电支持作者继续开发：**[afdian.com/a/2byteasr](https://afdian.com/a/2byteasr)**。赞助完全自愿，不赞助也能使用全部功能。
+模型第一次识别时再下载，NVIDIA 高质量方案约 11 GB。详见[选择识别方式](docs/product-guide.zh-CN.md#选择识别方式)。
 
-## 反馈、许可与第三方组件
+</details>
 
-遇到问题请到 [Issues](https://github.com/NOTBAD314/2ByteASR/issues) 反馈，附上版本、所用的识别方案、复现步骤和截图。<br>
-Discord 交流群：https://discord.gg/PSuTx9XfV · QQ 交流群：1124254900
+<details>
+<summary><b>安装时提示“未知发布者”？</b></summary>
 
-项目自有代码采用 **GPL-3.0-only**（[标准英文全文](LICENSE) / [适用范围](PROJECT_LICENSE.md)）。官方版本免费提供；允许依 GPL 商用、修改和收费分发，分发时须履行对应源码等条件。私人修改无需公开，普通字幕、视频和图片不会仅因使用本软件生成而自动适用 GPL。第三方组件保留各自许可：高保真渲染用到的 Remotion 对个人和员工不超过 3 人的营利组织免费，更大的营利组织需另购其 Company License；GSAP 采用其标准条款。详见[第三方说明](THIRD_PARTY_NOTICES.md)与[模型许可表](licenses/MODELS.md)，完整安装包的分发材料仍在整理中（[分发状态](licenses/DISTRIBUTION-STATUS.md)）。
+安装包没有做数字签名，所以系统会提示。可以用 Release 页面里的 SHA256SUMS 核对文件。
 
-源码：`main` 分支是程序源码；与 0.8.7 安装包对应的构建来源是 tag `v0.8.7`，完整构建输入在 Release 的 `2ByteASR-Source-0.8.7.zip`（说明见 [0.8.7 发布说明的“源码与校验”](docs/releases/0.8.7.md#源码与校验)）。[源码交付记录](SOURCE_DELIVERY.md)写于 0.5.0 阶段，尚未按 0.8.7 更新。
+</details>
+
+## 支持与反馈
+
+- 觉得好用，可以在[爱发电](https://afdian.com/a/2byteasr)支持作者。
+- 遇到问题到 [Issues](https://github.com/NOTBAD314/2ByteASR/issues) 反馈，附上版本和截图。
+- 交流群：[Discord](https://discord.gg/PSuTx9XfV) · QQ 群 1124254900
+- 代码采用 [GPL-3.0](LICENSE)，用它做出来的字幕和视频归你。第三方组件见[第三方说明](THIRD_PARTY_NOTICES.md)。
+- 更多文档：[使用指南](docs/product-guide.zh-CN.md) · [申请 API](docs/api-setup/README.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
