@@ -8718,5 +8718,10 @@
   "海外 · 银行卡": "International · Carte",
   "国内 · 微信 / 支付宝": "Chine · WeChat / Alipay",
   "「在画面中拖动字幕」已关闭，打开它就能直接拖动": "« Faire glisser les sous-titres sur l’image » est désactivé. Activez-le pour les déplacer directement.",
-  "这条字幕的位置还在计算，稍等一下再拖": "La position de ce sous-titre est encore en cours de calcul. Réessayez dans un instant."
+  "这条字幕的位置还在计算，稍等一下再拖": "La position de ce sous-titre est encore en cours de calcul. Réessayez dans un instant.",
+  "跳过教学 · Esc": "Ignorer le tutoriel · Échap",
+  "随时可以跳过；之后在「说明 → 新手教学」可以重新开始": "Vous pouvez l’ignorer à tout moment ; relancez-le ensuite via Aide → Tutoriel",
+  "这一步的画面没出现": "L’écran de cette étape n’est pas apparu",
+  "跳过这一步": "Passer cette étape",
+  "有冲突": "Conflits"
 }

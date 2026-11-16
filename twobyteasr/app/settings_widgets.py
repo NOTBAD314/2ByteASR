@@ -44,6 +44,7 @@ SECTION_ICONS = {
     '快捷键': ('fa5s.keyboard', '#9a5444'),
     '外部 AI（MCP）': ('fa5s.plug', '#5560a8'),
     '兔白权限': ('fa5s.user-shield', '#b05a7a'),
+    '我的改动': ('fa5s.magic', '#5a8a6e'),          # 2026-11-16 user_overlay
     '关于': ('fa5s.info-circle', '#7a6c5e'),
 }
 

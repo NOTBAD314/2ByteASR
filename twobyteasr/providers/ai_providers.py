@@ -490,7 +490,10 @@ class OpenAICompatibleProvider(AIProvider):
         from .anthropic_messages import complete
         from .llm_adapter import LLMRequestError, get_last_llm_response_diagnostics
         requested_thinking = kwargs.get("enable_thinking")
-        effort = None if operation in self._DESIGN_OPERATIONS or requested_thinking is True else "low"
+        from .subtitle_request_policy import EFFORT_LEVELS
+        # A named depth (the failed-result retry asks for high / max) is sent as that effort.
+        effort = (requested_thinking if isinstance(requested_thinking, str) and requested_thinking in EFFORT_LEVELS
+                  else None if operation in self._DESIGN_OPERATIONS or requested_thinking is True else "low")
         try:
             return complete(self.endpoint, list(messages), max_tokens=max_tokens, timeout=timeout, stage=stage,
                             cancel_check=cancel_check, json_wanted=json_wanted, effort=effort, enable_thinking=requested_thinking,

@@ -297,8 +297,9 @@ def test_tutorial_steps_let_clicks_through_the_outline_and_move_on_when_done():
 def test_fresh_install_must_choose_and_finish_the_tutorial(monkeypatch):
     """2026-11-13 (user): people who just downloaded asked whether there is a
     tutorial. A fresh install picks a way of working (no 稍后再说, Esc or click
-    outside) and goes through the tutorial (no box to untick, no 跳过教学 / Esc);
-    an unfinished tutorial comes back, unless subtitles were already made."""
+    outside) and the tutorial starts by itself (no box to untick); an unfinished
+    tutorial comes back, unless subtitles were already made. 2026-11-16 (user: stuck
+    at step 15 with no way out): 跳过教学 / Esc always leave it (``skipped``)."""
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import QApplication, QPushButton, QWidget
@@ -339,16 +340,22 @@ def test_fresh_install_must_choose_and_finish_the_tutorial(monkeypatch):
     target = QPushButton('目标', window)
     target.setGeometry(60, 300, 160, 44)
     window.show()
-    finished = []
+    finished, skipped = [], []
     tour = GuidedTour(window, [TourStep('点目标', lambda: target), TourStep('完成')])
     tour.finished.connect(finished.append)
+    tour.skipped.connect(lambda: skipped.append(True))
     tour.set_required(True)
     tour.start()
-    assert tour.skip.isHidden() and tour.chip_end.isHidden()
+    assert tour.required and not tour.skip.isHidden() and not tour.chip_end.isHidden()
     tour._user_close()
-    assert tour.mode != 'closed' and finished == []
-    tour.close_tour(True)
-    assert finished == [True]
+    assert tour.mode == 'closed' and finished == [False] and skipped == [True]
+    ended = []
+    again = GuidedTour(window, [TourStep('完成')])
+    again.finished.connect(ended.append)
+    again.set_required(True)
+    again.start()
+    again.close_tour(True)               # finished: no skip signal
+    assert ended == [True]
     other = GuidedTour(window, [TourStep('完成')])
     other.start()
     assert not other.skip.isHidden()

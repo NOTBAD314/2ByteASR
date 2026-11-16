@@ -3246,10 +3246,9 @@ class StudioExportWorkspace(QWidget):
         output = getattr(self, "_success_output", None)
         if output is None or not output.is_file():
             bind_text(self.success_page.error, '找不到成片文件，可能已被移动或删除。');self.success_page.error.show();return
-        try:
-            from ..system.processes import popen_hidden_subprocess
-            popen_hidden_subprocess(['explorer.exe','/select,',str(output)],purpose='reveal completed export')
-        except OSError:
+        from ..system.file_manager import reveal_file
+        self.success_page.error.hide()
+        if not reveal_file(output):
             bind_text(self.success_page.error, '无法打开资源管理器；可复制输出位置后手动打开。');self.success_page.error.show()
 
     def _show_failure(self, message: str) -> None:

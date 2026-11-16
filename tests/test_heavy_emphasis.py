@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import re
+import sys
 
 from twobyteasr.design.typography import (
     MONO_FONT_STACK, TITLE_FONT_FAMILIES, TITLE_FONT_STACK, UI_FONT_FAMILIES, UI_FONT_STACK,
@@ -42,7 +43,8 @@ def test_explicit_families_are_respected_except_body_face_with_emphasis():
 
 def test_declaration_lists_keywords_and_idempotence():
     bare = emphasis_qss("color: #333; font-size: 13px; font-weight: bold")
-    assert bare.endswith(f"font-weight: bold; font-family: {TITLE_FONT_STACK};")
+    expected = "900" if sys.platform == "darwin" else "bold"
+    assert bare.endswith(f"font-weight: {expected}; font-family: {TITLE_FONT_STACK};")
     assert emphasis_qss(bare) == bare
     sheet = emphasis_qss("QLabel { /* font-weight: 900 */ font-weight: 400; }")
     assert UI_FONT_STACK in sheet and TITLE_FONT_STACK not in sheet

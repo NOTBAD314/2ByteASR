@@ -1441,6 +1441,8 @@ class SpeakerManagerDialog(QDialog):
             # One edit session commits once at an explicit boundary; keystrokes
             # never rebuild the cards or add undo entries.
             card.committed_name = name
+            from ..app.newbie_tasks import mark
+            mark('speakers')
             self.page.undo_stack.push(SetSpeakerCommand(project, speaker.id, {"name": name},
                                                         text=tr("修改说话人名称"),
                                                         changed=self.page._speaker_structure_changed))
@@ -1641,6 +1643,8 @@ class SpeakerManagerDialog(QDialog):
         self._set_status(f'已整理 {count} 位局部识别空人物，可撤销恢复')
 
     def _push(self, command) -> None:
+        from ..app.newbie_tasks import mark
+        mark('speakers')
         self.page.undo_stack.push(command)
         error = getattr(command, "error", "")
         if error:

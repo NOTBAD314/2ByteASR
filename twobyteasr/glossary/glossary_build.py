@@ -393,8 +393,11 @@ def _structured_call(
     timeout: tuple[int, int],
     on_stream_event=None,
     first_response_timeout=None, idle_timeout=None,
+    enable_thinking=None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Run one structured completion; returns (payload, diagnostics)."""
+    """Run one structured completion; returns (payload, diagnostics).
+
+    ``enable_thinking``: sent only when given (False for DeepSeek sorting fetched pages, 2026-11-16)."""
     from ..providers.ai_providers import AIProviderError, provider_for_stage
     from ..providers.llm_config import endpoint_from_settings
 
@@ -425,6 +428,7 @@ def _structured_call(
             temperature=0.0,
             timeout=timeout,
             extra_body=extra_body,
+            **({} if enable_thinking is None else {"enable_thinking": enable_thinking}),
         )
     except AIProviderError as exc:
         category = str(getattr(exc, "category", "") or "")
