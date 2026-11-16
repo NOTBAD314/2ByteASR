@@ -908,6 +908,13 @@ class SubtitleTaskPanel(QDialog):
         error = str(row.get('error') or '')
         if error and status in TODO:
             text = f'{error}。{text}'
+        for stage, activity in (row.get('activity') or {}).items():
+            if not stage.startswith('escalation:') or activity.get('state') != 'completed':
+                continue
+            label = '校对' if activity.get('stage') == 'polished' else '断句'
+            text += (f" {label}提高思考等级重试（{activity.get('thinking', '')}）："
+                     f"救回 {int(activity.get('succeeded_cues') or 0)} 条，"
+                     f"仍失败 {int(activity.get('failed_cues') or 0)} 条。")
         self.next_lead.setText(lead)
         self.next_text.setText(text)
         if self.next_strip.property('status') != status:

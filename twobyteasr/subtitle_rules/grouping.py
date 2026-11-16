@@ -1402,6 +1402,123 @@ def accepted_japanese_boundaries(segments,boundaries,required=(),firered_tokens=
     return result
 
 
+# 2026-11-16: "the model did not answer in the contract" failures (after classify_request_error).
+# text_mutation_rejected (the model rewrote text) and auth/quota/HTTP 4xx are never resent.
+GROUPING_ESCALATION_CATEGORIES = frozenset({
+    'parse_failure', 'format_mismatch', 'empty_response',
+    'structured_output_truncated', 'structured_output_truncated_before_answer'})
+
+
+def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments, global_position, snapshot, *,
+                              protect_all_source_boundaries, abort_event, quality_budget, source_offsets,
+                              cache_context):
+    """Resend batches that fell back on format/truncation once: same model, thinking one level higher.
+
+    Each batch is resent as two halves with no further retry or split. A half that validates
+    replaces that part of the local fallback; a half that fails again keeps the same
+    conservative local boundaries as before. Returns rescued batch indexes and new review items.
+    """
+    import dataclasses
+    from ..providers.asr_provider_snapshot import GroupedBatchResult
+    from ..providers.provider_input_budget import RetryBudget
+    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+                                                     task_escalation_enabled)
+    from .ai_boundary_policy import provenance
+    candidates = [job for job in jobs if not job[-1] and fallback_reasons.get(job[0]) in GROUPING_ESCALATION_CATEGORIES]
+    if not candidates:
+        return set(), []
+    categories = {}
+    for index, *_ in candidates:
+        categories[fallback_reasons[index]] = categories.get(fallback_reasons[index], 0) + 1
+    count = sum(len(batch) for _, _, batch, *_ in candidates)
+    endpoint = snapshot.endpoint()
+    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
+        base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=snapshot.protocol)
+    limit = escalation_cue_limit(len(ordered_segments))
+    skipped = ('disabled' if not task_escalation_enabled('group') else
+               'configuration_rejected' if abort_event is not None and abort_event.is_set() else
+               'no_higher_thinking_level' if level is None else
+               'too_many_failures' if count > limit else '')
+    event = dict(stage='grouped', candidate_cues=count, candidate_batches=[job[0] for job in candidates],
+                 total_cues=len(ordered_segments), cue_limit=limit, categories=categories,
+                 current_thinking=snapshot.enable_thinking, thinking_protocol=snapshot.thinking_protocol)
+    if skipped:
+        record_run_event('ai_escalation_round', skipped_reason=skipped, **event)
+        return set(), []
+    escalated = dataclasses.replace(snapshot, enable_thinking=level)
+    work = []
+    for job in candidates:
+        batch = job[2]
+        middle = (len(batch) + 1) // 2  # thinking text also uses the output budget
+        work.append((job, [batch] if len(batch) == 1 else [batch[:middle], batch[middle:]]))
+    requests = sum(len(halves) for _, halves in work)
+    budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * requests)
+    print(f"   [提高思考重试] {len(candidates)} 个断句批次格式或截断仍失败，用同一模型、思考等级 {level} 再请求一轮"
+          f"（{requests} 个请求）。")
+    record_run_event('ai_escalation_round', state='started', thinking=level, requests=requests, **event)
+    owner = get_runtime_context()
+    resolved, improved, still_failed, extra_reviews, number = set(), [], [], [], 0
+    for (index, speaker, batch, dependency, _local_fast), halves in work:
+        cues, all_validated, any_ai, reviews_kept = [], True, False, []
+        for half in halves:
+            if bool(getattr(owner.cancellation_token, 'is_cancelled', False)):
+                from ..recognition.service import CancelledError
+                raise CancelledError('断句任务已取消。')
+            number += 1
+            first, last = global_position[half[0].segment_id], global_position[half[-1].segment_id]
+            context = {key: [{'id': x.segment_id, 'speaker': x.speaker, 'text': x.text, 'read_only': True} for x in values]
+                for key, values in [('before', ordered_segments[max(0, first-2):first]),
+                                    ('after', ordered_segments[last+1:last+3])]}
+            protected = set(dependency['protected_after']) & {row.segment_id for row in half}
+            diag = {'batch_id': f'E{number}', 'parent_batch_id': index}
+
+            def run(half=half, context=context, protected=protected, diag=diag, number=number):
+                return call_grouping_api(half, protect_all_source_boundaries=protect_all_source_boundaries,
+                    protected_after_segment_ids=protected, firered_tokens=dependency['firered_tokens'],
+                    speech_regions=dependency['speech_regions'], abort_event=abort_event,
+                    batch_index=f'E{number}', batch_total=requests, _split_depth=STRUCTURED_SPLIT_MAX_DEPTH,
+                    provider_snapshot=escalated, batch_diagnostics=diag, _retry_budget=budget,
+                    _quality_budget=quality_budget, _source_offsets=source_offsets,
+                    _cache_context=cache_context, _read_only_context=context)
+            with capture_review_items() as reviews:
+                if cache_context is None:
+                    value = run()
+                else:
+                    value = run_cached_api_batch('grouped', cache_context,
+                        dict(dependency, batch=_grouping_dependency_segments(half), thinking_escalation=level,
+                             protected_after=sorted(protected)),
+                        run, encoder=serialize_cues, decoder=deserialize_cues,
+                        fallback_categories=('断句回退',), provider_snapshot=escalated, diagnostics=diag,
+                        validator=lambda values, half=half, protected=protected: _validate_grouped_sources(half, values,
+                            protect_all_source_boundaries=protect_all_source_boundaries,
+                            protected_after_source_ids=protected))
+            ok = getattr(value, 'origin', '') != 'fallback'
+            any_ai = any_ai or ok
+            all_validated = all_validated and ok and bool(getattr(value, 'validated', False))
+            # A half that fails again is covered by the batch's 断句回退 warning kept below.
+            reviews_kept.extend(item for item in reviews if ok or item.get('category') != '断句回退')
+            cues.extend(value)
+        if not any_ai or not _validate_grouped_sources(batch, cues):
+            still_failed.append(index)
+            continue
+        origin, status = provenance(cues, all_validated)
+        results[index] = GroupedBatchResult(cues, validated=all_validated, origin=origin, result_status=status)
+        extra_reviews.extend(reviews_kept)
+        improved.append(index)
+        if all_validated:
+            resolved.add(index)
+        else:
+            still_failed.append(index)
+    record_run_event('ai_escalation_round', state='completed', thinking=level, requests=requests,
+        succeeded_batches=len(resolved), partly_improved_batches=sorted(set(improved)-resolved),
+        failed_batches=sorted(set(still_failed)), resolved_batches=sorted(resolved),
+        succeeded_cues=sum(len(job[2]) for job in candidates if job[0] in resolved),
+        failed_cues=sum(len(job[2]) for job in candidates if job[0] not in resolved),
+        remaining_fallback_batches=sum(index not in resolved for index in fallback_reasons), **event)
+    print(f"   [提高思考重试] 救回 {len(resolved)} 个断句批次，仍保留本地断句 {len(set(still_failed))} 个。")
+    return resolved, extra_reviews
+
+
 def group_subtitles(
     segments,
     firered_tokens=(),
@@ -1527,6 +1644,7 @@ def group_subtitles(
         }
         jobs.append((index, speaker, batch, dependency, local_fast))
     quality_budget.register_batches(index for index, *_ in jobs)
+    fallback_reasons = {}
 
     def execute_job(job):
         index, speaker, batch, dependency, local_fast = job
@@ -1626,6 +1744,8 @@ def group_subtitles(
             batch_index=index, batch_total=len(batches), rows=[dict(
                 start=round(float(cue.start), 3), end=round(float(cue.end), 3),
                 text=str(cue.text or ''), state='grouped') for cue in batch_cues if str(cue.text or '').strip()])
+        if getattr(batch_cues, 'origin', '') == 'fallback':
+            fallback_reasons[index] = batch_diag.get('fallback_reason')
         return index, batch_cues, review_items
 
     def run_job(job):
@@ -1635,6 +1755,7 @@ def group_subtitles(
             quality_budget.finish_batch(job[0])
 
     results = {}
+    batch_reviews = []
     from ..system.task_resources import cloud_request_workers
     workers = (
         min(cloud_request_workers(snapshot,CLOUD_BATCH_WORKERS), len(jobs))
@@ -1666,12 +1787,23 @@ def group_subtitles(
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="glm-group") as pool:
             for index, batch_cues, review_items in bounded_results(pool,run_job,jobs,limit=workers):
                 results[index] = batch_cues
-                extend_review_items(review_items)
+                batch_reviews.append((index, review_items))
     else:
         for job in jobs:
             index, batch_cues, review_items = run_job(job)
             results[index] = batch_cues
-            extend_review_items(review_items)
+            batch_reviews.append((index, review_items))
+    # Review items wait for the thinking-escalation round: a batch it rescued must not keep
+    # its 断句回退 warning.
+    resolved_batches, escalation_reviews = (_escalate_failed_grouping(
+        jobs, results, fallback_reasons, ordered_segments, global_position, snapshot,
+        protect_all_source_boundaries=protect_all_source_boundaries, abort_event=grouping_abort_event,
+        quality_budget=quality_budget, source_offsets=global_source_offsets, cache_context=cache_context)
+        if use_ai and snapshot is not None else (set(), []))
+    for index, review_items in batch_reviews:
+        extend_review_items([item for item in review_items if index not in resolved_batches
+                             or item.get('category') != '断句回退'])
+    extend_review_items(escalation_reviews)
     for index in sorted(results):
         cues.extend(results[index])
     final_quality_issues = []

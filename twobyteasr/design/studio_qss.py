@@ -22,6 +22,19 @@ class StudioComponentTokens:
     input_padding: int = 8
 
 
+def _cute_font_stack() -> str:
+    try:
+        from PySide6.QtWidgets import QApplication
+        if QApplication.instance() is not None:
+            from .loading_font import loading_font
+            family = loading_font().family()
+            if family:
+                return f'"{family}", {UI_FONT_STACK}'
+    except Exception:
+        pass
+    return UI_FONT_STACK
+
+
 @emphasized
 def build_studio_component_qss(theme, tokens: StudioComponentTokens | None = None) -> str:
     t = tokens or StudioComponentTokens()
@@ -34,6 +47,12 @@ def build_studio_component_qss(theme, tokens: StudioComponentTokens | None = Non
     bulk_edge = blend_hex(theme.warning_soft, theme.warning, 0.4)
     bulk_ink = max((theme.surface, theme.text, "#ffffff", "#1d1b18"), key=lambda ink: contrast_ratio(ink, theme.warning))
     bulk_hover = blend_hex(theme.warning, theme.text, 0.14)
+    ok_soft = blend_hex(theme.surface, theme.success, 0.16)
+    # The review strip's chrome uses the bundled rounded face (as 问问兔白
+    # does); captions keep the interface face so they read like subtitles.
+    cute = _cute_font_stack()
+    key_on_accent = blend_hex(theme.accent, theme.text_on_accent, 0.2)
+    key_on_accent_edge = blend_hex(theme.accent, theme.text_on_accent, 0.34)
     return f"""
 /* Timeline geometry belongs to this bar, independently of dialog controls. */
 QWidget#studioTimelineCommandBar QToolButton#studioTool {{
@@ -73,19 +92,61 @@ QFrame#reviewSummaryStrip {{
 QFrame#reviewSummaryStrip QLabel, QFrame#reviewSummaryStrip QPushButton {{
     font-family: {UI_FONT_STACK}; font-size: {t.label_size}px; font-weight: 500;
 }}
-QLabel#reviewIssueSummary {{ color: {theme.warning}; padding: 2px 4px; }}
-QLabel#reviewReason {{ color: {theme.text_secondary}; padding: 2px 4px; }}
-QLabel#reviewQueueCount {{ color: {theme.text}; padding: 2px 4px; font-weight: 600; }}
-QLabel#reviewLegend {{ color: {theme.text_muted}; padding: 3px 4px; font-size: {t.caption_size}px; }}
-QToolButton#reviewCollapseButton {{ background: transparent; border: 0; color: {theme.text_secondary}; min-width: 24px; }}
-QToolButton#reviewCollapseButton:hover {{ background: {theme.selected}; border-radius: 4px; }}
-QFrame#reviewCard {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 8px; }}
+/* 2026-11-16 design A 糖果条 (user: match the draft): rounded face for the chrome,
+   big heavy caption text on top of each card, small source chips under it. */
+QFrame#reviewStatusPill {{ border-radius: 15px; background: {theme.warning_soft}; }}
+QFrame#reviewStatusPill[tone="ok"] {{ background: {ok_soft}; }}
+QLabel#reviewStatusDot {{ border-radius: 10px; background: {theme.warning}; }}
+QLabel#reviewStatusDot[tone="ok"] {{ background: {theme.success}; }}
+QFrame#reviewSummaryStrip QLabel#reviewIssueSummary {{
+    font-family: {cute}; font-size: 15px; font-weight: 700; background: transparent; padding: 0;
+    color: {theme.warning};
+}}
+QFrame#reviewSummaryStrip QLabel#reviewIssueSummary[tone="ok"] {{ color: {theme.success}; }}
+QFrame#reviewSummaryStrip QLabel#reviewReason {{ font-family: {cute}; font-size: 14px; color: {theme.text_secondary}; padding: 2px 4px; }}
+QFrame#reviewSummaryStrip QLabel#reviewQueueCount {{ font-family: {cute}; color: {theme.text_muted}; padding: 0 1px; font-size: 12px; }}
+QProgressBar#reviewProgress {{ background: {theme.selected}; border: 0; border-radius: 3px; min-width: 128px; }}
+QProgressBar#reviewProgress::chunk {{ background: {theme.accent}; border-radius: 3px; }}
+QFrame#reviewSummaryStrip QPushButton#reviewPill, QFrame#reviewSummaryStrip QPushButton#reviewPillPrimary {{
+    font-family: {cute}; font-size: 14px;
+    border-radius: 16px; min-height: 32px; max-height: 32px; padding-left: 13px; padding-right: 13px;
+    background: {theme.surface}; color: {theme.text}; border: 1px solid {theme.border};
+}}
+QFrame#reviewSummaryStrip QPushButton#reviewPill:hover {{ background: {theme.surface_elevated}; border-color: {theme.border_strong}; }}
+QFrame#reviewSummaryStrip QPushButton#reviewPill:pressed {{ background: {theme.selected}; }}
+QFrame#reviewSummaryStrip QPushButton#reviewPillPrimary {{
+    background: {theme.accent}; color: {theme.text_on_accent}; border-color: {theme.accent}; font-weight: 700;
+}}
+QFrame#reviewSummaryStrip QPushButton#reviewPillPrimary:hover {{ background: {theme.accent_hover}; border-color: {theme.accent_hover}; }}
+QFrame#reviewSummaryStrip QPushButton#reviewPillPrimary:pressed {{ background: {theme.accent_pressed}; border-color: {theme.accent_pressed}; }}
+QFrame#reviewSummaryStrip QLabel#reviewKeycap, QFrame#reviewSummaryStrip QLabel#reviewKeycapOnAccent {{
+    font-family: {MONO_FONT_STACK}; font-size: 11px; font-weight: 500; border-radius: 7px;
+    padding: 1px 6px; min-width: 10px; min-height: 15px;
+}}
+QFrame#reviewSummaryStrip QLabel#reviewKeycap {{
+    background: {theme.input_surface}; color: {theme.text_secondary};
+    border: 1px solid {theme.border}; border-bottom: 2px solid {theme.border};
+}}
+QFrame#reviewSummaryStrip QLabel#reviewKeycapOnAccent {{
+    background: {key_on_accent}; color: {theme.text_on_accent}; border: 1px solid {key_on_accent_edge};
+}}
+QFrame#reviewSummaryStrip QLabel#reviewLegendText {{ font-family: {cute}; color: {theme.text_muted}; font-size: 12px; }}
+QToolButton#reviewLegendMore {{
+    font-family: {cute}; background: transparent; border: 0; color: {theme.accent}; font-size: 12px; padding: 1px 4px;
+}}
+QToolButton#reviewLegendMore:hover {{ text-decoration: underline; }}
+QToolButton#reviewCollapseButton {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 16px; }}
+QToolButton#reviewCollapseButton:hover {{ background: {theme.surface_elevated}; border-color: {theme.border_strong}; }}
+QFrame#reviewOkLine {{ background: {theme.surface}; border: 1.5px dashed {theme.border_strong}; border-radius: 16px; }}
+QFrame#reviewOkLine QLabel#reviewOkText {{ color: {theme.text}; font-family: {UI_FONT_STACK}; font-size: 19px; font-weight: 800; }}
+QFrame#reviewCard {{ background: {theme.surface}; border: 1.5px solid {theme.border}; border-radius: 16px; }}
 QFrame#reviewCard:hover {{ background: {theme.surface_elevated}; border-color: {theme.focus}; }}
-QFrame#reviewCard[selected="true"] {{ background: {theme.accent_soft}; border: 2px solid {theme.focus}; }}
-QFrame#reviewCard QLabel#reviewCandidateText {{ color: {theme.text}; font-family: {UI_FONT_STACK}; font-size: 15px; font-weight: 500; }}
-QFrame#reviewCard QLabel#reviewCardNum {{ background: {theme.selected}; color: {theme.text}; border-radius: 5px; font-size: 15px; font-weight: 600; }}
-QFrame#reviewCard QLabel#reviewSourceBadge {{ background: {theme.panel}; color: {theme.text_muted}; border-radius: 4px; padding: 2px 6px; font-size: {t.caption_size}px; }}
-QFrame#reviewCard QLabel#reviewSourceBadge[current="true"] {{ background: {theme.selected}; color: {theme.text}; }}
+QFrame#reviewCard[selected="true"] {{ background: {theme.accent_soft}; border: 1.5px solid {theme.accent}; }}
+QFrame#reviewCard QLabel#reviewCandidateText {{ color: {theme.text}; font-family: {UI_FONT_STACK}; font-size: 19px; font-weight: 800; }}
+QFrame#reviewCard QLabel#reviewCardNum {{ font-family: {cute}; background: {theme.selected}; color: {theme.text}; border-radius: 10px; font-size: 15px; font-weight: 800; }}
+QFrame#reviewCard[selected="true"] QLabel#reviewCardNum {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
+QFrame#reviewCard QLabel#reviewSourceBadge {{ font-family: {cute}; background: {theme.input_surface}; color: {theme.text_muted}; border-radius: 9px; padding: 0 8px; min-height: 18px; max-height: 18px; font-size: 11px; }}
+QFrame#reviewCard QLabel#reviewSourceBadge[current="true"] {{ background: {theme.accent}; color: {theme.text_on_accent}; }}
 QLineEdit#timelineTimecodeInput {{
     background: {theme.input_surface}; color: {theme.text}; border: 1px solid {theme.border_strong};
     border-radius: {t.control_radius}px; min-height: {t.field_height}px;

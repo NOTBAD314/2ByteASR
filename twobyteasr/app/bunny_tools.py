@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 MAX_PER_ROUND = 4
-MAX_ROUNDS = 5
+MAX_ROUNDS = 5                 # per question; ``start_task`` raises it (bunny_harness_tools.TASK_ROUNDS)
 
 
 class ToolError(Exception):
@@ -45,6 +45,7 @@ class Tool:
     acts: bool = False             # moves the view, selects, opens (🟢): not under 「只指路」
     edit: bool = False             # an undoable edit (🟡): waits for 「帮我做」 unless 能撤销的直接做
     paid: bool = False             # AI work on the user's own key: waits for 「帮我做」 unless allowed
+    persistent: bool = False       # stays after a restart (user_overlay): always waits for 「帮我做」
 
 
 # ------------------------------------------------------------------ time and places
@@ -474,6 +475,115 @@ def _ui_info(window, _args) -> str:
     return '\n'.join(lines)
 
 
+def _look_screen(window, _args):
+    """2026-11-16: a picture of 2ByteASR's own windows, for an AI that can see images (bunny_vision)."""
+    from . import bunny_vision
+    from .bunny_chat import runtime_settings
+    able, why = bunny_vision.support(runtime_settings(window))
+    if not able:
+        raise ToolError(why)
+    try:
+        return bunny_vision.capture(window)
+    except RuntimeError as exc:
+        raise ToolError(str(exc)) from None
+
+
+# ------------------------------------------------------------------ 「我的改动」 (2026-11-16, user_overlay)
+WIDGET_LIMIT = 25
+
+
+def _ui_widgets(window, args):
+    """The named controls on screen, so a style change can name the right one."""
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QWidget
+    want = ' '.join(str(args.get('text') or '').split())
+    rows, seen = [], set()
+    tops = [window, *[top for top in QApplication.topLevelWidgets() if top is not window and top.isVisible()]]
+    for top in tops:
+        if top.objectName() in ('bunnyChat', 'bunnyCarrier', 'bunnyLog'):
+            continue
+        for widget in [top, *top.findChildren(QWidget)]:
+            name = widget.objectName()
+            if (not name or name in seen or name.startswith(('qt_', 'bunny')) or not widget.isVisible()
+                    or widget.width() < 6 or widget.height() < 6):
+                continue
+            text = ''
+            if isinstance(widget, (QAbstractButton, QLabel)):
+                text = ' '.join(widget.text().split())
+            elif isinstance(widget, QLineEdit):
+                text = widget.placeholderText()
+            text = text or ' '.join(widget.toolTip().split())
+            if want and want not in text and want not in name:
+                continue
+            seen.add(name)
+            rows.append(f'- {type(widget).__name__}#{name}' + (f'「{text[:30]}」' if text else '')
+                        + f' {widget.width()}×{widget.height()}')
+            if len(rows) >= WIDGET_LIMIT:
+                break
+        if len(rows) >= WIDGET_LIMIT:
+            break
+    if not rows:
+        raise ToolError(f'屏幕上没有找到{"含「" + want + "」的" if want else ""}有名字的控件')
+    return '有名字的控件（样式改动按 #名字 改）：\n' + '\n'.join(rows)
+
+
+def _list_changes(window, _args):
+    from . import user_overlay
+    state = user_overlay.load()
+    rows = [user_overlay.describe(entry) for entry in state['entries']]
+    head = '「允许运行我的扩展脚本」' + ('开着' if state.get('scripts_allowed') else '关着')
+    return head + ('\n' + '\n'.join(rows[-20:]) if rows else '；还没有任何改动')
+
+
+def _overlay_undo(snapshot: str, revision_after: int):
+    def undo() -> str:
+        from . import user_overlay, user_overlay_runtime
+        if user_overlay.revision() != revision_after:
+            return '之后「我的改动」又有别的修改，兔白不敢乱撤；请到「设置 → 我的改动」手动处理'
+        user_overlay.restore(snapshot)
+        user_overlay_runtime.reapply()
+        return ''
+    return undo
+
+
+def _propose_change(window, args):
+    from . import user_overlay, user_overlay_runtime
+    kind = str(args.get('kind') or '').strip()
+    target = str(args.get('target') or '').strip()
+    value = str(args.get('value') or '').strip()
+    if kind == 'text':
+        source = user_overlay_runtime.resolve_ui_text(target)
+        if not source:
+            raise ToolError(f'「{target}」不是软件自带的界面文字（可能是字幕、文件名这类内容），改不了')
+        target = source
+    try:
+        entry, snapshot = user_overlay.add(kind, target, value, by='bunny', note=str(args.get('why') or ''),
+                                           code=args.get('code'), app_version=user_overlay_runtime.program_identity())
+    except user_overlay.OverlayError as exc:
+        raise ToolError(str(exc)) from None
+    user_overlay_runtime.reapply()
+    undo = UndoRecord('call', _overlay_undo(snapshot, user_overlay.revision()), 0)
+    if kind == 'script':
+        return (f'脚本存成了 {entry["id"]}，现在是关着的：要小兔纸在「设置 → 我的改动」看过代码、打开「允许运行我的扩展脚本」'
+                f'并勾上它才会运行'), undo
+    return (f'改好了 {entry["id"]}（{user_overlay.KIND_LABELS[kind]}），会一直保留，更新也不会盖掉；'
+            f'在「设置 → 我的改动」可以关掉或删掉'), undo
+
+
+def _disable_change(window, args):
+    from . import user_overlay, user_overlay_runtime
+    entry_id = str(args.get('id') or '').strip()
+    entry = user_overlay.find(entry_id)
+    if entry is None:
+        raise ToolError(f'没有编号 {entry_id} 的改动（list_changes 可以看编号）')
+    if not entry.get('enabled'):
+        raise ToolError(f'{entry_id} 本来就是关着的')
+    user_overlay.set_enabled(entry_id, False)
+    snapshot = user_overlay.snapshots()[0]['id']        # the state just before switching it off
+    user_overlay_runtime.reapply()
+    return f'关掉了 {entry_id}（没有删，「设置 → 我的改动」可以再打开）', UndoRecord(
+        'call', _overlay_undo(snapshot, user_overlay.revision()), 0)
+
+
 # ------------------------------------------------------------------ step 3: undoable edits (2026-11-15)
 # Each goes through the same command the user's own click pushes, so Ctrl+Z works, and returns
 # (receipt, undo record) so 「撤销兔白刚才做的」 can take exactly her steps back.
@@ -759,8 +869,18 @@ def edit_context(window) -> tuple:
     selected = tuple(page.selected_cue_ids()) if callable(getattr(page, 'selected_cue_ids', None)) else ()
     home = tuple(getattr(window, name).currentIndex() if getattr(window, name, None) is not None else None
                  for _action, name in HOME_FIELDS.values())
+    legacy = getattr(window, 'legacy', None)
+    loader = getattr(legacy, 'load_learned_term_payload', None)
+    glossary = ''
+    if callable(loader):
+        import hashlib, json
+        try:
+            glossary = hashlib.sha256(json.dumps(loader(strict=True), sort_keys=True, default=str,
+                                                  ensure_ascii=False).encode('utf8')).hexdigest()
+        except (OSError, ValueError, TypeError):
+            glossary = object()  # unreadable stores cannot authorize an old proposal
     return (current_page(window), id(getattr(page, 'project', None)), selected, index,
-            stack.command(index - 1) if index else None, home)
+            stack.command(index - 1) if index else None, home, glossary)
 
 
 # Background tools: slow reads that run beside her AI request, off the GUI thread (bunny_lookup).
@@ -807,8 +927,26 @@ def _tools() -> dict:
         Tool('find_cues', '{"text": "派门"}', '工作台：找包含某些字的字幕（原文或译文），列出第几条', _find_cues),
         Tool('project_info', '{}', '工作台：工程概况：说话人和各自条数、译文有多少、待检查几条、素材和音轨、词库、有没有没保存的修改', _project_info),
         Tool('ui_info', '{}', '屏幕上的情况：开着哪些窗口、首页底部提示和「开始生成字幕」能不能按、工作台状态栏', _ui_info),
+        Tool('look_screen', '{}', '截一张 2ByteASR 自己窗口的图（不含桌面和兔白的聊天框）给你看，图跟在操作结果后面；'
+             '要看排版、颜色、遮挡、文字有没有被切掉时用。一题最多截两次', _look_screen),
+        Tool('ui_widgets', '{"text": "开始生成字幕"}', '列出屏幕上有名字的控件（类名#控件名「文字」宽×高），text 可以只找含这些字的；'
+             '改样式前先用它找控件名', _ui_widgets),
+        Tool('list_changes', '{}', '看「我的改动」里已经有哪些改动（编号、种类、谁做的、开着没有）', _list_changes),
+        Tool('propose_change', '{"kind": "style", "target": "#startButton", "value": "font-size: 16px;", "why": "按钮字太小"}',
+             '【修改·长期保留】往「我的改动」加一条，更新也不会盖掉，要小兔纸按「帮我做」：'
+             'kind=style 改一个控件的样式（target 填 #控件名 或 类名#控件名，value 填「属性: 值;」）；'
+             'kind=text 把一句界面文字换个说法（target 填屏幕上看到的原句，value 填新说法）；'
+             'kind=note 给自己记一条长期说明（value）；'
+             'kind=script 写 Python 扩展脚本（code 填完整代码，要有 API_VERSION = 1 和 def setup(api):；'
+             'api.window 主窗口、api.find("控件名")、api.log()、api.every(毫秒, 函数)、api.data_dir；value 写一句做什么），'
+             '存下来是关着的，要小兔纸看过再打开', _propose_change, edit=True, persistent=True),
+        Tool('disable_change', '{"id": "u3"}', '【修改】关掉「我的改动」里的一条（不删）', _disable_change,
+             edit=True, persistent=True),
         *(Tool(name, '{}', f'（后台查，稍慢）{summary}', None, background=True) for name, summary in BACKGROUND.items()),
     )
+    # 2026-11-16 (harness plan P3/P4): term libraries, the web, the user's folders, long tasks.
+    from .bunny_harness_tools import tools as harness_tools
+    items = (*items, *harness_tools())
     return {tool.name: tool for tool in items}
 
 
@@ -846,30 +984,50 @@ def _params(name: str) -> dict:
 
 
 def split_calls(calls, permissions=None) -> tuple[list, list]:
-    """(calls handled on the GUI thread, background reads for the worker). A background read the
-    permissions refuse stays with the GUI calls, so its refusal is reported there."""
+    """(calls handled on the GUI thread, background work for the worker). A background read the
+    permissions refuse stays with the GUI calls, so its refusal is reported there.
+
+    Background items are a name for the lookups (``BACKGROUND``, no arguments) and ``(name, args)``
+    for the worker tools that take arguments (web_search, read_page; 2026-11-16)."""
     from . import bunny_permissions
-    background = [name for name, _args in calls if TOOLS[name].background
-                  and not (permissions is not None and bunny_permissions.refusal(TOOLS[name], permissions))]
-    now = [(name, args) for name, args in calls if name not in background]
-    return now, background
+    background, now = [], []
+    for name, args in calls:
+        tool = TOOLS[name]
+        refused = permissions is not None and bunny_permissions.refusal(tool, permissions)
+        waits = permissions is not None and bunny_permissions.needs_confirmation(tool, permissions)
+        if tool.background and not refused and not waits:
+            background.append((name, args) if tool.run is not None else name)
+        else:
+            now.append((name, args))
+    seen = []
+    for item in background:                      # a lookup asked twice runs once
+        if item not in seen:
+            seen.append(item)
+    return now, seen
 
 
-def run_background(names, *, ai_ready=None, settings=None) -> list[str]:
-    """The slow reads, on the worker thread; one receipt each."""
+def run_background(items, *, ai_ready=None, settings=None) -> list[str]:
+    """The slow reads and worker tools, on the worker thread; one receipt each."""
     from .bunny_lookup import run_check
+    from . import bunny_permissions
     receipts = []
-    for name in dict.fromkeys(names):
+    for item in items:
+        name, args = (item, {}) if isinstance(item, str) else item
+        shown = name if isinstance(item, str) else call_text(name, args)
         try:
-            from . import bunny_permissions
             refused = bunny_permissions.refusal(TOOLS[name], bunny_permissions.load())
             if refused:
-                receipts.append(f'- {name}：没有读取。{refused}')
+                receipts.append(f'- {shown}：没有读取。{refused}')
+                continue
+            if TOOLS[name].run is not None:
+                receipts.append(f'- {shown}：成功。{TOOLS[name].run(settings, args)}')
                 continue
             found = run_check(name, ai_ready=ai_ready, settings=settings) or '（没有查到内容）'
-            receipts.append(f'- {name}：\n{found}')
+            receipts.append(f'- {shown}：\n{found}')
+        except ToolError as exc:
+            receipts.append(f'- {shown}：没做成。{exc}')
         except Exception as exc:  # noqa: BLE001
-            receipts.append(f'- {name}：没查到。{type(exc).__name__}')
+            receipts.append(f'- {shown}：没查到。{type(exc).__name__}')
     return receipts
 
 
@@ -879,6 +1037,7 @@ class TurnResult:
     later: list = field(default_factory=list)       # windows to open after her answer
     pending: list = field(default_factory=list)     # edits waiting for 「帮我做」
     undo: list = field(default_factory=list)        # UndoRecord of the edits that ran
+    images: list = field(default_factory=list)      # bunny_vision.Capture, sent once with the next request
 
 
 def call_text(name: str, args: dict) -> str:
@@ -907,6 +1066,10 @@ def run_turn(window, calls, permissions=None, *, confirmed: bool = False) -> Tur
             if isinstance(done, tuple):
                 done, record = done
                 result.undo.append(record)
+            from .bunny_vision import Capture
+            if isinstance(done, Capture):
+                result.images.append(done)
+                done = done.receipt
             result.receipts.append(f'- {shown}：成功。{done}')
             if tool.deferred:
                 result.later.append((name, args))
@@ -923,7 +1086,7 @@ def run_calls(window, calls) -> tuple[list[str], list[tuple[str, dict]]]:
     return result.receipts, result.later
 
 
-def pending_summary(pending) -> str:
+def pending_summary(pending, window=None) -> str:
     """What 「帮我做」 will do, in a few words for the button."""
     words = {'ai_refine': lambda a: {'failed': '用 AI 重跑失败的断句', 'all': '用 AI 重新断句整个工程', 'selected': '用 AI 重新断句选中的'}.get(a.get('scope', 'failed'), 'AI 断句'),
              'retry_failed': lambda a: '按完成页的「重试」补做',
@@ -938,14 +1101,54 @@ def pending_summary(pending) -> str:
              'edit_cue': lambda a: f'第 {a.get("number")} 条{"译文" if a.get("layer") == "translation" else ""}改成「{str(a.get("text") or "")[:14]}」',
              'replace_text': lambda a: f'「{a.get("find")}」全换成「{a.get("replace")}」',
              'merge_cues': lambda a: f'合并第 {a.get("from")}–{a.get("to")} 条',
-             'use_recipe': lambda a: f'照配方「{a.get("name")}」套用'}
+             'use_recipe': lambda a: f'照配方「{a.get("name")}」套用',
+             'propose_change': lambda a: {'style': f'改 {a.get("target")} 的样式', 'text': f'把「{str(a.get("target") or "")[:10]}」换个说法',
+                                          'note': '记一条长期说明', 'script': '存一个扩展脚本（关着）'}.get(a.get('kind'), '加一条我的改动'),
+             'disable_change': lambda a: f'关掉改动 {a.get("id")}',
+             'change_terms': lambda a: f'改《{a.get("library")}》术语库 {len(a.get("changes") or []) if isinstance(a.get("changes"), list) else 1} 条',
+             'term_update': lambda a: f'《{a.get("library")}》{"从零整理词库" if a.get("mode") == "full" else "补新词"}',
+             'write_file': lambda a: f'写新文件「{str(a.get("path") or "")[-24:]}」',
+             'import_terms_file': lambda a: f'把「{str(a.get("path") or "")[-20:]}」导进《{a.get("library")}》'}
     parts = []
     for name, args in pending:
+        args = dict(args)
+        if name in ('change_terms', 'term_update', 'import_terms_file') and window is not None:
+            try:
+                from .bunny_harness_tools import _library
+                args['library'] = _library(window, args.get('library'))[1]
+            except Exception:
+                args['library'] = '所选词库'
+        if name in ('change_terms', 'term_update', 'import_terms_file'):
+            label = str(args.get('library') or '所选词库')
+            args['library'] = '所选词库' if label.startswith('library:') else label[:12] + ('…' if len(label) > 12 else '')
         try:
             parts.append(words[name](args))
         except Exception:  # noqa: BLE001
             parts.append(name)
     return '、'.join(parts[:2]) + (f' 等 {len(parts)} 项' if len(parts) > 2 else '')
+
+
+def pending_details(pending, window=None) -> str:
+    """The exact short term changes beside the readable approval label."""
+    lines = [pending_summary(pending, window)]
+    for name, args in pending:
+        if name != 'change_terms':
+            continue
+        changes = args.get('changes') or []
+        changes = [changes] if isinstance(changes, dict) else changes if isinstance(changes, list) else []
+        for item in changes[:20]:
+            if not isinstance(item, dict):
+                continue
+            action = item.get('action', 'add')
+            source = item.get('from') or item.get('to') or item.get('term') or ''
+            target = item.get('to') or item.get('term') or ''
+            if action == 'edit':
+                lines.append(f'修改：{source} → {target}，改为 {item.get("new_from", source)} → {item.get("new_to", target)}')
+            else:
+                lines.append(('删除：' if action == 'remove' else '新增：') + f'{source} → {target}')
+        if len(changes) > 20:
+            lines.append(f'另有 {len(changes)-20} 条，请先在词库核对全部修改。')
+    return '\n'.join(lines)
 
 
 def run_later(window, name: str, args: dict) -> None:
@@ -959,9 +1162,12 @@ def run_later(window, name: str, args: dict) -> None:
             entry.run()
 
 
-def describe_for_prompt() -> str:
+def describe_for_prompt(hidden=()) -> str:
+    """The tool list for her prompt; ``hidden``: tools not offered now (look_screen for a text-only AI)."""
     rows = []
     for tool in TOOLS.values():
+        if tool.name in hidden:
+            continue
         choices = f'。可填：{"、".join(f"{key}={label}" for key, label in tool.choices.items())}' if tool.choices else ''
         rows.append(f'- {tool.name} {tool.args}：{tool.summary}{choices}')
     return '\n'.join(rows)
