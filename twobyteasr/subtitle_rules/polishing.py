@@ -938,6 +938,7 @@ def call_correction_api(
     _planned=False,
     _cache_context=None,
     _retry_budget=None,
+    _thinking=None,
 ):
     runtime_context = get_runtime_context()
     cancelled = lambda: (get_runtime_context() is not runtime_context or bool(
@@ -955,6 +956,11 @@ def call_correction_api(
     }
     from ..providers.asr_provider_snapshot import task_provider_snapshot
     snapshot = task_provider_snapshot('polish')
+    if _thinking is not None:
+        # The failed-result retry: same service and model, one thinking level higher.
+        # Its own fingerprint keeps cache entries and task-local rejections apart.
+        import dataclasses
+        snapshot = dataclasses.replace(snapshot, enable_thinking=_thinking)
     rejected = (_retry_budget.snapshot_rejection('polished', snapshot.fingerprint)
         if not _messages_only else None)
     if rejected:
@@ -1013,14 +1019,15 @@ def call_correction_api(
                         project_context,stable_term_candidates,approved_global_mappings,verified_terms,
                         glossary_evidence=glossary_evidence,abort_event=abort_event,
                         batch_index=f'{batch_index}.{number}',batch_total=batch_total,_planned=True,
-                        _cache_context=_cache_context,_retry_budget=_retry_budget,_split_depth=_split_depth)
+                        _cache_context=_cache_context,_retry_budget=_retry_budget,_split_depth=_split_depth,
+                        _thinking=_thinking)
                 if _cache_context is None:
                     value=run_child()
                 else:
                     value=run_cached_api_batch('polished',_cache_context,
                         {'protocol':POLISH_PROMPT_VERSION,'messages':build(child)},run_child,
                         encoder=_encode_polish_batch, decoder=_decode_polish_batch,
-                        fallback_categories=('校对回退',),provider_snapshot=task_provider_snapshot('polish'))
+                        fallback_categories=('校对回退',),provider_snapshot=snapshot)
                 if set(value) != {x.segment_id for x in child}:
                     raise ValueError('校对子批次合并 ID 不完整或越权。')
                 result.update(value)
@@ -1542,6 +1549,7 @@ def call_correction_api(
                 batch_total=batch_total,
                 _split_depth=_split_depth + 1,
                 _cache_context=_cache_context,_retry_budget=_retry_budget,
+                _thinking=_thinking,
                 )
             if _cache_context is None:
                 child_result=run_child()
@@ -1969,6 +1977,134 @@ def retry_failed_polish(segments, media_title, previous_summary, cache_context=N
     return combined
 
 
+# 2026-11-16: "the model did not answer in the contract" failures. A semantic rejection
+# (the model answered and was wrong) is never resent; neither are auth/quota/HTTP 4xx failures.
+POLISH_ESCALATION_CATEGORIES = frozenset({
+    'structured_json_parse_error', 'structured_schema_error', 'structured_output', 'structured_output_schema',
+    'structured_empty_response', 'structured_output_truncated', 'structured_output_truncated_before_answer'})
+
+
+def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, project_context,
+                            stable_term_candidates, mappings, verified_terms, glossary_evidence,
+                            cache_context, abort_event):
+    """Resend still-failed format/truncation cues once: same model, one thinking level higher.
+
+    Runs after every ordinary batch and retry is done. Cues are regrouped per original batch in
+    half-size requests with no further retry or split. A cue that succeeds joins its batch's
+    result; one that fails again keeps the ordinary fallback (original text). Returns the batch
+    indexes whose failures are now all resolved, and review items the successful calls produced.
+    """
+    import dataclasses
+    from ..providers.asr_provider_snapshot import task_provider_snapshot
+    from ..providers.provider_input_budget import RetryBudget
+    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+                                                     task_escalation_enabled)
+    candidates, categories = [], {}
+    for index, batch, *_ in jobs:
+        failures = getattr(results[index], 'failures', {}) or {}
+        rows = [segment for segment in batch if failures.get(segment.segment_id) in POLISH_ESCALATION_CATEGORIES]
+        if rows:
+            candidates.append((index, batch, rows))
+            for segment in rows:
+                categories[failures[segment.segment_id]] = categories.get(failures[segment.segment_id], 0) + 1
+    if not candidates:
+        return set(), []
+    count = sum(len(rows) for *_, rows in candidates)
+    snapshot = task_provider_snapshot('polish')
+    endpoint = snapshot.endpoint()
+    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
+        base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=snapshot.protocol)
+    limit = escalation_cue_limit(len(segments))
+    skipped = ('disabled' if not task_escalation_enabled('polish') else
+               'configuration_rejected' if abort_event is not None and abort_event.is_set() else
+               'no_higher_thinking_level' if level is None else
+               'too_many_failures' if count > limit else '')
+    event = dict(stage='polished', candidate_cues=count, total_cues=len(segments), cue_limit=limit,
+                 categories=categories, current_thinking=snapshot.enable_thinking,
+                 thinking_protocol=snapshot.thinking_protocol)
+    if skipped:
+        record_run_event('ai_escalation_round', skipped_reason=skipped, **event)
+        for *_, rows in (candidates if skipped != 'disabled' else ()):
+            for segment in rows:
+                segment.caption_arbitration.setdefault('terminology_polish', {})['escalation'] = dict(
+                    outcome='skipped', reason=skipped)
+        return set(), []
+    position = {segment.segment_id: number for number, segment in enumerate(segments)}
+    chunks = []
+    for index, batch, rows in candidates:
+        size = max(1, (len(batch) + 1) // 2)  # thinking text also uses the output budget
+        chunks.extend((index, rows[start:start + size]) for start in range(0, len(rows), size))
+    escalated = dataclasses.replace(snapshot, enable_thinking=level)
+    budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * len(chunks))
+    print(f"   [提高思考重试] {count} 条字幕格式或截断仍失败，用同一模型、思考等级 {level} 再请求一轮"
+          f"（{len(chunks)} 个请求）。")
+    record_run_event('ai_escalation_round', state='started', thinking=level, requests=len(chunks), **event)
+    owner = get_runtime_context()
+    succeeded_all, failed_all, extra_reviews = set(), {}, []
+    for number, (index, chunk) in enumerate(chunks, 1):
+        if bool(getattr(owner.cancellation_token, 'is_cancelled', False)):
+            from ..recognition.service import CancelledError
+            raise CancelledError('校对任务已取消。')
+        first, last = position[chunk[0].segment_id], position[chunk[-1].segment_id]
+        before = ''.join(row.text for row in segments[max(0, first-20):first])[-300:]
+        after = ''.join(row.text for row in segments[last+1:last+21])[:300]
+
+        def run(chunk=chunk, before=before, after=after, number=number):
+            return call_correction_api(chunk, glossary, before, after, media_title, project_context,
+                stable_term_candidates, mappings, verified_terms, glossary_evidence=glossary_evidence,
+                abort_event=abort_event, batch_index=f'E{number}', batch_total=len(chunks),
+                _split_depth=structured_split_limit(), _cache_context=cache_context,
+                _retry_budget=budget, _thinking=level)
+        with capture_review_items() as reviews:
+            if cache_context is None:
+                value = run()
+            else:
+                value = run_cached_api_batch('polished', cache_context,
+                    {'kind': 'thinking_escalation', 'thinking': level, 'protocol': POLISH_PROMPT_VERSION,
+                     'batch': serialize_segments(chunk), 'context_before': before, 'context_after': after,
+                     'media_title': media_title, 'project_context': project_context, 'glossary': glossary,
+                     'stable_terms': stable_term_candidates, 'mappings': mappings,
+                     'verified_terms': verified_terms, 'enabled_glossary_evidence': glossary_evidence},
+                    run, encoder=_encode_polish_batch, decoder=_decode_polish_batch,
+                    fallback_categories=('校对回退',), provider_snapshot=escalated)
+        # A second failure is already covered by the original batch's 校对回退 warning.
+        extra_reviews.extend(item for item in reviews if item.get('category') != '校对回退')
+        succeeded = set(getattr(value, 'succeeded', set(value))) & {row.segment_id for row in chunk}
+        target = results[index]
+        for segment in chunk:
+            cue_id = segment.segment_id
+            details = getattr(value, 'details', {}).get(cue_id)
+            if details is not None:
+                target.details[cue_id] = details
+            if cue_id in succeeded:
+                target[cue_id] = value[cue_id]
+                target.failures.pop(cue_id, None)
+                target.succeeded.add(cue_id)
+                succeeded_all.add(cue_id)
+            else:
+                target.failures[cue_id] = getattr(value, 'failures', {}).get(cue_id, target.failures.get(cue_id))
+                failed_all[cue_id] = target.failures[cue_id]
+            receipt = segment.caption_arbitration.setdefault('terminology_polish', {})
+            if details is not None and details is not receipt:
+                receipt.update(details)
+            receipt['escalation'] = dict(thinking=level, outcome='succeeded' if cue_id in succeeded else 'failed',
+                                         category='' if cue_id in succeeded else failed_all[cue_id])
+            target.details[cue_id] = receipt
+        target.unassigned_new_suspects.extend(getattr(value, 'unassigned_new_suspects', ()))
+        results[('adjudicated', index)] = set(results.get(('adjudicated', index), ())) | succeeded
+        record_run_event('cloud_batch_preview', stage='polished', batch_index=index, batch_total=len(jobs),
+            rows=[dict(cue_id=segment.segment_id, start=round(float(segment.start), 3),
+                       end=round(float(segment.end), 3), text=str(target.get(segment.segment_id, segment.text) or ''),
+                       state='polished' if segment.segment_id in succeeded else 'polish_fallback')
+                  for segment in chunk])
+    resolved = {index for index, *_ in candidates if not getattr(results[index], 'failures', {})}
+    record_run_event('ai_escalation_round', state='completed', thinking=level, requests=len(chunks),
+        succeeded_cues=len(succeeded_all), failed_cues=len(failed_all), succeeded_ids=sorted(succeeded_all),
+        failed_ids=sorted(failed_all), resolved_batches=sorted(resolved), **event)
+    print(f"   [提高思考重试] 救回 {len(succeeded_all)} 条，仍失败 {len(failed_all)} 条（保留原文）。")
+    return resolved, extra_reviews
+
+
 def polish_subtitles(segments, media_title, cache_context=None):
     owner=get_runtime_context()
     def require_current():
@@ -2160,6 +2296,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
         return index, batch_result, review_items, adjudicated_ids
 
     results = {}
+    batch_reviews = []
     from ..system.task_resources import cloud_request_workers
     workers = min(cloud_request_workers(snapshot,CLOUD_BATCH_WORKERS), len(jobs)) if PARALLEL_CLOUD_BATCHES else 1
     # Threads beyond the broker's concurrent requests only queue, and their
@@ -2186,13 +2323,24 @@ def polish_subtitles(segments, media_title, cache_context=None):
             for index, batch_result, review_items, adjudicated_ids in bounded_results(pool,run_job,jobs,limit=workers):
                 results[index] = batch_result
                 results[("adjudicated", index)] = adjudicated_ids
-                extend_review_items(review_items)
+                batch_reviews.append((index, review_items))
     else:
         for job in jobs:
             index, batch_result, review_items, adjudicated_ids = run_job(job)
             results[index] = batch_result
             results[("adjudicated", index)] = adjudicated_ids
-            extend_review_items(review_items)
+            batch_reviews.append((index, review_items))
+    # Review items wait for the thinking-escalation round: a batch it fully rescued must not
+    # keep its 校对回退 warning.
+    resolved_batches, escalation_reviews = _escalate_failed_polish(
+        jobs, results, segments, glossary=glossary, media_title=media_title,
+        project_context=project_context, stable_term_candidates=stable_term_candidates,
+        mappings=all_global_mappings, verified_terms=verified_terms, glossary_evidence=glossary_evidence,
+        cache_context=cache_context, abort_event=correction_abort_event)
+    for index, review_items in batch_reviews:
+        extend_review_items([item for item in review_items if index not in resolved_batches
+                             or item.get('category') != '校对回退'])
+    extend_review_items(escalation_reviews)
     for index in range(1, len(jobs) + 1):
         if set(results[index]) & set(polished_by_id):
             raise ValueError('校对合并返回重复字幕 ID。')

@@ -194,6 +194,42 @@ def discover_application_catalogs(game, *, board, emit, queries=None):
     return catalogs
 
 
+def deepseek_catalogs(api_key, game, query_list, *, emit, cancel_check=None):
+    """2026-11-16: source entrances from DeepSeek's Search API instead of Bing RSS.
+
+    Returns (catalogs in the collector's shape, searches made). Only results that name the subject."""
+    from . import deepseek_term_sources as sources
+    from . import glossary_build as gb
+    for query in query_list:
+        emit('query_planned', dict(query=query, method='deepseek_search'), stage='来源查询')
+    results, made, rejected = sources.gather(api_key, game, query_list, cancel_check=cancel_check)
+    for url in rejected[:20]:
+        emit('source_rejected', dict(url=url, reason='subject_identity_missing'), stage='来源主题筛选')
+    catalogs = []
+    for row in results:
+        if not gb.is_safe_web_url(row['url'])[0]:
+            continue
+        title = str(row.get('title') or '')[:100]
+        catalogs.append(dict(url=row['url'], title=title, description=str(row.get('summary') or '')[:600],
+                             covers=title, method='deepseek_search'))
+        emit('link_discovered', dict(url=row['url'], title=title, method='deepseek_search'), stage='来源查询')
+        if len(catalogs) >= gb.MAX_CATALOG_PAGES:
+            break
+    return catalogs, made
+
+
+def deepseek_documents(api_key, game, catalogs, *, have=(), limit=4, cancel_check=None, emit=None):
+    """Pages the collector could not read (blocked sites, scripts), read with DeepSeek Fetch."""
+    from . import deepseek_term_sources as sources
+    have = set(have)
+    pages = sources.pick_pages([row for row in catalogs if row.get('url') not in have], limit)
+    def on_page(url, ok):
+        if emit is not None:
+            emit('page_read' if ok else 'source_rejected', dict(url=url, method='deepseek_fetch',
+                 **({} if ok else dict(reason='document_subject_missing'))), stage='资料抓取与程序解析')
+    return sources.fetch_pages(api_key, game, pages, cancel_check=cancel_check, on_page=on_page)
+
+
 def _baseline(legacy, game):
     saved = legacy.RUNTIME_GAME_NAME
     legacy.RUNTIME_GAME_NAME = game
@@ -385,6 +421,33 @@ def run_complete_library_update(legacy, game, settings, *, report=None, cancel_c
     search_board = HealthBoard(); search_board.deadline = deadline; search_board.cancel_check = active
     search_board.request_limit = source_limit
     search_board.request_budget = dict(remaining=source_limit)
+    # 2026-11-16: with a DeepSeek key the application searches with DeepSeek (Search) and reads blocked
+    # pages with Fetch; Bing RSS stays as the fallback.
+    deepseek_key = ''
+    if capability.get('tool_search') and not capability.get('provider_search'):
+        from ..providers.llm_config import endpoint_from_settings
+        try:
+            deepseek_key = str(endpoint_from_settings(settings, 'polish').get('api_key') or '')
+        except Exception:
+            deepseek_key = ''
+    stats.update(deepseek_searches=0, deepseek_fetches=0)
+    content_type = str(getattr(legacy, 'learned_content_type', lambda _n: 'game')(game))
+
+    def deepseek_failed(stage, exc):
+        if exc.category in {'auth', 'balance'}:
+            raise GlossarySearchError('unauthorized' if exc.category == 'auth' else 'balance', str(exc)) from exc
+        stats['failures'].append(dict(stage=stage, category=exc.category, message=str(exc)))
+
+    if not catalogs and deepseek_key:
+        from . import deepseek_term_sources
+        from ..providers.deepseek_tools import DeepSeekToolError
+        emit('来源查询', '用 DeepSeek 搜索查公开资料入口（角色、技能、地图、最近版本）')
+        try:
+            catalogs, made = deepseek_catalogs(deepseek_key, game, deepseek_term_sources.queries(game, content_type),
+                                               emit=event, cancel_check=active)
+            stats['deepseek_searches'] += made
+        except DeepSeekToolError as exc:
+            deepseek_failed('来源查询', exc)
     if not catalogs:
         emit('来源查询', '应用查询公开目录入口；模型文本处理不依赖模型原生搜索')
         try:
@@ -423,6 +486,17 @@ def run_complete_library_update(legacy, game, settings, *, report=None, cancel_c
             stats['failures'].append(dict(stage='资料采集', category=exc.code, message=exc.detail))
             source_results = list(checkpoint.get('source_results', []))
             terms = [gb._deserialize_term(row) for row in checkpoint.get('candidates', [])]
+    if deepseek_key and catalogs and len(documents) < 3:
+        from ..providers.deepseek_tools import DeepSeekToolError
+        emit('资料抓取与程序解析', '有些网页直接读不到，改用 DeepSeek 读取正文')
+        try:
+            pages, made = deepseek_documents(deepseek_key, game, catalogs, have={row['url'] for row in documents},
+                                             limit=4 - len(documents), cancel_check=active, emit=event)
+            stats['deepseek_fetches'] += made
+            for page in pages:
+                capture(page)
+        except DeepSeekToolError as exc:
+            deepseek_failed('资料抓取', exc)
     save_document_cache(game, documents)
     fresh = {row['url']: row for row in documents}
     for row in valid_cache:
@@ -470,7 +544,7 @@ def run_complete_library_update(legacy, game, settings, *, report=None, cancel_c
                         enable_search=False, cancel_check=lambda: bool(cancel_check and cancel_check()) or time.monotonic()>=deadline,
                         max_tokens=7000, timeout=(min(8, remaining), remaining),
                         first_response_timeout=min(90, remaining), idle_timeout=min(float(models.get('glossary_model_timeout_seconds',180)), remaining),
-                        on_stream_event=stream)
+                        on_stream_event=stream, enable_thinking=False if deepseek_key else None)
                 except GlossarySearchError as exc:
                     if stats['model_requests_sent'] == sent_before and getattr(exc, 'request_sent', False):
                         stats['model_requests_sent'] += 1
@@ -510,10 +584,27 @@ def run_complete_library_update(legacy, game, settings, *, report=None, cancel_c
             missing = [str(value) for value in payload.get('missing_categories', []) if str(value)][:2]
             if missing and stats['model_calls'] < max(1, int(models.get('glossary_max_model_calls', 4))):
                 emit('补充来源查询', '按模型识别的核心缺口补充一次查询，不无期限重试')
-                extra = discover_application_catalogs(game, board=search_board, emit=event,
-                    queries=source_queries(game, missing))
                 existing_urls = {row['url'] for row in documents}
                 additions = []
+                extra = []
+                if deepseek_key:
+                    from . import deepseek_term_sources
+                    from ..providers.deepseek_tools import DeepSeekToolError
+                    try:
+                        found, made = deepseek_catalogs(deepseek_key, game, deepseek_term_sources.queries(
+                            game, content_type, categories=missing), emit=event, cancel_check=active)
+                        stats['deepseek_searches'] += made
+                        pages, made = deepseek_documents(deepseek_key, game, found, have=existing_urls, limit=2,
+                                                         cancel_check=active, emit=event)
+                        stats['deepseek_fetches'] += made
+                        for page in pages:
+                            if source_relevance(game, page)[0]:
+                                additions.append(dict(page, id=f'doc{len(documents)+len(additions)+1}'))
+                    except DeepSeekToolError as exc:
+                        deepseek_failed('补充来源查询', exc)
+                else:
+                    extra = discover_application_catalogs(game, board=search_board, emit=event,
+                        queries=source_queries(game, missing))
                 for catalog in extra[:2]:
                     if catalog['url'] in existing_urls: continue
                     relevant, reason = source_relevance(game, catalog)
@@ -596,14 +687,18 @@ def run_complete_library_update(legacy, game, settings, *, report=None, cancel_c
         actual_models=[capability.get('model', '')] if stats['model_requests_sent'] else [],
         attempted_models=[capability.get('model', '')] if stats['model_attempts'] else [], configured_model=capability.get('model', ''),
         model_stages=model_stages, cached_documents=stats['cached_documents'], http_success=stats['fetch_success'],
-        http_requests=len(stats['http_receipts']), methods=['应用来源抓取', 'AI 文本整理'] if stats['model_success'] else ['应用来源抓取'],
+        http_requests=len(stats['http_receipts']),
+        methods=[*(['DeepSeek 搜索'] if stats['deepseek_searches'] or stats['deepseek_fetches'] else []), '应用来源抓取',
+                 *(['AI 文本整理'] if stats['model_success'] else [])],
+        deepseek_searches=stats['deepseek_searches'], deepseek_fetches=stats['deepseek_fetches'],
         new_candidates=stats['new_candidates'], unique_candidates=len(terms), model_added=stats['ai_candidates'],
         native_search_used=False, model_reviewed=len(terms) if stats['model_success'] else 0, usage=usages,
         completed_at=time.time(), recommendation_basis='实际模型评估 / 来源证据；未测量直播词频')
     update_checkpoint()
     observer.emit('outcome', outcome, stage='完成汇总')
     return dict(outcome=outcome, execution=execution, diffs=diffs, candidate_count=len(diffs), collected_count=len(terms),
-        elapsed_seconds=round(time.perf_counter()-started, 1), searched=bool(stats['http_receipts']),
+        elapsed_seconds=round(time.perf_counter()-started, 1),
+        searched=bool(stats['http_receipts'] or stats['deepseek_searches']),
         search_evidence=[], partial=status=='partial', quality_status=message, mode='full',
         service=capability.get('service', ''), model=capability.get('model', ''), capability=capability,
         build_stats=stats, checkpoint=checkpoint, notes=(payload or {}).get('notes', ''))

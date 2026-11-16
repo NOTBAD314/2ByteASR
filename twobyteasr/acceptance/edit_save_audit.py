@@ -63,8 +63,6 @@ def start(window, output):
             opened_at = time.perf_counter()
             page.project_controller.open_project_entry(os.environ['EDIT_SAVE_PROJECT'],single_shot_fn=QTimer.singleShot,skip_dirty_guard=True)
             wait(lambda:page.project is not None and page._readiness.ready,90)
-            wait(lambda:page._readiness.loading.state == 'ready'
-                 and not page._readiness.overlay.isVisible(),30)
             app.processEvents()
             check('workspace visibly presented', page.isVisible() and page.timeline.isVisible())
             result['open_ms'] = (time.perf_counter()-opened_at)*1000
@@ -100,6 +98,13 @@ def start(window, output):
                 page.select_cue(cue.id)
                 page._seek((cue.start_ms+min(100,(cue.end_ms-cue.start_ms)//2))/1000)
                 wait(lambda:cue.start_ms<=page.timeline.playhead_ms<cue.end_ms,10)
+                # E respects the actually selected language layer. A default
+                # preference cannot override an explicit original selection.
+                if layer == 'translation':
+                    page.timeline.select_translation(cue.id)
+                else:
+                    page.timeline.set_subtitle_layer('original')
+                check(f'explicit selected layer {number}',page.timeline.active_subtitle_layer == layer)
                 page.timeline.setFocus()
                 QTest.keyClick(page.timeline,Qt.Key_E)
                 wait(lambda:getattr(page,'_caption_draft',None) is not None)
@@ -177,11 +182,13 @@ def start(window, output):
             # Explicit save variants. Keep the target path fixed across runs.
             if part == 'edits':
                 preferences['caption_default_layer'] = 'translation'
+                page.timeline.select_translation(cues[-1].id)
                 page.timeline.setFocus()
                 QTest.keyClick(page.timeline,Qt.Key_E)
                 wait(lambda:page._caption_draft is not None)
                 app.processEvents()
                 draft = page._caption_draft
+                check('normalized no-change explicitly targets translation',draft.target.layer == 'translation')
                 before = page.undo_stack.index()
                 generation = page._autosave_generation
                 page.subtitle_edit_input.setPlainText(draft.before+' \n')
@@ -189,6 +196,7 @@ def start(window, output):
                 check('translation normalized no-change closes',not page._caption_following)
                 check('translation normalized no-change has no undo',page.undo_stack.index()==before)
                 check('translation normalized no-change has no autosave request',page._autosave_generation==generation)
+                page.timeline.select_translation(cues[-1].id)
                 page.timeline.setFocus()
                 QTest.keyClick(page.timeline,Qt.Key_E)
                 wait(lambda:page._caption_draft is not None)

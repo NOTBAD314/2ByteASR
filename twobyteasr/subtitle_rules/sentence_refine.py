@@ -178,6 +178,48 @@ class RefineOutcome:
     ranges: list = field(default_factory=list)
     results: dict[str, dict] = field(default_factory=dict)
     alignment_receipts: dict = field(default_factory=dict)
+    # 2026-11-16: the one thinking-escalation retry (thinking / ranges / succeeded / failed, or skipped_reason).
+    escalation: dict = field(default_factory=dict)
+
+
+# Format / truncation / unusable-boundary failures that a model thinking harder may answer properly.
+# Text changes, cuts inside a formula, frozen-boundary changes and service failures are not resent.
+REFINE_ESCALATION_CATEGORIES = frozenset({
+    'format_error', 'ambiguous_response', 'empty_response', 'incomplete_response', 'structure_error',
+    'duplicate_field', 'range_identity_error', 'constraint_conflict',
+    'structured_json_parse_error', 'structured_schema_error', 'structured_empty_response'})
+
+
+def _refine_escalation_round(units, outcome, provider, policy, batch_size, deadline, emit):
+    """(thinking value, request groups) for the final retry, or (False, []) when it does not apply."""
+    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+                                                     escalation_enabled)
+    failed = [unit for unit in units if outcome.results[unit.cue.id]['status'] == 'failed'
+              and not outcome.results[unit.cue.id].get('final')
+              and outcome.results[unit.cue.id].get('category') in REFINE_ESCALATION_CATEGORIES]
+    if not failed:
+        return False, []
+    endpoint = getattr(provider, 'endpoint', {}) or {}
+    level = escalated_thinking(policy.get('enable_thinking'), policy.get('thinking_protocol', 'auto'),
+        base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=endpoint.get('protocol', ''))
+    settings = getattr(provider, '_settings', None)
+    skipped = ('disabled' if not escalation_enabled(settings or {}, 'group') else
+               'no_higher_thinking_level' if level is None else
+               'too_many_failures' if len(failed) > escalation_cue_limit(len(units)) else
+               'task_timeout' if deadline - time.monotonic() <= 5 else '')
+    if skipped:
+        outcome.escalation.update(skipped_reason=skipped, ranges=len(failed))
+        return False, []
+    size = max(1, min(40, int(batch_size)) // 2)
+    groups = []
+    for unit in failed:
+        if (not groups or len(groups[-1]) >= size
+                or sum(len(item.cue.text) for item in groups[-1]) + len(unit.cue.text) > 900):
+            groups.append([])
+        groups[-1].append(unit)
+    for unit in failed:
+        emit(unit, status='running', final=False, phase=f'等待提高思考等级（{level}）再试一次')
+    return level, groups
 
 
 def _batch(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -587,7 +629,21 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     queue = [(batch, 1, None) for batch in batches]
     for unit in units:
         emit(unit)
-    while queue and not cancelled():
+    # 2026-11-16: once ordinary attempts and repairs are done, ranges that still failed on format or
+    # truncation get one more request: same model, thinking one level higher (None = not started,
+    # False = not applicable, otherwise the thinking value sent).
+    escalation = None
+    escalated_ids = []
+    while not cancelled():
+        if not queue:
+            if escalation is None and terminal_request_failure is None:
+                escalation, retry_groups = _refine_escalation_round(units, outcome, provider, policy, batch_size,
+                                                                    deadline, emit)
+                if escalation:
+                    escalated_ids = [unit.cue.id for group in retry_groups for unit in group]
+                    queue = [(group, attempts_limit, None) for group in retry_groups]
+                    continue
+            break
         group, attempt, repair = queue.pop(0)
         if terminal_request_failure is not None:
             for unit in group:
@@ -595,6 +651,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                     category=terminal_request_failure[0], error=terminal_request_failure[1])
             continue
         token_budget = min(policy['max_output_tokens'], max(768, len(group) * 80 + sum(len(unit.cue.text) for unit in group) + 512))
+        if escalation:
+            token_budget = policy['max_output_tokens']  # thinking text also uses the output budget
         if repair:
             if extras_left <= 0 or extra_tokens_left < token_budget:
                 continue
@@ -647,18 +705,22 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         receipt = dict(stage='sentence_refine', provider=getattr(provider, 'provider_id', ''),
             model=getattr(provider, 'model', ''), cue_ids=[c.id for u in group for c in u.originals],
             attempt=attempt, output_budget=token_budget, input=copy.deepcopy(payload))
+        if escalation:
+            receipt['thinking_escalation'] = escalation
         diagnostics = {}
         bad = []
         content = ''
         for unit in group:
-            emit(unit, phase='正在定向修复' if repair else '等待模型返回', status='running', attempts=attempt)
+            emit(unit, phase=f'提高思考等级（{escalation}）再试一次' if escalation else
+                 '正在定向修复' if repair else '等待模型返回', status='running', attempts=attempt)
         try:
-            remaining = min(60., remaining)
+            remaining = min(180. if escalation else 60., remaining)
             content = provider.complete([
                 {'role': 'system', 'content': prompt},
                 {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
                 max_tokens=token_budget, temperature=0.1, timeout=(min(10., remaining), remaining),
-                enable_thinking=policy['enable_thinking'], thinking_protocol=policy['thinking_protocol'], response_format={'type': 'json_object'} if json_mode else None,
+                enable_thinking=escalation if escalation else policy['enable_thinking'],
+                thinking_protocol=policy['thinking_protocol'], response_format={'type': 'json_object'} if json_mode else None,
                 stage='sentence_refine', json_schema=REFINE_SCHEMA if json_mode else None,
                 cancel_check=cancelled, request_diagnostics=diagnostics,
                 _timeout_policy=TimeoutPolicy(connect=min(10., remaining), read_idle=remaining,
@@ -807,6 +869,15 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                     queue.insert(0, (bad, attempt+1, repair_data))
     if cancelled():
         outcome.llm_status = 'cancelled'
+    if escalated_ids:
+        rescued = [cue_id for cue_id in escalated_ids if outcome.results[cue_id]['status'] == 'validated']
+        for cue_id in escalated_ids:
+            record = outcome.results[cue_id]
+            record['escalation'] = dict(thinking=escalation,
+                outcome='succeeded' if record['status'] == 'validated' else 'failed',
+                category='' if record['status'] == 'validated' else record.get('category', ''))
+        outcome.escalation.update(thinking=escalation, ranges=len(escalated_ids), succeeded=len(rescued),
+                                  failed=len(escalated_ids) - len(rescued))
     for unit in units:
         record = outcome.results[unit.cue.id]
         if (boundary_only and language.split('-')[0] == 'en' and not cancelled()

@@ -37,6 +37,33 @@ def dependency_bottle(formula: dict, tag: str) -> dict:
     return selected
 
 
+def verify_dependency_closure(formulae: list[dict]) -> None:
+    """Every declared runtime dependency must be part of the fixed closure."""
+    names = {formula['name'] for formula in formulae}
+    missing = []
+    for formula in formulae:
+        for dependency in formula.get('dependencies', []) + formula.get('recommended_dependencies', []):
+            if dependency not in names:
+                missing.append(formula['name'] + ' -> ' + dependency)
+    if missing:
+        raise RuntimeError('Incomplete media dependency closure: ' + ', '.join(sorted(set(missing))))
+
+
+def acquire_dependency_bottle(brew, formula, tag, command) -> dict:
+    """Select and hash-check the locked bottle before Homebrew can pour it.
+
+    A newer build host otherwise selects its own OS bottle even after a
+    Sonoma fetch. Passing the checked cache file preserves the target closure.
+    """
+    bottle = dependency_bottle(formula, tag)
+    command([brew, 'fetch', '--bottle-tag=' + tag, formula['name']])
+    archive = Path(command([brew, '--cache', '--bottle-tag=' + tag, formula['name']]))
+    if digest(archive) != bottle['sha256']:
+        raise RuntimeError('Downloaded dependency bottle digest differs: ' + formula['name'])
+    return dict(path=str(archive), bytes=archive.stat().st_size,
+                sha256=bottle['sha256'], url=bottle['url'], tag=tag)
+
+
 @contextlib.contextmanager
 def isolated_core_checkout(core_path: Path,selected: Path,boundary: Path):
     """Keep the runner's entire tap, including deliberate image modifications.
@@ -67,8 +94,12 @@ def main(argv=None):
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--lock',type=Path,default=ROOT/'packaging/macos/native-dependencies.lock.json')
     args=parser.parse_args(argv)
-    if sys.platform!='darwin' or platform.machine()!='arm64' or platform.mac_ver()[0].split('.')[0]!='14':
-        raise SystemExit('Build the locked Sonoma dependency closure on native macOS 14 arm64; newer-OS execution checks reuse that same DMG')
+    if sys.platform!='darwin' or platform.machine()!='arm64':
+        raise SystemExit('Build the locked Sonoma dependency closure on native Apple Silicon macOS')
+    from twobyteasr.system.macos_compatibility import compatibility_problem
+    problem = compatibility_problem()
+    if problem:
+        raise SystemExit(problem)
     out=args.output.resolve()
     if 'tmp' not in {p.lower() for p in out.parts} or out.exists():raise SystemExit('Use a fresh isolated tmp media directory')
     out.mkdir(parents=True)
@@ -79,15 +110,16 @@ def main(argv=None):
     for key in ('HOMEBREW_FORCE_API_AUTO_UPDATE','HOMEBREW_API_DOMAIN','HOMEBREW_BOTTLE_DOMAIN','HOMEBREW_ARTIFACT_DOMAIN'):
         env.pop(key,None)
     env.update(HOMEBREW_NO_AUTO_UPDATE='1',HOMEBREW_NO_INSTALL_FROM_API='1',
-               HOMEBREW_NO_INSTALL_CLEANUP='1',HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK='1',HOMEBREW_NO_ANALYTICS='1')
+               HOMEBREW_NO_INSTALL_CLEANUP='1',HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK='1',HOMEBREW_NO_ANALYTICS='1',
+               HOMEBREW_DEVELOPER='1')
     record=dict(target='darwin-arm64',macos=platform.mac_ver()[0],lock_sha256=digest(args.lock),
                 core_commit=core['commit'],passed=False,stage='inspect_host',media={})
     receipt=out/'media-install.json'
     def save():receipt.write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
-    def command(cmd,timeout=900):
-        result=subprocess.run(list(map(str,cmd)),env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
+    def command(cmd,timeout=900,cwd=None):
+        result=subprocess.run(list(map(str,cmd)),cwd=cwd,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
         with (out/'install.log').open('a',encoding='utf8') as log:
-            log.write('\nCOMMAND '+repr(list(map(str,cmd)))+'\n'+result.stdout+result.stderr)
+            log.write('\nCOMMAND '+repr(list(map(str,cmd)))+' CWD '+str(cwd or Path.cwd())+'\n'+result.stdout+result.stderr)
         if result.returncode:raise RuntimeError(f'Command failed ({result.returncode}): {cmd}; see install.log')
         return result.stdout.strip()
     save()
@@ -119,18 +151,38 @@ def main(argv=None):
             # tesseract library raised v0.8.3 to macOS 15.7.9 despite a 15.0 plist.
             # A fresh CI host is disposable; replace only the media dependency
             # closure, using the same official core snapshot and Sonoma bottles.
-            dependencies=command([brew,'deps','--topological','--formula',*selected_names]).splitlines()
+            # Multiple brew-deps roots default to their INTERSECTION. Include
+            # every FFmpeg-full and mpv dependency, including their private ones.
+            dependencies=command([brew,'deps','--union','--topological','--formula',*selected_names]).splitlines()
             dependencies=list(dict.fromkeys(name.strip() for name in dependencies if name.strip() and name.strip() not in selected_names))
             dependency_info=json.loads(command([brew,'info','--json=v2',*dependencies])) if dependencies else {'formulae':[]}
             by_name={formula['name']:formula for formula in dependency_info['formulae']}
+            verify_dependency_closure(before['formulae'] + dependency_info['formulae'])
+            recipe_dir = out/'formula-sources';recipe_dir.mkdir()
+            def recipe(formula):
+                path = formula['ruby_source_path']
+                expected = formula['ruby_source_checksum']['sha256']
+                original = core_path/path
+                if digest(original) != expected:
+                    raise RuntimeError('Dependency formula source differs: ' + formula['name'])
+                shutil.copy2(original, recipe_dir/(formula['name']+'.rb'))
+                return dict(path=path, sha256=expected, license=formula.get('license'), urls=formula.get('urls'))
+            record['selected_formula_sources'] = {f['name']: recipe(f) for f in before['formulae']}
             record['dependency_bottles']=[]
             for name in dependencies:
                 formula=by_name[name]
                 bottle=dependency_bottle(formula,core['bottle_tag'])
-                record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],bottle=bottle))
+                record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],
+                                                       bottle=bottle,formula_source=recipe(formula)))
             save()
             for name in dependencies:
-                command([brew,install_action(by_name[name]),'--force-bottle',name])
+                archive = acquire_dependency_bottle(brew, by_name[name], core['bottle_tag'], command)
+                next(item for item in record['dependency_bottles'] if item['name'] == name)['archive'] = archive
+                save()
+                # Homebrew7 also parses relative slash paths as qualified
+                # taps. A plain filename in its cache cwd is unambiguous.
+                local = Path(archive['path'])
+                command([brew,install_action(by_name[name]),'--force-bottle',local.name],cwd=local.parent)
             record['stage']='fetch_selected_bottles';save()
             command([brew,'fetch','--bottle-tag='+core['bottle_tag'],*selected_names])
             for name,expected in lock['media'].items():
@@ -142,7 +194,9 @@ def main(argv=None):
                     if roots!={keg_version(expected)}:raise RuntimeError('Bottle pkg_version differs: '+name)
                 record['media'][name]['archive']=dict(path=str(archive),bytes=archive.stat().st_size,sha256=digest(archive),url=bottle_spec(expected)['url'],tag=core['bottle_tag'])
             record['stage']='homebrew_pour_and_relocate';save()
-            for name,expected in lock['media'].items():command([brew,record['media'][name]['action'],'--force-bottle',formula_name(name,expected)])
+            for name,expected in lock['media'].items():
+                local = Path(record['media'][name]['archive']['path'])
+                command([brew,record['media'][name]['action'],'--force-bottle',local.name],cwd=local.parent)
             after=json.loads(command([brew,'info','--json=v2',*selected_names]))
             (out/'formula-after.json').write_text(json.dumps(after,indent=2)+'\n','utf8')
             cellar=Path(command([brew,'--cellar']))
@@ -172,7 +226,7 @@ def main(argv=None):
         from scripts.macos_compat_native import build_tesseract
         record.update(stage='rebuild_tesseract_for_target');save()
         record['compatibility_rebuilds']={'tesseract':build_tesseract(out/'tesseract-compat',lock['compatibility_rebuilds']['tesseract'],environment=env)}
-        record.update(stage='verified',passed=True,runner_core_restored=True,selected_core_snapshot=str(selected),environment_used={k:env[k] for k in ('HOMEBREW_NO_AUTO_UPDATE','HOMEBREW_NO_INSTALL_FROM_API','HOMEBREW_NO_INSTALL_CLEANUP','HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK','HOMEBREW_NO_ANALYTICS')})
+        record.update(stage='verified',passed=True,runner_core_restored=True,selected_core_snapshot=str(selected),environment_used={k:env[k] for k in ('HOMEBREW_NO_AUTO_UPDATE','HOMEBREW_NO_INSTALL_FROM_API','HOMEBREW_NO_INSTALL_CLEANUP','HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK','HOMEBREW_NO_ANALYTICS','HOMEBREW_DEVELOPER')})
         (out/'brew-installed.txt').write_text(command([brew,'list','--versions'])+'\n','utf8')
         save();print(json.dumps(dict(passed=True,receipt=str(receipt),core_commit=core['commit'])))
         return 0

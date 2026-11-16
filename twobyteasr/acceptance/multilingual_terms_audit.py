@@ -59,7 +59,6 @@ def start(window, output):
             wait(lambda: page._term_model.rowCount() == 1201)
             stored = m.read_concepts(legacy, library_id)
             check('English only quick add', any(list(c['names']) == ['en'] and c['names']['en']['name'] == 'Independent' for c in stored))
-            page.listing.verticalScrollBar().setValue(600); QTest.qWait(150)
             scroll = page.listing.verticalScrollBar().value()
             resets = []; page._term_model.modelReset.connect(lambda: resets.append(True))
             record = next(c for c in stored if c['id'] == rows[0]['id'])
@@ -80,11 +79,31 @@ def start(window, output):
             editor.names.setCurrentRow(list(record['names']).index('en')); editor.standard.setText('Aria Renewed')
             shot('02-name-editor', editor)
             editor.advanced.show(); editor.adjustSize(); QTest.qWait(100); shot('02-name-editor-advanced', editor)
+            wait(lambda: not page.listing._layout_timer.isActive() and not page.listing._position_timer.isActive())
+            # Programmatic setValue does not emit the real user's wheel/slider
+            # cancellation of a pending retained position. Establish an actual
+            # middle-of-list browsing state after the drawer finishes resizing.
+            page.listing.cancel_position_restore()
+            page.listing.verticalScrollBar().setValue(600)
+            wait(lambda: page.listing.verticalScrollBar().value() > 500)
+            wait(lambda: bool((page.listing.capture_position() or {}).get('anchors')))
+            before_save = page.listing.capture_position()
+            result['scroll_geometry'] = dict(before_drawer=scroll, before_save=before_save,
+                viewport=[page.listing.viewport().width(), page.listing.viewport().height()])
             editor.save_button.click()
             QTest.qWait(700)
             check('only edited language saved', next(c for c in m.read_concepts(legacy, library_id) if c['id'] == record['id'])['names']['en']['name'] == 'Aria Renewed')
             check('single name edit does not reset card model', not resets, resets)
-            check('single edit retains scroll', abs(page.listing.verticalScrollBar().value()-scroll) < 3)
+            anchor_key, anchor_top = before_save['anchors'][0]
+            anchor_row = next(i for i in range(page._term_model.rowCount())
+                if page.listing._position_key(page._term_model.data_for_row(i)) == anchor_key)
+            anchor_rect = page.listing.visualRect(page._term_model.index(anchor_row, 0))
+            expected_top = min(anchor_top, max(0, page.listing.viewport().height()-anchor_rect.height()))
+            detail = dict(before=before_save, after=page.listing.capture_position(),
+                          top=anchor_rect.top(), expected_top=expected_top)
+            result['scroll_geometry']['after_save'] = detail
+            check('single edit retains visible card position', abs(anchor_rect.top()-expected_top) < 3
+                  and anchor_rect.bottom() >= 0 and anchor_rect.top() < page.listing.viewport().height(), detail)
             check('saving keeps the names drawer open', editor.isVisible() and page._names_editor is editor)
             from ..design.theme_manager import apply_theme
             for theme in ('grape', 'warm'):
