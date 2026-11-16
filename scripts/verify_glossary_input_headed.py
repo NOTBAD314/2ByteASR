@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--cards', action='store_true')
     parser.add_argument('--layout', action='store_true')
+    parser.add_argument('--conflicts', action='store_true')
     parser.add_argument('--scale', default='1')
     parser.add_argument('--launcher', type=Path)
     parser.add_argument('--gui', type=Path)
@@ -48,6 +49,8 @@ def main():
         phases = [('glossary-card-wall', 'card-result.json')]
     if args.layout:
         phases = [('glossary-card-layout', 'layout-result.json')]
+    if args.conflicts:
+        phases = [('glossary-conflicts', 'conflict-result.json')]
     for scenario, name in phases:
         env['TWOBYTEASR_ACCEPTANCE_SCENARIO'] = scenario
         code = run_on_desktop(command, cwd=ROOT, env=env, output=output / (scenario + '-process'), timeout=90)

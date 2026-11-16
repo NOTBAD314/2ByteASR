@@ -304,6 +304,7 @@ def test_the_thread_keeps_every_line_and_switching_keeps_the_talk(app, chat_env,
 def test_a_poke_gets_a_real_line_in_its_own_voice(app, chat_env, monkeypatch):
     bunny_chat, window, _calls = chat_env
     _ready(monkeypatch, bunny_chat)
+    monkeypatch.setattr(bunny_chat, 'POKE_TIP_SHARE', 0.0)   # 2026-11-16: the joke side; tips: test_bunny_tips
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     moods = []
@@ -335,6 +336,10 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     _ready(monkeypatch, bunny_chat)
     from twobyteasr.app import bunny_puck
     monkeypatch.setattr(bunny_puck, 'REST_BEFORE_HOME_MS', 50)
+    # Exercise collisions and the complete timer-to-glide return in bounded
+    # test time; the production flight cap is 14 seconds, longer than the old
+    # 12-second assertion on a native Mac's embedded overlay.
+    monkeypatch.setattr(bunny_puck, 'MAX_FLIGHT_S', 1.8)
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     puck = chat.puck
@@ -349,7 +354,7 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     puck.velocity = QPointF(-3000, -1800)
     puck.started = puck.last = _time.perf_counter()
     puck.timer.start()
-    assert _until(app, lambda: puck.docked, seconds=12)
+    assert _until(app, lambda: puck.docked, seconds=4)
     assert hits and set(hits) <= {'left', 'right', 'top', 'bottom'}
     assert chat.mascot.parent() is chat and chat.mascot_docked
     limits = puck.limits()

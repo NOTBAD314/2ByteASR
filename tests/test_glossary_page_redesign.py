@@ -150,7 +150,8 @@ def test_ai_menu_groups_entries_by_goal_and_marks_what_needs_internet(make_page,
                         lambda _s: {"provider_search": False, "tool_search": True, "reason": "DeepSeek"})
     page._refresh_ai_capability_label()
     assert "DeepSeek" in page.ai_capability_label.text() and "支持联网" in page.ai_capability_label.text()
-    assert page.name_completion_button.badge.isHidden() and page.ai_update_button.badge.text() == "🔒 需换 AI"
+    # 2026-11-16: DeepSeek search also feeds 补上最近版本的新词, so it is no longer locked.
+    assert page.name_completion_button.badge.isHidden() and page.ai_update_button.badge.isHidden()
     page.ai_menu_button.click()
     APP.processEvents()
     bar = page.ai_bar

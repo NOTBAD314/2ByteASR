@@ -42,6 +42,10 @@ REVIEW_METHODS = (
     "_skip_current_review",
     "_set_cue_filter",
     "_toggle_review_dock",
+    # 2026-11-16 review strip design A (progress capsule, single no-issue line)
+    "_set_review_progress",
+    "_review_ok_line",
+    "_set_review_tone",
     "_show_filter_menu",
     "_activate_filter",
     "_jump_to_row",

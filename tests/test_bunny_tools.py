@@ -226,6 +226,63 @@ def test_she_stops_after_a_few_rounds(app, chat_env, monkeypatch):
     assert len(rounds) == MAX_ROUNDS + 2
 
 
+def test_new_conversation_forgets_this_projects_chat_only(app, chat_env, monkeypatch):
+    """2026-11-16 (user): 「新对话」 clears this project's chat everywhere; memory and other projects stay."""
+    from twobyteasr.app import bunny_memory
+    bunny_chat, window, _calls = chat_env
+    sent = []
+
+    def fake_run(worker):
+        sent.append(list(worker._messages))
+        worker.answered.emit(json.dumps({'lines': ['收到暗号～'], 'mood': 'happy'}, ensure_ascii=False))
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', fake_run)
+    bunny_memory.save_chat('other-project', [('user', '别的工程'), ('bunny', '好')])
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('暗号是紫菜包饭七号')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    chat._save_chat()
+    key = chat._project_key()
+    assert bunny_memory.load_chat(key) and chat._history
+    memories = list(bunny_memory.load())
+    chat.new_conversation()
+    assert not any(who == 'user' for who, _text in chat.transcript)
+    assert chat._history == [] and bunny_memory.load_chat(key) == []
+    assert bunny_memory.load_chat('other-project') and bunny_memory.load() == memories
+    assert '重新开始' in ''.join(chat.last_reply_html()) or any('重新开始' in str(t) for _w, t in chat.transcript)
+    chat.input.setText('现在呢')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    leaked = [m for m in sent[-1] if "紫菜包饭七号" in str(m.get("content"))]
+    assert not leaked, [(m["role"], str(m["content"])[:300]) for m in leaked]   # the old turns are not sent again
+    assert chat.new_button.toolTip()
+
+
+def test_start_task_gives_her_more_rounds_and_caps_web_use(app, chat_env, monkeypatch):
+    """2026-11-16 (harness plan P4): a bigger job gets TASK_ROUNDS; web calls stop at WEB_PER_QUESTION."""
+    from twobyteasr.app.bunny_harness_tools import TASK_ROUNDS, WEB_PER_QUESTION
+    bunny_chat, window, _calls = chat_env
+    rounds, receipts = [], []
+    monkeypatch.setattr('twobyteasr.app.bunny_tools.run_background',
+                        lambda items, **_k: [f'- {item}：成功。假结果' for item in items])
+
+    def fake_run(worker):
+        rounds.append(1)
+        receipts.extend(worker._receipts or [])
+        receipts.extend(str(m.get('content') or '') for m in worker._messages[-1:])
+        tools = [{'name': 'start_task', 'args': {'goal': '补完词库'}}] if len(rounds) == 1 else \
+            [{'name': 'web_search', 'args': {'query': f'q{len(rounds)}-{i}'}} for i in range(4)]
+        worker.answered.emit(json.dumps({'lines': ['继续～'], 'tools': tools}, ensure_ascii=False))
+    monkeypatch.setattr(bunny_chat.BunnyChatWorker, 'run', fake_run)
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.input.setText('把原神词库补完')
+    chat.send()
+    assert _until(app, lambda: not chat.busy, 10)
+    assert len(rounds) == TASK_ROUNDS + 2
+    assert chat._web_calls == WEB_PER_QUESTION
+    assert any('上网已经' in line for line in receipts)
+
+
 def test_plain_text_instead_of_json_gets_one_more_chance(app, chat_env, monkeypatch):
     bunny_chat, window, calls = chat_env
     sent = []

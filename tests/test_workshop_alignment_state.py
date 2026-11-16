@@ -307,3 +307,34 @@ def test_selection_follows_latest_final_snapshot_without_dropping_user_request(m
     assert selected == [('qwen_aligner', 'installed', {'role': 'timeline'})]
     w.ModelWorkshopPage._selection_check_done(page, payload)
     assert len(requested) == len(selected) == 1
+
+
+@pytest.mark.parametrize('before,value,disable,expected',[('off','qwen_aligner',False,'qwen_aligner'),
+                                                          ('qwen_aligner','qwen_aligner',True,'off')])
+def test_choosing_alignment_moves_home_selector_with_saved_choice(monkeypatch,before,value,disable,expected):
+    """2026-11-16: choosing Qwen3 对齐 saved it, but the home card was rebuilt from the old row (已关闭)."""
+    from PySide6.QtWidgets import QApplication,QComboBox
+    from twobyteasr.app import ui
+    from twobyteasr.local_models import model_status_cache
+    from twobyteasr.recognition import qwen_upgrade
+    from twobyteasr.storage import settings as settings_store
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.setattr(model_status_cache,'cached_registry',lambda root:NS(alignment_readiness={}))
+    monkeypatch.setattr(readiness,'effective_snapshot',lambda *a,**k:{'ready':True,'state':'selected'})
+    monkeypatch.setattr(qwen_upgrade,'activate_if_ready',lambda settings,persist=False:True)
+    saved=[];monkeypatch.setattr(settings_store,'save_runtime_settings',lambda s:saved.append(copy.deepcopy(s)))
+    monkeypatch.setattr('twobyteasr.local_models.model_state_events.notify',lambda *a,**k:None)
+    settings={'models':{'primary_asr_backend':'none','qwen_asr_backend':'off','firered_asr_backend':before}}
+    combos=dict(primary_asr_backend=QComboBox(),qwen_asr_backend=QComboBox(),firered_asr_backend=QComboBox())
+    shown=[]
+    win=NS(legacy=NS(RUNTIME_SETTINGS=settings,FIRERED_ASR_BACKEND=before),built_page=lambda _:None,
+           _cached_home_model_keys=lambda:set(),_apply_asr_backend_mode=lambda:None,**combos)
+    win._refresh_available_asr_choices=lambda:ui.MainWindow._refresh_available_asr_choices(win)
+    win._sync_timeline_selector=lambda v:ui.MainWindow._sync_timeline_selector(win,v)
+    win._refresh_asr_summary=lambda:shown.append(ui.MainWindow._shown_asr_backends(win)[1])
+    ui.populate_available_asr_choices(combos['primary_asr_backend'],combos['qwen_asr_backend'],
+                                      combos['firered_asr_backend'],settings,installed=set())
+    assert combos['firered_asr_backend'].currentData()==before
+    assert ui.MainWindow._commit_alignment_choice(win,value,disable=disable)
+    assert saved[-1]['models']['firered_asr_backend']==expected
+    assert combos['firered_asr_backend'].currentData()==expected and shown==[expected]

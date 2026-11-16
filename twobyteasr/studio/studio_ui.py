@@ -898,6 +898,9 @@ class SubtitleStudioPage(
         shortcut_registry.subscribe(_registry_changed)
         self.destroyed.connect(lambda *_args, callback=_registry_changed: shortcut_registry.unsubscribe(callback))
         self._install_shortcuts()
+        # 2026-11-16 (user): 「问问兔白」 on the subtitle list row, left of 「AI 工具」.
+        from .studio_bunny_entry import install as _install_bunny_entry
+        _install_bunny_entry(self)
         app = QApplication.instance()
         if app is not None:
             listen_app_events(self, self._APP_EVENT_TYPES)
@@ -2664,6 +2667,8 @@ class SubtitleStudioPage(
 
     def _translate_selected(self, *, merge=False) -> None:
         from .translation_actions import translate_selected
+        from ..app.newbie_tasks import mark
+        mark('translate')
         translate_selected(self, merge=merge)
 
     def _apply_default_transition(self,media):
@@ -3410,6 +3415,9 @@ class SubtitleStudioPage(
         menu.exec(global_pos)
 
     def _apply_timing_offset(self, cue_ids: list[str], offset_ms: int) -> None:
+        if len(cue_ids) > 1:
+            from ..app.newbie_tasks import mark
+            mark('shift_all')
         return self.cue_controller.apply_timing_offset(cue_ids, offset_ms)
 
     def _set_bilingual_mode(self, enabled: bool) -> None:
