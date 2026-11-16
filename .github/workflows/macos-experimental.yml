@@ -457,7 +457,7 @@ jobs:
 
   installed-candidate-models:
     needs: native-arm64
-    if: ${{ always() && (inputs.candidate_run_id != '' || (inputs.run_app_checks && inputs.run_cloud_mlx_smoke && needs.native-arm64.outputs.has_installer == 'true')) }}
+    if: ${{ always() && inputs.local_models_args != '--glossary-phase-check' && (inputs.candidate_run_id != '' || (inputs.run_app_checks && inputs.run_cloud_mlx_smoke && needs.native-arm64.outputs.has_installer == 'true')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -514,16 +514,61 @@ jobs:
           name: installed-model-receipts-${{ matrix.os }}-${{ inputs.candidate_source_sha || inputs.source_sha }}
           retention-days: 1
           if-no-files-found: warn
+
+  glossary-phase-check:
+    if: ${{ !inputs.run_app_checks && inputs.local_models_args == '--glossary-phase-check' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - run: python -m pip install PySide6==6.9.2
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-setup-95fff3eeb5337f160a1fa6f5c2cd493e2b0c8ccd
+          run-id: 43965154665
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/tmp/glossary-diag/download
+      - name: Verify and install the unchanged failed R5 candidate for diagnosis
+        run: |
+          set -euo pipefail
+          qa="$RUNNER_TEMP/tmp/glossary-diag"
+          dmg=$(find "$qa/download" -name '*.dmg' -type f)
+          test "$(find "$qa/download" -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1
+          python -c 'import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); assert p.stat().st_size==591270405; assert hashlib.sha256(p.read_bytes()).hexdigest()=="ed2810464920a6f08ea65f2b08e592fbe9db77fb67bbc24e3c621354d937f780"' "$dmg"
+          mkdir "$qa/mount"
+          test ! -e /Applications/2ByteASR.app
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$qa/mount" "$dmg"
+          ditto "$qa/mount/2ByteASR.app" /Applications/2ByteASR.app
+          hdiutil detach "$qa/mount"
+          codesign --verify --deep --strict /Applications/2ByteASR.app
+      - name: Record only fixed stage enums and elapsed seconds
+        continue-on-error: true
+        run: |
+          python scripts/macos_glossary_phase_scene.py --app /Applications/2ByteASR.app --scenario glossary-conflicts --output "$RUNNER_TEMP/tmp/glossary-diag/scene"
+      - name: Retain only bounded stage and elapsed-time fields
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-glossary-phase-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/tmp/installed-model-check/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/*.log
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.log
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.png
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/exports/*
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/runtime-evidence/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.json
-            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.log
+            ${{ runner.temp }}/tmp/glossary-diag/scene/**/phase-events.jsonl
+            ${{ runner.temp }}/tmp/glossary-diag/scene/**/phase-state.json
+            ${{ runner.temp }}/tmp/glossary-diag/scene/phase-result.json
 
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
