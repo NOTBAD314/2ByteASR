@@ -570,6 +570,41 @@ jobs:
             ${{ runner.temp }}/tmp/glossary-diag/scene/**/phase-state.json
             ${{ runner.temp }}/tmp/glossary-diag/scene/phase-result.json
 
+  glossary-ipc-check:
+    if: ${{ !inputs.run_app_checks && inputs.local_models_args == '--glossary-ipc-check' }}
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - run: python -m pip install pytest==9.1.1
+      - name: Native delayed-reader large-pipe cancel and timeout regression
+        run: |
+          python -m pytest tests/test_glossary_summary_pipe.py -q --tb=no
+          python scripts/verify_posix_glossary_ipc.py --output "$RUNNER_TEMP/tmp/glossary-ipc"
+      - name: Retain only fixed outcomes and stage elapsed times
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-glossary-ipc-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/tmp/glossary-ipc/phase-result.json
+            ${{ runner.temp }}/tmp/glossary-ipc/phase-events.jsonl
+
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
     # the Apple GPU (MPS) and the CPU. GitHub documents that MPS is not
