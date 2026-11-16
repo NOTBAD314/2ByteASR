@@ -202,7 +202,7 @@ def isolate_acceptance_settings() -> None:
         from .perf_provider_fixture import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality','display-continuity'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('review-reliability', 'learning-confirmation', 'glossary-search-stability', 'glossary-colors', 'glossary-card-layout', 'glossary-card-wall', 'glossary-conflicts', 'terms-color-export', 'proofread-repair', 'editor-wheel-selection','scope-stage-retry','review-speaker-stability','completion-todo','qwen-grouping-quality','display-continuity'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -1341,6 +1341,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-card-layout':
         from .glossary_card_layout_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-conflicts':
+        from .glossary_conflict_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

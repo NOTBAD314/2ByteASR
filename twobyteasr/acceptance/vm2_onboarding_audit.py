@@ -113,11 +113,10 @@ def start(window, output):
             check('confirmed setup persists', onboarding.load_state().get('setup_offered') and window._first_run_required)
             wait(lambda: window.findChild(GuidedTour) is not None and window.findChild(GuidedTour).mode != 'closed')
             tour = window.findChild(GuidedTour)
-            check('production picker starts required tutorial', tour.required and tour.skip.isHidden() and tour.chip_end.isHidden())
+            # 2026-11-16 (user: stuck at step 15 with no way out): the required tutorial can be skipped.
+            check('production picker starts required tutorial', tour.required and not tour.skip.isHidden())
             wait(lambda: tour.mode == 'shown' and tour.bubble.isVisible())
-            QTest.keyClick(window, Qt.Key.Key_Escape)
-            settle(.4)
-            check('required tutorial survives Escape', tour.mode != 'closed' and not onboarding.load_state().get('tour_done'))
+            check('required tutorial still open before skipping', tour.mode != 'closed' and not onboarding.load_state().get('tour_done'))
             shot(window, 'required-tutorial-start')
             shot(tour, 'required-tutorial-overlay')
             window._first_run_downloads = None  # this audit never requests models

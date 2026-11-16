@@ -199,6 +199,56 @@ class StudioReviewMixin:
         if restart_review:
             self._set_review_mode(True)
 
+    def _set_review_progress(self, done: int, total: int) -> None:
+        bar = getattr(self, "review_progress", None)
+        if bar is None:
+            return
+        total = max(0, int(total))
+        bar.setRange(0, max(1, total))
+        bar.setValue(max(0, min(int(done), total)))
+
+    def _set_review_tone(self, tone: str) -> None:
+        """Pill colour and the dot's mark (check / exclamation) for the status."""
+        pill = getattr(self, "review_status_pill", None)
+        dot = getattr(self, "review_status_dot", None)
+        parts = tuple(part for part in (pill, dot, self.review_summary_text) if part is not None)
+        if any(part.property("tone") != tone for part in parts):
+            for part in parts:
+                part.setProperty("tone", tone)
+                part.style().unpolish(part)
+                part.style().polish(part)
+        if dot is not None:
+            from PySide6.QtCore import QSize
+            from ..design.theme_manager import theme_key
+            from ..design.themed_icons import cached_icon_pixmap
+            from ..design.ui_theme import theme_definition
+            ink = theme_definition(theme_key()).surface   # dark on light green, light on dark green
+            icon = "fa5s.check" if tone == "ok" else "fa5s.exclamation"
+            key = (icon, ink, dot.devicePixelRatioF())
+            if getattr(dot, "_mark_key", None) != key:
+                dot._mark_key = key
+                dot.setPixmap(cached_icon_pixmap(icon, ink, QSize(11, 11), device_pixel_ratio=dot.devicePixelRatioF()))
+
+    def _review_ok_line(self, cue) -> "QFrame":
+        """No issue and nothing to choose: the caption once, with 改字 (design A)."""
+        from PySide6.QtWidgets import QFrame, QHBoxLayout
+        from .review_strip_widgets import ReviewPillButton
+        line = QFrame()
+        line.setObjectName("reviewOkLine")
+        layout = QHBoxLayout(line)
+        layout.setContentsMargins(14, 6, 8, 6)
+        layout.setSpacing(10)
+        text = QLabel(cue.text)
+        text.setObjectName("reviewOkText")
+        text.setWordWrap(True)
+        text.setToolTip(cue.text)
+        layout.addWidget(text, 1)
+        edit = ReviewPillButton("改字", "fa5s.pen", key="E")
+        edit.setObjectName("reviewPill")
+        edit.clicked.connect(self._shortcut_edit_at_playhead)
+        layout.addWidget(edit, 0, Qt.AlignmentFlag.AlignVCenter)
+        return line
+
     def _toggle_review_dock(self, collapsed: bool) -> None:
         for widget in (
             getattr(self, "review_dock_scroll", None) or getattr(self, "review_dock_candidates", None),
@@ -208,7 +258,8 @@ class StudioReviewMixin:
                 widget.setVisible(not collapsed)
         button = self.findChild(QToolButton, "reviewCollapseButton")
         if button is not None:
-            button.setText("⌄" if collapsed else "⌃")
+            from ..design.themed_icons import install_themed_icon
+            install_themed_icon(button, "fa5s.chevron-down" if collapsed else "fa5s.chevron-up", "secondary")
 
     def _show_filter_menu(self) -> None:
         menu = create_studio_menu(self)
@@ -340,6 +391,7 @@ class StudioReviewMixin:
         total = session.total if self._review_mode and session is not None else self.cue_model.rowCount()
         completed = session.completed if self._review_mode and session is not None else max(0, row)
         (bind_text(self.review_queue_label, '审核进度  {value0} / {value1}', value0=min(total, completed + 1) if total else 0, value1=total) if self._review_mode else bind_text(self.review_queue_label, '需要检查  - / -'))
+        self._set_review_progress(completed if self._review_mode else 0, total if self._review_mode else 0)
         reason = ""
         if ordered_issues:
             issue = ordered_issues[0]
@@ -376,8 +428,10 @@ class StudioReviewMixin:
             self.review_summary_text.setText(' · '.join(dict.fromkeys(r.label for r in current)))
             reason = '；'.join(f"{'译文' if r.layer == 'translation' else '原文'} · {r.language}：{r.detail}" for r in current)
         else:
-            bind_text(self.review_summary_text, '当前字幕没有待处理建议')
-            reason = '来源、覆盖和格式记录可在“详情”展开；未人工看过仅表示审核进度。'
+            bind_text(self.review_summary_text, '这条没问题')
+            reason = tr('没有待处理建议 · 来源和覆盖记录在「详情」里')
+        # 2026-11-16 (design A): the status is a pill, amber or green.
+        self._set_review_tone('warn' if current else 'ok')
         self.review_reason_label.setText(reason)
         self.review_reason_label.setToolTip(reason)
         if self._review_mode and session is not None:
@@ -394,8 +448,10 @@ class StudioReviewMixin:
                 expected='high' if session.scope.filter_mode=='critical' else 'suggested'
                 moved=sum(bool(view.for_cue(key)) and view.level(key)!=expected for key in session.scope.visible_cue_ids)
                 remaining-=moved
-            self.review_queue_label.setText(f'本轮已处理 {session.completed} / {session.total} · 当前剩余 {remaining}'
-                                           +(f' · 已转其他分类 {moved}' if moved else ''))
+            self.review_queue_label.setText(tr('本轮 {done} / {total} · 剩 {left}', done=session.completed,
+                                               total=session.total, left=remaining)
+                                           +(tr(' · 转其他分类 {moved}', moved=moved) if moved else ''))
+            self._set_review_progress(session.completed, session.total)
         if hasattr(self, "review_dock_candidate_layout"):
             text_types={'model_disagreement','suspected_word'}
             if (not any(r.layer=='original' and r.kind in text_types for r in current)
@@ -417,7 +473,7 @@ class StudioReviewMixin:
             columns = (max(1, min(4, len(candidates[:4]), width // 260)) if card_mode
                        else max(1, min(2, width // 260)) if suggestions else 1)
             signature = (cue.id, cue.text, cue.speaker_id, speaker_only, card_mode, columns,
-                         bool(aggregate.requires_review),
+                         bool(aggregate.requires_review), bool(current),
                          tuple((c.text, tuple(c.sources or ()), bool(c.context_only)) for c in candidates[:5]),
                          tuple(sorted(str(row.get("speaker_id") or row.get("speaker") or "")
                                       for row in aggregate.hypotheses)) if speaker_only else (),
@@ -510,6 +566,10 @@ class StudioReviewMixin:
                     card.suggestion_menu_requested.connect(lambda mark,pos,bound=binding:self._show_review_suggestion_menu(mark,pos,binding=bound))
                     self.review_dock_candidate_layout.addWidget(card, 0, 0)
                     self.review_dock_candidate_layout.addWidget(banner, 0 if columns > 1 else 1, 1 if columns > 1 else 0)
+                elif not current:
+                    # The header already says there is nothing to do; the
+                    # old banner repeated that sentence a second time.
+                    self.review_dock_candidate_layout.addWidget(self._review_ok_line(cue), 0, 0, 1, columns)
                 else:
                     self.review_dock_candidate_layout.addWidget(banner, 0, 0, 1, columns)
 
@@ -548,6 +608,8 @@ class StudioReviewMixin:
         leaving = not bool(enabled) and self._review_mode
         identity = (id(self.project), self.session.generation)
         if entering and self.project:
+            from ..app.newbie_tasks import mark
+            mark('review')
             saved = getattr(self, '_review_entry_anchor', None)
             if saved is None or saved[:2] != identity or saved[2] not in self._cue_lookup:
                 target = self._review_entry_target()

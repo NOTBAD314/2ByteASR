@@ -2127,6 +2127,21 @@ class StudioMediaFlowMixin:
                 local_fallback=kind == 'grouping_api_fallback' or row.get('local_fallback', False),
                 error=str(payload.get('error') or payload.get('reason') or payload.get('message')
                           or '部分阶段未通过，结果需要检查。完整原因见处理记录。')))
+        if kind == 'ai_escalation_round' and payload.get('state') == 'completed':
+            # 2026-11-16: a batch rescued by the thinking-escalation retry is no longer a fallback;
+            # the retry's own failures (batch E*) repeat what the original batch already reports.
+            row = task.rows['source']
+            resolved = {str(index) for index in payload.get('resolved_batches') or ()}
+            name = 'grouping_api_fallback' if payload.get('stage') == 'grouped' else 'polishing_api_fallback'
+            issues = [issue for issue in row.get('issues', ())
+                      if not (issue.get('event') == name and (str(issue.get('batch_index', '')).startswith('E')
+                              or str(issue.get('batch_index', '')).split('.')[0] in resolved))]
+            activity = dict(row.get('activity', {}), **{f"escalation:{payload.get('stage')}": dict(event=kind, **payload)})
+            changes = dict(range_id='source', issues=issues, activity=activity,
+                           local_fallback=any(issue.get('event') == 'grouping_api_fallback' for issue in issues))
+            if not issues and row.get('issues'):
+                changes['error'] = ''
+            task.update(changes)
         if kind == 'stage_started':
             self._recognition_show_status(str(payload.get('label') or '处理当前阶段'))
         if kind == 'pipeline_work_progress':

@@ -61,7 +61,7 @@ def review_ui_checks(page, output):
             if case == 'agreement':
                 coverage = item.source_coverage
                 partial_or_unknown = coverage.get('partial') or coverage.get('coverage_unknown')
-                honest_headline = (not item.requires_review and ('没有待处理建议' in headline
+                honest_headline = (not item.requires_review and ('没有待处理建议' in headline or '这条没问题' in headline
                     or any(text in headline for text in ('局部来源覆盖', '分段来源覆盖', '来源信息缺失')))
                     if partial_or_unknown else not item.requires_review and '3 路独立来源' in headline)
                 passed = len(candidates) == 1 and {'MOSS', 'FireRed', 'Qwen'}.issubset(set(candidates[0].sources)) and item.models_agree_text and honest_headline

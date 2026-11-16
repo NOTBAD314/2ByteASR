@@ -304,6 +304,7 @@ def test_the_thread_keeps_every_line_and_switching_keeps_the_talk(app, chat_env,
 def test_a_poke_gets_a_real_line_in_its_own_voice(app, chat_env, monkeypatch):
     bunny_chat, window, _calls = chat_env
     _ready(monkeypatch, bunny_chat)
+    monkeypatch.setattr(bunny_chat, 'POKE_TIP_SHARE', 0.0)   # 2026-11-16: the joke side; tips: test_bunny_tips
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     moods = []

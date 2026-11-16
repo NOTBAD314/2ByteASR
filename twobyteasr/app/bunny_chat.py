@@ -48,6 +48,9 @@ MOOD_EXPRESSION = {'sorry': {'eyes': 'cry', 'blink': 'cry'}, 'excited': {'eyes':
 IDLE_DOZE_S = 75.0           # no talk, typing or pointer nearby for this long: she dozes off
 BUBBLE_MIN_HEIGHT = 34       # a chat bubble's two 16 px corners on one side need this much height
 POKES_FOR_HMPH = 4           # this many pokes within POKE_WINDOW_S and she turns away
+POKE_TIP_SHARE = 0.7         # 2026-11-16 (user): a click mostly brings a tip (bunny_tips), sometimes a joke
+IDLE_TIP_AFTER_S = (50.0, 70.0)    # quiet this long (just before she dozes) and she may say a tip
+IDLE_TIP_GAP_S = (180.0, 360.0)    # ... but not more often than this
 POKE_WINDOW_S = 5.0
 LATE_NIGHT_KEY = 'bunny_late_night'
 
@@ -114,7 +117,20 @@ def app_state(window, ready: bool) -> dict:
         state['permission'] = describe()
     except Exception:  # noqa: BLE001
         pass
+    try:                                     # 2026-11-16: whether she can look at the screen, and why not
+        state['vision'] = vision_state(runtime_settings(window))[1]
+    except Exception:  # noqa: BLE001
+        pass
     return state
+
+
+def vision_state(settings) -> tuple[bool, str]:
+    """(may she call look_screen now, the words for her state) — bunny_vision + 「兔白权限」."""
+    from . import bunny_permissions, bunny_vision
+    if not bunny_permissions.load().get('see_screen'):
+        return False, '没打开（小兔纸可以在「设置 → 兔白权限」打开“让兔白截图看 2ByteASR 的画面”）'
+    able, advice = bunny_vision.support(settings)
+    return (True, '能（用 look_screen 截 2ByteASR 的窗口）') if able else (False, '不能：' + advice)
 
 
 def _visible(widget):
@@ -168,6 +184,7 @@ REASONING_BUDGET = {'off': (700, 90), 'high': (8000, 180), 'max': (16000, 300)}
 REASONING_CHIPS = {'off': '快速', 'high': '深思', 'max': '最深'}
 REASONING_LABELS = {'off': '快速：不思考，回得最快', 'high': '深思：先想再答（默认）', 'max': '最深：难题用，会慢一点'}
 EMPTY_ANSWER = {'reasoning_only', 'empty_content', 'structured_output_truncated_before_answer'}
+MAX_SHOTS = 2                    # look_screen pictures per question (2026-11-16)
 
 
 class BunnyChatWorker(QThread):
@@ -178,10 +195,11 @@ class BunnyChatWorker(QThread):
     looked_up = Signal(dict)     # the lookup turn handed to the AI (kept in the chat history)
 
     def __init__(self, settings: dict, messages: list[dict], parent=None, *, lookup: str = '', ai_ready=None,
-                 receipts=None, background=(), state_text: str = '', effort: str = 'high'):
+                 receipts=None, background=(), state_text: str = '', effort: str = 'high', images=()):
         super().__init__(parent)
         self._settings = settings
         self._messages = messages
+        self._images = tuple(images)         # bunny_vision.Capture: sent with this request only
         self._lookup = lookup
         self._ai_ready = ai_ready
         self._receipts = receipts            # tool receipts from the GUI thread, sent with the background reads
@@ -200,8 +218,9 @@ class BunnyChatWorker(QThread):
                 receipts = [*(self._receipts or []), *run_background(self._background, ai_ready=self._ai_ready,
                                                                      settings=self._settings)]
                 turn = bunny_persona.tool_results_message(receipts, self._state_text)
-                self._messages = [*self._messages, turn]
-                self.looked_up.emit(turn)
+                from .bunny_vision import with_images
+                self._messages = [*self._messages, with_images(turn, self._images)]
+                self.looked_up.emit(turn)       # the history keeps the words, never the picture
             elif self._lookup:
                 from .bunny_lookup import run_check
                 from . import bunny_permissions
@@ -236,6 +255,46 @@ class BunnyChatWorker(QThread):
             self.failed.emit(' '.join(f'{type(exc).__name__}: {exc}'.split())[:200])
         else:
             self.answered.emit(str(text or ''))
+
+
+def covered_by(old, new) -> bool:
+    """A waiting change_terms whose every change is in a newer one for the same library: the newer one
+    replaces it, so 「帮我做」 does not run the same removal twice (live run 2026-11-16)."""
+    (old_name, old_args), (new_name, new_args) = old, new
+    if old_name != 'change_terms' or new_name != 'change_terms' or old_args.get('library') != new_args.get('library'):
+        return False
+    def items(args):
+        changes = args.get('changes')
+        changes = [changes] if isinstance(changes, dict) else changes if isinstance(changes, list) else []
+        return [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in changes]
+    newer = set(items(new_args))
+    return bool(items(old_args)) and all(item in newer for item in items(old_args))
+
+
+RESULT_MARK = '【兔白操作结果】'
+COMPACT_CHARS = 60000      # a long task's messages above this: older tool results are shortened
+KEEP_RESULTS = 3           # the newest tool results always go whole
+SHORT_RESULT = 400
+
+
+def compact_messages(messages: list[dict]) -> list[dict]:
+    """2026-11-16 (harness plan P4): in a long task (up to 20 rounds of web pages and files) the
+    request would outgrow her input budget; older tool results keep their first lines only."""
+    def size(rows):
+        return sum(len(str(row.get('content') or '')) for row in rows)
+    if size(messages) <= COMPACT_CHARS:
+        return messages
+    results = [index for index, row in enumerate(messages)
+               if row.get('role') == 'user' and str(row.get('content') or '').startswith(RESULT_MARK)]
+    rows = list(messages)
+    for index in results[:-KEEP_RESULTS]:
+        content = str(rows[index].get('content') or '')
+        if len(content) > SHORT_RESULT:
+            rows[index] = dict(rows[index], content=content[:SHORT_RESULT]
+                               + '\n（较早一轮的结果太长，已省略后面部分；需要的话重新查）')
+        if size(rows) <= COMPACT_CHARS:
+            break
+    return rows
 
 
 _LIVE_WORKERS: set[BunnyChatWorker] = set()   # a worker outlives a closed card until its request returns
@@ -311,7 +370,8 @@ class Spotlight(QWidget):
 
 CHAT_MODES = ('dialog', 'thread')
 # 2026-11-14 (user: a click gave the same short blip every time): what she says when poked, with
-# the mood her voice takes. Nothing about subtitles: being poked is not a cue to talk shop.
+# the mood her voice takes. 2026-11-16 (user): a click now mostly brings a tip (bunny_tips,
+# POKE_TIP_SHARE); these jokes are the rest.
 POKE_LINES = (
     ('嘿嘿，被你发现我啦～', 'happy'),
     ('别戳啦，耳朵会痒的！', 'teasing'),
@@ -377,7 +437,7 @@ def chat_sheet(t, family: str) -> str:
         f" border-radius: {radius}px; padding: 0 12px; min-height: 28px; font-size: 14px; }}"
         f"QLineEdit#bunnyChatInput:focus {{ border: 1px solid {t.accent}; }}"
         f"QPushButton#bunnyChatSend {{ {fam} background: {t.accent}; color: {on_accent}; border: 0;"
-        f" border-radius: {radius}px; padding: 0 16px; min-height: 28px; font-size: 14px; }}"
+        f" border-radius: {radius}px; padding: 0 9px; min-height: 28px; font-size: 14px; }}"
         f"QPushButton#bunnyChatSend:disabled {{ background: {t.disabled}; }}")
 
 
@@ -584,6 +644,32 @@ class ThreadView(QFrame):
         self.scroll_to_end()
         return label, row
 
+    def add_picture(self, pixmap, caption: str):
+        """The picture 兔白 took and sent (2026-11-16), small, on her side of the thread."""
+        frame = QFrame()
+        frame.setObjectName('bunnyBubble')
+        frame.setStyleSheet(self.sheet)
+        inner = QVBoxLayout(frame)
+        inner.setContentsMargins(8, 6, 8, 8)
+        inner.setSpacing(4)
+        note = QLabel(caption)
+        note.setObjectName('bunnyThreadHint')
+        note.setStyleSheet(self.sheet)
+        picture = QLabel()
+        picture.setObjectName('bunnyShot')
+        picture.setPixmap(pixmap)
+        picture.setFixedSize(pixmap.deviceIndependentSize().toSize())   # the thread squeezes rows otherwise
+        picture.setToolTip(str(tr('这张图只发给你设置的 AI，没有存到电脑上')))
+        inner.addWidget(note)
+        inner.addWidget(picture)
+        frame.setFixedHeight(inner.sizeHint().height())     # like the bubbles' explicit minimum
+        row = QHBoxLayout()
+        row.addWidget(frame)
+        row.addStretch(1)
+        self.rows.insertLayout(self.rows.count(), row)
+        self.scroll_to_end()
+        return row
+
     def remove_row(self, row):
         while row.count():
             item = row.takeAt(0)
@@ -601,6 +687,22 @@ class ThreadView(QFrame):
     def scroll_to_end(self):
         bar = self.scroll.verticalScrollBar()
         QTimer.singleShot(0, self, lambda: bar.setValue(bar.maximum()))
+        # 2026-11-16: a tall row (her picture) grows the body after this call; follow the new end
+        # for a moment instead of stopping above the newest bubbles.
+        if not getattr(self, '_following', False):
+            self._following = True
+            bar.rangeChanged.connect(self._follow_end)
+            QTimer.singleShot(600, self, self._stop_following)
+
+    def _follow_end(self, _low, high):
+        self.scroll.verticalScrollBar().setValue(high)
+
+    def _stop_following(self):
+        self._following = False
+        try:
+            self.scroll.verticalScrollBar().rangeChanged.disconnect(self._follow_end)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class BunnyChat(QWidget):
@@ -635,6 +737,8 @@ class BunnyChat(QWidget):
         self._generation = 0
         self._history: list[dict] = []   # what the AI sees
         self.transcript: list[tuple] = []   # what was said on screen: ('bunny' | 'user', marked text)
+        # 2026-11-16: the tutorial's written answers (question -> BunnyReply): no AI, nothing billed or kept.
+        self.stand_in = None
         self._pending: list[str] = []
         self._line_total = 0
         self._offer_after = ''
@@ -663,6 +767,9 @@ class BunnyChat(QWidget):
         self._pokes = []
         self._active_at = time.monotonic()
         self._dozing = False
+        self._last_idle_tip = time.monotonic()     # no tip right after opening: the greeting is enough
+        self._idle_tip_after = IDLE_TIP_AFTER_S[0]
+        self._idle_tip_gap = IDLE_TIP_GAP_S[0] / 3
         self._window_at = window.pos()
         self._ear_hold_until = 0.0
         from .onboarding import load_state
@@ -713,7 +820,7 @@ class BunnyChat(QWidget):
         self.bar.setObjectName('bunnyChatBar')
         bar = QHBoxLayout(self.bar)
         bar.setContentsMargins(8, 6, 8, 6)
-        bar.setSpacing(4)
+        bar.setSpacing(3)                 # 2026-11-16: one more button (「新对话」), the input keeps its width
         self.mode_button = self._icon_button(self.toggle_mode)
         bar.addWidget(self.mode_button)
         self.input = QLineEdit()
@@ -722,7 +829,12 @@ class BunnyChat(QWidget):
         self.input.setMaxLength(300)
         self.input.returnPressed.connect(self.send)
         bar.addWidget(self.input, 1)
-        self.send_button = QPushButton(str(tr('发送')))
+        # 2026-11-16: a paper plane instead of the word, so the input keeps its width next to 「新对话」.
+        import qtawesome as qta
+        self.send_button = QPushButton()
+        self.send_button.setIcon(qta.icon('fa5s.paper-plane', color=t.text_on_accent or '#ffffff'))
+        self.send_button.setIconSize(QSize(15, 15))
+        self.send_button.setAccessibleName(str(tr('发送')))
         self.send_button.setObjectName('bunnyChatSend')
         self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_button.clicked.connect(self.send)
@@ -735,6 +847,12 @@ class BunnyChat(QWidget):
         self.reasoning_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.reasoning_button.clicked.connect(self._reasoning_menu)
         bar.addWidget(self.reasoning_button)
+        # 2026-11-16 (user): start over when the conversation went astray; only this project's chat goes.
+        self.new_button = self._icon_button(self.new_conversation)
+        self.new_button.setIcon(themed_icon('fa5s.plus-circle', 'muted'))
+        self.new_button.setToolTip(str(tr('新对话：清掉这个工程和兔白的聊天，重新开始（记住的习惯、知识库和配方都留着）')))
+        self.new_button.setAccessibleName(str(tr('新对话')))
+        bar.addWidget(self.new_button)
         self.log_button = self._icon_button(self.show_log)
         self.log_button.setIcon(themed_icon('fa5s.history', 'muted'))
         self.log_button.setToolTip(str(tr('兔白做过什么（能逐项撤销）')))
@@ -763,6 +881,10 @@ class BunnyChat(QWidget):
         self.steps_label.setTextFormat(Qt.TextFormat.RichText)
         self.steps_label.setWordWrap(True)
         self.steps_label.hide()
+        self.shot_label = QLabel()            # 2026-11-16: the picture she sent, in the dialog box
+        self.shot_label.setObjectName('bunnyShot')
+        self.shot_label.setToolTip(str(tr('兔白看了这张画面；只发给你设置的 AI，没有存到电脑上')))
+        self.shot_label.hide()
         self.suggest_row = QWidget()
         self.suggest_row.setObjectName('bunnySuggestRow')
         suggest = QHBoxLayout(self.suggest_row)
@@ -774,7 +896,8 @@ class BunnyChat(QWidget):
         for widget in (self.box.label, self.box.count, self.thread, self.thread.title, self.thread.hint,
                        self.thread.scroll, self.thread.body, self.bar, self.mode_button, self.input,
                        self.send_button, self.voice_button, self.reasoning_button, self.close_button, self.go_button,
-                       self.do_button, self.undo_button, self.log_button, self.steps_label, self.suggest_row):
+                       self.do_button, self.undo_button, self.log_button, self.new_button, self.steps_label,
+                       self.suggest_row):
             widget.setStyleSheet(self.sheet)
         self._sync_voice_button()
         self._sync_reasoning_button()
@@ -820,7 +943,7 @@ class BunnyChat(QWidget):
             text = tr('还没设置文字 AI：兔白只能帮你找功能在哪里')
         self.thread.hint.setText(str(text) if len(str(text)) <= 26 else str(text)[:25] + '…')
         self.thread.hint.setToolTip(str(text))
-        self.send_button.setToolTip(str(text))
+        self.send_button.setToolTip(str(tr('发送（Enter）')) + '\n' + str(text))
 
     def _sync_reasoning_button(self):
         level = self.reasoning
@@ -902,6 +1025,7 @@ class BunnyChat(QWidget):
             self.box.go_row.insertWidget(0, self.go_button)
             self.box.go_row.insertWidget(3, self.suggest_row)
             self.box.layout().insertWidget(0, self.steps_label)
+            self.box.layout().insertWidget(0, self.shot_label)
             said = [text for who, text in self.transcript if who == 'bunny']
             self._dialog_line(marked_html(said[-1], self._colors, keep_words=True) if said else '')
             self.box.set_count(0, 0)
@@ -913,6 +1037,8 @@ class BunnyChat(QWidget):
             self.thread.go_row.insertWidget(0, self.go_button)
             self.thread.go_row.insertWidget(3, self.suggest_row)
             self.thread.layout().insertWidget(1, self.steps_label)
+            self.shot_label.setParent(None)       # the thread shows its pictures as rows
+            self.shot_label.hide()
             self.thread.clear()
             self.relayout()
             for who, text in self.transcript:
@@ -1372,6 +1498,13 @@ class BunnyChat(QWidget):
             mascot.lean += (mascot.lean_target - mascot.lean) * 0.3
             mascot.update()
         quiet = not self.busy and not self.typer.running and not self._pending
+        if quiet and not mascot.current_move and self._idle_tip_due(now):
+            import random
+            self._last_idle_tip = now
+            self._idle_tip_after = random.uniform(*IDLE_TIP_AFTER_S)
+            self._idle_tip_gap = random.uniform(*IDLE_TIP_GAP_S)
+            self._say_tip()                          # wakes her if she dozed off
+            return
         if quiet and not self._dozing and now - self._active_at > IDLE_DOZE_S and not mascot.current_move:
             self._dozing = True
             mascot.play('doze')
@@ -1463,7 +1596,8 @@ class BunnyChat(QWidget):
         self._spoke(char, STYLE_VOICE.get(style) or self._voice_mood)
 
     def poke(self):
-        """A click on 兔白: she hops and says something short of her own (not a single blip)."""
+        """A click on 兔白: she hops and says something short of her own (not a single blip).
+        2026-11-16 (user): mostly a little tip about the software for the page on screen."""
         import random
         if self.mascot is not None:
             self.mascot.hop()
@@ -1477,9 +1611,27 @@ class BunnyChat(QWidget):
             self.say(bunny_persona.BunnyReply(lines=['哼，不理你了……', '__……好啦，就理你一下下__'], mood='teasing',
                                               act='hmph'))
             return
+        if random.random() < POKE_TIP_SHARE:
+            self._say_tip()
+            return
         line, mood = random.choice([item for item in POKE_LINES if item[0] != getattr(self, '_last_poke', '')])
         self._last_poke = line
         self.say(bunny_persona.BunnyReply(lines=[line], mood=mood))
+
+    def _say_tip(self):
+        from . import bunny_tips
+        self.say(bunny_persona.BunnyReply(lines=bunny_tips.tip_lines(current_page(self.window_)), mood='happy'))
+
+    def _idle_tip_due(self, now: float) -> bool:
+        """2026-11-16 (user): now and then a little tip on her own — never over a pending 「帮我做」, an
+        offer, an answer still being read, or what the user is typing; at most one per IDLE_TIP_GAP_S."""
+        if now - self._active_at < self._idle_tip_after or now - self._last_idle_tip < self._idle_tip_gap:
+            return False
+        if (self._pending_edits or self._do or self.input.text() or self.do_button.isVisible()
+                or self.go_button.isVisible() or self.undo_button.isVisible()):
+            return False
+        from . import bunny_tips
+        return bunny_tips.idle_allowed()
 
     @property
     def busy(self) -> bool:
@@ -1499,6 +1651,12 @@ class BunnyChat(QWidget):
         self.transcript.append(('user', question))
         if self.mode == 'thread':
             self.thread.add_bubble('user', self._user_html(question))
+        if self.stand_in is not None:
+            reply = self.stand_in(question)
+            QTimer.singleShot(450, self, lambda r=reply: self.say(r))
+            return
+        from .newbie_tasks import mark
+        mark('ask_bunny')
         if not self.ready:
             reply = bunny_persona.offline_reply(question, self.feature_entries)
             if not reply.offer_open and 'text_ai' in self.keys:
@@ -1513,10 +1671,11 @@ class BunnyChat(QWidget):
         permissions = bunny_permissions.load()
         history = self._history[-2 * HISTORY_TURNS:] if (
             permissions['read_subtitles'] and permissions['read_diagnostics'] and permissions['remember']) else []
+        sees = vision_state(self.settings)[0]
         return bunny_persona.build_messages(
             question, features=self.features, core=bunny_lore.CORE,
             entries=bunny_lore.select_extra(question, self.lore), state=app_state(self.window_, self.ready),
-            history=history)
+            history=history, hidden_tools=() if sees else ('look_screen',))
 
     def _ask(self, question: str):
         self._generation += 1
@@ -1534,6 +1693,12 @@ class BunnyChat(QWidget):
         self._undo_batch = []
         self._show_pending = self._show_undo = False
         self.undo_button.hide()
+        self._shots = 0                  # look_screen pictures for this question (at most MAX_SHOTS)
+        self._task_mode = False          # start_task: more rounds for this question (2026-11-16)
+        self._web_calls = 0              # web_search / read_page for this question
+        if self.shot_label.isVisible():
+            self.shot_label.hide()
+            self.relayout()
         self._turn_start = len(self._history)
         self._history.append({'role': 'user', 'content': bunny_persona.own_words(question)})
         self._set_busy(True)
@@ -1545,6 +1710,7 @@ class BunnyChat(QWidget):
         generation = self._generation
         from .bunny_tools import edit_context
         self._request_context = edit_context(self.window_)
+        messages = compact_messages(messages)
         extra.setdefault('effort', 'max' if getattr(self, '_escalated', False) else self.reasoning)
         worker = BunnyChatWorker(self.settings, messages, lookup=lookup, ai_ready=self.ready, **extra)
         self._worker = worker
@@ -1592,13 +1758,13 @@ class BunnyChat(QWidget):
             return
         turn = self._reply_turn(reply)
         self._history.append(turn)
-        from .bunny_tools import MAX_ROUNDS, TOOLS, edit_context
+        from .bunny_tools import TOOLS, edit_context
         if (any(TOOLS[name].acts or TOOLS[name].edit for name, _args in reply.tools)
                 and self._request_context != edit_context(self.window_)):
             self._set_busy(False)
-            self.say(bunny_persona.BunnyReply(lines=['等待回答时工程、选中字幕或设置变了，请重新告诉兔白要操作什么。'], mood='sorry'))
+            self.say(bunny_persona.BunnyReply(lines=['等待回答时工程、选中字幕、设置或术语库变了，请重新告诉兔白要操作什么。'], mood='sorry'))
             return
-        if reply.tools and getattr(self, '_tool_rounds', 0) < MAX_ROUNDS:
+        if reply.tools and getattr(self, '_tool_rounds', 0) < self._round_limit():
             self._run_tools(reply, turn)
             return
         if reply.tools and not getattr(self, '_rounds_closed', False):
@@ -1628,9 +1794,13 @@ class BunnyChat(QWidget):
 
     # ------------------------------------------------------------ step 3: 「帮我做」 and 「撤销兔白刚才做的」
     def _apply_agent_buttons(self):
-        from .bunny_tools import pending_summary
+        from .bunny_tools import pending_summary, pending_details
         if self._show_pending and self._pending_edits:
-            self.do_button.setText(str(tr('帮我做：{what}')).format(what=pending_summary(self._pending_edits)))
+            label = str(tr('帮我做：{what}')).format(what=pending_summary(self._pending_edits, self.window_))
+            self.do_button.setText(self.do_button.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight,
+                                                                         max(180, self.width()-90)))
+            self.do_button.setAccessibleName(label)
+            self.do_button.setToolTip(pending_details(self._pending_edits, self.window_))
             self.do_button.show()
         self.undo_button.setVisible(bool(self._show_undo and self._last_undo))
 
@@ -1652,7 +1822,7 @@ class BunnyChat(QWidget):
         self._show_pending = False
         self.do_button.hide()
         if self._pending_context != edit_context(self.window_):
-            self.say(bunny_persona.BunnyReply(lines=['工程、选中字幕或设置已经变了，请重新告诉兔白要改什么。'], mood='sorry'))
+            self.say(bunny_persona.BunnyReply(lines=['工程、选中字幕、设置或术语库已经变了，请重新告诉兔白要改什么。'], mood='sorry'))
             return
         if self.mascot is not None:
             self.mascot.play('push')
@@ -1686,23 +1856,60 @@ class BunnyChat(QWidget):
             self.say(bunny_persona.BunnyReply(lines=['都撤回去啦，跟兔白动手之前一样～'], mood='happy'))
         self._history.append({'role': 'user', 'content': f'（小兔纸按了「撤销兔白刚才做的」：撤回了 {undone} 步）'})
 
+    def _round_limit(self) -> int:
+        from .bunny_harness_tools import TASK_ROUNDS
+        from .bunny_tools import MAX_ROUNDS
+        return TASK_ROUNDS if getattr(self, '_task_mode', False) else MAX_ROUNDS
+
+    def _web_budget(self, calls):
+        """2026-11-16: at most WEB_PER_QUESTION web_search / read_page per question; (kept calls, receipts)."""
+        from .bunny_harness_tools import WEB_PER_QUESTION
+        kept, refused = [], []
+        for name, args in calls:
+            if name in ('web_search', 'read_page'):
+                if getattr(self, '_web_calls', 0) >= WEB_PER_QUESTION:
+                    refused.append(f'- {name}()：没查。这一题上网已经 {WEB_PER_QUESTION} 次了，照已经查到的回答')
+                    continue
+                self._web_calls = getattr(self, '_web_calls', 0) + 1
+            kept.append((name, args))
+        return kept, refused
+
     def _run_tools(self, reply, turn):
         """Agent step 1 (2026-11-15): her 🟢 tools run now; the receipts and the new moment go back to her."""
         from . import bunny_permissions
         from .bunny_tools import edit_context, run_turn, split_calls
         self._tool_rounds = getattr(self, '_tool_rounds', 0) + 1
+        if any(name == 'start_task' for name, _args in reply.tools):
+            self._task_mode = True                   # 2026-11-16: a bigger job, more rounds for this question
         permissions = bunny_permissions.load()
-        now, background = split_calls(reply.tools, permissions)
+        calls, web_refused = self._web_budget(reply.tools)
+        now, background = split_calls(calls, permissions)
+        # 2026-11-16: at most MAX_SHOTS pictures per question (each one is sent to her AI).
+        over, kept = 0, []
+        for call in now:
+            if call[0] == 'look_screen':
+                if getattr(self, '_shots', 0) >= MAX_SHOTS or any(c[0] == 'look_screen' for c in kept):
+                    over += 1                        # one per round, MAX_SHOTS per question
+                    continue
+                self._shots = getattr(self, '_shots', 0) + 1
+            kept.append(call)
+        now = kept
         if self.mascot is not None:                  # C2 / C1: a push for doing, the magnifier for looking up
             self.mascot.play('push' if now else 'search')
             if background:
                 self.mascot.stick('magnifier')
         result = run_turn(self.window_, now, permissions)
+        result.receipts += [f'- look_screen()：没截。一轮只截一张、一题最多 {MAX_SHOTS} 张，照已经看到的回答'] * over
+        result.receipts += web_refused
+        images = result.images
+        if images:
+            self._show_shot(images[-1])
         receipts, later = result.receipts, result.later
         if result.pending and not self._pending_edits:
             self._pending_context = edit_context(self.window_)
         for call in result.pending:                     # the same edit asked again in a later round waits once
             if call not in self._pending_edits:
+                self._pending_edits = [old for old in self._pending_edits if not covered_by(old, call)]
                 self._pending_edits.append(call)
         self._undo_batch = [*self._undo_batch, *result.undo]
         self._later = [*getattr(self, '_later', []), *later]
@@ -1712,12 +1919,29 @@ class BunnyChat(QWidget):
         if background:
             # The slow reads run on the worker beside the next request; it hands back one result turn.
             self._turn_messages = [*self._turn_messages, turn]
-            self._start_worker(self._turn_messages, receipts=receipts, background=background, state_text=state_text)
+            self._start_worker(self._turn_messages, receipts=receipts, background=background, state_text=state_text,
+                               images=images)
             return
         result = bunny_persona.tool_results_message(receipts, state_text)
         self._history.append(result)
         self._turn_messages = [*self._turn_messages, turn, result]
-        self._start_worker(self._turn_messages)
+        from .bunny_vision import with_images
+        # The picture goes with this one request; later rounds and the saved chat keep only the words.
+        self._start_worker([*self._turn_messages[:-1], with_images(result, images)] if images else self._turn_messages)
+
+    def _show_shot(self, shot):
+        """The picture she just took, small, so the user sees what was sent (2026-11-16)."""
+        from PySide6.QtGui import QPixmap
+        pixmap = QPixmap.fromImage(shot.thumbnail) if shot.thumbnail is not None else QPixmap()
+        if pixmap.isNull():
+            return
+        if self.mode == 'thread':
+            self.thread.add_picture(pixmap, str(tr('兔白看了这张画面')))
+            return
+        self.shot_label.setPixmap(pixmap)
+        self.shot_label.setFixedSize(pixmap.deviceIndependentSize().toSize())
+        self.shot_label.show()
+        self.relayout()
 
     def _open_later(self):
         """Windows her tools opened wait until her answer is on screen (their modal loops)."""
@@ -1945,6 +2169,8 @@ class BunnyChat(QWidget):
         return bool(items)
 
     def _save_chat(self):
+        if getattr(self, 'stand_in', None) is not None:
+            return                                   # the tutorial's demo conversation is not kept
         from . import bunny_memory, bunny_permissions
         values = bunny_permissions.load()
         token = (values['keep_chat'], values['remember'], bunny_memory.CHAT_EPOCH)
@@ -1956,6 +2182,33 @@ class BunnyChat(QWidget):
             bunny_memory.save_chat(self._chat_key, self.transcript)
         except OSError:
             pass
+
+    def new_conversation(self):
+        """「新对话」 (2026-11-16, user): this project's chat is gone — on screen, in what is sent with the
+        next question and on disk. A question still on its way is dropped; edits waiting for 「帮我做」 are
+        dropped too. What she remembers, the knowledge base, recipes and 「兔白做过什么」 stay."""
+        from . import bunny_memory
+        self._awake()
+        self._generation += 1                        # an answer still on its way is ignored
+        if self._worker is not None:
+            self._worker.requestInterruption()
+            self._set_busy(False)
+        self.typer.stop()
+        self._clear_thinking()
+        key = self._project_key()
+        try:
+            bunny_memory.clear_chat(key)
+        except OSError:
+            pass
+        self._restore_chat(key)                      # nothing saved now: an empty chat
+        self._show_pending = self._show_undo = False
+        self.do_button.hide()
+        self._set_offer('')
+        self.suggest_row.hide()
+        self.shot_label.hide()
+        self.input.clear()
+        self.say(bunny_persona.BunnyReply(lines=[str(tr('好～重新开始！刚才的聊天清掉了，记住的习惯和知识库还在。'))],
+                                          mood='happy'))
 
     def ask_about(self, number: int, text: str):
         """「问兔白这条」 from a subtitle's right-click menu: the question starts with that line."""

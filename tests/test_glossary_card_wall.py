@@ -84,6 +84,162 @@ def _row_index(page, source, target):
     raise AssertionError((source, target))
 
 
+def test_card_view_keeps_mid_list_anchor_after_rename_reset_and_resize(page, monkeypatch):
+    monkeypatch.setattr(page, '_apply_batch_summary', lambda *_args: None)
+    base = page._term_model.data_for_row(0)
+    rows = [dict(base, concept_id=f'position-{i}', target=f'位置{i}', source=f'位置{i}') for i in range(1500)]
+    page._term_model.set_data(rows)
+    QTest.qWait(150)
+    view = page.listing
+    view.cancel_position_restore()
+    index = page._term_model.index(900, 0)
+    view.selectionModel().setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+    view.scrollTo(index)
+    QTest.qWait(100)
+    position = view.capture_position()
+    old_top = view.visualRect(index).top()
+    assert view.verticalScrollBar().value() > 0
+    renamed = dict(rows[900], target='改名后的词条', source='改名后的词条')
+    page._term_model.set_data([*rows[20:900], renamed, *rows[901:]])
+    view.retain_position(position)
+    QTest.qWait(200)
+    assert abs(view.visualRect(page._term_model.index(880, 0)).top() - old_top) <= 2
+    assert view.currentIndex().row() == 880
+    # Move back to a middle card before the drawer narrows the grid.
+    view.cancel_position_restore()
+    middle = page._term_model.index(800, 0)
+    view.selectionModel().setCurrentIndex(middle, QItemSelectionModel.SelectionFlag.NoUpdate)
+    view.scrollTo(middle)
+    QTest.qWait(100)
+    old_top = view.visualRect(middle).top()
+    page.resize(1100, 900)
+    QTest.qWait(250)
+    assert view.verticalScrollBar().value() > 0
+    assert abs(view.visualRect(middle).top() - old_top) <= 2
+
+
+def test_card_view_keeps_neighbor_after_deleting_current_mid_list_card(page, monkeypatch):
+    monkeypatch.setattr(page, '_apply_batch_summary', lambda *_args: None)
+    base = page._term_model.data_for_row(0)
+    rows = [dict(base, concept_id=f'position-{i}', target=f'位置{i}', source=f'位置{i}') for i in range(500)]
+    page._term_model.set_data(rows)
+    QTest.qWait(120)
+    view = page.listing
+    view.cancel_position_restore()
+    index = page._term_model.index(250, 0)
+    view.selectionModel().setCurrentIndex(index, QItemSelectionModel.SelectionFlag.NoUpdate)
+    view.scrollTo(index)
+    QTest.qWait(100)
+    position = view.capture_position()
+    before = view.verticalScrollBar().value()
+    page._term_model.set_data([*rows[:250], *rows[251:]])
+    view.retain_position(position)
+    QTest.qWait(200)
+    assert view.verticalScrollBar().value() > 0
+    assert abs(view.verticalScrollBar().value() - before) <= view.gridSize().height()
+    view.verticalScrollBar().triggerAction(view.verticalScrollBar().SliderAction.SliderSingleStepAdd)
+    assert view._position_pending is None
+
+
+def _deliver_conflicts(page, libraries, *, current=None):
+    from twobyteasr.glossary.terminology import GlossarySnapshot
+    key = (tuple(lib.id for lib in libraries), True, page._library_key(), page.state['game'])
+    page._batch_request_key = key
+    summary = GlossarySnapshot(tuple(libraries)).summary()
+    local = GlossarySnapshot(tuple(current if current is not None else libraries)).summary()
+    local['conflict_card_targets'] = page._conflict_targets(
+        current if current is not None else libraries,
+        [*summary['conflicts'], *local['conflicts']], page._library_key())
+    page._apply_batch_summary(key, ([lib.name for lib in libraries], summary, local))
+    APP.processEvents()
+    return summary
+
+
+def test_conflict_segment_lists_both_sides_and_preserves_status(page):
+    from twobyteasr.glossary.terminology import GlossaryLibrary, TermEntry
+    lib = GlossaryLibrary(page._library_key(), '本库', '1', (
+        TermEntry('倾泻', ('同音',)), TermEntry('迪莫', ('同音',))))
+    summary = _deliver_conflicts(page, [lib])
+    assert len(summary['conflicts']) == 1
+    assert list(page.status_buttons)[-2:] == ['hidden', 'conflict']
+    button = page.status_buttons['conflict']
+    assert button.objectName() == page.status_buttons['confirmed'].objectName()
+    assert button.text() == '有冲突 2'  # cards, not ambiguous source spellings
+    button.click()
+    assert page.filter_status.currentData() == 'conflict'
+    rows = [page._term_model.data_for_row(i) for i in range(page._term_model.rowCount())]
+    assert {r['target'] for r in rows} == {'倾泻', '迪莫'}
+    assert all(r['status'] == 'confirmed' for r in rows)
+    assert sum(b.isChecked() for b in page.status_buttons.values()) == 1
+    page.search.setText('迪莫')
+    assert page._term_model.rowCount() == 1
+    page.search.clear()
+    page.filter_category.setCurrentIndex(page.filter_category.findData('技能'))
+    assert page._term_model.rowCount() == 1
+    assert page._term_model.data_for_row(0)['target'] == '倾泻'
+
+
+def test_conflict_segment_refreshes_after_resolution_and_ignores_stale_results(page):
+    from twobyteasr.glossary.terminology import GlossaryLibrary, TermEntry
+    lib = GlossaryLibrary(page._library_key(), '本库', '1', (
+        TermEntry('倾泻', ('同音',)), TermEntry('迪莫', ('同音',))))
+    _deliver_conflicts(page, [lib])
+    previous_key = page._batch_request_key
+    page.status_buttons['conflict'].click()
+    _deliver_conflicts(page, [GlossaryLibrary(lib.id, lib.name, '2', (TermEntry('倾泻'),))])
+    assert page.status_buttons['conflict'].text() == '有冲突 0'
+    assert page._term_model.rowCount() == 0
+    page._batch_request_key = ('new library',)
+    page._apply_batch_summary(previous_key, ([], {'conflicts': [{'targets': ['迪莫']}]}, {}))
+    assert page.status_buttons['conflict'].text() == '有冲突 0'
+
+
+def test_cross_library_conflict_includes_only_current_library_cards(page):
+    from twobyteasr.glossary.terminology import GlossaryLibrary, TermEntry
+    own = GlossaryLibrary(page._library_key(), '本库', '1', (TermEntry('倾泻', ('同音',)),))
+    other = GlossaryLibrary('other', '其他', '1', (TermEntry('迪莫', ('同音',)),))
+    _deliver_conflicts(page, [own, other], current=[own])
+    page.status_buttons['conflict'].click()
+    # Both spellings happen to exist as cards locally, but only 倾泻 participates.
+    assert page.status_buttons['conflict'].text() == '有冲突 1'
+    assert page._term_model.rowCount() == 1
+    assert page._term_model.data_for_row(0)['target'] == '倾泻'
+
+
+def test_conflict_projection_checks_all_confirmed_language_names(page):
+    page._term_conflict_library = page._library_key()
+    page._term_conflicts = frozenset({'アブ'})
+    row = {'status': 'confirmed', 'target': '阿布', 'concept': {'names': {
+        'zh-Hans': {'name': '阿布', 'confirmed': True, 'status': 'confirmed'},
+        'ja': {'name': 'アブ', 'confirmed': True, 'status': 'confirmed'}}}}
+    assert page._card_has_conflict(row)
+    row['concept']['names']['ja']['confirmed'] = False
+    assert not page._card_has_conflict(row)
+    page._term_conflict_library = 'different-library'
+    assert not page._card_has_conflict({'status': 'confirmed', 'target': 'アブ'})
+
+
+def test_disabled_library_still_exposes_its_internal_conflicts(page):
+    from twobyteasr.glossary.terminology import GlossaryLibrary, TermEntry
+    lib = GlossaryLibrary(page._library_key(), '本库', '1', (
+        TermEntry('倾泻', ('同音',)), TermEntry('迪莫', ('同音',))))
+    _deliver_conflicts(page, [], current=[lib])
+    page.status_buttons['conflict'].click()
+    assert page._term_model.rowCount() == 2
+    assert page.status_buttons['conflict'].text() == '有冲突 2'
+
+
+def test_non_terminal_mapping_conflict_finds_its_own_card(page):
+    from twobyteasr.glossary.terminology import GlossaryLibrary, TermEntry
+    lib = GlossaryLibrary(page._library_key(), '本库', '1', (
+        TermEntry('倾泻', ('倾斜',), priority=10), TermEntry('迪莫', ('倾泻',), priority=20)))
+    summary = _deliver_conflicts(page, [lib])
+    assert any(c['reason'] == 'non_terminal_mapping' for c in summary['conflicts'])
+    page.status_buttons['conflict'].click()
+    assert page._term_model.rowCount() == 1
+    assert page._term_model.data_for_row(0)['target'] == '倾泻'
+
+
 def test_card_parts_describe_mapping_alias_and_reference_rows():
     mapping = card_parts({"status": "confirmed", "source": "倾斜", "target": "倾泻", "category": "技能"})
     assert (mapping["word"], mapping["label"], mapping["chips"], mapping["action"]) == ("倾泻", "听成", ["倾斜"], "")
@@ -422,8 +578,9 @@ def test_first_use_strip_is_remembered(page):
     assert hub.term_guide_done(legacy=page.legacy) and hub.share_prompt_done("lib-x", legacy=page.legacy)
 
 
-def test_batch_switch_sits_in_the_title_row_and_marks_the_library_in_use(page):
-    assert page.use_game.parentWidget() is page.selected_title.parentWidget()
+def test_batch_switch_shares_header_actions_with_card_display_and_marks_in_use(page):
+    assert page.use_game.parentWidget() is page.term_actions.parentWidget()
+    assert page.term_tools_layout.indexOf(page.term_actions) < 0
     page.use_game.click()
     item = page.game_list.currentItem()
     row = page.game_list.itemWidget(item)

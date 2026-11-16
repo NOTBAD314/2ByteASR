@@ -118,6 +118,9 @@ class TourStep:
     # 2026-10-24: the page keeps changing for a moment after this step (the demo video loading, the
     # 「还差一步」 banner answering): the next step is judged and shown only once this is true.
     settle: Callable[[], bool] | None = None
+    # 2026-11-16: how long (ms) this step's page may take before the window is given back
+    # (``GuidedTour.STUCK_MS`` when shorter), e.g. opening a project in the workbench.
+    patience: int = 0
 
 
 def tutorial_anim_path(name: str, light: bool, still: bool = False):
@@ -357,8 +360,13 @@ class TourBubble(QWidget):
 
 class GuidedTour(QWidget):
     finished = Signal(bool)  # True when the last step was passed, False when skipped
+    skipped = Signal()       # 2026-11-16: the person chose to leave (跳过教学 / 结束教学 / Esc)
 
     WAIT_MS = 20000                                      # a page that never comes: skip the step
+    # 2026-11-16 (user: the screen went grey at 开始生成字幕 and nothing could be clicked): a step whose
+    # page has not come after this long gives the window back (only a chip: 跳过这一步 / 结束教学) instead
+    # of keeping the whole window under the shade; it comes back by itself once the page is there.
+    STUCK_MS = 4000
     TEXT_WIDTH = 440                                     # bubble text column (logical px)
     COMPACT_WIDTH = 340                                  # when no full-size spot near the target is free
     # 2026-10-22 (user: the outline still stutters and is slow to change place): the outline
@@ -454,6 +462,7 @@ class GuidedTour(QWidget):
         self._modal_running = 0                          # actions opening a window that have not returned yet
         self._shown_target = None                        # the widget the shown step outlines (its Hide is watched)
         self._settle = None                              # (check, since ms): the last step's page is still changing
+        self._stuck = False                              # the chip says the step's page did not come
         # 2026-11-11: 兔白 types the words while it babbles; a click on it gives a chat line.
         self._colors = marker_colors(self.theme)
         self._text_source = ''
@@ -522,8 +531,9 @@ class GuidedTour(QWidget):
             f" border-radius: 10px; padding: 2px 10px; font-size: 12px; font-weight: 700; }}"
             f"QLabel#tourText {{ color: {t.text}; font-size: 16px; }}"
             f"QLabel#tourNote {{ color: {t.text_secondary}; font-size: 13px; }}"
-            f"QPushButton#tourSkip {{ background: transparent; border: 0; color: {t.text_muted}; padding: 4px 6px; }}"
-            f"QPushButton#tourSkip:hover {{ color: {t.text}; }}"
+            f"QPushButton#tourSkip {{ background: transparent; border: 1px solid {t.border}; border-radius: 12px;"
+            f" color: {t.text_secondary}; padding: 3px 12px; }}"
+            f"QPushButton#tourSkip:hover {{ color: {t.text}; border-color: {t.accent}; }}"
             f"QPushButton#tourVoice {{ background: transparent; border: 0; border-radius: 12px; padding: 3px; }}"
             f"QPushButton#tourVoice:hover {{ background: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.16); }}"))
         self.bubble.hide()
@@ -546,7 +556,8 @@ class GuidedTour(QWidget):
         if self.bubble.mascot is None:   # (in its layout first: a parentless setVisible(True) opens a window)
             self.voice_button.hide()
         self.skip = QPushButton()
-        bind_text(self.skip, '跳过教学')
+        bind_text(self.skip, '跳过教学 · Esc')
+        bind_text(self.skip, '随时可以跳过；之后在「说明 → 新手教学」可以重新开始', property='toolTip')
         self.skip.setObjectName('tourSkip')
         self.skip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.skip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -603,7 +614,15 @@ class GuidedTour(QWidget):
         text = QLabel()
         text.setObjectName('tourChipText')
         bind_text(text, '教学已暂停')
+        self.chip_text = text
         row.addWidget(text)
+        self.chip_next = button_role(QPushButton(), 'primary')
+        self.chip_next.setObjectName('tourStuckNext')
+        bind_text(self.chip_next, '跳过这一步')
+        self.chip_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chip_next.clicked.connect(lambda: self._skip_stuck_step())
+        self.chip_next.hide()
+        row.addWidget(self.chip_next)
         self.chip_resume = button_role(QPushButton(), 'primary')
         self.chip_resume.setObjectName('tourResume')
         bind_text(self.chip_resume, '回到教学')
@@ -611,6 +630,7 @@ class GuidedTour(QWidget):
         self.chip_resume.clicked.connect(lambda: self._resume())
         row.addWidget(self.chip_resume)
         self.chip_end = button_role(QPushButton(), 'ghost')
+        self.chip_end.setObjectName('tourEnd')
         bind_text(self.chip_end, '结束教学')
         self.chip_end.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.chip_end.clicked.connect(lambda: self._user_close())
@@ -1138,7 +1158,12 @@ class GuidedTour(QWidget):
         return self.bubble.sizeHint()
 
     # ------------------------------------------------------------ steps
+    live = 0   # 2026-11-16: tutorials running now (practice there does not tick a 新手任务)
+
     def start(self):
+        if not getattr(self, '_counted', False):
+            self._counted = True
+            GuidedTour.live += 1
         self._sync_geometry()
         self.show()
         self.raise_()
@@ -1201,6 +1226,9 @@ class GuidedTour(QWidget):
         """Nothing of the window lies over the target's centre (an in-window dialog such as the model picker)."""
         widget, point = (target[0], target[1].center().toPoint()) if isinstance(target, tuple) \
             else (target, target.rect().center())
+        top = widget.window()
+        if host is None and top is not None and top is not self.window_ and top is not self:
+            host = top   # 2026-11-16: a target in a window of its own (the workbench's caption editor card)
         if host is not None:
             hit = host.childAt(host.mapFromGlobal(widget.mapToGlobal(point)))
         else:
@@ -1330,6 +1358,8 @@ class GuidedTour(QWidget):
             self._set_mode('dialog')
             return
         if not self._is_ready(self.index):
+            if not self._scrolled and self._covered(self.index) and self._scroll_into_view(self._raw_target(self.index)):
+                return   # 2026-11-16: below the page's fixed bottom bar, not under a dialog: scrolled, look again
             if self._covered(self.index):   # an in-window dialog is open over it: wait on the chip
                 self._poller.stop()
                 self._set_hole(QRectF())
@@ -1338,6 +1368,10 @@ class GuidedTour(QWidget):
             self._wait_left -= self.POLL_MS
             if not self.hole.isNull():
                 self._set_hole(QRectF())
+            if self.WAIT_MS - self._wait_left >= max(self.STUCK_MS, self._step().patience):
+                self._poller.stop()
+                self._show_stuck()
+                return
             if self._wait_left <= 0:
                 self._poller.stop()
                 self.go(self.index + self._wait_direction, step=self._wait_direction)  # not available here
@@ -1349,14 +1383,35 @@ class GuidedTour(QWidget):
             return
         widget = target[0] if isinstance(target, tuple) else target
         if not self._scrolled and not isinstance(target, tuple):
-            self._scrolled = True
-            scroll = widget.parent()
-            while scroll is not None and not isinstance(scroll, QScrollArea):
-                scroll = scroll.parent()
-            if scroll is not None:
-                scroll.ensureWidgetVisible(widget, 40, 60)
+            self._scroll_into_view(target)
         self._poller.stop()
         self._arrive(self._rect_of(target))
+
+    def _scroll_into_view(self, target) -> bool:
+        """Once per step: scroll the page so the target is in view (True when a scroll area did)."""
+        self._scrolled = True
+        if target is None or isinstance(target, tuple):
+            return False
+        scroll = target.parent()
+        while scroll is not None and not isinstance(scroll, QScrollArea):
+            scroll = scroll.parent()
+        if scroll is None:
+            return False
+        # Room for the page's fixed bottom bar (开始生成字幕) under the target. (Computed here:
+        # ensureWidgetVisible left a target that was already inside the viewport where it was.)
+        bar = scroll.verticalScrollBar()
+        content = scroll.widget()
+        if content is None or not content.isAncestorOf(target):
+            return False
+        top = target.mapTo(content, QPoint(0, 0)).y()
+        bottom = top + target.height()
+        view = scroll.viewport().height()
+        before = bar.value()
+        if bottom + 120 > before + view:
+            bar.setValue(min(bar.maximum(), bottom + 120 - view))
+        elif top - 40 < before:
+            bar.setValue(max(0, top - 40))
+        return bar.value() != before
 
     def _arrive(self, rect: QRectF):
         """Glide the outline to the target at once, then show the bubble beside it."""
@@ -1568,6 +1623,9 @@ class GuidedTour(QWidget):
 
     def _set_mode(self, mode: str):
         self.mode = mode
+        if mode != 'away' and self._stuck:
+            self._stuck = False
+            self._sync_chip()
         if mode == 'dialog':   # a window is open: nothing of the tutorial over it
             self._poller.stop()
             self._hide_bubble()
@@ -1589,6 +1647,7 @@ class GuidedTour(QWidget):
         elif mode == 'away':
             self._hide_bubble()
             self._set_click_through(False)
+            self._sync_chip()
             self.chip.ensurePolished()
             for child in self.chip.findChildren(QWidget):
                 child.ensurePolished()
@@ -1670,6 +1729,23 @@ class GuidedTour(QWidget):
         self._set_mode('wait')
         self._poller.start()
 
+    def _show_stuck(self):
+        """The step's page did not come: the window is usable again, the chip offers the way on."""
+        self._stuck = True
+        self._set_hole(QRectF())
+        self._set_mode('away')
+
+    def _skip_stuck_step(self):
+        self.go(self.index + (self._wait_direction or 1), step=self._wait_direction or 1)
+
+    def _sync_chip(self):
+        stuck = bool(self._stuck)
+        bind_text(self.chip_text, '这一步的画面没出现' if stuck else '教学已暂停')
+        self.chip_text.ensurePolished()   # its 14px comes from the chip's style sheet: measure with it
+        self.chip_text.setMinimumWidth(self.chip_text.fontMetrics().horizontalAdvance(self.chip_text.text()) + 6)
+        self.chip_next.setVisible(stuck)
+        self.chip_resume.setVisible(not stuck)
+
     def _page_changed(self, _index):
         self._cancel_impact()  # navigation takes priority over the previous hit
         if self.mode in ('shown', 'pending', 'away'):
@@ -1706,6 +1782,14 @@ class GuidedTour(QWidget):
                 self._apply_mask()
                 QTimer.singleShot(300, lambda index=self.index: index == self.index and self.go(index + 1))
                 return
+        if self.mode == 'away' and self._stuck and not self._advancing and self._is_ready(self.index):
+            self._resume(navigate=False)   # the page that did not come is there now
+            return
+        if self.mode == 'away' and self._covered(self.index) and self._scroll_into_view(self._raw_target(self.index)):
+            # Expandable panels can finish laying out after the first scroll
+            # attempt. Retry when they expose more content instead of leaving
+            # a visible control behind the workspace's fixed footer.
+            return
         if self._advancing or step.target is None:
             return
         target = self._target(self.index)
@@ -1978,17 +2062,23 @@ class GuidedTour(QWidget):
         self.go(0)
 
     def set_required(self, required: bool) -> None:
+        """A fresh install's first tutorial (it starts by itself and comes back while unfinished).
+
+        2026-11-16 (user: stuck at step 15 with no way out, the whole program unusable): it
+        can be left like any other: 跳过教学 and Esc always work, and leaving counts as done."""
         self.required = bool(required)
-        for button in (getattr(self, 'skip', None), getattr(self, 'chip_end', None)):
-            if button is not None:
-                button.setVisible(not self.required)
 
     def _user_close(self):
-        """跳过教学 / 结束教学 / Esc; a required first tutorial stays open."""
-        if not getattr(self, 'required', False):
-            self.close_tour(False)
+        """跳过教学 / 结束教学 / Esc."""
+        if self.mode == 'closed':
+            return
+        self.skipped.emit()
+        self.close_tour(False)
 
     def close_tour(self, completed: bool):
+        if getattr(self, '_counted', False):
+            self._counted = False
+            GuidedTour.live = max(0, GuidedTour.live - 1)
         for animation in (self._glide, self._reveal, self._attention, self._carry):
             animation.stop()
         pages = getattr(self.window_, 'pages', None)
@@ -2020,12 +2110,17 @@ class GuidedTour(QWidget):
         self.deleteLater()
 
     # ------------------------------------------------------------ Qt
-    def _keys_are_ours(self, watched) -> bool:
-        """Keys go to the tutorial on its own steps (not where the page needs them, not in dialogs)."""
+    def _keys_are_ours(self, watched, event=None) -> bool:
+        """Keys go to the tutorial on its own steps (not where the page needs them, not in dialogs).
+
+        2026-11-16: Esc also while a page step is still being waited for (only the shade is up)."""
         if self.mode not in ('wait', 'glide', 'shown') or not isinstance(watched, QWidget):
             return False
         step = self._step()
-        if step is None or step.interactive:
+        if step is None:
+            return False
+        if step.interactive and not (self.mode == 'wait' and event is not None
+                                     and event.key() == Qt.Key.Key_Escape):
             return False
         if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
             return False
@@ -2058,7 +2153,9 @@ class GuidedTour(QWidget):
             except Exception:  # noqa: BLE001 - the next tick tries again
                 pass
             return False
-        if watched is self.window_:
+        # 2026-11-16: keys aimed at the main window itself (it often holds the focus) go on to the key
+        # handling below; this block used to swallow them, so Esc / Enter did nothing there.
+        if watched is self.window_ and kind not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
             if kind in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.WindowStateChange,
                         QEvent.Type.Hide, QEvent.Type.ScreenChangeInternal):
                 self._cancel_impact()
@@ -2082,15 +2179,18 @@ class GuidedTour(QWidget):
                 QTimer.singleShot(0, self._raise_above_host)
             return False
         if kind == QEvent.Type.ShortcutOverride:
-            if self._keys_are_ours(watched):
+            if self._keys_are_ours(watched, event):
                 event.accept()   # no page shortcut fires: the key comes as a key press to the filter below
                 return True
             return False
-        if kind == QEvent.Type.KeyPress and self._keys_are_ours(watched):
+        if kind == QEvent.Type.KeyPress and self._keys_are_ours(watched, event):
             key = event.key()
             step = self._step()
             if key == Qt.Key.Key_Escape:
                 self._user_close()
+                return True
+            if step is None:
+                return True
             elif self.mode == 'shown' and step.show_next and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Right):
                 self.go(self.index + 1)
             elif self.mode == 'shown' and step.show_next and key == Qt.Key.Key_Left and self.index > 0:
@@ -2124,16 +2224,21 @@ class GuidedTour(QWidget):
                 inside = QPainterPath()
                 inside.addRoundedRect(self.hole, 16, 16)
                 painter.fillPath(inside, QColor(0, 0, 0, 1))   # a click there comes to the tutorial
+            # 2026-11-16 (user: some outlines covered the very words they pointed at): the ring and
+            # its glow are drawn only outside the hole, so nothing of them lies over the target.
             ring = self.hole.adjusted(-2, -2, 2, 2)
             extra = 6 * self.glow if step is not None and step.interactive else 0
+            painter.save()
+            painter.setClipPath(shade)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for width, alpha in ((12 + extra, 36), (6 + extra / 2, 72)):
                 glow = QColor(accent)
                 glow.setAlpha(int(alpha))
                 painter.setPen(QPen(glow, width))
                 painter.drawRoundedRect(ring, 17, 17)
-            painter.setPen(QPen(accent, 2.5))
-            painter.drawRoundedRect(ring, 17, 17)
+            painter.setPen(QPen(accent, 3))
+            painter.drawRoundedRect(ring.adjusted(-0.5, -0.5, 0.5, 0.5), 17.5, 17.5)
+            painter.restore()
         picture = self._reveal_pixmap
         if (self.bubble.isVisible() or picture is not None) and self.reveal > 0.01:
             box = QRectF(self.bubble.geometry())
@@ -2201,6 +2306,9 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     (merge tool: two pieces back into one), Shift+Q / Shift+W (ripple merge: the
     rest) and T (a new line at the playhead); key names follow the shortcut settings.
     """
+    from . import tutorial_chapters
+    if part in tutorial_chapters.OWN_STEPS:   # 2026-11-16: 编辑器 / 术语库 / 问问兔白, each on its own
+        return tutorial_chapters.steps(window, part)
     from .sample_project import TUTORIAL_LIBRARY
     w = window
     get = lambda name: (lambda: w.__dict__.get(name))  # noqa: E731 - resolved when shown
@@ -2487,6 +2595,11 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
 
     def candidates():
         page = studio()
+        strip = getattr(page, 'review_summary_strip', None)
+        if strip is not None and strip.isVisible():
+            # The compact review strip owns the visible candidate viewport;
+            # its inner widget can extend beneath its clipping at large scale.
+            return strip
         area = getattr(page, 'review_dock_candidates', None)
         if area is not None and area.isVisible():
             return area
@@ -2787,10 +2900,11 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  click=TourAction('', check_library)),
         TourStep('点 AI 校对，找出词库外的错字（教学里不联网、不收费）', proofread_part('ai_button'),
                  [TourAction('帮我做', lambda: proofread().ai_button.click())], show_next=False, interactive=True,
-                 done=ai_shown, ready=lambda: on_proofread() and not busy(), anim='gl_ai'),
+                 done=ai_shown, ready=lambda: on_proofread() and not busy(), anim='gl_ai',
+                 patience=30000),   # the glossary match runs first (a few seconds)
         TourStep('==红字是错字==，点下面的建议改正（至东 → 至冬）。按 **Ctrl+Z** 撤销', fix_target,
                  [TourAction('帮我做', fix_it)], show_next=False, interactive=True, done=fixed,
-                 ready=lambda: on_proofread() and not busy(), anim='gl_fix'),
+                 ready=lambda: on_proofread() and not busy(), anim='gl_fix', patience=30000),
         TourStep('其余建议也可以逐条点，或一次采用全部', proofread_part('select_all'),
                  ready=on_proofread, optional=True),
         TourStep('改好了，点返回结果', proofread_part('back_button'),
@@ -2855,7 +2969,8 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  [TourAction('帮我做', save_editor)], show_next=False, interactive=True,
                  done=lambda: editor() is None, optional=True),
         TourStep('标点：添加、去掉或保留原文，只影响显示和导出', studio_part('punctuation_button'),
-                 ready=studio_ready, anim='punct', enter=quiet(), page=to_studio),
+                 ready=studio_ready, anim='punct', enter=quiet(), page=to_studio,
+                 optional=True),   # 2026-11-16: in a narrow window the button sits in 「…」: skip, do not wait
         TourStep('导出字幕：选格式和文件夹', studio_part('studio_export_button'), ready=studio_ready,
                  anim='export', enter=quiet(), page=to_studio),
         TourStep('压制成片：把字幕烧进视频', studio_part('studio_render_button'), ready=studio_ready,
@@ -2872,6 +2987,41 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         step.chapter = '改字幕'
     for step in studio_steps:
         step.chapter = '工作台'          # 2026-10-24: its own chapter, so no part counts past 20
+    # 2026-11-16 (user picked the tutorial centre): the three chapters can also run on their own.
+    # 'first' is a fresh install's tutorial; 'fix' and 'studio' set up their own demo data.
+    if part == 'first':
+        closing = TourStep('第一份字幕做好啦！接下来在「==新手教学==」里挑下一章', next_label='完成',
+                           note='改错字、工作台、编辑器、术语库、问问兔白，想学哪章点哪章')
+        closing.chapter = '做字幕'
+        return home_steps + [closing]
+    if part == 'fix':
+        def demo_result():
+            if not on_completion() or not w.__dict__.get('_tutorial_media'):
+                w._tutorial_media = str(w._tutorial_demo_media())
+                w._tutorial_demo_completion()
+        intro = TourStep('这一章用==示范结果==练习改错字：一次找出写错的人名和术语', enter=demo_result,
+                         note='不联网、不收费，改坏了也没关系')
+        closing = TourStep('改错字学会啦！下一章可以学==字幕工作台==', next_label='完成')
+        fix = [intro] + later_steps[:-1] + [closing]   # (the last one opens the workbench: its own chapter)
+        for step in (intro, closing):
+            step.chapter = '改字幕'
+        return fix
+    if part == 'studio':
+        def open_tutorial_studio():
+            page = studio()
+            from .sample_project import ensure_tutorial_project, tutorial_project_path
+            import os
+            path = str(getattr(page, 'project_path', '') or '') if page is not None else ''
+            if path and os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+                    os.path.abspath(str(tutorial_project_path()))) and page.project is not None:
+                w._switch_page(page)
+                return
+            w.open_studio_project(str(ensure_tutorial_project()))
+        intro = TourStep('这一章在==示范工程==里学审核、剪刀、合并和导出', enter=open_tutorial_studio,
+                         note='示范工程正在打开，看完这句它就好了', anim='studio_open')
+        intro.chapter = '工作台'
+        studio_steps[0].patience = 45000         # opening a project takes a while
+        return [intro] + studio_steps
     later_steps += studio_steps
     return later_steps if part == 'advanced' else home_steps + later_steps
 
@@ -2892,17 +3042,21 @@ def tutorial_avoid(window):
     return rects
 
 
-def start_home_tour(window, on_finished=None, part: str = 'all', *, required: bool = False) -> GuidedTour | None:
+def start_home_tour(window, on_finished=None, part: str = 'all', *, required: bool = False,
+                    on_skipped=None) -> GuidedTour | None:
     """Start the tutorial (one at a time). 2026-10-22: one tutorial; ``part`` is kept for old callers.
 
-    2026-11-13 (user): ``required`` is a fresh install's first tutorial: no
-    跳过教学 / 结束教学 and Esc does not close it; it can still be paused."""
+    2026-11-13 (user): ``required`` is a fresh install's first tutorial; it starts by
+    itself and comes back while unfinished. 2026-11-16 (user: stuck at step 15 with no
+    way out): it can always be left with 跳过教学 / 结束教学 / Esc (``on_skipped``)."""
     existing = window.findChild(GuidedTour)
     if existing is not None and getattr(existing, 'mode', '') != 'closed':
         return existing
     tour = GuidedTour(window, tutorial_steps(window, part), avoid=tutorial_avoid(window))
     tour.part = part
     tour.set_required(required)
+    if on_skipped is not None:
+        tour.skipped.connect(on_skipped)
     if on_finished is not None:
         tour.finished.connect(on_finished)
     tour.start()

@@ -11,6 +11,12 @@ Switches: reading subtitle text, reading the diagnostics / recognition records, 
 the user (``remember``), and whether AI processing that spends the user's own credit (AI 断句,
 retrying failed AI steps) may run without a click — off by default, and only with 能撤销的直接做;
 and whether each project's chat is kept on this computer (2026-11-16, on by default).
+2026-11-16 (user): whether she may take a picture of 2ByteASR's own windows (``see_screen``, off by
+default, ``bunny_vision``); and changes that stay after a restart (``user_overlay``: styles, texts,
+notes, scripts) always wait for 「帮我做」, even with 能撤销的直接做.
+2026-11-16 (user, harness plan P3): folders the user adds (``folders``, none by default) — only inside
+them she lists, reads, writes new files (always after 「帮我做」, never over an existing file) and imports
+term lists (``bunny_files``).
 Never, at any level: uploading, deleting, starting a recognition or an export. Stored with the
 chat's other choices (``onboarding`` state). No Qt.
 """
@@ -22,25 +28,48 @@ LEVEL_LABELS = {'guide': '只指路（只看、只讲，不动手）',
                 'ask': '小操作直接做，修改要我按「帮我做」',
                 'auto': '能撤销的修改也直接做'}
 CHIP_LABELS = {'guide': '只指路', 'ask': '修改先问我', 'auto': '能撤销的直接做'}     # short, for the settings chips
-SWITCHES = ('read_subtitles', 'read_diagnostics', 'remember', 'allow_paid', 'keep_chat')
+SWITCHES = ('read_subtitles', 'read_diagnostics', 'remember', 'allow_paid', 'keep_chat', 'see_screen')
 DEFAULTS = {'level': 'ask', 'read_subtitles': True, 'read_diagnostics': True, 'remember': True, 'allow_paid': False,
-            'keep_chat': True}
+            'keep_chat': True, 'see_screen': False}
+FOLDERS_KEY = 'folders'      # 2026-11-16: folders she may list, read and write new files in (default none)
+MAX_FOLDERS = 12
+FILE_TOOLS = {'list_folder', 'read_file', 'write_file', 'import_terms_file'}
 SUBTITLE_READS = {'read_cues', 'find_cues', 'learned_edits', 'edit_cue', 'merge_cues', 'refine_cues'}
 DIAGNOSTIC_READS = {'diagnostics', 'last_task', 'history'}
 MEMORY_TOOLS = {'remember', 'forget', 'save_recipe', 'use_recipe'}
+SCREEN_TOOLS = {'look_screen'}
+SCREEN_ACK_KEY = 'bunny_see_screen_explained'     # the first-time explanation was shown and accepted
 
 
 def load() -> dict:
     from .onboarding import load_state
     stored = load_state().get(KEY)
-    merged = dict(DEFAULTS)
+    merged = dict(DEFAULTS, folders=[])
     if isinstance(stored, dict):
         if stored.get('level') in LEVELS:
             merged['level'] = stored['level']
         for name in SWITCHES:
             if isinstance(stored.get(name), bool):
                 merged[name] = stored[name]
+        merged['folders'] = clean_folders(stored.get(FOLDERS_KEY))
     return merged
+
+
+def clean_folders(value) -> list[str]:
+    """Absolute folder paths, each once, at most ``MAX_FOLDERS``."""
+    from pathlib import Path
+    result = []
+    for item in value if isinstance(value, (list, tuple)) else ():
+        text = str(item or '').strip()
+        if not text:
+            continue
+        try:
+            path = Path(text)
+        except (TypeError, ValueError):
+            continue
+        if path.is_absolute() and str(path) not in result:
+            result.append(str(path))
+    return result[:MAX_FOLDERS]
 
 
 def save(values: dict) -> dict:
@@ -51,6 +80,8 @@ def save(values: dict) -> dict:
     for name in SWITCHES:
         if isinstance(values.get(name), bool):
             merged[name] = values[name]
+    if FOLDERS_KEY in values:
+        merged['folders'] = clean_folders(values[FOLDERS_KEY])
     save_state(dict(load_state(), **{KEY: merged}))
     return merged
 
@@ -65,6 +96,9 @@ def describe(values: dict | None = None) -> str:
         notes.append('不能读诊断和识别记录')
     if not values['remember']:
         notes.append('不能记东西')
+    notes.append('能截图看 2ByteASR 的画面' if values.get('see_screen') else '不能截图看画面')
+    folders = values.get('folders') or []
+    notes.append(f'能看 {len(folders)} 个授权文件夹（只在里面读文件、写新文件）' if folders else '没有授权文件夹')
     paid_direct = values['allow_paid'] and values['level'] == 'auto'
     notes.append('会计费的 AI 处理' + ('也可以直接跑' if paid_direct else '要小兔纸按「帮我做」'))
     return LEVEL_LABELS[values['level']] + '；' + '、'.join(notes)
@@ -78,6 +112,10 @@ def refusal(tool, values: dict) -> str:
         return '小兔纸在「兔白权限」里关掉了“让兔白读诊断和识别记录”'
     if tool.name in MEMORY_TOOLS and not values['remember']:
         return '小兔纸在「兔白权限」里关掉了“让兔白记住我的习惯”'
+    if tool.name in SCREEN_TOOLS and not values.get('see_screen'):
+        return '小兔纸还没在「兔白权限」里打开“让兔白截图看 2ByteASR 的画面”'
+    if tool.name in FILE_TOOLS and not values.get('folders'):
+        return '小兔纸还没在「兔白权限」里加“兔白可以看的文件夹”'
     if values['level'] == 'guide' and (tool.acts or tool.edit or tool.paid or tool.name in MEMORY_TOOLS):
         return '小兔纸把兔白设成了「只指路」，兔白只讲不动手'
     return ''
@@ -86,8 +124,21 @@ def refusal(tool, values: dict) -> str:
 def needs_confirmation(tool, values: dict) -> bool:
     if tool.paid:                                   # spends the user's own AI credit
         return not (values['level'] == 'auto' and values['allow_paid'])
+    if getattr(tool, 'persistent', False):          # stays after a restart (user_overlay): always asks
+        return True
     return bool(tool.edit) and values['level'] != 'auto'
 
 
-__all__ = ['CHIP_LABELS', 'DEFAULTS', 'KEY', 'LEVELS', 'LEVEL_LABELS', 'SWITCHES', 'describe', 'load',
-           'needs_confirmation', 'refusal', 'save']
+def screen_explained() -> bool:
+    from .onboarding import load_state
+    return bool(load_state().get(SCREEN_ACK_KEY))
+
+
+def mark_screen_explained() -> None:
+    from .onboarding import load_state, save_state
+    save_state(dict(load_state(), **{SCREEN_ACK_KEY: True}))
+
+
+__all__ = ['CHIP_LABELS', 'DEFAULTS', 'FILE_TOOLS', 'FOLDERS_KEY', 'KEY', 'LEVELS', 'LEVEL_LABELS', 'SCREEN_TOOLS',
+           'SWITCHES', 'clean_folders', 'describe', 'load',
+           'mark_screen_explained', 'needs_confirmation', 'refusal', 'save', 'screen_explained']

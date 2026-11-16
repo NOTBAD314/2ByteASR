@@ -463,7 +463,82 @@ class TermCardView(QListView):
         self._layout_timer = QTimer(self)
         self._layout_timer.setSingleShot(True)
         self._layout_timer.timeout.connect(self._relayout)
+        self._position_pending = None
+        self._restoring_position = False
+        self._position_timer = QTimer(self)
+        self._position_timer.setSingleShot(True)
+        self._position_timer.timeout.connect(self._restore_position)
+        self.verticalScrollBar().rangeChanged.connect(self._position_range_changed)
+        self.verticalScrollBar().sliderPressed.connect(self.cancel_position_restore)
+        self.verticalScrollBar().actionTriggered.connect(self.cancel_position_restore)
         self.request_layout('initial')
+
+    @staticmethod
+    def _position_key(row):
+        return row.get('concept_id') or (row.get('target'), row.get('source'), row.get('status'))
+
+    def capture_position(self):
+        model = self.model()
+        if model is None or not model.rowCount():
+            return None
+        scroll = self.verticalScrollBar().value()
+        current = self.currentIndex()
+        anchors = []
+        first = max(0, scroll // max(1, self.gridSize().height()) * max(1, self._columns) - self._columns)
+        candidates = ([current.row()] if current.isValid() else []) + list(
+            range(first, min(model.rowCount(), first + max(1, self._columns) * 3)))
+        for row in dict.fromkeys(candidates):
+            rect = self.visualRect(model.index(row, 0))
+            if rect.isValid() and rect.bottom() >= 0 and rect.top() < self.viewport().height():
+                anchors.append((self._position_key(model.data_for_row(row)), rect.top()))
+        return dict(scroll=scroll, anchors=anchors, current=(
+            self._position_key(model.data_for_row(current.row())) if current.isValid() else None))
+
+    def retain_position(self, position):
+        if position is not None:
+            self._position_pending = position
+            self._position_timer.start(0)
+
+    def cancel_position_restore(self, *_args):
+        self._position_pending = None
+        self._position_timer.stop()
+
+    def _position_range_changed(self, *_args):
+        # Icon-mode batches may finish after the first model-reset callback.
+        if self._position_pending and not self._restoring_position:
+            self._position_timer.start(0)
+
+    def _restore_position(self):
+        position, model = self._position_pending, self.model()
+        if not position or model is None or not model.rowCount():
+            return
+        indexes = {self._position_key(model.data_for_row(i)): i for i in range(model.rowCount())}
+        self._restoring_position = True
+        try:
+            current = indexes.get(position['current'])
+            if current is not None:
+                # setCurrentIndex() on the view can scroll the current card
+                # into view after an earlier scrollbar restoration.
+                self.selectionModel().setCurrentIndex(model.index(current, 0), QItemSelectionModel.SelectionFlag.NoUpdate)
+            for key, top in position['anchors']:
+                if key in indexes:
+                    index = model.index(indexes[key], 0)
+                    self.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtTop)
+                    bar = self.verticalScrollBar()
+                    rect = self.visualRect(index)
+                    # Opening the names drawer can also make the card area
+                    # shorter. Keep the edited card visible at that edge.
+                    top = min(top, max(0, self.viewport().height() - rect.height()))
+                    bar.setValue(bar.value() + rect.top() - top)
+                    break
+            else:
+                self.verticalScrollBar().setValue(position['scroll'])
+        finally:
+            self._restoring_position = False
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt API
+        self.cancel_position_restore()
+        super().wheelEvent(event)
 
     def set_overlay(self, widget):
         """Float ``widget`` (the selection bar) over the bottom of the cards."""
@@ -533,6 +608,7 @@ class TermCardView(QListView):
         self._columns = columns
         if card == self.card_delegate.card_size and cell == self.gridSize():
             return
+        position = self._position_pending or self.capture_position()
         self._layout_running = True
         try:
             self.card_delegate.card_size = card
@@ -542,12 +618,15 @@ class TermCardView(QListView):
                 self._diagnostics['executed'] += 1
         finally:
             self._layout_running = False
+        self.retain_position(position)
 
     def resizeEvent(self, event):  # noqa: N802 - Qt API
+        position = self._position_pending or self.capture_position()
         super().resizeEvent(event)
         # QListView's icon layout can still be reserving the previous scrollbar
         # inside resizeEvent. Reflow once its viewport geometry has settled.
         self.request_layout('resize')
+        self.retain_position(position)
         self.place_overlay()
 
     def card_rect(self, index: QModelIndex) -> QRect:
@@ -568,6 +647,7 @@ class TermCardView(QListView):
         return QModelIndex()
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt API
+        self.cancel_position_restore()
         if event.button() == Qt.MouseButton.LeftButton:
             index = self._category_at(event.position().toPoint())
             if index.isValid():
@@ -593,6 +673,7 @@ class TermCardView(QListView):
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt API
+        self.cancel_position_restore()
         index = self.currentIndex()
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and index.isValid() and self._editable(index):
             self.edit_requested.emit(index)
