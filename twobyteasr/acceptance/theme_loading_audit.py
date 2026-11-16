@@ -14,6 +14,14 @@ def summary(values):
 
 
 def start(window, out):
+    if os.environ.get('TWOBYTEASR_AI_ESCALATION_AUDIT') == '1':
+        from .ai_escalation_audit import start as escalation_audit
+        escalation_audit(window, out)
+        return
+    if os.environ.get('TWOBYTEASR_EXPORT_REVEAL_AUDIT') == '1':
+        from .export_reveal_audit import start as reveal_audit
+        reveal_audit(window, out)
+        return
     from PySide6.QtCore import QObject, QEvent, Qt, QTimer
     from PySide6.QtGui import QFontInfo
     from PySide6.QtWidgets import QApplication, QWidget

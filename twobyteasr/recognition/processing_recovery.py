@@ -162,8 +162,15 @@ def recover_units(project,report):
     refine=(project.studio_state or {}).get('ai_sentence_refine') or {}
     for cue_id in refine.get('failed_cue_ids') or ():
         add_stage('grouping','refine-'+str(cue_id),[cue_id],refine.get('last_error') or '断句校验未通过')
+    # 2026-11-16: batches the thinking-escalation retry rescued are not failed units, and that
+    # retry's own fallbacks (batch E*) repeat the original batch's record.
+    rescued={str(index) for event in report.get('events') or () if event.get('event')=='ai_escalation_round'
+             and event.get('state')=='completed' and event.get('stage')=='grouped'
+             for index in event.get('resolved_batches') or ()}
     for event in report.get('events') or ():
         if event.get('event')!='grouping_api_fallback':continue
+        batch=str(event.get('batch_index',''))
+        if batch.startswith('E') or batch.split('.')[0] in rescued:continue
         start=round(float(event.get('segment_start',0))*1000);end=round(float(event.get('segment_end',0))*1000)
         source_ids=event.get('source_processing_ids') or ()
         refs={'segment:'+str(key) for key in source_ids} if source_ids else {

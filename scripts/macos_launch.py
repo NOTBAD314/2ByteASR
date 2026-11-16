@@ -123,15 +123,18 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-video-worker':
         from twobyteasr.playback.video_decode_worker import main as video_main
         return video_main()
-    if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
-        # Cloud recognition child (2026-10-13): needs no local model runtime.
+    if len(sys.argv) == 2 and sys.argv[1] in {'--asr-api-worker', '--subtitle-export-worker'}:
         # The parent owns real pipes even when the windowed .app has None.
+        # Both data-only children dispatch before normal GUI defaults.
         if sys.stdout is None:
             sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
         if sys.stderr is None:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
         if sys.stdin is None:
             sys.stdin = os.fdopen(os.dup(0), 'r', encoding='utf8')
+        if sys.argv[1] == '--subtitle-export-worker':
+            from twobyteasr.exports.subtitle_export_process import main as subtitle_main
+            return subtitle_main()
         from twobyteasr.providers.cloud_api_worker import main as cloud_api_worker_main
         return cloud_api_worker_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-mlx':

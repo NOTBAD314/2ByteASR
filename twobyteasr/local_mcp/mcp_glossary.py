@@ -272,16 +272,17 @@ def current_digest(legacy, library_id: str) -> str:
     return entry_digest(_entry(legacy, _games(_fresh(legacy)), library_id))
 
 
-def apply_changes(legacy, library_id: str, changes: list[dict]) -> list[dict]:
+def apply_changes(legacy, library_id: str, changes: list[dict], *, origin: str = ORIGIN) -> list[dict]:
     """Write an approved plan through the existing writers, in order; stops at
-    the first refusal (the writers re-read the file each time)."""
+    the first refusal (the writers re-read the file each time). ``origin``: who
+    proposed it (兔白 uses its own, 2026-11-16)."""
     results = []
     for number, change in enumerate(changes):
         action, source, target = change["action"], change["from"], change["to"]
         try:
             if action == "add":
                 changed = legacy.add_learned_mapping(library_id, source, target, category=change["category"],
-                                                     origin=ORIGIN)
+                                                     origin=origin)
             elif action == "edit":
                 changed = legacy.edit_learned_mapping(library_id, (source, target), change["new_from"],
                                                       change["new_to"], category=change["category"], origin=None)

@@ -295,7 +295,8 @@ def complete(endpoint, messages, *, max_tokens, timeout, stage="", cancel_check=
         elif official and enable_thinking is False and model.startswith(('claude-sonnet-5','claude-haiku-5-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8')):
             body['thinking'] = {'type':'disabled'}
             thinking_mode, compatibility = 'disabled', 'requested_unverified'
-        elif official and enable_thinking is True:
+        elif official and (enable_thinking is True or isinstance(enable_thinking, str) and bool(effort)):
+            # A named depth (high / max) is thinking on, with that depth as the effort.
             body['thinking'] = {'type':'adaptive'}
             thinking_mode, compatibility = 'adaptive', 'requested_unverified'
         else:

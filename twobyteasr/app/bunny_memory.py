@@ -160,6 +160,16 @@ def save_chat(key: str, items) -> None:
     temp.replace(path)
 
 
+def clear_chat(key: str) -> None:
+    """One project's saved chat (「新对话」, 2026-11-16); memory, knowledge and recipes stay."""
+    if not key:
+        return
+    try:
+        _chat_path(key).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def clear_chats() -> None:
     global CHAT_EPOCH
     CHAT_EPOCH += 1
@@ -171,5 +181,5 @@ def clear_chats() -> None:
             pass
 
 
-__all__ = ['CHAT_LIMIT', 'KINDS', 'LIMITS', 'add', 'clear', 'clear_chats', 'load', 'load_chat', 'looks_secret', 'prompt_block',
+__all__ = ['CHAT_LIMIT', 'KINDS', 'LIMITS', 'add', 'clear', 'clear_chat', 'clear_chats', 'load', 'load_chat', 'looks_secret', 'prompt_block',
            'remove', 'save_chat', 'store_path']
