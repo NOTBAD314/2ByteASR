@@ -174,7 +174,7 @@ class CaptionSuggestionView(QScrollArea):
             self._selection = None
         self._rebuild()
         if focused:
-            self.focus_current()
+            self.focus_current(locate=False)
 
     def stage_patch(self, start, end, replacement, new_text):
         """Only a validated draft patch can carry old row locations forward."""
@@ -232,7 +232,7 @@ class CaptionSuggestionView(QScrollArea):
         self.focus_current()
         return True
 
-    def focus_current(self):
+    def focus_current(self, *, locate=True):
         if self._selection is None:
             return
         self.dismissed = False
@@ -248,7 +248,7 @@ class CaptionSuggestionView(QScrollArea):
         self.ensureWidgetVisible(target, 0, 0)
         self._paint_selection()
         item = self._display[self._selection[0]]
-        if item.status == "pending":
+        if locate and item.status == "pending":
             self.location_requested.emit(item.row.start, item.row.end)
         self.selected_changed.emit()
 
@@ -856,7 +856,7 @@ class CaptionEditorPanel(QFrame):
         self.split_button = CaptionStripButton('切割', '⇧ C', 'fa5s.cut', self.strip_row)
         self.split_button.setToolTip('在文字光标处切开 · Shift+C')
         self.pronoun_button = CaptionStripButton('他 / 她 / 它', '⇧F', parent=self.strip_row)
-        self.pronoun_button.setToolTip("选中或将光标放到一个代词旁；Shift+F 循环选择 · Shift+E 采纳 · Shift+S 返回正文")
+        self.pronoun_button.setToolTip("Shift+F 直接循环替换目标代称：他 → 她 → 它；Shift+E 确认编辑 · Shift+S 返回正文")
         self.more_button = CaptionStripButton(icon='fa5s.ellipsis-h', parent=self.strip_row)
         self.more_button.setToolTip('更多')
         self.more_menu = QMenu(self.more_button)
@@ -876,7 +876,7 @@ class CaptionEditorPanel(QFrame):
                        self.cancel_button, self.confirm_button, self.cut_status):
             controls.addWidget(widget)
         strip_layout.addWidget(self.strip_row)
-        self.candidate_hint = QLabel('Shift+F 代称循环　Shift+A/D 候选循环\nShift+E 采纳高亮　Shift+S 返回正文', self.strip)
+        self.candidate_hint = QLabel('Shift+F 直接替换代称　Shift+A/D 候选循环\nShift+E 确认编辑　Shift+S 返回正文', self.strip)
         self.candidate_hint.setObjectName('subtitleEditCardHint')
         self.candidate_hint.setTextFormat(Qt.TextFormat.PlainText)
         self.candidate_hint.setWordWrap(True)
@@ -1122,6 +1122,7 @@ class CaptionEditorPanel(QFrame):
 
     # -- state -----------------------------------------------------------
     def reset(self):
+        self._pronoun_highlight = None
         self.suggestions.reset()
         self.reference_button.setChecked(False)
         self.reference.hide()
@@ -1169,6 +1170,9 @@ class CaptionEditorPanel(QFrame):
             caret = self.editor.textCursor().position()
             mark(0, caret, QColor(232, 122, 92, 70))
             mark(caret, limit, QColor(95, 179, 194, 80))
+        target = getattr(self, '_pronoun_highlight', None)
+        if target is not None and target.hasSelection() and target.selectedText() in '他她它':
+            mark(target.selectionStart(), target.selectionEnd(), AMBER)
         if self.suggestions.has_rows():
             from .caption_editor import qt_position
             text = self.editor.toPlainText()
@@ -1206,7 +1210,7 @@ class CaptionEditorPanel(QFrame):
 
     def update_hint(self):
         self.split_mode.setToolTip('C 切割模式：' + ('开，按 C 在光标处切割' if self.split_mode.isChecked() else '关，c 正常输入'))
-        text = "Shift+F 代称循环 · Shift+A/D 候选循环 · Shift+E 采纳高亮 · Shift+S 返回正文"
+        text = "Shift+F 直接替换代称 · Shift+A/D 候选循环 · Shift+E 确认编辑 · Shift+S 返回正文"
         text += " · Shift+C 切割 · Shift+Enter 换行"
         if self.split_mode.isChecked():
             text += ' · C 切割（输入法选字时暂停）'

@@ -160,6 +160,48 @@ def start(window, output: Path):
                 ui_zoom.apply_to(window.pages.currentWidget())
                 settle(1200)
                 measure(f'home_after_studio_{round_index}_long_name')
+            # Validate the received layout on real windows, including a return
+            # from a roomy profile to a short window and later zoom changes.
+            from ..app import ui_zoom
+            from PySide6.QtCore import QPoint
+            growth_seen = False
+            aligned = 0
+            for theme_name in ('warm', 'midnight'):
+                apply_theme(theme_name, app)
+                for zoom in (100, 150):
+                    ui_zoom.set_zoom_percent(zoom)
+                    ui_zoom.apply_to(window)
+                    for width, height in ((1320, 850), (2560, 1440), (1100, 740)):
+                        window.resize(width, height)
+                        settle(1600)
+                        tag = f'layout_{theme_name}_{zoom}_{width}'
+                        viewport = window.settings_scroll.viewport()
+                        right = window.home_settings_card
+                        left = window.studio_entry_card
+                        right_bottom = right.mapTo(viewport, QPoint(0, right.height())).y()
+                        left_bottom = left.mapTo(viewport, QPoint(0, left.height())).y()
+                        if right_bottom <= viewport.height():
+                            aligned += 1
+                            check(f'{tag}: both columns end on one line',
+                                  abs(left_bottom - right_bottom) <= 1,
+                                  dict(left=left_bottom, right=right_bottom))
+                        plan = window.recognition_plan
+                        scale = getattr(plan, '_type_scale_now', 1.0)
+                        growth_seen |= scale > 1.0
+                        check(f'{tag}: all three cards share bounded type growth',
+                              1.0 <= scale <= 1.4 and all(
+                                  abs(getattr(card, '_type_scale', 1.0) - scale) < .001
+                                  for card in cards().values()), scale)
+                        check(f'{tag}: action bar remains inside the window',
+                              window.bottom_bar.isVisible() and
+                              window.bottom_bar.mapTo(window, QPoint(0, window.bottom_bar.height())).y() <= window.height())
+                        measure(tag)
+                        result['metrics'][tag].update(type_scale=scale, profile=plan._responsive_profile,
+                                                      columns=[left_bottom, right_bottom],
+                                                      viewport=[viewport.width(), viewport.height()])
+                        grab(window, tag + '_window')
+            check('roomy windows actually grow model type and logos', growth_seen)
+            check('column alignment measured in multiple real layouts', aligned >= 2, aligned)
         except Exception:  # noqa: BLE001
             result['errors'].append(traceback.format_exc())
         result['passed'] = bool(result['checks']) and all(c['passed'] for c in result['checks']) and not result['errors']

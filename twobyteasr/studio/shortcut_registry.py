@@ -150,7 +150,7 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('review_adopt_3', '采用第 3 个候选', '3', 'studio.review', '审核'),
     _a('review_adopt_4', '采用第 4 个候选', '4', 'studio.review', '审核'),
     # 2026-10-15 (user: 他/她 is the most frequent fix): flip the caption's pronouns.
-    _a('review_flip_pronoun', '切换这一条的人称（他 ↔ 她）', '', 'studio.review', '审核'),
+    _a('review_flip_pronoun', '切换目标代称（他 → 她 → 它）', '', 'studio.review', '审核'),
     # Home page
     _a('home.start_run', '开始生成字幕', 'Ctrl+Return', 'home', '首页'),
     _a('home.choose_media', '选择素材', 'Ctrl+O', 'home', '首页'),
@@ -183,7 +183,7 @@ FIXED_GESTURES = (
     ('Alt + 拖动', '复制拖动；拖动时按住 Alt 暂停吸附'),
     ('Shift + 点击时间尺', '平移时间轴'),
     ('双击字幕块', '在时间轴上直接改字'),
-    ('Shift+F / Shift+A、D / Shift+E / Shift+S（字幕编辑）', '代称循环 / 候选循环 / 采纳高亮 / 返回正文'),
+    ('Shift+F / Shift+A、D / Shift+E / Shift+S（字幕编辑）', '直接替换代称 / 候选循环 / 确认编辑 / 返回正文'),
     ('字幕编辑框里的 Enter / Esc / Ctrl+Enter / Shift+Enter / Tab', '提交 / 取消 / 提交并编辑下一条 / 换行 / 下一条'),
     ('对话框里的 Esc 与 Enter', '关闭 / 确认（系统约定）'),
 )

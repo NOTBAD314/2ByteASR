@@ -22,7 +22,8 @@ def test_pill_sits_between_editing_and_transport_and_keeps_frame_and_cover(tmp_p
             '波纹向前合并 ({key})', '波纹向后合并 ({key})', '删除当前字幕 ({key})']
         assert groups['navigation'][:3] == [page.selection_center_toggle, page.cue_start_button, page.cue_end_button]
         assert all(widget.isVisible() for widget in (*cue, *groups['navigation']))
-        assert page.selection_center_toggle.accessibleName() == '选中定位并居中'
+        assert page.selection_center_toggle.accessibleName() == '播放头持续居中'
+        assert page.selection_center_toggle.isCheckable()
         assert roles.index('navigation') > roles.index('transport')
         assert not page.cue_boundary_button.isVisible()
         assert not any(label.text() == '时间轴' for label in page._timeline_command_bar.findChildren(QLabel))
@@ -45,6 +46,7 @@ def test_pill_names_the_selection_and_jumps_to_start_and_end(tmp_path, monkeypat
         page.cue_controller.cancel_selection(); app.processEvents()
         assert page.cue_capsule_badge.text() == '#—'
         assert not any(button.isEnabled() for button in page._cue_capsule_buttons)
+        assert page.selection_center_toggle.isEnabled()
         page.select_cue('b'); app.processEvents()
         assert page.cue_capsule_badge.text() == '#2'
         assert all(button.isEnabled() for button in page._cue_capsule_buttons)
@@ -54,8 +56,9 @@ def test_pill_names_the_selection_and_jumps_to_start_and_end(tmp_path, monkeypat
         page.cue_end_button.click(); page.cue_end_button.click()
         page.cue_start_button.click()
         assert calls == [16.0, 16.0, 14.0] and page.selected_cue_id == 'b'
+        before = (len(calls), page.timeline.visible_duration_ms)
         page.selection_center_toggle.click()
-        assert calls[-1] == 14.0 and page.timeline.visible_duration_ms == 15000
+        assert (len(calls), page.timeline.visible_duration_ms) == before
         page.timeline.set_playhead(10000)
         page.cue_boundary_button.click()
         assert calls[-1]==13.0  # clicked(bool) still executes the Alt+J toggle

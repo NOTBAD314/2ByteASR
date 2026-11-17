@@ -156,7 +156,7 @@ def test_a_window_opens_only_after_she_has_answered(app, studio, monkeypatch):
     opened = []
     monkeypatch.setattr(page, '_open_find_replace', lambda: opened.append('find_replace'))
     receipts, later = run_calls(window, [('open_window', {'name': 'find_replace'})])
-    assert '说完后打开' in receipts[0] and opened == []                 # not yet: its modal loop would wait
+    assert '马上打开' in receipts[0] and opened == []                 # not inside run_turn: its modal loop would wait
     for name, args in later:
         run_later(window, name, args)
     assert opened == ['find_replace']
@@ -393,6 +393,9 @@ def test_hard_questions_get_the_deepest_thinking_and_the_choice_is_remembered(ap
 
     class Fake:
         def complete(self, messages, **kwargs):
+            from twobyteasr.app import bunny_persona
+            if messages[-1].get('content') == bunny_persona.SUGGEST_ONLY:   # 2026-11-17: the choices request
+                return '{"suggest": ["好的", "再说说"]}'
             sent.append(kwargs)
             return json.dumps(next(answers), ensure_ascii=False)
     monkeypatch.setattr(ai_providers, 'provider_for_stage', lambda settings, stage: Fake())
@@ -420,6 +423,9 @@ def test_an_answer_lost_in_thinking_is_asked_again_then_without_thinking(app, ch
 
     class Fake:
         def complete(self, messages, **kwargs):
+            from twobyteasr.app import bunny_persona
+            if messages[-1].get('content') == bunny_persona.SUGGEST_ONLY:   # 2026-11-17: the choices request
+                return '{"suggest": ["好的", "再说说"]}'
             efforts.append(kwargs['enable_thinking'])
             if len(efforts) < 3:
                 raise Empty('模型没有返回可用正文（content 为空）。')

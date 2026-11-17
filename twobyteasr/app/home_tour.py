@@ -383,8 +383,12 @@ class GuidedTour(QWidget):
     FOLLOW_MS = 60
     JUMP = 48                                            # a shown target that moves less than this is followed at once
 
+    @classmethod
+    def uses_floating_overlay(cls) -> bool:
+        return (sys.platform == 'win32') if cls.FLOATING is None else bool(cls.FLOATING)
+
     def __init__(self, window, steps: list[TourStep], avoid: Callable[[], list] | None = None):
-        floating = (sys.platform == 'win32') if self.FLOATING is None else bool(self.FLOATING)
+        floating = self.uses_floating_overlay()
         flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
                  | Qt.WindowType.WindowDoesNotAcceptFocus) if floating else Qt.WindowType.Widget
         super().__init__(window, flags)
