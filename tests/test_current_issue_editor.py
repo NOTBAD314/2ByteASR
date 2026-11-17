@@ -242,7 +242,10 @@ def test_precise_pronouns_plural_words_and_input_focus(tmp_path, monkeypatch):
         editor.setPlainText('他们弹吉他，她看其他人')
         cursor = editor.textCursor(); cursor.setPosition(0); cursor.setPosition(8, QTextCursor.MoveMode.KeepAnchor)
         editor.setTextCursor(cursor)
-        assert not page._replace_editor_pronoun('她')
+        # No explicit single-character target: the nearest valid pronoun is
+        # already 她, so this is consumed without changing any word part.
+        assert page._replace_editor_pronoun('她')
+        assert editor.toPlainText() == '他们弹吉他，她看其他人'
         cursor.setPosition(0);cursor.setPosition(1,QTextCursor.MoveMode.KeepAnchor);editor.setTextCursor(cursor)
         assert page._replace_editor_pronoun('她')
         assert editor.toPlainText() == '她们弹吉他，她看其他人'

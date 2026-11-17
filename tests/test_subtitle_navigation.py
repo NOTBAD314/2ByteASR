@@ -35,7 +35,7 @@ class Page(StudioSubtitleNavigationMixin):
         self.seeks=[];self.hints=[]
     def _seek(self,seconds,**kwargs):
         self.seeks.append((seconds,kwargs));self.timeline.set_playhead(round(seconds*1000))
-        if self._selection_centered():self.timeline.center_playhead(round(seconds*1000),force=True)
+        if self._playhead_centered():self.timeline.center_playhead(round(seconds*1000),force=True)
     def _show_studio_hint(self,text):self.hints.append(text)
 
 @pytest.mark.parametrize('position,expected',[(10000,13000),(10001,13000),(12999,10000),(13000,10000),(11500,10000),(29000,10000)])
@@ -137,9 +137,9 @@ def test_preference_roundtrip_keeps_other_settings(tmp_path,monkeypatch):
     path=tmp_path/'studio.json';path.write_text(json.dumps({'shortcuts':{'play_pause':'K'},'studio_preferences':{'autosave_enabled':False}}),'utf8')
     monkeypatch.setattr(studio_project,'studio_settings_path',lambda:path)
     save_center_preference(True);payload=json.loads(path.read_text('utf8'))
-    assert payload['studio_preferences']=={'autosave_enabled':False,'selection_centered':True}
+    assert payload['studio_preferences']=={'autosave_enabled':False,'playhead_centered':True}
     assert payload['shortcuts']=={'play_pause':'K'}
-    save_center_preference(False);assert json.loads(path.read_text('utf8'))['studio_preferences']['selection_centered'] is False
+    save_center_preference(False);assert json.loads(path.read_text('utf8'))['studio_preferences']['playhead_centered'] is False
 
 
 def test_registry_default_is_free_rebindable_and_settings_roundtrip():
