@@ -418,13 +418,7 @@ class StudioCueController:
                 return
             page._load_style_inspector(selection_scope=scope)
         QTimer.singleShot(0, page, hydrate)
-        # Native list keyboard navigation has no clicked() signal. Programmatic
-        # clock mirrors block this selection signal; mouse activation keeps its
-        # existing one-frame coalescing boundary.
-        from PySide6.QtWidgets import QApplication
-        centered = getattr(page, '_selection_centered', None)
-        if callable(centered) and centered() and QApplication.mouseButtons() == Qt.NoButton:
-            page._navigate_selected_subtitle(scope.active_id)
+        # Selection and a viewport-follow preference never publish a seek.
 
     def smart_align_current(self) -> None:
         project = self.session.project
@@ -1781,7 +1775,4 @@ class StudioCueController:
         self.select_cue(cue_id)
         cue = self._read_runtime(project).cue_by_id.get(cue_id)
         if cue is not None:
-            if self.page._selection_centered():
-                self.page._navigate_selected_subtitle(cue.id)
-            else:
-                self.page._seek(cue.start_ms / 1000.0)
+            self.page._seek(cue.start_ms / 1000.0)

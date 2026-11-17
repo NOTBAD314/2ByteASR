@@ -3,6 +3,9 @@ import json, os, time, traceback
 from pathlib import Path
 
 def start(window, output):
+    if os.environ.get('TWOBYTEASR_EDITOR_REVIEW_INTERACTION_AUDIT') == '1':
+        from .editor_review_interaction_audit import start as run_interaction
+        return run_interaction(window, output)
     if os.environ.get('TWOBYTEASR_EDITOR_BACKGROUND_AUDIT') == '1':
         from .editor_background_audit import start as run_background
         return run_background(window, output)

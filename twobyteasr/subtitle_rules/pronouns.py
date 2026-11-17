@@ -37,6 +37,24 @@ def toggle_pronoun(char: str) -> str:
     return _TOGGLE.get(str(char), str(char))
 
 
+def edit_pronoun_target(text, position=0, anchor=None, previous=None):
+    """One editor target; ties go left and a live target remains stable."""
+    positions = pronoun_positions(text)
+    if not positions:
+        return None
+    low, high = sorted((position, position if anchor is None else anchor))
+    if high == low + 1 and low in positions:
+        return low
+    if previous in positions:
+        return previous
+    if low == high:
+        if low in positions:
+            return low
+        if low - 1 in positions:
+            return low - 1
+    return min(positions, key=lambda at: (min(abs(at-position), abs(at+1-position)), at))
+
+
 def pronoun_options(char: str) -> tuple[str, ...]:
     """The click choice first, then the remaining one (他 → 她, 它)."""
     first = toggle_pronoun(char)

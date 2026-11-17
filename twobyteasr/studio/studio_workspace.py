@@ -1567,7 +1567,7 @@ class StudioWorkspaceBuilder:
         yield from _gui_slice.checkpoint()
         page.follow_playhead_toggle.setObjectName("timelineToggleChip")
         page.follow_playhead_toggle.setChecked(True)
-        bind_text(page.follow_playhead_toggle, '开启时连续跟随；关闭时仅越界翻页，播放头左对齐。字幕选择保持不变。', property='toolTip')
+        bind_text(page.follow_playhead_toggle, '未开启持续居中时：开启则连续跟随，关闭则仅越界翻页。字幕选择保持不变。', property='toolTip')
         page.follow_playhead_toggle.toggled.connect(page._follow_toggle_changed)
         yield from _gui_slice.checkpoint()
         timeline_toolbar.addWidget(page.follow_playhead_toggle)
@@ -1576,9 +1576,13 @@ class StudioWorkspaceBuilder:
         # number and the single-cue edits (built below). Words live in tooltips
         # so the transport keeps its place under the video.
         page.selection_center_toggle = page._tool_button(
-            'fa5s.bullseye', '选中定位并居中 · 跳到活动字幕起点，显示15秒；片头从0开始。播放跟随由独立开关控制。',
-            page._locate_selected_subtitle)
-        bind_text(page.selection_center_toggle, '选中定位并居中', property='accessibleName')
+            'fa5s.bullseye', '播放头持续居中 · 开启后时间轴随播放平滑滚动，记住开关状态；手动浏览时暂让位，继续播放后恢复。',
+            lambda: None)
+        page.selection_center_toggle.setCheckable(True)
+        from .subtitle_navigation import PREFERENCE
+        page.selection_center_toggle.setChecked(page._studio_preferences().get(PREFERENCE, True) is not False)
+        page.selection_center_toggle.toggled.connect(page._playhead_center_changed)
+        bind_text(page.selection_center_toggle, '播放头持续居中', property='accessibleName')
         page.cue_start_button = page._tool_button(
             'ph.arrow-line-left-bold', '跳到当前字幕起点 · {key} 在起点和终点之间往返',
             page._jump_current_subtitle_start, shortcut='jump_cue_boundary')
@@ -1763,7 +1767,7 @@ class StudioWorkspaceBuilder:
         page.cue_capsule_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bind_text(page.cue_capsule_badge, '当前字幕在列表中的序号；未选中时按钮不可用', property='toolTip')
         cue_pill = (page.cue_capsule_badge, *cue_pill_commands)
-        page._cue_capsule_buttons = (page.selection_center_toggle, page.cue_start_button,
+        page._cue_capsule_buttons = (page.cue_start_button,
                                      page.cue_end_button, *cue_pill_commands)
         cue_pill_commands[-1].setProperty('danger', True)
         for widget in cue_pill_commands:
@@ -1807,8 +1811,7 @@ class StudioWorkspaceBuilder:
         from .studio_toolbar_layout import centre_on
         centre_on(page, page.video)
         page.timeline = WaveformTimeline()
-        page.timeline.set_center_playhead_mode(False)
-        page.timeline.cue_navigation_requested.connect(page._navigate_selected_subtitle)
+        page.timeline.set_center_playhead_mode(page._playhead_centered())
         yield from _gui_slice.checkpoint()
         from .source_timeline_drop import SourceTimelineDrop
         page.source_timeline_drop = SourceTimelineDrop(page)

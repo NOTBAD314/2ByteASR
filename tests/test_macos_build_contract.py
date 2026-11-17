@@ -18,10 +18,12 @@ def test_manual_workflow_is_bounded_read_only_and_pinned_to_trusted_source():
     assert workflow["permissions"]=={"contents":"read"}
     assert workflow["concurrency"]["cancel-in-progress"]=="false"
     job=workflow["jobs"]["native-arm64"]
-    # 2026-10-14: the runner is selectable among Apple Silicon labels only (xlarge = paid
-    # larger runner); the cap covers the optional Studio performance check.
-    assert job["runs-on"]=="${{ inputs.app_runner || 'macos-14' }}"
-    assert set(workflow["on"]["workflow_dispatch"]["inputs"]["app_runner"]["options"])<={"macos-14","macos-14-xlarge"}
+    # macOS14 standard runners retired; production and unchanged-DMG checks
+    # remain on explicitly selected Apple Silicon environments; paid labels require owner authorization.
+    assert job["runs-on"]=="${{ inputs.app_runner || 'macos-15' }}"
+    assert set(workflow["on"]["workflow_dispatch"]["inputs"]["app_runner"]["options"])=={"macos-15","macos-26","macos-15-xlarge","macos-26-xlarge"}
+    assert "requires owner authorization" in workflow["on"]["workflow_dispatch"]["inputs"]["app_runner"]["description"]
+    assert workflow['jobs']['same-candidate-newer-macos']['runs-on']=="${{ startsWith(inputs.app_runner, 'macos-26') && 'macos-15' || 'macos-26' }}"
     assert int(job["timeout-minutes"])<=100
     checkout=next(step for step in job["steps"] if "uses" in step and "actions/checkout@" in step["uses"])
     assert checkout["with"]["ref"]=="${{ inputs.source_sha }}"
@@ -90,3 +92,62 @@ def test_real_app_spec_selects_arm64_and_does_not_claim_universal_or_developer_i
     assert "codesign_identity=None" in text
     assert "universal2" not in text
     assert "BUNDLE(coll,name='2ByteASR.app'" in text
+
+
+@pytest.mark.parametrize('failed', ['embedded_preview', 'studio_perf', 'edit_save', 'cold_save', 'waveform_stability', 'full_waveform', 'caret_split', 'stable_captions', 'chinese_complete_expression', 'speaker_board', 'timeline_cue_pill'])
+def test_final_gate_rejects_failed_native_pixels_or_requested_studio_perf_even_when_other_steps_succeed(tmp_path, failed):
+    from scripts.macos_ci_status import main
+    root = tmp_path/'tmp/qa'
+    receipts = root/'artifacts/receipts'; receipts.mkdir(parents=True)
+    (receipts/'artifact-selection.json').write_text(json.dumps({'files': [{'path': 'dmg/real.dmg'}]}))
+    record = dict.fromkeys(['runtime_identity','media','app','relocation','startup','dmg','blank_project',
+                           'edit_save','caret_split','cold_save','waveform_stability','full_waveform','embedded_preview','renderer','studio_perf', 'stable_captions', 'chinese_complete_expression', 'speaker_board', 'timeline_cue_pill'], 'passed')
+    record.update(model_requested=False, cloud_mlx_requested=False, studio_perf_requested=True, test_step='success')
+    status = root/'ci-status.json'; status.write_text(json.dumps(record))
+    assert main(['--qa-root', str(root), '--enforce']) == 0
+    record[failed] = 'failed'; status.write_text(json.dumps(record))
+    assert main(['--qa-root', str(root), '--enforce']) == 1
+
+
+def test_windowed_subtitle_worker_restores_private_pipes_before_gui_defaults(tmp_path, monkeypatch):
+    import io
+    import multiprocessing
+    import sys
+    from types import SimpleNamespace
+    from scripts import macos_launch
+    from twobyteasr import runtime_paths
+    from twobyteasr.storage import settings
+    from twobyteasr.system import macos_compatibility, platform_macos
+
+    existing_settings = tmp_path / 'existing.json'
+    existing_settings.write_text('{}', encoding='utf8')
+    monkeypatch.setattr(multiprocessing, 'freeze_support', lambda: None)
+    monkeypatch.setattr(platform_macos, 'configure_macos_paths', lambda root: None)
+    monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path / 'profile')
+    monkeypatch.setattr(settings, 'project_settings_path', lambda: existing_settings)
+    monkeypatch.setattr(macos_compatibility, 'require_compatible', lambda role: None)
+    monkeypatch.setattr(macos_compatibility, 'write_startup_diagnostics', lambda *args, **kwargs: None)
+
+    calls = []
+
+    def subtitle_worker():
+        assert all(hasattr(getattr(sys, name), 'buffer') for name in ('stdin', 'stdout', 'stderr'))
+        calls.append('subtitle worker')
+        return 41
+
+    def normal_entry():
+        pytest.fail('data-only subtitle worker reached normal GUI entry')
+
+    monkeypatch.setitem(sys.modules, 'twobyteasr.exports.subtitle_export_process', SimpleNamespace(main=subtitle_worker))
+    monkeypatch.setitem(sys.modules, 'quick_start', SimpleNamespace(main=normal_entry))
+    streams = {fd: io.TextIOWrapper(io.BytesIO(), encoding='utf8') for fd in (0, 1, 2)}
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'platform', 'darwin')
+        patch.setattr(sys, 'argv', ['owned.app/Contents/MacOS/2ByteASR', '--subtitle-export-worker'])
+        patch.setattr(sys, 'stdin', None)
+        patch.setattr(sys, 'stdout', None)
+        patch.setattr(sys, 'stderr', None)
+        patch.setattr(macos_launch.os, 'dup', lambda fd: fd)
+        patch.setattr(macos_launch.os, 'fdopen', lambda fd, *args, **kwargs: streams[fd])
+        result = macos_launch.main()
+    assert result == 41 and calls == ['subtitle worker']
