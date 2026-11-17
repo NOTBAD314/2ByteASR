@@ -1468,7 +1468,7 @@ class SubtitleStudioPage(
             else None
         )
         follow_confirm = (getattr(self,'_caption_following',False) and isinstance(event,QKeyEvent) and (
-            event.key() in {Qt.Key_Return,Qt.Key_Enter} and not event.modifiers() & Qt.ShiftModifier
+            event.key() in {Qt.Key_Return,Qt.Key_Enter,Qt.Key_Escape} and not event.modifiers() & Qt.ShiftModifier
             or event.key() in {Qt.Key_R,Qt.Key_W,Qt.Key_A,Qt.Key_D,Qt.Key_F,Qt.Key_E,Qt.Key_S}
                 and event.modifiers()==Qt.ShiftModifier
             or event.key() == Qt.Key_C
@@ -1480,7 +1480,9 @@ class SubtitleStudioPage(
             watched in {self,self.timeline,self.cue_table,self.cue_table.viewport()}
             or self.timeline.isAncestorOf(watched)))
         if (getattr(self, '_caption_following', False) and isinstance(watched, QWidget)
-                and (self._caption_window_owns(watched) or follow_confirm and follow_context)
+                and (QApplication.activeModalWidget() is None
+                     or self._caption_window_owns(QApplication.activeModalWidget()))
+                and (self._caption_context_owns(watched) or follow_confirm and follow_context)
                 and event_type in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
                 and isinstance(event, QKeyEvent)):
             # E intentionally leaves playback input on the timeline. Its
@@ -1494,6 +1496,22 @@ class SubtitleStudioPage(
                 event.accept()
                 return True
             return False
+        if (self._review_mode and self.isVisible() and isinstance(watched, QWidget)
+                and (watched is self or self.isAncestorOf(watched))
+                and QApplication.activeModalWidget() is None
+                and not getattr(self, '_caption_following', False)
+                and event_type in {QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress}
+                and isinstance(event, QKeyEvent)
+                and (event.key() == Qt.Key_Escape and event.modifiers() == Qt.NoModifier
+                     or event.key() == Qt.Key_F and event.modifiers() == Qt.ShiftModifier)
+                and not isinstance(watched, (QLineEdit, QPlainTextEdit, QAbstractSpinBox))):
+            if event_type == QEvent.Type.KeyPress and not event.isAutoRepeat():
+                if event.key() == Qt.Key_Escape:
+                    self._exit_review()
+                else:
+                    self._cycle_review_pronoun()
+            event.accept()
+            return True
         if canvas_editor is not None and watched is canvas_editor:
             if (
                 event.type() == QEvent.Type.InputMethodQuery

@@ -213,6 +213,53 @@ def test_escalated_cache_entry_is_separate(context, monkeypatch):
     assert ctx.polishing_summary['fallback_cues'] == 0
 
 
+# --- cue_id read as id (2026-11-17 user's Roco stream: 125 of 284 cues lost to this) -------------
+
+def test_cue_id_field_is_read_as_id_without_another_request(context, monkeypatch, observed):
+    _, ctx, _ = context
+
+    def answer(messages, thinking):
+        ids = ids_of(messages)
+        # The real answer shape: an echoed "type", rows named cue_id, one row still named id.
+        rows = [{'cue_id': ids[0], 'edits': [{'from': '短容', 'to': '短绒', 'type': 'phonetic_correction'}]}]
+        if len(ids) > 1:
+            rows.append({'id': ids[1], 'edits': []})
+        return json.dumps({'type': 'json_object', 'checked_ids': ids, 'cues': rows}, ensure_ascii=False)
+    calls = install(monkeypatch, answer)
+    rows = [cue(i, f'第{i}段的短容装备') for i in range(1, 4)]
+    result = polishing.polish_subtitles(rows, '字段别名')
+    assert len(calls) == 3 and not escalated(calls)
+    assert ctx.polishing_summary['fallback_cues'] == 0 and not fallback_reviews(ctx)
+    receipt = next(row for row in result if row.segment_id == 1).caption_arbitration['terminology_polish']
+    assert receipt['response_state'] != 'fallback' and receipt['returned_edits']
+    alias = [payload for name, payload in observed if name == 'polishing_response_field_alias']
+    assert sorted(i for payload in alias for i in payload['cue_ids']) == [1, 2, 3]
+
+
+@pytest.mark.parametrize('row', [
+    {'id': 1, 'cue_id': 2, 'edits': []},        # two different readings
+    {'cue_id': 9, 'edits': []},                 # not a cue of this batch
+    {'cue_id': '1', 'edits': []},               # not a whole number
+])
+def test_ambiguous_cue_id_stays_invalid(row):
+    """Never read as an id: the batch fails, or (with a usable id) only that cue is quarantined."""
+    from twobyteasr.providers.ai_providers import AIProviderError
+    segments = [cue(1, '第一段'), cue(2, '第二段')]
+    quarantined = polishing.CueValidationFailures()
+    try:
+        value = polishing._validate_polish_response({'checked_ids': [1, 2], 'cues': [row]}, segments, 1, quarantined)
+    except AIProviderError as error:
+        assert error.category in {'structured_schema_error', 'coverage_mismatch'}
+    else:
+        assert 1 in quarantined and all('cue_id' not in item for item in value['cues'] if item.get('id') != 1)
+
+
+def test_matching_id_and_cue_id_is_one_reading():
+    value, aliased = polishing._alias_cue_id_fields(
+        {'checked_ids': [1], 'cues': [{'id': 1, 'cue_id': 1, 'edits': []}]}, [cue(1, '第一段')])
+    assert value['cues'] == [{'id': 1, 'edits': []}] and aliased == [1]
+
+
 # --- grouping ------------------------------------------------------------------------------------
 
 def test_grouping_batch_rescued_by_thinking_drops_its_fallback_warning(context, monkeypatch, observed):

@@ -472,7 +472,7 @@ class StudioPlaybackFlowMixin:
         # (2026-10-27, user: follow is on but does nothing); only the
         # timeline's own text editor sits on that view and needs it still.
         inline_editor = getattr(self.timeline, '_inline_editor', None)
-        if self._selection_centered():
+        if self._playhead_centered():
             self.timeline.center_playhead(milliseconds)
         elif (self.follow_playhead_toggle.isChecked()
                 and not (inline_editor is not None and inline_editor.isVisible())
@@ -680,7 +680,7 @@ class StudioPlaybackFlowMixin:
             # User selection is independent of both the view mode and an
             # ordinary seek. Only retire the last endpoint request's position.
             self._subtitle_navigation_requested_ms = None
-        if self._selection_centered():
+        if self._playhead_centered():
             self.timeline.center_playhead(round(seconds * 1000), force=True)
         from .caption_seek_preparation import coordinate_caption_seek
         if coordinate_caption_seek(self,seconds,accurate):return
@@ -693,7 +693,7 @@ class StudioPlaybackFlowMixin:
         if (timeline_ms != getattr(self, '_subtitle_locate_window_target_ms', None)
                 and not getattr(self.timeline,'_viewport_manipulated',lambda:False)()):
             self.timeline._manual_view_hold = False
-            if self._selection_centered():
+            if self._playhead_centered():
                 self.timeline._follow_suspended_until = 0
         if not getattr(self, '_highlight_seeking', False):
             self._highlight_preview = None

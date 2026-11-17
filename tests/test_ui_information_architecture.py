@@ -146,7 +146,9 @@ def test_home_recognition_cards_use_tall_window_space_without_moving_action_bar(
 
     # Home C′ (2026-10-17): the row takes its size hint between the tier height
     # and +48 px (a wrapped recovery button); taller windows add a little.
-    assert win.recognition_plan.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+    # 2026-11-10 (user: the right card ended above the Studio card): the row
+    # also takes the card's spare height, so both columns end on one line.
+    assert win.recognition_plan.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
     assert all(
         card.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Preferred
         for card in win.recognition_plan.cards.values()
@@ -154,6 +156,30 @@ def test_home_recognition_cards_use_tall_window_space_without_moving_action_bar(
     assert tall_height >= compact_height
     assert win.bottom_bar.isVisible()
     assert not win.settings_scroll.isAncestorOf(win.bottom_bar)
+    win.close()
+
+
+def test_home_columns_end_on_one_line_and_roomy_cards_grow_their_type():
+    """2026-11-10 (user): the right card ended above the Studio card, and on
+    wide windows the model names stayed small in roomy cards."""
+    from PySide6.QtCore import QPoint
+    app = _app()
+    win = _window()
+    win.show()
+    win.resize(1500, 1000)
+    for _ in range(5):
+        app.processEvents()
+    viewport = win.settings_scroll.viewport()
+    right = win.home_settings_card
+    right_bottom = right.mapTo(viewport, QPoint(0, right.height())).y()
+    left = win.studio_entry_card
+    if right_bottom <= viewport.height():
+        assert abs(left.geometry().bottom() + 1 - right_bottom) <= 1
+    plan = win.recognition_plan
+    if plan._responsive_profile == "extra_large":
+        scale = plan._type_scale()
+        assert 1.0 <= scale <= 1.4
+        assert all(card._type_scale == plan._type_scale_now for card in plan.cards.values())
     win.close()
 
 

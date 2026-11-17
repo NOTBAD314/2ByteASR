@@ -71,7 +71,7 @@ def run(window, output, check):
             cursor=editor.textCursor().position() if editor else None,draft_id=getattr(getattr(draft,'target',None),'cue_id',None))
         if current is not None:
             target=current._raw_target(current.index);widget=target[0] if isinstance(target,tuple) else target
-            state.update(stuck=current._stuck,ready=current._is_ready(current.index),covered=current._covered(current.index),
+            state.update(stuck=current._stuck,floating=current.floating,ready=current._is_ready(current.index),covered=current._covered(current.index),
                 target_type=type(widget).__name__,target_visible=widget.isVisible() if widget is not None else None,
                 project_path=str(getattr(page,'project_path','')),current_page=type(window.pages.currentWidget()).__name__)
             if widget is not None:
@@ -103,6 +103,12 @@ def run(window, output, check):
             index=tour.index;step=tour._step()
             if index not in seen:
                 seen.add(index);records.append(dict(chapter=key,index=index,text=tour._text_source))
+                if key=='speakers' and index==2 and not tour.floating:
+                    manager=window.__dict__.get('_tutorial_speakers')
+                    target=tour._raw_target(index)
+                    widget=target[0] if isinstance(target,tuple) else target
+                    check('speaker practice shares the child overlay window',manager is not None
+                          and not manager.isWindow() and widget is not None and widget.window() is window)
                 (output/'tutorial-steps.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),'utf8')
                 if index in (0,len(tour.steps)//2,len(tour.steps)-1):
                     shot(window,f'chapter-{key}-{index:02}-target');shot(tour,f'chapter-{key}-{index:02}')

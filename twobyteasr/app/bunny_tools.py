@@ -46,6 +46,20 @@ class Tool:
     edit: bool = False             # an undoable edit (🟡): waits for 「帮我做」 unless 能撤销的直接做
     paid: bool = False             # AI work on the user's own key: waits for 「帮我做」 unless allowed
     persistent: bool = False       # stays after a restart (user_overlay): always waits for 「帮我做」
+    later: Callable | None = None  # a deferred tool's own after-her-answer half (window, args) (2026-11-17)
+    # 2026-11-17 (universal control): (tool, window, args) -> the same tool with the risk this call
+    # carries (bunny_ui_control: pressing 「删除」 always asks, a search box never does).
+    variant: Callable | None = None
+
+
+def resolve(tool, window, args):
+    """The tool as this call needs it judged (``Tool.variant``), or the tool itself."""
+    if tool.variant is None:
+        return tool
+    try:
+        return tool.variant(tool, window, args) or tool
+    except Exception:  # noqa: BLE001 - a judgement that fails keeps the tool's own (stricter) flags
+        return tool
 
 
 # ------------------------------------------------------------------ time and places
@@ -205,7 +219,7 @@ def _open_place(window, args) -> str:
     entry = _place_entries(window).get(key)
     if entry is None:
         raise ToolError(f'这个地方兔白不能直接打开：{key}')
-    return f'「{entry.title}」（位置：{entry.where}）会在兔白说完后打开'
+    return f'「{entry.title}」（位置：{entry.where}）马上打开；下一轮可以用 ui_snapshot 看里面、接着操作'
 
 
 # ------------------------------------------------------------------ the workbench
@@ -323,7 +337,7 @@ def _open_window(window, args) -> str:
         problem, _ = range_state(page)
         if problem:
             raise ToolError(f'「只重新识别这一段字幕」现在是灰的：{problem}')
-    return f'「{WINDOWS[name]}」窗口会在兔白说完后打开，里面的按钮由小兔纸自己按'
+    return f'「{WINDOWS[name]}」窗口马上打开；开始、替换、导出这类按钮由小兔纸自己按，其他可以下一轮用 ui_snapshot 看、接着操作'
 
 
 def open_window_later(window, args) -> None:
@@ -899,6 +913,8 @@ def _tools() -> dict:
     from .bunny_subtitle_tools import tools as subtitle_tools
     items = (
         Tool('look', '{}', '重新看一眼现在的软件状态（做完操作后会自动附上，一般不用单独叫）', _look),
+        Tool('tool_help', '{"names": ["change_terms"], "text": ""}', '看工具的完整用法：names 填「更多工具」里的名字，'
+             '或 text 填想做的事里的几个字来找合适的工具', lambda window, args: _tool_help(window, args)),
         Tool('open_page', '{"page": "studio"}', '切换页面', _open_page, dict(PAGES), acts=True),
         Tool('open_place', '{"key": "shortcuts"}', '打开「可以指的位置」里的一个地方（设置的某一页、AI 设置、申请 API、模型工坊……）；'
              '不能打开：' + '、'.join(sorted(OPEN_PLACE_SKIP)), _open_place, deferred=True, acts=True),
@@ -946,7 +962,11 @@ def _tools() -> dict:
     )
     # 2026-11-16 (harness plan P3/P4): term libraries, the web, the user's folders, long tasks.
     from .bunny_harness_tools import tools as harness_tools
-    items = (*items, *harness_tools())
+    # 2026-11-17 (user): she opens recognition results and projects herself.
+    from .bunny_nav_tools import tools as nav_tools
+    from .bunny_ui_control import tools as control_tools
+    from .bunny_audit import tools as audit_tools
+    items = (*items, *harness_tools(), *nav_tools(), *control_tools(), *audit_tools())
     return {tool.name: tool for tool in items}
 
 
@@ -1040,44 +1060,78 @@ class TurnResult:
     images: list = field(default_factory=list)      # bunny_vision.Capture, sent once with the next request
 
 
+def _modal_title(window) -> str:
+    """The title of a dialog that blocks the rest of the app right now ('' when none)."""
+    try:
+        from PySide6.QtWidgets import QApplication
+        modal = QApplication.activeModalWidget()
+    except Exception:  # noqa: BLE001 - no GUI: nothing blocks
+        return ''
+    if modal is None or modal is window or str(modal.objectName()).startswith('bunny'):
+        return ''
+    return ' '.join(str(modal.windowTitle() or '对话框').split())
+
+
 def call_text(name: str, args: dict) -> str:
     return f'{name}(' + ', '.join(f'{key}={value}' for key, value in args.items()) + ')'
 
 
 def run_turn(window, calls, permissions=None, *, confirmed: bool = False) -> TurnResult:
     """Run the calls under 「兔白权限」 (``bunny_permissions``); ``None`` permits everything (tests, audits)."""
-    from . import bunny_permissions
     result = TurnResult()
     for name, args in calls:
-        tool = TOOLS[name]
-        shown = call_text(name, args)
-        refused = bunny_permissions.refusal(tool, permissions) if permissions is not None else ''
-        if refused:
-            result.receipts.append(f'- {shown}：没做成。{refused}')
-            continue
-        if tool.background:
-            continue                               # read on the worker (split_calls)
-        if (permissions is not None and not confirmed and bunny_permissions.needs_confirmation(tool, permissions)):
-            result.pending.append((name, args))
-            result.receipts.append(f'- {shown}：还没做，等小兔纸按「帮我做」才会做（现在的「兔白权限」是修改要先问）')
-            continue
-        try:
-            done = tool.run(window, args)
-            if isinstance(done, tuple):
-                done, record = done
-                result.undo.append(record)
-            from .bunny_vision import Capture
-            if isinstance(done, Capture):
-                result.images.append(done)
-                done = done.receipt
-            result.receipts.append(f'- {shown}：成功。{done}')
-            if tool.deferred:
-                result.later.append((name, args))
-        except ToolError as exc:
-            result.receipts.append(f'- {shown}：没做成。{exc}')
-        except Exception as exc:  # noqa: BLE001 - a surprise is reported, never raised into the chat
-            result.receipts.append(f'- {shown}：没做成。{type(exc).__name__}: {str(exc)[:80]}')
+        tool = resolve(TOOLS[name], window, args)
+        before = len(result.receipts)
+        _run_one(window, tool, name, args, permissions, confirmed, result)
+        if len(result.receipts) > before and (tool.acts or tool.edit or tool.paid):
+            # 2026-11-17 (harness P4): every call that moves, changes or spends goes to her action log.
+            from . import bunny_audit
+            bunny_audit.record(name, args, result.receipts[-1])
     return result
+
+
+def _run_one(window, tool, name, args, permissions, confirmed, result) -> None:
+    from . import bunny_permissions
+    shown = call_text(name, args)
+    refused = bunny_permissions.refusal(tool, permissions) if permissions is not None else ''
+    if refused:
+        result.receipts.append(f'- {shown}：没做成。{refused}')
+        return
+    if tool.background:
+        return                                 # read on the worker (split_calls)
+    if (permissions is not None and not confirmed and bunny_permissions.needs_confirmation(tool, permissions)):
+        if name in ('ui_press', 'ui_set'):
+            from .bunny_ui_control import bind_confirmation
+            try:
+                args = bind_confirmation(window, name, args)
+            except ToolError as exc:
+                result.receipts.append(f'- {shown}：没做成。{exc}')
+                return
+        result.pending.append((name, args))
+        why = ('这一步删除、开始任务或改动很大，总是要先问' if tool.persistent and tool.variant is not None else
+               '会用小兔纸的 Key 计费' if tool.paid else '现在的「兔白权限」是修改要先问')
+        blocked = _modal_title(window)
+        if blocked:      # 2026-11-17: an exec() dialog blocks her card, so 「帮我做」 cannot be clicked now
+            why += (f'。注意：「{blocked}」窗口开着，小兔纸现在按不到「帮我做」——请直接告诉他在那个窗口里自己按哪个按钮，'
+                    '或者等窗口关掉再做')
+        result.receipts.append(f'- {shown}：还没做，等小兔纸按「帮我做」才会做（{why}）')
+        return
+    try:
+        done = tool.run(window, args)
+        if isinstance(done, tuple):
+            done, record = done
+            result.undo.append(record)
+        from .bunny_vision import Capture
+        if isinstance(done, Capture):
+            result.images.append(done)
+            done = done.receipt
+        result.receipts.append(f'- {shown}：成功。{done}')
+        if tool.deferred:
+            result.later.append((name, args))
+    except ToolError as exc:
+        result.receipts.append(f'- {shown}：没做成。{exc}')
+    except Exception as exc:  # noqa: BLE001 - a surprise is reported, never raised into the chat
+        result.receipts.append(f'- {shown}：没做成。{type(exc).__name__}: {str(exc)[:80]}')
 
 
 def run_calls(window, calls) -> tuple[list[str], list[tuple[str, dict]]]:
@@ -1108,7 +1162,11 @@ def pending_summary(pending, window=None) -> str:
              'change_terms': lambda a: f'改《{a.get("library")}》术语库 {len(a.get("changes") or []) if isinstance(a.get("changes"), list) else 1} 条',
              'term_update': lambda a: f'《{a.get("library")}》{"从零整理词库" if a.get("mode") == "full" else "补新词"}',
              'write_file': lambda a: f'写新文件「{str(a.get("path") or "")[-24:]}」',
-             'import_terms_file': lambda a: f'把「{str(a.get("path") or "")[-20:]}」导进《{a.get("library")}》'}
+             'import_terms_file': lambda a: f'把「{str(a.get("path") or "")[-20:]}」导进《{a.get("library")}》',
+             # 2026-11-17 universal control
+             'ui_press': lambda a: f'按「{_control_name(a)}」',
+             'ui_set': lambda a: f'把「{_control_name(a)}」改成 {str(a.get("value"))[:12]}',
+             'run_command': lambda a: f'执行「{_command_name(a)}」'}
     parts = []
     for name, args in pending:
         args = dict(args)
@@ -1149,10 +1207,30 @@ def pending_details(pending, window=None) -> str:
         if len(changes) > 20:
             lines.append(f'另有 {len(changes)-20} 条，请先在词库核对全部修改。')
     return '\n'.join(lines)
+def _control_name(args) -> str:
+    """The control a pending ui_press / ui_set means, by name (a ref alone says nothing to the user)."""
+    from .bunny_ui_control import _REFS
+    held = _REFS.get(str(args.get('ref') or ''))
+    return (held[3] if held else '') or str(args.get('text') or args.get('ref') or '')[:16]
+
+
+def _command_name(args) -> str:
+    from ..studio.shortcut_registry import BY_ID
+    action = BY_ID.get(str(args.get('id') or ''))
+    if action is None and args.get('key'):
+        try:
+            from .bunny_ui_control import _action
+            action = _action(args)
+        except Exception:  # noqa: BLE001 - the button still says something
+            return str(args.get('key'))
+    return action.label if action is not None else str(args.get('id') or '')
 
 
 def run_later(window, name: str, args: dict) -> None:
-    if name == 'retry_failed':
+    tool = TOOLS.get(name)
+    if tool is not None and tool.later is not None:
+        tool.later(window, args)
+    elif name == 'retry_failed':
         retry_later(window, args)
     elif name == 'open_window':
         open_window_later(window, args)
@@ -1162,15 +1240,54 @@ def run_later(window, name: str, args: dict) -> None:
             entry.run()
 
 
+# 2026-11-17 (harness P2, progressive disclosure / tool search): long, rarely used tools are listed by
+# name and a few words only; tool_help gives the whole description (and searches by words) when she
+# needs one. The prompt stays the same between questions, so the provider's prompt cache still holds.
+COMPACT = frozenset({'propose_change', 'disable_change', 'list_changes', 'ui_widgets', 'change_terms', 'term_update',
+                     'term_task', 'check_library', 'import_terms_file', 'list_folder', 'read_file', 'write_file',
+                     'save_recipe', 'use_recipe', 'learned_edits', 'estimate_cost', 'usage', 'start_task',
+                     'recent_results', 'recent_projects'})
+SHORT_SUMMARY = 34
+
+
+def _full(tool) -> str:
+    choices = f'。可填：{"、".join(f"{key}={label}" for key, label in tool.choices.items())}' if tool.choices else ''
+    return f'- {tool.name} {tool.args}：{tool.summary}{choices}'
+
+
+def _short_summary(tool) -> str:
+    text = re.split(r'[；;。]', tool.summary.replace('【修改】', '').replace('【修改·长期保留】', ''))[0]
+    flags = ''.join(mark for mark in ('【修改】', '【花 Key】') if mark in tool.summary)
+    return flags + (text if len(text) <= SHORT_SUMMARY else text[:SHORT_SUMMARY - 1] + '…')
+
+
 def describe_for_prompt(hidden=()) -> str:
     """The tool list for her prompt; ``hidden``: tools not offered now (look_screen for a text-only AI)."""
-    rows = []
+    rows, more = [], []
     for tool in TOOLS.values():
         if tool.name in hidden:
             continue
-        choices = f'。可填：{"、".join(f"{key}={label}" for key, label in tool.choices.items())}' if tool.choices else ''
-        rows.append(f'- {tool.name} {tool.args}：{tool.summary}{choices}')
+        if tool.name in COMPACT:
+            more.append(f'- {tool.name}：{_short_summary(tool)}')
+        else:
+            rows.append(_full(tool))
+    if more:
+        rows += ['更多工具（这里只列名字；第一次用之前先 tool_help 看参数和用法，下一轮再用）：', *more]
     return '\n'.join(rows)
+
+
+def _tool_help(_window, args) -> str:
+    """The whole description of some tools, by name or by words (tool search)."""
+    names = args.get('names') or args.get('name') or []
+    names = [names] if isinstance(names, str) else [str(name) for name in names if name]
+    words = ' '.join(str(args.get('text') or '').split()).casefold()
+    picked = [TOOLS[name] for name in names if name in TOOLS]
+    if words:
+        picked += [tool for tool in TOOLS.values() if tool not in picked
+                   and (words in tool.name.casefold() or words in tool.summary.casefold())][:8]
+    if not picked:
+        raise ToolError('没有找到这样的工具；names 填工具名，或 text 填想做的事里的几个字')
+    return '工具用法：\n' + '\n'.join(_full(tool) for tool in picked[:8])
 
 
 __all__ = ['MAX_PER_ROUND', 'MAX_ROUNDS', 'TOOLS', 'Tool', 'ToolError', 'clock', 'describe_for_prompt', 'parse_time',
