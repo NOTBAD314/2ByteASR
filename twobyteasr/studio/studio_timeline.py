@@ -1530,12 +1530,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         vertical scrollbar or document geometry is touched here.
         """
         target = self._bounded_time_ms(milliseconds)
-        self.center_playhead_mode = False
         self._manual_view_hold = True
         self._follow_suspended_until = 0
         left = min(max(0, self._duration_ms() - 15000), max(0, target - 7500))
         self.set_visible_window(left, 15000)
         self._locate_follow_center = True
+        if getattr(self, 'center_playhead_mode', False):
+            self.center_playhead(target, force=True)
 
     def center_playhead(self, milliseconds, *, force=False):
         # Ignore a past manual-browse timeout on an explicit navigation, but

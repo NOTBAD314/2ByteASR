@@ -440,6 +440,7 @@ VOICE_MOODS = {
     'sorry': (-3, 1.16, -0.1, 0.0, 0.85),
     'shy': (1, 0.9, 0.0, 0.0, 0.7),
     'comfort': (-2, 1.2, -0.05, 0.0, 0.85),
+    'scared': (2, 1.1, -0.03, 0.035, 0.7),      # 2026-11-17: small and shaky after a fright
     # the words themselves: **bold** / ==marker==, ^^big^^, __whisper__, %%trembling%%
     'bright': (1, 1.0, 0.04, 0.0, 1.18),
     'big': (3, 1.12, 0.06, 0.0, 1.32),

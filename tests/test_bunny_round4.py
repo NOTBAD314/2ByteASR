@@ -284,8 +284,8 @@ def test_steps_suggestions_and_her_log(app, chat_env, monkeypatch):
     chat.reveal_all()
     assert not chat.steps_label.isVisible()
     chat.refresh_suggestions()
-    labels = [chat.suggest_row.layout().itemAt(i).widget().text() for i in range(chat.suggest_row.layout().count())]
-    assert labels == ['我该怎么开始？', '我的电脑能用本机识别吗？'] and chat.suggest_row.isVisible()
+    labels = [chat.suggest_row.layout().itemAt(i).widget().text().removeprefix(bunny_chat.CHOICE_MARK) for i in range(chat.suggest_row.layout().count())]
+    assert labels == ['我该怎么开始？', '打开最近一次识别结果'] and chat.suggest_row.isVisible()
     asked = []
     monkeypatch.setattr(chat, '_ask', lambda question: asked.append(question))
     chat.suggest_row.layout().itemAt(0).widget().click()
