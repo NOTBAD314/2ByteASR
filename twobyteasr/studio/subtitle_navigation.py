@@ -14,7 +14,7 @@ from PySide6.QtGui import QKeySequence
 from ..i18n import tr
 
 COMMAND = 'jump_cue_boundary'
-PREFERENCE = 'selection_centered'
+PREFERENCE = 'playhead_centered'
 
 
 def save_center_preference(enabled):
@@ -36,7 +36,7 @@ def save_center_preference(enabled):
 
 
 class StudioSubtitleNavigationMixin:
-    def _selection_centered(self):
+    def _playhead_centered(self):
         toggle = getattr(self, 'selection_center_toggle', None)
         return bool(toggle is not None and toggle.isChecked())
 
@@ -53,14 +53,15 @@ class StudioSubtitleNavigationMixin:
         if not paused and getattr(self, '_navigation_resume_follow_pending', False):
             self._navigation_resume_follow_pending = False
             self.timeline._manual_view_hold = False
-            if self._selection_centered():
+            if self._playhead_centered():
                 self.timeline._follow_suspended_until = 0
 
-    def _selection_center_changed(self, enabled):
-        # Compatibility for callers of the former switch. Locating is now an
-        # explicit action; ordinary selection and playback never reset zoom.
+    def _playhead_center_changed(self, enabled):
+        # A viewport preference, independent of selection, seek and zoom.
+        self.timeline.set_center_playhead_mode(enabled)
         if enabled:
-            self._locate_selected_subtitle()
+            self.timeline.center_playhead(self.timeline.playhead_ms, force=True)
+        save_center_preference(enabled)
 
     def _locate_selected_subtitle(self):
         # This button owns the explicit selection, independently of an older
@@ -128,8 +129,8 @@ class StudioSubtitleNavigationMixin:
         return cue, layer
 
     def _navigate_selected_subtitle(self, cue_id):
-        """Only a completed click or an explicit keyboard selection calls this."""
-        if not self._selection_centered() or cue_id != self.selected_cue_id:
+        """Explicit navigation API; ordinary selection no longer calls it."""
+        if not self._playhead_centered() or cue_id != self.selected_cue_id:
             return
         cue = self.timeline._timeline_cue_by_id.get(cue_id)
         if cue is not None:

@@ -35,6 +35,9 @@ def start(window, output):
     def run():
         code=0
         try:
+            if os.environ.get('TWOBYTEASR_ULTRA_PREFLIGHT_AUDIT')=='1':
+                from .ultra_preflight_audit import verify as verify_preflight
+                verify_preflight(output,check)
             from ..design.theme_manager import apply_theme
             from ..local_models.model_workshop import _DeferredPickerCard
             from ..local_models.model_picker_cards import PickerCard
@@ -109,16 +112,17 @@ def start(window, output):
                     title=ai.findChild(QLabel,'aiDialogTitle');face=QFontInfo(title.font())
                     check('AI title resolves the bundled Heavy face','heavy' in (face.family()+' '+face.styleName()).casefold(),
                           dict(family=face.family(),style=face.styleName(),weight=int(face.weight())))
-                    import ctypes
-                    from ctypes import wintypes
-                    hwnd=wintypes.HWND(int(ai.winId()))
-                    status=getattr(ai,'_native_transitions_status',None)
-                    check('native AI dialog accepts disabled Windows transitions',status==0,dict(set_status=status,hwnd=hwnd.value))
-                    from ..design.popup_corners import _windows_supports_rounding
-                    supported=_windows_supports_rounding();applied=getattr(ai,'_native_rounding_applied',False)
-                    check('native corner request follows Windows capability',applied if supported else not applied,
-                          dict(supported=supported,applied=applied,windows_build=sys.getwindowsversion().build,
-                               scope='Windows 10 keeps the existing square fallback; Windows 11 native rounding requires a supported host.'))
+                    if os.name == 'nt':
+                        import ctypes
+                        from ctypes import wintypes
+                        hwnd=wintypes.HWND(int(ai.winId()))
+                        status=getattr(ai,'_native_transitions_status',None)
+                        check('native AI dialog accepts disabled Windows transitions',status==0,dict(set_status=status,hwnd=hwnd.value))
+                        from ..design.popup_corners import _windows_supports_rounding
+                        supported=_windows_supports_rounding();applied=getattr(ai,'_native_rounding_applied',False)
+                        check('native corner request follows Windows capability',applied if supported else not applied,
+                              dict(supported=supported,applied=applied,windows_build=sys.getwindowsversion().build,
+                                   scope='Windows 10 keeps the existing square fallback; Windows 11 native rounding requires a supported host.'))
                     shot(ai,theme+'-ai-settings-'+str(enable));ai.reject();settle(.15)
                     check('AI settings cancel restores the prior off choice',not window.ai_grouping.isChecked())
                 window.ai_grouping.setChecked(saved_grouping)

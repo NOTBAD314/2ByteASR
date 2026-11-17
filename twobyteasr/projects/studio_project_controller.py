@@ -966,6 +966,8 @@ class StudioProjectController:
             source_out_ms=int(active_v1.source_out_ms if active_v1 is not None else 0),
         )
         page.timeline.set_playhead(playhead_ms)
+        if page._playhead_centered():
+            page.timeline.center_playhead(playhead_ms, force=True)
         mark_hydration("timeline_window")
         yield from _gui_slice.checkpoint()
         if project.generation_metadata.get('display_overlap_audit',{}).get('status') != 'user_undone':
