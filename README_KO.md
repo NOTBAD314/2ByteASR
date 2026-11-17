@@ -102,16 +102,16 @@ YouTube, Bilibili 영상을 자막과 함께 가져옵니다.
 
 ## 다운로드
 
-| 내 컴퓨터 | 1.1.0 다운로드 |
+현재 버전: **Windows · Apple Silicon Mac 1.1.1** (2026-11-17).
+
+| 환경 | 다운로드 |
 | --- | --- |
-| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-1.1.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-Setup-1.1.0.exe) (약 1165 MB) |
-| Apple Silicon Mac, macOS 14 이상 | [2ByteASR-1.1.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.0/2ByteASR-1.1.0-macos-arm64-Setup.dmg) (약 591 MB, 실험판) |
+| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-1.1.1.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.1/2ByteASR-Setup-1.1.1.exe), 약 1166MB |
+| Apple Silicon Mac, macOS14 이상 | [2ByteASR-1.1.1-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.1/2ByteASR-1.1.1-macos-arm64-Setup.dmg), 약 592MB, **실험판**. Intel Mac 미지원 |
 
-[이번 버전의 변경 사항](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.0) · [GitCode 미러](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.0) · [설치 안내](docs/product-guide.ko.md#windows에-설치하기) · [Linux Docker 버전](README.docker.md)
+작업을 저장하고 종료한 뒤 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원하며, Mac은 Applications의 앱을 교체하세요. [릴리스 노트](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.1) · [GitCode 미러](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.1) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
 
-이미 설치했다면 Windows는 앱에서 “업데이트 확인”을 누르고, Mac은 덮어서 설치하면 됩니다. 프로젝트와 설정은 그대로 남습니다.
-
-**시작은 세 단계:** 인식 방식 고르기 → 영상을 홈 화면에 끌어다 놓고 “자막 생성 시작” → 스튜디오에서 고친 뒤 내보내기. 먼저 둘러보고 싶다면 “도움말 → 초보자 튜토리얼”을 여세요. 모델은 필요 없습니다.
+Linux용 [Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)도 사용할 수 있습니다.
 
 ## 자주 묻는 질문
 
