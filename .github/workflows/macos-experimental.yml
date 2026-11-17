@@ -457,7 +457,7 @@ jobs:
 
   installed-candidate-models:
     needs: native-arm64
-    if: ${{ always() && (inputs.candidate_run_id != '' || (inputs.run_app_checks && inputs.run_cloud_mlx_smoke && needs.native-arm64.outputs.has_installer == 'true')) }}
+    if: ${{ always() && inputs.local_models_args != '--glossary-ui-check' && (inputs.candidate_run_id != '' || (inputs.run_app_checks && inputs.run_cloud_mlx_smoke && needs.native-arm64.outputs.has_installer == 'true')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -524,6 +524,62 @@ jobs:
             ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/runtime-evidence/*.json
             ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.json
             ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.log
+
+  glossary-ui-check:
+    if: ${{ !inputs.run_app_checks && inputs.local_models_args == '--glossary-ui-check' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - run: python -m pip install PySide6==6.9.2
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-setup-9e17e45884dbf02d1ae8d3d3b79a5b74cd9a7403
+          run-id: 43981575131
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/tmp/glossary-ui/download
+      - name: Verify unchanged R6 DMG and normal Applications install
+        run: |
+          set -euo pipefail
+          qa="$RUNNER_TEMP/tmp/glossary-ui"
+          dmg=$(find "$qa/download" -name '*.dmg' -type f)
+          test "$(find "$qa/download" -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1
+          python -c 'import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); assert p.stat().st_size==591544752; assert hashlib.sha256(p.read_bytes()).hexdigest()=="ceb08657bad56c8bcbeaf642cb7afcd1b4f141d77c5e56e09e0488e58cf72483"' "$dmg"
+          mkdir "$qa/mount"
+          test ! -e /Applications/2ByteASR.app
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$qa/mount" "$dmg"
+          ditto "$qa/mount/2ByteASR.app" /Applications/2ByteASR.app
+          hdiutil detach "$qa/mount"
+          codesign --verify --deep --strict /Applications/2ByteASR.app
+      - name: Corrected native batch-layout fixture with all original business assertions
+        run: |
+          python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/glossary-ui/display" python tests/release111_mac_conflict_scene.py --app /Applications/2ByteASR.app --scenario glossary-conflicts --output "$RUNNER_TEMP/tmp/glossary-ui/scene"
+          codesign --verify --deep --strict /Applications/2ByteASR.app
+      - name: Retain owned synthetic application checks and screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-glossary-ui-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/tmp/glossary-ui/scene/conflict-result.json
+            ${{ runner.temp }}/tmp/glossary-ui/scene/caption-policy-summary.json
+            ${{ runner.temp }}/tmp/glossary-ui/scene/external-driver.json
+            ${{ runner.temp }}/tmp/glossary-ui/scene/*.png
 
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
