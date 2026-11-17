@@ -2,13 +2,15 @@
 from pathlib import Path
 import json
 import os
+import sys
+import time
 import traceback
 
 
 def start(window, output):
-    from PySide6.QtCore import QItemSelectionModel, QTimer, Qt
+    from PySide6.QtCore import QEventLoop, QItemSelectionModel, QTimer, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QAbstractItemView, QAbstractSlider, QApplication, QMessageBox
     from ..design.theme_manager import apply_theme
     from .blank_project_audit import _capture
 
@@ -25,15 +27,24 @@ def start(window, output):
 
     def settle(ms=160):
         app.processEvents()
-        QTest.qWait(ms)
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
 
-    def wait_for(name, predicate):
-        for _ in range(160):
+    def wait_for(name, predicate, *, seconds=8):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
             settle(50)
             if predicate():
                 check(name, True)
                 return
-        check(name, False)
+        detail = ''
+        if page is not None:
+            detail = dict(rows=page._term_model.rowCount(), conflict=page.status_buttons['conflict'].text(),
+                          game=page.state.get('game'), library_id=page.state.get('library_id'),
+                          mapping_count=len(page.state.get('mappings', ())), batch_status=page.batch_status.text(),
+                          summary_running=page._batch_running)
+        check(name, False, detail)
 
     def click(button):
         check('visible enabled ' + button.text(), button.isVisible() and button.isEnabled())
@@ -54,6 +65,8 @@ def start(window, output):
     def run():
         nonlocal page
         try:
+            from ..i18n import save_language
+            save_language('zh')  # The explicit segment-copy assertions below use Chinese.
             store = Path(legacy.LEARNED_TERMS_PATH).resolve()
             check('storage isolated', store.is_relative_to(out), store)
             own = legacy.create_learned_content('鸣潮 · 冲突筛选验收', create_new=True)
@@ -83,8 +96,14 @@ def start(window, output):
             page.state.update(game='鸣潮 · 冲突筛选验收', library_id=own)
             page._notify_library_changed()
             page.refresh_current_game()
+            started = time.monotonic()
+            # A cold frozen Mac worker starts a fresh native interpreter. Use
+            # the existing product's bounded 60-second worker deadline here;
+            # later ordinary UI operations keep their original 8-second bound.
             wait_for('858 cards and three participating conflicts', lambda:
-                     page.status_buttons['conflict'].text() == '有冲突 3' and page._term_model.rowCount() == 858)
+                     page.status_buttons['conflict'].text() == '有冲突 3' and page._term_model.rowCount() == 858,
+                     seconds=60 if sys.platform == 'darwin' else 8)
+            result['initial_summary_seconds'] = round(time.monotonic() - started, 3)
             check('same segment object names', {b.objectName() for b in page.status_buttons.values()} == {'termSegmentButton'})
             check('hidden then conflict', list(page.status_buttons)[-2:] == ['hidden', 'conflict'])
             for theme in ('cinema', 'warm'):
@@ -144,11 +163,24 @@ def start(window, output):
             settle(300)
             index = page._term_model.index(600, 0)
             identity = page._term_model.data_for_row(600)['concept_id']
-            page.listing.cancel_position_restore()
-            page.listing.scrollTo(index)
-            settle(200)
+            def establish_middle():
+                # Let native icon-mode batches complete and use the scrollbar
+                # action that cancels retained-position ownership for the user.
+                page.listing.verticalScrollBar().triggerAction(QAbstractSlider.SliderAction.SliderToMaximum)
+                page.listing.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+                rect = page.listing.visualRect(index)
+                return (page.listing.verticalScrollBar().value() > 500 and rect.isValid()
+                        and rect.top() >= 0 and rect.bottom() < page.listing.viewport().height())
+            wait_for('native middle target actually visible', establish_middle, seconds=12)
+            settle(300)
             before_top = page.listing.visualRect(index).top()
-            check('editing starts in middle', page.listing.verticalScrollBar().value() > 500)
+            bar = page.listing.verticalScrollBar()
+            result['middle_geometry'] = dict(scroll=bar.value(), maximum=bar.maximum(),
+                top=before_top, bottom=page.listing.visualRect(index).bottom(),
+                height=page.listing.viewport().height(), row=index.row())
+            check('editing starts in middle', bar.value() > 500)
+            check('middle target remains visible after settling',
+                  before_top >= 0 and page.listing.visualRect(index).bottom() < page.listing.viewport().height())
             shot('position-before-click')
             QTest.mouseClick(page.listing.viewport(), Qt.MouseButton.LeftButton,
                             Qt.KeyboardModifier.NoModifier, page.listing.visualRect(index).center())

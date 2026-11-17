@@ -192,6 +192,32 @@ def _without_null_optional_fields(value):
     return value
 
 
+def _alias_cue_id_fields(value, segments):
+    """Read a cue row's ``cue_id`` as its ``id`` when that is the only, in-batch reading.
+
+    2026-11-17 (user's 15-minute Roco stream, deepseek-flash): 4 of 12 batches, 125 of 284
+    cues, were discarded for ``'id' is a required property``. The edits were sound; the model
+    named the field ``cue_id`` like the request's suspects/matches do, sometimes switching
+    halfway through one answer. Only a whole-number ``cue_id`` naming a cue of this batch is
+    read, and a row carrying a different ``id`` and ``cue_id`` stays invalid. Ownership,
+    duplicates and the checked_ids receipt are still verified afterwards.
+    """
+    if not isinstance(value, dict) or not isinstance(value.get('cues'), list):
+        return value, []
+    batch = {segment.segment_id for segment in segments}
+    rows, aliased = [], []
+    for row in value['cues']:
+        if isinstance(row, dict) and 'cue_id' in row:
+            cue_id = row['cue_id']
+            same = 'id' not in row or (type(row['id']) is int and row['id'] == cue_id)
+            if type(cue_id) is int and cue_id in batch and same:
+                rest = {key: item for key, item in row.items() if key not in ('cue_id', 'id')}
+                row = {'id': cue_id, **rest}
+                aliased.append(cue_id)
+        rows.append(row)
+    return ({**value, 'cues': rows} if aliased else value), aliased
+
+
 def _normalize_verified_keep_edits(value, segments):
     """Remove only legacy no-ops whose cue, span, source and overlaps are proven.
 
@@ -288,6 +314,10 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
     from jsonschema import ValidationError, validate
     from ..providers.ai_providers import AIProviderError
     value = _without_null_optional_fields(value)
+    value, aliased = _alias_cue_id_fields(value, segments)
+    if aliased:
+        record_run_event('polishing_response_field_alias', batch_index=batch_index,
+                         field='cues[].cue_id', read_as='cues[].id', cue_ids=aliased)
     value, noops = _normalize_verified_keep_edits(value, segments)
     try:
         validate(value, POLISH_SCHEMA)
