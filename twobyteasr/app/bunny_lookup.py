@@ -177,16 +177,16 @@ def recent_tasks_summary(*, limit: int = 8, roots=None) -> str:
     if not listing:
         return '还没有任何识别记录。'
     rows = []
-    for path, _stamp, *_rest in sorted(listing, key=lambda row: row[1], reverse=True)[:limit]:
+    for number, (path, _stamp, *_rest) in enumerate(sorted(listing, key=lambda row: row[1], reverse=True)[:limit], 1):
         try:
             record = parse_recognition_report(path)
         except Exception:  # noqa: BLE001 - unreadable reports are counted, never quoted
-            rows.append('- （一条记录读不出来）')
+            rows.append(f'{number}. （一条记录读不出来）')
             continue
-        rows.append(f'- {record.completed_at or "时间未记录"} · {_short(PureWindowsPath(record.media_name).name, 40)} · '
+        rows.append(f'{number}. {record.completed_at or "时间未记录"} · {_short(PureWindowsPath(record.media_name).name, 40)} · '
                     f'{record.status_label or record.status} · 字幕 {record.cue_count} 条 · 待复核 {record.review_count} · '
                     f'警告或错误 {record.anomaly_count} · 主力 {record.primary_model or "?"}')
-    return f'最近 {len(rows)} 次识别（新的在上）：\n' + '\n'.join(rows)
+    return f'最近 {len(rows)} 次识别（新的在上；要打开哪次的结果，用 open_result 填这个编号）：\n' + '\n'.join(rows)
 
 
 DIAGNOSTIC_LIMIT = 3600

@@ -184,6 +184,13 @@ class ReviewCandidateCard(QFrame):
         return self._diff_markup(self._candidate.text or "", self._current_text)
 
     # click-to-fix marks ------------------------------------------------------
+    def update_suggestions(self, text, suggestions):
+        """Refresh this review surface without deleting its focused widget."""
+        self._current_text = text
+        self._suggestions = tuple(suggestions)
+        self._pressed_hit = self._hover_hit = None
+        self.text_label.update_suggestions(text, self._suggestions)
+
     def _hit_at(self, pos):
         """``(mark, option)`` under ``pos`` (card coordinates) or None; option
         is a chip's alternative, ``MORE`` ("+n") or ``BASE`` (the span)."""
@@ -204,7 +211,7 @@ class ReviewCandidateCard(QFrame):
         from .review_marked_text import MORE
         row = self._suggestions[index]
         if row.kind == "pronoun":
-            return tr("点一下：{old} → {new}；右键选择 他 / 她 / 它；按 {key} 切换整条的人称",
+            return tr("点一下：{old} → {new}；右键选择 他 / 她 / 它；按 {key} 切换目标代称",
                       old=row.original, new=row.options[0].text, key=self._flip_key_text())
         chosen = option if option is not None and option >= 0 else None
         options = (row.options[chosen],) if chosen is not None else row.options
@@ -286,7 +293,7 @@ class ReviewCandidateCard(QFrame):
         self.update()
 
     def refresh_theme_palette(self):
-        if self._suggestions:
+        if hasattr(self.text_label, 'update_suggestions'):
             self.text_label.refresh()
         else:
             self.text_label.setText(self._markup())

@@ -35,8 +35,11 @@ POLICIES={
     'visual_feedback':InputPolicy(8000,6000,16384,1,960,120_000,400_000),
     'general':InputPolicy(32768,16384,65536,3,768,160_000,1_500_000),
     # 2026-11-16: 兔白's chat: a long fixed prefix (persona, tools, manual; cached by the provider) plus a
-    # few turns. Text only; DeepSeek's context is far larger than this.
-    'bunny_chat':InputPolicy(49152,16384,98304,0,0,0,1_500_000),
+    # few turns. DeepSeek's context is far larger than this.
+    # 2026-11-17: she looks at the screen (look_screen) and at pictures the user pastes — a pasted one
+    # and a screenshot can ride in one request. Before this the 0-image limit refused every picture.
+    # 2026-11-17 (user): several pictures and long text files go with one question (up to 6 + a screenshot).
+    'bunny_chat':InputPolicy(98304,16384,131072,8,1600,500_000,8_000_000),
     'polish':InputPolicy(20000,262144,32768,0,0,0,180_000),
     'domain_terms':InputPolicy(18000,8192,32768,0,0,0,160_000),
     # 联网词库更新：64 词条 × 全证据字段（sources/evidence）≈ 9-12k 输出；

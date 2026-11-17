@@ -1,14 +1,14 @@
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QApplication
 
 from twobyteasr.playback import audio_process
 
 
 @pytest.fixture
 def bridge(tmp_path):
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = QApplication.instance() or QApplication([])
     worker = audio_process.AudioProcessBridge(tmp_path / 'ffmpeg.exe')
     worker.process = SimpleNamespace(pid=42, poll=lambda: None)
     worker._sent_at = 100.

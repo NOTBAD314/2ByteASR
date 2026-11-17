@@ -104,7 +104,7 @@ def _darwin(monkeypatch, workshop, machine):
 def test_workshop_cards_are_downloadable_on_apple_silicon_and_named_for_the_gpu(monkeypatch, key):
     from twobyteasr.local_models import model_workshop as workshop
     model = next(item for item in workshop.MODELS if item.key == key)
-    page = SimpleNamespace(browser_role=model.role, runtime_settings={'models': {}}, _registry=None, _installed=set(),
+    page = SimpleNamespace(_async_status=False, browser_role=model.role, runtime_settings={'models': {}}, _registry=None, _installed=set(),
                            _active_download_dialog=lambda download_key: None, _state_memo=None)
     _darwin(monkeypatch, workshop, 'arm64')
     assert workshop.ModelWorkshopPage._compute_model_state(page, model, model.role) == 'missing'
