@@ -81,7 +81,7 @@ Comes with term libraries for several games, and you can add your own.
 
 ## Why the subtitles are accurate
 
-<img src="docs/assets/readme/mg-accuracy-en.webp" width="100%" alt="Recognition flow: the glossary goes to the models first; three models transcribe, time every character and cross-check; when MOSS writes 虚迷 and the other two write 须弥, it is fixed to 须弥 automatically; when the other two disagree, the line waits for you in Review mode">
+<img src="docs/assets/readme/mg-accuracy-en.webp" width="100%" alt="Recognition flow: the glossary goes to the models first; three models transcribe, time every word and cross-check; when model A writes “Sue Mary” and the other two write “Sumeru”, it is fixed to Sumeru automatically; when the other two disagree on “Paimon”, the line waits for you in Review mode">
 
 ## What AI does, and what it doesn't
 
