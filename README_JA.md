@@ -102,14 +102,14 @@ YouTube やビリビリの動画を、字幕ごと取り込めます。
 
 ## ダウンロード
 
-現行版：**Windows・Apple Silicon Mac 1.1.1**（2026-11-17）。
+現行版：**Windows・Apple Silicon Mac 1.1.2**（2026-11-18）。
 
 | 環境 | ダウンロード |
 | --- | --- |
-| Windows 10 1809以降、64bit | [2ByteASR-Setup-1.1.1.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.1/2ByteASR-Setup-1.1.1.exe)、約1166MB |
-| Apple Silicon Mac、macOS14以降 | [2ByteASR-1.1.1-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.1/2ByteASR-1.1.1-macos-arm64-Setup.dmg)、約592MB、**実験版**。Intel Mac非対応 |
+| Windows 10 1809以降、64bit | [2ByteASR-Setup-1.1.2.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.2/2ByteASR-Setup-1.1.2.exe)、約1166MB |
+| Apple Silicon Mac、macOS14以降 | [2ByteASR-1.1.2-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.2/2ByteASR-1.1.2-macos-arm64-Setup.dmg)、約592MB、**実験版**。Intel Mac非対応 |
 
-保存して終了してから上書きインストールしてください。Windows 0.6.5以降はアプリ内更新も利用できます。MacはApplicationsのアプリを置き換えてください。[リリースノート](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.1) · [GitCodeミラー](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.1) · [導入ガイド](docs/product-guide.ja.md)。WindowsのAuthenticode署名とApple公証はありません。Source、ライセンス、コンポーネント、署名の添付は検証・ソース提供・アプリ内更新用です。
+保存して終了してから上書きインストールしてください。Windows 0.6.5以降はアプリ内更新も利用できます。MacはApplicationsのアプリを置き換えてください。[リリースノート](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.2) · [GitCodeミラー](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.2) · [導入ガイド](docs/product-guide.ja.md)。WindowsのAuthenticode署名とApple公証はありません。Source、ライセンス、コンポーネント、署名の添付は検証・ソース提供・アプリ内更新用です。
 
 Linux向け[Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)も利用できます。
 
