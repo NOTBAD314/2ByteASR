@@ -1,0 +1,65 @@
+name: 1.1.2 native fixture preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44140836932
+          name: macos-arm64-setup-0875153a3fa73077383f8f41c706341209b3a55a
+          path: ${{ runner.temp }}/tmp/input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44140836932
+          name: macos-arm64-receipts-0875153a3fa73077383f8f41c706341209b3a55a
+          path: ${{ runner.temp }}/tmp/producer
+      - name: Prepare bounded checker runtime
+        run: |
+          python -m venv "$RUNNER_TEMP/tmp/checker"
+          "$RUNNER_TEMP/tmp/checker/bin/python" -m pip install -r packaging/macos/requirements-gui.txt
+      - name: Check unchanged installed R4 with owned corrected fixtures
+        run: |
+          set -euo pipefail
+          dmg=$(find "$RUNNER_TEMP/tmp/input" -name '*.dmg' -type f)
+          RELEASE112_PROBE_SCENES=bunny-112 python scripts/macos_display_mode_probe.py "$RUNNER_TEMP/tmp/display" "$RUNNER_TEMP/tmp/checker/bin/python" tests/release112_mac_preflight.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/producer/dmg/dmg-result.json" --output "$RUNNER_TEMP/tmp/preflight"
+      - name: Select only owned verification receipts
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os,shutil
+          root=Path(os.environ['RUNNER_TEMP'])/'tmp/preflight';out=Path(os.environ['RUNNER_TEMP'])/'tmp/receipts';out.mkdir()
+          total=0
+          for p in root.rglob('*'):
+              rel=p.relative_to(root)
+              if not p.is_file() or p.is_symlink() or any(x in {'installed','mounted','models','runtimes','site-packages'} for x in rel.parts):continue
+              if p.suffix not in {'.json','.log','.xml','.png'}:continue
+              total+=p.stat().st_size
+              if total>150*1024*1024:raise RuntimeError('Receipt cap exceeded')
+              target=out/rel;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,target)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: release112-native-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}/tmp/receipts
+          retention-days: 1
+          if-no-files-found: warn

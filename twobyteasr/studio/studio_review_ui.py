@@ -305,10 +305,7 @@ class StudioReviewMixin:
         # landing on the previous caption (2026-10-18). Its track goes first.
         self.session.preferred_subtitle_speaker = cue.speaker_id
         self.select_cue(cue.id)
-        if self._selection_centered():
-            self._navigate_selected_subtitle(cue.id)
-        else:
-            self._seek(cue.start_ms / 1000.0)
+        self._seek(cue.start_ms / 1000.0)
 
     def _sync_jump_position(self) -> None:
         """The 跳转 box shows the selected caption's number (2026-10-18, user:
@@ -482,11 +479,35 @@ class StudioReviewMixin:
                                for row in suggestions))
             binding=(id(self.project),self.session.generation,cue.id,cue.text,cue.start_ms,cue.end_ms,signature)
             self._review_suggestions_binding=binding
+            local = getattr(self, '_review_local_context', None)
+            if local is not None and local != binding[:3]:
+                self._review_local_context = None
+                self._review_pronoun_target = None
+            if (local == binding[:3] and self.review_dock_candidate_layout.count()
+                    and getattr(self, '_review_inline_card', None) is not None
+                    and self._review_inline_card._review_binding[:3] == binding[:3]):
+                # Local adoption keeps the exact review widgets, scroll and
+                # keyboard owner, including after the final suggestion.
+                card = self._review_inline_card
+                card.update_suggestions(cue.text, suggestions)
+                card._review_binding = binding
+                for index in range(self.review_dock_candidate_layout.count()):
+                    peer = self.review_dock_candidate_layout.itemAt(index).widget()
+                    if isinstance(peer, ReviewCandidateCard):
+                        peer._review_binding = binding
+                        peer._current_text = cue.text
+                        if peer._index < len(candidates):
+                            peer._candidate = candidates[peer._index]
+                        if peer is not card:
+                            peer.text_label.setText(peer._markup())
+                self._review_cards_signature = signature
+                return
             if signature == getattr(self, "_review_cards_signature", None) and self.review_dock_candidate_layout.count():
                 # Same caption, same width bucket: keep the cards (resize events
                 # and repeated hydration of one caption used to rebuild them).
                 return
             self._review_cards_signature = signature
+            self._review_inline_card = None
             while self.review_dock_candidate_layout.count():
                 item = self.review_dock_candidate_layout.takeAt(0)
                 if item.widget() is not None:
@@ -533,10 +554,10 @@ class StudioReviewMixin:
                         suggestions=suggestions if index == 0 else (),
                         key_text=self._shortcut_key_text,
                     )
-                    card.clicked.connect(lambda row=index, bound=binding: self._adopt_review_candidate(row,binding=bound))
+                    card._review_binding = binding
+                    card.clicked.connect(lambda row=index, owner=card: self._click_review_candidate(row,binding=owner._review_binding))
                     if index == 0 and suggestions:
-                        card.suggestion_activated.connect(lambda mark,option,bound=binding:self._apply_review_suggestion(mark,option,binding=bound))
-                        card.suggestion_menu_requested.connect(lambda mark,pos,bound=binding:self._show_review_suggestion_menu(mark,pos,binding=bound))
+                        self._bind_inline_review_card(card, binding)
                     if candidate.context_only:
                         card.setEnabled(False)
                         card.setToolTip('原始段落上下文；缺少本条精确字词边界，请结合原音编辑，不能整段替换。')
@@ -561,9 +582,9 @@ class StudioReviewMixin:
                     card = ReviewCandidateCard(0, QCCandidate(cue.text, ("Current",)), is_current=True,
                                                current_text=cue.text, parent=self, suggestions=suggestions,
                                                key_text=self._shortcut_key_text)
-                    card.clicked.connect(lambda _=0,bound=binding: self._adopt_review_candidate(0,binding=bound))
-                    card.suggestion_activated.connect(lambda mark,option,bound=binding:self._apply_review_suggestion(mark,option,binding=bound))
-                    card.suggestion_menu_requested.connect(lambda mark,pos,bound=binding:self._show_review_suggestion_menu(mark,pos,binding=bound))
+                    card._review_binding = binding
+                    card.clicked.connect(lambda _=0,owner=card: self._click_review_candidate(0,binding=owner._review_binding))
+                    self._bind_inline_review_card(card, binding)
                     self.review_dock_candidate_layout.addWidget(card, 0, 0)
                     self.review_dock_candidate_layout.addWidget(banner, 0 if columns > 1 else 1, 1 if columns > 1 else 0)
                 elif not current:
@@ -572,6 +593,23 @@ class StudioReviewMixin:
                     self.review_dock_candidate_layout.addWidget(self._review_ok_line(cue), 0, 0, 1, columns)
                 else:
                     self.review_dock_candidate_layout.addWidget(banner, 0, 0, 1, columns)
+
+    def _bind_inline_review_card(self, card, binding):
+        self._review_inline_card = card
+        card._review_binding = binding
+        card.suggestion_activated.connect(lambda mark, option, owner=card:
+            self._apply_review_suggestion(mark, option, binding=owner._review_binding))
+        card.suggestion_menu_requested.connect(lambda mark, pos, owner=card:
+            self._show_review_suggestion_menu(mark, pos, binding=owner._review_binding))
+
+    def _click_review_candidate(self, index, *, binding=None):
+        # A second physical click can hit the blank area left by an adopted
+        # chip. The current card must not turn that click into whole-caption
+        # confirmation. Explicit Enter/confirm/number commands keep their route.
+        if (index == 0 and binding is not None
+                and getattr(self, '_review_local_context', None) == binding[:3]):
+            return False
+        return self._adopt_review_candidate(index, binding=binding)
 
     def _review_entry_target(self):
         """Capture explicit active identity before a filter resets selection."""
@@ -604,6 +642,11 @@ class StudioReviewMixin:
         return cue.id, layer
 
     def _set_review_mode(self, enabled: bool) -> None:
+        if not enabled:
+            self._review_local_context = None
+            self._review_pronoun_target = None
+            if getattr(self, '_caption_following', False):
+                self._cancel_bound_caption_editor(trigger='review_return')
         entering = bool(enabled) and not self._review_mode
         leaving = not bool(enabled) and self._review_mode
         identity = (id(self.project), self.session.generation)
@@ -1316,9 +1359,13 @@ class StudioReviewMixin:
         if value == cue.text or not value.strip():
             return False
         target=self._resolve_caption_edit_target(cue.id,'original')
+        # Install before the command's synchronous data-change callbacks.
+        self._review_local_context = current[:3]
         if not self._commit_target_text_patch(target,row.start,row.end,row.options[int(option)].text,
                 kind=row.kind,options={row.original,*(o.text for o in row.options)},label=tr('审核改字')):
             return False
+        if row.kind == 'pronoun':
+            self._remember_review_pronoun(target, row.start)
         self._remember_canvas_edit_target(cue.id,'original')
         bind_text(self.save_state, '已改为「{new}」· {key} 撤销', new=row.options[int(option)].text or "∅",
                   key=self._shortcut_key_text("undo"))
@@ -1342,24 +1389,36 @@ class StudioReviewMixin:
 
     def _flip_review_pronouns(self) -> bool:
         if getattr(self, '_caption_draft', None) is not None:
-            return self._show_editor_pronouns()
+            return self._cycle_editor_pronoun()
+        return self._cycle_review_pronoun()
+
+    def _remember_review_pronoun(self, target, at):
+        identity = (id(self.project), self.session.generation, target)
+        self._review_pronoun_target = (identity, target.read(self.project), at)
+        card = getattr(self, '_review_inline_card', None)
+        if card is not None and card._review_binding[:3] == identity[:2]+(target.cue_id,):
+            card.text_label.set_pronoun_target(at)
+
+    def _cycle_review_pronoun(self):
+        from ..subtitle_rules.pronouns import edit_pronoun_target
         target = self._resolve_caption_edit_target()
         if target is None:
             return False
-        from ..subtitle_rules.pronouns import pronoun_positions, toggle_pronoun
         text = target.read(self.project)
-        positions = pronoun_positions(text)
-        if len(positions) != 1:
-            self._open_caption_editor()
-            self.caption_editor_hint.setText('请选中一个人称，Shift+F 循环选择 · Shift+E 采纳 · Shift+S 返回正文')
+        if text is None:
             return False
-        at = positions[0]
-        value = text[:at] + toggle_pronoun(text[at]) + text[at+1:]
-        if target.track_id in self.timeline.locked_speakers:
+        saved = getattr(self, '_review_pronoun_target', None)
+        identity = (id(self.project), self.session.generation, target)
+        previous = saved[2] if saved and saved[:2] == (identity, text) else None
+        at = edit_pronoun_target(text, previous=previous)
+        if at is None:
             return False
-        changed=self._commit_target_text_patch(target,at,at+1,toggle_pronoun(text[at]),
-            kind='pronoun',options=('他','她','它'),label='切换目标人称')
+        replacement = '他她它'[('他她它'.index(text[at])+1)%3]
+        self._review_local_context = (id(self.project), self.session.generation, target.cue_id)
+        changed = self._commit_target_text_patch(target, at, at+1, replacement,
+            kind='pronoun', options=('他','她','它'), label='切换目标人称')
         if changed:
+            self._remember_review_pronoun(target, at)
             bind_text(self.save_state, '人称已切换 · {key} 撤销', key=self._shortcut_key_text('undo'))
         return changed
 

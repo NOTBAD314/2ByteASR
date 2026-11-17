@@ -90,13 +90,14 @@ def test_complete_left_hand_candidate_path_then_confirm(page, monkeypatch):
     key(QApplication.focusWidget(),Qt.Key.Key_D)
     assert view.selected==(target,0)
     key(QApplication.focusWidget(),Qt.Key.Key_D)
-    key(QApplication.focusWidget(),Qt.Key.Key_E)
+    QTest.keyClick(QApplication.focusWidget(),Qt.Key.Key_Space)
     assert page._caption_draft is not None and page.subtitle_edit_input.toPlainText()==before.replace('营第','营区')
     assert page.project.cues[0].text==before
     key(QApplication.focusWidget(),Qt.Key.Key_S)
     assert page.subtitle_edit_input.hasFocus() and view.isHidden()
-    key(page.subtitle_edit_input,Qt.Key.Key_R)
+    key(page.subtitle_edit_input,Qt.Key.Key_E)
     assert page._caption_draft is None and page.project.cues[0].text==before.replace('营第','营区')
+    assert not page.subtitle_edit_dock.isVisible()
 
 
 def test_candidate_left_up_and_mouse_apply_stay_in_current_draft(page, monkeypatch):
@@ -213,9 +214,12 @@ def test_pronoun_target_is_local_and_old_p_is_text(page):
     assert editor.toPlainText().startswith('她在') and editor.toPlainText().lower().endswith('p')
     cursor = editor.textCursor();cursor.setPosition(qt_position(editor.toPlainText(), 0));editor.setTextCursor(cursor)
     key(editor, Qt.Key.Key_F)
-    key(QApplication.focusWidget(), Qt.Key.Key_D)
-    key(QApplication.focusWidget(), Qt.Key.Key_E)
+    assert editor.toPlainText().startswith('它在')
+    key(editor, Qt.Key.Key_F)
     assert editor.toPlainText().startswith('他在')
+    assert '其他人，吉他在门口。' in editor.toPlainText()
+    key(QApplication.focusWidget(), Qt.Key.Key_E)
+    assert page._caption_draft is None and page.project.cues[0].text.startswith('他在')
 
 
 def test_hidden_panel_supports_no_argument_theme_refresh_callback(page):

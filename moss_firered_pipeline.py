@@ -704,7 +704,7 @@ def check_runtime(legacy):
         )
     elif legacy.FIRERED_ASR_BACKEND in {"qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"}:
         required.append((legacy.resolve_qwen_aligner_local_source(), "Qwen3 ForcedAligner 模型"))
-        if legacy.FIRERED_ASR_BACKEND == 'qwen_ultra_head':
+        if legacy.selected_qwen_aligner_backend() == 'qwen_ultra_head':
             from twobyteasr.recognition.alignment_backend import head_directory
             required.append((head_directory() or '', 'Ultra Local Head（需在模型工坊准备）'))
     elif legacy.FIRERED_ASR_BACKEND == "mlx_qwen_aligner":
@@ -766,8 +766,11 @@ def check_runtime(legacy):
     if legacy.FIRERED_ASR_BACKEND == "local":
         verify_model_files("firered_aed", legacy.FIRERED_MODEL_DIR)
     elif legacy.FIRERED_ASR_BACKEND in {"qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"}:
-        verify_model_files("qwen_ultra_aligner" if legacy.FIRERED_ASR_BACKEND in {"qwen_ultra_aligner", "qwen_ultra_head"} else "qwen_aligner", legacy.resolve_qwen_aligner_local_source())
-        if legacy.FIRERED_ASR_BACKEND == 'qwen_ultra_head':
+        # Lock entry, directory and Local Head all follow the resolved profile:
+        # Ultra is stored as qwen_aligner + ultra-v5 (2026-11-17 fix).
+        aligner_backend = legacy.selected_qwen_aligner_backend()
+        verify_model_files("qwen_ultra_aligner" if aligner_backend in {"qwen_ultra_aligner", "qwen_ultra_head"} else "qwen_aligner", legacy.resolve_qwen_aligner_local_source())
+        if aligner_backend == 'qwen_ultra_head':
             from twobyteasr.recognition.alignment_backend import head_directory
             verify_model_files('qwen_ultra_head', head_directory() or '')
     elif legacy.FIRERED_ASR_BACKEND == "whisper_turbo":

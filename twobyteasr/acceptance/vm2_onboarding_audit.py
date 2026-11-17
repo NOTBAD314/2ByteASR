@@ -35,15 +35,17 @@ def start(window, output):
         check('screenshot ' + name, widget.grab().save(str(output / (name + '.png'))))
 
     def run():
+        centre_watcher = None
         try:
             from ..app import onboarding, ui
             from ..app.quick_setup import QuickSetupDialog
             from ..app.home_tour import GuidedTour, start_home_tour
+            from ..app.tutorial_centre import TutorialCentre
             from ..design.theme_manager import apply_theme
             from ..glossary import multilingual_terms as m
             from ..glossary.glossary_term_cards import TermCardDelegate, card_parts
             from ..i18n import translate
-            check('normal Windows platform', app.platformName() == 'windows')
+            check('normal native platform', app.platformName() in ('windows', 'cocoa'))
             check('owned private profile', Path(os.environ['TWOBYTEASR_TEST_ROOT']).resolve().is_relative_to(output))
             window.showNormal()
             window.resize(1440, 900)
@@ -135,6 +137,19 @@ def start(window, output):
             # The existing full teaching sequence and assets are retained. New
             # completion state is checked by its real finished signal boundary.
             check('full tutorial sequence retained', len(tour.steps) >= 10, len(tour.steps))
+            # Completing the first chapter now offers the tutorial centre.
+            # Close that real dialog as a user does before testing the library;
+            # otherwise its nested exec loop blocks the old driver indefinitely.
+            centres_seen = []
+            def dismiss_completed_centre():
+                for centre in window.findChildren(TutorialCentre):
+                    if centre.isVisible():
+                        centres_seen.append(True)
+                        shot(centre, 'completed-chapter-centre')
+                        QTest.keyClick(centre, Qt.Key.Key_Escape)
+            centre_watcher = QTimer(window)
+            centre_watcher.timeout.connect(dismiss_completed_centre)
+            centre_watcher.start(80)
             with patch.object(window, '_start_first_run_downloads', return_value=None):
                 tour.close_tour(True)
                 settle(.4)
@@ -146,6 +161,9 @@ def start(window, output):
             check('manual tutorial still skippable', not manual.required and not manual.skip.isHidden())
             manual._user_close()
             check('manual tutorial closes normally', manual.mode == 'closed')
+            wait(lambda: bool(centres_seen) and not any(c.isVisible() for c in window.findChildren(TutorialCentre)))
+            check('completed chapter centre closes with Escape',
+                  not any(c.isVisible() for c in window.findChildren(TutorialCentre)))
 
             # Populate only an owned throwaway library via production storage.
             window._return_to_settings()
@@ -198,6 +216,9 @@ def start(window, output):
             except Exception:
                 pass
         finally:
+            if centre_watcher is not None:
+                centre_watcher.stop()
+                centre_watcher.deleteLater()
             from ..diagnostics.build_identity import load_build_identity
             result.update(pid=os.getpid(), executable=sys.executable, identity=load_build_identity().to_dict())
             def stopped():
