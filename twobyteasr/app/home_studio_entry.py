@@ -403,6 +403,9 @@ class StudioEntryPin(QObject):
         card.installEventFilter(self)
         window.studio_entry_slot.installEventFilter(self)
         window.settings_scroll.widget().installEventFilter(self)
+        right = getattr(window, 'home_settings_card', None)
+        if right is not None:
+            right.installEventFilter(self)  # the left card ends with it
         self.schedule_sync()
 
     def schedule_sync(self, *_args):
@@ -421,7 +424,15 @@ class StudioEntryPin(QObject):
         # it until reaching the viewport top, while the card bottom stays in
         # the viewport. No extra row is inserted above the global action bar.
         top = max(0,min(origin.y(),max(0,viewport.height()-_zpx(300))))
-        height = max(1,viewport.height()-top-_zpx(6))
+        bottom = viewport.height()-_zpx(6)
+        # 2026-11-10 (user: the two columns ended on different lines): end with
+        # the right settings card whenever that card ends inside the viewport.
+        right = getattr(window, 'home_settings_card', None)
+        if right is not None and right.isVisible():
+            right_bottom = right.mapTo(viewport, QPoint(0, right.height())).y()
+            if top < right_bottom <= viewport.height():
+                bottom = right_bottom
+        height = max(1,bottom-top)
         card.setGeometry(origin.x(),top,slot.width(),height)
         card.raise_()
         card.schedule_recent_fit()

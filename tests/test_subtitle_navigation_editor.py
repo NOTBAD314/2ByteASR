@@ -47,14 +47,15 @@ def test_native_list_keyboard_selection_navigates_and_configured_key_reaches_e(t
         assert not page._held_subtitle_navigation()
         page._timeline_cue_clicked('a')
         assert page._held_subtitle_navigation()
-        assert page.selection_center_toggle.accessibleName()=='选中定位并居中'
+        assert page.selection_center_toggle.accessibleName()=='播放头持续居中'
         page.select_cue('a');calls.clear()
         row=page.cue_model.row_for_cue_id('b')
         page.cue_table.selectionModel().setCurrentIndex(page.cue_model.index(row,0),
             QItemSelectionModel.ClearAndSelect|QItemSelectionModel.Rows)
         assert page.selected_cue_id=='b' and calls==[]
+        before=page.timeline.visible_duration_ms
         page.selection_center_toggle.click()
-        assert calls==[14.0] and page.timeline.visible_duration_ms==15000
+        assert calls==[] and page.timeline.visible_duration_ms==before
         values=dict(page._shortcut_values,jump_cue_boundary='Ctrl+Shift+J')
         page._shortcut_registry_changed(values)
         assert 'Ctrl+Shift+J' in page.cue_boundary_button.toolTip()

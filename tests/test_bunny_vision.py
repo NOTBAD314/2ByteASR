@@ -38,9 +38,13 @@ def _until(app, condition, seconds=5.0):
 
 def test_which_ais_can_see_and_what_she_says_when_hers_cannot():
     from twobyteasr.app.bunny_vision import SEEING_MODELS, advice, judge
-    able, why = judge('deepseek', 'deepseek-flash', 'openai_compatible', None)
-    assert not able and '文字模型' in why and 'deepseek-flash' in why
-    assert SEEING_MODELS in advice(why) and 'Claude' in advice(why) and 'AI 设置' in advice(why)
+    # 2026-11-17 (user; DeepSeek's pricing page): V4.1 Flash sees images, under both of its names; V4 Pro does not
+    assert judge('deepseek', 'deepseek-flash', 'openai_compatible', None) == (True, '')
+    assert judge('deepseek', 'deepseek-v4-flash', 'openai_compatible', None) == (True, '')
+    able, why = judge('deepseek', 'deepseek-v4-pro', 'openai_compatible', None)
+    assert not able and '文字模型' in why and 'deepseek-v4-pro' in why
+    assert SEEING_MODELS in advice(why) and 'Claude' in advice(why) and 'deepseek-flash' in advice(why)
+    assert 'AI 设置' in advice(why)
     assert judge('deepseek', 'deepseek-v4-pro', 'openai_compatible', False)[0] is False
     assert judge('anthropic', 'claude-sonnet-5-5', 'openai_compatible', None) == (True, '')
     assert judge('openai', 'gpt-4.1-mini', 'openai_compatible', None)[0]
@@ -58,7 +62,7 @@ def test_support_reads_the_bunny_service_and_never_guesses_without_settings(monk
     from twobyteasr.app import bunny_vision
     able, why = bunny_vision.support(None)
     assert not able and '还没有设置文字 AI' in why
-    settings = {'models': {'polish_provider': 'deepseek', 'polish_model': 'deepseek-flash',
+    settings = {'models': {'polish_provider': 'deepseek', 'polish_model': 'deepseek-v4-pro',
                            'polish_base_url': 'https://api.deepseek.com/v1'}}
     able, why = bunny_vision.support(settings)
     assert not able and bunny_vision.SEEING_MODELS in why
@@ -206,3 +210,114 @@ def test_a_text_only_ai_is_not_offered_the_tool_and_she_knows_why(app, chat_env,
     assert '没打开' in chat.messages_for('你看一下')[-1]['content']
     result = run_turn(window, [('look_screen', {})], bunny_permissions.load())
     assert not result.images and '兔白权限' in result.receipts[0]
+
+
+def test_her_chat_budget_lets_a_picture_through():
+    """2026-11-17: the 'bunny_chat' input budget allowed 0 images, so every screenshot was refused
+    before it was sent, whatever the model."""
+    import base64
+    import io
+    from PIL import Image
+    from twobyteasr.providers.provider_input_budget import prepare_input
+    buffer = io.BytesIO()
+    Image.new('RGB', (1280, 720), (200, 40, 40)).save(buffer, format='JPEG')
+    url = 'data:image/jpeg;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+    picture = {'type': 'image_url', 'image_url': {'url': url}}
+    messages = [{'role': 'system', 'content': '兔白'},
+                {'role': 'user', 'content': [{'type': 'text', 'text': '你看看'}, picture, dict(picture)]}]
+    prepared, report = prepare_input(messages, schema=None, max_tokens=8000, operation='bunny_chat')
+    assert report['passed'] and report['image_count'] == 2
+    assert prepared[1]['content'][1]['image_url']['url'].startswith('data:image/jpeg;base64,')
+
+
+def test_a_pasted_picture_goes_with_the_next_question_only(app, chat_env, monkeypatch):
+    bunny_chat, window = chat_env
+    from PySide6.QtCore import QMimeData
+    from PySide6.QtGui import QColor, QImage
+    from twobyteasr.app import bunny_vision
+    monkeypatch.setattr(bunny_vision, 'support', lambda settings: (True, ''))
+    sent = []
+    _scripted(monkeypatch, bunny_chat, [
+        {'lines': ['这是导出失败的提示，显卡编码器用不了'], 'mood': 'thinking'},
+        {'lines': ['不客气～']},
+    ], sent)
+    chat = bunny_chat.open_bunny_chat(window)
+    image = QImage(900, 500, QImage.Format.Format_ARGB32)
+    image.fill(QColor(30, 120, 200, 255))
+    mime = QMimeData()
+    mime.setImageData(image)
+    assert bunny_vision.image_from_mime(mime) is not None
+    assert bunny_vision.image_from_mime(QMimeData()) is None
+    assert chat.attach_picture(bunny_vision.image_from_mime(mime))
+    assert len(chat._attachments) == 1 and '附件准备好了' in chat.input.placeholderText() and chat.attach_row.isVisibleTo(chat)
+    chat.send()                                                  # Enter alone sends the picture
+    assert _until(app, lambda: not chat.busy)
+    asked = sent[0][-1]
+    assert isinstance(asked['content'], list) and asked['content'][1]['type'] == 'image_url'
+    assert bunny_vision.PASTED_NOTE in asked['content'][0]['text'] and '你看看这张图' in asked['content'][0]['text']
+    assert chat._attachments == [] and '附件准备好了' not in chat.input.placeholderText()
+    assert all(isinstance(turn['content'], str) for turn in chat._history)      # no picture kept
+    assert chat.transcript[-2][1].endswith(bunny_chat.PICTURE_MARK)
+    chat.input.setText('谢谢')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    assert all(isinstance(m['content'], str) for m in sent[1])                    # never sent twice
+
+
+def test_a_picture_is_not_kept_when_her_ai_cannot_see(app, chat_env, monkeypatch):
+    bunny_chat, window = chat_env
+    from PySide6.QtGui import QImage
+    from twobyteasr.app import bunny_vision
+    monkeypatch.setattr(bunny_vision, 'support',
+                        lambda settings: (False, bunny_vision.advice('现在兔白用的 deepseek-v4-pro 是文字模型，看不了图。')))
+    chat = bunny_chat.open_bunny_chat(window)
+    image = QImage(200, 120, QImage.Format.Format_RGB32)
+    image.fill(0)
+    assert not chat.attach_picture(image) and chat._attachments == []
+    chat.reveal_all()
+    assert '看不了图' in _plain_reply(chat)
+
+
+def _plain_reply(chat):
+    import html
+    import re
+    return html.unescape(re.sub(r'<[^>]+>', '', ''.join(chat.last_reply_html())))
+
+
+def test_project_switch_before_send_drops_previous_picture(app, chat_env, monkeypatch):
+    bunny_chat, window = chat_env
+    from PySide6.QtGui import QImage
+    from twobyteasr.app import bunny_vision
+    monkeypatch.setattr(bunny_vision, 'support', lambda settings: (True, ''))
+    sent = []
+    _scripted(monkeypatch, bunny_chat, [{'lines': ['这是新工程']}], sent)
+    chat = bunny_chat.open_bunny_chat(window)
+    image = QImage(200, 120, QImage.Format.Format_RGB32)
+    image.fill(0)
+    assert chat.attach_picture(image)
+    chat._uneasy = 3
+    chat._since_meme = 0
+    monkeypatch.setattr(chat, '_project_key', lambda: 'different-project')
+    chat.input.setText('新工程的问题')
+    chat.send()
+    assert _until(app, lambda: not chat.busy)
+    assert len(sent) == 1 and all(isinstance(m['content'], str) for m in sent[0])
+    assert not chat._attachments and chat._uneasy == 0
+    assert all('[图]' not in text for who, text in chat.transcript if who == 'user')
+
+
+def test_model_capability_change_before_send_refuses_waiting_picture(app, chat_env, monkeypatch):
+    bunny_chat, window = chat_env
+    from PySide6.QtGui import QImage
+    from twobyteasr.app import bunny_vision
+    monkeypatch.setattr(bunny_vision, 'support', lambda settings: (True, ''))
+    sent = []
+    _scripted(monkeypatch, bunny_chat, [], sent)
+    chat = bunny_chat.open_bunny_chat(window)
+    image = QImage(200, 120, QImage.Format.Format_RGB32)
+    image.fill(0)
+    assert chat.attach_picture(image)
+    monkeypatch.setattr(bunny_vision, 'support', lambda settings: (False, '当前模型不支持图片'))
+    chat.input.setText('看一下')
+    chat.send()
+    assert not sent and not chat._attachments and not chat.busy

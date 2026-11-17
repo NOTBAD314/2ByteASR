@@ -39,7 +39,9 @@ def test_multi_selection_and_nonpronoun_not_consumed(page):
     select(page,1,6)
     assert not page._caption_editor_key(QKeyEvent(QEvent.KeyPress,Qt.Key_1,Qt.ShiftModifier,'!'),text_focus=True)
     at=page.subtitle_edit_input.toPlainText().index('其他')+1;select(page,at,at+1)
-    assert page._caption_pronoun_target() is None
+    # The editor now finds the nearest valid independent pronoun; the word
+    # part itself remains excluded.
+    assert page._caption_pronoun_target() in (1,3,5)
 
 def test_ime_does_not_consume_digit(page):
     select(page,1,2);e=page.subtitle_edit_input
