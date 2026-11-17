@@ -38,7 +38,7 @@ def audit_directory() -> Path | None:
     profile_value=os.environ.get('TWOBYTEASR_ACCEPTANCE_PROFILE_DIR','')
     if profile_value:
         profile=Path(profile_value).resolve()
-        if (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') not in {'unified-studio','editor-recovery','learning-confirmation'}
+        if (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') not in {'unified-studio','editor-recovery','learning-confirmation','editor-download'}
                 or not profile.is_relative_to(audit_tmp_root()) or not output.is_relative_to(profile)
                 or Path(os.environ.get('TWOBYTEASR_TEST_ROOT','')).resolve()!=profile):
             raise ValueError('Acceptance requires its explicit owned unified tmp profile')
@@ -357,7 +357,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'editor-integrity','subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'editor-integrity','subtitle-reliability','macos-edit-save','macos-waveform-stability','macos-caption-caret-split','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -1237,6 +1237,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario in {'macos-edit-save', 'macos-waveform-stability', 'macos-caption-caret-split'}:
+        from .macos_edit_save_entry import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'waveform-full':
         from .waveform_full_audit import start
         output = audit_directory()

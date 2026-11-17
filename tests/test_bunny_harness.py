@@ -211,7 +211,10 @@ def test_start_task_receipt_and_prompt_lists_the_tools():
         TOOLS['start_task'].run(None, {})
     prompt = describe_for_prompt()
     for name in ('change_terms', 'web_search', 'read_file', 'write_file', 'import_terms_file', 'start_task', 'term_update'):
-        assert f'- {name} ' in prompt
+        # 2026-11-17 (tool search): long, rarely used tools are listed by name; tool_help gives the whole usage
+        assert f'- {name} ' in prompt or f'- {name}：' in prompt
+    assert TOOLS['change_terms'].args not in prompt
+    assert TOOLS['change_terms'].args in TOOLS['tool_help'].run(None, {'names': ['change_terms']})
 
 
 def test_term_undo_preserves_later_manual_changes_and_metadata(library):

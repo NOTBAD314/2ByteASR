@@ -85,6 +85,7 @@ class ReviewMarkedText(QLabel):
         self._caption = str(text or "")
         self._suggestions = tuple(suggestions or ())
         self._hover = None       # (mark, option) under the pointer
+        self._active_pronoun = None
         self._cache = None       # (key, _Layout)
         self.setText(self._caption)
         policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
@@ -92,6 +93,18 @@ class ReviewMarkedText(QLabel):
         self.setSizePolicy(policy)
 
     # layout ---------------------------------------------------------------
+    def update_suggestions(self, text, suggestions):
+        self._caption = str(text or '')
+        self._suggestions = tuple(suggestions)
+        self._hover = self._cache = None
+        self.setText(self._caption)
+        self.updateGeometry()
+        self.update()
+
+    def set_pronoun_target(self, position):
+        self._active_pronoun = position
+        self.update()
+
     def _fonts(self):
         base = self.font()
         chip = QFont(base)
@@ -321,6 +334,8 @@ class ReviewMarkedText(QLabel):
             box = mark.rect
             baseline = box.top() + fm.ascent()
             if mark.kind == "pronoun" or not mark.chips:
+                if mark.kind == 'pronoun' and self._suggestions[mark.index].start == self._active_pronoun:
+                    painter.fillRect(box, QColor(theme.warning_soft))
                 painter.setPen(QColor(theme.accent))
                 painter.drawText(QPointF(box.left(), baseline), mark.text)
                 pen = QPen(QColor(theme.accent), 1.4 if mark.index == hover_mark else 1.0)

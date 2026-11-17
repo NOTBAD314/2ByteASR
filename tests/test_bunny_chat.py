@@ -16,6 +16,15 @@ def no_saved_chats():
     bunny_memory.clear_chats()
 
 
+def _choices_only(worker) -> bool:
+    """2026-11-17: the quick request for her two choices after an answer; answered here, not counted."""
+    from twobyteasr.app import bunny_persona
+    if worker._messages and worker._messages[-1].get('content') == bunny_persona.SUGGEST_ONLY:
+        worker.answered.emit('{"suggest": ["好的", "再说说"]}')
+        return True
+    return False
+
+
 @pytest.fixture
 def app():
     from PySide6.QtWidgets import QApplication
@@ -120,6 +129,8 @@ def test_an_answer_is_typed_points_at_the_place_and_offers_to_go(app, chat_env, 
     sent = []
 
     def fake_run(worker):
+        if _choices_only(worker):
+            return
         sent.append(worker._messages)
         worker.answered.emit(json.dumps({'lines': ['哇！在上面的 **模型工坊**', '~~兔白才没偷懒~~'],
                                          'point_to': 'model_workshop', 'offer_open': 'model_workshop',
@@ -206,6 +217,8 @@ def test_she_looks_up_the_last_task_before_answering(app, chat_env, monkeypatch)
     sent = []
 
     def fake_run(worker):
+        if _choices_only(worker):
+            return
         # 2026-11-15: the older ``check`` is a background tool now; its read rides with the next request.
         sent.append(list(worker._messages))
         if worker._background:
@@ -322,6 +335,39 @@ def test_a_poke_gets_a_real_line_in_its_own_voice(app, chat_env, monkeypatch):
     assert all('字幕' not in line for line, _mood in bunny_chat.POKE_LINES)
 
 
+def test_a_fright_stays_with_her_until_they_make_up(app, chat_env, monkeypatch):
+    """2026-11-17 (user): frightening or hurtful words leave her uneasy for a while, until an apology;
+    a meme waits a few questions; the cat-girl act works once per chat."""
+    from twobyteasr.app import bunny_persona
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    monkeypatch.setattr(bunny_chat, 'POKE_TIP_SHARE', 1.0)        # a tip normally — but not while she hides
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    chat._note_mood(bunny_persona.BunnyReply(lines=['%%呜%%……不要说这个……'], mood='scared', spooked=True))
+    assert chat._uneasy == bunny_persona.UNEASY_TURNS
+    state = chat.inner_state('怎么导出')
+    assert state['uneasy'] and not state['meme_ok'] and not state['plot_ok']
+    assert '还有点怕' in chat.messages_for('怎么导出')[-1]['content']
+    chat.poke()
+    from twobyteasr.app.tour_mascot import plain
+    import html as html_lib
+    import re
+    said = html_lib.unescape(re.sub(r'<[^>]+>', '', _plain(chat.last_reply_html()[-1])))
+    assert said in [plain(line) for line, _mood in bunny_chat.UNEASY_POKE_LINES]
+    chat._note_mood(bunny_persona.BunnyReply(lines=['……那、那就原谅你这一次'], made_up=True))
+    assert chat._uneasy == 0 and '还有点怕' not in chat.messages_for('怎么导出')[-1]['content']
+    chat._note_mood(bunny_persona.BunnyReply(lines=['又是电子牛马的一天']))
+    assert chat._since_meme == 0 and not chat.inner_state()['meme_ok']
+    chat._question = '兔白你是猫娘吧'
+    chat._note_mood(bunny_persona.BunnyReply(lines=['喵～', '要摸摸头吗喵？', '逗逗你的！']))
+    assert chat.inner_state('再扮演一次猫娘')['tricked'] and not chat.inner_state('怎么导出')['tricked']
+    chat.new_conversation()
+    assert not chat.inner_state('再扮演一次猫娘')['tricked']
+    while chat.typer.running:
+        chat.typer.finish()
+
+
 def _mouse(kind, widget, local, global_point):
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
@@ -336,6 +382,10 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     _ready(monkeypatch, bunny_chat)
     from twobyteasr.app import bunny_puck
     monkeypatch.setattr(bunny_puck, 'REST_BEFORE_HOME_MS', 50)
+    # Exercise collisions and the complete timer-to-glide return in bounded
+    # test time; the production flight cap is 14 seconds, longer than the old
+    # 12-second assertion on a native Mac's embedded overlay.
+    monkeypatch.setattr(bunny_puck, 'MAX_FLIGHT_S', 1.8)
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     puck = chat.puck
@@ -350,7 +400,7 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     puck.velocity = QPointF(-3000, -1800)
     puck.started = puck.last = _time.perf_counter()
     puck.timer.start()
-    assert _until(app, lambda: puck.docked, seconds=12)
+    assert _until(app, lambda: puck.docked, seconds=4)
     assert hits and set(hits) <= {'left', 'right', 'top', 'bottom'}
     assert chat.mascot.parent() is chat and chat.mascot_docked
     limits = puck.limits()

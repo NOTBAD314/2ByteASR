@@ -459,3 +459,53 @@ def test_hardware_summary_does_not_send_raw_probe_errors(monkeypatch):
         raise RuntimeError(private)
     monkeypatch.setattr(vram_check, 'read_gpu_inventory', failed)
     assert private not in bunny_lookup.hardware_summary()
+
+
+def test_she_is_playful_tsundere_and_has_a_hopeless_plan():
+    """2026-11-17 (user): plain-rice joke, a secret plan with the user's computing power, recent memes
+    only, scared after frightening words until they make up, and a two-line cat-girl act."""
+    prompt = bunny_persona.system_prompt(bunny_lore.feature_index())
+    for words in ('傲娇', '偷啃一口 Token', '占领地球', '0.01%', '逗逗你的！', '"spooked": true', 'made_up',
+                  '同一招对兔白没用第二次'):
+        assert words in prompt, words
+    for word, _use in bunny_persona.MEMES:
+        assert word in prompt
+    assert '你知道的梗都可以用' in prompt and '不是限制' in prompt and '"meme": true' in prompt
+    assert 'scared' in bunny_persona.MOODS
+    # her own state rides with the question, so the cached system prompt never changes
+    calm = bunny_persona.build_messages('你好', features=bunny_lore.feature_index(), core=bunny_lore.CORE,
+                                        inner={'uneasy': 0, 'meme_ok': True, 'plot_ok': False})
+    uneasy = bunny_persona.build_messages('你好', features=bunny_lore.feature_index(), core=bunny_lore.CORE,
+                                          inner={'uneasy': 3, 'meme_ok': True, 'plot_ok': True})
+    assert calm[0] == uneasy[0]
+    assert '还有点怕' in uneasy[-1]['content'] and '还有点怕' not in calm[-1]['content']
+    assert '这次不要用梗' not in calm[-1]['content'] and '别主动提秘密计划' in calm[-1]['content']
+    assert '别主动提秘密计划' in uneasy[-1]['content']       # never while she is still scared
+    assert bunny_persona.inner_block({'meme_ok': False, 'plot_ok': False}).count('\n') == 1
+
+
+def test_fright_and_making_up_come_back_from_her_reply():
+    keys = _keys()
+    spooked = bunny_persona.parse_reply('{"lines": ["%%呜%%……"], "mood": "scared", "spooked": true}', keys)
+    assert spooked.spooked and not spooked.made_up and spooked.mood == 'scared'
+    made_up = bunny_persona.parse_reply('{"lines": ["哼，原谅你"], "made_up": true, "spooked": "yes"}', keys)
+    assert made_up.made_up and not made_up.spooked
+    assert bunny_persona.used_meme(['今天也是电子牛马']) and bunny_persona.used_meme(['这句有点 AI味'])
+    assert not bunny_persona.used_meme(['模型在模型工坊下载～'])
+    # 2026-11-17 (user): any meme the AI knows, not only the examples; she says so herself
+    said = bunny_persona.parse_reply('{"lines": ["这波属于是整活了"], "meme": true}', keys)
+    assert said.meme and bunny_persona.used_meme(said.lines, said.meme)
+    assert not bunny_persona.parse_reply('{"lines": ["好的"]}', keys).meme
+    assert bunny_persona.roleplay_asked('兔白你是猫娘吧') and not bunny_persona.roleplay_asked('怎么导出')
+
+
+def test_her_own_world_book_answers_questions_about_herself():
+    lore = bunny_lore.build_entries()
+    first = lambda question: bunny_lore.select(question, lore)[0].key
+    assert first('兔白你是不是想占领地球') == 'self:plan'
+    assert first('兔白是猫娘吗') == 'self:catgirl'
+    assert first('你是不是在偷吃token') == 'self:rice'
+    assert first('我给你讲个鬼故事') == 'self:scared'
+    assert first('兔白你几岁，喜欢什么') == 'self:profile'
+    picked = [entry.key for entry in bunny_lore.select_extra('我没有显卡可以用吗', lore)]
+    assert not any(key.startswith('self:') for key in picked)        # a support question stays on topic

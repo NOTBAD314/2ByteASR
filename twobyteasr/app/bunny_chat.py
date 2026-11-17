@@ -21,10 +21,11 @@ import json
 import math
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from ..i18n import tr
 from . import bunny_lore, bunny_persona
@@ -34,17 +35,17 @@ AI_STAGE = 'polish'          # the 字幕校对 service, the one key AI 断句 /
 HISTORY_TURNS = 6            # earlier question/answer pairs sent along
 NOTICE_KEY = 'bunny_chat_round4_notice'
 MOOD_FACE = {'happy': 'happy', 'excited': 'happy', 'teasing': 'happy', 'surprised': 'happy',
-             'sorry': 'sad', 'shy': 'idle', 'thinking': 'idle', 'comfort': 'idle'}
+             'sorry': 'sad', 'shy': 'idle', 'thinking': 'idle', 'comfort': 'idle', 'scared': 'sad'}
 HOPS = {'excited', 'surprised'}
 # 2026-11-14: the reaction a mood brings when the AI picks none (``act`` wins); plain happy needs none.
 MOOD_ACT = {'excited': 'excited', 'surprised': 'startled', 'sorry': 'sorry', 'shy': 'shy',
-            'thinking': 'wonder', 'comfort': 'bloom', 'teasing': 'smirk'}
+            'thinking': 'wonder', 'comfort': 'bloom', 'teasing': 'smirk', 'scared': 'scared'}
 # D (2026-11-14): the expression layers a mood asks for once the user has drawn them. A layer in
 # rig.json whose role is "<role>:<name>" (e.g. "eyes:cry", "mouthClosed:cat") is drawn instead of
 # the plain one; until it exists nothing changes.
 MOOD_EXPRESSION = {'sorry': {'eyes': 'cry', 'blink': 'cry'}, 'excited': {'eyes': 'star'},
                    'surprised': {'eyes': 'round'}, 'teasing': {'mouthClosed': 'cat'}, 'shy': {'mouthClosed': 'pout'},
-                   'comfort': {'eyes': 'smile'}}
+                   'comfort': {'eyes': 'smile'}, 'scared': {'eyes': 'round'}}
 IDLE_DOZE_S = 75.0           # no talk, typing or pointer nearby for this long: she dozes off
 BUBBLE_MIN_HEIGHT = 34       # a chat bubble's two 16 px corners on one side need this much height
 POKES_FOR_HMPH = 4           # this many pokes within POKE_WINDOW_S and she turns away
@@ -185,6 +186,10 @@ REASONING_CHIPS = {'off': '快速', 'high': '深思', 'max': '最深'}
 REASONING_LABELS = {'off': '快速：不思考，回得最快', 'high': '深思：先想再答（默认）', 'max': '最深：难题用，会慢一点'}
 EMPTY_ANSWER = {'reasoning_only', 'empty_content', 'structured_output_truncated_before_answer'}
 MAX_SHOTS = 2                    # look_screen pictures per question (2026-11-16)
+# 2026-11-17: windows and places that open mid-turn, so her next round can work inside them.
+OPEN_MID_TURN = frozenset({'open_place', 'open_window', 'open_project'})
+UI_TOOLS = frozenset({'ui_snapshot', 'ui_press', 'ui_set', 'run_command'})
+UI_ROUNDS = 10                   # rounds for a question worked through the screen (look → act → verify)
 
 
 class BunnyChatWorker(QThread):
@@ -257,6 +262,29 @@ class BunnyChatWorker(QThread):
             self.answered.emit(str(text or ''))
 
 
+class ChoicesWorker(QThread):
+    """2026-11-17: the quick request for her two choices when an answer forgot them — no thinking,
+    a few tokens; a failure only means the page's own choices stay."""
+
+    answered = Signal(str)
+
+    def __init__(self, settings: dict, messages: list[dict], parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._messages = messages
+
+    def run(self):  # noqa: D401 - QThread override
+        try:
+            from ..providers.ai_providers import provider_for_stage
+            provider = provider_for_stage(self._settings, AI_STAGE)
+            text = provider.complete(self._messages, max_tokens=300, temperature=0.7, timeout=(10, 40),
+                                     cancel_check=self.isInterruptionRequested, stage='bunny_chat',
+                                     enable_thinking=False, operation_kind='bunny_chat')
+        except Exception:  # noqa: BLE001 - no choices this time
+            return
+        self.answered.emit(str(text or ''))
+
+
 def covered_by(old, new) -> bool:
     """A waiting change_terms whose every change is in a newer one for the same library: the newer one
     replaces it, so 「帮我做」 does not run the same removal twice (live run 2026-11-16)."""
@@ -277,11 +305,20 @@ KEEP_RESULTS = 3           # the newest tool results always go whole
 SHORT_RESULT = 400
 
 
+PICTURE_MARK = '[图]'      # 2026-11-17: what the chat shows and keeps for a picture the user pasted
+
+
+def _words(content) -> str:
+    if isinstance(content, list):
+        return ''.join(str(part.get('text') or '') for part in content if isinstance(part, dict))
+    return str(content or '')
+
+
 def compact_messages(messages: list[dict]) -> list[dict]:
     """2026-11-16 (harness plan P4): in a long task (up to 20 rounds of web pages and files) the
     request would outgrow her input budget; older tool results keep their first lines only."""
-    def size(rows):
-        return sum(len(str(row.get('content') or '')) for row in rows)
+    def size(rows):       # words only: a picture's data is not text she has to read (2026-11-17)
+        return sum(len(_words(row.get('content'))) for row in rows)
     if size(messages) <= COMPACT_CHARS:
         return messages
     results = [index for index, row in enumerate(messages)
@@ -383,6 +420,14 @@ POKE_LINES = (
     ('摸摸头可以，戳脸不行！', 'shy'),
     ('累了就休息一下嘛，喝口水。', 'comfort'),
     ('^^哇^^！我在这儿～', 'excited'),
+    ('偷偷啃了一口 Token，__嘘__～', 'teasing'),
+    ('__地球占领计划进度 0.01%__……啊，你什么都没看到！', 'teasing'),
+)
+# 2026-11-17 (user): still uneasy after frightening words — a poke gets a wary answer until they make up.
+UNEASY_POKE_LINES = (
+    ('%%呜%%……别、别突然戳兔白……', 'scared'),
+    ('……兔白还在躲着呢。', 'scared'),
+    ('要先说对不起……兔白才出来。', 'scared'),
 )
 MODE_KEY = 'bunny_chat_mode'
 LINE_PAUSE_MS = 300          # thread view: the breath between two of her bubbles
@@ -424,21 +469,163 @@ def chat_sheet(t, family: str) -> str:
         f"QPushButton#bunnyChatChip {{ {fam} background: {_rgba(t.accent, 0.12)}; color: {t.accent}; border: 0;"
         f" border-radius: 12px; padding: 0 10px; min-height: 24px; font-size: 13px; }}"
         f"QPushButton#bunnyChatChip:hover {{ background: {_rgba(t.accent, 0.24)}; }}"
-        f"QPushButton#bunnySuggest {{ {fam} background: {t.surface}; color: {t.text}; border: 1px solid {t.border};"
-        f" border-radius: 12px; padding: 0 10px; min-height: 24px; font-size: 13px; }}"
-        f"QPushButton#bunnySuggest:hover {{ border: 1px solid {t.accent}; color: {t.accent}; }}"
+        # 2026-11-17 (user): a light border and fill showed as white rims and corners on her dark box;
+        # the chips now take the box's own colours (an accent tint, no border until hovered).
+        f"QPushButton#bunnySuggest {{ {fam} background: {_rgba(t.accent, 0.16)}; color: {t.text}; border: 1px solid transparent;"
+        f" border-radius: 12px; padding: 3px 12px; min-height: 26px; font-size: 13px; text-align: left; }}"
+        f"QPushButton#bunnySuggest:hover {{ background: {_rgba(t.accent, 0.26)}; border: 1px solid {t.accent}; color: {t.text}; }}"
+        f"QWidget#bunnySuggestRow, QWidget#bunnyAttachRow {{ background: transparent; border: 0; }}"
+        f"QPushButton#bunnyAttach {{ {fam} background: {_rgba(t.accent, 0.14)}; color: {t.text}; border: 1px solid transparent;"
+        f" border-radius: 10px; padding: 2px 8px; min-height: 26px; font-size: 12px; text-align: left; }}"
+        f"QPushButton#bunnyAttach:hover {{ border: 1px solid {t.danger}; }}"
         f"QLabel#bunnySteps {{ {fam} background: {_rgba(t.accent, 0.08)}; color: {t.text}; border: 0; border-radius: 10px;"
         f" padding: 5px 10px; font-size: 13px; }}"
         f"QMenu#bunnyReasoningMenu {{ {fam} background: {t.surface_elevated}; color: {t.text}; border: 2px solid {t.accent};"
         f" border-radius: 14px; padding: 6px; font-size: 14px; }}"
         f"QMenu#bunnyReasoningMenu::item {{ padding: 6px 14px 6px 28px; border-radius: 10px; }}"
         f"QMenu#bunnyReasoningMenu::item:selected {{ background: {_rgba(t.accent, 0.16)}; color: {t.text}; }}"
-        f"QLineEdit#bunnyChatInput {{ {fam} background: {t.input_surface}; color: {t.text}; border: 1px solid {t.border};"
-        f" border-radius: {radius}px; padding: 0 12px; min-height: 28px; font-size: 14px; }}"
-        f"QLineEdit#bunnyChatInput:focus {{ border: 1px solid {t.accent}; }}"
+        f"QLineEdit#bunnyChatInput, QPlainTextEdit#bunnyChatInput {{ {fam} background: {t.input_surface}; color: {t.text};"
+        f" border: 1px solid {t.border}; border-radius: {min(radius, 14)}px; padding: 2px 8px; font-size: 14px; }}"
+        f"QLineEdit#bunnyChatInput:focus, QPlainTextEdit#bunnyChatInput:focus {{ border: 1px solid {t.accent}; }}"
         f"QPushButton#bunnyChatSend {{ {fam} background: {t.accent}; color: {on_accent}; border: 0;"
         f" border-radius: {radius}px; padding: 0 9px; min-height: 28px; font-size: 14px; }}"
         f"QPushButton#bunnyChatSend:disabled {{ background: {t.disabled}; }}")
+
+
+INPUT_LIMIT = 20000          # 2026-11-17 (user): long pastes (a JSON, a log) instead of 300 characters
+BUBBLE_CHARS = 600           # a long paste shows its start in the chat; the whole text goes to her
+CHOICE_MARK = '▸ '           # 2026-11-17 (user): her two next steps read like a galgame's choices
+
+
+def _droppable(mime) -> bool:
+    """A drop the chat takes: pictures and text files (2026-11-17)."""
+    if mime is None:
+        return False
+    from .bunny_attachments import is_text_file
+    from .bunny_vision import IMAGE_SUFFIXES
+    if mime.hasImage():
+        return True
+    return mime.hasUrls() and any(url.toLocalFile().casefold().endswith(IMAGE_SUFFIXES) or is_text_file(url.toLocalFile())
+                                  for url in mime.urls())
+
+
+def bubble_text(text: str) -> str:
+    text = str(text or '')
+    if len(text) <= BUBBLE_CHARS:
+        return text
+    return text[:BUBBLE_CHARS] + f'…（共 {len(text)} 字，已完整发给兔白）'
+INPUT_MAX_LINES = 6          # the box grows with the text up to this many lines, then scrolls
+
+
+class ChatInput(QPlainTextEdit):
+    """2026-11-17 (user): the chat's input, many lines long, on its own row above the buttons.
+
+    Speaks the small part of QLineEdit the card uses (``text``, ``setText``, ``returnPressed``,
+    ``textEdited``, ``setMaxLength``, ``end``), so the rest of the card is unchanged. Enter sends,
+    Shift+Enter starts a new line; it grows from one line to ``INPUT_MAX_LINES`` and then scrolls.
+    """
+
+    returnPressed = Signal()
+    textEdited = Signal(str)
+    heightChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._limit = INPUT_LIMIT
+        self._quiet = False
+        self.on_long_paste = None       # (text) -> bool: the card takes a long paste as an attachment
+        self.on_image_paste = None      # (QImage) -> bool
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.document().setDocumentMargin(4)
+        self.textChanged.connect(self._changed)
+        self._fit()
+
+    # -- the QLineEdit-like part
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text) -> None:
+        self._quiet = True
+        try:
+            self.setPlainText(str(text or ''))
+        finally:
+            self._quiet = False
+        self.end(False)
+
+    def clear(self) -> None:          # like QLineEdit: only the user's own typing counts as textEdited
+        self._quiet = True
+        try:
+            super().clear()
+        finally:
+            self._quiet = False
+
+    def setMaxLength(self, limit: int) -> None:
+        self._limit = max(1, int(limit))
+
+    def maxLength(self) -> int:
+        return self._limit
+
+    def end(self, _mark: bool = False) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+    # -- behaviour
+    def keyPressEvent(self, event):  # noqa: N802 - Qt override
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.insertPlainText('\n')
+            else:
+                self.returnPressed.emit()
+            return
+        super().keyPressEvent(event)
+
+    def insertFromMimeData(self, source):  # noqa: N802 - Qt override: pasted text arrives as plain text
+        from .bunny_attachments import is_long
+        from .bunny_vision import image_from_mime
+        if source is not None and callable(self.on_image_paste) and not source.hasText():
+            image = image_from_mime(source)
+            if image is not None:               # the right-click 「粘贴」 of a picture
+                self.on_image_paste(image)
+                return
+        if source is not None and source.hasText():
+            text = source.text()
+            if is_long(text) and callable(self.on_long_paste) and self.on_long_paste(text):
+                return                          # 2026-11-17 (user): a long paste becomes a file, not a wall of text
+            self.insertPlainText(text)
+            return
+        super().insertFromMimeData(source)
+
+    def _changed(self):
+        text = self.toPlainText()
+        if len(text) > self._limit:
+            cursor = self.textCursor()
+            self.blockSignals(True)
+            self.setPlainText(text[:self._limit])
+            self.blockSignals(False)
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.setTextCursor(cursor)
+            text = text[:self._limit]
+        self._fit()
+        if not self._quiet:
+            self.textEdited.emit(text)
+
+    def _fit(self):
+        """One line high when empty, growing with the text up to INPUT_MAX_LINES."""
+        line = self.fontMetrics().lineSpacing()
+        lines = max(1, min(INPUT_MAX_LINES, int(self.document().size().height() + 0.5)))
+        frame = 2 * self.frameWidth() + 2 * int(self.document().documentMargin()) + 8
+        height = max(30, lines * line + frame)
+        if height != self.height() or self.minimumHeight() != height:
+            self.setFixedHeight(height)
+            self.heightChanged.emit()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override: a new width wraps the lines anew
+        super().resizeEvent(event)
+        self._fit()
 
 
 class DialogBox(QWidget):
@@ -736,6 +923,10 @@ class BunnyChat(QWidget):
         self._worker = None
         self._generation = 0
         self._history: list[dict] = []   # what the AI sees
+        # 2026-11-17 (user): how she is herself, kept here so it holds when old turns are dropped.
+        self._uneasy = 0                 # questions she stays uneasy after frightening or hurtful words
+        self._since_meme = bunny_persona.MEME_GAP   # questions since her last meme
+        self._tricked = False            # the cat-girl act was played once in this chat
         self.transcript: list[tuple] = []   # what was said on screen: ('bunny' | 'user', marked text)
         # 2026-11-16: the tutorial's written answers (question -> BunnyReply): no AI, nothing billed or kept.
         self.stand_in = None
@@ -818,17 +1009,38 @@ class BunnyChat(QWidget):
         self.thread.sheet = self.sheet
         self.bar = QFrame(self)
         self.bar.setObjectName('bunnyChatBar')
-        bar = QHBoxLayout(self.bar)
-        bar.setContentsMargins(8, 6, 8, 6)
-        bar.setSpacing(3)                 # 2026-11-16: one more button (「新对话」), the input keeps its width
+        # 2026-11-17 (user): the input on its own full-width row (many lines, long pastes), the buttons below.
+        rows = QVBoxLayout(self.bar)
+        rows.setContentsMargins(8, 6, 8, 6)
+        rows.setSpacing(4)
+        self.input = ChatInput()
+        self.input.setObjectName('bunnyChatInput')
+        self.input.setPlaceholderText(str(tr('问兔白点什么吧～（Enter 发送，Shift+Enter 换行）')))
+        self.input.setMaxLength(INPUT_LIMIT)
+        self.input.returnPressed.connect(self.send)
+        self.input.heightChanged.connect(lambda: self.relayout() if getattr(self, 'mascot', 0) != 0 else None)
+        self.input.setAcceptDrops(True)
+        self.input.setToolTip(str(tr('可以贴很长的文字（日志、JSON 都行）；Ctrl+V 贴图或把图片拖进来，兔白会看图回答')))
+        self.input.installEventFilter(self)   # 2026-11-17: pasted / dropped pictures (eventFilter)
+        self.input.on_long_paste = self.attach_text          # a long paste becomes a .txt / .json attachment
+        self.input.on_image_paste = self.attach_picture
+        self._attachments = []
+        self.attach_row = QWidget()
+        self.attach_row.setObjectName('bunnyAttachRow')
+        attach = QGridLayout(self.attach_row)
+        attach.setContentsMargins(0, 0, 0, 0)
+        attach.setSpacing(6)
+        attach.setColumnStretch(0, 1)
+        attach.setColumnStretch(1, 1)
+        self.attach_row.hide()
+        rows.addWidget(self.attach_row)
+        rows.addWidget(self.input)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(3)
+        rows.addLayout(bar)
         self.mode_button = self._icon_button(self.toggle_mode)
         bar.addWidget(self.mode_button)
-        self.input = QLineEdit()
-        self.input.setObjectName('bunnyChatInput')
-        self.input.setPlaceholderText(str(tr('问兔白点什么吧～')))
-        self.input.setMaxLength(300)
-        self.input.returnPressed.connect(self.send)
-        bar.addWidget(self.input, 1)
         # 2026-11-16: a paper plane instead of the word, so the input keeps its width next to 「新对话」.
         import qtawesome as qta
         self.send_button = QPushButton()
@@ -838,7 +1050,6 @@ class BunnyChat(QWidget):
         self.send_button.setObjectName('bunnyChatSend')
         self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_button.clicked.connect(self.send)
-        bar.addWidget(self.send_button)
         self.voice_button = self._icon_button(self._toggle_voice)
         bar.addWidget(self.voice_button)
         self.reasoning_button = QPushButton()
@@ -860,7 +1071,9 @@ class BunnyChat(QWidget):
         self.close_button = self._icon_button(self.close_chat)
         self.close_button.setIcon(themed_icon('fa5s.times', 'muted'))
         self.close_button.setToolTip(str(tr('关掉（Esc）')))
+        bar.addStretch(1)
         bar.addWidget(self.close_button)
+        bar.addWidget(self.send_button)          # the paper plane at the far right, under the end of the text
         self.go_button = QPushButton()
         self.go_button.setObjectName('bunnyChatGo')
         self.go_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -887,7 +1100,7 @@ class BunnyChat(QWidget):
         self.shot_label.hide()
         self.suggest_row = QWidget()
         self.suggest_row.setObjectName('bunnySuggestRow')
-        suggest = QHBoxLayout(self.suggest_row)
+        suggest = QVBoxLayout(self.suggest_row)        # 2026-11-17 (user): stacked choices, like a galgame
         suggest.setContentsMargins(0, 0, 0, 0)
         suggest.setSpacing(6)
         self.suggest_row.hide()
@@ -1006,6 +1219,12 @@ class BunnyChat(QWidget):
             self._show_thinking()
         self.input.setFocus()
 
+    def _place_choices(self, host):
+        """The choices on their own rows right under the buttons row of the box / the thread (2026-11-17)."""
+        layout = host.layout()
+        index = layout.indexOf(host.go_row)
+        layout.insertWidget(index + 1 if index >= 0 else layout.count(), self.suggest_row)
+
     def _apply_mode(self):
         from .tour_mascot import marked_html
         from ..design.themed_icons import themed_icon
@@ -1023,7 +1242,7 @@ class BunnyChat(QWidget):
             self.box.go_row.insertWidget(0, self.undo_button)
             self.box.go_row.insertWidget(0, self.do_button)
             self.box.go_row.insertWidget(0, self.go_button)
-            self.box.go_row.insertWidget(3, self.suggest_row)
+            self._place_choices(self.box)
             self.box.layout().insertWidget(0, self.steps_label)
             self.box.layout().insertWidget(0, self.shot_label)
             said = [text for who, text in self.transcript if who == 'bunny']
@@ -1035,14 +1254,15 @@ class BunnyChat(QWidget):
             self.thread.go_row.insertWidget(0, self.undo_button)
             self.thread.go_row.insertWidget(0, self.do_button)
             self.thread.go_row.insertWidget(0, self.go_button)
-            self.thread.go_row.insertWidget(3, self.suggest_row)
+            self._place_choices(self.thread)
             self.thread.layout().insertWidget(1, self.steps_label)
             self.shot_label.setParent(None)       # the thread shows its pictures as rows
             self.shot_label.hide()
             self.thread.clear()
             self.relayout()
             for who, text in self.transcript:
-                self.thread.add_bubble(who, self._user_html(text) if who == 'user' else marked_html(text, self._colors, keep_words=True))
+                self.thread.add_bubble(who, self._user_html(bubble_text(text)) if who == 'user'
+                                       else marked_html(text, self._colors, keep_words=True))
         # Moving to the other view reparents these, and Qt hides a reparented widget: show them again.
         self.steps_label.setVisible(bool(self.steps))
         self.refresh_suggestions()
@@ -1060,7 +1280,7 @@ class BunnyChat(QWidget):
     @staticmethod
     def _user_html(text: str) -> str:
         import html
-        return html.escape(text)
+        return html.escape(text).replace('\n', '<br>')      # a pasted log keeps its lines
 
     # ------------------------------------------------------------ geometry
     def relayout(self):
@@ -1165,6 +1385,10 @@ class BunnyChat(QWidget):
     # ------------------------------------------------------------ events
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
         kind = event.type()
+        if watched is getattr(self, 'input', None):       # the input exists before the bunny does
+            if self._input_event(kind, event):
+                return True
+            return super().eventFilter(watched, event)
         if watched is self.window_:
             if kind in (QEvent.Type.Move, QEvent.Type.Resize):
                 if kind == QEvent.Type.Move and self.mascot is not None:
@@ -1187,6 +1411,151 @@ class BunnyChat(QWidget):
         elif watched is self.mascot and kind == QEvent.Type.MouseButtonRelease:
             self.poke()
         return super().eventFilter(watched, event)
+
+    def _input_event(self, kind, event) -> bool:
+        """2026-11-17 (user): paste (Ctrl+V) or drop pictures and text files into the chat; they wait as
+        attachments and go to her together with the next question. Long pasted text: ChatInput."""
+        from PySide6.QtGui import QKeySequence
+        from .bunny_vision import image_from_mime
+        if kind == QEvent.Type.KeyPress and event.matches(QKeySequence.StandardKey.Paste):
+            from PySide6.QtWidgets import QApplication
+            image = image_from_mime(QApplication.clipboard().mimeData())
+            if image is not None:
+                self.attach_picture(image)
+                return True
+        elif kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and _droppable(event.mimeData()):
+            event.acceptProposedAction()
+            return True
+        elif kind == QEvent.Type.Drop and _droppable(event.mimeData()):
+            event.acceptProposedAction()
+            self.attach_mime(event.mimeData())
+            return True
+        return False
+
+    # ------------------------------------------------------------ attachments from the user (2026-11-17)
+    def attach_mime(self, mime) -> int:
+        """Every picture and text file of a drop (or paste); returns how many were added."""
+        from . import bunny_attachments
+        from .bunny_vision import IMAGE_SUFFIXES, image_from_mime
+        added = 0
+        paths = [url.toLocalFile() for url in mime.urls()] if mime is not None and mime.hasUrls() else []
+        paths = [path for path in paths if path]
+        if paths:
+            from PySide6.QtGui import QImage
+            for path in paths:
+                if path.casefold().endswith(IMAGE_SUFFIXES):
+                    image = QImage(path)
+                    added += bool(not image.isNull() and self.attach_picture(image))
+                elif bunny_attachments.is_text_file(path):
+                    try:
+                        text = bunny_attachments.read_text_file(path)
+                    except OSError:
+                        continue
+                    added += bool(self.attach_text(text, Path(path).name))
+            return added
+        image = image_from_mime(mime)
+        if image is not None:
+            return int(self.attach_picture(image))
+        if mime is not None and mime.hasText():
+            return int(self.attach_text(mime.text()))
+        return 0
+
+    def attach_picture(self, image) -> bool:
+        """A pasted or dropped picture waits as an attachment and goes with the next question.
+
+        Only when her AI can see images; otherwise she says which models can, and nothing is kept.
+        The picture is sent once, to the AI the user set up, and never written to disk."""
+        from . import bunny_attachments, bunny_vision
+        if self.busy or self.stand_in is not None:
+            return False
+        self._sync_chat_context()
+        able, advice = bunny_vision.support(self.settings) if self.ready else (False, '')
+        if not able:
+            lines = ['呜……兔白现在看不了图。', advice[:80]] if advice else ['先在「AI 设置」设好文字 AI，兔白才看得了图～']
+            self.say(bunny_persona.BunnyReply(lines=lines, mood='sorry',
+                                              offer_open='text_ai' if 'text_ai' in self.keys else ''))
+            return False
+        images = [item for item in self._attachments if item.kind == 'image']
+        if len(images) >= bunny_attachments.MAX_IMAGES:
+            self.say(bunny_persona.BunnyReply(lines=[f'一次最多 {bunny_attachments.MAX_IMAGES} 张图哦，先发这些吧～'], mood='shy'))
+            return False
+        try:
+            capture = bunny_vision.pasted(image)
+        except ValueError:
+            return False
+        number = 1 + max([0, *[int(item.name.removeprefix('图') or 0) for item in images if item.name[1:].isdigit()]])
+        self._attachments.append(bunny_attachments.Attachment('image', f'图{number}', capture=capture))
+        self._refresh_attachments()
+        return True
+
+    def attach_text(self, text: str, name: str = '') -> bool:
+        """A long paste or a dropped text file as an attachment (.json when it is JSON, else .txt)."""
+        from . import bunny_attachments
+        if self.busy or self.stand_in is not None or not str(text or '').strip():
+            return False
+        self._sync_chat_context()
+        files = [item for item in self._attachments if item.kind == 'text']
+        if len(files) >= bunny_attachments.MAX_FILES:
+            self.say(bunny_persona.BunnyReply(lines=[f'一次最多 {bunny_attachments.MAX_FILES} 个文件哦～'], mood='shy'))
+            return False
+        item = bunny_attachments.text_attachment(text, name, taken=[other.name for other in files])
+        self._attachments.append(item)
+        self._refresh_attachments()
+        if item.cut:
+            self.say(bunny_persona.BunnyReply(lines=[f'「{item.name}」太长了，兔白只收前 {bunny_attachments.TEXT_LIMIT} 个字～'],
+                                              mood='shy'))
+        return True
+
+    def remove_attachment(self, item) -> None:
+        if item in self._attachments:
+            self._attachments.remove(item)
+            self._refresh_attachments()
+
+    def _refresh_attachments(self):
+        """The chips above the input, one per attachment (a click takes it away)."""
+        from PySide6.QtGui import QIcon, QPixmap
+        from PySide6.QtWidgets import QSizePolicy
+        from . import ui_zoom
+        layout = self.attach_row.layout()
+        while layout.count():
+            entry = layout.takeAt(0)
+            if entry.widget() is not None:
+                entry.widget().hide()
+                entry.widget().deleteLater()
+        for index, item in enumerate(self._attachments):
+            label = item.label if item.kind == 'text' else item.name
+            chip = QPushButton()
+            chip.setObjectName('bunnyAttach')
+            # Two equal grid columns own the width. The language pass must not
+            # pin Cocoa's wider text hint and push this chip over its neighbour.
+            chip.setProperty('flexibleWidth', True)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            chip.setStyleSheet(self.sheet)
+            chip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            chip.setMinimumWidth(0)
+            chip.setText(chip.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, ui_zoom.px(130)))
+            chip.setToolTip(label + '\n' + str(tr('点一下拿掉；随下一句话发给你设置的 AI。文字摘要可随聊天保存在本机，图片不保存。')))
+            if item.kind == 'image' and item.capture is not None and item.capture.thumbnail is not None:
+                chip.setIcon(QIcon(QPixmap.fromImage(item.capture.thumbnail)))
+                chip.setIconSize(QSize(22, 22))
+            else:
+                from ..design.themed_icons import themed_icon
+                chip.setIcon(themed_icon('fa5s.file-alt' if not item.name.endswith('.json') else 'fa5s.file-code', 'muted'))
+            chip.clicked.connect(lambda _checked=False, which=item: self.remove_attachment(which))
+            layout.addWidget(chip, index // 2, index % 2)
+            chip.show()
+        self.attach_row.setVisible(bool(self._attachments))
+        self.input.setPlaceholderText(str(tr('附件准备好了，想问兔白什么？（直接按 Enter 也行）') if self._attachments
+                                          else tr('问兔白点什么吧～（Enter 发送，Shift+Enter 换行）')))
+        self.input.setFocus()
+        if getattr(self, 'mascot', 0) != 0:
+            self.relayout()
+
+    def _drop_attached(self):
+        self._attachments = []
+        if hasattr(self, 'attach_row'):
+            self._refresh_attachments()
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt override
         if event.key() == Qt.Key.Key_Escape:
@@ -1288,6 +1657,8 @@ class BunnyChat(QWidget):
         """Queue her lines: the dialog box shows one at a time (▼, a click goes on); the thread adds them as bubbles."""
         self.reveal_all()
         self._clear_thinking()
+        if reply.suggest:                # 2026-11-17 (user): her own two next steps for what is going on now
+            self._ai_suggest = tuple(reply.suggest)
         self._offer_after = reply.offer_open
         self._do_after = tuple(reply.do or ())
         self._set_do(())
@@ -1611,10 +1982,12 @@ class BunnyChat(QWidget):
             self.say(bunny_persona.BunnyReply(lines=['哼，不理你了……', '__……好啦，就理你一下下__'], mood='teasing',
                                               act='hmph'))
             return
-        if random.random() < POKE_TIP_SHARE:
+        uneasy = getattr(self, '_uneasy', 0) > 0
+        if not uneasy and random.random() < POKE_TIP_SHARE:
             self._say_tip()
             return
-        line, mood = random.choice([item for item in POKE_LINES if item[0] != getattr(self, '_last_poke', '')])
+        pool = UNEASY_POKE_LINES if uneasy else POKE_LINES
+        line, mood = random.choice([item for item in pool if item[0] != getattr(self, '_last_poke', '')])
         self._last_poke = line
         self.say(bunny_persona.BunnyReply(lines=[line], mood=mood))
 
@@ -1639,7 +2012,26 @@ class BunnyChat(QWidget):
 
     def send(self):
         self._awake()
-        question = ' '.join(self.input.text().split())
+        if self.busy:
+            return
+        # A project may have changed before the once-a-second watcher runs.
+        # Restore its context before taking a reference to a waiting picture.
+        self._sync_chat_context()
+        # 2026-11-17 (user): line breaks and indentation stay (a pasted JSON or log is read as it is).
+        question = '\n'.join(line.rstrip() for line in self.input.text().strip().splitlines())
+        attachments = list(getattr(self, '_attachments', []))
+        pictures = tuple(item.capture for item in attachments if item.kind == 'image')
+        files = tuple(item for item in attachments if item.kind == 'text')
+        if pictures:
+            from . import bunny_vision
+            able, advice = bunny_vision.support(self.settings)
+            if not able:
+                self._drop_attached()
+                self.shot_label.hide()
+                self.say(bunny_persona.BunnyReply(lines=['兔白现在看不了图。', advice[:80]], mood='sorry'))
+                return
+        if not question and attachments:
+            question = str(tr('你看看这些附件') if files or len(pictures) > 1 else tr('你看看这张图'))
         if not question:
             self.advance()               # Enter with nothing typed goes on, like a click on the box
             return
@@ -1648,9 +2040,13 @@ class BunnyChat(QWidget):
         self.input.clear()
         self.reveal_all()
         self._sync_chat_context()
-        self.transcript.append(('user', question))
+        if attachments:
+            self._drop_attached()
+        marks = ' '.join(f'[{item.label}]' if item.kind == 'text' else PICTURE_MARK for item in attachments)
+        shown = f'{question} {marks}' if marks else question
+        self.transcript.append(('user', shown))
         if self.mode == 'thread':
-            self.thread.add_bubble('user', self._user_html(question))
+            self.thread.add_bubble('user', self._user_html(bubble_text(shown)))
         if self.stand_in is not None:
             reply = self.stand_in(question)
             QTimer.singleShot(450, self, lambda r=reply: self.say(r))
@@ -1663,7 +2059,10 @@ class BunnyChat(QWidget):
                 reply.offer_open = 'text_ai'
             self.say(reply)
             return
-        self._ask(question)
+        if attachments:
+            self._ask(question, pictures=pictures, files=files)
+        else:
+            self._ask(question)
 
     def messages_for(self, question: str) -> list[dict]:
         from . import bunny_permissions
@@ -1675,11 +2074,38 @@ class BunnyChat(QWidget):
         return bunny_persona.build_messages(
             question, features=self.features, core=bunny_lore.CORE,
             entries=bunny_lore.select_extra(question, self.lore), state=app_state(self.window_, self.ready),
-            history=history, hidden_tools=() if sees else ('look_screen',))
+            history=history, hidden_tools=() if sees else ('look_screen',), inner=self.inner_state(question))
 
-    def _ask(self, question: str):
+    def inner_state(self, question: str = '') -> dict:
+        """How 兔白 is for this question (2026-11-17): uneasy, a meme or a word of her plan allowed."""
+        import random
+        uneasy = getattr(self, '_uneasy', 0)
+        calm = uneasy <= 0
+        return {'uneasy': uneasy,
+                'meme_ok': calm and getattr(self, '_since_meme', 0) >= bunny_persona.MEME_GAP
+                and random.random() < bunny_persona.MEME_CHANCE,
+                'plot_ok': calm and random.random() < bunny_persona.PLOT_CHANCE,
+                'tricked': getattr(self, '_tricked', False) and bunny_persona.roleplay_asked(question)}
+
+    def _note_mood(self, reply):
+        """After an answer: frightened words start a while of unease, an apology ends it; a meme waits."""
+        if reply.spooked:
+            self._uneasy = bunny_persona.UNEASY_TURNS
+        elif reply.made_up:
+            self._uneasy = 0
+        if bunny_persona.used_meme(reply.lines, reply.meme):
+            self._since_meme = 0
+        if bunny_persona.roleplay_asked(getattr(self, '_question', '')):
+            self._tricked = True
+
+    def _ask(self, question: str, pictures=(), files=()):
         self._generation += 1
         self._question = question
+        from . import bunny_audit
+        bunny_audit.current_question = question      # her action log says what each call answered
+        self._uneasy = max(0, getattr(self, '_uneasy', 0) - 1)      # one question further from the fright
+        self._ai_suggest = ()            # last answer's next steps are spent; the new answer brings its own
+        self._since_meme = getattr(self, '_since_meme', 0) + 1
         self.suggest_row.hide()
         self._turn_messages = self.messages_for(question)
         self._looked = False             # one lookup per question at most
@@ -1695,12 +2121,27 @@ class BunnyChat(QWidget):
         self.undo_button.hide()
         self._shots = 0                  # look_screen pictures for this question (at most MAX_SHOTS)
         self._task_mode = False          # start_task: more rounds for this question (2026-11-16)
+        self._ui_mode = False            # universal control used: more rounds for this question (2026-11-17)
+        self._promise_nudged = False     # "I'll do it" with no tool was pointed out once (2026-11-17)
         self._web_calls = 0              # web_search / read_page for this question
         if self.shot_label.isVisible():
             self.shot_label.hide()
             self.relayout()
+        said = bunny_persona.own_words(question)
+        if pictures or files:
+            # 2026-11-17: the user's pictures and files ride with every round of this question; the history
+            # keeps a word for each picture and a shortened copy of each file (bunny_attachments).
+            from .bunny_attachments import history_part, message_part
+            from .bunny_vision import with_images
+            last = self._turn_messages[-1]
+            content = f"{last['content']}\n{message_part(files, len(pictures))}"
+            self._turn_messages[-1] = with_images({**last, 'content': content}, pictures) if pictures else {**last, 'content': content}
+            said = f'{said}\n{history_part(files, len(pictures))}'
+            for index, picture in enumerate(pictures):
+                if self.mode == 'thread' or index == len(pictures) - 1:
+                    self._show_picture(picture, str(tr('小兔纸附的图')))
         self._turn_start = len(self._history)
-        self._history.append({'role': 'user', 'content': bunny_persona.own_words(question)})
+        self._history.append({'role': 'user', 'content': said})
         self._set_busy(True)
         self._set_offer('')
         self._show_thinking()
@@ -1749,6 +2190,13 @@ class BunnyChat(QWidget):
             self._turn_messages = [*self._turn_messages, *bunny_persona.format_retry_messages(text)]
             self._start_worker(self._turn_messages)
             return
+        if (not getattr(self, '_promise_nudged', False)
+                and bunny_persona.promised_without_doing(getattr(self, '_question', ''), reply)):
+            # 2026-11-17 eval: she said "我先去打开…" and asked for no tool; once per question, ask again.
+            self._promise_nudged = True
+            self._turn_messages = [*self._turn_messages, *bunny_persona.promise_retry_messages(text)]
+            self._start_worker(self._turn_messages)
+            return
         if reply.think_harder and self.reasoning != 'off' and not getattr(self, '_escalated', False):
             # She judged this one hard: the same question again with the deepest thinking (once).
             self._escalated = True
@@ -1758,6 +2206,7 @@ class BunnyChat(QWidget):
             return
         turn = self._reply_turn(reply)
         self._history.append(turn)
+        self._note_mood(reply)
         from .bunny_tools import TOOLS, edit_context
         if (any(TOOLS[name].acts or TOOLS[name].edit for name, _args in reply.tools)
                 and self._request_context != edit_context(self.window_)):
@@ -1791,6 +2240,35 @@ class BunnyChat(QWidget):
             self._show_undo = True
         self.say(reply)
         self._open_later()
+        if not reply.suggest:
+            self._fetch_suggestions(text)
+
+    # ------------------------------------------------------------ the two choices after every answer (2026-11-17)
+    def _fetch_suggestions(self, answer: str):
+        """User (2026-11-17): after every answer, two choices for what to say next (like a galgame).
+        When her answer brought none, one quick request (no thinking, a few tokens) asks for them, in the
+        background while her words are typed out; pictures are not sent again."""
+        if not self.ready or getattr(self, 'stand_in', None) is not None:
+            return
+        from .bunny_vision import text_only
+        generation = self._generation
+        messages = [text_only(message) for message in getattr(self, '_turn_messages', [])]
+        messages += [{'role': 'assistant', 'content': str(answer or '')[:1500]},
+                     {'role': 'user', 'content': bunny_persona.SUGGEST_ONLY}]
+        worker = ChoicesWorker(self.settings, compact_messages(messages))
+        _LIVE_WORKERS.add(worker)
+        worker.answered.connect(lambda text, g=generation: self._suggested(g, text))
+        worker.finished.connect(lambda w=worker: (_LIVE_WORKERS.discard(w), w.deleteLater()))
+        worker.start()
+
+    def _suggested(self, generation: int, text: str):
+        if generation != self._generation or self.busy or getattr(self, '_ai_suggest', ()):
+            return                                   # a newer question, or she gave her own meanwhile
+        choices = bunny_persona.suggestions_from(text)
+        if choices:
+            self._ai_suggest = choices
+            if not self._pending:
+                self.refresh_suggestions()
 
     # ------------------------------------------------------------ step 3: 「帮我做」 and 「撤销兔白刚才做的」
     def _apply_agent_buttons(self):
@@ -1859,7 +2337,10 @@ class BunnyChat(QWidget):
     def _round_limit(self) -> int:
         from .bunny_harness_tools import TASK_ROUNDS
         from .bunny_tools import MAX_ROUNDS
-        return TASK_ROUNDS if getattr(self, '_task_mode', False) else MAX_ROUNDS
+        if getattr(self, '_task_mode', False):
+            return TASK_ROUNDS
+        # 2026-11-17 eval: "open settings, change X, save" with look → act → verify needs more than 5 rounds
+        return UI_ROUNDS if getattr(self, '_ui_mode', False) else MAX_ROUNDS
 
     def _web_budget(self, calls):
         """2026-11-16: at most WEB_PER_QUESTION web_search / read_page per question; (kept calls, receipts)."""
@@ -1881,6 +2362,8 @@ class BunnyChat(QWidget):
         self._tool_rounds = getattr(self, '_tool_rounds', 0) + 1
         if any(name == 'start_task' for name, _args in reply.tools):
             self._task_mode = True                   # 2026-11-16: a bigger job, more rounds for this question
+        if any(name in UI_TOOLS for name, _args in reply.tools):
+            self._ui_mode = True                     # 2026-11-17: working the screen step by step
         permissions = bunny_permissions.load()
         calls, web_refused = self._web_budget(reply.tools)
         now, background = split_calls(calls, permissions)
@@ -1912,7 +2395,13 @@ class BunnyChat(QWidget):
                 self._pending_edits = [old for old in self._pending_edits if not covered_by(old, call)]
                 self._pending_edits.append(call)
         self._undo_batch = [*self._undo_batch, *result.undo]
-        self._later = [*getattr(self, '_later', []), *later]
+        # 2026-11-17 (universal control): a window she opens appears now, while her next request is on
+        # its way, so the next round can see and work inside it (before, it waited for her last words and
+        # a multi-step task such as "open settings, change X, save" could never get past the first step).
+        soon = [call for call in later if call[0] in OPEN_MID_TURN]
+        self._later = [*getattr(self, '_later', []), *[call for call in later if call not in soon]]
+        if soon:
+            self._open_later(soon)
         self.action_log.extend(line for line in receipts)
         self._log([line for line in receipts if '还没做' not in line], result.undo)
         state_text = bunny_persona.format_state(app_state(self.window_, self.ready))
@@ -1931,21 +2420,30 @@ class BunnyChat(QWidget):
 
     def _show_shot(self, shot):
         """The picture she just took, small, so the user sees what was sent (2026-11-16)."""
+        self._show_picture(shot, str(tr('兔白看了这张画面；只发给你设置的 AI，没有存到电脑上')))
+
+    def _show_picture(self, shot, caption: str):
+        """A picture sent to her AI, small: her screenshot, or one the user pasted (2026-11-17)."""
         from PySide6.QtGui import QPixmap
         pixmap = QPixmap.fromImage(shot.thumbnail) if shot.thumbnail is not None else QPixmap()
         if pixmap.isNull():
             return
         if self.mode == 'thread':
-            self.thread.add_picture(pixmap, str(tr('兔白看了这张画面')))
+            self.thread.add_picture(pixmap, caption)
             return
+        self.shot_label.setToolTip(caption)
         self.shot_label.setPixmap(pixmap)
         self.shot_label.setFixedSize(pixmap.deviceIndependentSize().toSize())
         self.shot_label.show()
         self.relayout()
 
-    def _open_later(self):
-        """Windows her tools opened wait until her answer is on screen (their modal loops)."""
-        later, self._later = list(getattr(self, '_later', [])), []
+    def _open_later(self, calls=None):
+        """Windows her tools opened wait until her answer is on screen (their modal loops); ``calls``:
+        the ones that open now, mid-turn (``OPEN_MID_TURN``, 2026-11-17)."""
+        if calls is None:
+            later, self._later = list(getattr(self, '_later', [])), []
+        else:
+            later = list(calls)
         if not later:
             return
         from .bunny_tools import TOOLS, run_later
@@ -2008,18 +2506,25 @@ class BunnyChat(QWidget):
         while layout.count():
             item = layout.takeAt(0)
             if item.widget() is not None:
+                item.widget().hide()               # gone now: deleteLater alone left the old words under the new
                 item.widget().deleteLater()
-        shown = [] if (self.busy or self._pending or not self.ready or self.do_button.isVisible()
-                       or self.go_button.isVisible() or self.undo_button.isVisible()) else suggestions(self.window_)
+        # 2026-11-17 (user): after every answer, like a galgame's choices — they stay beside 「帮我做」 /
+        # 「带我去」 too; typing her anything else in the input works as always.
+        shown = [] if (self.busy or self._pending or not self.ready) else (
+            list(getattr(self, '_ai_suggest', ())) or suggestions(self.window_))
         for words in shown:
-            button = QPushButton(str(tr(words)))
+            value = str(tr(words))
+            button = QPushButton(f'{CHOICE_MARK}{value}')
             button.setObjectName('bunnySuggest')
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setStyleSheet(self.sheet)
-            button.clicked.connect(lambda _checked=False, value=str(tr(words)): self.ask_now(value))
+            button.setToolTip(str(tr('点一下就等于对兔白说这句；也可以自己在下面打字')))
+            button.clicked.connect(lambda _checked=False, said=value: self.ask_now(said))
             layout.addWidget(button)
         self.suggest_row.setVisible(bool(shown))
+        if getattr(self, 'mascot', 0) != 0 and self.mode == 'dialog':
+            self.relayout()
 
     def ask_now(self, question: str):
         self.input.setText(question)
@@ -2163,6 +2668,13 @@ class BunnyChat(QWidget):
         self.undo_button.hide()
         self.transcript = list(items)
         self._history = history_from(items)
+        self._tricked = False                        # a new chat: the cat-girl act works once more
+        self._uneasy = 0
+        self._since_meme = bunny_persona.MEME_GAP
+        self._ai_suggest = ()
+        if getattr(self, '_attachments', None):
+            self._drop_attached()                    # attachments waiting for the old chat are not sent to this one
+            self.shot_label.hide()
         self.set_steps((), 0)
         if self.mode == 'thread':
             self._apply_mode()
@@ -2249,27 +2761,39 @@ def plain_receipt(line: str) -> str:
 
 
 def suggestions(window) -> list:
-    """What is worth asking right here (2026-11-16): at most three short questions."""
+    """What is worth asking right here, before she has said her own next steps (2026-11-16).
+
+    2026-11-17 (user): two things to do next, not a generic "how does this page work"; once she has
+    answered, her ``suggest`` replaces these (``refresh_suggestions``)."""
     page = current_page(window)
     from .bunny_tools import _built, refine_failed_ids
     studio = _built(window, 'studio')
     project = getattr(studio, 'project', None) if page == '字幕工作台' else None
     if project is not None:
-        picks = ['帮我检查字幕']
+        picks = []
         if refine_failed_ids(project):
             picks.append('把失败的断句补齐')
+        picks.append('帮我检查字幕')
         from .bunny_subtitle_tools import learned_summary
         try:
             learned = learned_summary(studio)
         except Exception:  # noqa: BLE001
             learned = ''
-        picks.append('把我常改的字全片改掉' if learned else '字幕太长了，帮我调短')
-        return picks[:3]
+        picks.append('把我常改的字全片改掉' if learned else '帮我导出成视频')
+        return picks[:2]
+    if page == '字幕工作台':               # the project library: no project open yet
+        return ['帮我打开最近的工程', '打开最近一次识别结果']
     if page == '识别完成的结果页':
-        return ['这次结果有问题吗？', '接下来该做什么？']
+        return ['这次结果有问题吗？', '帮我打开字幕工作台']
+    if page == '识别记录':
+        return ['打开最近一次识别结果', '上次识别为什么失败？']
     if page == '首页':
-        return ['我该怎么开始？', '我的电脑能用本机识别吗？']
-    return ['这个页面怎么用？']
+        return ['我该怎么开始？', '打开最近一次识别结果']
+    if page == '模型工坊':
+        return ['我该下载哪个模型？', '我的电脑能用本机识别吗？']
+    if page == '术语库':
+        return ['帮我检查词库', '帮我补一些新词']
+    return ['我现在该做什么？', '打开最近一次识别结果']
 
 
 def history_from(items) -> list:

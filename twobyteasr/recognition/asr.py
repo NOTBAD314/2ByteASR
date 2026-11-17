@@ -46,6 +46,7 @@ __all__ = [
     'write_pcm16_wav',
     'transcribe_firered_reference',
     'resolve_qwen_aligner_local_source',
+    'selected_qwen_aligner_backend',
     'align_qwen_transcript_segments',
     'transcribe_qwen_aligner_reference',
     'run_qwen_aligner_worker',
@@ -526,11 +527,24 @@ def resolve_qwen_asr_local_source():
     return ""
 
 
+def selected_qwen_aligner_backend():
+    """The alignment profile this run uses, e.g. canonical ``qwen_aligner`` + ``ultra-v5`` -> ``qwen_ultra_aligner``.
+
+    ``firered_asr_backend`` alone is not enough: since the 2026-11-14 upgrade Ultra
+    is stored as ``qwen_aligner`` with ``qwen_alignment_profile='ultra-v5'``.
+    Anything that picks the model directory, lock entry or Local Head must use
+    this value so all three agree (2026-11-17: the preflight hashed the Ultra
+    weights against the official 0.6B lock entry and refused every Ultra task).
+    """
+    from .alignment_backend import selected_backend
+    settings = get_runtime_context().asr_settings_snapshot or _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
+    return selected_backend(settings)
+
+
 def resolve_qwen_aligner_local_source():
     """The selected profile has its own directory and override; no weight aliasing."""
-    from .alignment_backend import model_directory, selected_backend
-    settings = get_runtime_context().asr_settings_snapshot or _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
-    return model_directory(selected_backend(settings))
+    from .alignment_backend import model_directory
+    return model_directory(selected_qwen_aligner_backend())
 
 
 def align_qwen_transcript_segments(aligner, audio, transcript_segments, *, sampling_rate=16000, batch_size=4):
