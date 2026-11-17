@@ -376,6 +376,15 @@ class ApplicationSettingsDialog(SpringDialog):
             bind_text(self.bunny_allow_paid, '会计费的 AI 处理也直接做', property='accessibleName')
             row(reading, '会计费的 AI 处理也直接做', self.bunny_allow_paid,
                 '例如重跑失败的 AI 断句、补做没跑完的 AI 校对；用你自己的 Key 计费。只在「能撤销的直接做」时生效，关着就每次先问你')
+            self._build_bunny_screen(reading, row, toggle, values)
+            self._build_bunny_folders(bunny, section, values)
+            # 2026-11-16 (user): now and then she teaches a little trick on her own.
+            from .bunny_tips import idle_allowed
+            self.bunny_idle_tips = toggle(idle_allowed())
+            self.bunny_idle_tips.setObjectName('bunnyIdleTipsSetting')
+            bind_text(self.bunny_idle_tips, '兔白不定期说小窍门', property='accessibleName')
+            row(reading, '兔白不定期说小窍门', self.bunny_idle_tips,
+                '聊天框开着、你一阵子没动时，兔白偶尔冒个小气泡教你一招（几分钟最多一次，不会盖掉要你按的按钮）；点兔白也会说')
             self._build_bunny_memory(bunny, section, row, toggle, values)
             thinking = section(bunny)
             self.bunny_reasoning = field_width(StudioComboBox(), 'preferred')
@@ -389,6 +398,7 @@ class ApplicationSettingsDialog(SpringDialog):
             bunny.addStretch()
 
         self._section_builders.append(('兔白权限', build_bunny))
+        self._section_builders.append(('我的改动', lambda: self._build_overlay_page(page, section, row, toggle)))
         self._section_builders+=[('快捷键',self._build_shortcut_page),
                                  ('外部 AI（MCP）',lambda:self._build_mcp_page(page, section, row, toggle, parent)),
                                  ('关于',build_about)]
@@ -943,6 +953,327 @@ class ApplicationSettingsDialog(SpringDialog):
         self._save_bunny_permissions()
         super().accept()
 
+    def _build_overlay_page(self, page, section, row, toggle):
+        """「我的改动」 (2026-11-16, user_overlay): every change the user or 兔白 made, kept out of the
+        program folder so updates never overwrite it. Actions apply at once, like the memory list."""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QComboBox, QListWidgetItem
+        from . import user_overlay, user_overlay_runtime
+        lay = page('我的改动', '你自己或兔白替你做的改动都存在这台电脑的用户资料里，软件更新不会覆盖。每条都能单独关掉、删掉，'
+                   '也能回到之前的样子。启动时按住 Shift，这次就先不套用任何改动。')
+        rows = section(lay)
+        self.overlay_status = QLabel()
+        self.overlay_status.setObjectName('settingsDescription')
+        self.overlay_status.setWordWrap(True)
+        rows.addWidget(self.overlay_status)
+        self.overlay_list = QListWidget()
+        self.overlay_list.setObjectName('userOverlayList')
+        self.overlay_list.setMinimumHeight(170)
+        self.overlay_list.setWordWrap(True)
+        self.overlay_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.overlay_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.overlay_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        rows.addWidget(self.overlay_list)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.overlay_edit = button_role(bind_text(QPushButton(), '查看 / 修改'), 'secondary')
+        self.overlay_remove = button_role(bind_text(QPushButton(), '删掉选中的'), 'secondary')
+        self.overlay_new_script = button_role(bind_text(QPushButton(), '新建扩展脚本'), 'secondary')
+        self.overlay_folder = button_role(bind_text(QPushButton(), '打开文件夹'), 'secondary')
+        for button in (self.overlay_edit, self.overlay_remove, self.overlay_new_script):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        actions.addWidget(self.overlay_folder)
+        rows.addLayout(actions)
+        scripts = section(lay)
+        self.overlay_scripts = toggle(bool(user_overlay.load().get('scripts_allowed')))
+        self.overlay_scripts.setObjectName('userOverlayScriptsSetting')
+        bind_text(self.overlay_scripts, '允许运行我的扩展脚本', property='accessibleName')
+        row(scripts, '允许运行我的扩展脚本', self.overlay_scripts,
+            '扩展脚本是 Python 程序，能做软件能做的任何事（包括读写文件、上网），只打开你看过、信得过的脚本。'
+            '兔白写的脚本存下来时是关着的，要你看过再打开。脚本出错会自动停用；启动时出问题按住 Shift 就能先不加载。'
+            '停用会停止 api.every 定时器；脚本已做的其他操作和代码修改，需要重启程序才能完全停止或重新加载')
+        history = section(lay)
+        title = QLabel()
+        bind_text(title, '回到之前的样子')
+        title.setObjectName('settingsRowTitle')
+        history.addWidget(title)
+        line = QHBoxLayout()
+        self.overlay_history = field_width(QComboBox(), 'preferred')
+        self.overlay_history.setObjectName('userOverlayHistory')
+        self.overlay_restore = button_role(bind_text(QPushButton(), '回到这次改动之前'), 'secondary')
+        line.addWidget(self.overlay_history, 1)
+        line.addWidget(self.overlay_restore)
+        history.addLayout(line)
+
+        def apply_now():
+            try:
+                user_overlay_runtime.reapply()
+            except Exception as exc:  # noqa: BLE001 - said on the page
+                self.overlay_status.setText(str(tr('改动已保存，但这次没能马上套用：{why}')).format(why=f'{type(exc).__name__}: {exc}'))
+
+        def refresh(message: str = ''):
+            self.overlay_list.blockSignals(True)
+            self.overlay_list.clear()
+            items = user_overlay.entries()
+            for entry in items:
+                item = QListWidgetItem(user_overlay.describe(entry))
+                item.setData(Qt.ItemDataRole.UserRole, entry['id'])
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if entry.get('enabled') else Qt.CheckState.Unchecked)
+                tip = [entry.get('note') or '', entry.get('detail') or '', f'{entry.get("created", "")} · {entry.get("app_version", "")}']
+                item.setToolTip('\n'.join(part for part in tip if part.strip(' ·')))
+                self.overlay_list.addItem(item)
+            if not items:
+                placeholder = QListWidgetItem(tr('还没有改动。可以让兔白帮你改（她会先问你），或者自己新建扩展脚本。'))
+                placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.overlay_list.addItem(placeholder)
+            self.overlay_list.blockSignals(False)
+            self.overlay_history.clear()
+            for snap in user_overlay.snapshots()[:20]:
+                self.overlay_history.addItem(f'{snap["when"]} · {snap["reason"]}（之前有 {snap["count"]} 条）', snap['id'])
+            self.overlay_restore.setEnabled(self.overlay_history.count() > 0)
+            paused = [entry for entry in items if entry.get('status')]
+            runtime = user_overlay_runtime.runtime()
+            words = [message] if message else []
+            if runtime is not None and runtime.safe:
+                words.append(str(tr('这次是安全模式启动，改动都没有套用。')))
+            if paused:
+                words.append(str(tr('{n} 条改动被程序暂停了（把勾打上就会再试一次）：')).format(n=len(paused))
+                             + '；'.join(f'{entry["id"]} {user_overlay.STATUS_LABELS.get(entry["status"], entry["status"])}'
+                                        for entry in paused[:4]))
+            self.overlay_status.setText('\n'.join(words) or str(tr('改动存放在：{path}')).format(path=user_overlay.root()))
+
+        def selected_id():
+            item = self.overlay_list.currentItem()
+            return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+        def checked(item):
+            entry_id = item.data(Qt.ItemDataRole.UserRole)
+            if not entry_id:
+                return
+            try:
+                user_overlay.set_enabled(entry_id, item.checkState() == Qt.CheckState.Checked)
+            except user_overlay.OverlayError as exc:
+                refresh(str(exc))
+                return
+            apply_now()
+            QTimer.singleShot(0, self, refresh)
+
+        def remove():
+            entry_id = selected_id()
+            if not entry_id:
+                return
+            user_overlay.remove(entry_id)
+            apply_now()
+            refresh(str(tr('删掉了 {id}；想要回来可以用下面的「回到之前的样子」。')).format(id=entry_id))
+
+        def edit():
+            entry_id = selected_id()
+            entry = user_overlay.find(entry_id) if entry_id else None
+            if entry is None:
+                return
+            if entry['kind'] == 'script':
+                text = user_overlay.script_path(entry).read_text('utf-8') if user_overlay.script_path(entry).is_file() else ''
+            else:
+                text = entry['value']
+            changed = self._edit_overlay_text(entry, text)
+            if changed is None:
+                return
+            try:
+                if entry['kind'] == 'script':
+                    user_overlay.set_code(entry_id, changed)
+                else:
+                    user_overlay.update(entry_id, value=changed)
+            except user_overlay.OverlayError as exc:
+                refresh(str(exc))
+                return
+            apply_now()
+            refresh(str(tr('{id} 改好了。')).format(id=entry_id))
+
+        def new_script():
+            template = (f'API_VERSION = {user_overlay.API_VERSION}\n\n\n'
+                        'def setup(api):\n'
+                        '    """软件窗口出来后运行一次。api.window 是主窗口，api.find("控件名") 找控件，\n'
+                        '    api.log("…") 记一行，api.data_dir 是这个脚本自己的文件夹，api.every(毫秒, 函数) 定时运行。"""\n'
+                        '    api.log("我的脚本开始运行了")\n')
+            code = self._edit_overlay_text({'kind': 'script', 'id': '新脚本', 'value': ''}, template)
+            if code is None:
+                return
+            try:
+                entry, _snap = user_overlay.add('script', '', '我自己写的脚本', code=code, by='user',
+                                                app_version=user_overlay_runtime.program_identity())
+            except user_overlay.OverlayError as exc:
+                refresh(str(exc))
+                return
+            apply_now()
+            refresh(str(tr('存好了 {id}。打开上面的「允许运行我的扩展脚本」后才会运行。')).format(id=entry['id']))
+
+        def scripts_toggled(on):
+            user_overlay.set_scripts_allowed(on)
+            apply_now()
+            refresh()
+
+        def restore():
+            snapshot = self.overlay_history.currentData()
+            if not snapshot:
+                return
+            try:
+                user_overlay.restore(snapshot)
+            except user_overlay.OverlayError as exc:
+                refresh(str(exc))
+                return
+            self.overlay_scripts.blockSignals(True)
+            self.overlay_scripts.setChecked(bool(user_overlay.load().get('scripts_allowed')))
+            self.overlay_scripts.blockSignals(False)
+            apply_now()
+            refresh(str(tr('回去了。刚才的样子也存了一份，想反悔可以再选回来。')))
+
+        def open_folder():
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            user_overlay.root().mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(user_overlay.root())))
+
+        self.overlay_list.itemChanged.connect(checked)
+        self.overlay_list.itemDoubleClicked.connect(lambda _item: edit())
+        self.overlay_remove.clicked.connect(remove)
+        self.overlay_edit.clicked.connect(edit)
+        self.overlay_new_script.clicked.connect(new_script)
+        self.overlay_scripts.toggled.connect(scripts_toggled)
+        self.overlay_restore.clicked.connect(restore)
+        self.overlay_folder.clicked.connect(open_folder)
+        self.overlay_refresh = refresh
+        refresh()
+        lay.addStretch()
+
+    def _edit_overlay_text(self, entry: dict, text: str):
+        """A small editor for one change (a script's code, a style, a sentence); None when cancelled."""
+        from PySide6.QtGui import QFontDatabase
+        from PySide6.QtWidgets import QDialog, QPlainTextEdit, QVBoxLayout
+        dialog = QDialog(self)
+        dialog.setObjectName('userOverlayEditor')
+        dialog.setWindowTitle(str(tr('我的改动')) + f' · {entry.get("id", "")}')
+        dialog.resize(720 if entry['kind'] == 'script' else 520, 520 if entry['kind'] == 'script' else 220)
+        layout = QVBoxLayout(dialog)
+        hint = QLabel(str(tr({'script': '扩展脚本（Python）。保存前会检查语法，并要有 API_VERSION 和 setup(api)。',
+                              'style': '样式：写成「属性: 值;」，例如 font-size: 16px; color: #333333;',
+                              'text': '这句界面文字要换成的说法：',
+                              'note': '给兔白的长期说明：'}.get(entry['kind'], ''))))
+        hint.setWordWrap(True)
+        hint.setObjectName('settingsDescription')
+        layout.addWidget(hint)
+        editor = QPlainTextEdit()
+        editor.setObjectName('userOverlayCode')
+        editor.setPlainText(text)
+        if entry['kind'] == 'script':
+            editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        layout.addWidget(editor, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        bind_text(buttons.button(QDialogButtonBox.StandardButton.Save), '保存')
+        bind_text(buttons.button(QDialogButtonBox.StandardButton.Cancel), '取消')
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        apply_secondary_surface_theme(dialog)
+        self._overlay_editor = dialog
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return editor.toPlainText()
+
+    def _build_bunny_screen(self, rows, row, toggle, values):
+        """2026-11-16 (user): 兔白 may take a picture of 2ByteASR's own windows; off by default, explained once."""
+        from PySide6.QtWidgets import QMessageBox
+        from . import bunny_permissions, bunny_vision
+        from .bunny_chat import runtime_settings
+        owner = self.parentWidget().window() if self.parentWidget() else None
+        try:
+            able, advice = bunny_vision.support(runtime_settings(owner) if owner is not None else None)
+        except Exception:  # noqa: BLE001 - the note only
+            able, advice = False, ''
+        self.bunny_see_screen = toggle(values.get('see_screen', False))
+        self.bunny_see_screen.setObjectName('bunnySeeScreenSetting')
+        bind_text(self.bunny_see_screen, '让兔白截图看 2ByteASR 的画面', property='accessibleName')
+        note = ('只截 2ByteASR 自己的窗口，不截桌面和其他程序；截图发给你设置的文字 AI，不存到电脑上。'
+                + ('现在的 AI 能看图。' if able else '现在的 AI 看不了图，要换成能看图的模型（' + bunny_vision.SEEING_MODELS + '）才用得上。'))
+        row(rows, '让兔白截图看 2ByteASR 的画面', self.bunny_see_screen, note)
+
+        def changed(on):
+            if not on or bunny_permissions.screen_explained():
+                return
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle(str(tr('让兔白截图看画面')))
+            box.setText(str(tr('让兔白截图看 2ByteASR 的画面？')))
+            box.setInformativeText(str(tr(bunny_vision.PRIVACY_NOTE)) + ('' if able else '\n\n' + advice))
+            yes = box.addButton(str(tr('打开')), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(str(tr('先不要')), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is yes:
+                bunny_permissions.mark_screen_explained()
+            else:
+                self.bunny_see_screen.setChecked(False)
+        self.bunny_see_screen.toggled.connect(changed)
+
+    def _build_bunny_folders(self, lay, section, values):
+        """2026-11-16 (harness plan P3): folders 兔白 may list, read and write new files in; saved at once."""
+        from PySide6.QtWidgets import QFileDialog, QListWidget, QListWidgetItem
+        from . import bunny_permissions
+        rows = section(lay)
+        title = QLabel()
+        bind_text(title, '兔白可以看的文件夹')
+        title.setObjectName('settingsRowTitle')
+        rows.addWidget(title)
+        note = QLabel()
+        bind_text(note, '只在这些文件夹里列文件、读文字类文件（术语表、字幕、文档），读到的内容会发给你设置的文字 AI；'
+                        '写文件只写新文件、从不覆盖，每次都要你按「帮我做」；不删除文件。默认一个都没有')
+        note.setObjectName('settingsDescription')
+        note.setWordWrap(True)
+        rows.addWidget(note)
+        self.bunny_folder_list = QListWidget()
+        self.bunny_folder_list.setObjectName('bunnyFolderList')
+        self.bunny_folder_list.setMinimumHeight(64)
+        self.bunny_folder_list.setMaximumHeight(132)
+        rows.addWidget(self.bunny_folder_list)
+
+        def refresh(folders=None):
+            self.bunny_folder_list.clear()
+            folders = bunny_permissions.load()['folders'] if folders is None else folders
+            for folder in folders:
+                item = QListWidgetItem(folder)
+                item.setData(Qt.ItemDataRole.UserRole, folder)
+                self.bunny_folder_list.addItem(item)
+            if not folders:
+                placeholder = QListWidgetItem(tr('还没有授权文件夹。'))
+                placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.bunny_folder_list.addItem(placeholder)
+
+        def add_folder():
+            path = QFileDialog.getExistingDirectory(self, str(tr('选一个兔白可以看的文件夹')))
+            if path:
+                current = bunny_permissions.load()['folders']
+                refresh(bunny_permissions.save({'folders': [*current, str(Path(path))]})['folders'])
+
+        def remove_selected():
+            chosen = {item.data(Qt.ItemDataRole.UserRole) for item in self.bunny_folder_list.selectedItems()}
+            current = bunny_permissions.load()['folders']
+            refresh(bunny_permissions.save({'folders': [f for f in current if f not in chosen]})['folders'])
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        add = button_role(QPushButton(), 'secondary')
+        bind_text(add, '添加文件夹…')
+        remove = button_role(QPushButton(), 'secondary')
+        bind_text(remove, '移除选中的')
+        actions.addWidget(add)
+        actions.addWidget(remove)
+        actions.addStretch(1)
+        rows.addLayout(actions)
+        add.clicked.connect(add_folder)
+        remove.clicked.connect(remove_selected)
+        self.bunny_folder_add, self.bunny_folder_remove = add, remove
+        refresh(values.get('folders') or [])
+
     def _build_bunny_memory(self, lay, section, row, toggle, values):
         """兔白's memory of the user and the user's knowledge base for her (2026-11-15). Entries are
         added and removed at once (like the MCP page's actions); the on/off switch saves with the page."""
@@ -1051,7 +1382,10 @@ class ApplicationSettingsDialog(SpringDialog):
                                 'read_diagnostics': self.bunny_read_diagnostics.isChecked(),
                                 'allow_paid': self.bunny_allow_paid.isChecked(),
                                 'remember': self.bunny_remember.isChecked(),
-                                'keep_chat': self.bunny_keep_chat.isChecked()})
+                                'keep_chat': self.bunny_keep_chat.isChecked(),
+                                'see_screen': self.bunny_see_screen.isChecked()})
+        from .bunny_tips import set_idle_allowed
+        set_idle_allowed(self.bunny_idle_tips.isChecked())
         reasoning = self.bunny_reasoning.currentData()
         if reasoning:
             save_state(dict(load_state(), **{REASONING_KEY: reasoning}))

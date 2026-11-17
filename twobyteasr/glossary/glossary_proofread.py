@@ -6243,6 +6243,9 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         if row is None or not 0 <= index < len(row["issues"]):
             return
         issue = row["issues"][index]
+        if not issue.get('checked'):
+            from ..app.newbie_tasks import mark
+            mark('proofread')
         from uuid import uuid4
         from ..diagnostics.event_log import emit
         operation_id = uuid4().hex

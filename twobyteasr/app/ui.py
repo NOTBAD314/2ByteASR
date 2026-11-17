@@ -827,7 +827,8 @@ def persist_ai_configuration(
         models["ai_service"] = active_service
         models["provider_profiles"] = profile_view["models"].get("provider_profiles", {})
     for stage, values in (('polish', polish), ('group', group)):
-        for key, default in (("max_output_tokens", 10000), ("enable_thinking", False), ("thinking_protocol", "auto")):
+        for key, default in (("max_output_tokens", 10000), ("enable_thinking", False), ("thinking_protocol", "auto"),
+                             ("escalate_on_failure", True)):
             models[f"{stage}_{key}"] = values.get(key, models.get(f"{stage}_{key}", default))
         models[f'{stage}_json_mode'] = bool(values.get('json_mode', True))
         models[f'{stage}_structured_output'] = bool(values.get('structured_output', True))
@@ -1693,13 +1694,25 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         outer.addWidget(chrome, 1)
         return header
 
+    def _show_tutorial_menu(self):
+        """新手教学 (2026-11-16): the tutorial centre, once the 说明 menu has closed."""
+        QTimer.singleShot(0, self._open_tutorial_menu)   # after the 说明 menu has closed
+
+    def _open_tutorial_menu(self):
+        """The tutorial centre (design C, 2026-11-16): chapters and 新手任务; the chosen chapter starts."""
+        from .tutorial_centre import open_tutorial_centre
+        chosen = open_tutorial_centre(self)
+        if chosen:
+            self._start_home_tour(chosen)
+
     def _show_help_menu(self):
         """2026-11-11 (user): a rounder, friendlier card that keeps only what people open it for."""
         from .help_menu import CuteMenu
         menu = CuteMenu(self)
         menu.add_hello()
         # 2026-11-14 (user): 「问问兔白」 gets its own entry, first: an AI plays 兔白 and answers.
-        menu.add_row("新手教学", "兔白带你做出第一份字幕", "fa5s.graduation-cap", self._start_home_tour)
+        # 2026-11-16: 新手教学 opens a small menu of the whole tutorial and its chapters.
+        menu.add_row("新手教学", "分章节学，还有新手任务", "fa5s.graduation-cap", self._show_tutorial_menu)
         menu.add_row("打开范例工程", "看看做好的字幕长什么样", "fa5s.folder-open", self._open_sample_project)
         menu.add_row("选择识别方式…", "云端还是本机，随时能换", "fa5s.cloud",
                      lambda: self._next_step_action("choose_plan"))
@@ -1809,8 +1822,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         current = self.pages.widget(index)
         if current is self.__dict__.get("settings_scroll"):
             self._schedule_next_step_probe()
-            if self.__dict__.pop("_home_tour_pending", False):
-                QTimer.singleShot(500, self._start_home_tour)
+            pending = self.__dict__.pop("_home_tour_pending", False)
+            if pending:
+                part = pending if isinstance(pending, str) else "first"
+                QTimer.singleShot(500, lambda: self._start_home_tour(part))
         completion = current.objectName() == 'completionScroll'
         studio = existing_page(self, "studio")
         loading = self.__dict__.get('_studio_loading_session')
@@ -3299,6 +3314,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.legacy.FIRERED_ASR_BACKEND=models.get('firered_asr_backend')
         studio=self.built_page('studio')
         if studio is not None:studio.runtime_settings=copy.deepcopy(settings)
+        # 2026-11-16: the refresh below keeps each selector's current row over
+        # the saved value, so the home selector is moved to the new choice
+        # first. Before, choosing Qwen3 对齐 saved it while the home card was
+        # rebuilt from the old row and kept saying 已关闭.
+        self._sync_timeline_selector(models.get('firered_asr_backend') or 'off')
         self._refresh_available_asr_choices()
         self._refresh_asr_summary()
         page=self.built_page('workshop')
@@ -3306,6 +3326,15 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         from ..local_models.model_state_events import notify
         notify(['qwen_ultra_aligner'] if value=='qwen_aligner' else ['mfa_aligner'],'selection_changed')
         return True
+
+    def _sync_timeline_selector(self, value):
+        combo=getattr(self,'firered_asr_backend',None)
+        if combo is None:return
+        index=combo.findData(value)
+        if index<0 or index==combo.currentIndex():return
+        blocked=combo.blockSignals(True)
+        try:combo.setCurrentIndex(index)
+        finally:combo.blockSignals(blocked)
 
     def _use_ultra_base(self):
         return self._commit_alignment_choice('qwen_aligner',base_only=True)
@@ -3478,35 +3507,55 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         from .bunny_chat import open_bunny_chat
         return open_bunny_chat(self)
 
-    def _start_home_tour(self, part: str = "all"):
+    def _start_home_tour(self, part: str = "first"):
         """Point at the real page parts one by one (2026-10-14).
 
         2026-10-22 (user: "进阶" made people think the basics were enough): one
         tutorial from the first video to the workbench; it starts on the home page.
         """
-        if part != "advanced" and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
+        from . import tutorial_chapters
+        whole = part != "advanced" and not tutorial_chapters.is_chapter(part)
+        if whole and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
             self._switch_page(0)
-            self._home_tour_pending = True
+            self._home_tour_pending = part
             return
         from . import onboarding
         from .home_tour import GuidedTour, start_home_tour
         running = self.findChild(GuidedTour)
-        if part != "advanced" and (running is None or getattr(running, "mode", "") == "closed") \
+        if whole and (running is None or getattr(running, "mode", "") == "closed") \
                 and not self.__dict__.get("_tutorial_plan_chosen"):
             # 2026-11-11 (user): the cloud / local comparison first, then step ① - the step used to
             # appear and the comparison opened over it 450 ms later (a visible twitch).
             self._choose_plan_in_tutorial()
             self._tutorial_plan_chosen = True
 
-        required = bool(self.__dict__.get("_first_run_required"))
+        required = bool(self.__dict__.get("_first_run_required")) and whole
+
+        def release():
+            onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
+            self._first_run_required = False
 
         def done(completed):
-            # A fresh install's tutorial counts only when finished (2026-11-13).
-            if completed or not required:
-                onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
-                self._first_run_required = False
+            # A fresh install's tutorial counts when finished (2026-11-13) or when the person
+            # chose to leave it (2026-11-16, see ``on_skipped``); closing the app midway does not.
+            if not tutorial_chapters.is_chapter(part) and (completed or not required):   # a chapter alone does not end it
+                release()
+            if tutorial_chapters.is_chapter(part):
+                tutorial_chapters.cleanup(self, part)
+            finished = ("first", "fix", "studio") if part == "all" else (part,)
+            if completed and all(item in tutorial_chapters.BY_ID for item in finished):
+                # 2026-11-16: which chapters were finished (for the tutorial centre)
+                state = onboarding.load_state()
+                done_parts = [item for item in state.get("chapters_done", []) if item not in finished]
+                onboarding.save_state(dict(state, chapters_done=done_parts + list(finished)))
             self._tutorial_finish(completed)
-        start_home_tour(self, done, part, required=required)
+            if completed and part == "first":
+                # The first subtitle is done: the tutorial centre suggests what to learn next.
+                QTimer.singleShot(700, self._show_tutorial_menu)
+
+        # 2026-11-16 (user: stuck at step 15 of a required tutorial, the program unusable):
+        # 跳过教学 / 结束教学 / Esc always leave, and the next start does not bring it back.
+        start_home_tour(self, done, part, required=required, on_skipped=release if whole else None)
 
     def _current_plan_key(self) -> str:
         """Which quick-chooser plan the saved roles are: cloud, local, apple, light or '' (custom)."""
@@ -3605,6 +3654,13 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._handle_result(QueueResult((item,), 12.6))
         finally:
             self._tutorial_demo_result = False
+        # 2026-11-16 (user: the tutorial went grey at 开始生成字幕): since 2026-11-15 a result
+        # only brings its page forward while the progress page is in front, and the demo is
+        # started from the home page. Show the result page here, as a real run would.
+        completion = next((self.pages.widget(index) for index in range(self.pages.count())
+                           if self.pages.widget(index).objectName() == "completionScroll"), None)
+        if completion is not None and self.pages.currentWidget() is not completion:
+            self._switch_page(completion)
 
     def _tutorial_finish(self, completed: bool):
         """Leave the window as a new user expects: demo media gone, back on the home page."""
@@ -7155,6 +7211,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 self.open_subtitle_result_button.setEnabled(True)
                 self.result_files.append("\n".join(str(a.path) for a in dialog.artifacts))
                 self._completion_output_paths.extend(str(a.path) for a in dialog.artifacts)
+                from .newbie_tasks import mark
+                mark('export')
         finally:
             dialog.deleteLater()
 
@@ -12261,6 +12319,22 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 degraded[1] = tr('{fallback}/{total} 条回退原文', fallback=fallback, total=total)
         elif event.kind == 'grouping_api_fallback':
             degraded[2] = tr('部分断句改用本地规则')
+        elif event.kind == 'ai_escalation_round' and event.payload.get('state') in {'started', 'completed'}:
+            # 2026-11-16: failed format/truncation results resent once with more thinking.
+            payload = event.payload
+            polish = payload.get('stage') == 'polished'
+            if payload.get('state') == 'started':
+                self._append_feed('提高思考重试',
+                    '校对有 {count} 条格式或截断失败，用同一模型提高思考等级（{level}）再试一次' if polish else
+                    '断句有 {count} 条格式或截断失败，用同一模型提高思考等级（{level}）再试一次', BLUE,
+                    count=int(payload.get('candidate_cues') or 0), level=str(payload.get('thinking', '')))
+            else:
+                self._append_feed('提高思考重试',
+                    '校对救回 {done} 条，仍失败 {left} 条（保留原文）' if polish else
+                    '断句救回 {done} 条，仍失败 {left} 条（改用本地断句）', BLUE,
+                    done=int(payload.get('succeeded_cues') or 0), left=int(payload.get('failed_cues') or 0))
+                if not polish and not payload.get('remaining_fallback_batches'):
+                    degraded.pop(2, None)
         elif event.kind == 'text_ai_terminal_failure':
             stage = str(event.payload.get('stage') or '')
             if stage.startswith('polish'):
@@ -12975,12 +13049,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 if answer != QMessageBox.StandardButton.Yes:
                     return False
             guard = getattr(getattr(studio, 'project_controller', None), 'dirty_guard', None)
-            prepared = getattr(self, '_pending_update', None)
-            def resume_close():
-                if prepared is not None:
-                    self._pending_update = prepared
-                self.close()
-            return guard is None or guard.confirm('退出应用', on_saved=resume_close)
+            return guard is None or guard.confirm('退出应用', on_saved=self.close)
 
     def closeEvent(self, event):
         if self.__dict__.get('_studio_entry_discarding', False):
@@ -13167,12 +13236,17 @@ def run_desktop_app(
             instance_guard.release()
             return 0
     _startup_mark("SETTINGS_LOADED")
+    # 2026-11-16 「我的改动」: the user's own texts/styles before the first widget; Shift = safe start.
+    from .user_overlay_runtime import install as _install_user_overlay
+    user_overlay = _install_user_overlay(app)
     # The window's construction scans the model registry several times
     # (ASR choices, summaries, language pass); nothing installs or removes a
     # model meanwhile, so they share one scan's path/record memo.
     from ..runtime_paths import single_scan
     with single_scan():
         window = MainWindow([], legacy, pipeline, startup_self_test, startup_page=startup_page)
+    # Their extension scripts and any notice once the window is up (never blocks startup).
+    QTimer.singleShot(1500, window, lambda: user_overlay.after_window(window))
     from .desktop_intake import DesktopIntake
     window._desktop_intake = DesktopIntake(window)
     instance_guard.paths_received.connect(window._desktop_intake.receive_external)

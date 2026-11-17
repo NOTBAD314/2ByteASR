@@ -1460,6 +1460,8 @@ class StudioCueController:
         project = self.session.project
         if not project:
             return
+        from ..app.newbie_tasks import mark
+        mark('cut')
         cue = cue_by_id(project, cue_id)
         # The timeline razor preview snaps and resolves before emitting, so
         # this value is already exactly what the preview card showed. Do NOT

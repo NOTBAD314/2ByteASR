@@ -206,6 +206,7 @@ def test_the_help_menu_keeps_five_round_entries(app, monkeypatch):
     window.help_button = QPushButton('说明', window)
     window._open_bunny_chat = lambda: calls.append('bunny')
     window._start_home_tour = lambda: calls.append('tour')
+    window._show_tutorial_menu = lambda: calls.append('tutorial menu')   # 2026-11-16: whole tutorial or a chapter
     window._open_sample_project = lambda: calls.append('sample')
     window._next_step_action = lambda action: calls.append(action)
     window._open_diagnostics_dialog = lambda: calls.append('diagnostics')
@@ -222,7 +223,7 @@ def test_the_help_menu_keeps_five_round_entries(app, monkeypatch):
     assert all(a.caption for a in rows)
     for action in rows:
         action.trigger()
-    assert calls == ['tour', 'sample', 'choose_plan', 'diagnostics', 'hints']
+    assert calls == ['tutorial menu', 'sample', 'choose_plan', 'diagnostics', 'hints']
     from PySide6.QtCore import Qt
     assert menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)   # really round corners
 

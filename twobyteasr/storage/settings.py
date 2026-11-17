@@ -69,6 +69,9 @@ DEFAULT_SETTINGS = {
         "polish_enable_thinking": False,
         "group_thinking_protocol": "auto",
         "polish_thinking_protocol": "auto",
+        # 2026-11-16: resend still-failed format/truncation results once, thinking one level higher.
+        "group_escalate_on_failure": True,
+        "polish_escalate_on_failure": True,
         "ai_design_timeout_seconds": 150,
         "ai_design_cli_timeout_seconds": 300,
         "ai_design_wait_mode": "long30",

@@ -1,5 +1,8 @@
 import ctypes
 import os
+import sys
+import time
+from pathlib import Path
 
 import psutil
 import pytest
@@ -52,6 +55,45 @@ def test_pre_cancel_never_starts_a_worker_or_publishes(tmp_path):
     finished(task)
     assert task.exception_type == 'SubtitleExportCancelled'
     assert not hasattr(task, 'worker_pid') and not list(tmp_path.glob('*.srt'))
+
+
+def large_cold_task(tmp_path, monkeypatch):
+    from twobyteasr.system import processes
+    real_start = processes.popen_hidden_subprocess
+    def cold_start(_command, **kwargs):
+        kwargs.setdefault('cwd', Path(__file__).resolve().parents[1])
+        return real_start([sys.executable, '-B', '-X', 'utf8', '-c',
+            'import time; time.sleep(.35); from twobyteasr.exports.subtitle_export_process import main; raise SystemExit(main())'],
+            **kwargs)
+    monkeypatch.setattr(processes, 'popen_hidden_subprocess', cold_start)
+    project = SubtitleProject(StudioMedia('', duration_ms=4000), cues=[StudioCue('a', 0, 1000, '大请求字幕')])
+    project.generation_metadata['owned_pipe_regression'] = 'x' * 1_000_000
+    return SubtitleExportTask(SubtitleSnapshot.capture(project), tmp_path, 'large', {'srt'}, (),
+        'combined', False, export_subtitle_artifacts, export_language_layers)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX pipe backpressure and communicate retry regression')
+def test_large_request_survives_worker_start_slower_than_poll_interval(tmp_path, monkeypatch):
+    task = large_cold_task(tmp_path, monkeypatch)
+    finished(task)
+    assert task.snapshot_bytes > 1_000_000
+    assert task.error is None and len(task.artifacts) == 1
+    assert '大请求字幕' in task.artifacts[0].path.read_text('utf8')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX owned cancellation during full input transfer')
+def test_cancel_is_not_lost_while_a_large_request_is_being_transferred(tmp_path, monkeypatch):
+    task = large_cold_task(tmp_path, monkeypatch)
+    task.start()
+    deadline = time.monotonic() + 5
+    while not hasattr(task, 'worker_pid') and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert hasattr(task, 'worker_pid')
+    task.cancel.set()
+    assert task.done.wait(30), task.details
+    assert task.exception_type == 'SubtitleExportCancelled'
+    assert task.snapshot is None and not list(tmp_path.glob('*.srt'))
+    assert not psutil.pid_exists(task.worker_pid)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows exclusive file handle')

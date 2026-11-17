@@ -896,7 +896,7 @@ class CompletionActionCard(QPushButton):
         import qtawesome as qta
 
         self._theme = theme_definition(theme_key())
-        self._card_icon = qta.icon(self.icon_name, color=self._theme.on_vivid,
+        self._card_icon = qta.icon(self.icon_name, color=self.on_ink(),
                                    color_disabled=self._theme.disabled)
         self.update()
 
@@ -952,10 +952,18 @@ class CompletionActionCard(QPushButton):
     def is_light(self):
         return self.hue == "finish"
 
+    def on_ink(self):
+        """Text on the coloured cards. 2026-11-16 (user): on the dark themes all four cards read in
+        white (the vivid ink there was dark, so three cards were black text and the finish card
+        white); the fills darken until white reads clearly. Light themes keep their ink."""
+        theme = self._theme
+        is_light = theme.is_light() if callable(getattr(theme, 'is_light', None)) else bool(getattr(theme, 'is_light', True))
+        return theme.on_vivid if is_light else '#ffffff'
+
     def fill_color(self):
         """The resting fill: the quiet hue, or its pale wash on the light card."""
         theme = self._theme
-        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        solid = soft_hue(self.hue_color(), self.on_ink())
         return blend_hex(theme.surface, solid, 0.16) if self.is_light() else solid
 
     def card_colors(self):
@@ -963,7 +971,7 @@ class CompletionActionCard(QPushButton):
         theme = self._theme
         if not self.isEnabled():
             return theme.panel, theme.border
-        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        solid = soft_hue(self.hue_color(), self.on_ink())
         fill = self.fill_color()
         border = solid if self.is_light() else fill
         if self.isDown():
@@ -975,12 +983,13 @@ class CompletionActionCard(QPushButton):
     def ink_colors(self):
         """(title, description, chip, pill, pill text) on the current fill."""
         theme = self._theme
-        solid = soft_hue(self.hue_color(), theme.on_vivid)
+        solid = soft_hue(self.hue_color(), self.on_ink())
         if not self.isEnabled():
             return theme.disabled, theme.disabled, theme.surface, theme.surface, theme.disabled
         if self.is_light():
-            return theme.text, theme.text_secondary, solid, solid, theme.on_vivid
-        return (theme.on_vivid, blend_hex(solid, theme.on_vivid, 0.86), blend_hex(solid, theme.on_vivid, 0.18),
+            return theme.text, theme.text_secondary, solid, solid, self.on_ink()
+        ink = self.on_ink()
+        return (ink, blend_hex(solid, ink, 0.86), blend_hex(solid, ink, 0.18),
                 theme.surface, blend_hex(solid, theme.text, 0.35))
 
     # --- fonts and geometry ----------------------------------------------

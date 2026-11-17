@@ -106,6 +106,65 @@ def apply_thinking(body, *, provider, base_url, enabled, protocol="auto", extra_
                 reasoning_tokens=None, reasoning_tokens_status="unknown")
 
 
+# 2026-11-16 (user: failed AI proofreading/grouping should be collected and retried once with the
+# same model thinking harder, instead of going straight to local rules): one level up per run.
+ESCALATION_DEFAULT = True
+ESCALATION_MAX_SHARE = 0.3
+ESCALATION_MIN_CUES = 10
+
+
+def thinking_dialect(base_url, protocol="auto", endpoint_protocol=""):
+    """The one wire dialect a request would use; ``unknown`` when none is verified."""
+    if str(endpoint_protocol) == "anthropic_messages":
+        return "anthropic_effort"
+    if protocol != "auto":
+        return protocol
+    host = (urlsplit(str(base_url)).hostname or "").lower()
+    return ("deepseek" if host == "api.deepseek.com" else
+            "enable_thinking" if host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} else "unknown")
+
+
+def escalated_thinking(enabled, protocol="auto", *, base_url="", endpoint_protocol=""):
+    """The next thinking value for a final retry, or None when there is no higher verified level.
+
+    Graded dialects go off/low/medium -> high -> max; the on/off ``enable_thinking`` dialect only
+    goes off -> on. An unknown relay gets nothing: sending a guessed parameter could break it.
+    """
+    dialect = thinking_dialect(base_url, protocol, endpoint_protocol)
+    level = enabled if isinstance(enabled, str) and enabled in EFFORT_LEVELS else None
+    on = bool(level) or enabled is True
+    if dialect == "enable_thinking":
+        return None if on else True
+    if dialect not in {"deepseek", "reasoning_effort", "anthropic_effort"}:
+        return None
+    if not on or level in {"low", "medium"}:
+        return "high"
+    return None if level == "max" else "max"
+
+
+def escalation_enabled(settings, stage="group"):
+    """The saved per-stage switch; a missing key means on (the recommended default)."""
+    models = (settings or {}).get("models", {}) or {}
+    prefix = "group" if stage != "polish" or (settings or {}).get("switches", {}).get("unified_glm_processing") else "polish"
+    return bool(models.get(f"{prefix}_escalate_on_failure", ESCALATION_DEFAULT))
+
+
+def task_escalation_enabled(stage="group"):
+    """The switch as frozen for the running task (falls back to the live settings)."""
+    from ..recognition.run_context import get_runtime_context
+    settings = getattr(get_runtime_context(), "asr_settings_snapshot", None)
+    if not settings:
+        import subtitle_core as core
+        settings = core.RUNTIME_SETTINGS
+    return escalation_enabled(settings, stage)
+
+
+def escalation_cue_limit(total):
+    """Most cues one task may resend; more failures than this point at the service, not the answer."""
+    import math
+    return max(ESCALATION_MIN_CUES, math.ceil(max(0, int(total)) * ESCALATION_MAX_SHARE))
+
+
 def observe_response_policy(diagnostics):
     """Do not turn a requested disable into a claim about the server's state."""
     if (diagnostics.get("thinking_requested") is False

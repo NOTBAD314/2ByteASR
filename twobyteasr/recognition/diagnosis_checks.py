@@ -504,7 +504,16 @@ def _ai_failures(facts: RunFacts) -> dict[str, list[dict]]:
             and facts.outcome is not None and facts.outcome.polish_status!='partial'):
         return {}  # historical failed attempts remain in the immutable log
     grouped: dict[str, list[dict]] = {}
+    # 2026-11-16: batches the thinking-escalation retry rescued are not failures any more, and
+    # that retry's own fallbacks (batch E*) repeat the original batch's record.
+    rescued = {('grouping_api_fallback' if row.get('stage') == 'grouped' else 'polishing_api_fallback', str(index))
+               for row in facts.events_named('ai_escalation_round') if row.get('state') == 'completed'
+               for index in row.get('resolved_batches') or ()}
     for row in facts.events_named(*AI_FAILURE_EVENTS):
+        batch = str(row.get('batch_index', ''))
+        if row.get('event') in {'grouping_api_fallback', 'polishing_api_fallback'} and (
+                batch.startswith('E') or (row.get('event'), batch.split('.')[0]) in rescued):
+            continue
         if (row.get('event') == 'grouping_api_fallback' and row.get('category') == 'format_mismatch'
                 and '强制停顿位置' in str(row.get('error') or '')):
             continue  # precise batch-level explanation below, not failed proofreading
