@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 from PySide6.QtCore import Qt, Signal
@@ -311,13 +312,27 @@ class RecognitionRoleCard(QFrame):
         """The chosen model's logo tile, or the role chip when none is chosen."""
         import qtawesome as qta
         from . import ui_zoom
-        size = self.icon_label.width()
+        scale = getattr(self, "_type_scale", 1.0)
+        base = ""
+        if scale != 1.0:
+            # Grown past extra_large (2026-11-10): the app QSS pins the logo at
+            # the profile's size, so the label's own sheet carries the larger one.
+            side = round(getattr(self, "_profile_icon", 60) * scale)
+            base = (f"min-width: {side}px; max-width: {side}px; min-height: {side}px; max-height: {side}px;"
+                    f" border-radius: {round(16 * scale)}px;")
+        if self._model is not None:
+            base = "background: transparent; " + base
+        sheet = ui_zoom.scale_qss(base, ui_zoom.zoom_factor()) if base else ""
+        self.icon_label.setProperty("_uiZoomSheetBase", base)
+        self.icon_label.setProperty("_uiZoomSheetLast", sheet)
+        if self.icon_label.styleSheet() != sheet:
+            self.icon_label.setStyleSheet(sheet)
+        self.icon_label.ensurePolished()
+        size = self.icon_label.width() if scale == 1.0 else ui_zoom.px(round(getattr(self, "_profile_icon", 60) * scale))
         if self._model is None:
-            self.icon_label.setStyleSheet("")
             glyph = ui_zoom.px(self._glyph_size)
             self.icon_label.setPixmap(qta.icon(self._icon_name, color=self._icon_color()).pixmap(glyph, glyph))
             return
-        self.icon_label.setStyleSheet("background: transparent;")
         self.icon_label.setPixmap(model_tile_pixmap(self._model, size, self.devicePixelRatioF()))
 
     # ------------------------------------------------------------ 事件
@@ -481,7 +496,9 @@ class RecognitionRoleCard(QFrame):
     def apply_ui_zoom(self, _factor):
         """Interface zoom changed: re-apply the current profile (glyph size)."""
         profile, self._responsive_profile = self._responsive_profile, None
+        scale = getattr(self, "_type_scale", 1.0)
         self.apply_responsive_profile(profile or "normal")
+        self.set_type_scale(scale)  # keep the plan's growth (2026-11-10)
 
     def apply_responsive_profile(self, profile: str):
         """Apply one of three bounded density profiles.
@@ -522,6 +539,9 @@ class RecognitionRoleCard(QFrame):
         ui_zoom.set_size(self.icon_label, fixed_w=config["icon"], fixed_h=config["icon"])
         self.description_label.setVisible(True)  # compact tiles keep their line, on one line
         self.description_label.setWordWrap(profile != "compact")
+        self._profile_icon, self._profile_glyph = config["icon"], config["glyph"]
+        self._type_scale = 1.0  # the plan grows it again past extra_large
+        self._set_description_px(None)
         self._paint_icon()
         ui_zoom.set_size(self, min_h=config["minimum"])
         self.set_name_px(None)  # the profile's own size first; the plan steps down if needed
@@ -595,6 +615,38 @@ class RecognitionRoleCard(QFrame):
         self.model_label.setProperty("_uiZoomSheetBase", base)
         self.model_label.setProperty("_uiZoomSheetLast", sheet)
         self.model_label.setStyleSheet(sheet)
+
+    # 100% px of the description in the extra-large profile (main_ui_theme).
+    _DESCRIPTION_BASE_PX = 15
+
+    def set_type_scale(self, scale: float) -> None:
+        """Grow the logo and the line under the name (the plan grows the name)."""
+        scale = max(1.0, float(scale))
+        if scale == getattr(self, "_type_scale", 1.0):
+            return
+        self._type_scale = scale
+        from . import ui_zoom
+        icon = round(getattr(self, "_profile_icon", 60) * scale)
+        ui_zoom.set_size(self.icon_label, fixed_w=icon, fixed_h=icon)
+        self._glyph_size = round(getattr(self, "_profile_glyph", self._glyph_size) * scale)
+        self._paint_icon()
+        self._set_description_px(None if scale == 1.0 else self._DESCRIPTION_BASE_PX * scale)
+
+    def _set_description_px(self, logical_px) -> None:
+        """The description at ``logical_px`` (100% px) or, None, the profile's QSS size."""
+        from . import ui_zoom
+        label = self.description_label
+        if logical_px is None:
+            base = sheet = ""
+        else:
+            base = f"font-size: {round(logical_px)}px;"
+            sheet = f"font-size: {round(logical_px * ui_zoom.zoom_factor())}px;"
+        if label.property("_uiZoomSheetLast") == sheet and label.styleSheet() == sheet:
+            return
+        # Same bookkeeping as set_name_px, so a later zoom pass keeps the size.
+        label.setProperty("_uiZoomSheetBase", base)
+        label.setProperty("_uiZoomSheetLast", sheet)
+        label.setStyleSheet(sheet)
 
     def _required_description_height(self) -> int:
         """Lines the description needs at this width (the plan takes the tallest card)."""
@@ -710,6 +762,7 @@ class RecognitionPlanWidget(QWidget):
 
     def apply_density(self, comfortable: bool):
         self._update_responsive_profile(comfortable)
+        self._apply_type_scale()
 
     def _sync_identity_height(self) -> None:
         if not self.cards or getattr(self, "_syncing_identity_height", False):
@@ -734,6 +787,9 @@ class RecognitionPlanWidget(QWidget):
         limit = self.maximumHeight()
         if limit >= 16777215 // 2:
             return None
+        if self.height() > 0:
+            # Laid out: the height it really got (it grows past its tier band).
+            limit = min(limit, self.height())
         margins = self.layout().contentsMargins()
         return limit - margins.top() - margins.bottom()
 
@@ -756,6 +812,8 @@ class RecognitionPlanWidget(QWidget):
         base = cards[0].name_base_px()
         if base <= 0:
             return
+        grown = getattr(self, "_type_scale_now", 1.0)
+        base = round(base * grown)
         room = self._card_room()
 
         def fits(card, size):
@@ -765,7 +823,7 @@ class RecognitionPlanWidget(QWidget):
         for scale in (1.0, 0.86, 0.76, 0.68, 0.6):
             size = round(base * scale)
             if all(fits(card, size) for card in cards):
-                chosen = None if scale == 1.0 else size
+                chosen = None if scale == 1.0 and grown == 1.0 else size
                 break
             chosen = size
         for card in cards:
@@ -781,6 +839,39 @@ class RecognitionPlanWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_responsive_profile()
+        self._apply_type_scale()
+
+    def _type_scale(self) -> float:
+        """How much the name, its line and the logo grow past the largest profile.
+
+        2026-11-10 (user: on an ultrawide or tall window the names stayed at
+        one size and the roomy cards looked empty): in the extra-large profile
+        they grow with the card, by the smaller of its width and height ratio,
+        in 5% steps up to 1.4x.
+        """
+        if self._responsive_profile != "extra_large":
+            return 1.0
+        from .ui_zoom import logical
+        widths = [card.width() for card in self.cards.values() if card.width() > 0]
+        if not widths or self.height() <= 0:
+            return 1.0
+        ratio = min(logical(min(widths)) / 320.0, logical(self.height()) / 230.0)
+        return max(1.0, min(1.4, math.floor(ratio * 20) / 20))
+
+    def _apply_type_scale(self) -> None:
+        if getattr(self, "_applying_type_scale", False):
+            return
+        scale = self._type_scale()
+        if scale == getattr(self, "_type_scale_now", 1.0):
+            return
+        self._applying_type_scale = True
+        try:
+            self._type_scale_now = scale
+            for card in self.cards.values():
+                card.set_type_scale(scale)
+            self._sync_identity_height()
+        finally:
+            self._applying_type_scale = False
 
     def _update_responsive_profile(self, comfortable: bool | None = None):
         # Updating one card can resize its parent while the other two still
@@ -851,6 +942,7 @@ class RecognitionPlanWidget(QWidget):
         if self._responsive_profile in _PROFILES:
             self._profile_left[self._responsive_profile] = time.monotonic()
         self._responsive_profile = profile
+        self._type_scale_now = 1.0  # each card's profile resets its own growth
         self._applying_profile, self._profile_recheck = True, False
         try:
             for card in self.cards.values():

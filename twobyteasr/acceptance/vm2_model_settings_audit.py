@@ -35,6 +35,9 @@ def start(window, output):
     def run():
         code=0
         try:
+            if os.environ.get('TWOBYTEASR_ULTRA_PREFLIGHT_AUDIT')=='1':
+                from .ultra_preflight_audit import verify as verify_preflight
+                verify_preflight(output,check)
             from ..design.theme_manager import apply_theme
             from ..local_models.model_workshop import _DeferredPickerCard
             from ..local_models.model_picker_cards import PickerCard

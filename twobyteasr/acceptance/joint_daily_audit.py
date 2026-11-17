@@ -128,7 +128,7 @@ def verify_ui(window, output):
         options.aboutToShow.emit()
         check(theme+' timeline menu keeps display switches',
               {'波形', '缩略图', '跟随播放头', '自动吸附'} <= {a.text() for a in options.actions()}
-              and page.selection_center_toggle.isVisible() and not page.selection_center_toggle.isCheckable())
+              and page.selection_center_toggle.isVisible() and page.selection_center_toggle.isCheckable())
         more = page.cue_more_button.menu()
         more.aboutToShow.emit()
         check(theme+' cue menu keeps collision setting', any('避让' in a.text() for a in more.actions()))

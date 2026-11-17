@@ -49,7 +49,7 @@ def test_only_explicit_action_uses_active_project_cue(timeline):
     p._locate_selected_subtitle()
     assert p.seeks==[605.964] and timeline.visible_start_ms==598464
     assert p._subtitle_navigation_target[2]=='c30'
-    timeline.set_visible_window(1000,9000);p._navigate_selected_subtitle('c0')
+    timeline.set_visible_window(1000,9000);timeline.set_selected('c0')
     assert len(p.seeks)==1 and timeline.visible_duration_ms==9000
 
 def test_secondary_default_compact_and_selection_never_expands(timeline):

@@ -34,9 +34,12 @@ DEFAULTS = {'level': 'ask', 'read_subtitles': True, 'read_diagnostics': True, 'r
 FOLDERS_KEY = 'folders'      # 2026-11-16: folders she may list, read and write new files in (default none)
 MAX_FOLDERS = 12
 FILE_TOOLS = {'list_folder', 'read_file', 'write_file', 'import_terms_file'}
-SUBTITLE_READS = {'read_cues', 'find_cues', 'learned_edits', 'edit_cue', 'merge_cues', 'refine_cues'}
-DIAGNOSTIC_READS = {'diagnostics', 'last_task', 'history'}
+SUBTITLE_READS = {'read_cues', 'find_cues', 'learned_edits', 'edit_cue', 'merge_cues', 'refine_cues',
+                  'ui_snapshot', 'ui_set', 'recent_actions', 'replay_action'}
+DIAGNOSTIC_READS = {'diagnostics', 'last_task', 'history', 'recent_results', 'open_result',
+                    'recent_projects', 'open_project', 'ui_snapshot', 'recent_actions', 'replay_action'}
 MEMORY_TOOLS = {'remember', 'forget', 'save_recipe', 'use_recipe'}
+MEMORY_READS = {'recent_actions', 'replay_action'}
 SCREEN_TOOLS = {'look_screen'}
 SCREEN_ACK_KEY = 'bunny_see_screen_explained'     # the first-time explanation was shown and accepted
 
@@ -110,7 +113,7 @@ def refusal(tool, values: dict) -> str:
         return '小兔纸在「兔白权限」里关掉了“让兔白读字幕原文”'
     if tool.name in DIAGNOSTIC_READS and not values['read_diagnostics']:
         return '小兔纸在「兔白权限」里关掉了“让兔白读诊断和识别记录”'
-    if tool.name in MEMORY_TOOLS and not values['remember']:
+    if tool.name in MEMORY_TOOLS | MEMORY_READS and not values['remember']:
         return '小兔纸在「兔白权限」里关掉了“让兔白记住我的习惯”'
     if tool.name in SCREEN_TOOLS and not values.get('see_screen'):
         return '小兔纸还没在「兔白权限」里打开“让兔白截图看 2ByteASR 的画面”'

@@ -62,7 +62,7 @@ CATALOG = (
             ('双击或按 E 改字，Enter 保存', '按 R 审核，1 / 2 / 3 选候选', 'C 剃刀、B 合并、Shift+Q / W 波纹合并',
              'T 新增一条、导出和压制')),
     Chapter('editor', '编辑器新操作与快捷键', 4, '进阶', 'edit',
-            ('Shift+F / E / S 换人称', 'Shift+C 在光标处切开', 'Ctrl+A 再 Alt+← / → 整片微调',
+            ('Shift+F 直接换代称，Shift+E 确认编辑', 'Shift+C 在光标处切开', 'Ctrl+A 再 Alt+← / → 整片微调',
              'I / O 框一段，只重新识别这一段', '= / - 缩放时间轴、J / K / L 播放'), new=True),
     Chapter('terms', '术语库：加一个词、试一句', 2, '进阶', 'glossary',
             ('用一本教学词库，学完自动删除', '写正确写法和常被听成的错字', '「试一句」马上看会改成什么',
@@ -240,7 +240,7 @@ def editor_steps(w) -> list:
         place_caret('她')
         button = pronoun_button()
         if button is not None:
-            button.click()
+            studio()._cycle_editor_pronoun()
 
     mark = {'start': None, 'zoom': None}
 
@@ -311,9 +311,9 @@ def editor_steps(w) -> list:
                  note='**Shift+Enter** 在这条里换行；编辑框上方会提示能用的按键', show_next=False, interactive=True,
                  done=lambda: editor() is None, ready=lambda: editor() is not None,
                  focus=editor_input, anim='edit'),
-        TourStep('光标在「她」后面，按 **Shift+F** 换人称（他 / 她 / 它）', pronoun_button,
+        TourStep('不用选字，按 **Shift+F** 直接换这句的代称（他 → 她 → 它）', pronoun_button,
                  [TourAction('帮我按 Shift+F', change_pronoun)],
-                 note='**Shift+E** 采纳，**Shift+S** 回到正文；高亮的修改候选用 **Shift+A / D** 切换', interactive=True,
+                 note='**Shift+F** 直接替换代称，**Shift+E** 确认编辑，**Shift+S** 回到正文；候选用 **Shift+A / D** 切换，点击或空格采纳', interactive=True,
                  enter=edit('tutorial-8', '她'), ready=lambda: studio_ready() and editing_id() == 'tutorial-8',
                  focus=editor_input, anim='edit', page=open_demo),
         TourStep('光标放在「纪行的」后面，按 **Shift+C** ==在光标处切成两条==',

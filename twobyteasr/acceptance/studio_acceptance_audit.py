@@ -38,7 +38,7 @@ def audit_directory() -> Path | None:
     profile_value=os.environ.get('TWOBYTEASR_ACCEPTANCE_PROFILE_DIR','')
     if profile_value:
         profile=Path(profile_value).resolve()
-        if (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') not in {'unified-studio','editor-recovery','learning-confirmation'}
+        if (os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') not in {'unified-studio','editor-recovery','learning-confirmation','editor-download'}
                 or not profile.is_relative_to(audit_tmp_root()) or not output.is_relative_to(profile)
                 or Path(os.environ.get('TWOBYTEASR_TEST_ROOT','')).resolve()!=profile):
             raise ValueError('Acceptance requires its explicit owned unified tmp profile')

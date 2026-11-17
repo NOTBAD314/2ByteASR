@@ -4062,7 +4062,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         page_heading.setSpacing(12)
         # 2026-10-23 (user: the plan toolbar sat on the page's top edge): the
         # same room above the heading row as below it, so the row sits midway.
-        page_heading.setContentsMargins(0, 10, 0, 0)
+        # 2026-11-10 (user: 本批字幕 sat flush on the box edge): the title starts
+        # at the cards' inner padding instead of on their outer edge.
+        page_heading.setContentsMargins(14, 10, 0, 0)
         title = QLabel("本批字幕")
         title.setObjectName("sectionTitle")
         # P0: allow natural width; CN text must not truncate. Max was causing squeeze on some locales.
@@ -4252,7 +4254,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         # model cards level with the cover), AI segmentation, content & terms,
         # subtitle language & output. Each section carries its zone colour.
         surface_layout = QHBoxLayout(surface)
-        surface_layout.setContentsMargins(0, 2, 0, 0)
+        # The bottom gap matches the left card's gap above the action bar.
+        surface_layout.setContentsMargins(0, 2, 0, 6)
         surface_layout.setSpacing(16)
         left = QVBoxLayout()
         left.setSpacing(16)
@@ -4559,7 +4562,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         plan_columns = self.recognition_plan.layout()
         plan_columns.setSpacing(0)
         policy = self.recognition_plan.sizePolicy()
-        policy.setVerticalPolicy(QSizePolicy.Policy.Fixed)  # its size hint, between the tier height and +48
+        policy.setVerticalPolicy(QSizePolicy.Policy.Expanding)  # the tier height plus the card's spare height
         self.recognition_plan.setSizePolicy(policy)
         for index in range(plan_columns.count()):
             plan_columns.setStretch(index, 1)
@@ -4578,9 +4581,12 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         produce = QVBoxLayout(settings_card)
         produce.setContentsMargins(0, 0, 0, 0)
         produce.setSpacing(0)
-        produce.addWidget(plan_block)
+        # 2026-11-10 (user: the right card ended above the left one): the card
+        # reaches the same bottom as the Studio card; spare height goes to the
+        # model cards, 内容与术语 keeps its compact height.
+        produce.addWidget(plan_block, 1)
         produce.addWidget(self.home_process_card)
-        produce.addWidget(content_profile, 1)
+        produce.addWidget(content_profile)
         self.settings_right_column = produce
         # The slot preserves the original left-column width. The whole card
         # stays inside the visible scroll viewport, including its own footer.
@@ -4591,7 +4597,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         left.addWidget(self.studio_entry_slot, 1)
         surface_layout.addLayout(left, 1)
         surface_layout.addWidget(settings_card, 2)
-        layout.addWidget(surface)
+        layout.addWidget(surface, 1)
 
         settings = self.legacy.RUNTIME_SETTINGS
         self.asr_panel = CollapsibleFrame(
@@ -5089,8 +5095,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         for panel in (self.advanced_disclosure, self.advanced_panel):
             panel.setParent(page)
             panel.setVisible(False)
-        # Spare height stays below both columns instead of stretching a card.
-        layout.addStretch(1)
+        # Spare height goes to the cards (the surface's stretch): both columns
+        # end on one line above the action bar (2026-11-10).
         self.ai_panel.set_expanded(self.ai_panel._expanded, animate=False)
         # NOTE: The primary "取消 / 开始生成字幕" bar is now owned as self.bottom_bar
         # at the content_host level (fixed, outside any scroll). Do not add another here.
@@ -5152,7 +5158,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         height = ui_zoom.px(home_plan_height(tier) + getattr(self, "_home_plan_extra", 0))
         # A recovery button wrapped under the badges may need a little more.
         self.recognition_plan.setMinimumHeight(height)
-        self.recognition_plan.setMaximumHeight(height + ui_zoom.px(48))
+        self.recognition_plan.setMaximumHeight(height + ui_zoom.px(240))
         ai_card = getattr(self, "setting_tiles", {}).get("ai")
         if ai_card is not None:
             ai_card.set_compact(tier == 0)  # short windows: one row, no feature tags
@@ -6754,6 +6760,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._completion_log_generation += 1
         self.result_console.clear()
         bind_text(self.result_log_toggle, '运行日志 · 本次报告事件')
+        # 2026-11-17 (user): 「打开识别结果」 loaded the result but stayed on 识别记录 — _handle_result only
+        # moves to the completion page from the progress page (249cfbf6, so a background job does not
+        # pull the user away). Opening from history is the user's own request: show the page.
+        if getattr(self, 'pages', None) is not None:      # partial windows in tests have no pages
+            self._switch_page(2)
 
     def _open_history_diagnosis(self, record):
         """排查原因 of a recognition history record (2026-10-23); task-only actions are left out."""

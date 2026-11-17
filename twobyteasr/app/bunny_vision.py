@@ -10,6 +10,10 @@ User (2026-11-16): 「这 AI 如果能调用视觉来截图看的话会更好一
 * the picture is made smaller (``LONG_SIDE``), sent once with the next request and never written
   to disk; the saved chat keeps only 「[截图 1280×720]」.
 
+2026-11-17 (user): DeepSeek V4.1 Flash (``deepseek-flash``, and the old ``deepseek-v4-flash`` name it
+serves) sees images, per DeepSeek's pricing page; only ``deepseek-v4-pro`` does not. The user may
+also paste (Ctrl+V) or drop a picture into the chat (``pasted``); it goes with that question only.
+
 ``support`` has no Qt; ``capture`` needs the GUI thread.
 """
 from __future__ import annotations
@@ -24,7 +28,9 @@ SKIP_NAMES = frozenset({'bunnyChat', 'bunnyCarrier', 'bunnyLog', 'bunnyChatMasco
 SKIP_CLASSES = frozenset({'Spotlight', 'QTipLabel', 'QComboBoxPrivateContainer', 'QMenu'})
 
 # Kinds of models that can see images, for the explanation (in the user's words, not ids).
-SEEING_MODELS = 'Claude、OpenAI 的 GPT-4.1 / GPT-4o / GPT-5、Gemini、通义千问 VL（qwen-vl）'
+SEEING_MODELS = 'DeepSeek V4.1 Flash（deepseek-flash）、Claude、OpenAI 的 GPT-4.1 / GPT-4o / GPT-5、Gemini、通义千问 VL（qwen-vl）'
+DEEPSEEK_SEEING = frozenset({'deepseek-flash', 'deepseek-v4-flash'})
+PASTE_SIDE = 1600            # px, a picture the user pastes keeps more detail (screenshots of text)
 PRIVACY_NOTE = ('打开后，兔白需要时会把 2ByteASR 自己窗口的截图（不含桌面和其他程序）发给你在「字幕校对」设置的 AI 服务，'
                 '截图里可能有字幕、视频画面和工程名称。每次截图都会在聊天里显示一张小图。截图不会存到电脑上。')
 
@@ -49,7 +55,11 @@ def _known_seeing(provider: str, model: str) -> bool | None:
     name = model.casefold()
     provider = provider.casefold()
     if provider == 'deepseek' or name.startswith('deepseek'):
-        return False                  # deepseek-flash / v4-pro are text models; vision-exp is retired
+        # 2026-11-17 (user; DeepSeek's pricing page, "Vision" row): deepseek-flash is V4.1-Flash and takes
+        # images; the old deepseek-v4-flash name is served by the same model. deepseek-v4-pro: not supported.
+        if name in DEEPSEEK_SEEING:
+            return True
+        return False if name == 'deepseek-v4-pro' else None
     if provider == 'anthropic' or name.startswith('claude'):
         return True
     if provider == 'gemini' or name.startswith('gemini'):
@@ -165,9 +175,28 @@ def capture(window) -> Capture:
             painter.drawPixmap(QRect(at, top.size()), picture)    # logical size, whatever the DPI
     finally:
         painter.end()
-    image = canvas
-    if max(image.width(), image.height()) > LONG_SIDE:
-        image = image.scaled(LONG_SIDE, LONG_SIDE, Qt.AspectRatioMode.KeepAspectRatio,
+    image, url, thumb = _encode(canvas, LONG_SIDE)
+    titles = [top.windowTitle() for top in tops[1:] if top.windowTitle()]
+    receipt = (f'截好了 2ByteASR 的画面（{image.width()}×{image.height()}，图在这条消息后面）'
+               + (f'，上面还开着：' + '、'.join(f'「{title}」' for title in titles[:4]) if titles else '')
+               + '。照图回答；看不清的地方就说看不清，不要猜。')
+    return Capture(receipt, url, image.width(), image.height(), thumb)
+
+
+def _encode(image, side: int):
+    """(the picture made at most ``side`` px long, its JPEG data URL, the chat's thumbnail)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+    from PySide6.QtGui import QImage
+    if image.hasAlphaChannel():                       # a transparent paste: on white, not black
+        flat = QImage(image.size(), QImage.Format.Format_RGB32)
+        flat.fill(Qt.GlobalColor.white)
+        from PySide6.QtGui import QPainter
+        painter = QPainter(flat)
+        painter.drawImage(0, 0, image)
+        painter.end()
+        image = flat
+    if max(image.width(), image.height()) > side:
+        image = image.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
                              Qt.TransformationMode.SmoothTransformation)
     data = QByteArray()
     stream = QBuffer(data)
@@ -177,11 +206,41 @@ def capture(window) -> Capture:
     url = 'data:image/jpeg;base64,' + base64.b64encode(bytes(data)).decode('ascii')
     thumb = image.scaled(THUMB_SIDE, THUMB_SIDE, Qt.AspectRatioMode.KeepAspectRatio,
                          Qt.TransformationMode.SmoothTransformation)
-    titles = [top.windowTitle() for top in tops[1:] if top.windowTitle()]
-    receipt = (f'截好了 2ByteASR 的画面（{image.width()}×{image.height()}，图在这条消息后面）'
-               + (f'，上面还开着：' + '、'.join(f'「{title}」' for title in titles[:4]) if titles else '')
-               + '。照图回答；看不清的地方就说看不清，不要猜。')
-    return Capture(receipt, url, image.width(), image.height(), thumb)
+    return image, url, thumb
+
+
+PASTED_NOTE = '（小兔纸贴了一张图，图在这条消息后面）'
+
+
+def pasted(image) -> Capture:
+    """A picture the user pasted or dropped into the chat (2026-11-17, user): sent with their question."""
+    if image is None or image.isNull():
+        raise ValueError('没有图片')
+    image, url, thumb = _encode(image, PASTE_SIDE)
+    return Capture(PASTED_NOTE, url, image.width(), image.height(), thumb)
+
+
+IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif')
+
+
+def image_from_mime(mime):
+    """The picture in a clipboard or drop (an image, or one image file); None when there is none."""
+    from PySide6.QtGui import QImage
+    if mime is None:
+        return None
+    if mime.hasImage():
+        value = mime.imageData()
+        image = value if isinstance(value, QImage) else value.toImage() if hasattr(value, 'toImage') else QImage()
+        if not image.isNull():
+            return image
+    if mime.hasUrls():
+        for url in mime.urls():
+            path = url.toLocalFile()
+            if path and path.casefold().endswith(IMAGE_SUFFIXES):
+                image = QImage(path)
+                if not image.isNull():
+                    return image
+    return None
 
 
 # ------------------------------------------------------------------ messages
@@ -209,5 +268,5 @@ def text_only(message: dict) -> dict:
     return {**message, 'content': '\n'.join(words)}
 
 
-__all__ = ['Capture', 'LONG_SIDE', 'PRIVACY_NOTE', 'SEEING_MODELS', 'advice', 'capture', 'judge', 'support',
-           'text_only', 'with_images']
+__all__ = ['Capture', 'DEEPSEEK_SEEING', 'LONG_SIDE', 'PASTED_NOTE', 'PRIVACY_NOTE', 'SEEING_MODELS', 'advice',
+           'capture', 'image_from_mime', 'judge', 'pasted', 'support', 'text_only', 'with_images']
