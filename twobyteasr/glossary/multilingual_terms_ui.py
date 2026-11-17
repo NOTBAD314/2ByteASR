@@ -763,17 +763,7 @@ def start_completion(page, code=None):
 
 
 def refresh(page):
-    scroll = page.listing.verticalScrollBar().value()
-    selected = page.listing.currentIndex()
-    identity = (page._term_model.data_for_row(selected.row()) or {}).get('concept_id') if selected.isValid() else None
     page._notify_library_changed(); page.refresh_current_game()
-    def restore():
-        page.listing.verticalScrollBar().setValue(scroll)
-        if identity:
-            for i in range(page._term_model.rowCount()):
-                if page._term_model.data_for_row(i).get('concept_id') == identity:
-                    page.listing.setCurrentIndex(page._term_model.index(i, 0)); break
-    QTimer.singleShot(0, restore)
 
 
 def open_editor(page, identity):

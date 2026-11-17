@@ -616,6 +616,8 @@ class StudioRenderDialog(QDialog):
             self._show_render_success(Path(path))
 
     def _show_render_success(self, output: Path) -> None:
+        from ..app.newbie_tasks import mark
+        mark('render')
         dialog = QDialog(self)
         bind_text(dialog, '压制完成', property='windowTitle')
         dialog.setMinimumWidth(460)

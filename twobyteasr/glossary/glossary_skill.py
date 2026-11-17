@@ -202,7 +202,10 @@ def build_search_messages(
     excluded_terms: list[str] | None = None,
     today: str | None = None,
     provider_search: bool = True,
+    provided: Mapping[str, Any] | None = None,
 ) -> list[dict]:
+    """``provided``: the application already searched (DeepSeek Search / Fetch); its
+    ``search_results`` and ``pages`` go in the user turn and the model only reads them."""
     today = today or datetime.now().strftime("%Y-%m-%d")
     existing = sorted({str(term) for term in (existing_terms or ()) if str(term).strip()})
     confirmed = sorted(
@@ -219,12 +222,17 @@ def build_search_messages(
     }
     type_label = type_labels.get(str(content_type), "内容主题")
 
-    research_line = (
-        "你必须先联网检索官方公告、版本说明、角色/技能资料与可信社区讨论，"
-        "再整理术语；没有检索到证据的词不要输出。"
-        if provider_search
-        else "请基于现有可靠资料整理；没有把握的词不要输出，也不要声称已联网核实。"
-    )
+    if provided is not None:
+        research_line = (
+            "这次由软件替你联网检索：输入里的 search_results 是刚从搜索引擎拿到的结果（标题、网址、摘要），"
+            "pages 是软件读到的网页正文。只根据这些资料整理，不要凭记忆补充；sources 只能填 search_results 或 pages "
+            "里出现过的 url，而且该词必须原样出现在那条结果或那页正文里，资料里没有的词不要输出。"
+        )
+    elif provider_search:
+        research_line = ("你必须先联网检索官方公告、版本说明、角色/技能资料与可信社区讨论，"
+                         "再整理术语；没有检索到证据的词不要输出。")
+    else:
+        research_line = "请基于现有可靠资料整理；没有把握的词不要输出，也不要声称已联网核实。"
 
     system = f"""你是游戏字幕术语整理员。当前系统日期是 {today}。目标：为《{game_name}》（{type_label}）整理对语音字幕识别真正有价值的中文术语表。
 
@@ -253,6 +261,9 @@ def build_search_messages(
         "excluded_terms": excluded[:120],
         "budget": f"最多 {MAX_TERMS_PER_UPDATE} 个词；优先新增与最近版本变化，existing_terms 里已有的不要重复返回（除非补充别名）。",
     }
+    if provided is not None:
+        payload["search_results"] = list(provided.get("search_results") or [])
+        payload["pages"] = list(provided.get("pages") or [])
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -625,6 +636,54 @@ class GlossarySearchError(Exception):
         self.detail = detail
 
 
+def _deepseek_gather(endpoint, game_name, content_type, *, report, observer, cancel_check, stats):
+    """2026-11-16: the application searches with DeepSeek's Search API and reads the best pages.
+
+    Returns (material for the model, receipts, url -> text read, url -> title). The receipts are the
+    application's own (the URLs Search returned), never the model's word."""
+    from ..providers.deepseek_tools import DeepSeekToolError
+    from . import deepseek_term_sources as sources
+
+    def cancelled():
+        if cancel_check is not None and cancel_check():
+            raise GlossarySearchError("cancelled", "检索已取消。")
+
+    api_key = str(endpoint.get("api_key") or "")
+    query_list = sources.queries(game_name, content_type)
+    report("检索来源", f"用 DeepSeek 搜索查 {len(query_list)} 组资料（角色、技能、地图、最近版本…）")
+    for query in query_list:
+        observer.emit("query_planned", dict(query=query, method="deepseek_search"))
+
+    def on_query(query, count):
+        observer.emit("search_receipt", dict(tool="deepseek_search", query=query, results=count))
+
+    try:
+        results, made, rejected = sources.gather(api_key, game_name, query_list, cancel_check=cancelled,
+                                                 on_query=on_query)
+        stats["searches"] += made
+        cancelled()
+        pages = sources.pick_pages(results)
+        report("读取资料", f"找到 {len(results)} 条相关结果，读取其中 {len(pages)} 个网页的正文…")
+        documents, fetched = sources.fetch_pages(
+            api_key, game_name, pages, cancel_check=cancelled,
+            on_page=lambda url, ok: observer.emit("page_read" if ok else "page_skipped", dict(url=url)))
+        stats["fetches"] += fetched
+    except DeepSeekToolError as exc:
+        code = {"auth": "unauthorized", "balance": "balance"}.get(exc.category, "unavailable")
+        raise GlossarySearchError(code, str(exc)) from exc
+    if not results:
+        raise GlossarySearchError(
+            "search_evidence_missing",
+            f"DeepSeek 搜索没有找到标题或摘要里写着《{game_name}》的资料"
+            + (f"（{len(rejected)} 条结果和它无关，已丢弃）" if rejected else "")
+            + "。可以检查词库名称是不是常用写法，或换成游戏的正式名称再试。")
+    urls = list(dict.fromkeys([*(row["url"] for row in results), *(doc["url"] for doc in documents)]))
+    receipts = [{"tool": "deepseek_search", "urls": urls, "searches": stats["searches"], "fetches": stats["fetches"]}]
+    titles = {row["url"]: str(row.get("title") or "")[:80] for row in results}
+    titles.update({doc["url"]: doc.get("title", "")[:80] for doc in documents})
+    return sources.model_material(results, documents), receipts, sources.evidence_texts(results, documents), titles
+
+
 def run_term_search(
     legacy,
     game_name: str,
@@ -649,11 +708,12 @@ def run_term_search(
 
     settings_dict = dict(settings) if isinstance(settings, Mapping) else {}
     capability = detect_search_capability(settings_dict)
-    if provider_search_only and not capability["provider_search"]:
+    tool_search = bool(capability.get("tool_search")) and not capability["provider_search"]
+    if provider_search_only and not capability["provider_search"] and not tool_search:
         raise GlossarySearchError(
             "unsupported_search",
             "当前选择的 AI 不支持联网检索（缺少：服务端搜索）。"
-            f"{capability['reason']}。可改选 Grok/Antigravity CLI 或百炼，"
+            f"{capability['reason']}。可改选 DeepSeek、Grok/Antigravity CLI 或百炼，"
             "或使用智能建词的本地资料整理。",
         )
     try:
@@ -681,21 +741,33 @@ def run_term_search(
     finally:
         legacy.RUNTIME_GAME_NAME = saved_game
 
-    report("检索来源", "使用所选 AI 联网检索官方与社区资料…")
+    content_type = str(getattr(legacy, "learned_content_type", lambda _n: "game")(game_name))
+    from ..providers.task_execution_events import ExecutionObserver
+    observer=ExecutionObserver(on_event, {k:capability.get(k, "") for k in ("provider","service","transport","model")})
+    started = time.perf_counter()
+    provided = None
+    tool_receipts: list[dict] = []
+    tool_texts: dict[str, str] = {}
+    tool_titles: dict[str, str] = {}
+    tool_stats = {"searches": 0, "fetches": 0}
+    if tool_search:
+        provided, tool_receipts, tool_texts, tool_titles = _deepseek_gather(
+            endpoint, game_name, content_type, report=report, observer=observer,
+            cancel_check=cancel_check, stats=tool_stats)
+    else:
+        report("检索来源", "使用所选 AI 联网检索官方与社区资料…")
     messages = build_search_messages(
         game_name,
-        content_type=str(getattr(legacy, "learned_content_type", lambda _n: "game")(game_name)),
+        content_type=content_type,
         existing_terms=existing_terms,
         confirmed_pairs=confirmed_pairs,
         excluded_terms=excluded_terms,
         provider_search=bool(capability["provider_search"]),
+        provided=provided,
     )
     diag: dict[str, Any] = {}
     transport = str(capability.get("transport") or "")
     provider = provider_for_stage(settings_dict, "polish")
-    started = time.perf_counter()
-    from ..providers.task_execution_events import ExecutionObserver
-    observer=ExecutionObserver(on_event, {k:capability.get(k, "") for k in ("provider","service","transport","model")})
     observer.emit("request_started","请求已发出，等待模型响应")
     def stream_event(kind, detail):
         observer.stream(kind, detail)
@@ -718,6 +790,9 @@ def run_term_search(
             on_stream_event=stream_event,
             max_tokens=12000,
             temperature=0.0,
+            # 2026-11-16 (live run): deepseek-v4-flash thinks by default and spent 8279 of the 12000
+            # output tokens on it, cutting the JSON off. Sorting given material needs no thinking.
+            **({"enable_thinking": False} if tool_search else {}),
             # Multi-turn CLI web search on a full term contract routinely
             # exceeds 300s (production domain-term runs have taken ~680s).
             # Hard single-attempt cap; no automatic retry escalation.
@@ -756,7 +831,11 @@ def run_term_search(
 
     report("提取候选", "校验与规范化 AI 返回的结构化术语…")
     try:
-        candidates = bind_search_sources(normalize_searched_terms(payload), diag.get('search_evidence'))
+        if tool_search:
+            from .deepseek_term_sources import verify_terms
+            candidates = verify_terms(normalize_searched_terms(payload), tool_texts, tool_titles)
+        else:
+            candidates = bind_search_sources(normalize_searched_terms(payload), diag.get('search_evidence'))
     except (ValueError, TypeError) as exc:
         raise GlossarySearchError(
             "unavailable", f"AI 返回不符合术语契约：{' '.join(str(exc).split())[:200]}"
@@ -768,12 +847,21 @@ def run_term_search(
         confirmed_pairs=confirmed_pairs,
         excluded_terms=excluded_terms,
     )
+    if tool_search:
+        from .deepseek_term_sources import cost_usd
+        sourced = sum(term.verification != "unverified" for term in candidates)
+        observer.emit("model_result", dict(candidates=len(candidates), sourced=sourced,
+                                           searches=tool_stats["searches"], fetches=tool_stats["fetches"]))
     return {
         "diffs": diffs,
         "candidate_count": len(candidates),
         "elapsed_seconds": round(elapsed, 1),
-        "searched": search_evidence or not capability["provider_search"],
-        "search_evidence": diag.get('search_evidence', []),
+        "searched": bool(tool_receipts) or search_evidence or not capability["provider_search"],
+        "search_evidence": tool_receipts if tool_search else diag.get('search_evidence', []),
+        "search_tool": "deepseek" if tool_search else "",
+        "searches": tool_stats["searches"],
+        "fetches": tool_stats["fetches"],
+        "search_cost_usd": cost_usd(tool_stats["searches"], tool_stats["fetches"]) if tool_search else 0.0,
         "model": capability.get("model") or "",
         "service": capability.get("service") or "",
         "capability": capability,

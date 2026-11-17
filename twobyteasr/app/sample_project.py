@@ -10,6 +10,7 @@ recreated on demand.
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,12 +148,22 @@ def _tutorial_rows() -> list[tuple[float, float, str, str, str, str]]:
         (12.2, 15.0, 'S00', *same('派门又在旁边说个不停')),
         (15.2, 18.0, 'S01', *same('这期纪行的奖励还挺划算')),
         (18.2, 21.0, 'S00', *same('下次带派门一起去探险')),
-        (21.2, 23.6, 'S01', *same('好啊，记得叫上我')),
+        (21.2, 23.6, 'S01', *same('好啊，记得叫上她')),
     ]
+
+
+# 2026-11-16: the tutorial prepares its project in the background while 「放入演示视频」 may ask for it on
+# the GUI thread; both used to write the same 教学影片.part.mp4 and one failed (WinError 32).
+_TUTORIAL_LOCK = threading.RLock()
 
 
 def ensure_tutorial_project() -> Path:
     """A fresh tutorial project every time (what the last tutorial changed never sticks)."""
+    with _TUTORIAL_LOCK:
+        return _ensure_tutorial_project()
+
+
+def _ensure_tutorial_project() -> Path:
     from ..projects.studio_project import project_from_runtime_cues, save_project
     root = tutorial_root()
     root.mkdir(parents=True, exist_ok=True)

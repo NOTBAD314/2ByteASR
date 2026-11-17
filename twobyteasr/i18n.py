@@ -149,7 +149,20 @@ def _hant_fallback(text: str) -> str:
     return "".join(_HANT_CHARS.get(ch, ch) for ch in text)
 
 
+# 2026-11-16 「我的改动」 (app/user_overlay): source sentence -> the user's own words, in every language.
+_USER_TEXTS: dict[str, str] = {}
+
+
+def set_user_texts(mapping) -> None:
+    global _USER_TEXTS
+    _USER_TEXTS = {str(key): str(value) for key, value in dict(mapping or {}).items() if key and value}
+
+
 def translate(text: str, language: str | None = None) -> str:
+    if _USER_TEXTS:
+        mine = _USER_TEXTS.get(text)
+        if mine is not None:
+            return mine
     language = current_language() if language is None else language
     table = language_table(language)
     if language == "zh-Hant" and text not in table and text in _KNOWN_KEYS:
@@ -169,6 +182,8 @@ def ui_literal(text: str, language: str | None = None) -> str:
     it has the text, otherwise for 繁體中文 the character conversion. Never pass
     user content (subtitles, file names, custom names).
     """
+    if _USER_TEXTS and text in _USER_TEXTS:
+        return _USER_TEXTS[text]
     language = current_language() if language is None else language
     table = language_table(language)
     if text in table:

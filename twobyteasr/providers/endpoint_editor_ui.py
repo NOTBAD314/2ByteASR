@@ -868,6 +868,13 @@ class EndpointEditor(QFrame):
         self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(models.get(f"{prefix}_thinking_protocol", "auto"))))
         grid.addWidget(QLabel("思考控制协议"), 9, 0)
         grid.addWidget(self.thinking_protocol, 9, 1)
+        # 2026-11-16: still-failed format/truncation results get one more try, thinking one level higher.
+        self.escalate_on_failure = QCheckBox("失败时提高思考等级再试一次")
+        self.escalate_on_failure.setChecked(bool(models.get(f"{prefix}_escalate_on_failure", True)))
+        self.escalate_on_failure.setToolTip(
+            "JSON 格式错误或输出被截断、正常重试后仍失败的字幕，集中起来用同一个模型、"
+            "高一级的思考再请求一轮；会多花一些费用和时间。思考控制协议为“自动”且服务未知时不会生效。")
+        grid.addWidget(self.escalate_on_failure, 10, 1)
         grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(grid)
         self.advanced_box.hide()
@@ -1352,6 +1359,7 @@ class EndpointEditor(QFrame):
             "max_output_tokens": self.max_output_tokens.value(),
             "enable_thinking": self.enable_thinking.isChecked(),
             "thinking_protocol": self.thinking_protocol.currentData(),
+            "escalate_on_failure": self.escalate_on_failure.isChecked(),
         }
 
     def restore_profile_values(self, values: dict, settings: dict) -> None:
@@ -1383,6 +1391,7 @@ class EndpointEditor(QFrame):
         self.max_output_tokens.setValue(int(values.get("max_output_tokens", 10000)))
         self.enable_thinking.setChecked(bool(values.get("enable_thinking", False)))
         self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(values.get("thinking_protocol", "auto"))))
+        self.escalate_on_failure.setChecked(bool(values.get("escalate_on_failure", True)))
         self.refresh_secret_status()
         self._refresh_endpoint_hint()
 

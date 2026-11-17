@@ -267,9 +267,9 @@ def test_run_term_search_requires_search_evidence(monkeypatch):
 def test_run_term_search_rejects_provider_without_search(monkeypatch):
     legacy = _FakeLegacy()
     settings = {
-        "models": {"ai_service": "deepseek"},
+        "models": {"ai_service": "openai"},
         "switches": {},
-        "provider_profiles": {"deepseek": {"model": "deepseek-v4-pro"}},
+        "provider_profiles": {"openai": {"model": "gpt-test"}},
     }
     monkeypatch.setattr(
         "twobyteasr.providers.llm_config.read_scoped_api_key",
@@ -278,6 +278,90 @@ def test_run_term_search_rejects_provider_without_search(monkeypatch):
     with pytest.raises(GlossarySearchError) as exc_info:
         gs.run_term_search(legacy, "绝区零", settings)
     assert exc_info.value.code == "unsupported_search"
+
+
+def _deepseek_settings(monkeypatch):
+    monkeypatch.setattr(
+        "twobyteasr.providers.llm_config.read_scoped_api_key",
+        lambda *_a, **_k: ("sk-test", "test"),
+    )
+    return {
+        "models": {"ai_service": "deepseek"},
+        "switches": {},
+        "provider_profiles": {"deepseek": {"model": "deepseek-v4-pro"}},
+    }
+
+
+def test_run_term_search_with_deepseek_searches_itself_and_checks_spelling(monkeypatch):
+    """2026-11-16: a DeepSeek key no longer locks 补上最近版本的新词; the app searches, reads the best
+    page, and a term is sourced only when its spelling is in a page it read."""
+    from twobyteasr.providers import deepseek_tools
+    import twobyteasr.glossary.smart_glossary as sg
+    monkeypatch.setattr(sg, "is_safe_web_url", lambda url: (str(url).startswith("https://"), "stub"))
+    settings = _deepseek_settings(monkeypatch)
+    assert detect_search_capability(settings)["tool_search"] is True
+    queries = []
+
+    def search(api_key, query, **_kw):
+        queries.append(query)
+        assert api_key == "sk-test"
+        return [
+            dict(title="绝区零 角色一览", url="https://wiki.example/zzz", summary="绝区零 新角色 全新角色 登场",
+                 snippet="", rerank_score=2.0, authority=3),
+            dict(title="无关页面", url="https://other.example/x", summary="别的游戏", snippet="",
+                 rerank_score=1.0, authority=1),
+        ]
+
+    monkeypatch.setattr(deepseek_tools, "search", search)
+    monkeypatch.setattr(deepseek_tools, "fetch", lambda api_key, url, **_kw: dict(
+        title="绝区零 Wiki", content="# 绝区零\n代理人：全新角色、页面角色 ![](https://img/x.png)"))
+    payload = {"terms": [
+        {"term": "全新角色", "category": "角色", "priority": "core", "sources": [{"url": "https://wiki.example/zzz"}]},
+        {"term": "页面角色", "category": "角色", "priority": "core", "sources": [{"url": "https://made.up/page"}]},
+        {"term": "凭空编的", "category": "角色", "priority": "core", "sources": [{"url": "https://wiki.example/zzz"}]},
+    ]}
+    fake = _FakeProvider(payload, with_evidence=False)
+    monkeypatch.setattr(_ai_providers, "provider_for_stage", lambda *_a, **_k: fake)
+    stages = []
+    result = gs.run_term_search(_FakeLegacy(), "绝区零", settings, progress=lambda s, n: stages.append(s))
+    assert stages == ["检索来源", "读取资料", "提取候选", "去重/比较"]
+    assert queries and all(q.startswith("绝区零") and len(q) <= 128 for q in queries)
+    assert fake.calls[0]["enable_search"] is False
+    assert result["search_tool"] == "deepseek" and result["searched"] is True
+    assert result["searches"] == len(queries) and result["fetches"] == 1
+    assert "https://other.example/x" not in result["search_evidence"][0]["urls"]   # subject not named
+    by_term = {diff.term.term: diff for diff in result["diffs"]}
+    assert by_term["全新角色"].change_type == "new" and by_term["全新角色"].checked_by_default
+    # cited a made-up URL, but the page the app read has the name: that page becomes its source
+    assert by_term["页面角色"].term.source_urls == ("https://wiki.example/zzz",)
+    assert by_term["凭空编的"].change_type == "unverifiable" and not by_term["凭空编的"].checked_by_default
+
+
+def test_run_term_search_with_deepseek_and_no_relevant_results(monkeypatch):
+    from twobyteasr.providers import deepseek_tools
+    settings = _deepseek_settings(monkeypatch)
+    monkeypatch.setattr(deepseek_tools, "search", lambda *_a, **_k: [
+        dict(title="无关", url="https://other.example/x", summary="别的", snippet="")])
+    fake = _FakeProvider({"terms": []}, with_evidence=False)
+    monkeypatch.setattr(_ai_providers, "provider_for_stage", lambda *_a, **_k: fake)
+    with pytest.raises(GlossarySearchError) as exc_info:
+        gs.run_term_search(_FakeLegacy(), "绝区零", settings)
+    assert exc_info.value.code == "search_evidence_missing"
+    assert not fake.calls                                  # no model request without material
+
+
+def test_run_term_search_with_deepseek_bad_key_is_unauthorized(monkeypatch):
+    from twobyteasr.providers import deepseek_tools
+    settings = _deepseek_settings(monkeypatch)
+
+    def search(*_a, **_k):
+        raise deepseek_tools.DeepSeekToolError("bad key", status=401, category="auth")
+
+    monkeypatch.setattr(deepseek_tools, "search", search)
+    monkeypatch.setattr(_ai_providers, "provider_for_stage", lambda *_a, **_k: _FakeProvider({"terms": []}))
+    with pytest.raises(GlossarySearchError) as exc_info:
+        gs.run_term_search(_FakeLegacy(), "绝区零", settings)
+    assert exc_info.value.code == "unauthorized"
 
 
 def test_capability_detection_flags_missing_search():

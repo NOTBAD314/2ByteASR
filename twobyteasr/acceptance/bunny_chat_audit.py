@@ -80,15 +80,19 @@ def audit(win, output: Path, theme: str) -> int:
         card = chat()
         card.reveal_all()
         yield 0.3
-        check('the card floats above the window', card.floating and card.isWindow(), card.windowFlags())
-        inside = win.geometry().contains(card.geometry())
-        corner = win.geometry().right() - card.geometry().right()
+        expected_floating = sys.platform == 'win32'
+        check('the card uses the platform overlay', card.floating == expected_floating
+              and (card.isWindow() if expected_floating else card.parentWidget() is win), card.windowFlags())
+        window_rect = QRect(win.mapToGlobal(QPoint()), win.size())
+        card_rect = QRect(card.mapToGlobal(QPoint()), card.size())
+        inside = window_rect.contains(card_rect)
+        corner = window_rect.right() - card_rect.right()
         check('at the right inside the window', inside and 0 <= corner < 60,
-              [card.geometry().getRect(), win.geometry().getRect()])
+              [card_rect.getRect(), window_rect.getRect()])
         start = win.start_button
         start_rect = QRect(start.mapToGlobal(QPoint(0, 0)), start.size())
-        check('it leaves 「开始生成字幕」 uncovered', not start.isVisible() or not card.geometry().intersects(start_rect),
-              [card.geometry().getRect(), start_rect.getRect(), start.isVisible()])
+        check('it leaves 「开始生成字幕」 uncovered', not start.isVisible() or not card_rect.intersects(start_rect),
+              [card_rect.getRect(), start_rect.getRect(), start.isVisible()])
         check('兔白 stands beside the card', card.mascot is not None and card.mascot.isVisible())
         check('no AI: she says so and offers the AI settings',
               '找功能在哪里' in ''.join(lines(card)) and card.go_button.isVisible(), [lines(card), card.go_button.text()])
@@ -286,11 +290,12 @@ def audit(win, output: Path, theme: str) -> int:
         bunny_chat.IDLE_DOZE_S = original_idle
         bunny_chat.ai_readiness = monkey_ready
 
-        before = card.pos() - win.pos()
+        before = card.mapToGlobal(QPoint()) - win.mapToGlobal(QPoint())
         win.move(win.pos() + QPoint(-40, -30))
         yield 0.5
-        check('the card follows the window', (card.pos() - win.pos() - before).manhattanLength() <= 2,
-              [(card.pos() - win.pos()).toTuple(), before.toTuple()])
+        relative = card.mapToGlobal(QPoint()) - win.mapToGlobal(QPoint())
+        check('the card follows the window', (relative - before).manhattanLength() <= 2,
+              [relative.toTuple(), before.toTuple()])
         from PySide6.QtCore import QEvent
         from PySide6.QtGui import QKeyEvent
         app.sendEvent(card, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
