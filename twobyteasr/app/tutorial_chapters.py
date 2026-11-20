@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF, QTimer
+from PySide6.QtCore import QRectF, QTimer, Qt
 from PySide6.QtWidgets import QWidget
 
 from ..i18n import tr
@@ -422,9 +422,10 @@ def speakers_steps(w) -> list:
     """说话人管理 (2026-11-16): rename, colour, merge, names before lines, per-speaker export.
     The manager is opened without blocking (``show``) so the tutorial's buttons keep working;
     it is closed when the chapter ends."""
-    from .home_tour import TourAction, TourStep
+    from .home_tour import GuidedTour, TourAction, TourStep
     s = _Studio(w)
     names = {}
+    embedded = not GuidedTour.uses_floating_overlay()
 
     def dialog():
         found = w.__dict__.get('_tutorial_speakers')
@@ -441,8 +442,17 @@ def speakers_steps(w) -> list:
         names.update({speaker.id: speaker.name for speaker in page.project.speakers})
         manager = SpeakerManagerDialog(page)
         manager.setModal(False)
+        if embedded:
+            # A child tour cannot cover another native window. Keep this
+            # throwaway practice manager in the same canvas on Mac/Linux.
+            manager.setParent(w, Qt.WindowType.Widget)
+            manager.resize(min(manager.width(), max(1, w.width()-32)),
+                           min(manager.height(), max(1, w.height()-32)))
+            manager.move(max(0, (w.width()-manager.width())//2),
+                         max(0, (w.height()-manager.height())//2))
         w._tutorial_speakers = manager
         manager.show()
+        manager.raise_()
 
     def card(key='S00'):
         def find():
@@ -495,7 +505,7 @@ def speakers_steps(w) -> list:
                 return child
         return None
 
-    host = dialog
+    host = None if embedded else dialog
     return [
         TourStep('这一章学==说话人管理==：改名、换颜色、合并同一个人、字幕前带名字', None,
                  note='用示范工程练习；它有「主播」和「嘉宾」两位', enter=s.open, anim='speakers'),

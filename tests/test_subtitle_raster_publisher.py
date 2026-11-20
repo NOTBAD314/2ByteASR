@@ -36,6 +36,27 @@ def test_cropped_geometry_alpha_and_revoke(tmp_path):
     finally:publisher.close();publisher.thread.join(2)
 
 
+def test_fade_scales_only_cropped_premultiplied_pixels(tmp_path):
+    from PySide6.QtGui import QPainter
+    publisher=SubtitleRasterPublisher(tmp_path);controller=Controller()
+    image=QImage(64,32,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
+    painter=QPainter(image);painter.fillRect(10,5,20,10,QColor(240,120,60,200));painter.end()
+    try:
+        for step,opacity in enumerate((1.,.73,.31)):
+            assert publisher.submit(9,image,QRect(0,0,64,32),opacity,controller)
+            until(lambda:len(controller.calls)==step+1)
+            _,path,kw=controller.calls[-1]
+            assert (kw['x'],kw['y'],kw['width'],kw['height'])==(10,5,20,10)
+            expected=QImage(64,32,QImage.Format_ARGB32_Premultiplied);expected.fill(Qt.transparent)
+            painter=QPainter(expected);painter.setOpacity(opacity);painter.drawImage(0,0,image);painter.end()
+            region=expected.copy(QRect(10,5,20,10))  # constBits() is only a view: keep the image alive
+            want=bytes(region.constBits())
+            got=path.read_bytes()[:len(want)]
+            assert max(abs(a-b) for a,b in zip(got,want))<=1
+            kw['on_applied'](True)
+    finally:publisher.close();publisher.thread.join(2)
+
+
 def test_close_revokes_but_retains_inflight_buffer_until_ack(tmp_path):
     publisher=SubtitleRasterPublisher(tmp_path);controller=Controller()
     image=QImage(2,2,QImage.Format_ARGB32);image.fill(Qt.white)

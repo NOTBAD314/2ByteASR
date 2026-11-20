@@ -147,6 +147,52 @@ def test_loading_guard_does_not_swallow_recovery_buttons(tmp_path):
         root.close()
 
 
+def test_loading_guard_does_not_swallow_save_changes_buttons():
+    """2026-11-19: 「保存工程修改」 over the loading page could not be clicked at all."""
+    from twobyteasr.design.native_loading_cover import InputHostLease
+    from twobyteasr.projects.save_changes_dialog import ask_save_changes
+    root = QWidget()
+    host, cover = QWidget(root), QWidget(root)
+    lease = InputHostLease(host)
+    root.show()
+    host.show()
+    lease.acquire(root, cover)
+    seen = {}
+    def click():
+        box = next(x for x in APP.topLevelWidgets() if x.objectName() == 'saveChangesDialog' and x.isVisible())
+        seen['shown'] = True
+        QTest.mouseClick(box.save_button, Qt.LeftButton)
+        if box.isVisible():
+            box.reject()
+    QTimer.singleShot(50, click)
+    try:
+        # Parented to the covered editor, exactly like the real dirty guard.
+        assert ask_save_changes(host, '打开工程', 'demo') == 'save'
+        assert seen and lease.held
+    finally:
+        lease.release()
+        root.close()
+
+
+def test_loading_guard_still_blocks_the_covered_editor():
+    from twobyteasr.design.native_loading_cover import InputHostLease
+    from PySide6.QtWidgets import QPushButton
+    root = QWidget()
+    host, cover = QWidget(root), QWidget(root)
+    button = QPushButton('x', host)
+    clicked = []
+    button.clicked.connect(lambda: clicked.append(True))
+    lease = InputHostLease(host)
+    root.show()
+    lease.acquire(root, cover)
+    try:
+        QTest.mouseClick(button, Qt.LeftButton)
+        assert not clicked
+    finally:
+        lease.release()
+        root.close()
+
+
 def test_failed_commit_does_not_claim_success_or_enter_undo(page, monkeypatch):
     w, p = page
     before = [c.text for c in p.cues]

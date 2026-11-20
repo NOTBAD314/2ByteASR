@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--size', default='1600x1000')
     parser.add_argument('--fixtures', type=Path)
     parser.add_argument('--layout-only', action='store_true')
+    parser.add_argument('--exe', type=Path)
     args = parser.parse_args()
     out = args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):
@@ -52,6 +53,8 @@ def main():
     encode('long-source.mp4',['-f','lavfi','-i','color=c=0x405060:s=160x90:r=1:d=7200',
         '-f','lavfi','-i','sine=frequency=330:sample_rate=8000:duration=7200',
         '-c:v','libx264','-preset','ultrafast','-threads','2','-c:a','aac','-b:a','16k'])
+    from PIL import Image
+    Image.new('RGB', (160, 90), (40, 90, 230)).save(fixtures/'placement-photo.png')
     project=SubtitleProject(media=StudioMedia(str(base),duration_ms=90000,width=320,height=180),
         cues=[StudioCue('preserve-caption',1000,4000,'现有字幕保持时序')],
         studio_state={'playhead_ms':60000})
@@ -63,14 +66,17 @@ def main():
         TWOBYTEASR_ACCEPTANCE_SCENARIO='source-monitor',TWOBYTEASR_ACCEPTANCE_DIR=str(out),
         SOURCE_MONITOR_FIXTURES=str(fixtures),SOURCE_MONITOR_LAYOUT_ONLY=str(int(args.layout_only)),
         QT_QPA_PLATFORM='windows',QT_SCALE_FACTOR=str(args.scale),PYTHONUTF8='1')
-    from isolated_windows_desktop import run_on_desktop
-    code=run_on_desktop([sys.executable,'-B',str(ROOT/'quick_start.py')],cwd=ROOT,env=env,
-        output=out/'process',timeout=600)
-    result_path=out/'result.json'
-    result=json.loads(result_path.read_text('utf8')) if result_path.is_file() else {'error':'No acceptance result'}
-    result['exit_code']=code; result_path.write_text(json.dumps(result,ensure_ascii=False,indent=2),'utf8')
-    print(json.dumps(result,ensure_ascii=False,indent=2))
-    return 0 if code==0 and result.get('finished') and not result.get('error') and all(result.get('checks',{}).values()) else 1
+    env.update(TWOBYTEASR_INVOKER_CWD=str(ROOT), LOCALAPPDATA=str(out/'local'), APPDATA=str(out/'roaming'))
+    from audit_launch_bridge import run_audit_on_desktop
+    command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT/'quick_start.py')]
+    result_path = out/'result.json'
+    code = run_audit_on_desktop(command, cwd=ROOT, env=env, output=out, timeout=600, receipt=result_path)
+    result = json.loads(result_path.read_text('utf8')) if result_path.is_file() else {'error': 'No acceptance result'}
+    result['exit_code'] = code
+    result['passed'] = code == 0 and bool(result.get('finished')) and bool(result.get('checks')) and not result.get('error') and all(result['checks'].values())
+    result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), 'utf8')
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result['passed'] else 1
 
 
 if __name__=='__main__':

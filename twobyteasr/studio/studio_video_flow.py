@@ -1824,7 +1824,8 @@ class StudioVideoFlowMixin:
         layers = self._multitrack_preview_layers(timeline_ms)
         audio_layers = self._multitrack_audio_layers(timeline_ms)
         target = self._multitrack_preview_target(timeline_ms, layers=layers, audio_layers=audio_layers)
-        if target is not None and str(target.get('source_path', '')).lower().endswith('.gif'):
+        from ..media.animated_gif import is_frame_image
+        if target is not None and is_frame_image(target.get('source_path', '')):
             # A GIF has no transport/audio clock. Its base and overlay frames
             # follow the existing unattached ProjectClock, just like a gap.
             key = str(target.get('key') or target['clip_id'])

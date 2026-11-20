@@ -357,7 +357,7 @@ def isolate_acceptance_settings() -> None:
             from .real_glossary_repair_audit import install
             install(output)
         return
-    if scenario in {'editor-integrity','subtitle-reliability','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
+    if scenario in {'editor-integrity','subtitle-reliability','macos-edit-save','macos-waveform-stability','macos-caption-caret-split','caption-caret-split','waveform-full','waveform-stability','edit-save','studio-search-lag','toolbar-scope','storage-media-relink','real-storage-after','bilingual-text','proofread-interactions','studio-edit-integrity','translation-vad','cloud-preview-integrity','issue-frame-step','playback-stability'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -1131,6 +1131,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'premium-motion':
+        from .premium_motion_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-plan-zoom':
         from .home_plan_zoom_audit import start
         output = audit_directory()
@@ -1237,6 +1242,11 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
+    if scenario in {'macos-edit-save', 'macos-waveform-stability', 'macos-caption-caret-split'}:
+        from .macos_edit_save_entry import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if scenario == 'waveform-full':
         from .waveform_full_audit import start
         output = audit_directory()

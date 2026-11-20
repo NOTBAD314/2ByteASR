@@ -15,6 +15,7 @@ Coloured inks are not changed.
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from collections.abc import Sequence
 
 from PySide6.QtGui import QColor, QImage
@@ -144,12 +145,46 @@ def _column_colors(colors: Sequence[QColor], columns: int):
     return stops[index] + (stops[index + 1] - stops[index]) * share
 
 
+#: At-rest washes already made (2026-11-19, user: opening a project froze the
+#: workbench). Every style-panel load, resize and repaint of a well rebuilt
+#: its noise field in NumPy on the GUI thread, though a resting well (no
+#: pointer, no ripple) is a pure function of these inputs.
+_REST_CACHE: OrderedDict[tuple, QImage] = OrderedDict()
+REST_CACHE_SIZE = 96
+
+
+def _rest_key(width, height, colors, field):
+    hover = field.get("hover")
+    if field.get("ripples") or (hover is not None and hover[2] > 0.01):
+        return None
+    if set(field) - {"level", "t", "seed", "neutral", "hover", "ripples"}:
+        return None
+    return (round(float(width), 2), round(float(height), 2), tuple(color.rgba() for color in colors),
+            round(float(field.get("level", 1.0)), 4), round(float(field.get("t", 0.0)), 4),
+            float(field.get("seed", 0.0)), float(field.get("neutral", 0.0)))
+
+
 def wash_image(width: float, height: float, colors: Sequence[QColor], **field) -> QImage:
     """The wash as a premultiplied image, ``SCALE`` times smaller than the
     well; draw it stretched over the well with smooth scaling.  Several
     ``colors`` run left to right (a gradient fill, or mixed selections)."""
-    np = _np()
     colors = [color for color in colors if color.isValid()] or [QColor("#000000")]
+    key = _rest_key(width, height, colors, field)
+    if key is not None:
+        cached = _REST_CACHE.get(key)
+        if cached is not None:
+            _REST_CACHE.move_to_end(key)
+            return cached
+    image = _wash_image(width, height, colors, **field)
+    if key is not None:
+        _REST_CACHE[key] = image
+        while len(_REST_CACHE) > REST_CACHE_SIZE:
+            _REST_CACHE.popitem(last=False)
+    return image
+
+
+def _wash_image(width: float, height: float, colors: Sequence[QColor], **field) -> QImage:
+    np = _np()
     neutral = neutrality(colors[0]) if len(colors) == 1 else 0.0
     alpha = wash_alpha(width, height, neutral=neutral, **field)
     rows, columns = alpha.shape

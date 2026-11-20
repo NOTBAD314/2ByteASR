@@ -676,7 +676,9 @@ MOTION_UI_PRESETS = {
 
 
 from ..studio.studio_shortcuts import STUDIO_COMMANDS
-STUDIO_MEDIA_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".wav", ".mp3", ".m4a", ".flac", ".aac", ".gif"}
+STUDIO_MEDIA_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".wav", ".mp3", ".m4a", ".flac", ".aac", ".gif",
+                         # 2026-11-18: pictures are sources too (media.animated_gif.STILL_IMAGE_SUFFIXES).
+                         ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 STUDIO_QSS = f"""
 QWidget#subtitleStudio {{ background: {BACKGROUND}; color: {INK}; font-size: 13px; }}

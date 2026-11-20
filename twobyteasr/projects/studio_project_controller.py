@@ -45,6 +45,34 @@ from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 from ..i18n import bind_text
 
 
+# 2026-11-19: an audio-only source (MP3/M4A recording) has no picture; ffmpeg
+# then exits 0xFFFFFFEA ("Output file does not contain any stream"), and the
+# library backfill retried it on every refresh. Known sources are skipped.
+_AUDIO_ONLY_SUFFIXES = frozenset({'.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.wma'})
+_NO_PICTURE_SOURCES: set[tuple] = set()
+
+# One ordered writer for library-index updates made while a project opens.
+from concurrent.futures import ThreadPoolExecutor
+_LIBRARY_INDEX_WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix='library-index-writer')
+
+
+def _picture_key(media: Path) -> tuple:
+    try:
+        stat = media.stat()
+        return str(media), stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return str(media), None, None
+
+
+def _media_has_no_picture(project, media: Path) -> bool:
+    if media.suffix.lower() in _AUDIO_ONLY_SUFFIXES:
+        return True
+    assets = list(getattr(project, 'media_pool', None) or [])
+    if assets and all((asset.video_metadata or {}).get('has_video') is False for asset in assets):
+        return True
+    return _picture_key(media) in _NO_PICTURE_SOURCES
+
+
 class StudioProjectController:
     """Coordinate project persistence and page population without owning UI state."""
 
@@ -198,7 +226,8 @@ class StudioProjectController:
             records.append(record)
         return records
 
-    def _remember_recent_project(self, path: Path, *, settings_path_fn=studio_settings_path) -> None:
+    def _remember_recent_project(self, path: Path, *, settings_path_fn=studio_settings_path,
+                                 background_index: bool = False) -> None:
         settings_path = settings_path_fn()
         try:
             payload = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.is_file() else {}
@@ -252,9 +281,9 @@ class StudioProjectController:
         payload["recent_projects"] = [current] + retained[:9]
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        self._touch_library_index_entry(path, current)
+        self._touch_library_index_entry(path, current, background=background_index)
 
-    def _touch_library_index_entry(self, path: Path, recent_record: dict) -> None:
+    def _touch_library_index_entry(self, path: Path, recent_record: dict, *, background: bool = False) -> None:
         """Keep the persisted Library index fresh for one project (save/open).
 
         2026-09-19：索引是工程库首屏的数据源；保存或打开工程时把摘要与
@@ -294,10 +323,16 @@ class StudioProjectController:
                     entry[dimension] = int(previous.get(dimension) or 0)
             entry["project_id"] = entry["project_id"] or str(previous.get("project_id") or "")
         from .studio_project import _LIBRARY_INDEX_LOCK
-        with _LIBRARY_INDEX_LOCK:
-            latest=load_library_index()
-            latest[resolved]=entry
-            save_library_index(latest)
+
+        def write():
+            with _LIBRARY_INDEX_LOCK:
+                latest=load_library_index()
+                latest[resolved]=entry
+                save_library_index(latest)
+        if background:
+            _LIBRARY_INDEX_WRITER.submit(write)
+        else:
+            write()
 
     def _ensure_project_cover(self, project_path: Path, project: SubtitleProject) -> Path | None:
         preview_dir = project_path.resolve().parent / "preview"
@@ -311,6 +346,8 @@ class StudioProjectController:
         media = Path(project.media.path)
         ffmpeg = Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
         if not media.is_file() or not ffmpeg.is_file():
+            return None
+        if _media_has_no_picture(project, media):
             return None
         preview_dir.mkdir(parents=True, exist_ok=True)
         seek_seconds = min(90.0, max(1.0, float(project.media.duration_ms or 0) / 100_000.0))
@@ -329,6 +366,8 @@ class StudioProjectController:
                  '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2',
                  '-q:v', '3', str(temporary)],
                 purpose='ffmpeg project cover',capture_output=True,timeout=20)
+            if result.returncode != 0 and 'does not contain any stream' in str(result.stderr or ''):
+                _NO_PICTURE_SOURCES.add(_picture_key(media))
             if result.returncode != 0 or not temporary.is_file():return None
             if version(project_path)!=project_version or version(cover)!=cover_version:return None
             if cover_version is None:
@@ -747,7 +786,9 @@ class StudioProjectController:
         )
         yield from _gui_slice.checkpoint()
         mark_hydration("project_assignment")
-        page._remember_recent_project(self.session.project_path)
+        # The rebuildable library index is merged and written on a worker
+        # (2026-11-19: 0.15 s of an atomic write on the GUI thread while opening).
+        self._remember_recent_project(self.session.project_path, background_index=True)
         owner = page.window().parentWidget() if page.window() is not None else None
         if owner is not None and hasattr(owner, "_refresh_studio_entry_card"):
             owner._refresh_studio_entry_card()

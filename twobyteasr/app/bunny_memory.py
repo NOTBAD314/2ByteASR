@@ -146,7 +146,7 @@ def load_chat(key: str) -> list:
     if not isinstance(rows, list):
         return []
     return [(row[0], row[1]) for row in rows if isinstance(row, (list, tuple)) and len(row) == 2
-            and row[0] in ('user', 'bunny') and isinstance(row[1], str) and row[1]][-CHAT_LIMIT:]
+            and row[0] in ('user', 'bunny', 'detail') and isinstance(row[1], str) and row[1]][-CHAT_LIMIT:]
 
 
 def save_chat(key: str, items) -> None:

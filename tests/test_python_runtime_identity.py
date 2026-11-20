@@ -29,6 +29,7 @@ class RuntimeEntryTests(unittest.TestCase):
             if key.startswith("TWOBYTEASR_") or key in {"2BYTEASR_USER_DATA_ROOT","2BYTEASR_MODEL_ROOT"}:
                 env.pop(key)
         env.update(LOCALAPPDATA=str(self.root/"local"),APPDATA=str(self.root/"roaming"),
+                   TWOBYTEASR_DEVELOPER_RUNTIMES="1",
                    TWOBYTEASR_CHILD_PROCESS_LOG=str(self.root/"children.jsonl"))
         self.environment=patch.dict(os.environ,env,clear=True);self.environment.start()
         registry.reset_runtime_registry_cache()
@@ -114,14 +115,16 @@ class RuntimeEntryTests(unittest.TestCase):
         self.assertEqual(registry.registry_path().read_bytes(),original)
 
     def test_missing_runtime_and_boundary_are_not_silently_repaired_to_base(self):
+        # This case exercises the formal app boundary, unlike the explicit
+        # source-only venv identity fixtures used by the other cases.
+        os.environ.pop("TWOBYTEASR_DEVELOPER_RUNTIMES",None)
         os.environ["TWOBYTEASR_TEST_ROOT"]=str(self.root)
         os.environ["TWOBYTEASR_MAIN_PYTHON"]=str(self.root/"missing/bin/python")
         registry.reset_runtime_registry_cache()
         self.assertEqual(registry.resolve_runtime_python("main"),"")
-        if os.name!="nt":
-            os.environ["TWOBYTEASR_MAIN_PYTHON"]=str(self.entries[0])
-            # Canonical target lies outside disposable root; retain old boundary.
-            self.assertEqual(registry.resolve_runtime_python("main"),"")
+        os.environ["TWOBYTEASR_MAIN_PYTHON"]=str(self.entries[0])
+        # An arbitrary developer venv must not enter the managed app role.
+        self.assertEqual(registry.resolve_runtime_python("main"),"")
     def test_wrong_venv_is_a_real_failed_production_import_probe(self):
         status,_,stderr=self.probe(self.entries[1],self.entries[0].parent.parent)
         self.assertNotEqual(status,0)

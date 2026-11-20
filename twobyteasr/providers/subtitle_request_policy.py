@@ -142,6 +142,69 @@ def escalated_thinking(enabled, protocol="auto", *, base_url="", endpoint_protoc
     return None if level == "max" else "max"
 
 
+ESCALATION_INPUT_RESERVE = 12288
+# 2026-11-18 (users: "一直显示返回上限" then local rules): a measured DeepSeek v4-flash run spent
+# 6146 reasoning tokens at thinking=high on a 140-character polish half batch (6787 of 10000);
+# the ordinary answers in the same run used 20-800. Thinking retries get 32768, a ceiling the
+# common thinking models accept; it is a maximum, billing counts only what is generated.
+ESCALATION_OUTPUT_TOKENS = 32768
+TRUNCATION_CATEGORIES = frozenset({'structured_output_truncated', 'structured_output_truncated_before_answer'})
+
+
+def escalated_budget(current, operation="polish", known_output=None, known_context=None):
+    """The retry's output budget: ESCALATION_OUTPUT_TOKENS within the request window and the
+    model's known output limit, never lower than what the user configured."""
+    current = max(1, int(current or 0))
+    from .provider_input_budget import POLICIES
+    policy = POLICIES.get(operation) or POLICIES['polish']
+    context = policy.context_tokens
+    if isinstance(known_context, int) and not isinstance(known_context, bool) and known_context > 0:
+        context = min(context, known_context)
+    cap = max(1, min(ESCALATION_OUTPUT_TOKENS, context - ESCALATION_INPUT_RESERVE))
+    if isinstance(known_output, (int, float)) and not isinstance(known_output, bool) and known_output > 0:
+        cap = min(cap, int(known_output))
+    return max(current, cap)
+
+
+def endpoint_escalated_budget(current, operation, endpoint, model=""):
+    from .model_discovery import model_limits
+
+    known = model_limits(endpoint.get('provider', ''), endpoint.get('base_url') or endpoint.get('url', ''),
+                         endpoint.get('api_key', ''), model or endpoint.get('model', ''))
+    return escalated_budget(current, operation, known.get('output_tokens'), known.get('context_tokens'))
+
+
+def escalated_output_tokens(snapshot, operation="polish"):
+    """Output budget for a thinking-escalation request; reasoning shares the answer's budget.
+
+    2026-11-18 (鳴潮 special): both grouping halves resent at thinking=high with the ordinary
+    10000-token cap were cut off before the answer (``HTTP正文因长度限制被截断``) and the batch
+    stayed local. See ``escalated_budget`` (the window check in provider_input_budget still
+    applies to the request).
+    """
+    try:
+        return endpoint_escalated_budget(getattr(snapshot, 'max_output_tokens', 0), operation,
+                                         snapshot.endpoint(), getattr(snapshot, 'model', ''))
+    except Exception:
+        return escalated_budget(getattr(snapshot, 'max_output_tokens', 0), operation)
+
+
+def retry_thinking(snapshot, categories, operation="polish", *, base_url="", endpoint_protocol=""):
+    """The thinking value for the one final retry, or None when the retry cannot help.
+
+    One level higher when the dialect has one. When it has none (an unverified relay, or already
+    at the top level) but every failure was a cut-off answer, the same thinking value is resent
+    with the larger output budget: a relay whose model thinks anyway used to go straight to
+    local rules here.
+    """
+    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
+                               base_url=base_url, endpoint_protocol=endpoint_protocol)
+    if (level is None and categories and set(categories) <= TRUNCATION_CATEGORIES
+            and escalated_output_tokens(snapshot, operation) > int(snapshot.max_output_tokens or 0)):
+        return snapshot.enable_thinking
+    return level
+
+
 def escalation_enabled(settings, stage="group"):
     """The saved per-stage switch; a missing key means on (the recommended default)."""
     models = (settings or {}).get("models", {}) or {}

@@ -129,17 +129,38 @@ def warm_words() -> None:
     threading.Thread(target=load, name='bunny-words', daemon=True).start()
 
 
-@lru_cache(maxsize=256)
+def words_ready() -> bool:
+    return _words_ready is not None and _words_ready.is_set()
+
+
 def _joints(plain_text: str, marked_runs: tuple) -> frozenset:
     """Positions after which a line must not break (2026-11-14, user: words cut in half look bad).
 
     Inside a Chinese word that jieba finds (新手|引导, 显卡, 时间轴) and inside a short marked run
     (**新手引导**). Qt's line breaker honours U+2060 WORD JOINER; ``white-space: nowrap`` it does not.
+
+    2026-11-18 (user: opening 「问问兔白」 hangs): her first line used to call jieba on the GUI thread
+    while its dictionary was still loading — 0.6–0.9 s with nothing drawn. Until the background
+    load (``warm_words``) is done only the marked runs stay whole; that answer is not cached, so the
+    lines after it get whole words.
     """
+    if not words_ready():
+        warm_words()
+        return _marked_joints(marked_runs)
+    return _word_joints(plain_text, marked_runs)
+
+
+def _marked_joints(marked_runs: tuple) -> frozenset:
     joints = set()
     for start, end in marked_runs:
         if 1 < end - start <= _KEEP_MARKED:
             joints.update(range(start, end - 1))
+    return frozenset(joints)
+
+
+@lru_cache(maxsize=256)
+def _word_joints(plain_text: str, marked_runs: tuple) -> frozenset:
+    joints = set(_marked_joints(marked_runs))
     try:
         import warnings
         with warnings.catch_warnings():
@@ -420,8 +441,12 @@ VOWELS = {                       # F1, F2, F3 of an adult voice; scaled up for a
 CONSONANTS = {'b': (900, 0.45, 3), 'd': (1750, 0.45, 3), 'm': (1000, 0.4, 2), 'n': (1700, 0.4, 2),
               'l': (1300, 0.6, 2), 'w': (750, 0.5, 2), 'y': (2200, 0.45, 2), 'h': (None, 0.8, 8), '': (None, 1.0, 0)}
 BASE_HZ = 520.0
-SPREAD = (-3, -1, 0, 1, 2, 4)            # semitones, one per syllable: a sing-song line
-GLIDES = (-0.16, -0.08, 0.0, 0.07, 0.12)  # pitch movement inside a syllable
+# 2026-11-19 (user: her voice is no longer cute — many low 「吧」「啊」, it sounds like Thai; picked
+# 「A 修正版」 from the samples): the timbre stays, but no syllable goes below the base pitch, the
+# glides inside a syllable are small and mostly rising (the big falling ones read as tones of a
+# tonal language), and the dark vowels o/u and the dark consonants w/h are no longer drawn.
+SPREAD = (0, 1, 2, 3, 4, 2)              # semitones, one per syllable: a sing-song line
+GLIDES = (-0.03, 0.0, 0.03, 0.05, 0.08)  # pitch movement inside a syllable
 FORMANT_SCALE = 1.5
 SYLLABLE_S = 0.072
 SOFT_TOP_HZ = 3200.0                      # harmonics above this are softened
@@ -430,21 +455,25 @@ LOUDNESS = 0.075                          # RMS of one syllable
 # 2026-11-14 (「问问兔白」, user: every click sounded the same short blip; the voice should follow her
 # mood and the words): (semitones, length factor, extra glide, vibrato depth, loudness factor).
 # '' is the tutorial's voice, unchanged.
+# 2026-11-19 (「A 修正版」): sad and gentle moods were up to 3 semitones lower, 20 % longer and fell
+# 10 % inside each syllable — her long answers became a low, drawn-out 「啊」. Now no mood goes
+# below the base pitch or past 1.05 x the length, and the bends are halved (never below -0.02);
+# sadness is carried by a softer voice instead.
 VOICE_MOODS = {
     '': (0, 1.0, 0.0, 0.0, 1.0),
-    'happy': (2, 0.95, 0.05, 0.0, 1.05),
-    'excited': (4, 0.86, 0.09, 0.0, 1.12),
-    'teasing': (1, 1.0, 0.12, 0.0, 1.0),
-    'surprised': (5, 0.92, 0.14, 0.0, 1.12),
-    'thinking': (-1, 1.12, -0.04, 0.0, 0.9),
-    'sorry': (-3, 1.16, -0.1, 0.0, 0.85),
+    'happy': (2, 0.95, 0.025, 0.0, 1.05),
+    'excited': (4, 0.86, 0.045, 0.0, 1.12),
+    'teasing': (1, 1.0, 0.06, 0.0, 1.0),
+    'surprised': (5, 0.92, 0.07, 0.0, 1.12),
+    'thinking': (0, 1.05, -0.02, 0.0, 0.9),
+    'sorry': (0, 1.05, -0.02, 0.0, 0.85),
     'shy': (1, 0.9, 0.0, 0.0, 0.7),
-    'comfort': (-2, 1.2, -0.05, 0.0, 0.85),
-    'scared': (2, 1.1, -0.03, 0.035, 0.7),      # 2026-11-17: small and shaky after a fright
+    'comfort': (0, 1.05, -0.02, 0.0, 0.85),
+    'scared': (2, 1.05, -0.015, 0.035, 0.7),    # 2026-11-17: small and shaky after a fright
     # the words themselves: **bold** / ==marker==, ^^big^^, __whisper__, %%trembling%%
-    'bright': (1, 1.0, 0.04, 0.0, 1.18),
-    'big': (3, 1.12, 0.06, 0.0, 1.32),
-    'whisper': (-1, 0.92, -0.02, 0.0, 0.5),
+    'bright': (1, 1.0, 0.02, 0.0, 1.18),
+    'big': (3, 1.05, 0.03, 0.0, 1.32),
+    'whisper': (0, 0.92, -0.01, 0.0, 0.5),
     'tremble': (3, 1.05, 0.0, 0.045, 1.05),
 }
 STYLE_VOICE = {'em': 'bright', 'hi': 'bright', 'big': 'big', 'small': 'whisper', 'shake': 'tremble'}
@@ -557,8 +586,8 @@ class MascotVoice(QObject):
 
     GAP = 0.05
     VOLUME = 0.42
-    VOWELS = 'aiueo'
-    CONSONANT_ORDER = 'bdmnlwyh'
+    VOWELS = 'aieia'               # 2026-11-19: bright vowels drawn (a and i twice), no dark o/u
+    CONSONANT_ORDER = 'bdmnly'     # 2026-11-19: no w (a dark 「wo」) or breathy h
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -619,8 +648,9 @@ class MascotVoice(QObject):
         code = (ord(char) * 2654435761) >> 9
         names = self.CONSONANT_ORDER + ' '
         lower = char.lower()
-        vowel = lower if lower in self.VOWELS else self.VOWELS[code % 5]
-        consonant = '' if lower in self.VOWELS else names[(code >> 3) % len(names)].strip()
+        typed_vowel = lower in VOWELS      # a typed Latin vowel keeps its own sound
+        vowel = lower if typed_vowel else self.VOWELS[code % len(self.VOWELS)]
+        consonant = '' if typed_vowel else names[(code >> 3) % len(names)].strip()
         return consonant, vowel, (code >> 7) % len(SPREAD), (code >> 11) % len(GLIDES)
 
     def say(self, char: str, mood: str = '') -> bool:
@@ -662,21 +692,25 @@ class Typewriter(QObject):
         self.keep_words = False   # 「问问兔白」: words never break across lines
         self.pace = 1.0           # 「问问兔白」: slower for long (sad, gentle) syllables, so sound and words stay together
         self._styles = []
+        self._before = ''         # 「问问兔白」: what the label already says above the line being typed
 
     @property
     def running(self) -> bool:
         return bool(self._parts) and self._index < len(self._parts)
 
-    def prepare(self, parts, colors: dict) -> None:
-        """``parts``: [(label, marked text)]. Leaves every label blank (space kept) until ``start``."""
+    def prepare(self, parts, colors: dict, before: str = '') -> None:
+        """``parts``: [(label, marked text)]. Leaves every label blank (space kept) until ``start``.
+
+        ``before`` (2026-11-18): HTML that stays in front of what is typed (her earlier sentences)."""
         self.stop()
+        self._before = before
         self._colors = colors
         self._parts = [[label, marked_segments(text), plain(text)] for label, text in parts if text]
         self._styles = [[style for words, style in segments for _char in words] for _label, segments, _c in self._parts]
         self._index = 0
         self._shown = 0
         for label, segments, _chars in self._parts:
-            label.setText(segments_html(segments, colors, 0, keep_words=self.keep_words))
+            label.setText(self._before + segments_html(segments, colors, 0, keep_words=self.keep_words))
 
     def start(self) -> None:
         if self.running and not self._timer.isActive():
@@ -696,7 +730,7 @@ class Typewriter(QObject):
             return
         char = chars[self._shown]
         self._shown += 1
-        label.setText(segments_html(segments, self._colors, self._shown, keep_words=self.keep_words))
+        label.setText(self._before + segments_html(segments, self._colors, self._shown, keep_words=self.keep_words))
         self.spoke.emit(char)
         styles = self._styles[self._index] if self._index < len(self._styles) else []
         self.spoke_marked.emit(char, styles[self._shown - 1] if self._shown - 1 < len(styles) else '')
@@ -709,7 +743,7 @@ class Typewriter(QObject):
         self._timer.stop()
         was_running = self.running
         for label, segments, _chars in self._parts:
-            label.setText(segments_html(segments, self._colors, keep_words=self.keep_words))
+            label.setText(self._before + segments_html(segments, self._colors, keep_words=self.keep_words))
         self._index = len(self._parts)
         if was_running:
             self.finished.emit()

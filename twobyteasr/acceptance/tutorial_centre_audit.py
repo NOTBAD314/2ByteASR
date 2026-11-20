@@ -37,6 +37,23 @@ def run(window, output, check):
         apply_theme(theme,app);set_language('zh');settle(.35)
         centre=TutorialCentre(window);centre.resize(1100,760);centre.show();settle(.3)
         check('eleven available chapters '+theme,len(centre.rows)==11 and not any(c.soon for c in tutorial_chapters.CATALOG))
+        if os.environ.get('TWOBYTEASR_TUTORIAL_LEARNING_PATH_AUDIT') == '1':
+            from ..app.tutorial_centre import recommended
+            keys = [chapter.id for chapter in tutorial_chapters.CATALOG]
+            check('numbered learning path ' + theme,
+                  [key for _node, key in centre.path.nodes] == keys
+                  and [centre.nodes[key].text() for key in keys] == [str(i) for i in range(1, 12)])
+            check('recommended chapter highlighted ' + theme,
+                  centre.path.next_up == recommended(set()) == centre.pick
+                  and centre.nodes[centre.pick].property('picked'))
+            until(lambda: centre.windowOpacity() >= .99)
+            QTest.mouseClick(centre.rows[keys[1]], Qt.LeftButton)
+            check('actual chapter click updates path and preview ' + theme,
+                  centre.pick == centre.path.picked == keys[1]
+                  and centre.nodes[keys[1]].property('picked')
+                  and '1.</span>' in centre.preview_learn.text())
+            if os.environ.get('TWOBYTEASR_ROUND_REGION') == '1':
+                check('native Windows rounded tutorial ' + theme, _has_rounded_region(centre))
         for key in centre.rows:
             centre.select(key);settle(.02)
             check('chapter selectable '+theme+' '+key,centre.start_button.isEnabled() and centre.pick==key)
@@ -71,7 +88,7 @@ def run(window, output, check):
             cursor=editor.textCursor().position() if editor else None,draft_id=getattr(getattr(draft,'target',None),'cue_id',None))
         if current is not None:
             target=current._raw_target(current.index);widget=target[0] if isinstance(target,tuple) else target
-            state.update(stuck=current._stuck,ready=current._is_ready(current.index),covered=current._covered(current.index),
+            state.update(stuck=current._stuck,floating=current.floating,ready=current._is_ready(current.index),covered=current._covered(current.index),
                 target_type=type(widget).__name__,target_visible=widget.isVisible() if widget is not None else None,
                 project_path=str(getattr(page,'project_path','')),current_page=type(window.pages.currentWidget()).__name__)
             if widget is not None:
@@ -103,6 +120,12 @@ def run(window, output, check):
             index=tour.index;step=tour._step()
             if index not in seen:
                 seen.add(index);records.append(dict(chapter=key,index=index,text=tour._text_source))
+                if key=='speakers' and index==2 and not tour.floating:
+                    manager=window.__dict__.get('_tutorial_speakers')
+                    target=tour._raw_target(index)
+                    widget=target[0] if isinstance(target,tuple) else target
+                    check('speaker practice shares the child overlay window',manager is not None
+                          and not manager.isWindow() and widget is not None and widget.window() is window)
                 (output/'tutorial-steps.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),'utf8')
                 if index in (0,len(tour.steps)//2,len(tour.steps)-1):
                     shot(window,f'chapter-{key}-{index:02}-target');shot(tour,f'chapter-{key}-{index:02}')
@@ -138,3 +161,25 @@ def run(window, output, check):
     check('task progress reloads',centre.tasks_done=={'review'})
     shot(centre,'tasks-completed');centre.reject();until(lambda:not centre.isVisible());centre.deleteLater()
     (output/'tutorial-steps.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),'utf8')
+
+
+def _has_rounded_region(widget):
+    """Check the actual Windows window shape when the Windows 10 fallback is forced."""
+    import ctypes
+    from ctypes import wintypes
+
+    user = ctypes.windll.user32
+    gdi = ctypes.windll.gdi32
+    gdi.CreateRectRgn.restype = wintypes.HRGN
+    gdi.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi.PtInRegion.argtypes = [wintypes.HRGN, ctypes.c_int, ctypes.c_int]
+    user.GetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN]
+    region = gdi.CreateRectRgn(0, 0, 0, 0)
+    if not region:
+        return False
+    try:
+        return (user.GetWindowRgn(widget.winId(), region) > 0
+                and not gdi.PtInRegion(region, 0, 0)
+                and bool(gdi.PtInRegion(region, 40, 40)))
+    finally:
+        gdi.DeleteObject(region)

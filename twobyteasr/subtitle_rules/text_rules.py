@@ -212,6 +212,8 @@ BOUNDARY_COHESION_TERMS = frozenset(
         "商城",
         "所有",
         "到时候",
+        # 2026-11-18: common set phrases split by a generic tokenizer.
+        "一键三连",
         "时候",
         "事件",
         "事情",

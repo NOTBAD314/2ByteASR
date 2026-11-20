@@ -37,7 +37,8 @@ FILE_TOOLS = {'list_folder', 'read_file', 'write_file', 'import_terms_file'}
 SUBTITLE_READS = {'read_cues', 'find_cues', 'learned_edits', 'edit_cue', 'merge_cues', 'refine_cues',
                   'ui_snapshot', 'ui_set', 'recent_actions', 'replay_action'}
 DIAGNOSTIC_READS = {'diagnostics', 'last_task', 'history', 'recent_results', 'open_result',
-                    'recent_projects', 'open_project', 'ui_snapshot', 'recent_actions', 'replay_action'}
+                    'recent_projects', 'open_project', 'ui_snapshot', 'recent_actions', 'replay_action',
+                    'analyze_recognition'}
 MEMORY_TOOLS = {'remember', 'forget', 'save_recipe', 'use_recipe'}
 MEMORY_READS = {'recent_actions', 'replay_action'}
 SCREEN_TOOLS = {'look_screen'}

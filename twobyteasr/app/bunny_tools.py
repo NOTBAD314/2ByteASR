@@ -966,7 +966,10 @@ def _tools() -> dict:
     from .bunny_nav_tools import tools as nav_tools
     from .bunny_ui_control import tools as control_tools
     from .bunny_audit import tools as audit_tools
-    items = (*items, *harness_tools(), *nav_tools(), *control_tools(), *audit_tools())
+    from .bunny_troubleshoot import tools as knowledge_tools      # 2026-11-18: she looks things up herself
+    from .bunny_report import tools as report_tools                # 2026-11-18: a recognition's raw JSON, step by step
+    items = (*items, *harness_tools(), *nav_tools(), *control_tools(), *audit_tools(), *knowledge_tools(),
+             *report_tools())
     return {tool.name: tool for tool in items}
 
 
@@ -1026,7 +1029,7 @@ def split_calls(calls, permissions=None) -> tuple[list, list]:
     return now, seen
 
 
-def run_background(items, *, ai_ready=None, settings=None) -> list[str]:
+def run_background(items, *, ai_ready=None, settings=None, recognition_job_id='') -> list[str]:
     """The slow reads and worker tools, on the worker thread; one receipt each."""
     from .bunny_lookup import run_check
     from . import bunny_permissions
@@ -1040,7 +1043,8 @@ def run_background(items, *, ai_ready=None, settings=None) -> list[str]:
                 receipts.append(f'- {shown}：没有读取。{refused}')
                 continue
             if TOOLS[name].run is not None:
-                receipts.append(f'- {shown}：成功。{TOOLS[name].run(settings, args)}')
+                tool_settings = {'_bunny_recognition_job_id': recognition_job_id} if name == 'analyze_recognition' else settings
+                receipts.append(f'- {shown}：成功。{TOOLS[name].run(tool_settings, args)}')
                 continue
             found = run_check(name, ai_ready=ai_ready, settings=settings) or '（没有查到内容）'
             receipts.append(f'- {shown}：\n{found}')

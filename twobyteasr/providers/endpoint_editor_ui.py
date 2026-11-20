@@ -875,6 +875,13 @@ class EndpointEditor(QFrame):
             "JSON 格式错误或输出被截断、正常重试后仍失败的字幕，集中起来用同一个模型、"
             "高一级的思考再请求一轮；会多花一些费用和时间。思考控制协议为“自动”且服务未知时不会生效。")
         grid.addWidget(self.escalate_on_failure, 10, 1)
+        # 2026-11-18: DeepSeek's strict tool call makes the answer follow the JSON contract.
+        self.strict_output = QCheckBox("严格结构化输出（DeepSeek 官方，测试中）")
+        self.strict_output.setChecked(bool(models.get(f"{prefix}_strict_output", False)))
+        self.strict_output.setToolTip(
+            "只对 DeepSeek 官方服务的流式请求生效：用 beta 接口的严格工具调用让模型按字段契约回答。"
+            "服务拒绝或回答不可用时，同一请求自动改用 JSON Mode，之后本次运行不再尝试。")
+        grid.addWidget(self.strict_output, 11, 1)
         grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(grid)
         self.advanced_box.hide()
@@ -1360,6 +1367,7 @@ class EndpointEditor(QFrame):
             "enable_thinking": self.enable_thinking.isChecked(),
             "thinking_protocol": self.thinking_protocol.currentData(),
             "escalate_on_failure": self.escalate_on_failure.isChecked(),
+            "strict_output": self.strict_output.isChecked(),
         }
 
     def restore_profile_values(self, values: dict, settings: dict) -> None:
@@ -1392,6 +1400,7 @@ class EndpointEditor(QFrame):
         self.enable_thinking.setChecked(bool(values.get("enable_thinking", False)))
         self.thinking_protocol.setCurrentIndex(max(0, self.thinking_protocol.findData(values.get("thinking_protocol", "auto"))))
         self.escalate_on_failure.setChecked(bool(values.get("escalate_on_failure", True)))
+        self.strict_output.setChecked(bool(values.get("strict_output", False)))
         self.refresh_secret_status()
         self._refresh_endpoint_hint()
 

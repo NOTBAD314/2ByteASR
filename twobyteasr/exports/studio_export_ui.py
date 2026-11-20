@@ -923,14 +923,18 @@ class StudioExportWorkspace(QWidget):
         )
         self.setObjectName("studioExportWorkspace")
         self._compact_layout = None
+        # The workspace sheet goes on before the controls exist, so each is styled once as it is
+        # first shown. 2026-11-19 (user: dialogs stutter when they open): set after the build it
+        # restyled the whole finished subtree, a third of the 0.9 s the workspace took to open.
+        self._apply_workspace_theme()
         try:
             self._build()
         except BaseException:
             self.release_preview()
             self.deleteLater()
             raise
-        # Polish the complete subtree once, just like a later palette refresh.
-        self._apply_workspace_theme()
+        if hasattr(self, "preview_scrub"):
+            self.preview_scrub.set_theme(_workspace_theme())
         self._apply_responsive_layout()
         self.render_succeeded.connect(self._show_success)
         self.render_failed.connect(self._show_failure)
@@ -2745,7 +2749,7 @@ class StudioExportWorkspace(QWidget):
             start_ms = None if start is None else round(float(start) * 1000)
             duration_ms = None if duration is None else round(float(effective) * 1000)
             slices = tuple(export_source_slices(sequence, start_ms, duration_ms))
-        from ..projects.studio_project import studio_data_root
+        from ..projects.studio_project import studio_data_root, detached_snapshot_payload
         import uuid
         cover_dir = studio_data_root()/'cache/export-completion'
         cover_dir.mkdir(parents=True, exist_ok=True)
@@ -2758,7 +2762,7 @@ class StudioExportWorkspace(QWidget):
             skip_empty=True, start_ms=round((start or 0)*1000), end_ms=round(((start or 0)+effective)*1000),
             width=settings.width or self.project.media.width, height=settings.height or self.project.media.height,
             require_layout_fit=True)
-        project_data = self._export_project.to_dict()
+        project_data = detached_snapshot_payload(self._export_project)  # worker-owned snapshot: one plain copy, no GUI-thread deepcopy walk
         revision = hashlib.sha256(json.dumps(project_data, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
         return RenderJob(

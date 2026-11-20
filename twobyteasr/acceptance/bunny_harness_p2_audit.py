@@ -117,10 +117,18 @@ def run(window, page, output, check):
             check('P2 multiline input and send are accessible '+theme,'\n' in card.input.text()
                   and not card.input.visibleRegion().isEmpty() and not card.send_button.visibleRegion().isEmpty())
             chips=[card.attach_row.layout().itemAt(i).widget() for i in range(card.attach_row.layout().count())]
-            check('P2 attachment chips stay inside separate rows '+theme,
-                  all(card.attach_row.rect().contains(b.geometry()) for b in chips)
-                  and all(not a.geometry().intersects(b.geometry()) for i,a in enumerate(chips) for b in chips[i+1:]))
+            def rows_ready():
+                return (all(card.attach_row.rect().contains(b.geometry()) for b in chips)
+                        and all(not a.geometry().intersects(b.geometry()) for i,a in enumerate(chips) for b in chips[i+1:]))
+            def geometry_record():
+                return dict(row=[card.attach_row.width(),card.attach_row.height()],
+                            chips=[[b.x(),b.y(),b.width(),b.height()] for b in chips],ready=rows_ready())
+            before_rows=geometry_record()
+            deadline=time.monotonic()+3
+            while not rows_ready() and time.monotonic()<deadline:QTest.qWait(20)
             card.grab().save(str(output/('P2-attachments-'+theme+'.png')))
+            (output/('P2-row-layout-'+theme+'.json')).write_text(json.dumps(dict(before=before_rows,after=geometry_record()),indent=2),'utf8')
+            check('P2 attachment chips stay inside separate rows '+theme,rows_ready())
         QTest.keyClick(card.input,Qt.Key.Key_Return)
         wait(lambda:not card.busy,'mixed attachment request finishes')
         card.reveal_all()

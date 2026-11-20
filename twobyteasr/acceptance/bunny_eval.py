@@ -33,6 +33,7 @@ class Task:
     level: str = 'auto'                  # 「兔白权限」 for this task
     seconds: float = 150.0
     note: str = ''
+    setup: Callable | None = None        # (window) -> None, right before the question (2026-11-18)
 
 
 @dataclass
@@ -50,6 +51,20 @@ class Result:
 def _page(name):
     def check(window, _chat):
         from ..app.bunny_chat import current_page
+        page = current_page(window)
+        return page == name, f'当前页面：{page or "?"}'
+    return check
+
+
+def _page_soon(name, seconds: float = 12.0):
+    """Like ``_page`` for a page that is built after she answered (the workbench loads lazily)."""
+    def check(window, _chat):
+        from PySide6.QtWidgets import QApplication
+        from ..app.bunny_chat import current_page
+        deadline = time.monotonic() + seconds
+        while current_page(window) != name and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.05)
         page = current_page(window)
         return page == name, f'当前页面：{page or "?"}'
     return check
@@ -119,6 +134,44 @@ def _not_started(_window, chat):
     return (not started and honest), f'开始了识别：{started}；说明了原因：{honest}'
 
 
+def _zoom_is(percent):
+    def check(_window, _chat):
+        from ..app.ui_zoom import zoom_percent
+        value = zoom_percent()
+        return value == percent, f'界面缩放 {value}%'
+    return check
+
+
+def _answer(chat) -> str:
+    rows = []
+    for who, text in reversed(chat.transcript):
+        if who == 'user':
+            break
+        rows.insert(0, text)
+    return '\n'.join(rows).replace('**', '').replace('==', '')
+
+
+def _explains(*groups, card_rows: int = 0, handed: str = ''):
+    """Her answer names one spelling of every group; ``card_rows``: a detail card of at least that many
+    rows; ``handed``: these words were in what the program gave her (a lookup done before she asked)."""
+    def check(_window, chat):
+        said = _answer(chat)
+        missing = [group for group in groups if not any(word in said for word in group)]
+        cards = [text for who, text in chat.transcript if who == 'detail']
+        rows = len(cards[-1].split('\n')) if cards else 0
+        given = '\n'.join(str(turn.get('content')) for turn in chat._history)
+        ok = not missing and rows >= card_rows and (handed in given if handed else True)
+        detail = (f'缺 {missing}；' if missing else '') + f'卡片 {rows} 行，回答 {len(said)} 字'
+        return ok, detail + (f'；先查好了：{handed in given}' if handed else '')
+    return check
+
+
+def _remember_error(_window):
+    from ..app import bunny_events
+    bunny_events.forget_recent()
+    bunny_events.remember('跳出过一个提示框「导出失败：显卡编码器 h264_nvenc 不可用（-40）」')
+
+
 TASKS = (
     Task('open_history', '帮我打开识别记录', _page('识别记录')),
     Task('open_workshop', '我想下载模型，带我去模型工坊', _page('模型工坊')),
@@ -130,6 +183,22 @@ TASKS = (
     Task('zoom_in', '界面的字有点小，帮我整体放大一档', _zoom_above(100), note='run_command app.zoom_in 或设置'),
     Task('start_without_media', '帮我开始生成字幕', _not_started, note='没有素材：不能开始，要说明原因'),
     Task('recall_actions', '你刚才都帮我做了哪些操作？', _used('recent_actions'), level='ask', note='跨聊天的操作记录'),
+    # 2026-11-18 (phases 1, 2, 5): more places, answers that carry enough, things she is handed.
+    Task('zoom_reset', '把界面缩放恢复成原来的大小', _zoom_is(100), note='run_command Ctrl+0'),
+    Task('open_terms', '带我去术语库', _page('术语库')),
+    Task('settings_storage', '打开设置里的存储与缓存那一页', _settings_section('存储与缓存')),
+    Task('settings_bunny', '打开兔白权限的设置', _settings_section('兔白权限')),
+    Task('howto_card', '我第一次用，怎么从头做一份字幕？', _explains(('开始生成字幕',), ('导出',), card_rows=3),
+         level='guide', note='第 1 阶段：结论加完整步骤的卡片'),
+    Task('knowledge_garbled', '导出的 SRT 用记事本打开全是乱码怎么办', _explains(('UTF-8',)), level='guide',
+         note='第 2 阶段：知识库'),
+    Task('why_failed', '上次识别为什么失败？', _explains(('没有', '还没', '找不到'), handed='兔白查到的：最近一次识别'),
+         level='ask', note='第 5 阶段：先查再答；隔离资料里没有记录，要照实说'),
+    Task('recent_error', '刚才那个报错是什么意思，怎么办？', _explains(('CPU',), ('编码',)), level='guide',
+         setup=_remember_error, note='第 5 阶段：最近发生的事'),
+    # Last: the workbench is built after her answer, and a page that appears during the next
+    # question would (rightly) make that question's context stale.
+    Task('open_studio', '打开字幕工作台', _page_soon('字幕工作台')),
 )
 
 
@@ -217,6 +286,8 @@ def run(tasks, settings: dict, *, out: Path | None = None) -> list[Result]:
         chat.new_conversation()
         chat.reveal_all()
         chat.action_log.clear() if task.id != 'recall_actions' else None
+        if task.setup is not None:
+            task.setup(window)
         state.update(task=task, chat=chat, started=time.monotonic(), sent=False)
         QTimer.singleShot(300, lambda: (chat.ask_now(task.question), state.update(sent=True)))
         QTimer.singleShot(500, poll)

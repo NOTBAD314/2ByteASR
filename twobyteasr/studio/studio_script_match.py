@@ -1,4 +1,4 @@
-"""Studio 「匹配文稿」 (2026-10-14).
+"""Studio 「匹配文稿」 (2026-10-14; the home page's rounded wizard since 2026-11-18).
 
 The user pastes a complete script that is already broken into subtitle lines.
 Every line becomes one caption, timed only by the word timestamps this
@@ -174,60 +174,113 @@ def line_status(line) -> str:
 
 
 def open_script_match_dialog(page) -> bool:
+    """Studio's 匹配文稿 wizard (2026-11-18, user: the plain Windows dialog did
+    not match the theme). The home page's rounded window and parts: ① 贴文稿
+    with the bunny's tip, ② 核对预览 (the matched lines on the project's own
+    word times), ③ 替换字幕 replaces every caption in one undo step."""
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-                                   QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
-                                   QVBoxLayout)
+    from PySide6.QtGui import QColor, QGuiApplication
+    from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
+                                   QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+    from ..app.home_script_match_ui import ScriptEditor, WizardDialog, build_stepper, bunny_tip, show_step_states
     from ..design.presentation import button_role
+    from ..design.theme_manager import theme_definition, theme_key
     project = getattr(page, 'project', None)
     if project is None:
         return False
-    dialog = QDialog(page.window() or page)
-    dialog.setObjectName('scriptMatchDialog')
-    dialog.setWindowTitle(tr('匹配文稿'))
-    dialog.resize(940, 660)
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(20, 18, 20, 16)
-    layout.setSpacing(10)
-    intro = QLabel(tr('粘贴已断好句的完整文稿，每行一条字幕。只用工程里已有的字级时间对齐，'
-                      '不调用识别模型或 AI；文字保持你输入的样子。'))
-    intro.setWordWrap(True)
-    layout.addWidget(intro)
-    split = QSplitter(Qt.Orientation.Horizontal, dialog)
-    left = QPlainTextEdit(split)
-    left.setObjectName('scriptMatchInput')
-    left.setPlaceholderText(tr('每行一条字幕，例如：\n大家好，欢迎回来\n今天我们继续打洛克王国'))
-    table = QTableWidget(0, 4, split)
+    state = {'match': None, 'text': None}
+    dialog = WizardDialog(page.window() or page, object_name='scriptMatchDialog', title=tr('匹配文稿'),
+                          minimum=(600, 540), size=(820, 660))
+    layout = dialog.body
+    stepper, badges, names, step_lines = build_stepper(('贴文稿', '核对预览', '替换字幕'))
+    layout.addLayout(stepper)
+    pages = QStackedWidget()
+    pages.setObjectName('scriptWizardPages')
+    layout.addWidget(pages, 1)
+
+    # ① 贴文稿
+    script_page = QWidget()
+    script_page.setObjectName('scriptWizardPage')
+    first = QVBoxLayout(script_page)
+    first.setContentsMargins(0, 6, 0, 0)
+    first.setSpacing(12)
+    first.addLayout(bunny_tip(tr('每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>'
+                                 '只用这个工程已有的字级时间对齐，文字我不会改。'))[0])
+    editor = ScriptEditor('scriptMatchInput')
+    left = editor.input
+    first.addWidget(editor, 1)
+    runs = QLabel(tr('不调用识别模型或 AI，也不上传；替换全部字幕后可用 Ctrl+Z 一步恢复。'))
+    runs.setObjectName('homeScriptMatchRuns')
+    runs.setWordWrap(True)
+    first.addWidget(runs)
+    pages.addWidget(script_page)
+
+    # ② 核对预览
+    preview_page = QWidget()
+    preview_page.setObjectName('scriptWizardPage')
+    second = QVBoxLayout(preview_page)
+    second.setContentsMargins(0, 6, 0, 0)
+    second.setSpacing(12)
+    tip_row, summary = bunny_tip('')
+    second.addLayout(tip_row)
+    frame = QFrame()
+    frame.setObjectName('scriptPreviewFrame')
+    frame_lines = QVBoxLayout(frame)
+    frame_lines.setContentsMargins(10, 8, 10, 10)
+    table = QTableWidget(0, 4)
     table.setObjectName('scriptMatchPreview')
     table.setHorizontalHeaderLabels([tr('开始'), tr('结束'), tr('文稿'), tr('匹配')])
     table.verticalHeader().hide()
+    table.setShowGrid(False)
+    table.setWordWrap(False)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setFrameShape(QFrame.Shape.NoFrame)
     header = table.horizontalHeader()
+    header.setHighlightSections(False)
+    header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
     header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
     header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
     header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-    split.setSizes([380, 520])
-    layout.addWidget(split, 1)
-    summary = QLabel(tr('贴上文稿后点「匹配预览」。'))
-    summary.setObjectName('scriptMatchSummary')
-    summary.setWordWrap(True)
-    layout.addWidget(summary)
+    frame_lines.addWidget(table)
+    second.addWidget(frame, 1)
+    pages.addWidget(preview_page)
+
+    status = QLabel('')
+    status.setObjectName('homeScriptMatchStatus')
+    status.setWordWrap(True)
+    status.hide()
+    layout.addWidget(status)
     actions = QHBoxLayout()
-    load = button_role(QPushButton(tr('从文件读取…')), 'secondary')
-    preview = button_role(QPushButton(tr('匹配预览')), 'secondary')
-    apply = button_role(QPushButton(tr('替换全部字幕')), 'primary')
+    actions.setSpacing(10)
+    back = button_role(QPushButton(tr('上一步')), 'ghost')
     cancel = button_role(QPushButton(tr('取消')), 'secondary')
-    apply.setEnabled(False)
-    actions.addWidget(load)
+    preview = button_role(QPushButton(tr('匹配预览')), 'primary')
+    apply = button_role(QPushButton(tr('替换全部字幕')), 'primary')
+    for button in (back, cancel, preview, apply):
+        button.setAutoDefault(False)
+    actions.addWidget(back)
     actions.addStretch(1)
-    actions.addWidget(preview)
     actions.addWidget(cancel)
+    actions.addWidget(preview)
     actions.addWidget(apply)
     layout.addLayout(actions)
-    state = {'match': None, 'text': None}
+
+    def show_message(text):
+        status.setText(text)
+        status.setVisible(bool(text))
+
+    def go(index):
+        pages.setCurrentIndex(index)
+        show_step_states(badges, names, step_lines,
+                         ('done', 'current', 'todo') if index == 1 else ('current', 'todo', 'todo'))
+        back.setVisible(index == 1)
+        preview.setVisible(index == 0)
+        apply.setVisible(index == 1)
+        apply.setEnabled(index == 1 and state['match'] is not None)
+        if index == 0:
+            left.setFocus()
 
     def load_file():
         path, _ = QFileDialog.getOpenFileName(dialog, tr('选择文稿'), '', tr('文本文件 (*.txt);;所有文件 (*)'))
@@ -235,7 +288,7 @@ def open_script_match_dialog(page) -> bool:
             try:
                 left.setPlainText(read_script_file(path))
             except (OSError, ValueError) as exc:
-                summary.setText(str(exc))
+                show_message(str(exc))
 
     def run_preview():
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -244,13 +297,14 @@ def open_script_match_dialog(page) -> bool:
             _lines, match = match_project(project, text)
         except ScriptMatchError as exc:
             state['match'] = None
-            apply.setEnabled(False)
             table.setRowCount(0)
-            summary.setText(str(exc))
+            go(0)
+            show_message(str(exc))
             return
         finally:
             QGuiApplication.restoreOverrideCursor()
         state['match'], state['text'] = match, text
+        review_ink = QColor(theme_definition(theme_key()).warning)
         table.setRowCount(len(match.lines))
         for row, line in enumerate(match.lines):
             values = (_format_ms(line.start_ms), _format_ms(line.end_ms), line.text, line_status(line))
@@ -258,11 +312,13 @@ def open_script_match_dialog(page) -> bool:
                 item = QTableWidgetItem(value)
                 if column == 3 and line.needs_review:
                     font = item.font(); weighted_font(font, 700); item.setFont(font)
+                    item.setForeground(review_ink)
                 table.setItem(row, column, item)
         summary.setText(tr('共 {count} 句；文稿 {coverage}% 的字对上了字级时间；{review} 句标为待检查。'
                            '替换后可用 Ctrl+Z 一步恢复。', count=len(match.lines),
                            coverage=round(match.coverage * 100), review=match.review_count))
-        apply.setEnabled(True)
+        show_message('')
+        go(1)
 
     def accept():
         if state['match'] is None or state['text'] != left.toPlainText():
@@ -272,13 +328,23 @@ def open_script_match_dialog(page) -> bool:
         apply_match(page, state['match'])
         dialog.accept()
 
-    left.textChanged.connect(lambda: apply.setEnabled(False) if state['text'] != left.toPlainText() else None)
-    load.clicked.connect(load_file)
+    def text_changed():
+        show_message('')
+        if state['text'] != left.toPlainText():
+            state['match'] = None
+
+    left.textChanged.connect(text_changed)
+    editor.load.clicked.connect(load_file)
+    back.clicked.connect(lambda: go(0))
     preview.clicked.connect(run_preview)
     cancel.clicked.connect(dialog.reject)
     apply.clicked.connect(accept)
+    dialog.finish()
+    go(0)
     dialog._run_preview = run_preview  # automated checks drive the real buttons' handlers
     dialog._accept_match = accept
+    dialog._pages = pages
+    dialog._status = status
     page._script_match_dialog = dialog
     try:
         return dialog.exec() == QDialog.DialogCode.Accepted

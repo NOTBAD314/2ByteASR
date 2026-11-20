@@ -10,8 +10,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def no_saved_chats():
     """2026-11-16: each project's chat is kept; a test never inherits another test's chat."""
-    from twobyteasr.app import bunny_memory
+    from twobyteasr.app import bunny_bond, bunny_memory
     bunny_memory.clear_chats()
+    bunny_bond.clear()               # 2026-11-18: every test meets her as a stranger (her greeting follows it)
     yield
     bunny_memory.clear_chats()
 
@@ -245,9 +246,117 @@ def test_she_looks_up_the_last_task_before_answering(app, chat_env, monkeypatch)
     assert json.loads(chat._history[1]['content'])['check'] == 'last_task'
 
 
-def test_the_dialog_box_says_one_sentence_at_a_time(app, chat_env, monkeypatch):
+def test_the_dialog_box_goes_on_by_itself_and_keeps_the_answer_together(app, chat_env, monkeypatch):
+    """2026-11-18 (user: a few words, then another click for the next sentence)."""
     bunny_chat, window, _calls = chat_env
     _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_persona
+    monkeypatch.setattr(bunny_chat, 'LINE_PAUSE_MS', 10)
+    chat = bunny_chat.open_bunny_chat(window)
+    assert chat.mode == 'dialog' and not bunny_chat.click_lines()
+    chat.reveal_all()
+    chat.say(bunny_persona.BunnyReply(lines=['第一句。', '第二句。', '第三句。'],
+                                      detail=('1. 点 **模型工坊**', '· 下载 ==不花钱=='), suggest=('好', '然后呢')))
+    assert chat._detail_card is None                                   # the card waits for her words
+    chat.typer.finish()
+    assert not chat.box.more and chat.box.count.text() == ''           # nothing asks for a click
+    deadline = time.monotonic() + 3
+    while (chat._pending or chat.typer.running) and time.monotonic() < deadline:
+        app.processEvents()
+        chat.typer.finish()
+    shown = _plain(chat.box.label.source_html)
+    assert '第一句' in shown and '第二句' in shown and '第三句' in shown  # together, not one replacing the other
+    card = chat._detail_card
+    assert card is not None and card.isVisible() and card.parent() is chat.box
+    assert '模型工坊' in _plain(card.label.source_html) and card.height() <= chat.box.height()
+    card.copy_button.click()
+    from PySide6.QtWidgets import QApplication
+    assert QApplication.clipboard().text() == '1. 点 模型工坊\n· 下载 不花钱'
+    assert chat.transcript[-1] == ('detail', '1. 点 **模型工坊**\n· 下载 ==不花钱==')
+    assert chat.last_reply_html() and all('模型工坊' not in line for line in chat.last_reply_html())
+    # A click on the box while she is still speaking shows everything at once.
+    chat.say(bunny_persona.BunnyReply(lines=['甲。', '乙。', '丙。'], detail=('· 要点',)))
+    assert chat._detail_card is None
+    chat.advance()
+    shown = _plain(chat.box.label.source_html)
+    assert '甲' in shown and '丙' in shown and not chat._pending and chat._detail_card is not None
+    # The thread view shows the same answer: bubbles, then the card; the saved chat brings it back.
+    chat.set_mode('thread')
+    assert chat._detail_card is None and chat.thread.findChildren(bunny_chat.DetailCard)
+    history = bunny_chat.history_from(chat.transcript + [('user', '然后呢')])
+    assert json.loads(history[-2]['content'])['detail'][-1] == '· 要点'   # (both answers, no question between)
+    long_turn = bunny_chat.BunnyChat._reply_turn(bunny_persona.BunnyReply(lines=['好'], detail=('字' * 120,) * 6))
+    assert sum(len(row) for row in json.loads(long_turn['content'])['detail']) <= bunny_chat.DETAIL_HISTORY_CHARS
+    chat.set_mode('dialog')
+
+
+def test_a_long_answer_never_grows_the_box_without_end(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    from twobyteasr.app import bunny_persona, ui_zoom
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    lines = [f'第{n}句' + '很长的话' * 14 + '。' for n in range(1, 6)]
+    chat.say(bunny_persona.BunnyReply(lines=lines, detail=tuple(f'{n}. ' + '步骤' * 40 for n in range(1, 13))))
+    chat.reveal_all()
+    shown = _plain(chat.box.label.source_html)
+    assert '第5句' in shown and '第1句' not in shown                    # the oldest left; the thread keeps them
+    assert [text for who, text in chat.transcript if who == 'bunny'][-5:] == lines
+    assert chat._detail_card.scroll.height() <= ui_zoom.px(bunny_chat.DETAIL_HEIGHT)
+
+
+@pytest.mark.parametrize('click', [False, True])
+@pytest.mark.parametrize('floating', [False, True])
+def test_her_later_sentences_never_move_or_resize_the_card(app, chat_env, monkeypatch, floating, click):
+    """2026-11-19 (user): at her 2nd and 3rd sentence the card twitched, flashed or grew. The reply's
+    height is taken at once, so later sentences change no geometry; when the card does change size
+    it is placed in the same step, its bottom and 兔白 staying where they are."""
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    monkeypatch.setattr(bunny_chat.BunnyChat, 'FLOATING', floating)   # (offscreen: Qt's own geometry)
+    monkeypatch.setattr(bunny_chat, 'LINE_PAUSE_MS', 10)
+    bunny_chat.set_click_lines(click)
+    from PySide6.QtCore import QEvent, QObject
+    from twobyteasr.app import bunny_persona
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    for _ in range(10):
+        app.processEvents()
+    seen = []
+
+    class Watch(QObject):
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
+                seen.append((chat.geometry().bottom(), chat.mascot.mapTo(window, chat.mascot.rect().topLeft())))
+            return False
+    watch = Watch()
+    chat.installEventFilter(watch)
+    bottom = chat.geometry().bottom()
+    bunny_at = chat.mascot.mapTo(window, chat.mascot.rect().topLeft())
+    chat.say(bunny_persona.BunnyReply(lines=['短的一句。', '第二句长一些，框要多一行才能放下这么多字。',
+                                             '第三句还要更长一点点，看看框会不会再跳一次，兔白是不是会跟着动来动去。']))
+    first = chat.geometry(), chat.box.geometry()
+    deadline = time.monotonic() + 5
+    while (chat._pending or chat.typer.running) and time.monotonic() < deadline:
+        assert (chat.geometry(), chat.box.geometry()) == first         # sentences 2 and 3: nothing moves
+        if click and not chat.typer.running:
+            chat.advance()                                             # the click for the next sentence
+        chat.typer.finish()                                            # (the last one brings her choices)
+        app.processEvents()
+        time.sleep(0.002)
+    assert not chat._pending
+    for _ in range(10):
+        app.processEvents()
+    assert seen, 'the reply should have changed the card at least once'
+    assert all(at_bottom == bottom and at == bunny_at for at_bottom, at in seen)   # never a frame grown downward
+    chat.removeEventFilter(watch)
+    bunny_chat.set_click_lines(False)
+
+
+def test_the_dialog_box_says_one_sentence_at_a_time_when_asked_to(app, chat_env, monkeypatch):
+    bunny_chat, window, _calls = chat_env
+    _ready(monkeypatch, bunny_chat)
+    bunny_chat.set_click_lines(True)                                   # 「兔白一句一句说，点一下才说下一句」
     from twobyteasr.app import bunny_persona
     from twobyteasr.app.tour_mascot import MascotVoice
     chat = bunny_chat.open_bunny_chat(window)
@@ -382,6 +491,8 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     _ready(monkeypatch, bunny_chat)
     from twobyteasr.app import bunny_puck
     monkeypatch.setattr(bunny_puck, 'REST_BEFORE_HOME_MS', 50)
+    # Exercise the complete timer-to-glide return in bounded test time.
+    monkeypatch.setattr(bunny_puck, 'MAX_FLIGHT_S', 1.8)
     chat = bunny_chat.open_bunny_chat(window)
     chat.reveal_all()
     puck = chat.puck
@@ -396,7 +507,7 @@ def test_she_can_be_thrown_bounces_off_the_edges_and_comes_home(app, chat_env, m
     puck.velocity = QPointF(-3000, -1800)
     puck.started = puck.last = _time.perf_counter()
     puck.timer.start()
-    assert _until(app, lambda: puck.docked, seconds=12)
+    assert _until(app, lambda: puck.docked, seconds=4)
     assert hits and set(hits) <= {'left', 'right', 'top', 'bottom'}
     assert chat.mascot.parent() is chat and chat.mascot_docked
     limits = puck.limits()

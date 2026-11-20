@@ -74,7 +74,8 @@ def _check_cancel(cancelled):
 def probe_media(ffmpeg, path, *, cancelled=None):
     try:
         _check_cancel(cancelled)
-        if str(path).lower().endswith('.gif'):
+        from ..media.animated_gif import is_frame_image
+        if is_frame_image(path):
             from ..media.animated_gif import prepare_gif
             _, data = prepare_gif(path, cancelled=cancelled)
             return MediaIndex(str(Path(path).resolve()), Fraction(0), Fraction(1,1000),
@@ -232,7 +233,8 @@ class SequentialExportDecoder:
             if self.current is not None and self.current.pts==expected:break
         return start
 
-    def read(self, seconds, *, context=None):
+    def read(self, seconds, *, context=None, fit=None, fit_key=None):
+        """Exact frame at ``seconds``; ``fit(display_w, display_h)`` bounds only its BGRA size."""
         if self.gif is not None:
             _check_cancel(self.cancelled)
             self.request_id += 1
@@ -277,11 +279,16 @@ class SequentialExportDecoder:
                     raise ValueError(f'decoded frame does not match full index PTS {expected}')
             self.last_target=target
             pts=self.current.pts
-            if self.cached_pts != pts:
+            if self.cached_pts != (pts, fit_key):
                 self.cached=display_bgra(self.current,float(self.stream.sample_aspect_ratio or 1),
-                    (max(self.current.width,self.current.height)*16,)*2)
-                self.cached_pts=pts
+                    fit or (max(self.current.width,self.current.height)*16,)*2, copy=False)
+                self.cached_pts=(pts, fit_key)
+            source_format = self.current.format
+            source_opaque = not source_format.has_palette and not any(
+                component.is_alpha for component in source_format.components
+            )
             receipt.update(frame_pts=pts,frame_seconds=float(pts*self.current.time_base-self.index.origin),
+                source_opaque=source_opaque,
                 next_pts=self.future.pts if self.future else None, state='FRAME', eof=self.eof,
                 decoded_frames=self.decoded_frames-decoded_before,
                 rejected_packets=len(self.rejected)-rejected_before,
@@ -299,7 +306,8 @@ class SequentialExportDecoder:
 
 def identity_video_graph(graph, media_path):
     """Prove a V1 graph is equivalent to the original media, including audio."""
-    if str(media_path).lower().endswith('.gif'):
+    from ..media.animated_gif import is_frame_image
+    if is_frame_image(media_path):
         return False
     tracks=[t for t in graph.get('video_tracks',[]) if t.get('enabled',True)]
     if len(tracks)!=1: return False
