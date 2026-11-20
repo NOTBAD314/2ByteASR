@@ -76,6 +76,7 @@ def main():
             fixture=load_project(target)
             fixture.cues=[StudioCue('a',0,5000,'她打不出什么东西'),StudioCue('b',5100,10000,'他告诉她们今天晚点来，其他人弹吉他。')]
             translation='她们会来吗'
+            fixture.generation_metadata['language'] = {'code': 'zh'}
             fixture.generation_metadata.update(translations={'a':translation},translation_records=dict(version=1,target='zh',records={'a':st._record(translation,fixture.cues[0].text,origin=st.ORIGIN_MANUAL)},history=[]))
             save_project(fixture,target)
         env = blank_environment(output, invoker, target)

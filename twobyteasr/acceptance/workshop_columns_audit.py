@@ -28,6 +28,34 @@ def start(window,out):
             check(tag+' shared sidebar scale',page.sidebar.width()==round(SIDEBAR_WIDTH*expected_factor),dict(actual=page.sidebar.width(),expected=round(SIDEBAR_WIDTH*expected_factor)))
         names={'language':'支持语言','accuracy':'准确度','speed':'速度','action':'操作'}
         heads={key:next(w for w in page.list_header.findChildren(QLabel) if w.text()==translate(text,current_language())) for key,text in names.items()}
+        def columns_ready():
+            expected = {key: rect(label, host) for key, label in heads.items()}
+            attrs = {'language': 'language_row', 'accuracy': 'accuracy_bar',
+                     'speed': 'speed_bar', 'action': 'action_host'}
+            for wrapper in page._cards.values():
+                card = wrapper.__dict__.get('_card')
+                if card is None or wrapper.isHidden():
+                    continue
+                for key, attr in attrs.items():
+                    if key in ('accuracy', 'speed') and card.metrics_host.isHidden():
+                        continue
+                    actual = rect(getattr(card, attr), host)
+                    wanted = expected[key]
+                    if abs(actual[0] - wanted[0]) > 1 or abs(actual[2] - wanted[2]) > 1:
+                        return False
+            return True
+
+        # Lazy cards can materialize during scrolling. Give normal layout
+        # events a bounded opportunity to synchronize a newly visible row.
+        started = time.monotonic()
+        initially_aligned = columns_ready()
+        while not columns_ready() and time.monotonic() - started < 3:
+            settle(.04)
+        aligned_after_wait = columns_ready()
+        if not initially_aligned:
+            with (out / 'column-settle.jsonl').open('a', encoding='utf-8') as trace:
+                trace.write(json.dumps(dict(tag=tag, aligned=aligned_after_wait,
+                                            seconds=time.monotonic()-started)) + '\n')
         cells={key:rect(w,host) for key,w in heads.items()};rows=[]
         for wrapper in page._cards.values():
             card=wrapper.__dict__.get('_card')

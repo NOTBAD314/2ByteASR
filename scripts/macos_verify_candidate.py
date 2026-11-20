@@ -11,7 +11,7 @@ import traceback
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from scripts.macos_build import sha256, finder_environment
+from scripts.macos_build import sha256, finder_environment, bundle_inventory
 from scripts.macos_binary_audit import audit_tree
 from scripts.macos_startup_contract import probe
 from twobyteasr.system.macos_compatibility import MINIMUM_MACOS, host_diagnostics
@@ -41,6 +41,14 @@ def main(argv=None):
     result=dict(host=host_diagnostics(),source_sha=args.source_sha,dmg_sha256=expected['artifact']['sha256'],
                 passed=False,actual_applications_install=False,browser_quarantine_verified=False)
     def run(cmd,timeout=300,check=True):
+        if len(cmd) > 1 and str(cmd[1]).endswith("macos_caret_split_smoke.py"):
+            cmd = [sys.executable, ROOT/"tests/release113_mac_recheck.py", "worker",
+                   "caret-split", app, out/"caret-split"]
+        elif (len(cmd) > 1 and str(cmd[1]).endswith("macos_caption_policy_smoke.py")
+              and cmd[5] in ("workshop-columns", "editor-review")):
+            scene = cmd[5]
+            cmd = [sys.executable, ROOT/"tests/release113_mac_recheck.py", "worker",
+                   scene, app, out/scene]
         with (out/'build/verification.log').open('ab') as stream:
             return subprocess.run(list(map(str,cmd)),check=check,timeout=timeout,stdout=stream,stderr=subprocess.STDOUT)
     try:
@@ -48,6 +56,7 @@ def main(argv=None):
         run(['/usr/bin/hdiutil','attach','-readonly','-nobrowse','-noautoopen','-mountpoint',mount,args.dmg])
         run(['/usr/bin/ditto',mount/'2ByteASR.app',app])
         result['actual_applications_install']=True
+        before_bundle = bundle_inventory(app)
         run(['/usr/bin/codesign','--verify','--deep','--strict',app])
         result['gatekeeper_assessment_exit']=run(['/usr/sbin/spctl','--assess','--type','execute','--verbose',app],check=False).returncode
         audit=audit_tree(app,arch='arm64',target=MINIMUM_MACOS)
@@ -80,6 +89,10 @@ def main(argv=None):
              '今天测试兔白字幕。字幕可以编辑，剪切后保存工程，最后导出视频。'])
         run([sys.executable,ROOT/'scripts/macos_desktop_smoke.py','--app',app,'--runtime',out/'unused-build-runtime',
              '--fresh-runtime','--audio',audio,'--output',out/'desktop-flow'],timeout=2100)
+        result['bundle_unchanged'] = before_bundle == bundle_inventory(app)
+        result['bundle_files'] = len(before_bundle)
+        if not result['bundle_unchanged']:
+            raise RuntimeError('The checked application bundle changed')
         result['passed']=True
     except Exception:
         result['error']=traceback.format_exc()
