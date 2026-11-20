@@ -39,6 +39,29 @@ def test_scene_priority_unique_domains_and_mixed_without_remote_guess():
     assert resolve_content_scene(owner, generic).source == 'unknown'
 
 
+def test_home_game_field_names_an_enabled_library_domain_by_folded_name():
+    """A free-text game field ("鸣潮声优特别节目") still scopes the 鳴潮 library (2026-11-18)."""
+    from twobyteasr.recognition.content_scene import _names_domain, resolve_content_scene
+    game = GlossarySnapshot((library('鳴潮', '鳴潮', '25', (TermEntry('鎖暝', ('サメイ', 'サメ'), category='角色'),)),))
+    owner = SimpleNamespace(enable_domain_terms=True, game_name='鸣潮声优特别节目')
+    scene = resolve_content_scene(owner, game)
+    assert scene.source == 'user_selected' and scene.domain == '鸣潮声优特别节目'
+    assert scene.domain_ids == ('鳴潮',)
+    result = TermResolver(game).resolve('守りますサメのこと', scene=scene)
+    assert result.text == '守ります鎖暝のこと'
+    assert not any(hit.reason == 'alias_domain_conflict' for hit in result.skipped)
+    for typed in ('鸣潮', '鳴潮', ' 鳴潮 ', '鳴潮・特別番組'):
+        assert _names_domain(typed, '鳴潮', '鳴潮')
+    assert _names_domain('LoL Worlds 2026', 'lol', 'LoL') and _names_domain('league-of-legends', 'x', 'League of Legends')
+    assert not _names_domain('LoLita', 'lol', 'LoL')
+    assert not _names_domain('原神', '鳴潮', '鳴潮') and not _names_domain('潮', '鳴潮', '鳴潮')
+    # A different game still blocks the library's aliases.
+    other = resolve_content_scene(SimpleNamespace(enable_domain_terms=True, game_name='原神'), game)
+    blocked = TermResolver(game).resolve('守りますサメのこと', scene=other)
+    assert blocked.text == '守りますサメのこと'
+    assert any(hit.reason == 'alias_domain_conflict' for hit in blocked.skipped)
+
+
 def test_local_aliases_keep_canonical_case_original_pronunciation_and_ordinary_media(context):
     from twobyteasr.recognition.content_scene import resolve_content_scene
     _, owner, _ = context

@@ -5,7 +5,10 @@ draft until 「应用」, through the existing scoped motion workflow.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSignalBlocker, Signal, QRect, QSize, QPoint, QTimer
+from collections import deque
+from time import perf_counter
+
+from PySide6.QtCore import Qt, QObject, QSignalBlocker, Signal, QRect, QSize, QPoint, QTimer
 from PySide6.QtGui import QPainter, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout,
                               QGridLayout, QStackedWidget, QDoubleSpinBox, QSlider,
@@ -43,6 +46,9 @@ ARROWS = [('left', '←'), ('right', '→'), ('up', '↑'), ('down', '↓')]
 # instead of 2026-11-09's four small ones, so each preset is told apart.
 TILE_HEIGHT, PREVIEW_HEIGHT = 70, 44
 TILE_MIN_WIDTH = 62
+TILE_CHUNK = 12   # the first four rows of tiles, created with the page
+TILE_LATER_CHUNK = 6   # then two rows per event-loop turn
+TILE_GAP_MS = 10  # after the page has painted
 # 2026-10-23 (user's design A): the stage track, chips, segments and tiles are
 # styled with the other soft controls in design/soft_qss.py (theme colours).
 
@@ -145,6 +151,55 @@ class MotionPanel(QWidget):
             preview.setVisible(self.height() >= 470)
 
 
+class _TilePreviewQueue(QObject):
+    """Render shown tiles' previews a few per event-loop turn (2026-11-18).
+
+    Each preview is a real renderer snapshot (about 14 ms). The first visit to
+    the 动效 page rendered all 33 entry tiles in its show event, a 470 ms freeze
+    before the page appeared. Tiles now appear at once with an empty stage and
+    fill in over the next few frames, in layout order.
+    """
+    BUDGET_S = .025
+    GAP_MS = 10   # paints and input go first: the page shows before any preview
+
+    def __init__(self):
+        from PySide6.QtWidgets import QApplication
+        super().__init__(QApplication.instance())
+        self._tiles = deque()
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._run)
+
+    def add(self, tile):
+        self._tiles.append(tile)
+        if not self._timer.isActive():
+            self._timer.start(self.GAP_MS)
+
+    def _run(self):
+        from shiboken6 import isValid
+        began = perf_counter()
+        while self._tiles:
+            tile = self._tiles.popleft()
+            if not isValid(tile) or tile._built or not tile.isVisible():
+                continue   # a tile shown again later queues itself again
+            tile.build()
+            if perf_counter() - began >= self.BUDGET_S:
+                break
+        if self._tiles:
+            self._timer.start(self.GAP_MS)
+
+
+_PREVIEW_QUEUE = None
+
+
+def _queue_preview(tile):
+    global _PREVIEW_QUEUE
+    from shiboken6 import isValid
+    if _PREVIEW_QUEUE is None or not isValid(_PREVIEW_QUEUE):
+        _PREVIEW_QUEUE = _TilePreviewQueue()
+    _PREVIEW_QUEUE.add(tile)
+
+
 class MotionEffectTile(QPushButton):
     def __init__(self, stage, key, label, parent):
         super().__init__(parent)
@@ -209,7 +264,8 @@ class MotionEffectTile(QPushButton):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.build()
+        if not self._built:
+            _queue_preview(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -266,6 +322,7 @@ class MotionInspector(QWidget):
         # crashes of the user's 22:01/22:03 sessions happened while building
         # them. They are built per stage when the 动效 page is first shown.
         self._grid_hosts, self._tiles_built, self._tiles_allowed = {}, set(), False
+        self._tiles_pending = {}   # stage -> (key, label) still to create
         self.category = dict.fromkeys(STAGES, 'all')
         self.directions = {'entry': None, 'exit': None}
         self.columns = 0
@@ -392,26 +449,62 @@ class MotionInspector(QWidget):
     @property
     def cards(self):
         """Every tile, built on first use (internal code reads ``_cards``)."""
-        missing = [stage for stage in STAGES if stage not in self._tiles_built]
+        missing = [stage for stage in STAGES if stage not in self._tiles_built or stage in self._tiles_pending]
         if missing:
             self._tiles_allowed = True
             for stage in missing:
                 self._build_tiles(stage)
+                self._create_tiles(stage)
             self.reflow(self.columns or 3)
         return self._cards
 
     def _build_tiles(self, stage):
+        """Start a stage's tiles: the first rows now, the rest on later turns.
+
+        2026-11-18: creating and showing all 33 entry tiles in one go held the
+        first visit to the 动效 page for 120 ms after their previews moved to
+        _TilePreviewQueue; the rows below the first screen follow a turn later.
+        """
         if stage in self._tiles_built:
             return False
         self._tiles_built.add(stage)
+        self._tiles_pending[stage] = deque(CHOICES[stage])
+        self._create_tiles(stage, TILE_CHUNK)
+        if stage in self._tiles_pending:
+            QTimer.singleShot(TILE_GAP_MS, self, lambda stage=stage: self._continue_tiles(stage))
+        return True
+
+    def _create_tiles(self, stage, limit=None):
+        pending = self._tiles_pending.get(stage)
         host = self._grid_hosts[stage]
-        for key, label in CHOICES[stage]:
+        made = 0
+        while pending and (limit is None or made < limit):
+            key, label = pending.popleft()
             tile = MotionEffectTile(stage, key, label, host)
             tile.clicked.connect(lambda _=False, stage=stage, key=key: self.choose(stage, key))
             self._cards[stage, key] = tile
-        if stage == 'words':
+            made += 1
+        if not pending:
+            self._tiles_pending.pop(stage, None)
+        if made and stage == 'words':
             self._recolor_words()
-        return True
+        return made
+
+    def _continue_tiles(self, stage):
+        if stage not in self._tiles_pending:
+            return
+        made = self._create_tiles(stage, TILE_LATER_CHUNK)
+        self.reflow(self.columns or 3)
+        if self.stages[self.tabs.currentIndex()] == stage:
+            self.fit_stack()
+        # Only the new tiles need their selection state; a full sync() would
+        # also restart the chosen tile's animation on every turn.
+        chosen = self.selected(stage)
+        new = [(key, tile) for (tile_stage, key), tile in self._cards.items() if tile_stage == stage][-made:] if made else []
+        for key, tile in new:
+            tile.set_selected(key == chosen)
+        if stage in self._tiles_pending:
+            QTimer.singleShot(TILE_GAP_MS, self, lambda: self._continue_tiles(stage))
 
     def _ensure_current_tiles(self):
         if self._tiles_allowed and self._build_tiles(self.stages[self.tabs.currentIndex()]):
@@ -423,7 +516,9 @@ class MotionInspector(QWidget):
         super().showEvent(event)
         if not self._tiles_allowed:
             self._tiles_allowed = True
-            self._ensure_current_tiles()
+            # 2026-11-18: the page (timeline, parameters, chips) paints first;
+            # its tiles follow on the next turn (_build_tiles, _TilePreviewQueue).
+            QTimer.singleShot(0, self, self._ensure_current_tiles)
 
     # ------------------------------------------------------------ layout --
     def reflow(self, columns):
@@ -435,9 +530,10 @@ class MotionInspector(QWidget):
             grid = self.grids[stage]
             while grid.count():
                 grid.takeAt(0)
-            shown = [key for key, _ in choices
+            made = [key for key, _ in choices if (stage, key) in self._cards]
+            shown = [key for key in made
                      if self.category[stage] in ('all', CATEGORY.get((stage, key)))]
-            for key, _ in choices:
+            for key in made:
                 self._cards[stage, key].setVisible(key in shown)
             for i, key in enumerate(shown):
                 grid.addWidget(self._cards[stage, key], i//columns, i % columns)

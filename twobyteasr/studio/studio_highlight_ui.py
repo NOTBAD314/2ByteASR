@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..timeline.studio_edit_sequence import HighlightCandidate, sequence_of
-from .studio_highlight_analyzer import HighlightSkillAdapter, analyze_highlights, highlight_transcript_project
+from .studio_highlight_analyzer import (HighlightSkillAdapter, analyze_highlights, cached_skill_adapter,
+                                        discover_skill_in_background, highlight_transcript_project)
 from ..projects.studio_project import SubtitleProject, analysis_transcript_cues
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_definition
@@ -92,9 +93,8 @@ class SmoothCardList(QListWidget):
         if not notches:
             super().wheelEvent(event)
             return
-        bar = self.verticalScrollBar()
-        bar.setValue(int(round(bar.value() - notches * self.WHEEL_NOTCH_PX)))
-        event.accept()
+        from ..design.smooth_scroll import glide_wheel
+        glide_wheel(self.verticalScrollBar(), event, self.WHEEL_NOTCH_PX)   # 2026-11-18: glides
 
 
 def _clamp_label_lines(label: QLabel, max_lines: int) -> None:
@@ -408,6 +408,7 @@ class HighlightAssistantPanel(QWidget):
     autocut_apply_requested = Signal(object)
     autocut_cancel_requested = Signal()
     autocut_preview_requested = Signal(int, int)
+    _skill_ready = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -423,6 +424,9 @@ class HighlightAssistantPanel(QWidget):
         self._candidate_signature = ""
         self._show_all = False
         self._all_candidates = []
+        self._shown_skill: HighlightSkillAdapter | None = None
+        self._skill_search_pending = False
+        self._skill_ready.connect(self._skill_found)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(7)
@@ -1183,7 +1187,32 @@ class HighlightAssistantPanel(QWidget):
         return label
 
     def _refresh_skill(self) -> None:
-        skill = HighlightSkillAdapter.discover()
+        # Never searches the disk here: the last answer now, a fresh search on
+        # a worker (studio_highlight_analyzer.discover_skill_in_background).
+        skill = cached_skill_adapter()
+        if skill is None:
+            skill = self._shown_skill or HighlightSkillAdapter()
+            if not self._skill_search_pending:
+                self._skill_search_pending = True
+                ready = self._skill_ready
+
+                def deliver(adapter, ready=ready):
+                    try:
+                        ready.emit(adapter)
+                    except RuntimeError:  # the panel was closed meanwhile
+                        pass
+                discover_skill_in_background(deliver)
+        self._show_skill(skill)
+
+    def _skill_found(self, skill) -> None:
+        self._skill_search_pending = False
+        self._show_skill(skill)
+
+    def _show_skill(self, skill) -> None:
+        if self._shown_skill is not None and self._shown_skill.found == skill.found:
+            self._shown_skill = skill
+            return
+        self._shown_skill = skill
         if skill.found:
             bind_text(self.skill_label, '发现本地切片规则；是否采用以切片分析结果为准。口播停顿使用本地音频检测。')
         else:

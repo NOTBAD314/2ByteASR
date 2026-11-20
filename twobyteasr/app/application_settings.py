@@ -226,6 +226,88 @@ def _dialog_cache_stamp(owner, preferences, repaired_fields, reset_layout):
             id(existing_page(owner, 'studio')), callable(reset_layout))
 
 
+def _new_dialog(owner, parent, preferences, repaired_fields, *, clear_recent, reset_layout):
+    """The settings window for ``owner``, built hidden (shared by opening and idle preparation)."""
+    from .application_settings_ui import ApplicationSettingsDialog
+    from ..diagnostics.event_log import emit
+    from ..diagnostics.support_dialog import open_support_dialog
+    advanced_owner = owner if hasattr(owner, 'advanced_disclosure') else None
+    # Owned by the window, not the page it was opened from, so it outlives page changes.
+    dialog = ApplicationSettingsDialog(
+        owner, preferences, project_library_root(), browse=_choose_hub_project_root,
+        clear_recent=clear_recent, reset_layout=reset_layout,
+        advanced_owner=advanced_owner, repaired_fields=repaired_fields,
+    )
+    report_button = dialog.add_report_button("回报问题／导出诊断")
+    report_button.clicked.connect(lambda: open_support_dialog(dialog, getattr(parent, "_studio_page", None)))
+    dialog.finished.connect(lambda code: emit("settings.dialog",result="completed",phase="closed",dialog_code=code))
+    dialog.destroyed.connect(lambda: emit("settings.dialog",result="completed",phase="destroyed"))
+    return dialog
+
+
+def prepare_application_settings_steps(owner):
+    """Build the settings window while Home is idle, so the first click reuses it.
+
+    2026-11-18: the first opening built about 300 widgets, styled and polished
+    them before the first frame (221-277 ms). This leaves exactly the window a
+    closed, unchanged visit leaves behind (``_application_settings_cache`` with
+    its stamp); opening then takes the reuse path. Any change to what the window
+    shows changes the stamp and the click builds a fresh one, as before.
+    Each ``yield`` is a point where the caller gives the event loop a turn.
+    """
+    from shiboken6 import isValid
+    from .studio_module_preload import import_module   # primes PySide's import check too
+    for name in ('twobyteasr.app.application_settings_ui', 'twobyteasr.app.settings_widgets',
+                 'twobyteasr.diagnostics.support_dialog'):
+        import_module(name)
+        yield
+    if (owner.__dict__.get('_application_settings_dialog') is not None
+            or owner.__dict__.get('_application_settings_opening', False)):
+        return
+    cached = owner.__dict__.get('_application_settings_cache')
+    if cached is not None and isValid(cached):
+        return
+    studio = existing_page(owner, 'studio')
+    reset_layout = getattr(studio, '_reset_studio_layout_preferences', None)
+    preferences, repaired_fields = _preferences_snapshot()
+    stamp = _dialog_cache_stamp(owner, preferences, repaired_fields, reset_layout)
+    yield
+    if owner.__dict__.get('_application_settings_dialog') is not None or owner.__dict__.get('_application_settings_cache') is not None:
+        return
+    dialog = _new_dialog(owner, owner, preferences, repaired_fields,
+                         clear_recent=clear_recent_project_metadata, reset_layout=reset_layout)
+    owner._application_settings_cache = dialog
+    owner._application_settings_cache_stamp = stamp
+
+    def forget(*_):
+        for name in ('_application_settings_dialog', '_application_settings_cache'):
+            if owner.__dict__.get(name) is dialog:
+                setattr(owner, name, None)
+    dialog.destroyed.connect(forget)
+    yield
+
+    def current():
+        return isValid(dialog) and owner.__dict__.get('_application_settings_cache') is dialog
+    if not current():
+        return
+    from ..design.theme_scopes import prepare, apply_scope
+    prepare(dialog)
+    apply_scope(dialog)
+    yield
+    from ..design.gui_slices import GuiSlice
+    budget = GuiSlice(12)
+    for widget in reversed(dialog.findChildren(QWidget)):
+        if not current():
+            return
+        if isValid(widget):
+            widget.ensurePolished()
+        if budget.due():
+            yield
+            budget.resume()
+    if current():
+        dialog.ensurePolished()
+
+
 @owned_settings('application')
 def open_application_settings(
     parent: QWidget,
@@ -245,7 +327,6 @@ def open_application_settings(
     and shown again while everything it shows is unchanged
     (``_dialog_cache_stamp``); rebuilding it took about 2 s.
     """
-    from .application_settings_ui import ApplicationSettingsDialog
     from shiboken6 import isValid
     preferences, repaired_fields = _preferences_snapshot()
     owner = parent.window()
@@ -265,19 +346,10 @@ def open_application_settings(
             dialog.deleteLater()
         dialog = None
     if dialog is None:
-        # Owned by the window, not the page it was opened from, so it outlives page changes.
-        dialog = ApplicationSettingsDialog(
-            owner, preferences, project_library_root(), browse=_choose_hub_project_root,
-            clear_recent=_clear_recent, reset_layout=reset_layout,
-            advanced_owner=advanced_owner, repaired_fields=repaired_fields,
-        )
+        dialog = _new_dialog(owner, parent, preferences, repaired_fields,
+                             clear_recent=_clear_recent, reset_layout=reset_layout)
         retain(owner, dialog, 'application')
-        from ..diagnostics.support_dialog import open_support_dialog
-        report_button = dialog.add_report_button("回报问题／导出诊断")
-        report_button.clicked.connect(lambda: open_support_dialog(dialog, getattr(parent, "_studio_page", None)))
         emit("settings.dialog", result="completed", phase="created")
-        dialog.finished.connect(lambda code: emit("settings.dialog",result="completed",phase="closed",dialog_code=code))
-        dialog.destroyed.connect(lambda: emit("settings.dialog",result="completed",phase="destroyed"))
     else:
         owner._application_settings_dialog = dialog
         dialog.prepare_reuse(clear_recent=_clear_recent, reset_layout=reset_layout)

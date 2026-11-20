@@ -51,15 +51,6 @@ class AlignmentReport:
         return round(sum(changes) / len(changes)) if changes else 0
 
 
-def _ms(value: Any, *, default: int | None = None) -> int | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    # Evidence produced by ASR is commonly seconds, while Studio stores ms.
-    return round(number * 1000) if abs(number) < 100 else round(number)
-
-
 def _points(value: Any) -> list[tuple[int, int]]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -69,10 +60,20 @@ def _points(value: Any) -> list[tuple[int, int]]:
             try:
                 start = round(float(item['start_ms'])) if 'start_ms' in item else round(float(item.get('start', item.get('begin')))*1000)
                 end = round(float(item['end_ms'])) if 'end_ms' in item else round(float(item.get('end', item.get('finish')))*1000)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            start, end = _ms(item[0]), _ms(item[1])
+            try:
+                first, last = item[:2]
+                if isinstance(first, bool) or isinstance(last, bool):
+                    continue
+                start, end = float(first), float(last)
+                # ASR writes floating seconds. Preserve legacy integer pairs below 100 seconds.
+                seconds = any(isinstance(number, float) for number in (first, last)) or max(abs(start), abs(end)) < 100
+                scale = 1000 if seconds else 1
+                start, end = round(start * scale), round(end * scale)
+            except (TypeError, ValueError, OverflowError):
+                continue
         else:
             continue
         if start is not None and end is not None and end > start:
@@ -103,6 +104,48 @@ def _evidence(project: SubtitleProject, cue: StudioCue) -> tuple[list[tuple[int,
     return words, speech, list(dict.fromkeys(labels))
 
 
+# 2026-11-18 (user: 「智能修轴」 did nothing at all). It read only an old evidence layout (keys
+# ``word_timestamps`` / ``speech_regions`` on the cue's own refs), so on today's projects — captions with
+# measured words in their timeline receipts, or segment rows the AI split — it found nothing, and when it
+# did it never moved an edge more than 0.4 s. It now uses the same measured words as the razor
+# (``cue_words``): the caption starts at its first heard word and ends a short reading tail after its
+# last one. Captions without measured words are measured by the aligner first (the controller does that).
+MEASURED_MAX_ADJUST_MS = 2_000
+READING_TAIL_MS = 120
+WORD_LEAD_MS = 0
+
+
+def measured_words(project: SubtitleProject, cue: StudioCue) -> tuple:
+    """(words, reason): the caption's measured words in its own clock, or () and why not."""
+    try:
+        from ..recognition.cue_word_alignment import MEASURED_ALIGNMENTS, cue_words
+        words, reason = cue_words(project, cue)
+    except Exception as exc:  # noqa: BLE001 - an odd project gives no words, never an error
+        return (), f'alignment_error:{type(exc).__name__}'
+    if not words or reason not in MEASURED_ALIGNMENTS:
+        return (), str(reason or 'missing_word_timestamps')
+    return tuple(words), str(reason)
+
+
+def _from_words(cue: StudioCue, words, *, max_adjust_ms: int, min_duration_ms: int) -> AlignmentRecommendation | None:
+    first, last = int(words[0].start_ms), int(words[-1].end_ms)
+    start = max(0, first - WORD_LEAD_MS)
+    end = last + READING_TAIL_MS
+    if end - start < min_duration_ms or last <= first:
+        return None
+    current_start, current_end = cue.start_ms, cue.end_ms
+    if abs(start - current_start) > max_adjust_ms:
+        start = current_start
+    if abs(end - current_end) > max_adjust_ms:
+        end = current_end
+    if end - start < min_duration_ms:
+        return None
+    label = ('首字/末字时间（按声音量出）',)
+    return AlignmentRecommendation(cue.id, None if start == current_start else start,
+                                   None if end == current_end else end, current_start, current_end,
+                                   label[0], label[0], 0.92, label)
+
+
 def recommend_cue_alignment(
     project: SubtitleProject,
     cue: StudioCue,
@@ -110,6 +153,10 @@ def recommend_cue_alignment(
     max_adjust_ms: int = 400,
     min_duration_ms: int = 80,
 ) -> AlignmentRecommendation | None:
+    words, _reason = measured_words(project, cue)
+    if words:
+        return _from_words(cue, words, max_adjust_ms=max(max_adjust_ms, MEASURED_MAX_ADJUST_MS),
+                           min_duration_ms=min_duration_ms)
     words, speech, labels = _evidence(project, cue)
     if not words and not speech:
         return None
@@ -147,7 +194,16 @@ def recommend_many(project: SubtitleProject, cue_ids: Iterable[str] | None = Non
     wanted = {str(item) for item in cue_ids} if cue_ids is not None else None
     report = AlignmentReport()
     ordered = sorted(project.cues, key=lambda item: (item.start_ms, item.end_ms, item.id))
-    for index, cue in enumerate(ordered):
+    neighbors = {}
+    for cue in ordered:
+        neighbors.setdefault(cue.speaker_id, []).append(cue)
+    adjacent = {
+        cue.id: (track[index - 1] if index else None, track[index + 1] if index + 1 < len(track) else None)
+        for track in neighbors.values()
+        for index, cue in enumerate(track)
+    }
+    applied_end = {}
+    for cue in ordered:
         if wanted is not None and cue.id not in wanted:
             continue
         recommendation = recommend_cue_alignment(project, cue, **kwargs)
@@ -155,19 +211,22 @@ def recommend_many(project: SubtitleProject, cue_ids: Iterable[str] | None = Non
             report.skipped.append(cue.id)
             continue
         # Never create an overlap with the neighboring cue on the same track.
-        previous = ordered[index - 1] if index else None
-        following = ordered[index + 1] if index + 1 < len(ordered) else None
+        previous, following = adjacent[cue.id]
         start = recommendation.recommended_start
         end = recommendation.recommended_end
-        if previous and previous.speaker_id == cue.speaker_id and start is not None:
-            start = max(start, previous.end_ms)
-        if following and following.speaker_id == cue.speaker_id and end is not None:
+        if previous and start is not None:
+            start = max(start, applied_end.get(previous.id, previous.end_ms))
+        if following and end is not None:
             end = min(end, following.start_ms)
-        if start is not None and end is not None and end <= start:
+        effective_start = cue.start_ms if start is None else start
+        effective_end = cue.end_ms if end is None else end
+        if effective_end - effective_start < kwargs.get('min_duration_ms', 80):
             report.skipped.append(cue.id)
             continue
+        applied_end[cue.id] = effective_end
         report.recommendations.append(AlignmentRecommendation(
-            cue.id, start, end, cue.start_ms, cue.end_ms,
+            cue.id, start if effective_start != cue.start_ms else None,
+            end if effective_end != cue.end_ms else None, cue.start_ms, cue.end_ms,
             recommendation.start_reason, recommendation.end_reason,
             recommendation.confidence, recommendation.evidence,
         ))

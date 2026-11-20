@@ -940,7 +940,11 @@ class StudioSourceMonitor(QWidget):
         for combo, tracks, label in ((self.video_target, project.video_tracks if project else [], '新建视频轨'),
                                      (self.audio_target, project.audio_tracks if project else [], '新建独立音轨')):
             previous = combo.currentData()
-            combo.blockSignals(True); combo.clear(); combo.addItem(('画面 → ' if combo is self.video_target else '声音 → ')+label, 'new')
+            prefix = '画面 → ' if combo is self.video_target else '声音 → '
+            # 2026-11-18: "自动" is the default. It used to be a new track for
+            # every insert, which left a pile of one-clip tracks behind.
+            combo.blockSignals(True); combo.clear(); combo.addItem(prefix+'自动（空轨，没有就新建）', 'auto')
+            combo.addItem(prefix+label, 'new')
             for track in tracks:
                 combo.addItem(('画面 → ' if combo is self.video_target else '声音 → ')+f'{track.id} · {track.name}' + (' · 已锁定' if track.locked else ''), track.id)
             combo.setCurrentIndex(max(0, combo.findData(previous)))
@@ -951,7 +955,8 @@ class StudioSourceMonitor(QWidget):
         if self.mode == 'av':
             video_id = self.video_target.currentData()
             group = next((g for g in self.page.project.av_track_groups if g.video_track_id == video_id), None) if self.page.project else None
-            self.audio_target.setCurrentIndex(max(0, self.audio_target.findData(group.audio_track_id if group else 'new')))
+            follows = 'auto' if video_id == 'auto' else group.audio_track_id if group else 'new'
+            self.audio_target.setCurrentIndex(max(0, self.audio_target.findData(follows)))
         self.insert_button.setToolTip('加入工程播放头位置；声音跟随视频关联轨' if self.mode == 'av'
                                       else '加入工程播放头位置；源入点决定内容，源播放头只用于预览')
 
@@ -960,9 +965,17 @@ class StudioSourceMonitor(QWidget):
             return
         try:
             selection = SourceSelection.capture(self.project, self.asset_id, self.mode)
-            command = SourceInsertCommand(self.project, selection, self.page.timeline.playhead_ms,
-                self.video_target.currentData() or 'new', self.audio_target.currentData() or 'new')
+            video = self.video_target.currentData() or 'auto'
+            audio = self.audio_target.currentData() or 'auto'
+            if 'auto' in (video, audio):
+                from ..timeline.source_selection import resolve_insert_targets
+                free_video, free_audio = resolve_insert_targets(self.project, selection, self.page.timeline.playhead_ms)
+                video = free_video if video == 'auto' else video
+                audio = free_audio if audio == 'auto' else audio
+            command = SourceInsertCommand(self.project, selection, self.page.timeline.playhead_ms, video, audio)
             self.page.undo_stack.push(command)
+            if hasattr(self.page, '_ensure_timeline_lane_space'):
+                self.page._ensure_timeline_lane_space()
             message = (f'已加入 {format_timeline_timecode(command.placement["start_ms"])} → '
                        f'{format_timeline_timecode(command.placement["end_ms"])} · 可一步撤销')
             self.status.setText(message)

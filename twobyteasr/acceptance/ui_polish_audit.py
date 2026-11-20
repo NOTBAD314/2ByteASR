@@ -40,8 +40,9 @@ RECENT = ['洛克王国：世界', '瓦罗兰特', '明日方舟终末地', '原
 
 
 def start(window, output: Path):
-    from PySide6.QtCore import QRect, QTimer
-    from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPlainTextEdit, QTableWidget
+    from PySide6.QtCore import QRect, Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPlainTextEdit, QPushButton, QTableWidget
+    from ..i18n import tr
     app = QApplication.instance()
     output.mkdir(parents=True, exist_ok=True)
     result = dict(checks=[], skipped=[], metrics={}, errors=[], passed=False, pid=os.getpid(),
@@ -182,6 +183,26 @@ def start(window, output: Path):
               and page.studio_render_button.property('emphasis') == 'accent',
               (page.punctuation_button.property('buttonRole'), page.studio_render_button.property('buttonRole')))
 
+        from ..design.transitions import PanelSlide
+        check('subtitle and media tab strip has a themed background target',
+              page.source_tabs.objectName() == 'studioSourceTabs')
+        for btn, panel, direction in (
+                (page.cue_list_toggle_button, page.source_tabs, 'left'),
+                (page.context_expand_button, page.context_panel, 'right')):
+            initial = panel.isVisible()
+            for visible in (not initial, initial):
+                btn.click()
+                animation = next((slide for slide in window.findChildren(PanelSlide)
+                                  if slide.isVisible()), None)
+                if animation is not None:
+                    check(f'{direction} panel slides in the expected direction',
+                          animation.side == direction and animation.entering == visible)
+                check(f'{direction} panel settles to the requested visibility',
+                      wait_for(lambda: panel.isVisible() == visible
+                               and not any(slide.isVisible() for slide in window.findChildren(PanelSlide)), 3)
+                      and btn.isChecked() == visible)
+        grab(window, 'studio_with_themed_tabs')
+
     def step_studio_match(page):
         from ..recognition.cue_word_alignment import cue_words
         before = [(c.id, c.start_ms, c.end_ms, c.text) for c in page.project.cues]
@@ -191,15 +212,32 @@ def start(window, output: Path):
         grab_around(button, 'zoom_script_match_button', 30, 14)
 
         def drive(dialog):
-            dialog.findChild(QPlainTextEdit, 'scriptMatchInput').setPlainText(STUDIO_SCRIPT)
-            settle(200)
-            dialog._run_preview()
+            from ..app.home_script_match_ui import WizardDialog
+
+            def click(label):
+                next(control for control in dialog.findChildren(QPushButton)
+                     if control.isVisible() and control.text() == tr(label)).click()
+
+            check('Studio uses the rounded script wizard', isinstance(dialog, WizardDialog)
+                  and bool(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint))
+            field = dialog.findChild(QPlainTextEdit, 'scriptMatchInput')
+            check('wizard opens on the text input', field.isVisible() and dialog._pages.currentIndex() == 0)
+            grab(dialog, 'studio_match_input')
+            click('匹配预览')
+            check('empty text keeps the input step with a message',
+                  dialog._pages.currentIndex() == 0 and dialog._status.isVisible())
+            field.setPlainText(STUDIO_SCRIPT)
+            click('匹配预览')
+            check('matching opens the preview step', dialog._pages.currentIndex() == 1)
+            click('上一步')
+            check('back restores the input', field.isVisible() and field.toPlainText() == STUDIO_SCRIPT)
+            click('匹配预览')
             settle(500)
             grab(dialog, 'studio_match_dialog')
             table = dialog.findChild(QTableWidget, 'scriptMatchPreview')
             result['metrics']['studio_preview'] = [[table.item(r, c).text() for c in range(4)]
                                                    for r in range(table.rowCount())]
-            dialog._accept_match()
+            click('替换全部字幕')
 
         modal(button.click, drive)
         settle(1500)
@@ -450,6 +488,7 @@ def start(window, output: Path):
 
     def run_all():
         try:
+            studio_only = os.environ.get('TWOBYTEASR_UI_POLISH_STUDIO_ONLY') == '1'
             theme = os.environ.get('TWOBYTEASR_UI_POLISH_THEME', '')
             if theme:
                 from ..design.theme_manager import apply_theme
@@ -458,7 +497,8 @@ def start(window, output: Path):
             settle(1500)
             for dialog in [w for w in app.topLevelWidgets() if isinstance(w, QDialog) and w.isVisible()]:
                 QDialog.done(dialog, 0)
-            for name, step in (('home', step_home), ('history', step_history)):
+            home_checks = () if studio_only else (('home', step_home), ('history', step_history))
+            for name, step in home_checks:
                 try:
                     step()
                 except Exception:  # noqa: BLE001
@@ -469,7 +509,8 @@ def start(window, output: Path):
                     step(page)
                 except Exception:  # noqa: BLE001
                     result['errors'].append(f'{name}: ' + traceback.format_exc())
-            for name, step in (('plans', step_plans), ('home match', step_home_match)):
+            recognition_checks = () if studio_only else (('plans', step_plans), ('home match', step_home_match))
+            for name, step in recognition_checks:
                 try:
                     step()
                 except Exception:  # noqa: BLE001

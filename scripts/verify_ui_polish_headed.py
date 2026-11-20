@@ -167,6 +167,8 @@ def main() -> int:
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--zoom', type=int, default=110)
     parser.add_argument('--theme', default='slate')
+    parser.add_argument('--studio-only', action='store_true',
+                        help='verify Studio chrome and the local script wizard')
     parser.add_argument('--models', type=Path, help='folder with installed models to link (read-only)')
     parser.add_argument('--main-python', type=Path, help='registered main runtime python (Home 匹配文稿, source runs)')
     parser.add_argument('--main-runtime', type=Path,
@@ -216,6 +218,8 @@ def main() -> int:
                    TWOBYTEASR_INVOKER_CWD=str(ROOT), TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', QT_QPA_PLATFORM='windows',
                    NO_PROXY='127.0.0.1,localhost', HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9',
                    TWOBYTEASR_UI_POLISH_REPORT=str(report), TWOBYTEASR_UI_POLISH_THEME=args.theme)
+        if args.studio_only:
+            env['TWOBYTEASR_UI_POLISH_STUDIO_ONLY'] = '1'
         if args.media:
             env['TWOBYTEASR_UI_POLISH_MEDIA'] = str(args.media.resolve())
         if args.match_language:

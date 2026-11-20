@@ -32,6 +32,75 @@ def test_smart_alignment_uses_words_and_vad_with_guardrails():
     assert item.confidence > 0.8
 
 
+def test_smart_alignment_follows_the_measured_words_like_the_razor(monkeypatch):
+    """2026-11-18 (user: 「智能修轴」 did nothing): the caption's measured words decide, up to 2 s away."""
+    from twobyteasr.timeline import studio_timing
+    from twobyteasr.recognition.cue_word_alignment import AlignedWord
+    project = _project()
+    project.cues[1].speaker_id = "S02"                       # no neighbour on the same track to stop at
+    words = (AlignedWord("你", 0, 1, 2_300, 2_500, "r"), AlignedWord("好", 1, 2, 2_550, 2_900, "r"))
+    monkeypatch.setattr(studio_timing, "measured_words",
+                        lambda project, cue: (words, "exact_token_text") if cue.id == "a" else ((), "missing_word_timestamps"))
+    item = recommend_many(project, ["a"]).recommendations[0]
+    assert item.recommended_start == 2_300                    # 1.3 s later: beyond the old 0.4 s limit
+    assert item.recommended_end == 2_900 + studio_timing.READING_TAIL_MS
+    assert recommend_many(project, ["b"]).skipped == ["b"]
+    far = (AlignedWord("你", 0, 1, 9_000, 9_200, "r"), AlignedWord("好", 1, 2, 9_300, 9_500, "r"))
+    monkeypatch.setattr(studio_timing, "measured_words", lambda project, cue: (far, "exact_token_text"))
+    assert not recommend_many(project, ["a"]).recommendations[0].changed          # 8 s away: not this caption's sound
+
+
+def test_bare_evidence_times_after_100_seconds_stay_seconds():
+    from twobyteasr.timeline.studio_timing import _points
+    assert _points([[256.0, 258.25], [256_000, 258_250], [1, 2]]) == [
+        (256_000, 258_250), (256_000, 258_250), (1_000, 2_000)]
+
+
+def test_smart_align_measures_captions_without_words_first(monkeypatch):
+    from types import SimpleNamespace
+    from twobyteasr.studio import studio_cue_controller, studio_realign
+    from twobyteasr.timeline import studio_caption_timeline, studio_timing
+    project = _project()
+    hints, started = [], []
+    page = SimpleNamespace(_show_studio_hint=hints.append)
+    applied = []
+    class RecordingController(studio_cue_controller.StudioCueController):
+        __slots__ = ()
+
+        def _smart_align(self, project, ids, **kwargs):
+            applied.append((project, ids, kwargs))
+
+    controller = RecordingController(page, SimpleNamespace(project=project))
+    monkeypatch.setattr(studio_timing, "measured_words", lambda project, cue: ((), "missing_word_timestamps"))
+    monkeypatch.setattr(studio_realign, "aligner_language", lambda project: "Chinese")
+    monkeypatch.setattr(studio_caption_timeline, "independent_captions", lambda project: True)
+    def start(page, ids, on_done=None, on_fail=None, *, undo_label):
+        started.append((list(ids), on_done, on_fail, undo_label))
+        return True
+    monkeypatch.setattr(studio_realign, "start_realign", start)
+    measure = studio_cue_controller.StudioCueController._measure_first
+    assert measure(controller, project, ["a", "b"], single=False) is True
+    assert started[0][0] == ["a", "b"] and "量" in hints[-1]
+    assert measure(controller, project, ["b"], single=True) is True
+    assert len(started) == 1 and started[0][3] == 'Smart Align'
+    started[0][1]({"a": {}})
+    assert applied == [(project, ["a"], {"single": False, "measure": False})]
+    assert controller._smart_align_measuring is None
+    assert measure(controller, project, ["a"], single=True) is True
+    started[-1][2]("no_reliable_time")
+    assert controller._smart_align_measuring is None and "没能" in hints[-1]
+    assert measure(controller, project, ["a"], single=True) is True
+    controller.session.project = _project()
+    started[-1][1]({"a": {}})
+    assert len(applied) == 1 and controller._smart_align_measuring is None
+    controller.session.project = project
+    monkeypatch.setattr(studio_realign, "start_realign", lambda *args, **kwargs: False)
+    assert measure(controller, project, ["a"], single=True) is False
+    assert controller._smart_align_measuring is None
+    monkeypatch.setattr(studio_realign, "aligner_language", lambda project: None)   # no aligner: the old way
+    assert measure(controller, project, ["a"], single=True) is False
+
+
 def test_alignment_skips_missing_evidence_and_loop_clamps_media():
     project = _project()
     assert recommend_many(project, ["b"]).skipped == ["b"]

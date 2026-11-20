@@ -22,9 +22,10 @@ def main():
     compiler=Path(os.environ['WINDIR'])/'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     launcher=output/'2ByteASR.exe'
     source=ROOT/'launcher/2ByteASRLauncher.cs'
+    cover=ROOT/'launcher/LaunchCover.cs'   # 2026-11-19: compiled together (scripts/build_launcher.ps1)
     subprocess.run([str(compiler),'/nologo','/target:winexe','/optimize+','/codepage:65001',
-        '/reference:System.Windows.Forms.dll',f'/win32icon:{ROOT / "assets/app_icon.ico"}',
-        f'/out:{launcher}',str(source)],check=True,capture_output=True)
+        '/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',f'/win32icon:{ROOT / "assets/app_icon.ico"}',
+        f'/out:{launcher}',str(source),str(cover)],check=True,capture_output=True)
     child=output/'dist/2ByteASR/2ByteASR.exe';child.parent.mkdir(parents=True)
     capture=output/'Capture.cs'
     capture.write_text('''using System;

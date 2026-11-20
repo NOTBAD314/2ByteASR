@@ -8,9 +8,15 @@ Compact headers show the face alone.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtCore import QEasingCurve, QElapsedTimer, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QPushButton, QSizePolicy
+
+BREATH_MS = 2600
+BREATH_FRAME_MS = 40
+# 兔白's heights to prepare ahead: the chat card (BunnyChat.MASCOT_HEIGHT), the save question and
+# the recovery question. Plain numbers so this button never imports the big chat module.
+PREWARM_HEIGHTS = (150, 66, 70)
 
 FILL = '#c4532c'
 FILL_HOVER = '#d0603a'
@@ -29,16 +35,24 @@ class AskBunnyButton(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._phase = 0.
-        self._breath = QVariantAnimation(self)
-        self._breath.setStartValue(0.)
-        self._breath.setEndValue(1.)
-        self._breath.setDuration(2600)
-        self._breath.setLoopCount(-1)
-        self._breath.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._breath.valueChanged.connect(self._breathe)
+        # 2026-11-18 (user: the app should feel smooth everywhere): the halo used to run on a
+        # looping QVariantAnimation — a repaint of this header button (and what is behind it) at
+        # the animation clock's ~60 fps for as long as the app was open, even in the background.
+        # A slow 2.6 s glow reads the same at 25 fps, and it rests while the window is not active.
+        self._breath = QTimer(self)
+        self._breath.setInterval(BREATH_FRAME_MS)
+        self._breath.timeout.connect(self._breathe)
+        self._breath_clock = QElapsedTimer()
+        self._curve = QEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def _breathe(self, value) -> None:
-        self._phase = float(value)
+    def _breathe(self) -> None:
+        window = self.window()
+        if window is not None and not window.isActiveWindow():
+            if self._phase:
+                self._phase = 0.
+                self.update()
+            return
+        self._phase = self._curve.valueForProgress((self._breath_clock.elapsed() % BREATH_MS) / BREATH_MS)
         self.update()
 
     def _font(self) -> QFont:
@@ -62,7 +76,31 @@ class AskBunnyButton(QPushButton):
 
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
+        if not self._breath_clock.isValid():
+            self._breath_clock.start()
         self._breath.start()
+        # 兔白's pictures for the chat card and the save question, prepared while nothing happens,
+        # so neither opens on a stand-in picture that is swapped a moment later (2026-11-18).
+        QTimer.singleShot(1200, self._prewarm_bunny)
+        # Her word list for line breaks (jieba, ~0.6 s of loading) on a background thread, a little
+        # later so it does not compete with the window's own first seconds.
+        QTimer.singleShot(4000, self._prewarm_words)
+
+    @staticmethod
+    def _prewarm_words() -> None:
+        try:
+            from .tour_mascot import warm_words
+            warm_words()
+        except Exception:  # noqa: BLE001 - only a head start
+            pass
+
+    def _prewarm_bunny(self) -> None:
+        try:
+            from . import ui_zoom
+            from ..design.mascot_assets import prewarm
+            prewarm(tuple(ui_zoom.px(height) for height in PREWARM_HEIGHTS), self.devicePixelRatioF() or 1.0)
+        except Exception:  # noqa: BLE001 - only a head start; the bunny prepares herself anyway
+            pass
 
     def hideEvent(self, event):  # noqa: N802 - Qt override
         self._breath.stop()

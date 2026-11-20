@@ -36,7 +36,12 @@ class SubtitleRasterPublisher:
     def _run(self):
         from .overlay_buffer import OverlayBuffer
         import numpy as np
-        buffers={};slots={};last_frames={}
+        buffers={};slots={};last_frames={};alpha_bounds={};scratch={}
+        def scratch_for(view):
+            held=scratch.get('array')
+            if held is None or held.shape!=view.shape:
+                held=scratch['array']=np.empty(view.shape,dtype=np.float32)
+            return held
         try:
             while True:
                 with self.condition:
@@ -48,15 +53,26 @@ class SubtitleRasterPublisher:
                     identity=(epoch,image.cacheKey(),target.getRect(),opacity,cue_id)
                     if last_frames.get(overlay_id)==identity:continue
                     image=image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                    if opacity<.999:
-                        faded=QImage(image.size(),QImage.Format_ARGB32_Premultiplied);faded.fill(Qt.transparent)
-                        painter=QPainter(faded);painter.setOpacity(opacity);painter.drawImage(0,0,image);painter.end();image=faded
-                    alpha=np.ndarray((image.height(),image.width(),4),dtype=np.uint8,buffer=image.constBits(),strides=(image.bytesPerLine(),4,1))[:,:,3]
-                    rows=np.flatnonzero(np.any(alpha,axis=1));cols=np.flatnonzero(np.any(alpha,axis=0))
-                    bounds=QRect(int(cols[0]),int(rows[0]),int(cols[-1]-cols[0]+1),int(rows[-1]-rows[0]+1)) if rows.size and cols.size else QRect(0,0,1,1)
+                    # Alpha bounds do not depend on a fade, so a fading cue
+                    # reuses them; and the fade scales only the cropped bytes.
+                    bounds=alpha_bounds.get(image.cacheKey()) if alpha_bounds.get('size')==image.size() else None
+                    if bounds is None:
+                        alpha=np.ndarray((image.height(),image.width(),4),dtype=np.uint8,buffer=image.constBits(),strides=(image.bytesPerLine(),4,1))[:,:,3]
+                        rows=np.flatnonzero(np.any(alpha,axis=1))
+                        cols=np.flatnonzero(np.any(alpha[rows[0]:rows[-1]+1],axis=0)) if rows.size else rows
+                        bounds=QRect(int(cols[0]),int(rows[0]),int(cols[-1]-cols[0]+1),int(rows[-1]-rows[0]+1)) if rows.size and cols.size else QRect(0,0,1,1)
+                        alpha_bounds.clear();alpha_bounds.update({'size':image.size(),image.cacheKey():bounds})
                     display=QRect(round(target.x()+bounds.x()*target.width()/image.width()),round(target.y()+bounds.y()*target.height()/image.height()),
                         max(1,round(bounds.width()*target.width()/image.width())),max(1,round(bounds.height()*target.height()/image.height())))
-                    cropped=image.copy(bounds);pixels=cropped.constBits();slot=1-slots.get(overlay_id,1)
+                    cropped=image.copy(bounds)
+                    if opacity<.999:
+                        # Premultiplied: a uniform fade scales all four channels.
+                        view=np.ndarray((cropped.height(),cropped.bytesPerLine()),dtype=np.uint8,buffer=cropped.bits())
+                        faded=scratch_for(view)
+                        np.multiply(view,max(0.,float(opacity)),out=faded,casting='unsafe')
+                        faded+=.5
+                        view[...]=faded
+                    pixels=cropped.constBits();slot=1-slots.get(overlay_id,1)
                     key=(overlay_id,slot);buffer=buffers.get(key)
                     if buffer is None or buffer.capacity<len(pixels):
                         if buffer is not None:buffer.close()

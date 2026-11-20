@@ -17,10 +17,10 @@ def test_worker_pixels_match_gui_compositor_and_reject_old_generation():
         position_x=.7,position_y=.3,opacity=.6,rotation=12),effects={})
     scene=VideoCompositionScene();scene.resize(640,360)
     scene._layers=[layer];scene._players={'clip':SimpleNamespace(image=image,pts_ms=1000,generation=4,frame_age_ms=0)}
-    scene._render_composition();expected=bytes(scene._rendered_frames[0].constBits())
+    scene._render_composition();expected=scene._rendered_frames[0].copy()
     scene._players={};scene.close()
     delivered=[];ready=threading.Event()
-    def publish(image,rect,context):delivered.append((bytes(image.constBits()),context));ready.set()
+    def publish(image,rect,context):delivered.append((bytes(image.constBits()),context,rect,image.copy()));ready.set()
     worker=VideoCompositionWorker(publish)
     try:
         worker.configure(dict(size=(640,360),display_rect=(0,0,640,360),base=False,project_ms=1000,layers=[layer]))
@@ -28,7 +28,12 @@ def test_worker_pixels_match_gui_compositor_and_reject_old_generation():
         worker.receive('clip',frame(3));time.sleep(.04);assert not delivered
         worker.receive('clip',frame(4,1));time.sleep(.04);assert not delivered
         worker.receive('clip',frame(4));assert ready.wait(2)
-        assert delivered[-1][0]==expected
+        # Only the area the rotated layer touches is painted and uploaded.
+        _,_,rect,raster=delivered[-1]
+        assert rect.width()*rect.height() < 640*360/3
+        assert bytes(raster.constBits())==bytes(expected.copy(rect).constBits())
+        assert all(expected.pixelColor(x,y).alpha()==0 for x,y in ((0,0),(639,359),(10,300))
+                   if not rect.contains(x,y))
         worker.configure(None);count=len(delivered);worker.receive('clip',frame(4));time.sleep(.03)
         assert len(delivered)==count
     finally:worker.close();worker.thread.join(2)
@@ -52,4 +57,41 @@ def test_single_plain_follower_keeps_owned_pixels_for_native_gpu_scaling():
         assert context['submitted_at'] >= context['compose_end']
         worker.configure(None);del payload
         assert frame.pixelColor(10,10).blue()==172
+    finally:worker.close();worker.thread.join(2)
+
+
+def test_picture_in_picture_follower_is_placed_by_mpv_without_painting():
+    image=QImage(160,90,QImage.Format_ARGB32);image.fill(0xff2468ac)
+    payload=memoryview(bytes(image.constBits()));delivered=[];ready=threading.Event()
+    def publish(image,rect,context):delivered.append((QImage(image),rect,context));ready.set()
+    worker=VideoCompositionWorker(publish)
+    try:
+        layer=dict(clip_id='v2',path='fixture',generation=1,decode_epoch=3,effects={},
+                   transform=dict(scale_x=.25,scale_y=.25,position_x=.75,position_y=.75))
+        worker.configure(dict(size=(320,180),display_rect=(4,8,640,360),base=False,project_ms=1000,publication_epoch=5,layers=[layer]))
+        worker.receive('v2',PipeFrame(3,1,'fixture',1000,1000,160,90,payload))
+        assert ready.wait(2)
+        frame,rect,context=delivered[-1]
+        assert context['direct_gpu_scale'] and frame.size()==image.size()
+        # 80x45 canvas px centred at (240,135), doubled into device pixels.
+        assert rect.getRect()==(4+400,8+225,160,90)
+    finally:worker.close();worker.thread.join(2)
+
+
+def test_pip_partly_outside_canvas_is_clipped_by_painting():
+    image=QImage(160,90,QImage.Format_ARGB32);image.fill(0xff2468ac)
+    payload=memoryview(bytes(image.constBits()));delivered=[];ready=threading.Event()
+    def publish(image,rect,context):delivered.append((QImage(image),rect,context));ready.set()
+    worker=VideoCompositionWorker(publish)
+    try:
+        layer=dict(clip_id='v2',path='fixture',generation=1,decode_epoch=3,effects={},
+                   transform=dict(scale_x=.5,scale_y=.5,position_x=1.,position_y=.5))
+        worker.configure(dict(size=(320,180),display_rect=(0,0,320,180),base=False,project_ms=1000,publication_epoch=5,layers=[layer]))
+        worker.receive('v2',PipeFrame(3,1,'fixture',1000,1000,160,90,payload))
+        assert ready.wait(2)
+        frame,rect,context=delivered[-1]
+        assert not context.get('direct_gpu_scale')
+        # Fitted 320x180, halved to 160x90 centred at x=320: the right half is off-canvas.
+        assert rect.getRect()==(240,45,80,90)
+        assert frame.size().width()==rect.width() and frame.pixelColor(10,10).blue()==172
     finally:worker.close();worker.thread.join(2)

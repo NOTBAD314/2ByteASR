@@ -536,6 +536,13 @@ class TermCardView(QListView):
         finally:
             self._restoring_position = False
 
+    # 2026-11-18: app-wide smooth scrolling may take this view's wheel (design.smooth_scroll);
+    # it only has to stop the pending position restore first, as the plain wheel does.
+    smooth_wheel = True
+
+    def on_smooth_wheel(self):
+        self.cancel_position_restore()
+
     def wheelEvent(self, event):  # noqa: N802 - Qt API
         self.cancel_position_restore()
         super().wheelEvent(event)

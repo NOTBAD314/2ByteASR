@@ -544,6 +544,7 @@ class TermLibraryDialog(QWidget):
         container: QWidget | None = None,
         *,
         page_mode: bool = False,
+        deferred: bool = False,
     ):
         parent = container if container is not None else owner
         super().__init__(parent)
@@ -610,7 +611,44 @@ class TermLibraryDialog(QWidget):
         self._toolbar_timer.setSingleShot(True)
         self._toolbar_timer.timeout.connect(self._sync_term_toolbar)
         self._learning_store = GlossaryLearningStore()
+        self._construction = None
+        self._construction = self._construction_steps(game_identity)
+        if not deferred:
+            self.finish_construction()
+
+    @property
+    def construction_pending(self) -> bool:
+        return self._construction is not None
+
+    def construction_steps(self):
+        """Build the rest of the page, yielding between pieces (2026-11-18).
+
+        With ``deferred=True`` the constructor stops before the store reads and
+        the widget tree; the term library page drives these steps while it is
+        hidden (Home's idle preparation) or one event-loop turn at a time after
+        its first frame, instead of one 300-500 ms freeze on the first visit.
+        """
+        steps = self._construction
+        while steps is not None and self._construction is steps:
+            try:
+                next(steps)
+            except StopIteration:
+                return
+            yield
+
+    def finish_construction(self):
+        for _ in self.construction_steps():
+            pass
+
+    def _construction_steps(self, game_identity):
+        try:
+            yield from self._construct(game_identity)
+        finally:
+            self._construction = None
+
+    def _construct(self, game_identity):
         getattr(self.legacy, "migrate_user_verified_profile_terms", lambda: 0)()
+        yield
         # P0 perf: build skeleton fast; do NOT load per-game mappings/builtins or select synchronously.
         # Heavy work (learned_mappings_for_game + builtin_for_game for 650-term sets) is deferred after show().
         games = term_library_game_names(self.legacy, self.game_box_text())
@@ -632,11 +670,16 @@ class TermLibraryDialog(QWidget):
                 )(name))
             )
         }
-        self._build(games)
+        yield
+        yield from self._build_steps(games)
+        yield
         from .multilingual_terms_ui import install
         install(self)
-        for entry in getattr(self.legacy, "glossary_catalog", lambda: [])():
+        yield
+        for index, entry in enumerate(getattr(self.legacy, "glossary_catalog", lambda: [])()):
             self.add_game_item(entry["name"], library_id=entry["id"])
+            if index % 8 == 7:
+                yield
         self.libraries_changed.connect(self._notify_owner_library_changed)
         self._building_game_index = False
         self._sidebar_counts_timer.start()
@@ -954,6 +997,10 @@ class TermLibraryDialog(QWidget):
     # ------------------------------------------------------------ build
 
     def _build(self, games):
+        for _ in self._build_steps(games):
+            pass
+
+    def _build_steps(self, games):
         # 2026-10-17 redesign v2 (plan docs/exec-plans/completed/2026-10-17-glossary-page-redesign.md):
         # one accent color, underline tabs on a hairline, a flat library list,
         # and one content card whose sections are split by hairlines instead of
@@ -1101,6 +1148,7 @@ class TermLibraryDialog(QWidget):
         sidebar_layout.addWidget(self.game_list, 1)
         body.addWidget(sidebar)
 
+        yield
         # ---- right: the selected library, one card
         content = QFrame()
         content.setObjectName("termLibraryContent")
@@ -1245,6 +1293,7 @@ class TermLibraryDialog(QWidget):
 
         # 加词（2026-11-03）：带列名的一行——正确写法 | 常被听成（可不填）| 分类 | 添加，
         # 列名就是说明；下面一行灰字讲两种填法。
+        yield
         quick_add_panel = QFrame()
         quick_add_panel.setObjectName("termQuickAdd")
         self.quick_add_panel = quick_add_panel
@@ -1388,6 +1437,7 @@ class TermLibraryDialog(QWidget):
         self.term_try_panel.hide()
         content_layout.addWidget(content_header)
 
+        yield
         content_body = QFrame()
         content_body.setObjectName("termLibraryBody")
         content_body_layout = QVBoxLayout(content_body)
@@ -1487,6 +1537,7 @@ class TermLibraryDialog(QWidget):
         bar.addWidget(self.ai_model_combo)
         bar.addWidget(self.ai_capability_label)
         self.ai_popup.add_widget(self.ai_bar)
+        yield
         links = QHBoxLayout()
         links.setContentsMargins(4, 0, 4, 2)
         links.setSpacing(2)
@@ -1690,6 +1741,7 @@ class TermLibraryDialog(QWidget):
             self.listing.selectionModel().selectionChanged.connect(self.update_remove_action)
         except Exception:
             pass
+        yield
         card_stage = QWidget()
         card_stage_layout = QGridLayout(card_stage)
         card_stage_layout.setContentsMargins(0, 0, 0, 0)
@@ -1792,6 +1844,7 @@ class TermLibraryDialog(QWidget):
         content_layout.addWidget(content_body, 1)
 
         # 页底：一个开关决定这个词库用不用在本批字幕
+        yield
         footer = QFrame()
         footer.setObjectName("termLibraryFooter")
         self.library_footer = footer
@@ -1822,11 +1875,16 @@ class TermLibraryDialog(QWidget):
         body.addWidget(self.library_content_scroll, 1)
         body.addWidget(self.names_drawer)
 
+        yield
         self.refresh_learning_suggestions()
+        yield
         self._refresh_ai_choices()
+        yield
 
-        for game_name in games:
+        for index, game_name in enumerate(games):
             self.add_game_item(game_name)
+            if index % 8 == 7:
+                yield
         (bind_text(self.library_badge, f'{self.game_list.count()} games') if current_language() == 'en' else bind_text(self.library_badge, '{value0} 个游戏', value0=self.game_list.count()))
         self._sync_tab_counts()
         self._apply_cached_hub_counts()
@@ -2496,7 +2554,16 @@ class TermLibraryDialog(QWidget):
         return stats
 
     def _term_stats(self) -> dict[str, int]:
-        return self._count_term_cards(self._group_term_rows(self._unified_term_rows()))
+        # 2026-11-18: while a large library's rows are prepared off the GUI
+        # thread, reuse the rows that preparation started from (same data
+        # state) instead of merging them a second time (40-70 ms).
+        building = self.__dict__.get('_row_build_rows')
+        if (building is not None and self._row_build_state is not None
+                and building[0] is self._row_build_state and self._term_data_state() == building[0]):
+            rows = building[1]
+        else:
+            rows = self._unified_term_rows()
+        return self._count_term_cards(self._group_term_rows(rows))
 
     @staticmethod
     def _conflict_targets(libraries, conflicts, library_id):
@@ -2603,6 +2670,7 @@ class TermLibraryDialog(QWidget):
         self._row_generation += 1
         generation = self._row_generation
         self._row_build_state = data_state
+        self._row_build_rows = (data_state, rows)
         # One running preparation and one replacement, never an unbounded queue.
         self._row_build_queued = (generation, data_state, rows)
         self.listing.setEnabled(False)
@@ -2654,6 +2722,8 @@ class TermLibraryDialog(QWidget):
         query = self.search.text().strip().lower()
         data_state = self._term_data_state()
         if self._term_rows_cache is None or data_state != self._term_rows_cache[0]:
+            if self._row_build_state is not None and data_state == self._row_build_state:
+                return   # these rows are being prepared already (_prepare_term_rows)
             rows = self._unified_term_rows() if game_name else []
             if len(rows) > 1000:
                 self._prepare_term_rows(self._term_data_state(), rows)
@@ -2873,6 +2943,33 @@ class TermLibraryDialog(QWidget):
         elif to_hide or to_restore:
             self._show_toast("没有可更改的参考词条。")
 
+    def prepare_game_data(self, game_name):
+        """Read a library's stores before its first display (2026-11-18).
+
+        Fills the caches refresh_current_game reads first (confirmed mappings,
+        built-in names and reference entries) while the page is still hidden,
+        and records the learned-terms stamp it compares, so a change made in
+        between still reloads everything, as on any later visit.
+        """
+        game_name = str(game_name or '')
+        if not game_name or self._library_stamp_observed:
+            return
+        try:
+            stat = Path(self.legacy.LEARNED_TERMS_PATH).stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except (AttributeError, OSError):
+            stamp = None
+        self._library_read_stamp = stamp
+        self._library_stamp_observed = True
+        library_id = self._library_key(game_name)
+        if library_id not in self._mappings_cache:
+            self._mappings_cache[library_id] = getattr(
+                self.legacy, "user_confirmed_mappings_for_game", self.legacy.learned_mappings_for_game,
+            )(library_id) or []
+        if game_name not in self._builtin_cache:
+            self._builtin_cache[game_name] = self.builtin_for_game(game_name)
+        self._reference_entries_for_game(game_name)
+
     def refresh_current_game(self):
         import time as _t
         _t0 = _t.perf_counter()
@@ -3055,6 +3152,12 @@ class TermLibraryDialog(QWidget):
     # ------------------------------------------------------------ 交互
 
     def select_game(self, current, _previous=None):
+        # 2026-11-18 (user: switching word libraries should move too): the card wall's picture is
+        # taken now and fades over the newly loaded library once it is in (next tick, below).
+        from ..design.transitions import capture_region
+        listing = getattr(self, 'listing', None)
+        old_picture = (capture_region(listing, minimum=(80, 60))
+                       if listing is not None and _previous is not None and current is not _previous else None)
         for index in range(self.game_list.count()):
             item = self.game_list.item(index)
             row = self.game_list.itemWidget(item)
@@ -3101,7 +3204,15 @@ class TermLibraryDialog(QWidget):
             from .multilingual_terms import default_language
             code = default_language(self.legacy, self._library_key())
             self.term_input_language.setCurrentIndex(max(0, self.term_input_language.findData(code)))
-        QTimer.singleShot(0, self.refresh_current_game)
+        if old_picture is None:
+            QTimer.singleShot(0, self.refresh_current_game)
+            return
+
+        def refresh_then_fade():
+            from ..design.transitions import start_page_crossfade
+            self.refresh_current_game()
+            start_page_crossfade(listing, old_picture)
+        QTimer.singleShot(0, refresh_then_fade)
 
     def apply_filter(self, _text=""):
         if self._diagnostics is not None:

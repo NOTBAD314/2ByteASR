@@ -37,7 +37,7 @@ def start(window,output):
         send('pipeline_work_progress',work_id='media:final-word-alignment',label='日语最终字级对齐',state='running',done=5970,total=6963)
         send('alignment_progress',engine='MFA-ALIGNER',label='MFA 切点复核',worker_pid=12345,worker_state='progress',
              done=400,total=834,range_start_ms=120000,range_end_ms=150000)
-        window._refresh_progress_cards();window._progress_motion.setCurrentTime(window._progress_motion.duration())
+        window._refresh_progress_cards()
         title=window.progress_stage.text();details=window.active_tasks_label.text()
         check('tail names actual model', 'MFA' in title and '下一步' not in title,title=title)
         check('actual completed counts and range','400/834' in details and '02:00' in details and '02:30' in details,details=details)
@@ -71,7 +71,7 @@ def start(window,output):
         send('mosi_scheduler',request_total=16,uploading=2,polling=4,queued=8)
         send('asr_progress',backend='mosi_moss_pro',completed_batches=4,total_batches=16)
         send('long_pipeline_progress',completed=18,total=96,shards=16,phase='polished',request_index=0)
-        window._refresh_progress_cards();window._progress_motion.setCurrentTime(window._progress_motion.duration())
+        window._refresh_progress_cards()
         details=window.active_tasks_label.text()
         check('concurrent stages visible',all(value in details for value in ('MOSS','4/16','校对','断句','翻译')),details=details)
         check('parallel title fits card',window.progress_stage.text()=='分片并行处理中',title=window.progress_stage.text())

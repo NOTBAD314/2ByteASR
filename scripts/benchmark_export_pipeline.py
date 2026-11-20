@@ -118,7 +118,8 @@ def main():
     parser.add_argument('--make-fixture', action='store_true')
     parser.add_argument('--force-raster', action='store_true', help='Synthetic fixture: opacity .99 requires the existing compositor')
     parser.add_argument('--reorder', action='store_true', help='Synthetic fixture: swap the two source halves')
-    parser.add_argument('--mode', choices=['project', 'none', 'ass', 'static', 'motion'], default='project')
+    parser.add_argument('--mode', choices=['project', 'none', 'ass', 'static', 'motion', 'motion-all'], default='project',
+                        help='motion: one animated caption at the midpoint; motion-all: every caption fades in/out')
     parser.add_argument('--duration', type=float, default=60, help='0 = full timeline')
     parser.add_argument('--start', type=float, default=0)
     parser.add_argument('--width', type=int, default=0)
@@ -236,19 +237,23 @@ def main():
                 f'字幕导出性能样本 {i:03d}', style_id='g') for i in range(int(duration / 2))])
         project.project_id = 'perf-'+hashlib.sha256(str(media.resolve()).encode('utf8')).hexdigest()[:24]
         project.created_at = project.updated_at = '2026-11-04T00:00:00Z'
-        if args.mode in {'static', 'motion'}:
+        if args.mode in {'static', 'motion', 'motion-all'}:
             project.style_recipes['g'] = dict(name='静态渐变', engine='remotion', motion=dict(mode='none'),
                 colors=dict(fill=dict(type='linear-gradient', angle=0, stops=[
                     dict(position=0, color='#FFFF8040'), dict(position=1, color='#FF40D0FF')])) )
             project.generation_metadata['translations'] = {c.id: f'Bilingual export sample {c.id}' for c in project.cues}
             project.studio_state['bilingual'] = dict(mode='bilingual', layout='ink_v1', gap_ratio=.13)
-        if args.mode == 'motion':
+        if args.mode in {'motion', 'motion-all'}:
             from copy import deepcopy
             recipe = deepcopy(project.style_recipes['g'])
             recipe['motion'] = dict(mode='fade', entry=dict(type='fade', duration=250), exit=dict(type='fade', duration=250))
             project.style_recipes['animated'] = recipe
-            midpoint = args.start*1000 + (args.duration*500 if args.duration else project.media.duration_ms/2)
-            min(project.cues, key=lambda cue:abs(cue.start_ms-midpoint)).style_id = 'animated'
+            if args.mode == 'motion-all':
+                for cue in project.cues:
+                    cue.style_id = 'animated'
+            else:
+                midpoint = args.start*1000 + (args.duration*500 if args.duration else project.media.duration_ms/2)
+                min(project.cues, key=lambda cue:abs(cue.start_ms-midpoint)).style_id = 'animated'
         project.validate()
     if args.reorder:
         from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence

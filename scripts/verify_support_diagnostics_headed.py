@@ -14,6 +14,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--exe',type=Path)
     parser.add_argument('--source-root',type=Path);parser.add_argument('--bench',action='store_true')
+    parser.add_argument('--report-only',action='store_true',help='inspect the report window and local bundle')
     parser.add_argument('--theme',default='grape',choices=('grape','warm'))
     parser.add_argument('--tooltips-zoom',type=int,choices=(100,110,120,135,150,175,200),
                         help='tooltip-only pass at this interface zoom (preset in the isolated settings)')
@@ -45,6 +46,7 @@ def main():
         TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'),TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         TWOBYTEASR_SUPPORT_BENCH='1' if args.bench else '0',TWOBYTEASR_SUPPORT_THEME=args.theme,QT_QPA_PLATFORM='windows',PYTHONUTF8='1')
     if args.bench:env['TWOBYTEASR_DIAGNOSTIC_NO_PLAYER']='1'
+    if args.report_only:env['TWOBYTEASR_SUPPORT_REPORT_ONLY']='1'
     if args.tooltips_zoom:env['TWOBYTEASR_SUPPORT_TOOLTIPS']='1'
     cwd=(args.source_root or root).resolve();env['TWOBYTEASR_INVOKER_CWD']=str(root)
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(cwd/'quick_start.py')]

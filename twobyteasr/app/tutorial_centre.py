@@ -6,11 +6,17 @@ preview and 「开始这一章」, and a second tab of small tasks ticked by the
 
 The window only chooses: ``chosen`` holds the chapter id to start (or a task's chapter) once it
 has closed; the main window starts the tutorial (``MainWindow._start_home_tour``).
+
+2026-11-19 (user: the tutorial window is square and sharp, it looks bad; they picked draft B,
+「学习路线」, of three): the chapters are one path from top to bottom, each a round node (its number,
+a tick once learned) on a soft line, 基础 / 进阶 as milestones on it, and the next chapter to learn
+breathing with a ring and 「你在这里」. No dark square behind the list and no thick pink frame; the
+preview is a soft gradient card with the points numbered. Same layout and the same choices as before.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, QSize, QTimer
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -36,32 +42,43 @@ def recommended(done: set) -> str:
 def _qss(t) -> str:
     accent = t.accent
     return f"""
-    QDialog#tutorialCentre {{ background: {t.surface}; border: 2px solid {accent}; border-radius: 26px; }}
+    QDialog#tutorialCentre {{ background: {t.surface}; border: 0; }}
     QLabel#centreTitle {{ color: {t.text}; font-size: 22px; font-weight: 800; }}
     QLabel#centreSub, QLabel#centreFootNote, QLabel#centreMeta, QLabel#taskHint, QLabel#centreGroup
         {{ color: {t.text_secondary}; font-size: 13px; }}
     QLabel#centreGroup {{ font-size: 12px; letter-spacing: 1px; margin: 8px 4px 2px 4px; }}
     QPushButton#centreClose {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 17px;
-        color: {t.text}; font-size: 18px; min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; }}
-    QPushButton#centreTab {{ background: transparent; border: 0; border-radius: 12px; padding: 6px 14px;
-        color: {t.text_secondary}; font-size: 14px; }}
-    QPushButton#centreTab:checked {{ background: {t.accent_soft}; color: {t.text}; font-weight: 700; }}
-    QPushButton#chapterRow {{ background: transparent; border: 1px solid transparent; border-radius: 14px;
-        padding: 0; text-align: left; }}
-    QPushButton#chapterRow:hover {{ background: {t.surface_elevated}; }}
-    QPushButton#chapterRow:checked {{ background: {t.surface_elevated}; border-color: {accent}; }}
+        color: {t.text}; font-size: 18px; padding: 0; min-width: 32px; max-width: 32px; min-height: 32px;
+        max-height: 32px; }}
+    QPushButton#centreTab {{ background: transparent; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+        padding: 6px 14px; color: {t.text_secondary}; font-size: 14px; }}
+    QPushButton#centreTab:hover {{ color: {t.text}; }}
+    QPushButton#centreTab:checked {{ color: {t.text}; font-weight: 700; border-bottom-color: {accent}; }}
+    QPushButton#chapterRow, QPushButton#chapterRow:hover, QPushButton#chapterRow:checked, QPushButton#chapterRow:pressed
+        {{ background: transparent; border: 0; border-radius: 14px; padding: 0; text-align: left; min-width: 0; }}
+    QLabel#pathNode {{ background: {t.surface}; border: 3px solid {t.border_strong}; border-radius: 16px;
+        min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;
+        color: {t.text_secondary}; font-size: 12px; font-weight: 700; qproperty-alignment: AlignCenter; }}
+    QLabel#pathNode[picked="true"] {{ border-color: {accent}; color: {t.text}; }}
+    QLabel#pathNode[done="true"] {{ background: {t.success}; border-color: {t.success}; color: {t.text_on_accent}; }}
+    QLabel#pathMile {{ background: {t.app_background}; border: 1px solid {t.border_strong}; border-radius: 10px;
+        padding: 0 10px; min-height: 18px; max-height: 18px; color: {t.text_secondary}; font-size: 12px;
+        font-weight: 700; }}
+    QLabel#pathHere {{ background: {accent}; color: {t.text_on_accent}; border-radius: 9px; padding: 0 8px;
+        min-height: 18px; max-height: 18px; font-size: 11px; font-weight: 700; }}
     QLabel#rowTitle {{ color: {t.text}; font-size: 15px; }}
     QLabel#rowMinutes {{ color: {t.text_secondary}; font-size: 12px; }}
     QLabel#rowCheck {{ border: 2px solid {t.text_secondary}; border-radius: 12px; min-width: 20px; max-width: 20px;
         min-height: 20px; max-height: 20px; color: {t.text_on_accent}; font-size: 12px; qproperty-alignment: AlignCenter; }}
     QLabel#rowCheck[done="true"] {{ background: {t.success}; border-color: {t.success}; }}
-    QLabel#pill {{ border-radius: 9px; padding: 1px 9px; font-size: 12px; font-weight: 700; }}
+    QLabel#pill {{ border-radius: 10px; padding: 0 9px; min-height: 20px; max-height: 20px; font-size: 12px;
+        font-weight: 700; }}
     QLabel#pill[kind="done"] {{ background: {t.success_soft}; color: {t.success}; }}
     QLabel#pill[kind="new"] {{ background: {t.info_soft}; color: {t.info}; }}
     QLabel#pill[kind="soon"] {{ background: {t.surface_elevated}; color: {t.text_secondary}; }}
     QLabel#pill[kind="todo"] {{ background: {t.accent_soft}; color: {t.text}; }}
-    QFrame#centrePreview {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 20px; }}
-    QLabel#previewPicture {{ background: {t.app_background}; border-radius: 14px; }}
+    QFrame#centrePreview {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {t.surface_elevated},
+        stop:1 {t.surface}); border: 1px solid {t.border}; border-radius: 22px; }}
     QLabel#previewTitle {{ color: {t.text}; font-size: 19px; font-weight: 800; }}
     QLabel#previewLearn {{ color: {t.text}; font-size: 14px; }}
     QPushButton#centreStart {{ background: {accent}; color: {t.text_on_accent}; border: 0; border-radius: 16px;
@@ -70,21 +87,30 @@ def _qss(t) -> str:
     QPushButton#centreStart:disabled {{ background: {t.surface}; color: {t.text_secondary}; }}
     QPushButton#centreGhost {{ background: {t.surface_elevated}; color: {t.text}; border: 1px solid {t.border};
         border-radius: 14px; padding: 7px 14px; font-size: 13px; }}
-    QFrame#taskCard {{ background: {t.surface_elevated}; border: 1px solid {t.border}; border-radius: 16px; }}
+    QFrame#taskCard {{ background: {t.surface_elevated}; border: 0; border-radius: 14px; }}
     QLabel#taskTitle {{ color: {t.text}; font-size: 14px; }}
     QLabel#taskTitle[done="true"] {{ color: {t.text_secondary}; text-decoration: line-through; }}
-    QLabel#taskCheck {{ border: 2px solid {t.text_secondary}; border-radius: 7px; min-width: 22px; max-width: 22px;
+    QLabel#taskCheck {{ border: 2px solid {t.border_strong}; border-radius: 8px; min-width: 22px; max-width: 22px;
         min-height: 22px; max-height: 22px; color: {t.text_on_accent}; qproperty-alignment: AlignCenter; }}
     QLabel#taskCheck[done="true"] {{ background: {t.success}; border-color: {t.success}; }}
-    QScrollArea#centreScroll {{ background: transparent; border: 0; }}
+    QScrollArea#centreScroll, QScrollArea#centreScroll > QWidget#qt_scrollarea_viewport
+        {{ background: transparent; border: 0; }}
     QWidget#centreList {{ background: transparent; }}
-    QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: {t.border}; border-radius: 4px; min-height: 30px; }}
+    QStackedWidget#centreStack, QStackedWidget#centreStack > QWidget {{ background: transparent; }}
+    QScrollBar:vertical {{ background: transparent; width: 6px; margin: 4px 0; border: 0; }}
+    QScrollBar::handle:vertical {{ background: {_faint(t.border)}; border-radius: 3px; min-height: 30px; }}
+    QScrollBar::handle:vertical:hover {{ background: {t.border_strong}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
     QPushButton#taskTeach {{ background: transparent; color: {accent}; border: 1px solid {accent}; border-radius: 11px;
         padding: 3px 10px; font-size: 12px; }}
     """
+
+
+def _faint(color: str) -> str:
+    """A colour at half strength, so a scroll bar does not read as a divider (2026-11-19)."""
+    value = QColor(color)
+    return f'rgba({value.red()},{value.green()},{value.blue()},0.45)'
 
 
 class _Theme:
@@ -98,8 +124,147 @@ class _Theme:
         if value:
             return value
         fallback = {'success': '#3f9a63', 'success_soft': 'rgba(63,154,99,0.18)', 'info': '#4f7fc4',
-                    'info_soft': 'rgba(79,127,196,0.18)', 'border': '#5a4d60'}
+                    'info_soft': 'rgba(79,127,196,0.18)', 'border': '#5a4d60', 'border_strong': '#574c60',
+                    'text_on_accent': '#ffffff', 'app_background': '#19151c'}
         return fallback.get(name, '#888888')
+
+
+class _PathColumn(QWidget):
+    """The chapters' column: a soft line through the nodes, a halo round the picked one and a slow
+    breathing ring round the next chapter to learn (none under reduced motion)."""
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.setObjectName('centreList')
+        self.theme = theme
+        self.nodes = []                     # (QLabel node, chapter id)
+        self.rows = {}                      # chapter id -> row button
+        self.hovered = ''
+        self.picked = ''
+        self.next_up = ''
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._breathe)
+
+    def _centre(self, node) -> QPointF:
+        return QPointF(node.mapTo(self, node.rect().center()))
+
+    def add_row(self, key: str, row) -> None:
+        self.rows[key] = row
+        row.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        from PySide6.QtCore import QEvent
+        kind = event.type()
+        if kind in (QEvent.Type.Enter, QEvent.Type.Leave):
+            key = str(watched.property('chapter') or '')
+            if kind == QEvent.Type.Enter:
+                self.hovered = key
+            elif self.hovered == key:
+                self.hovered = ''
+            self.update()
+        return False
+
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        from ..design.transitions import enabled
+        if self.next_up and enabled():
+            self._timer.start()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt override
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def _breathe(self):
+        import time
+        self._phase = (time.perf_counter() % 2.2) / 2.2
+        node = next((n for n, key in self.nodes if key == self.next_up), None)
+        if node is not None:
+            centre = self._centre(node)
+            self.update(QRectF(centre.x() - 30, centre.y() - 30, 60, 60).toAlignedRect())
+
+    def paintEvent(self, event):  # noqa: N802 - Qt override
+        if not self.nodes:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # The rows' own backgrounds would cover the halo; their highlight is painted here, under it.
+        painter.setPen(Qt.PenStyle.NoPen)
+        for key in dict.fromkeys((self.hovered, self.picked)):
+            row = self.rows.get(key)
+            if row is None or not row.isVisible():
+                continue
+            fill = QColor(self.theme.surface_elevated)
+            if key != self.picked:
+                fill.setAlpha(150)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(QRectF(row.geometry()), 14, 14)
+        first, last = self._centre(self.nodes[0][0]), self._centre(self.nodes[-1][0])
+        line = QLinearGradient(first, last)
+        line.setColorAt(0.0, QColor(self.theme.accent))
+        line.setColorAt(0.3, QColor(self.theme.border_strong))
+        line.setColorAt(1.0, QColor(self.theme.border))
+        pen = QPen(line, 3)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(first, last)
+        painter.setPen(Qt.PenStyle.NoPen)
+        accent = QColor(self.theme.accent)
+        for node, key in self.nodes:
+            centre = self._centre(node)
+            if key == self.picked:
+                halo = QColor(accent)
+                halo.setAlpha(56)
+                painter.setBrush(halo)
+                painter.drawEllipse(centre, 21, 21)
+            if key == self.next_up:
+                import math
+                k = 0.5 - 0.5 * math.cos(self._phase * 2 * math.pi)       # 0 -> 1 -> 0, smoothly
+                ring = QColor(accent)
+                ring.setAlpha(round(150 - 90 * k))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(ring, 2))
+                radius = 22 + 3 * k
+                painter.drawEllipse(centre, radius, radius)
+                painter.setPen(Qt.PenStyle.NoPen)
+        painter.end()
+
+
+class _RoundPicture(QWidget):
+    """The chapter's still, filling a rounded frame (cropped, not letterboxed: the label used to
+    leave bands above and below it)."""
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self._picture = QPixmap()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_picture(self, picture: QPixmap) -> None:
+        self._picture = picture
+        self.update()
+
+    def pixmap(self) -> QPixmap:
+        return self._picture
+
+    def paintEvent(self, event):  # noqa: N802 - Qt override
+        from PySide6.QtGui import QPainterPath
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        area = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(area, 16, 16)
+        painter.setClipPath(clip)
+        painter.fillRect(area, QColor(self.theme.app_background))
+        if not self._picture.isNull():
+            size = self._picture.size().toSizeF()
+            scale = max(area.width() / size.width(), area.height() / size.height())
+            width, height = size.width() * scale, size.height() * scale
+            painter.drawPixmap(QRectF((area.width() - width) / 2, (area.height() - height) / 2, width, height),
+                               self._picture, QRectF(self._picture.rect()))
+        painter.end()
 
 
 class _ChapterRow(QPushButton):
@@ -129,7 +294,8 @@ class TutorialCentre(SpringDialog):
         self._light = getattr(theme, 'is_light', False)
         self.setObjectName('tutorialCentre')
         bind_text(self, '新手教学 - 2ByteASR', property='windowTitle')
-        self.setStyleSheet(_qss(_Theme(theme)))
+        self._theme = _Theme(theme)
+        self.setStyleSheet(_qss(self._theme))
         self.setMinimumSize(QSize(860, 560))
         from . import onboarding
         state = onboarding.load_state()
@@ -153,6 +319,7 @@ class TutorialCentre(SpringDialog):
         head.addLayout(words, 1)
         close = QPushButton('×')
         close.setObjectName('centreClose')
+        close.setFixedSize(34, 34)
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         bind_text(close, '关闭', property='toolTip')
         close.clicked.connect(self.reject)
@@ -177,6 +344,7 @@ class TutorialCentre(SpringDialog):
         outer.addLayout(tabs)
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName('centreStack')
         self.stack.addWidget(self._build_chapters())
         self.stack.addWidget(self._build_tasks())
         outer.addWidget(self.stack, 1)
@@ -207,24 +375,30 @@ class TutorialCentre(SpringDialog):
         scroll = _scroll()
         scroll.setFixedWidth(370)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        holder = QWidget()
-        holder.setObjectName('centreList')
+        holder = self.path = _PathColumn(self._theme)
+        holder.next_up = recommended(self.learned)
         column = QVBoxLayout(holder)
-        column.setContentsMargins(0, 0, 6, 0)
+        column.setContentsMargins(14, 4, 8, 4)          # room for the picked node's halo
         column.setSpacing(2)
         self.row_group = QButtonGroup(self)
         self.rows = {}
+        self.nodes = {}
         group = ''
         for chapter in tutorial_chapters.CATALOG:
             if chapter.group != group:
                 group = chapter.group
+                mile = QHBoxLayout()
+                mile.setContentsMargins(0, 8, 0, 2)
                 label = QLabel()
-                label.setObjectName('centreGroup')
+                label.setObjectName('pathMile')
                 bind_text(label, group)
-                column.addWidget(label)
+                mile.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+                mile.addStretch(1)
+                column.addLayout(mile)
             button = self._chapter_row(chapter)
             self.row_group.addButton(button)
             self.rows[chapter.id] = button
+            self.path.add_row(chapter.id, button)
             column.addWidget(button)
         column.addStretch(1)
         scroll.setWidget(holder)
@@ -241,12 +415,15 @@ class TutorialCentre(SpringDialog):
         button.setMinimumHeight(44)
         button.setProperty('chapter', chapter.id)
         line = QHBoxLayout(button)
-        line.setContentsMargins(10, 6, 10, 6)
+        line.setContentsMargins(4, 6, 10, 6)
         line.setSpacing(10)
-        check = QLabel('✓' if status == 'done' else '')
-        check.setObjectName('rowCheck')
+        number = tutorial_chapters.CATALOG.index(chapter) + 1
+        check = QLabel('✓' if status == 'done' else str(number))
+        check.setObjectName('pathNode')
         check.setProperty('done', status == 'done')
-        line.addWidget(check)
+        self.nodes[chapter.id] = check
+        self.path.nodes.append((check, chapter.id))
+        line.addWidget(check, 0, Qt.AlignmentFlag.AlignVCenter)
         title = QLabel()
         title.setObjectName('rowTitle')
         title.setWordWrap(True)
@@ -254,12 +431,18 @@ class TutorialCentre(SpringDialog):
         bind_text(title, chapter.title)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         line.addWidget(title, 1)
+        if chapter.id == self.path.next_up:
+            here = QLabel()
+            here.setObjectName('pathHere')
+            here.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            bind_text(here, '你在这里')
+            line.addWidget(here, 0, Qt.AlignmentFlag.AlignVCenter)
         if status == 'new':
-            line.addWidget(self._pill('new'))
+            line.addWidget(self._pill('new'), 0, Qt.AlignmentFlag.AlignVCenter)
         minutes = QLabel()
         minutes.setObjectName('rowMinutes')
         bind_text(minutes, '{value0} 分', value0=chapter.minutes)
-        line.addWidget(minutes)
+        line.addWidget(minutes, 0, Qt.AlignmentFlag.AlignVCenter)
         for child in (check, minutes):
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         if status == 'soon':
@@ -283,11 +466,9 @@ class TutorialCentre(SpringDialog):
         column = QVBoxLayout(card)
         column.setContentsMargins(16, 14, 16, 14)
         column.setSpacing(10)
-        self.picture = QLabel()
+        self.picture = _RoundPicture(self._theme)
         self.picture.setObjectName('previewPicture')
-        self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.picture.setFixedHeight(180)
-        self.picture.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         column.addWidget(self.picture)
         top = QHBoxLayout()
         self.preview_title = QLabel()
@@ -305,6 +486,7 @@ class TutorialCentre(SpringDialog):
         self.preview_learn.setObjectName('previewLearn')
         self.preview_learn.setTextFormat(Qt.TextFormat.RichText)
         self.preview_learn.setWordWrap(True)
+        self.preview_learn.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         column.addWidget(self.preview_learn, 1)
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
@@ -331,6 +513,15 @@ class TutorialCentre(SpringDialog):
         button = self.rows.get(key)
         if button is not None:
             button.setChecked(True)
+        for chapter_id, node in getattr(self, 'nodes', {}).items():
+            picked = chapter_id == key
+            if node.property('picked') != picked:
+                node.setProperty('picked', picked)
+                node.style().unpolish(node)
+                node.style().polish(node)
+        if getattr(self, 'path', None) is not None:
+            self.path.picked = key
+            self.path.update()
         status = chapter_status(chapter, self.learned)
         bind_text(self.preview_title, chapter.title)
         while self.preview_pill_holder.count():
@@ -339,19 +530,16 @@ class TutorialCentre(SpringDialog):
                 item.widget().hide()
                 item.widget().deleteLater()
         pill = self._pill(status)
-        self.preview_pill_holder.addWidget(pill)
+        self.preview_pill_holder.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
         pill.show()
         bind_text(self.preview_meta, '约 {value0} 分钟', value0=chapter.minutes)
-        lines = ''.join(f'<li>{str(tr(line))}</li>' for line in chapter.learn)
-        self.preview_learn.setText(f'<b>{str(tr("会学到"))}</b><ul style="margin-left:-18px">{lines}</ul>')
+        accent = self._theme.accent
+        lines = ''.join(f'<div style="margin-top:4px"><span style="color:{accent}; font-weight:700">{index}.</span>'
+                        f'&nbsp; {str(tr(line))}</div>' for index, line in enumerate(chapter.learn, 1))
+        self.preview_learn.setText(f'<b>{str(tr("会学到"))}</b>{lines}')
         from .home_tour import tutorial_anim_path
         path = tutorial_anim_path(chapter.picture, self._light, still=True)
-        picture = QPixmap(str(path)) if path is not None else QPixmap()
-        if not picture.isNull():
-            self.picture.setPixmap(picture.scaled(QSize(400, 176), Qt.AspectRatioMode.KeepAspectRatio,
-                                                  Qt.TransformationMode.SmoothTransformation))
-        else:
-            self.picture.clear()
+        self.picture.set_picture(QPixmap(str(path)) if path is not None else QPixmap())
         self.start_button.setEnabled(status != 'soon')
         bind_text(self.start_button, {'soon': '即将推出', 'done': '再学一遍'}.get(status, '开始这一章 ›'))
 

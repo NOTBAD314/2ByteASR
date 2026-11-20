@@ -43,7 +43,9 @@ def test_actual_grouping_entry_known_bad_edges_and_independent_short_answers(wor
     result,_,_=replay(FIXTURE,workers=workers,reverse_completion=reverse)
     assert result['passed'],result['checks']
     assert sum(e['state']=='unchanged_with_violations' for e in result['events'] if e['event']=='grouping_model_quality') == 4
-    assert not any('failed_constraints' in r['body'] for r in result['requests'])
+    # 2026-11-18: advisory windows may be sent back for a second look; a
+    # recorded answer keeps every window, so no correction is adopted.
+    assert not any(e['event']=='grouping_quality_retry' and e['improved'] for e in result['events'])
 
 
 @pytest.mark.parametrize('parts',[
@@ -109,7 +111,7 @@ def test_retry_reconsiders_local_stable_boundary_and_current_constraints():
     result=retry_quality_windows(q,[14,16],[14,16],provider=SimpleNamespace(complete=complete),
         snapshot=snapshot(),schema=GROUPING_SCHEMA,budget=QualityRetryBudget(),record=lambda *a,**k:None)
     assert result==[8,16]
-    assert calls and 14 not in calls[0]['required_boundaries']
+    assert calls and 14 not in calls[0]['windows'][0]['required_boundaries']
 
 
 def test_unchanged_invalid_retry_remains_unresolved():
@@ -117,7 +119,8 @@ def test_unchanged_invalid_retry_remains_unresolved():
     q=BoundaryQuality('SuperLongPlayerIdentifier')
     events=[]
     result=retry_quality_windows(q,[q.total],[q.total],provider=SimpleNamespace(
-        complete=lambda messages,**k:json.dumps({'boundaries':json.loads(messages[1]['content'])['current_boundaries']})),
+        complete=lambda messages,**k:json.dumps({'windows':[dict(id=w['id'],boundaries=w['current_boundaries'])
+                                                            for w in json.loads(messages[1]['content'])['windows']]})),
         snapshot=snapshot(),schema=GROUPING_SCHEMA,budget=QualityRetryBudget(),
         record=lambda name,**data:events.append(dict(event=name,**data)))
     retry=next(e for e in events if e['event']=='grouping_quality_retry')
@@ -126,19 +129,25 @@ def test_unchanged_invalid_retry_remains_unresolved():
 
 
 def test_task_retry_budget_is_independent_of_thread_completion_order():
-    budget=QualityRetryBudget(requests=1)
-    budget.register_batches([1,2])
-    entered=threading.Event()
-    def second():
-        entered.set()
-        return budget.take(2048,batch_index=2)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future=pool.submit(second)
-        assert entered.wait(2)
-        assert budget.take(2048,batch_index=1) is not None
-        budget.finish_batch(1)
-        assert future.result(timeout=2) is None
-        budget.finish_batch(2)
+    # 2026-11-18: every batch has its own fair share; early batches can no
+    # longer spend the whole allowance before the second half of a video.
+    budget=QualityRetryBudget(requests=16)
+    budget.register_batches(range(1,9))
+    assert budget.share()==2
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        grants=list(pool.map(lambda b:[budget.take(2048,batch_index=f'{b}.quality-{n}') for n in range(3)],
+                             reversed(range(1,9))))
+    for taken in grants:
+        assert taken[0] is not None and taken[1] is not None and taken[2] is None
+    assert budget.refusal_reason(1)=='batch_share_used'
+    assert budget.summary()['requests_used']==16
+
+
+def test_long_task_budget_scales_but_stays_capped():
+    budget=QualityRetryBudget()
+    budget.register_batches(range(1,41))
+    assert budget.requests==QualityRetryBudget.MAX_REQUESTS and budget.share()==1
+    assert QualityRetryBudget(requests=0).take(2048,batch_index=1) is None
 
 
 def test_alignment_block_does_not_become_a_lexical_word():

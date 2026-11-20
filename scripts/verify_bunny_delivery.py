@@ -10,7 +10,7 @@ def main():
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):raise ValueError('Use a fresh source/tmp directory')
     out.mkdir(parents=True);(out/'startup.2byteproj').write_text('{}','utf8')
     env=dict(os.environ,QT_QPA_PLATFORM='windows',QT_SCALE_FACTOR=args.scale,QT_ENABLE_HIGHDPI_SCALING='0',QT_FONT_DPI='96',
-        TWOBYTEASR_ACCEPTANCE_SCENARIO='bunny-chat',TWOBYTEASR_BUNNY_THEME=args.theme,TWOBYTEASR_ACCEPTANCE_DIR=str(out),
+        TWOBYTEASR_ACCEPTANCE_SCENARIO='bunny-chat',TWOBYTEASR_BUNNY_RESIDENT='1',TWOBYTEASR_BUNNY_THEME=args.theme,TWOBYTEASR_ACCEPTANCE_DIR=str(out),
         TWOBYTEASR_STARTUP_PROJECT=str(out/'startup.2byteproj'),TWOBYTEASR_INVOKER_CWD=str(ROOT),
         TWOBYTEASR_TEST_ROOT=str(out/'profile'),LOCALAPPDATA=str(out/'profile/local'),APPDATA=str(out/'profile/roaming'),
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONUTF8='1')

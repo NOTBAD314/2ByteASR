@@ -45,6 +45,53 @@ def start(window, output):
             page.video.set_paused(True)
             result['dpr'] = page.devicePixelRatioF()
             before = page.project.cues[0].text
+            from ..recognition import cue_word_alignment
+            from ..timeline import studio_timing
+            page.select_cue('a')
+            cue = page.project.cues[0]
+            previous_timing = (cue.start_ms, cue.end_ms)
+            measured = studio_timing.measured_words
+            studio_timing.measured_words = lambda project, item: ((
+                cue_word_alignment.AlignedWord('她', 0, 1, 650, 800, 'audit'),
+                cue_word_alignment.AlignedWord('西', 6, 7, 4200, 4300, 'audit'),
+            ), 'exact_token_text')
+            try:
+                index = page.undo_stack.index()
+                page._smart_align_current()
+                check('smart alignment follows measured words and preserves text',
+                      (cue.start_ms, cue.end_ms) == (650, 4420) and cue.text == before
+                      and page.undo_stack.index() == index + 1)
+                page.undo_stack.undo()
+                check('smart alignment is reversible with a single undo',
+                      (cue.start_ms, cue.end_ms) == previous_timing)
+            finally:
+                studio_timing.measured_words = measured
+            page._seek(4.5)
+            wait(lambda: 4300 <= page.timeline.playhead_ms < 5000)
+            page.select_cue('a')
+            page._remember_canvas_edit_target('a', 'original')
+            page.video.set_paused(False)
+            wait(lambda: 5200 <= page.timeline.playhead_ms < 9000, seconds=15)
+            focus(page.timeline)
+            QTest.keyClick(page.timeline, Qt.Key_E)
+            wait(lambda: page._caption_draft is not None, seconds=5)
+            check('E follows true playback on first opening',
+                  page._caption_draft.target.cue_id == 'b'
+                  and page.subtitle_edit_input.toPlainText() == page.project.cues[1].text)
+            page.subtitle_edit_dock.grab().save(str(output/'e-playhead-caption.png'))
+            page._cancel_canvas_inline_edit()
+            page._seek(6.0)
+            wait(lambda: 5900 <= page.timeline.playhead_ms <= 6100)
+            page.select_cue('a')
+            page._remember_canvas_edit_target('a', 'translation')
+            focus(page.timeline)
+            QTest.keyClick(page.timeline, Qt.Key_E)
+            wait(lambda: page._caption_draft is not None, seconds=5)
+            check('E preserves fresh explicit translation selection',
+                  page._caption_draft.target.cue_id == 'a'
+                  and page._caption_draft.target.layer == 'translation')
+            page._cancel_canvas_inline_edit()
+            page.timeline.set_subtitle_layer('original')
             for theme in ('sand','midnight'):
                 apply_theme(theme,app)
                 for at in (0,len(before),7):
@@ -74,6 +121,44 @@ def start(window, output):
                 e=open_editor(page);check(owner+' reopen',e.toPlainText()==expected)
                 page._cancel_canvas_inline_edit();page.undo_stack.undo()
                 if page._review_mode:page._set_review_mode(False)
+            # The real modal opens from the normal E editor shortcut.
+            from ..studio.studio_find_replace import FindReplaceDialog
+            for key in (Qt.Key_F, Qt.Key_H):
+                editor = open_editor(page)
+                select(editor, len(editor.toPlainText()))
+                editor.insertPlainText('新')
+                select(editor, 0, 2)
+                modal_result = {}
+
+                def read_modal():
+                    dialog = QApplication.activeModalWidget()
+                    if not isinstance(dialog, FindReplaceDialog) or not dialog.isVisible():
+                        return
+                    modal_result.update(
+                        find=dialog.find_edit.text(),
+                        replacement=dialog.replace_edit.text(),
+                        focus=dialog.focusWidget() is dialog.replace_edit,
+                        committed=page.project.cues[0].text,
+                        draft_closed=page._caption_draft is None,
+                        screenshot=dialog.grab().save(str(output/f'editor-find-{int(key)}.png')),
+                    )
+                    dialog.reject()
+
+                poll = QTimer()
+                poll.setInterval(30)
+                poll.timeout.connect(read_modal)
+                poll.start()
+                try:
+                    QTest.keyClick(editor, key, Qt.ControlModifier)
+                    wait(lambda: bool(modal_result), seconds=8)
+                    check(f'{key} opens find with selection', modal_result['find'] == before[:2])
+                    check(f'{key} focuses empty replacement', modal_result['focus'] and not modal_result['replacement'])
+                    check(f'{key} commits and closes draft', modal_result['committed'] == before+'新' and modal_result['draft_closed'])
+                    check(f'{key} captured real modal', modal_result['screenshot'])
+                    page.undo_stack.undo()
+                    check(f'{key} committed draft undoes once', page.project.cues[0].text == before)
+                finally:
+                    poll.stop()
             for trigger in ('enter','shift_e','button'):
                 e=open_editor(page);shift(e,Qt.Key_F);expected=e.toPlainText();index=page.undo_stack.index()
                 if trigger=='enter':QTest.keyClick(e,Qt.Key_Return)
@@ -179,6 +264,51 @@ def start(window, output):
             check('retired shortcut cannot commit',not page._caption_editor_key(QKeyEvent(QEvent.KeyPress,Qt.Key_E,Qt.ShiftModifier,'E')))
             page.save();wait(lambda:not page.project_controller.dirty_guard.is_dirty())
             check('normal save clears dirty guard',not page.project_controller.dirty_guard.is_dirty())
+            from threading import Event
+            from ..studio import studio_realign
+            from ..timeline.studio_caption_timeline import ensure_independent_captions
+            ensure_independent_captions(page.project)
+            first, next_cue = page.project.cues[:2]
+            page.select_cue(first.id)
+            original = (first.start_ms, first.end_ms)
+            other = (next_cue.start_ms, next_cue.end_ms)
+            expected = (original[0] + 600, original[1] - 480)
+            allow_worker = Event()
+            measured_backend = studio_realign.measure
+            audio_basis = studio_realign.alignment_audio_basis
+
+            def measure_fixture(project, targets, *, cancelled):
+                if not allow_worker.wait(10) or cancelled() or targets != [first.id]:
+                    raise RuntimeError('Smart alignment fixture did not receive its original target')
+                return {first.id: {'status': 'aligned', 'text': first.text, 'words': [{
+                    'text': first.text, 'char_start': 0, 'char_end': len(first.text),
+                    'start_ms': expected[0], 'end_ms': expected[1] - 120, 'evidence_ref': 'realign:a',
+                }]}}
+
+            studio_realign.measure = measure_fixture
+            studio_realign.alignment_audio_basis = lambda project, cue_id: next(
+                (item.text, item.start_ms, item.end_ms) for item in project.cues if item.id == cue_id)
+            try:
+                check('background timing fixture starts without existing words',
+                      not studio_timing.measured_words(page.project, first)[0])
+                index = page.undo_stack.index()
+                page._smart_align_current()
+                page.select_cue(next_cue.id)
+                allow_worker.set()
+                wait(lambda: page.cue_controller._smart_align_measuring is None, seconds=15)
+                check('background measurement applies only to the original caption',
+                      (first.start_ms, first.end_ms) == expected and (next_cue.start_ms, next_cue.end_ms) == other)
+                check('background measurement and timing make one undo step',
+                      page.undo_stack.index() == index + 1 and bool(studio_timing.measured_words(page.project, first)[0]))
+                page.undo_stack.undo()
+                check('one undo removes the measured receipt and restores timing',
+                      (first.start_ms, first.end_ms) == original and not studio_timing.measured_words(page.project, first)[0])
+                window.grab().save(str(output/'smart-align-window.png'))
+            finally:
+                allow_worker.set()
+                studio_realign.measure = measured_backend
+                studio_realign.alignment_audio_basis = audio_basis
+            page.save();wait(lambda:not page.project_controller.dirty_guard.is_dirty())
             result['passed']=True;save();window.close();QTimer.singleShot(200,app.quit)
         except Exception:
             result['error']=traceback.format_exc();save()

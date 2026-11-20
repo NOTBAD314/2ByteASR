@@ -105,11 +105,94 @@ def start(window, out):
             p=self.page=window.built_page('studio'); t=p.timeline; panel=p.media_pool_panel; m=p.source_monitor
             self.result['measurements']['layout']={'window':[window.width(),window.height()],
                 'device_pixel_ratio':window.devicePixelRatioF(),'source_parent':'left subtitle tab'}
-            p._toggle_drawer(p.media_pool_tab_index)
+            from ..design import transitions
+            from ..caption_style.motion_inspector_ui import CHOICES
+            app = QApplication.instance()
+            previous_motion = app.property('reduceMotion')
+            app.setProperty('reduceMotion', False)
+            window.activateWindow()
+            yield from self.wait(window.isActiveWindow, 3, 'Studio window is active on the isolated desktop')
+            p._show_context_panel()
+            p.context_drawer.setCurrentIndex(p.motion_tab_index)
+            inspector = p.motion_inspector
+            stage = inspector.stages[inspector.tabs.currentIndex()]
+            yield from self.wait(lambda: inspector.isVisible() and sum(
+                key[0] == stage for key in inspector._cards) == len(CHOICES[stage]),
+                10, 'Studio motion pane builds all cards after opening')
+            self.capture('motion-cards-ready')
+            panel_rect = p.context_panel.geometry().size()
+            p._collapse_context_panel()
+            def panel_slides():
+                return [slide for slide in app.topLevelWidgets()
+                        if isinstance(slide, transitions.PanelSlide) and slide.isVisible()]
+
+            self.check('closed Studio panel slides right over video without intercepting input',
+                       any(slide.size() == panel_rect and not slide.pixmap.isNull()
+                           and slide.side == 'right' and not slide.entering
+                           and slide.windowFlags() & Qt.WindowType.WindowTransparentForInput
+                           for slide in panel_slides()))
+            yield from self.wait(lambda: not panel_slides(),
+                4, 'Studio panel overlay clears')
+            self.check('Studio uses a live native video surface',
+                       transitions.has_visible_native_child(window.pages))
+            self.check('Studio video page can capture a current visual for transition',
+                       transitions.capture_region(window.pages) is not None)
+            app.setProperty('reduceMotion', previous_motion)
+            p._show_context_panel()
             p.context_drawer.setCurrentIndex(p.media_pool_tab_index)
             p.video.set_paused(True); p.volume_slider.setValue(0); m.volume.setValue(0)
             fixtures=Path(os.environ['SOURCE_MONITOR_FIXTURES'])
             original_cues=copy.deepcopy(p.project.cues)
+            photo_path = fixtures/'placement-photo.png'
+            if photo_path.is_file():
+                panel.import_paths([photo_path])
+                yield from self.wait(lambda: any(Path(asset.canonical_source) == photo_path
+                                                 for asset in p.project.media_pool),
+                                     40, 'picture imported through the media pool')
+                photo = next(asset for asset in p.project.media_pool if Path(asset.canonical_source) == photo_path)
+                self.select(photo.asset_id, double=False)
+                before = p.undo_stack.index()
+                playhead = t.playhead_ms
+                audio_before = len(p.project.audio_tracks)
+                rect = panel.assets.visualRect(panel.assets.currentIndex())
+                plus = panel.assets.plus_rect(rect).center().toPoint()
+                QTest.mouseClick(panel.assets.viewport(), Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.NoModifier, plus)
+                yield .2
+                photo_tracks = [track for track in p.project.video_tracks
+                                if any(clip.asset_id == photo.asset_id for clip in track.clips)]
+                self.check('one-click picture creates a single undo step on an overlay track',
+                           p.undo_stack.index() == before+1 and len(photo_tracks) == 1
+                           and photo_tracks[0].id != p.project.video_tracks[0].id)
+                first = next(clip for clip in photo_tracks[0].clips if clip.asset_id == photo.asset_id)
+                self.check('picture starts at the playhead for five seconds without an audio row',
+                           first.timeline_in_ms == playhead and first.timeline_out_ms == playhead+5000
+                           and len(p.project.audio_tracks) == audio_before)
+                t.set_visible_window(max(0, playhead-20000), 40000)
+                yield .15
+                primary = p.project.video_tracks[0]
+                row = t._video_track_rects()[primary.id]
+                point = QPoint(round(t._time_to_x(playhead)), round(row.center().y()))
+                mime = source_mime(p.project, SourceSelection.capture(p.project, photo.asset_id, 'auto'))
+                drag = (Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+                QApplication.sendEvent(t, QDragEnterEvent(point, *drag))
+                QApplication.sendEvent(t, QDragMoveEvent(point, *drag))
+                placement = p.source_timeline_drop.overlay.placement or {}
+                self.check('occupied track previews a new overlay track', placement.get('video_track_id') == 'new')
+                self.capture('picture-over-occupied-track')
+                QApplication.sendEvent(t, QDropEvent(QPointF(point), *drag))
+                yield .2
+                audios = t._audio_track_rects()
+                rows = sorted([*t._video_track_rects().values(), *audios.values()], key=lambda rect: rect.top())
+                self.check('occupied drop commits once and timeline displays only real non-overlapping audio rows',
+                           p.undo_stack.index() == before+2 and set(audios) == {track.id for track in p.project.audio_tracks}
+                           and all(above.bottom() <= below.top()+.5 for above, below in zip(rows, rows[1:])))
+                self.capture('picture-quick-add-and-timeline')
+                p.undo_stack.undo()
+                p.undo_stack.undo()
+                p.project.media_pool = [asset for asset in p.project.media_pool if asset.asset_id != photo.asset_id]
+                panel.refresh(p.project)
+                yield .2
             before_graph=copy.deepcopy((p.project.video_tracks,p.project.audio_tracks,p.project.av_track_groups))
             panel.import_paths([fixtures/name for name in ('source-two-audio.mp4','music.wav','silent.mp4','long-source.mp4')])
             yield from self.wait(lambda:len(p.project.media_pool)==5,40,'background multi-import finished')
@@ -183,7 +266,8 @@ def start(window, out):
             p.project.audio_tracks[0].muted=True
             for mode,position in (('av',60000),('video',65000),('audio',70000)):
                 t.playhead_ms=position; m.set_mode(mode)
-                m.video_target.setCurrentIndex(0); m.audio_target.setCurrentIndex(0)
+                # 'new' by value: the first entry is 自动 since 2026-11-18.
+                m.video_target.setCurrentIndex(m.video_target.findData('new')); m.audio_target.setCurrentIndex(m.audio_target.findData('new'))
                 before=p.undo_stack.index(); m.content_scroll.ensureWidgetVisible(m.insert_button); yield .1
                 if mode == 'av':
                     self.capture('source-insert-controls')
@@ -200,7 +284,7 @@ def start(window, out):
             # Change out before in when two ranges share an old endpoint.
             if m.range_ms()!=(15000,20000):
                 m.set_boundary('out_ms',20000); m.set_boundary('in_ms',15000)
-            t.playhead_ms=75000; m.set_mode('video'); m.video_target.setCurrentIndex(0); m.insert()
+            t.playhead_ms=75000; m.set_mode('video'); m.video_target.setCurrentIndex(m.video_target.findData('new')); m.insert()
             yield .2
             m.clear_range(); m.set_boundary('out_ms',3000)
             self.check('old clips retain captured range',all(c.source_in_ms==10000 and c.source_out_ms==15000 for c in clips))
@@ -258,7 +342,7 @@ def start(window, out):
             target.locked=False
             t.playhead_ms=66000; m.insert()
             self.check('collision rejection visible',p.undo_stack.index()==before and '重叠' in m.status.text())
-            m.video_target.setCurrentIndex(0)
+            m.video_target.setCurrentIndex(m.video_target.findData('new'))
             self.check('missing track has explicit create entry',m.video_target.currentData()=='new')
             original_path=video.canonical_source; video.canonical_source=str(fixtures/'missing.mp4'); video.offline=True
             m.open_asset(video.asset_id); yield .15
@@ -347,6 +431,8 @@ def start(window, out):
             self.save()
             window.close()
             self.result['gui_shutdown']=not window.isVisible()
+            self.result['passed'] = bool(self.result.get('finished') and self.result['gui_shutdown']
+                                         and not self.result['error'] and all(self.result['checks'].values()))
             self.save()
             QTimer.singleShot(200,QApplication.instance().quit)
 
