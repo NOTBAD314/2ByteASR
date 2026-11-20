@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 MAX_BYTES = 64 * 1024 * 1024
+_SUMMARY_TIMEOUT_SECONDS = 60.0
 
 
 def evaluate(payload):
@@ -26,23 +28,38 @@ def summarize(snapshots, cancel):
         sys.executable, '-m', 'twobyteasr.glossary.summary_process']
     process = popen_hidden_subprocess(command, purpose='glossary summary', own_process_tree=True,
         cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    deadline = time.perf_counter()+60
-    first = True
+    deadline = time.perf_counter()+_SUMMARY_TIMEOUT_SECONDS
+    finished = threading.Event()
+    aborted = []
+    def monitor():
+        while not finished.wait(.1):
+            reason = 'cancelled' if cancel.is_set() else 'timed out' if time.perf_counter() >= deadline else ''
+            if reason:
+                aborted.append(reason)
+                try: process.kill()
+                except OSError: pass
+                return
+    watcher = threading.Thread(target=monitor, name='glossary-summary-cancel', daemon=True)
+    watcher.start()
     try:
-        while True:
-            if cancel.is_set() or time.perf_counter()>deadline:
-                raise RuntimeError('Glossary summary cancelled or timed out')
-            try:
-                output, _error = process.communicate(input=request if first else None, timeout=.2)
-                break
-            except subprocess.TimeoutExpired:
-                first = False
+        # Keep stdin registered until the complete request and EOF are sent.
+        # Retrying communicate(input=None) after a short POSIX timeout can
+        # strand an unfinished large write. The watcher retains prompt cancel
+        # and the original deadline even while Windows is writing to the pipe.
+        try:
+            output, _error = process.communicate(input=request, timeout=_SUMMARY_TIMEOUT_SECONDS+1)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError('Glossary summary timed out') from exc
+        if aborted or cancel.is_set():
+            raise RuntimeError('Glossary summary '+(aborted[0] if aborted else 'cancelled'))
         if process.returncode or len(output)>MAX_BYTES:
             raise RuntimeError('Glossary summary worker failed')
         response = json.loads(output.decode('utf8'))
         if 'error' in response: raise RuntimeError(response['error'])
         return response['summaries']
     finally:
+        finished.set()
+        watcher.join(timeout=.3)
         if process.poll() is None:
             process.kill()
             try: process.communicate(timeout=2)

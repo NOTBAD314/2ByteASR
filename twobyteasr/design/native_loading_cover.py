@@ -174,8 +174,16 @@ class InputHostLease(QObject):
         # A user decision is part of this load, not input to the covered
         # editor. Admit only dialogs explicitly leased by this request.
         self._dialogs = [ref for ref in self._dialogs if ref() is not None and isValid(ref())]
-        for ref in self._dialogs:
-            dialog = ref()
+        # 2026-11-19 (user: 兔白 reopened a project, 「保存工程修改」 came up over the loading page and
+        # nothing in it could be clicked; only quitting got out). That dialog is a child of the
+        # covered editor and never asked for a lease, so every click and key was eaten here. The
+        # dialog Qt is currently waiting on is a decision for this load, never input to the hidden
+        # editor (Qt's modality already blocks the editor), so it is always let through.
+        modal = QApplication.activeModalWidget()
+        leased = [ref() for ref in self._dialogs]
+        if modal is not None and isValid(modal) and modal.isVisible():
+            leased.append(modal)
+        for dialog in leased:
             current = watched
             while current is not None:
                 if current is dialog and dialog.isVisible():

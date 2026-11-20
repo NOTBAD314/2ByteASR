@@ -90,7 +90,12 @@ def source_pts_ms(frame, container_start_us=0):
     return round(float(frame.pts * frame.time_base) * 1000 - container_start_us / 1000)
 
 
-def display_bgra(frame, sar, max_size, *, costs=None):
+def display_bgra(frame, sar, max_size, *, costs=None, copy=True):
+    """``copy=False`` may return a memoryview of the converted plane (in-process use)."""
+    return _display_bgra(frame, sar, max_size, costs=costs, copy=copy)
+
+
+def _display_bgra(frame, sar, max_size, *, costs=None, copy=True):
     """Apply container display geometry after bounded conversion, like autorotate.
 
     Ordinary landscape frames keep the zero-array fast path. DISPLAYMATRIX also
@@ -103,6 +108,9 @@ def display_bgra(frame, sar, max_size, *, costs=None):
     source_width = max(2, round(frame.width * sar))
     display_width = abs(a)*source_width + abs(c)*frame.height
     display_height = abs(b)*source_width + abs(d)*frame.height
+    if callable(max_size):
+        # Callers that paint the frame smaller choose the box from its display size.
+        max_size = max_size(max(2, display_width), max(2, display_height))
     factor = min(1., max_size[0]/max(2, display_width), max_size[1]/max(2, display_height))
     width, height = max(2, round(source_width*factor)), max(2, round(frame.height*factor))
     # VideoFrame.reformat creates a per-frame SwsContext. Its default thread
@@ -119,8 +127,13 @@ def display_bgra(frame, sar, max_size, *, costs=None):
     # to_ndarray here lazily loads NumPy/OpenBLAS in the frozen child and can
     # block its first frame beyond the heartbeat deadline. Pack rows directly.
     view = memoryview(plane)
-    packed = (bytes(view) if plane.line_size == width*4 else
-              b''.join(view[y*plane.line_size:y*plane.line_size+width*4] for y in range(height)))
+    unrotated = values is None or (a, b, c, d) == (1., 0., 0., 1.)
+    if not copy and unrotated and plane.line_size == width*4:
+        # The view keeps the converted frame alive; each reformat allocates anew.
+        packed = view
+    else:
+        packed = (bytes(view) if plane.line_size == width*4 else
+                  b''.join(view[y*plane.line_size:y*plane.line_size+width*4] for y in range(height)))
     if costs is not None:
         costs.update(input_pixels=[frame.width, frame.height], input_format=frame.format.name,
             raster_pixels=[width, height], pixel_bytes=len(packed),
@@ -233,6 +246,8 @@ def main():
     gif = None
     gif_path = ''
     gif_published = None
+    # GIFs and pictures: frames from the shared cache, not from a video decoder.
+    from twobyteasr.media.animated_gif import is_frame_image
     try:
         while not closed.is_set():
             with demand_condition:
@@ -263,7 +278,7 @@ def main():
                     next_publish = 0.
                     previous_transport = transport
                     stats['publication_transport_resets'] = stats.get('publication_transport_resets', 0) + 1
-                if request['path'].lower().endswith('.gif'):
+                if is_frame_image(request['path']):
                     from twobyteasr.media.animated_gif import GifFrames
                     if gif is None or gif_path != request['path']:
                         if gif is not None: gif.close()

@@ -224,7 +224,7 @@ def test_local_correction_input_budget_is_distinct_and_never_dispatched(monkeypa
     snapshot,calls=provider(monkeypatch,json.dumps({"boundaries":[len(text)]}))
     original=budget.prepare_input
     def prepare(messages,**kwargs):
-        if json.loads(messages[1]["content"]).get("failed_constraints"):
+        if json.loads(messages[1]["content"]).get("windows"):
             raise budget.InputBudgetError({},["fixture"])
         return original(messages,**kwargs)
     monkeypatch.setattr(budget,"prepare_input",prepare)
@@ -290,9 +290,9 @@ def test_request_failures_keep_source_and_are_classified(monkeypatch,category):
 def test_quality_retry_budget_is_shared_and_has_an_absolute_time_cap():
     clock=[0.]
     budget=QualityRetryBudget(clock=lambda:clock[0])
-    assert budget.take(10000)==(2048,6.)
-    clock[0]=13.
-    assert budget.take(10000) is None
+    assert budget.take(10000)==(256,7.5)
+    clock[0]=91.
+    assert budget.take(10000) is None and budget.refusal_reason()=='task_time_limit'
 
 
 def test_filetrans_keeps_sentence_identity_global_spans_word_times_and_time_domain():

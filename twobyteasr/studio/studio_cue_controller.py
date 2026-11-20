@@ -42,13 +42,14 @@ from ..i18n import bind_text, tr
 class StudioCueController:
     """Coordinate cue-domain actions against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session", "_table_refresh_serial", "_pending_table_activation")
+    __slots__ = ("page", "session", "_table_refresh_serial", "_pending_table_activation", "_smart_align_measuring")
 
     def __init__(self, page, session):
         self.page = page
         self.session = session
         self._table_refresh_serial = 0
         self._pending_table_activation = None
+        self._smart_align_measuring = None
 
     def _read_runtime(self, project):
         """Session transactions maintain this index; legacy callers still validate.
@@ -425,36 +426,11 @@ class StudioCueController:
         cue_id = self.session.selected_cue_id
         if not project or not cue_id:
             return
-        report = recommend_many(project, [cue_id])
-        if not report.recommendations:
-            self.page._show_studio_hint(tr('无法可靠修轴：当前字幕缺少明确字级时间或语音证据'))
-            return
-        values = {
-            item.cue_id: (
-                item.recommended_start
-                if item.recommended_start is not None
-                else item.current_start,
-                item.recommended_end
-                if item.recommended_end is not None
-                else item.current_end,
-            )
-            for item in report.recommendations
-        }
-        self.session.undo_stack.push(
-            BatchTimingCommand(project, values, "Smart Align", self.changed)
-        )
-        item = report.recommendations[0]
-        delta = (
-            values[item.cue_id][0] - item.current_start,
-            values[item.cue_id][1] - item.current_end,
-        )
-        self.page._show_studio_hint(tr('已修正时间轴 {value0:+d}ms / {value1:+d}ms', value0=delta[0], value1=delta[1]))
+        self._smart_align(project, [cue_id], single=True)
 
-    def smart_align_selected(self) -> None:
-        project = self.session.project
-        if not project:
+    def _smart_align(self, project, cue_ids, *, single=False, measure=True):
+        if measure and self._measure_first(project, cue_ids, single=single):
             return
-        cue_ids = self.selected_cue_ids()
         report = recommend_many(project, cue_ids)
         values = {
             item.cue_id: (
@@ -469,12 +445,69 @@ class StudioCueController:
             if item.changed
         }
         if not values:
-            self.page._show_studio_hint(tr('无法可靠修轴：已跳过 {value0} 条', value0=len(cue_ids)))
+            if single:
+                message = tr('当前字幕无需调整，或缺少可靠的字词时间')
+            else:
+                message = tr('没有调整字幕，检查了 {value0} 条', value0=len(cue_ids))
+            self.page._show_studio_hint(message)
             return
         self.session.undo_stack.push(
-            BatchTimingCommand(project, values, "Smart Align selected", self.changed)
+            BatchTimingCommand(project, values, "Smart Align", self.changed)
         )
-        self.page._show_studio_hint(tr('已修正 {value0} 条字幕，跳过 {value1} 条', value0=len(values), value1=len(report.skipped)))
+        if single:
+            item = report.recommendations[0]
+            start, end = values[item.cue_id]
+            message = tr('已修正时间轴 {value0:+d}ms / {value1:+d}ms',
+                         value0=start - item.current_start, value1=end - item.current_end)
+        else:
+            message = tr('已修正 {value0} 条字幕，跳过 {value1} 条', value0=len(values), value1=len(cue_ids) - len(values))
+        self.page._show_studio_hint(message)
+
+    def _measure_first(self, project, cue_ids, *, single) -> bool:
+        """Queue measurement for missing words and keep the original targets."""
+        from ..timeline.studio_timing import measured_words
+        from ..timeline.studio_caption_timeline import independent_captions
+        from .studio_realign import aligner_language, start_realign
+        if self._smart_align_measuring is project:
+            return True
+        lookup = {cue.id: cue for cue in project.cues}
+        missing = [cue_id for cue_id in cue_ids if cue_id in lookup and not measured_words(project, lookup[cue_id])[0]]
+        if not missing or aligner_language(project) is None or not independent_captions(project):
+            return False
+        self._smart_align_measuring = project
+        self.page._show_studio_hint(tr('正在按声音量 {value0} 条字幕的字词时间，量完自动修轴…', value0=len(missing)))
+        missing_ids = set(missing)
+
+        def clear_pending():
+            if self._smart_align_measuring is project:
+                self._smart_align_measuring = None
+
+        def done(results):
+            clear_pending()
+            if self.session.project is project:
+                targets = [cue_id for cue_id in cue_ids if cue_id not in missing_ids or cue_id in results]
+                self._smart_align(project, targets, single=single, measure=False)
+
+        def failed(reason):
+            clear_pending()
+            if reason != 'cancelled' and self.session.project is project:
+                available = [cue_id for cue_id in cue_ids if cue_id not in missing_ids]
+                if available:
+                    self._smart_align(project, available, single=single, measure=False)
+                    return
+                self.page._show_studio_hint(tr('没能按声音量出这几条字幕的时间，时间没有改；可试听后手动拖两端'))
+
+        started = start_realign(self.page, missing, on_done=done, on_fail=failed,
+                                undo_label='Smart Align')
+        if not started:
+            clear_pending()
+        return started
+
+    def smart_align_selected(self) -> None:
+        project = self.session.project
+        if not project:
+            return
+        self._smart_align(project, self.selected_cue_ids())
 
     def speaker_structure_changed(self) -> None:
         self.page._populate_speakers()
@@ -492,6 +525,12 @@ class StudioCueController:
         if remembered is not None and remembered[2].cue_id!=str(cue_id or ''):
             self.page._caption_canvas_edit_target=None
         self.page.timeline.explicit_subtitle_id = str(cue_id or '')
+        # 2026-11-18: where the clock was when the user chose this caption.
+        # Once playback/seeking moves on to another caption, E follows the
+        # playhead instead (StudioCanvasEditMixin._playhead_overrides_selection).
+        self.page._explicit_selection_clock = (
+            self.session.generation, str(cue_id or ''), int(self.page.timeline.playhead_ms),
+        )
         self._select_cue_transaction(cue_id,refresh_advanced=refresh_advanced,hydrate=hydrate)
         remember = getattr(self.page, '_remember_subtitle_navigation', None)
         if callable(remember) and not getattr(self.page, '_navigation_observation_selection', False):

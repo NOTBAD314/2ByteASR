@@ -7,6 +7,7 @@ from PySide6.QtGui import QUndoCommand
 from ..timeline.studio_edit_sequence import VideoSegment, sequence_of, replace_runtime_sequence
 from ..timeline.studio_media_pool import add_media_asset, add_video_clip, create_video_track, primary_video_track_id
 from ..projects.studio_runtime_state import DirtyDomain, state_for
+from ..media.animated_gif import is_frame_image
 
 
 class MediaDropCommand(QUndoCommand):
@@ -19,10 +20,14 @@ class MediaDropCommand(QUndoCommand):
         position = max(0, int(position_ms))
         selected = track_id or str(working.studio_state.get("selected_video_track_id") or "")
         tracks = sorted(working.video_tracks, key=lambda t: t.id != selected)
+        primary = primary_video_track_id(working)
+        # 2026-11-18: GIFs and pictures dropped without pointing at a track are
+        # overlays. They stay off the main track once it holds the main video.
+        overlay = not track_id and all(is_frame_image(r.source_path) for r in results)
         track = next((t for t in tracks if not t.locked and (not track_id or t.id == track_id)
+                      and not (overlay and t.id == primary and t.clips)
                       and not any(c.timeline_in_ms < position+total and c.timeline_out_ms > position
                                   for c in t.clips)), None)
-        primary = primary_video_track_id(working)
         sequence = sequence_of(working)
         if not working.media.path:
             sequence.segments = []
@@ -49,7 +54,7 @@ class MediaDropCommand(QUndoCommand):
                     "sample_timeline_origin_ms":result.sample_timeline_origin_ms})
             if track is None:
                 track = create_video_track(working, locked=False,
-                    synchronize=not str(result.source_path).lower().endswith('.gif'))
+                    synchronize=not is_frame_image(result.source_path))
             if not primary:
                 # The first lane did not exist when primary was resolved.
                 # Its clips must enter the same sequence used by seek/reload.

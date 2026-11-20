@@ -903,12 +903,13 @@ def load_active_game_lexicon_names(include_hidden: bool = False):
             if runtime_game_identity(payload.get("game", "")) != expected_identity:
                 continue
             entries = payload.get("entries", [])
-            current = [
+            # Clean each name once (it was cleaned three times; 2026-11-18).
+            cleaned = (
                 clean_subtitle_text(item.get("name", ""))
                 for item in entries
-                if isinstance(item, dict) and clean_subtitle_text(item.get("name", ""))
-                and clean_subtitle_text(item.get("name", "")) not in hidden
-            ]
+                if isinstance(item, dict)
+            )
+            current = [name for name in cleaned if name and name not in hidden]
             names.extend(current)
             loaded.append(
                 (

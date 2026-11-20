@@ -54,6 +54,11 @@ def _paint_geometry(method):
         return cache[key]
     return cached
 
+# Media refinements (progressive waveform, tiles, filmstrip cells) redraw the
+# static timeline at most this often, or this many times its last cost.
+REFINEMENT_MIN_INTERVAL_S = 0.4
+REFINEMENT_COST_FACTOR = 4.0
+
 from ..timeline.selection_scope import SelectionMode, SelectionScope
 from ..timeline.studio_commands import cue_by_id
 from .studio_cue_table import _speaker_color, _speaker_name
@@ -461,7 +466,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.filmstrip_visible = True
         self._thumbnails = FilmstripCache(self)
         self.interaction_changed.connect(lambda active:self._thumbnails.set_interacting(active))
-        self._thumbnails.updated.connect(self._media_refinement_ready)
+        self._thumbnails.updated.connect(self._thumbnail_refinement_ready)
         from .transport_cursor_overlay import TransportCursorOverlay
         self._transport_overlay = TransportCursorOverlay(self)
 
@@ -1023,7 +1028,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                          for t in self.project.audio_tracks) if self.project and self.waveform_visible else 0
         # 2026-10-24: a video track's further audio streams sit under its A
         # lane, so each group is V + A + its visible stream lanes.
-        heights = {track_id: video_height + audio_height * (1 + len(self._shown_stream_lanes(track_id)))
+        # 2026-11-18: a picture-only track (GIF / image) owns no A lane. It
+        # used to get an empty row here that the height budget did not count,
+        # so lanes overlapped and the top track covered the subtitle rows.
+        paired = self._paired_audio_lanes()
+        heights = {track_id: video_height + audio_height * (
+                       (1 if not self.project or track_id in paired else 0)
+                       + len(self._shown_stream_lanes(track_id)))
                    for track_id in track_ids}
         y = bottom - sum(heights.values()) - standalone*self._audio_track_height()
         if y < self.RULER_HEIGHT:
@@ -1050,16 +1061,15 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if not self.project:
             primary = video_rects.get("V1", QRectF())
             return {"A1": QRectF(0, primary.bottom(), self.width(), audio_height)}
-        audio_by_video = {
-            group.video_track_id: group.audio_track_id
-            for group in self.project.av_track_groups
-            if group.video_track_id and group.audio_track_id
-        }
+        audio_by_video = self._paired_audio_lanes()
         result = {}
-        for index, (video_id, rect) in enumerate(video_rects.items()):
-            result[audio_by_video.get(video_id, f"A{index + 1}")] = QRectF(
-                0, rect.bottom(), self.width(), audio_height)
-            for lane_index, lane in enumerate(self._shown_stream_lanes(video_id), 1):
+        for video_id, rect in video_rects.items():
+            # Only a real A lane gets a row (see _video_track_rects).
+            offset = 0
+            if video_id in audio_by_video:
+                result[audio_by_video[video_id]] = QRectF(0, rect.bottom(), self.width(), audio_height)
+                offset = 1
+            for lane_index, lane in enumerate(self._shown_stream_lanes(video_id), offset):
                 result[lane.id] = QRectF(0, rect.bottom() + lane_index * audio_height, self.width(), audio_height)
         standalone = [t for t in self.project.audio_tracks if t.id not in audio_by_video.values()
                       and getattr(t, 'stream_ordinal', -1) < 0]
@@ -1067,6 +1077,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         for index,track in enumerate(standalone):
             result[track.id] = QRectF(0,bottom-(len(standalone)-index)*audio_height,self.width(),audio_height)
         return result
+
+    def _paired_audio_lanes(self) -> dict[str, str]:
+        """Video track id -> the A lane drawn under it (existing lanes only)."""
+        if not self.project:
+            return {}
+        lanes = {track.id for track in self.project.audio_tracks}
+        return {group.video_track_id: group.audio_track_id for group in self.project.av_track_groups
+                if group.video_track_id and group.audio_track_id in lanes}
 
     def _stream_lanes(self, video_track_id: str) -> list:
         if not self.project:
@@ -1709,7 +1727,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if getattr(self._thumbnails,'closed',False):
             from .video_filmstrip import FilmstripCache
             self._thumbnails=FilmstripCache(self)
-            self._thumbnails.updated.connect(self._media_refinement_ready)
+            self._thumbnails.updated.connect(self._thumbnail_refinement_ready)
         self.cancel_timing_edit()
         if project is not self.project:
             self._unified_selection = False
@@ -1758,6 +1776,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.update()
 
     def set_cache(self, cache: WaveformCache | None) -> None:
+        # A newer picture of a waveform already shown is a refinement.
+        previous = self.cache
+        refinement = (cache is not None and previous is not None and cache is not previous
+                      and str(getattr(cache.metadata, 'source_path', ''))
+                      == str(getattr(previous.metadata, 'source_path', '')))
         self.cache = cache
         if self.project and cache:
             source = _resolved_source(cache.metadata.source_path)
@@ -1779,9 +1802,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 # display data, not a replacement for the saved media clock.
                 # A late cache must not extend an exact recognition result.
                 self.project.media.duration_ms = int(cache.metadata.duration_ms or 0)
-        self._media_refinement_ready()
+        self._media_refinement_ready(throttle=refinement)
 
-    def _media_refinement_ready(self, *_):
+    def _media_refinement_ready(self, *_, throttle=False):
         # Decoded cache data stays current. Its optional quality repaint must
         # not compete with a live canvas gesture for a full timeline layout.
         if getattr(self,'_caption_transform_active',False):
@@ -1792,7 +1815,37 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             if not self._feedback_refinement_timer.isActive():
                 self._feedback_refinement_timer.start()
             return
+        if throttle and self._throttle_refinement():
+            return
         self.update()
+
+    def _throttle_refinement(self) -> bool:
+        """Defer a repeated media refinement; True when it was deferred.
+
+        2026-11-19 (user: opening a project froze the workbench): a long
+        recording publishes its progressive waveform, tiles and filmstrip
+        cells dozens of times while it opens, and each one redrew the whole
+        static timeline (0.3 s here, 0.5-3 s on a 175% desktop). Refinements
+        now redraw at most once per interval, scaled to what the last full
+        picture cost, so the page keeps most of each second for input.
+        """
+        wait = REFINEMENT_MIN_INTERVAL_S
+        last_cost = getattr(self, '_static_render_seconds', 0.0)
+        wait = max(wait, last_cost * REFINEMENT_COST_FACTOR)
+        remaining = wait - (perf_counter() - getattr(self, '_static_rendered_at', 0.0))
+        if remaining <= 0:
+            return False
+        timer = getattr(self, '_refinement_throttle_timer', None)
+        if timer is None:
+            timer = self._refinement_throttle_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._media_refinement_ready)
+        if not timer.isActive():
+            timer.start(max(1, int(remaining * 1000)))
+        return True
+
+    def _thumbnail_refinement_ready(self, *_):
+        self._media_refinement_ready(throttle=True)
 
     def set_caption_transform_active(self, active):
         self._caption_transform_active=bool(active)
@@ -1849,9 +1902,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self.update()
 
     def set_waveform_state(self, state: str, message: str = "") -> None:
+        previous = (self.waveform_state, self.waveform_message)
         self.waveform_state = state if state in {"EMPTY", "LOADING", "READY", "ERROR"} else "ERROR"
         self.waveform_message = str(message or "")
-        self._media_refinement_ready()
+        # The same state again (each progressive publication says READY; the
+        # loading text counts up) is a refinement, not a new state.
+        self._media_refinement_ready(throttle=previous[0] == self.waveform_state)
 
     @measured('playhead_target')
     def set_playhead(self, milliseconds: int) -> None:
@@ -2921,8 +2977,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             if partials is None:self._waveform_partial_tiles = partials = {}
             partials[key] = (cache,path,stats,perf_counter()+.12)
             while len(partials)>96:partials.pop(next(iter(partials)))
-            QTimer.singleShot(140,self.update)
-        self.update()
+            QTimer.singleShot(140,self._thumbnail_refinement_ready)
+        self._media_refinement_ready(throttle=True)
 
     def _build_waveform_envelope(self, cache, source_in, source_out, pixels, width, height, *, amplitude=None):
         """Envelope polygon at x=0..width, y around 0 (same drawing as before).
@@ -3305,6 +3361,27 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         shift = round(moved * (right - self.TRACK_HEADER_WIDTH) / max(1, duration) * dpr)
         return shift if shift <= extra * dpr else None
 
+    def _render_static(self, backing, palette, extra, without):
+        """Draw the static picture (``extra`` px of follow overscan)."""
+        selection = (self.selected_id, self.selected_ids, self.selection_scope)
+        duration = self.visible_duration_ms
+        if without:
+            self.selected_id, self.selected_ids, self.selection_scope = "", set(), SelectionScope.empty()
+        try:
+            if extra:
+                # Same pixels per millisecond, a wider content area and window.
+                content = self._content_right() - self.TRACK_HEADER_WIDTH
+                backing.fillRect(QRectF(0, 0, self.width() + extra, self.height()), QColor(palette.background))
+                self._render_extra_px = extra
+                self.visible_duration_ms = round(duration * (content + extra) / content)
+                self._paint_timeline_contents(backing, QPaintEvent(QRect(0, 0, self.width() + extra, self.height())), palette)
+            else:
+                self._paint_timeline_contents(backing, QPaintEvent(self.rect()), palette)
+        finally:
+            self._render_extra_px = 0
+            self.visible_duration_ms = duration
+            self.selected_id, self.selected_ids, self.selection_scope = selection
+
     def _paint_timeline(self, event):
         self._paint_geometry_cache = {}
         self._waveform_tile_jobs = {}
@@ -3320,9 +3397,40 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 worker.ready.connect(self._waveform_tile_ready)
             worker.submit(self._waveform_tile_jobs,self.project)
 
+    def prepare_static_picture(self) -> bool:
+        """Build the static picture now, without painting the widget.
+
+        For opening readiness (2026-11-19): grab() of the timeline also ran
+        the whole window's pending layout, every hidden page included (the
+        model workshop's cards, Home), 0.2-0.3 s while a project opened. The
+        next real paint only blits this picture. False without a project or
+        a size to draw at.
+        """
+        if self.project is None or self.width() <= 0 or self.height() <= 0:
+            return False
+        self._paint_geometry_cache = {}
+        self._waveform_tile_jobs = {}
+        try:
+            self._static_picture(self._timeline_palette(), self.devicePixelRatioF())
+        finally:
+            self._paint_geometry_cache = None
+        if self._waveform_tile_jobs:
+            worker = getattr(self, '_waveform_tile_worker', None)
+            if worker is None:
+                from .waveform_tiles import WaveformTileWorker
+                self._waveform_tile_worker = worker = WaveformTileWorker(self)
+                worker.ready.connect(self._waveform_tile_ready)
+            worker.submit(self._waveform_tile_jobs, self.project)
+        return True
+
     def _paint_timeline_frame(self, event):
         palette = self._timeline_palette()
         dpr = self.devicePixelRatioF()
+        image, shift = self._static_picture(palette, dpr)
+        self._paint_timeline_present(event, image, shift, palette, dpr)
+
+    def _static_picture(self, palette, dpr):
+        """(picture, device-pixel shift) of the static layer, drawn if stale."""
         key = (self.width(), self.height(), dpr, repr(palette), self.font().key())
         cached = getattr(self, "_static_timeline_cache", None)
         self._paint_item_counts = {'viewport_height': self.height()}
@@ -3341,35 +3449,25 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 image = QPixmap(*size)
                 image.setDevicePixelRatio(dpr)
             image.fill(Qt.GlobalColor.transparent)
+            render_started = perf_counter()
             backing = QPainter(image)
             backing.setFont(self.font())
             without = self._clock_selection_is_dynamic()
             view = (self.visible_start_ms, self.visible_duration_ms, self._content_right(), extra, without)
-            selection = (self.selected_id, self.selected_ids, self.selection_scope)
-            duration = self.visible_duration_ms
-            if without:
-                self.selected_id, self.selected_ids, self.selection_scope = "", set(), SelectionScope.empty()
-            try:
-                if extra:
-                    # Same pixels per millisecond, a wider content area and window.
-                    backing.fillRect(QRectF(0, 0, self.width() + extra, self.height()), QColor(palette.background))
-                    self._render_extra_px = extra
-                    self.visible_duration_ms = round(duration * (content + extra) / content)
-                    self._paint_timeline_contents(backing, QPaintEvent(QRect(0, 0, self.width() + extra, self.height())), palette)
-                else:
-                    self._paint_timeline_contents(backing, QPaintEvent(self.rect()), palette)
-            finally:
-                self._render_extra_px = 0
-                self.visible_duration_ms = duration
-                self.selected_id, self.selected_ids, self.selection_scope = selection
+            self._render_static(backing, palette, extra, without)
             backing.end()
             self._static_timeline_cache = (key, image, dict(self._paint_item_counts), view)
             self._static_timeline_dirty = False
+            self._static_rendered_at = perf_counter()
+            self._static_render_seconds = self._static_rendered_at - render_started
             self._last_paint_stats = {**self._paint_item_counts, 'static_cache_hit': False}
             shift = 0
         else:
             image = cached[1]
             self._last_paint_stats = {**cached[2], 'static_cache_hit': True, 'static_shift_px': shift}
+        return image, shift
+
+    def _paint_timeline_present(self, event, image, shift, palette, dpr):
         painter = QPainter(self)
         if shift == 0 and image.width() == round(self.width() * dpr):
             painter.drawPixmap(0, 0, image)

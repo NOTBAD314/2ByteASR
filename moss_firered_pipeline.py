@@ -4792,8 +4792,20 @@ def process_media(
             [dict(start=start, end=end)], shared_audio, audio_seconds)
         return [dict(row, speaker=f"RECOVERY_{round(start*16000)}_{row.get('speaker') or 'UNKNOWN'}")
                 for row in rows]
+    # 2026-11-19: FireRed ran beside an online primary and already finished.
+    # Its words corroborate VAD-only gaps (an API response that stopped 25 s
+    # before the end left the tail without subtitles) and fill what the
+    # primary retry does not recover; Chinese or undecided language only.
+    independent_tokens = []
+    requested_language = str(getattr(runtime_context, "requested_language", "") or "auto")
+    if firered_early and primary_backend != "firered" and requested_language in {"zh", "auto", ""}:
+        try:
+            independent_tokens = _flatten_firered_stage5_result(firered_early)
+        except Exception as exc:  # noqa: BLE001 - evidence only; the stage 5 boundary reports schema errors
+            legacy.record_run_event("independent_gap_evidence_skipped", backend="firered", error=str(exc)[:300])
     audit_primary(moss_payload, speech_regions, runtime_context, duration=audio_seconds, legacy=legacy,
-                  runner=recover_coverage_range, source=primary_backend)
+                  runner=recover_coverage_range, source=primary_backend,
+                  independent=independent_tokens, fill_independent=bool(independent_tokens))
     stage_index = 3
 
     # The language this task runs with: a manual choice, otherwise the kana
@@ -4803,7 +4815,9 @@ def process_media(
     validate_rows(moss_payload,len(shared_audio)/16000)
     task_language, language_evidence = bind(
         runtime_context,
-        [str(row.get("text") or "") for row in moss_payload.get("segments", [])],
+        # FireRed gap-fill rows are Chinese evidence, not the primary's language.
+        [str(row.get("text") or "") for row in moss_payload.get("segments", [])
+         if row.get("source") != "firered-gap-fill"],
         asr_detected=(moss_payload.get("metadata") or {}).get("detected_language") or moss_payload.get("language"),
     )
     runtime_context.task_language = task_language
@@ -4834,6 +4848,10 @@ def process_media(
                                 reason={_JA: "japanese_audio", "en": "english_audio"}.get(task_language,
                                                                                           f"{task_language}_audio"))
         firered_early = None
+        if independent_tokens:
+            from twobyteasr.recognition.speech_coverage import discard_independent_fill
+            discard_independent_fill(runtime_context.speech_coverage, moss_payload)
+            legacy.record_run_event("independent_gap_fill_discarded", backend="firered", language=task_language)
 
     from twobyteasr.recognition.speaker_evidence import needs_moss_speakers
     from twobyteasr.recognition.speaker_strategy import resolve

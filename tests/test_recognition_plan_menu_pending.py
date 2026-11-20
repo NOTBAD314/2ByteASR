@@ -95,3 +95,16 @@ def test_a_selector_choice_made_since_wins_over_the_pending_one(fresh_install):
     assert home._shown_asr_backends() == ("moss", "local", "api")
     home._refresh_recognition_recommendation()
     assert home.recognition_mode_combo.currentData() == "custom"
+
+
+def test_workshop_refresh_keeps_explicit_home_choice_over_pending_models(fresh_install):
+    home = Home("auto")
+    home._cached_home_model_keys = lambda: set()
+    ui._apply_setup_choice(home, "moss", "local", "local", (), open_workshop=False, auto_download=False)
+    assert home.primary_asr_backend.currentData() == "none"
+    home.primary_asr_backend.setCurrentIndex(home.primary_asr_backend.findData("api"))
+
+    ui.MainWindow._refresh_available_asr_choices(home)
+
+    assert home.primary_asr_backend.currentData() == "api"
+    assert home._shown_asr_backends() == ("api", "local", "local")

@@ -4,7 +4,13 @@ Qt draws ``border-radius`` inside a popup, but the native window behind it
 stays square, so menus showed hard corners around a rounded inner box
 (2026-11-09). On Windows 11 the window manager can round the window itself
 and draw a matching 1px edge; this filter asks for that whenever a popup is
-about to show. Older Windows and other platforms simply keep square popups.
+about to show. On Windows 10, a window region provides the rounded shape.
+
+2026-11-19 (user, on Windows 10: the tutorial window is square and sharp, it looks bad): Windows
+10 has no rounding of its own, so every dialog and popup there was a hard rectangle around a
+rounded inside. There the window is now cut to a rounded shape (a window region, kept to the
+window's size); the edge is not smoothed, but the corners are round. ``TWOBYTEASR_ROUND_REGION=1``
+uses this on Windows 11 too (to check it), ``=0`` turns it off.
 
 Popups that paint their own translucent shape are left alone: rounding their
 transparent margin would draw an edge around nothing.
@@ -12,6 +18,7 @@ transparent margin would draw an edge around nothing.
 
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtCore import QEvent, QObject, Qt
@@ -38,7 +45,10 @@ def _colorref(hex_color: str) -> int:
 
 
 def round_native_window(widget: QWidget, border_color: str | None) -> bool:
-    """Ask Windows 11 to round ``widget``'s window; returns whether it applied."""
+    """Ask Windows 11 to round ``widget``'s window (Windows 10: cut it round); returns whether it applied."""
+    choice = os.environ.get('TWOBYTEASR_ROUND_REGION', '')
+    if sys.platform == 'win32' and (choice == '1' or (choice != '0' and not _windows_supports_rounding())):
+        return round_with_region(widget)
     if not _windows_supports_rounding():
         return False
     import ctypes
@@ -58,6 +68,69 @@ def round_native_window(widget: QWidget, border_color: str | None) -> bool:
         return True
     except Exception:
         return False
+
+
+REGION_RADIUS = 12          # logical px, the radius Windows 11 uses for its rounded windows
+
+
+class _RegionKeeper(QObject):
+    """Keeps a window's rounded region matching its size (a region is in pixels and fixed)."""
+
+    def __init__(self, widget: QWidget, radius: int):
+        super().__init__(widget)
+        self.widget = widget
+        self.radius = radius
+        self._size = None
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        if watched is self.widget and event.type() in (QEvent.Type.Resize, QEvent.Type.Show,
+                                                       QEvent.Type.WindowStateChange):
+            self.apply()
+        return False
+
+    def apply(self) -> bool:
+        widget = self.widget
+        if not widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+            ratio = widget.devicePixelRatioF() or 1.0
+            width, height = round(widget.width() * ratio), round(widget.height() * ratio)
+            full = widget.isMaximized() or widget.isFullScreen()
+            key = (width, height, full)
+            if key == self._size:
+                return True
+            self._size = key
+            hwnd = wintypes.HWND(int(widget.winId()))
+            user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+            gdi.CreateRoundRectRgn.restype = wintypes.HRGN
+            user.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+            if full:
+                applied = bool(user.SetWindowRgn(hwnd, None, True))
+            else:
+                diameter = max(2, round(self.radius * 2 * ratio))
+                region = gdi.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)
+                applied = bool(region) and bool(user.SetWindowRgn(hwnd, region, True))
+                if region and not applied:
+                    gdi.DeleteObject(wintypes.HANDLE(region))
+            if not applied:
+                self._size = None
+            return applied
+        except Exception:  # noqa: BLE001
+            self._size = None
+            return False
+
+
+def round_with_region(widget: QWidget, radius: int = REGION_RADIUS) -> bool:
+    """Cut ``widget``'s window to a rounded shape that follows its size (Windows 10)."""
+    if widget is None or not widget.isWindow() or widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+        return False
+    keeper = getattr(widget, '_rounded_region', None)
+    if keeper is None:
+        keeper = widget._rounded_region = _RegionKeeper(widget, radius)
+    return keeper.apply()
 
 
 def _is_plain_popup(widget: QWidget) -> bool:
@@ -85,7 +158,7 @@ class RoundedPopupFilter(QObject):
 
 def install_rounded_popups(app, border_color: str | None) -> None:
     """Install once per application; later calls only update the edge colour."""
-    if not _windows_supports_rounding():
+    if sys.platform != "win32":
         return
     existing = getattr(app, "_rounded_popup_filter", None)
     if existing is not None:

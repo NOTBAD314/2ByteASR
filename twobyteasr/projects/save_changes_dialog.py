@@ -66,10 +66,20 @@ class _BunnyDisc(QWidget):
         super().__init__()
         self.setObjectName('candyBunnyDisc')
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        # Taller than the disc when needed, so the keyring on her head is never cut.
-        self.setFixedSize(size, max(size, mascot.height() + 6))
+        # 2026-11-18 (user: the bunny charm was not centred): her body (ears to feet, keyring left
+        # out) used to sit on the disc's bottom edge with her feet cut by it. Now the middle of her
+        # body is the disc's centre; the keyring may rise above the disc, and the widget is tall
+        # enough that it is never cut.
+        self.diameter = size * .86
+        body = mascot.body_center() if hasattr(mascot, 'body_center') else QPointF(mascot.width() / 2,
+                                                                                   mascot.height() / 2)
+        ring_top = getattr(mascot, 'pad_top', 0)
+        cy = max(self.diameter / 2 + 2, body.y() - ring_top + 2)
+        self.centre = QPointF(size / 2, cy)
+        at_x, at_y = round(size / 2 - body.x()), round(cy - body.y())
+        self.setFixedSize(size, max(round(cy + self.diameter / 2 + 2), at_y + mascot.height()))
         mascot.setParent(self)
-        mascot.move((size - mascot.width()) // 2, self.height() - mascot.height())
+        mascot.move(at_x, at_y)
         self.mascot = mascot
 
     def paintEvent(self, event):  # noqa: N802 - Qt override
@@ -78,8 +88,8 @@ class _BunnyDisc(QWidget):
         t = theme_definition(theme_key())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        diameter = self.width() * .86
-        centre = QPointF(self.width() / 2, self.height() - diameter / 2 - 1)
+        diameter = self.diameter
+        centre = self.centre
         painter.setPen(QPen(QColor(blend_hex(t.surface, t.accent, .45)), 3))
         painter.setBrush(QColor(blend_hex(t.surface, t.accent, .28 if not t.is_light else .18)))
         painter.drawEllipse(centre, diameter / 2, diameter / 2)

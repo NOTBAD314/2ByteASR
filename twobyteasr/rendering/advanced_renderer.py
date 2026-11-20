@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -229,18 +230,26 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                            on_line: Callable[[str], None] | None = None,
                            cancelled: Callable[[], bool] | None = None,
                            stall_timeout: float | None = None,
-                           purpose: str = "advanced preview/render child") -> tuple[int, str]:
+                           purpose: str = "advanced preview/render child",
+                           stdin_feeder: Callable | None = None) -> tuple[int, str]:
     if command and Path(command[0]).name.lower() in {'node.exe', 'node'}:
         from .renderer_export_temp import renderer_temporary_environment
         with renderer_temporary_environment(renderer_child_environment()) as child_env:
             return _run_streaming_process_impl(command, cwd=cwd, on_line=on_line,
                 cancelled=cancelled, stall_timeout=stall_timeout, purpose=purpose, child_env=child_env)
     return _run_streaming_process_impl(command, cwd=cwd, on_line=on_line,
-        cancelled=cancelled, stall_timeout=stall_timeout, purpose=purpose)
+        cancelled=cancelled, stall_timeout=stall_timeout, purpose=purpose, stdin_feeder=stdin_feeder)
 
 
 def _run_streaming_process_impl(command, *, cwd=None, on_line=None, cancelled=None,
-                                stall_timeout=None, purpose="advanced preview/render child", child_env=None):
+                                stall_timeout=None, purpose="advanced preview/render child", child_env=None,
+                                stdin_feeder=None):
+    """``stdin_feeder(binary_stdin)`` runs on its own thread when given.
+
+    Its error (for example a source decode failure) is raised instead of the
+    child's resulting broken-input exit; a write failing because the child
+    already exited or was cancelled is left to the child's own result.
+    """
     import queue
     from ..exports.export_failure import ErrorEvidence, ProcessEvidence
     separate = Path(str(command[0])).stem.lower().startswith('ffmpeg')
@@ -248,6 +257,7 @@ def _run_streaming_process_impl(command, *, cwd=None, on_line=None, cancelled=No
 
     process = popen_hidden_subprocess(
         command, cwd=cwd, stdout=subprocess.PIPE,
+        **({'stdin': subprocess.PIPE} if stdin_feeder else {}),
         stderr=subprocess.PIPE if separate else subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
         purpose=purpose,
@@ -337,6 +347,22 @@ def _run_streaming_process_impl(command, *, cwd=None, on_line=None, cancelled=No
     for reader in readers:
         reader.start()
     watchdog.start()
+    feeder = None
+    if stdin_feeder:
+        def feed() -> None:
+            stdin = process.stdin.buffer if hasattr(process.stdin, 'buffer') else process.stdin
+            try:
+                stdin_feeder(stdin)
+                stdin.close()
+            except BaseException as exc:
+                if not (isinstance(exc, OSError) and process.poll() is not None) and not isinstance(exc, InterruptedError):
+                    state['feeder_error'] = exc
+                try:
+                    cleanup()
+                except BaseException:
+                    pass
+        feeder = threading.Thread(target=feed, daemon=True, name='streaming-process-stdin')
+        feeder.start()
     try:
         remaining = len(readers)
         while remaining:
@@ -389,8 +415,12 @@ def _run_streaming_process_impl(command, *, cwd=None, on_line=None, cancelled=No
                 process.stdout.close()
             if separate and not readers[1].is_alive():
                 process.stderr.close()
+            if feeder is not None:
+                feeder.join(timeout=10)
     if state['cancelled'] or (cancelled and cancelled()):
         raise InterruptedError("render cancelled")
+    if 'feeder_error' in state:
+        raise state['feeder_error']
     if state["stall_killed"]:
         tail.append(f"[2ByteASR] 渲染进程超过 {stall_timeout:.0f}s 无输出，已终止（疑似挂死）。")
         raise RuntimeError("\n".join(tail[-12:]))
@@ -1019,6 +1049,26 @@ def _web_theme_composition(props: Mapping[str, object]) -> bool:
         and cue['visual'].get('webTheme') for cue in (props.get('cues') or []))
 
 
+def overlay_render_pages(width, height, *, cores=None, available_bytes=None):
+    """Browser pages rendering animated caption frames in parallel.
+
+    Two pages left most cores idle on long animated exports. Up to four are
+    used when the cores and free memory (about 1.5 GB a page at 1080p, 4 GB
+    above it, plus 2 GB headroom) allow; never fewer than the original two.
+    """
+    cores = cores if cores is not None else (os.cpu_count() or 4)
+    if available_bytes is None:
+        try:
+            import psutil
+            available_bytes = psutil.virtual_memory().available
+        except (ImportError, OSError):
+            return 2
+    pixels = int(width or 1920) * int(height or 1080)
+    per_page = (1.5 if pixels <= 1920 * 1088 else 4.) * 1024**3
+    by_memory = int((available_bytes - 2 * 1024**3) // per_page)
+    return max(2, min(4, cores // 2, by_memory))
+
+
 class AdvancedRendererBackend:
     def __init__(self, renderer_root: str | os.PathLike[str] | None = None):
         self.root = Path(renderer_root or Path(__file__).resolve().parents[2] / "renderer").resolve()
@@ -1047,7 +1097,7 @@ class AdvancedRendererBackend:
         chrome: Path, fps: float, progress, cancelled, trace, timings: dict,
         stills_manifest=None, still_line=None,
     ) -> list[tuple[int, int, Path]]:
-        """One job-owned browser, at most two render pages, bounded batches.
+        """One job-owned browser, a few render pages, bounded batches.
 
         Static PNGs and animated ProRes windows share the same bundle/browser.
         Each window retains the existing frame clock and verified cache key.
@@ -1064,12 +1114,17 @@ class AdvancedRendererBackend:
         timings.update(dynamic_assets=len(segment_specs),dynamic_assets_rendered=len(missing),
                        dynamic_asset_cache_hits=len(segment_specs)-len(missing))
         if missing or stills_manifest:
-            pages = 2
+            pages = overlay_render_pages(props.get('width'), props.get('height'))
             manifest = temp / 'html-segments.json'
             data = dict(props=str(props_path), browser=str(chrome),
                 referenceBrowser=str(_export_browser(self.root, web=False)), pages=pages,
                 segments=[dict(start=a, end=b, output=str(target)) for a, b, target in missing])
             if stills_manifest: data['stillsManifest'] = str(stills_manifest)
+            overlay_ffmpeg = getattr(self, '_overlay_ffmpeg', None)
+            if overlay_ffmpeg and Path(overlay_ffmpeg).is_file():
+                # Animated windows encode as QuickTime RLE with the app's full
+                # FFmpeg (Remotion's minimal build has no RLE encoder).
+                data['ffmpeg'] = str(Path(overlay_ffmpeg).resolve())
             manifest.write_text(json.dumps(data), encoding='utf8')
             started = time.perf_counter()
             if trace:
@@ -1104,6 +1159,51 @@ class AdvancedRendererBackend:
             timings.update(remotion=0., overlay_cache='segments-hit', browser_processes=0)
         return sorted(segment_specs, key=lambda item: item[0])
 
+    def _render_native_windows(self, *, props, props_path, temp, windows, groups, sparse, hold_output_frames,
+                               ffmpeg_path, width, height, fps, cli, chrome, progress, cancelled, trace, timings):
+        """Entrance/exit windows of held cues from their browser still (native_caption_motion).
+
+        Cue-local frames follow SubtitleComposition exactly. A window whose
+        still is missing (e.g. intentionally empty) renders in the browser.
+        """
+        from .native_caption_motion import render_native_windows
+        def js_round(value):
+            return math.floor(value + .5)
+        stills = {layer['first_frame']: layer for layer in (sparse or {}).get('layers', [])}
+        planned, browser = [], []
+        for a, b in windows:
+            span = next(s for s in groups if s[0] <= a and b <= s[1])
+            row = groups[span]
+            still = stills.get(hold_output_frames.get(row['id'], (None,))[0])
+            if still is None or any(edge in (0, limit) for edge, limit in zip(
+                    still['bounds'], (width, height, width, height))):
+                # A cropped still may omit pixels which move into view.
+                browser.append((a, b))
+                continue
+            start = js_round(row['startMs']/1000*fps)
+            offset = (row.get('localOffsetMs') or 0)/1000*fps
+            duration = max(1, js_round((row.get('cueDurationMs') or (row['endMs']-row['startMs']))/1000*fps))
+            frames = [(max(0, f - start) + offset, duration, fps) for f in range(a, b + 1)]
+            longest = max(str(row.get('text', '')).split('\n'), key=len)
+            planned.append((a, b, still['path'], still['bounds'], row.get('visual'), longest, frames, fps))
+        started = time.perf_counter()
+        specs, failed = render_native_windows(planned, ffmpeg_path, temp, width=width, height=height, cancelled=cancelled)
+        native_seconds = time.perf_counter() - started
+        if failed:
+            # A native window that failed is rendered by the browser instead.
+            browser += [(a, b) for a, b, _ in failed]
+            timings['native_failures'] = [error for _, _, error in failed][:8]
+        if browser:
+            specs += self._render_overlay_segments(props=props, props_path=props_path, temp=temp, windows=browser,
+                cli=cli, chrome=chrome, fps=fps, progress=progress, cancelled=cancelled, trace=trace, timings=timings)
+        timings.update(native_windows=len(planned) - len(failed), native_frames=sum(len(p[6]) for p in planned),
+                       native_browser_fallback=len(browser), native_seconds=native_seconds)
+        if trace:
+            trace('native_caption_motion', dict(windows=len(planned) - len(failed), browser_fallback=len(browser),
+                                                failures=[error for _, _, error in failed][:4],
+                                                seconds=round(native_seconds, 3)))
+        return specs
+
     @record_completion
     @renderer_identity_scope
     def render(
@@ -1125,6 +1225,7 @@ class AdvancedRendererBackend:
         from dataclasses import replace
         from copy import copy
         from ..exports.export_run_log import note_export
+        self._overlay_ffmpeg = ffmpeg_path
         # Route only visible cues that can contribute to this export range.
         start = float(job.start_seconds or 0)
         duration = float(job.duration_seconds or project.media.duration_ms/1000-start)
@@ -1147,7 +1248,11 @@ class AdvancedRendererBackend:
             from ..exports.timeline_media import resolve_video_graph, export_range_graph
             graph = export_range_graph(job.video_graph, start, duration)
             job = replace(job, video_graph=resolve_video_graph(graph, ffmpeg_path, cancelled=cancelled, seekable=True))
-        if job.video_graph and simple_video_clips(job.video_graph) is not None:
+        # Overlay layers stay on the damage-tolerant compositor here: this route
+        # has no raster retry when FFmpeg's strict decode meets a bad packet.
+        from ..exports.export_filtergraph import direct_video_layout
+        if (job.video_graph and simple_video_clips(job.video_graph) is not None
+                and not direct_video_layout(job.video_graph)['layers']):
             source_fps = job.settings.fps or job.video_graph.get('fps')
             if not source_fps:
                 from fractions import Fraction
@@ -1182,22 +1287,60 @@ class AdvancedRendererBackend:
         width = int(job.settings.width or project.media.width or 1920)
         height = int(job.settings.height or project.media.height or 1080)
         fps = float(job.settings.fps or getattr(project.media, "fps", 0.0) or 30.0)
+        overlay_offset_frames = 0
         if mixed:
             # Reducing a mixed composition's window must not change which
             # authored animation frame reaches an output frame (e.g. its fade).
             from fractions import Fraction
-            import math
             rate = Fraction(str(fps)).limit_denominator(100100)
             first = math.floor(Fraction(str(overlay_start-start))*rate)
             last = math.ceil(Fraction(str(overlay_start+overlay_duration-start))*rate)
             overlay_start = start+float(Fraction(first)/rate)
             overlay_duration = min(start+duration, start+float(Fraction(last)/rate))-overlay_start
+            overlay_offset_frames = first
         if progress:
             progress(export_progress(STAGE_PREPARE_SUBTITLES, message="正在准备 Advanced recipe 与 overlay 缓存…"))
         props = compile_composition_data(
             moving_project, width=width, height=height, fps=fps,
             start_seconds=overlay_start, duration_seconds=overlay_duration,
         )
+        # Entry/exit-only cues: their constant hold is one still (output
+        # frames), the browser renders only entrance and exit frames. Both
+        # sides come from these same numbers, so frames are split exactly.
+        hold_frames = {}
+        hold_ids = getattr(moving_project, '_hold_cue_ids', frozenset())
+        if hold_ids:
+            from ..exports.mixed_caption_export import hold_window
+            groups = {}
+            for row in props['cues']:
+                if row.get('sourceId', row['id']) in hold_ids and row['id'] == row.get('sourceId', row['id']):
+                    groups.setdefault((row['startMs'], row['endMs']), []).append((row['id'], hold_window(row, fps)))
+            for members in groups.values():
+                # Cues sharing a span (bilingual companions) must hold on the
+                # same frames, or the whole group keeps every frame.
+                windows = {window for _, window in members}
+                if len(windows) == 1 and None not in windows:
+                    hold_frames.update((cue_id, window) for cue_id, window in members)
+            timings['hold_stills'] = len(hold_frames)
+        hold_output_frames = {key: (a+overlay_offset_frames, b+overlay_offset_frames) for key, (a, b) in hold_frames.items()}
+        # Entrance/exit windows of held cues whose motion is a transform of
+        # their still are produced natively from that still, not by the browser.
+        from .native_caption_motion import native_supported
+        native_groups = {}
+        if hold_frames:
+            from fractions import Fraction
+            rate = Fraction(str(fps)).limit_denominator(100100)
+            for row in props['cues']:
+                if row.get('sourceId', row['id']) in hold_frames:
+                    span = (math.ceil(Fraction(row['startMs'], 1000)*rate), math.ceil(Fraction(row['endMs'], 1000)*rate) - 1)
+                    native_groups.setdefault(span, []).append(row)
+            # A still shared by multiple captions has multiple transform
+            # origins. Keep their moving frames in the browser.
+            native_groups = {span: rows[0] for span, rows in native_groups.items()
+                             if len(rows) == 1 and native_supported(rows[0].get('visual'))}
+        def native_split(windows):
+            native = [w for w in windows if any(a <= w[0] and w[1] <= b for a, b in native_groups)]
+            return [w for w in windows if w not in native], native
         output = Path(job.output_path).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         if trace:
@@ -1207,20 +1350,24 @@ class AdvancedRendererBackend:
             props_path = temp / "recipe.json"
             props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
             batch_segments = []
+            batch_ran = []
             def render_browser_batch(manifest, on_line):
                 from ..exports.export_performance import export_phase
                 total = int(props.get('durationInFrames') or max(1, round(overlay_duration*fps)))
                 from .caption_asset_identity import asset_windows
-                windows = asset_windows(props, total)
+                windows = asset_windows(props, total, holds=hold_frames)
+                browser_windows, native = native_split(windows)
+                batch_ran.append(True)
                 with export_phase('mixed_browser_batch', overlaps='static stills, moving frames and encoding share one browser'):
                     batch_segments.extend(self._render_overlay_segments(
-                        props=props, props_path=props_path, temp=temp, windows=windows or [(0,total-1)],
+                        props=props, props_path=props_path, temp=temp,
+                        windows=browser_windows if native else (windows or [(0,total-1)]),
                         cli=self.root/'node_modules/.bin/remotion', chrome=_composition_browser(self.root,props),
                         fps=fps, progress=progress, cancelled=cancelled, trace=trace, timings=timings,
                         stills_manifest=manifest, still_line=on_line))
             sparse = prepare_mixed_stills(still_project, self.root, temp, width=width, height=height,
                 fps=fps, start=start, duration=duration, cancelled=cancelled, progress=progress, trace=trace,
-                render_stills=render_browser_batch) if still_project else None
+                render_stills=render_browser_batch, holds=hold_output_frames) if still_project else None
             overlay = temp / "subtitle-overlay.mov"
             native_ass = temp / "native-subtitles.ass"
             props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1239,9 +1386,23 @@ class AdvancedRendererBackend:
             # 且 Remotion 自己的 "time remaining" 会长时间停在 2s。
             total_frames = int(props.get("durationInFrames") or expected_frames)
             from .caption_asset_identity import asset_windows
-            windows = asset_windows(props, total_frames)
+            windows = asset_windows(props, total_frames, holds=hold_frames)
+            browser_windows, native_windows = native_split(windows)
             segment_overlays: list[tuple[int, int, Path]] = []
-            if batch_segments:
+            if native_windows and still_project is not None:
+                segment_overlays = list(batch_segments)
+                if not batch_ran and browser_windows:
+                    # Stills came from the cache, so no browser batch ran yet.
+                    segment_overlays = self._render_overlay_segments(
+                        props=props, props_path=props_path, temp=temp, windows=browser_windows,
+                        cli=cli, chrome=chrome, fps=fps, progress=progress, cancelled=cancelled, trace=trace,
+                        timings=timings)
+                segment_overlays = sorted(segment_overlays + self._render_native_windows(
+                    props=props, props_path=props_path, temp=temp, windows=native_windows, groups=native_groups,
+                    sparse=sparse, hold_output_frames=hold_output_frames, ffmpeg_path=ffmpeg_path,
+                    width=width, height=height, fps=fps, cli=cli, chrome=chrome, progress=progress,
+                    cancelled=cancelled, trace=trace, timings=timings), key=lambda item: item[0])
+            elif batch_segments:
                 segment_overlays = batch_segments
             elif cache_hit:
                 timings["remotion"] = 0.0
@@ -1307,6 +1468,15 @@ class AdvancedRendererBackend:
             # ---- overlay chain: 单段（整窗 mov）走旧路径；分段则逐段 setpts
             # 偏移 + enable 时间窗叠加（段外透出底图，段间空隙自然留白）。
             overlay_inputs: list[tuple[float, float, Path]] = []
+            if len(segment_overlays) > 1:
+                # Every window as its own input made long animated exports
+                # open hundreds of demuxers and exceed Windows' command line.
+                from ..exports.caption_composite_region import merge_moving_overlays
+                merged = merge_moving_overlays(segment_overlays, temp, ffmpeg_path, width=width, height=height,
+                    fps=fps, regions=job.export_context.get('overlay_alpha_bounds'))
+                if merged:
+                    timings['merged_overlay_windows'] = len(segment_overlays)
+                    segment_overlays = [merged]
             if segment_overlays:
                 for seg_a, seg_b, seg_path in segment_overlays:
                     seg_start_sec = delay + seg_a / fps
@@ -1332,11 +1502,13 @@ class AdvancedRendererBackend:
                 input_id = input_index + 1 + bool(sparse)
                 stream_label = f"ov{input_index}"
                 next_label = "v" if input_index == len(overlay_inputs) - 1 else f"m{input_index}"
+                from ..exports.export_filtergraph import overlay_timing_filter
                 parts.append(
-                    f"[{input_id}:v]setpts={overlay_pts_shift(max(0.0,window_start),fps)}[{stream_label}]"
+                    f"[{input_id}:v]{overlay_timing_filter(max(0.0,window_start),fps,overlay_path)}[{stream_label}]"
                 )
                 enable = (
-                    f"enable='between(t,{max(0.0, window_start):.5f},{window_end:.5f})'"
+                    # Half a frame of margin: output frame times are truncated.
+                    f"enable='between(t,{max(0.0, window_start - .5/fps):.6f},{window_end - .5/fps:.6f})'"
                     if segment_overlays else ""
                 )
                 from ..exports.caption_composite_region import append_region_overlay
@@ -1356,9 +1528,16 @@ class AdvancedRendererBackend:
             else:
                 from ..exports.studio_render import video_input_acceleration
                 composite.extend([*video_input_acceleration(job), "-i", str(Path(job.media_path).resolve()), *static_inputs])
+                from ..exports.export_filtergraph import overlay_input_args
                 for _window_start, _window_end, overlay_path in overlay_inputs:
-                    composite.extend(["-i", str(overlay_path)])
+                    composite.extend(overlay_input_args(overlay_path))
                 composite.extend(["-t", f"{duration:.9f}", "-filter_complex", filter_graph, "-map", f"[{prev_label}]", "-map", audio_map])
+            graph_at = composite.index("-filter_complex")
+            if len(composite[graph_at + 1]) > 12000:
+                # A very long graph (many caption layers): keep the command line short.
+                graph_file = temp / "composite.ffgraph"
+                graph_file.write_text(composite[graph_at + 1], encoding="utf-8")
+                composite[graph_at:graph_at + 2] = ["-/filter_complex", str(graph_file)]
             composite.extend(["-c:v", encoder, *quality, "-pix_fmt", pix])
             preset = encoder_preset(encoder, job.settings.preset)
             if preset:

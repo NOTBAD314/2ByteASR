@@ -52,6 +52,12 @@ POKES_FOR_HMPH = 4           # this many pokes within POKE_WINDOW_S and she turn
 POKE_TIP_SHARE = 0.7         # 2026-11-16 (user): a click mostly brings a tip (bunny_tips), sometimes a joke
 IDLE_TIP_AFTER_S = (50.0, 70.0)    # quiet this long (just before she dozes) and she may say a tip
 IDLE_TIP_GAP_S = (180.0, 360.0)    # ... but not more often than this
+# 2026-11-19 (user): a tip came while her answer was still being read and pushed it out. An answer
+# to the user's question stays until it could have been read at a slow pace (counted from when it
+# was all on screen) and the user has been back since (pointer at her, typing, a click).
+READ_CHARS_PER_S = 4.0       # slow reading of mixed Chinese and button names
+READ_BASE_S = 8.0
+READ_MIN_S = 20.0
 POKE_WINDOW_S = 5.0
 LATE_NIGHT_KEY = 'bunny_late_night'
 
@@ -122,6 +128,13 @@ def app_state(window, ready: bool) -> dict:
         state['vision'] = vision_state(runtime_settings(window))[1]
     except Exception:  # noqa: BLE001
         pass
+    try:                                     # 2026-11-18: error boxes and finished recognitions of this start
+        from . import bunny_events, bunny_permissions
+        recent = bunny_events.recent_text() if bunny_permissions.load().get('read_diagnostics') else ''
+        if recent:
+            state['recent'] = recent
+    except Exception:  # noqa: BLE001
+        pass
     return state
 
 
@@ -179,7 +192,7 @@ def _floating() -> bool:
 # tokens count against the output budget, so the budget grows with the depth.
 REASONING_LEVELS = ('off', 'high', 'max')
 REASONING_KEY = 'bunny_chat_reasoning'
-REASONING_BUDGET = {'off': (700, 90), 'high': (8000, 180), 'max': (16000, 300)}
+REASONING_BUDGET = {'off': (1400, 90), 'high': (8000, 180), 'max': (16000, 300)}
 # 2026-11-15 (user): a brain icon lit for two levels and grey for one was hard to read; the chip
 # says the level in a word, and a click lists all three with what each means.
 REASONING_CHIPS = {'off': '快速', 'high': '深思', 'max': '最深'}
@@ -200,13 +213,15 @@ class BunnyChatWorker(QThread):
     looked_up = Signal(dict)     # the lookup turn handed to the AI (kept in the chat history)
 
     def __init__(self, settings: dict, messages: list[dict], parent=None, *, lookup: str = '', ai_ready=None,
-                 receipts=None, background=(), state_text: str = '', effort: str = 'high', images=()):
+                 receipts=None, background=(), state_text: str = '', effort: str = 'high', images=(),
+                 recognition_job_id: str = ''):
         super().__init__(parent)
         self._settings = settings
         self._messages = messages
         self._images = tuple(images)         # bunny_vision.Capture: sent with this request only
         self._lookup = lookup
         self._ai_ready = ai_ready
+        self._recognition_job_id = recognition_job_id
         self._receipts = receipts            # tool receipts from the GUI thread, sent with the background reads
         self._background = tuple(background)
         self._state_text = state_text
@@ -221,7 +236,8 @@ class BunnyChatWorker(QThread):
                 # Agent step 2: the slow reads run here, beside the request, then go back as one result turn.
                 from .bunny_tools import run_background
                 receipts = [*(self._receipts or []), *run_background(self._background, ai_ready=self._ai_ready,
-                                                                     settings=self._settings)]
+                                                                     settings=self._settings,
+                                                                     recognition_job_id=self._recognition_job_id)]
                 turn = bunny_persona.tool_results_message(receipts, self._state_text)
                 from .bunny_vision import with_images
                 self._messages = [*self._messages, with_images(turn, self._images)]
@@ -230,10 +246,23 @@ class BunnyChatWorker(QThread):
                 from .bunny_lookup import run_check
                 from . import bunny_permissions
                 from .bunny_tools import TOOLS
-                refused = bunny_permissions.refusal(TOOLS[self._lookup], bunny_permissions.load())
-                found = ('没有读取：' + refused) if refused else run_check(
-                    self._lookup, ai_ready=self._ai_ready, settings=self._settings)
-                turn = bunny_persona.lookup_message(self._lookup, found)
+                auto = self._lookup.startswith(bunny_persona.AUTO_PREFIX)     # looked up before she asked
+                name = self._lookup[len(bunny_persona.AUTO_PREFIX):] if auto else self._lookup
+                refused = bunny_permissions.refusal(TOOLS[name], bunny_permissions.load())
+                if refused:
+                    found = '没有读取：' + refused
+                elif TOOLS[name].run is not None:          # a background tool of its own (analyze_recognition)
+                    from .bunny_tools import ToolError
+                    try:
+                        settings = self._settings
+                        if name == 'analyze_recognition':
+                            settings = {'_bunny_recognition_job_id': self._recognition_job_id}
+                        found = TOOLS[name].run(settings, {})
+                    except ToolError as error:
+                        found = f'没查到：{error}'
+                else:
+                    found = run_check(name, ai_ready=self._ai_ready, settings=self._settings)
+                turn = bunny_persona.lookup_message(name, found, auto=auto)
                 self._messages = [*self._messages, turn]
                 self.looked_up.emit(turn)
             if self.isInterruptionRequested():
@@ -430,7 +459,42 @@ UNEASY_POKE_LINES = (
     ('要先说对不起……兔白才出来。', 'scared'),
 )
 MODE_KEY = 'bunny_chat_mode'
-LINE_PAUSE_MS = 300          # thread view: the breath between two of her bubbles
+LINE_PAUSE_MS = 300          # the breath between two of her sentences
+# 2026-11-18 (user: a few words, then another click for the next sentence): the box now goes on by
+# itself and keeps this answer's sentences together; the old click-for-each stays as a choice.
+CLICK_LINES_KEY = 'bunny_click_lines'
+DIALOG_LINES_HEIGHT = 300    # the box keeps this answer's sentences up to this height; older ones leave first
+DETAIL_HEIGHT = 220          # the card of steps and causes scrolls above this
+DETAIL_HISTORY_CHARS = 300   # what later questions still carry of a card
+
+
+def click_lines() -> bool:
+    from .onboarding import load_state
+    return load_state().get(CLICK_LINES_KEY) is True
+
+
+def set_click_lines(on: bool) -> None:
+    from .onboarding import load_state, save_state
+    save_state(dict(load_state(), **{CLICK_LINES_KEY: bool(on)}))
+
+
+def reading_seconds(chars: int) -> float:
+    """How long an answer of ``chars`` characters is given to be read (2026-11-19)."""
+    return max(READ_MIN_S, READ_BASE_S + max(0, int(chars)) / READ_CHARS_PER_S)
+
+
+def answer_may_give_way(now: float, shown_at, chars: int, active_at: float) -> bool:
+    """May an idle tip take the place of the answer on screen? ``shown_at``: when her last answer to
+    the user was all there (None: no answer on screen); ``active_at``: the user's last sign of life.
+    Only once it could have been read and the user has come back since it was all there."""
+    if shown_at is None:
+        return True
+    return now >= shown_at + reading_seconds(chars) and active_at > shown_at
+
+
+def detail_html(rows, colors: dict) -> str:
+    from .tour_mascot import marked_html
+    return ''.join(f'<p style="margin:0 0 5px 0;">{marked_html(row, colors, keep_words=True)}</p>' for row in rows)
 
 
 def chat_font_family() -> str:
@@ -450,6 +514,15 @@ def chat_sheet(t, family: str) -> str:
         f"QLabel#bunnyDialogText {{ {fam} font-size: 18px; color: {t.text}; background: transparent; border: 0; }}"
         f"QLabel#bunnyBubbleText {{ {fam} font-size: 15px; color: {t.text}; background: transparent; border: 0; }}"
         f"QLabel#bunnyBubbleText[user=\"true\"] {{ color: {on_accent}; }}"
+        f"QFrame#bunnyHint {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 18px; }}"
+        f"QLabel#bunnyHintText {{ {fam} font-size: 14px; color: {t.text}; background: transparent; border: 0; }}"
+        f"QPushButton#bunnyHintClose {{ {fam} background: transparent; color: {t.text_muted}; border: 0;"
+        f" border-radius: 11px; font-size: 15px; padding: 0; }}"
+        f"QPushButton#bunnyHintClose:hover {{ background: {_rgba(t.accent, 0.18)}; color: {t.text}; }}"
+        f"QFrame#bunnyDetail {{ background: {_rgba(t.accent, 0.08)}; border: 1px solid {_rgba(t.accent, 0.30)};"
+        f" border-radius: 14px; }}"
+        f"QLabel#bunnyDetailText {{ {fam} font-size: 14px; color: {t.text}; background: transparent; border: 0; }}"
+        f"QScrollArea#bunnyDetailScroll, QWidget#bunnyDetailBody {{ background: transparent; border: 0; }}"
         f"QLabel#bunnyCount {{ {fam} font-size: 12px; color: {t.text_muted}; background: transparent; border: 0; }}"
         f"QFrame#bunnyThread {{ background: {t.surface_elevated}; border: 2px solid {t.accent}; border-radius: 22px; }}"
         f"QLabel#bunnyThreadTitle {{ {fam} color: {t.accent}; font-size: 16px; background: transparent; border: 0; }}"
@@ -756,6 +829,56 @@ class DialogBox(QWidget):
             painter.drawPolygon(QPolygonF([QPointF(x - 7, y - 5), QPointF(x + 7, y - 5), QPointF(x, y + 5)]))
 
 
+class DetailCard(QFrame):
+    """The longer half of an answer (2026-11-18): steps, causes, points. Shown at once under her
+    words, never voiced; the text can be selected, 「复制」 takes it without the marks."""
+
+    def __init__(self, rows, colors: dict, width: int, sheet: str = '', parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QApplication, QScrollArea
+        from . import ui_zoom
+        from .tour_mascot import plain
+        self.setObjectName('bunnyDetail')
+        self.rows = tuple(rows)
+        self.setStyleSheet(sheet)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 6, 6)
+        layout.setSpacing(2)
+        self.label = MarkedLabel()
+        self.label.setObjectName('bunnyDetailText')
+        self.label.setTextFormat(Qt.TextFormat.RichText)
+        self.label.setWordWrap(True)
+        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.label.setText(detail_html(self.rows, colors))
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName('bunnyDetailScroll')
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidget(self.label)
+        self.scroll.viewport().setAutoFillBackground(False)
+        layout.addWidget(self.scroll, 1)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 4, 0)
+        foot.addStretch(1)
+        self.copy_button = QPushButton(str(tr('复制')))
+        self.copy_button.setObjectName('bunnyChatChip')
+        self.copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.copy_button.clicked.connect(
+            lambda: QApplication.clipboard().setText('\n'.join(plain(row) for row in self.rows)))
+        foot.addWidget(self.copy_button)
+        layout.addLayout(foot)
+        self.ensurePolished()
+        self.label.ensurePolished()
+        inner = max(80, width - 12 - 6 - ui_zoom.px(12))        # the margins and room for a scroll bar
+        text_h = self.label.heightForWidth(inner)
+        self.scroll.setFixedHeight(min(max(text_h, 20), ui_zoom.px(DETAIL_HEIGHT)))
+        self.setFixedWidth(width)
+        self.setFixedHeight(layout.sizeHint().height())           # rows in the thread squeeze otherwise
+
+
 class ThreadView(QFrame):
     """A, the chat thread (2026-11-14): her lines one bubble each on the left, the user's on the
     right, scrollable to read back. 兔白 stands outside the panel, so she never covers a word."""
@@ -830,6 +953,15 @@ class ThreadView(QFrame):
         self.rows.insertLayout(self.rows.count(), row)
         self.scroll_to_end()
         return label, row
+
+    def add_card(self, card):
+        """Her card of steps and causes (2026-11-18), on her side of the thread."""
+        row = QHBoxLayout()
+        row.addWidget(card)
+        row.addStretch(1)
+        self.rows.insertLayout(self.rows.count(), row)
+        self.scroll_to_end()
+        return row
 
     def add_picture(self, pixmap, caption: str):
         """The picture 兔白 took and sent (2026-11-16), small, on her side of the thread."""
@@ -920,6 +1052,9 @@ class BunnyChat(QWidget):
         self._offset = QPoint()          # where the user dragged the card, from its corner place
         self._press = None
         self._dragging = False
+        from .floating_anchor import Coalesced
+        self._follower = Coalesced(self, self._follow_window)   # drags and window moves: one place per frame
+        self._window_moved = False
         self._worker = None
         self._generation = 0
         self._history: list[dict] = []   # what the AI sees
@@ -927,7 +1062,11 @@ class BunnyChat(QWidget):
         self._uneasy = 0                 # questions she stays uneasy after frightening or hurtful words
         self._since_meme = bunny_persona.MEME_GAP   # questions since her last meme
         self._tricked = False            # the cat-girl act was played once in this chat
-        self.transcript: list[tuple] = []   # what was said on screen: ('bunny' | 'user', marked text)
+        self.transcript: list[tuple] = []   # what was said on screen: ('bunny' | 'user' | 'detail', marked text)
+        self._said_now: list = []           # this answer's sentences the dialog box is showing together
+        self._detail_after: tuple = ()      # the card that comes when she has finished speaking
+        self._detail_card = None            # the dialog box's card of the answer on screen
+        self._click_lines = click_lines()   # the old way: one sentence, a click, the next
         # 2026-11-16: the tutorial's written answers (question -> BunnyReply): no AI, nothing billed or kept.
         self.stand_in = None
         self._pending: list[str] = []
@@ -961,6 +1100,15 @@ class BunnyChat(QWidget):
         self._last_idle_tip = time.monotonic()     # no tip right after opening: the greeting is enough
         self._idle_tip_after = IDLE_TIP_AFTER_S[0]
         self._idle_tip_gap = IDLE_TIP_GAP_S[0] / 3
+        # 2026-11-19 (user): an idle tip never pushes out an answer still being read (answer_may_give_way).
+        self._asked = False               # the user asked; what she says next answers it
+        self._answering = False           # the reply being said is such an answer
+        self._reply_chars = 0
+        self._answer_shown_at = None      # when her last answer was all on screen
+        self._answer_chars = 0
+        # 2026-11-19 (user): the box twitched at her 2nd and 3rd sentence. It takes the height the whole
+        # reply needs at once, so later sentences fill it instead of growing the card each time.
+        self._reserve_h = 0
         self._window_at = window.pos()
         self._ear_hold_until = 0.0
         from .onboarding import load_state
@@ -1236,6 +1384,9 @@ class BunnyChat(QWidget):
         self.bar.style().polish(self.bar)
         self.box.setVisible(dialog)
         self.thread.setVisible(not dialog)
+        self._drop_detail()
+        self._said_now = []
+        self._reserve_h = 0
         if dialog:
             self.bar.setParent(self)
             self.bar.show()
@@ -1261,6 +1412,9 @@ class BunnyChat(QWidget):
             self.thread.clear()
             self.relayout()
             for who, text in self.transcript:
+                if who == 'detail':
+                    self.thread.add_card(self._new_card(text.split('\n')))
+                    continue
                 self.thread.add_bubble(who, self._user_html(bubble_text(text)) if who == 'user'
                                        else marked_html(text, self._colors, keep_words=True))
         # Moving to the other view reparents these, and Qt hides a reparented widget: show them again.
@@ -1289,16 +1443,12 @@ class BunnyChat(QWidget):
         pad = self.mascot.pad_x if self.mascot is not None else 0
         if self.mode == 'dialog':
             width = ui_zoom.px(self.DIALOG_WIDTH)
-            layout = self.box.layout()
-            layout.activate()
-            box_h = max(ui_zoom.px(112), layout.totalHeightForWidth(width) if layout.hasHeightForWidth()
-                        else layout.totalSizeHint().height())
+            box_h = max(ui_zoom.px(112), self._box_height(), self._reserve_h)
             self.bar.adjustSize()
             bar_h = self.bar.sizeHint().height()
             gap = ui_zoom.px(10)
             content_h = box_h + gap + bar_h
             total = QSize(width + max(0, bunny.width() - pad), max(content_h, bunny.height()))
-            self.resize(total)
             left = max(0, bunny.width() - pad) if self.flipped else 0
             tail = self.box.TAIL_W
             self.box.setGeometry(left, total.height() - content_h, width, box_h)
@@ -1307,34 +1457,54 @@ class BunnyChat(QWidget):
             width, height = ui_zoom.px(self.THREAD_WIDTH), ui_zoom.px(self.THREAD_HEIGHT)
             gap = ui_zoom.px(4)
             total = QSize(width + gap + max(0, bunny.width() - pad), max(height, bunny.height()))
-            self.resize(total)
             left = gap + max(0, bunny.width() - pad) if self.flipped else 0
             self.thread.setGeometry(left, total.height() - height, width, height)
         self.mascot_slot = QPoint(0 if self.flipped else total.width() - bunny.width(), total.height() - bunny.height())
         if self.mascot is not None and self.mascot_docked:
             self.mascot.move(self.mascot_slot)
             self.mascot.raise_()
-        self.place()
+        # 2026-11-19 (user: she twitched as the box grew): the new size and the place that keeps its
+        # bottom (and 兔白) where it was go in one step. Resized first, the card grew downward from its
+        # old top and 兔白 dropped for a frame before it was moved back up.
+        self.place(size=total)
 
-    def _home_rect(self) -> QRect:
+    def _box_height(self) -> int:
+        """What the dialog box's contents need at its width now."""
+        from . import ui_zoom
+        width = ui_zoom.px(self.DIALOG_WIDTH)
+        layout = self.box.layout()
+        layout.activate()
+        return layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else layout.totalSizeHint().height()
+
+    def _home_rect(self, size: QSize | None = None) -> QRect:
         """Where the card goes in window coordinates: its corner place, moved by the user's drag."""
         window = self.window_
-        corner = self._corner()
+        size = QSize(size) if size is not None else self.size()
+        corner = self._corner(size)
         x = corner.x() + self._offset.x()
         y = corner.y() + self._offset.y()
-        x = max(0, min(x, window.width() - self.width()))
-        y = max(0, min(y, window.height() - self.height()))
-        return QRect(QPoint(x, y), self.size())
+        x = max(0, min(x, window.width() - size.width()))
+        y = max(0, min(y, window.height() - size.height()))
+        return QRect(QPoint(x, y), size)
 
-    def place(self):
-        rect = self._home_rect()
+    def place(self, *, raise_carrier=True, size: QSize | None = None):
+        rect = self._home_rect(size)
         if self.floating:
-            self.move(self.window_.mapToGlobal(rect.topLeft()))
+            from . import floating_anchor
+            floating_anchor.place(self, self.window_, rect.topLeft(), size=rect.size())   # physical pixels (2026-11-19)
         else:
-            self.move(rect.topLeft())
+            if self.geometry() != rect:
+                self.setGeometry(rect)
             self.raise_()
-        if self.puck is not None and not self.puck.docked:
+        if (raise_carrier or not self.floating) and self.puck is not None and not self.puck.docked:
             self.puck.carrier.raise_()                     # out on her own, she stays in front of the card
+
+    def _follow_window(self):
+        """The card (and 兔白 out on her own) after the window moved or the card was dragged."""
+        self.place()
+        window_moved, self._window_moved = self._window_moved, False
+        if window_moved and self.puck is not None and not self.puck.docked:
+            self.puck._place(self.puck._clamp(self.puck.pos))
 
     def follow_bunny(self, at):
         """2026-11-15 (user): carried or thrown, 兔白 takes her card along. ``at`` is where her
@@ -1350,7 +1520,7 @@ class BunnyChat(QWidget):
         slot = QPoint(round(at.x()), round(at.y())) - self.mascot_slot
         self._offset = slot - self._corner()
         self._offset = self._home_rect().topLeft() - self._corner()
-        self.place()
+        self.place(raise_carrier=False)
 
     def set_flipped(self, flipped: bool):
         if bool(flipped) == self.flipped:
@@ -1369,18 +1539,19 @@ class BunnyChat(QWidget):
             self._keep_bunny_on_top()       # a click on the card must not bury her under it
         return handled
 
-    def _corner(self) -> QPoint:
+    def _corner(self, size: QSize | None = None) -> QPoint:
         """The lower right corner; on the home page just above 「开始生成字幕」, which lives down there."""
         from . import ui_zoom
         window = self.window_
+        size = QSize(size) if size is not None else self.size()
         margin = ui_zoom.px(self.MARGIN)
         bottom = window.height() - margin
         start = _visible(getattr(window, 'start_button', None))
         if start is not None and start.window() is window:
             top = start.mapTo(window, QPoint(0, 0)).y()
-            if self.height() + margin <= top < window.height():
+            if size.height() + margin <= top < window.height():
                 bottom = min(bottom, top - margin)
-        return QPoint(window.width() - self.width() - margin, bottom - self.height())
+        return QPoint(window.width() - size.width() - margin, bottom - size.height())
 
     # ------------------------------------------------------------ events
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
@@ -1395,9 +1566,8 @@ class BunnyChat(QWidget):
                     moved = self.window_.pos() - self._window_at
                     self.mascot.nudge(moved.x())
                 self._window_at = self.window_.pos()
-                self.place()
-                if self.puck is not None and not self.puck.docked:
-                    self.puck._place(self.puck._clamp(self.puck.pos))
+                self._window_moved = True
+                self._follower.request()           # 2026-11-19: not a native move per event
             elif kind == QEvent.Type.WindowStateChange and self.floating:
                 self.setVisible(not self.window_.isMinimized())
             elif kind == QEvent.Type.WindowActivate:
@@ -1447,6 +1617,10 @@ class BunnyChat(QWidget):
                     image = QImage(path)
                     added += bool(not image.isNull() and self.attach_picture(image))
                 elif bunny_attachments.is_text_file(path):
+                    analysed = self._recognition_json(path)
+                    if analysed:
+                        added += bool(self.attach_text(analysed, '识别记录分析.txt'))
+                        continue
                     try:
                         text = bunny_attachments.read_text_file(path)
                     except OSError:
@@ -1459,6 +1633,22 @@ class BunnyChat(QWidget):
         if mime is not None and mime.hasText():
             return int(self.attach_text(mime.text()))
         return 0
+
+    def _recognition_json(self, path) -> str:
+        """A dropped recognition JSON (2026-11-18): the whole file is read and analysed here, step by step;
+        what goes to her is the analysis (a raw journal is megabytes and would be cut). '' for any other file."""
+        if not str(path).casefold().endswith('.json'):
+            return ''
+        from . import bunny_report
+        try:
+            payload = bunny_report.load(path)
+        except (OSError, ValueError):
+            return ''
+        if not bunny_report.looks_like_task(payload):
+            return ''
+        found = bunny_report.summarize(payload, ai_ready=self.ready)
+        return ('（这是小兔纸拖进来的识别原始 JSON，程序已经读完整个文件并按步骤分析好了，下面是分析结果；'
+                '照它回答，不用再叫他找文件）\n' + found)
 
     def attach_picture(self, image) -> bool:
         """A pasted or dropped picture waits as an attachment and goes with the next question.
@@ -1526,6 +1716,9 @@ class BunnyChat(QWidget):
             label = item.label if item.kind == 'text' else item.name
             chip = QPushButton()
             chip.setObjectName('bunnyAttach')
+            # Two equal grid columns own the width. The language pass must not
+            # pin Cocoa's wider text hint and push this chip over its neighbour.
+            chip.setProperty('flexibleWidth', True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             chip.setStyleSheet(self.sheet)
@@ -1569,7 +1762,9 @@ class BunnyChat(QWidget):
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton and self._grab_area(event.position().toPoint()):
-            self._press = (event.globalPosition().toPoint(), QPoint(self._offset), event.position().toPoint())
+            from . import floating_anchor
+            pointer = floating_anchor.Pointer(self.window_, self, event)
+            self._press = (pointer.at(event), QPoint(self._offset), event.position().toPoint(), pointer)
             self._dragging = False
             event.accept()
             return
@@ -1577,21 +1772,22 @@ class BunnyChat(QWidget):
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt override
         if self._press is not None:
-            start, offset, _at = self._press
-            moved = event.globalPosition().toPoint() - start
+            start, offset, _at, pointer = self._press
+            moved = (pointer.at(event) - start).toPoint()
             if self._dragging or moved.manhattanLength() > self.DRAG_SLOP:
                 self._dragging = True
                 self._offset = offset + moved
-                self.place()
+                self._follower.request()
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt override
         if self._press is not None:
-            _start, _offset, at = self._press
+            _start, _offset, at, _pointer = self._press
             self._press = None
             if self._dragging:
+                self._follower.flush()
                 self._offset = self._home_rect().topLeft() - self._corner()    # keep what clamping allowed
             elif self.mode == 'dialog' and self.box.geometry().contains(at):
                 self.advance()                                                # a click on the box: go on
@@ -1604,6 +1800,8 @@ class BunnyChat(QWidget):
     def open(self):
         self.relayout()
         self.show()
+        if self.floating:
+            self.place()                # again now that the native window exists: in physical pixels
         self.raise_()
         if self.floating:
             self.activateWindow()
@@ -1611,9 +1809,8 @@ class BunnyChat(QWidget):
         restored = self._restore_chat(self._project_key())
         self.say(self._greeting(restored))
         if self._first_notice:
-            # The disclosure must be readable before Send, even in the default
-            # one-line-at-a-time dialog. Do not hide it behind a later greeting.
-            self.typer.finish()
+            # The disclosure must be readable before Send. Do not hide it behind a later greeting.
+            self.typer.finish() if self._click_lines else self.reveal_all()
 
     def _greeting(self, restored: bool = False) -> bunny_persona.BunnyReply:
         from .onboarding import load_state, save_state
@@ -1623,7 +1820,8 @@ class BunnyChat(QWidget):
                 lines=['嗨～小兔纸，我是兔白。', '还没设置文字 AI，兔白现在只能帮你 ==找功能在哪里==。'],
                 offer_open='text_ai' if 'text_ai' in self.keys else '', mood='happy')
         state = load_state()
-        lines = ['嗨～小兔纸，我是兔白。', '有不懂的随时问我，想聊天也可以哦。']
+        from . import bunny_bond
+        lines = list(bunny_bond.greeting())          # 2026-11-18: more familiar the more they did together
         if restored:
             lines = ['欢迎回来～', '上次聊的兔白都还记得，接着说吧。']
         act = 'hello'
@@ -1660,11 +1858,19 @@ class BunnyChat(QWidget):
         self._do_after = tuple(reply.do or ())
         self._set_do(())
         self._set_offer('')
+        self._click_lines = click_lines()
+        self._drop_detail()
+        self._said_now = []
+        self._detail_after = tuple(reply.detail or ())
         self._pending = [line for line in reply.lines if line]
         self._line_total = len(self._pending)
+        self._answering = self._asked
+        from .tour_mascot import plain
+        self._reply_chars = sum(len(plain(text)) for text in (*self._pending, *self._detail_after))
         if reply.steps is not None:
             self.set_steps(reply.steps, reply.step_now)
         self.suggest_row.hide()
+        self._reserve_h = self._reply_box_height(self._pending) if self.mode == 'dialog' else 0
         from .tour_mascot import VOICE_MOODS
         self._voice_mood = reply.mood if reply.mood in VOICE_MOODS else ''
         self.typer.pace = VOICE_MOODS[self._voice_mood][1]   # long syllables, slower words: they stay together
@@ -1690,44 +1896,134 @@ class BunnyChat(QWidget):
         line = self._pending.pop(0)
         self.transcript.append(('bunny', line))
         rich = marked_html(line, self._colors, keep_words=True)
+        before = ''
         if self.mode == 'dialog':
             self.box.set_more(False)
-            self._dialog_line(rich)
-            self.box.set_count(self._line_total - len(self._pending), self._line_total)
+            if self._click_lines:
+                self._dialog_line(rich)
+                self.box.set_count(self._line_total - len(self._pending), self._line_total)
+            else:
+                before = self._dialog_before(line)
+                self.box.set_count(0, 0)
             label = self.box.label
             self.relayout()
         else:
             label, _row = self.thread.add_bubble('bunny', rich)
         if reduced_motion():
-            label.setText(rich)
+            label.setText(before + rich)
             self._line_done()
         else:
-            self.typer.prepare([(label, line)], self._colors)
+            self.typer.prepare([(label, line)], self._colors, before=before)
             self.typer.start()
+
+    def _dialog_before(self, line: str) -> str:
+        """The box keeps this answer's earlier sentences above the one being typed (2026-11-18); returns
+        their HTML. When they no longer fit ``DIALOG_LINES_HEIGHT`` the oldest leave (the thread keeps all)."""
+        self._said_now, before = self._together(self._said_now, line)
+        return before
+
+    def _together(self, said: list, line: str) -> tuple[list, str]:
+        """``said`` kept above ``line`` and their HTML, as ``_dialog_before`` shows them; the label is
+        left holding all of it (the oldest leave while it is taller than ``DIALOG_LINES_HEIGHT``)."""
+        from . import ui_zoom
+        from .tour_mascot import marked_html
+        label = self.box.label
+        rich = marked_html(line, self._colors, keep_words=True)
+        width = self.box.text_width(ui_zoom.px(self.DIALOG_WIDTH))
+        kept = list(said)
+        before = ''
+        while kept:
+            before = ''.join(f'<p style="margin:0 0 6px 0;">{marked_html(text, self._colors, keep_words=True)}</p>'
+                             for text in kept)
+            label.ensurePolished()
+            label.setFixedWidth(width)
+            label.setText(before + rich)
+            if label.heightForWidth(width) <= ui_zoom.px(DIALOG_LINES_HEIGHT):
+                break
+            kept.pop(0)
+            before = ''
+        if not kept:
+            self._dialog_line(rich)
+        return kept + [line], before
+
+    def _reply_box_height(self, lines) -> int:
+        """The dialog box height a reply needs at its fullest (2026-11-19). Each of its sentences is
+        laid in the box the way it will be shown and measured; the label shows the first sentence
+        after (``_next_line`` types it there next)."""
+        if not lines:
+            return 0
+        from .tour_mascot import marked_html
+        tallest = 0
+        said: list = []
+        for line in lines:
+            if self._click_lines:
+                self._dialog_line(marked_html(line, self._colors, keep_words=True))
+            else:
+                said, _before = self._together(said, line)
+            tallest = max(tallest, self._box_height())
+        self._dialog_line(marked_html(lines[0], self._colors, keep_words=True))
+        return tallest
+
+    def _new_card(self, rows) -> 'DetailCard':
+        from . import ui_zoom
+        width = (self.box.text_width(ui_zoom.px(self.DIALOG_WIDTH)) if self.mode == 'dialog'
+                 else self.thread.bubble_width())
+        return DetailCard([row for row in rows if row], self._colors, width, self.sheet)
+
+    def _show_detail(self, rows):
+        """The card of steps and causes, once she has said her sentences: at once, not voiced."""
+        self.transcript.append(('detail', '\n'.join(rows)))
+        card = self._new_card(rows)
+        if self.mode == 'dialog':
+            layout = self.box.layout()
+            layout.insertWidget(layout.indexOf(self.box.label) + 1, card)
+            self._detail_card = card
+        else:
+            self.thread.add_card(card)
+        card.show()
+
+    def _drop_detail(self):
+        card, self._detail_card = self._detail_card, None
+        if card is not None:
+            try:
+                card.hide()
+                self.box.layout().removeWidget(card)
+                card.deleteLater()
+            except RuntimeError:
+                pass
 
     def _line_done(self):
         if self._pending:
-            if self.mode == 'dialog':
+            if self.mode == 'dialog' and self._click_lines:
                 self.box.set_more(True)
             else:
                 QTimer.singleShot(LINE_PAUSE_MS, self, self._next_if_waiting)
             return
+        if self._detail_after:
+            rows, self._detail_after = self._detail_after, ()
+            self._show_detail(rows)
         self._set_offer(self._offer_after)
         self._set_do(self._do_after)
         self._apply_agent_buttons()
         self.refresh_suggestions()
         self._save_chat()
         self.relayout()
+        if self._answering:                  # her answer is all there: its reading time starts now
+            self._answer_shown_at = time.monotonic()
+            self._answer_chars = self._reply_chars
         if self.mascot is not None and self.mascot.mood == 'happy':
             QTimer.singleShot(1600, self.mascot, lambda: self.mascot.set_mood('idle'))   # dies with the card
 
     def _next_if_waiting(self):
-        if self.mode == 'thread' and self._pending and not self.typer.running:
+        if self._pending and not self.typer.running and not (self.mode == 'dialog' and self._click_lines):
             self._next_line()
 
     def advance(self):
-        """A click on the box, or Enter with nothing typed: finish this sentence, or go to the next one."""
-        if self.typer.running:
+        """A click on the box, or Enter with nothing typed: everything she is saying at once
+        (click-for-each: finish this sentence, or go to the next one)."""
+        if not (self.mode == 'dialog' and self._click_lines):
+            self.reveal_all()
+        elif self.typer.running:
             self.typer.finish()
         elif self._pending:
             self._next_line()
@@ -1749,14 +2045,19 @@ class BunnyChat(QWidget):
         for who, text in reversed(self.transcript):
             if who == 'user':
                 break
+            if who == 'detail':
+                continue
             lines.insert(0, marked_html(text, self._colors))
         return lines
 
     def _show_thinking(self):
         self._think_step = 0
+        self._reserve_h = 0
         if self.mode == 'dialog':
             self.box.set_count(0, 0)
             self.box.set_more(False)
+            self._drop_detail()
+            self._said_now = []
             self._dialog_line('· · ·')
             self.relayout()
         else:
@@ -1882,6 +2183,7 @@ class BunnyChat(QWidget):
         """C11: a recognition finished while she is open: she pops out and cheers."""
         if successes <= 0 or self.busy:
             return
+        self._asked = False
         self._awake()
         self.reveal_all()
         self.say(bunny_persona.BunnyReply(lines=['^^识别做完啦^^！', '要不要打开 **字幕工作台** 看看？'], mood='excited',
@@ -1972,6 +2274,7 @@ class BunnyChat(QWidget):
         if self.busy or self.typer.running or self._pending:
             self._spoke('喵', 'surprised')
             return
+        self._asked = False                  # her own words now, not an answer
         now = time.monotonic()
         self._pokes = [at for at in self._pokes if now - at < POKE_WINDOW_S] + [now]
         if len(self._pokes) >= POKES_FOR_HMPH:       # C8: enough is enough
@@ -1990,6 +2293,7 @@ class BunnyChat(QWidget):
 
     def _say_tip(self):
         from . import bunny_tips
+        self._asked = False
         self.say(bunny_persona.BunnyReply(lines=bunny_tips.tip_lines(current_page(self.window_)), mood='happy'))
 
     def _idle_tip_due(self, now: float) -> bool:
@@ -2000,6 +2304,8 @@ class BunnyChat(QWidget):
         if (self._pending_edits or self._do or self.input.text() or self.do_button.isVisible()
                 or self.go_button.isVisible() or self.undo_button.isVisible()):
             return False
+        if not answer_may_give_way(now, self._answer_shown_at, self._answer_chars, self._active_at):
+            return False                     # 2026-11-19 (user): her answer is still being read
         from . import bunny_tips
         return bunny_tips.idle_allowed()
 
@@ -2042,6 +2348,7 @@ class BunnyChat(QWidget):
         marks = ' '.join(f'[{item.label}]' if item.kind == 'text' else PICTURE_MARK for item in attachments)
         shown = f'{question} {marks}' if marks else question
         self.transcript.append(('user', shown))
+        self._asked = True                   # what she says next answers this (kept from idle tips)
         if self.mode == 'thread':
             self.thread.add_bubble('user', self._user_html(bubble_text(shown)))
         if self.stand_in is not None:
@@ -2070,7 +2377,7 @@ class BunnyChat(QWidget):
         sees = vision_state(self.settings)[0]
         return bunny_persona.build_messages(
             question, features=self.features, core=bunny_lore.CORE,
-            entries=bunny_lore.select_extra(question, self.lore), state=app_state(self.window_, self.ready),
+            entries=self._knowledge_for(question), state=app_state(self.window_, self.ready),
             history=history, hidden_tools=() if sees else ('look_screen',), inner=self.inner_state(question))
 
     def inner_state(self, question: str = '') -> dict:
@@ -2082,7 +2389,16 @@ class BunnyChat(QWidget):
                 'meme_ok': calm and getattr(self, '_since_meme', 0) >= bunny_persona.MEME_GAP
                 and random.random() < bunny_persona.MEME_CHANCE,
                 'plot_ok': calm and random.random() < bunny_persona.PLOT_CHANCE,
-                'tricked': getattr(self, '_tricked', False) and bunny_persona.roleplay_asked(question)}
+                'tricked': getattr(self, '_tricked', False) and bunny_persona.roleplay_asked(question),
+                'bond': self._bond_line()}
+
+    @staticmethod
+    def _bond_line() -> str:
+        try:
+            from . import bunny_bond
+            return bunny_bond.inner_line()
+        except Exception:  # noqa: BLE001 - how familiar they are is a nicety
+            return ''
 
     def _note_mood(self, reply):
         """After an answer: frightened words start a while of unease, an apology ends it; a meme waits."""
@@ -2100,6 +2416,9 @@ class BunnyChat(QWidget):
         self._question = question
         from . import bunny_audit
         bunny_audit.current_question = question      # her action log says what each call answered
+        if getattr(self, 'stand_in', None) is None:  # (the tutorial's demo talk is not theirs)
+            from . import bunny_bond
+            bunny_bond.note('chat')                  # 2026-11-18: they know each other a little better
         self._uneasy = max(0, getattr(self, '_uneasy', 0) - 1)      # one question further from the fright
         self._ai_suggest = ()            # last answer's next steps are spent; the new answer brings its own
         self._since_meme = getattr(self, '_since_meme', 0) + 1
@@ -2120,6 +2439,8 @@ class BunnyChat(QWidget):
         self._task_mode = False          # start_task: more rounds for this question (2026-11-16)
         self._ui_mode = False            # universal control used: more rounds for this question (2026-11-17)
         self._promise_nudged = False     # "I'll do it" with no tool was pointed out once (2026-11-17)
+        self._names_nudged = False       # a made-up 「name」 was pointed out once (2026-11-18)
+        self._thin_nudged = False        # a how-to that stopped at step one was pointed out once
         self._web_calls = 0              # web_search / read_page for this question
         if self.shot_label.isVisible():
             self.shot_label.hide()
@@ -2142,7 +2463,29 @@ class BunnyChat(QWidget):
         self._set_busy(True)
         self._set_offer('')
         self._show_thinking()
-        self._start_worker(self._turn_messages)
+        lookup = self._auto_lookup(question)
+        if lookup and self.mascot is not None:       # she is already off looking it up, magnifier in hand
+            self.mascot.unstick('dots')
+            self.mascot.play('search')
+            self.mascot.stick('magnifier')
+        self._start_worker(self._turn_messages, lookup=lookup)
+
+    def _auto_lookup(self, question: str) -> str:
+        """The lookup to run beside the first request (phase 5), '' when none or she may not read it."""
+        from . import bunny_permissions
+        name = bunny_persona.auto_lookup(question)
+        if not name or not self.ready:
+            return ''
+        from .bunny_tools import TOOLS
+        if name not in TOOLS or bunny_permissions.refusal(TOOLS[name], bunny_permissions.load()):
+            return ''
+        return bunny_persona.AUTO_PREFIX + name
+
+    def _knowledge_for(self, question: str) -> list:
+        """The world-book entries for this question: its words, the page on screen and an open dialog's title."""
+        from .bunny_tools import _modal_title
+        return bunny_lore.select_extra(question, self.lore, page=current_page(self.window_),
+                                       seen=_modal_title(self.window_))
 
     def _start_worker(self, messages, lookup: str = '', **extra):
         generation = self._generation
@@ -2150,7 +2493,9 @@ class BunnyChat(QWidget):
         self._request_context = edit_context(self.window_)
         messages = compact_messages(messages)
         extra.setdefault('effort', 'max' if getattr(self, '_escalated', False) else self.reasoning)
-        worker = BunnyChatWorker(self.settings, messages, lookup=lookup, ai_ready=self.ready, **extra)
+        from .bunny_report import project_job_id
+        worker = BunnyChatWorker(self.settings, messages, lookup=lookup, ai_ready=self.ready,
+                                 recognition_job_id=project_job_id(self.window_), **extra)
         self._worker = worker
         _LIVE_WORKERS.add(worker)
         worker.answered.connect(lambda text, g=generation: self._answered(g, text))
@@ -2163,6 +2508,8 @@ class BunnyChat(QWidget):
     @staticmethod
     def _reply_turn(reply) -> dict:
         data = {'lines': reply.lines, 'point_to': reply.point_to, 'offer_open': reply.offer_open, 'mood': reply.mood}
+        if reply.detail:                             # later questions carry only the start of a card
+            data['detail'] = _short_detail(reply.detail)
         if reply.check:
             data['check'] = reply.check
         if reply.tools:
@@ -2194,6 +2541,23 @@ class BunnyChat(QWidget):
             self._turn_messages = [*self._turn_messages, *bunny_persona.promise_retry_messages(text)]
             self._start_worker(self._turn_messages)
             return
+        if (not getattr(self, '_thin_nudged', False)
+                and bunny_persona.thin_how_to(getattr(self, '_question', ''), reply)):
+            self._thin_nudged = True
+            self._turn_messages = [*self._turn_messages, *bunny_persona.thin_retry_messages(text)]
+            self._start_worker(self._turn_messages)
+            return
+        if not getattr(self, '_names_nudged', False) and not reply.tools and reply.structured:
+            # 2026-11-18: a 「name」 that is nowhere in what she was given is made up; once, ask again.
+            given = '\n'.join(str(message.get('content') or '') if isinstance(message.get('content'), str)
+                              else json.dumps(message.get('content'), ensure_ascii=False)
+                              for message in self._turn_messages if message.get('role') != 'assistant')
+            made_up = bunny_persona.unknown_names(reply, given)
+            if made_up:
+                self._names_nudged = True
+                self._turn_messages = [*self._turn_messages, *bunny_persona.names_retry_messages(text, made_up)]
+                self._start_worker(self._turn_messages)
+                return
         if reply.think_harder and self.reasoning != 'off' and not getattr(self, '_escalated', False):
             # She judged this one hard: the same question again with the deepest thinking (once).
             self._escalated = True
@@ -2698,6 +3062,8 @@ class BunnyChat(QWidget):
         dropped too. What she remembers, the knowledge base, recipes and 「兔白做过什么」 stay."""
         from . import bunny_memory
         self._awake()
+        self._asked = False
+        self._answer_shown_at = None                 # no answer on screen to keep any more
         self._generation += 1                        # an answer still on its way is ignored
         if self._worker is not None:
             self._worker.requestInterruption()
@@ -2793,19 +3159,38 @@ def suggestions(window) -> list:
     return ['我现在该做什么？', '打开最近一次识别结果']
 
 
+def _short_detail(rows) -> list:
+    kept, left = [], DETAIL_HISTORY_CHARS
+    for row in rows:
+        if left <= 0:
+            break
+        kept.append(row[:left])
+        left -= len(row)
+    return kept
+
+
 def history_from(items) -> list:
     """A saved chat back into what the AI sees: the user's words, her lines as one answer each time."""
-    history, lines = [], []
+    history, lines, detail = [], [], []
+
+    def answer():
+        data = {'lines': lines}
+        if detail:
+            data['detail'] = _short_detail(detail)
+        return {'role': 'assistant', 'content': json.dumps(data, ensure_ascii=False)}
+
     for who, text in items:
         if who == 'user':
             if lines:
-                history.append({'role': 'assistant', 'content': json.dumps({'lines': lines}, ensure_ascii=False)})
-                lines = []
+                history.append(answer())
+            lines, detail = [], []
             history.append({'role': 'user', 'content': bunny_persona.own_words(text)})
+        elif who == 'detail':
+            detail += text.split('\n')
         else:
             lines.append(text)
     if lines:
-        history.append({'role': 'assistant', 'content': json.dumps({'lines': lines}, ensure_ascii=False)})
+        history.append(answer())
     return history
 
 

@@ -84,6 +84,7 @@ class ModelListReveal(QObject):
         scroll.viewport().installEventFilter(self)
         self.veil.hide()
         self.started = None
+        self.building = False          # cards are being built behind the veil right now
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Show:
@@ -110,6 +111,7 @@ class ModelListReveal(QObject):
             return
         if self.started is None:
             self.started = perf_counter()
+        self.building = True
         self.veil.opacity = 1.
         self.veil.setGeometry(self.scroll.viewport().rect())
         self.veil.show()
@@ -121,10 +123,14 @@ class ModelListReveal(QObject):
         if not self.scroll.isVisible():
             return
         started = perf_counter()
+        # 2026-11-19: behind the old page's picture (design.transitions.PageHold) nobody watches
+        # the list fill, so it is built in bigger steps and shown complete.
+        from ..design.transitions import is_held
+        budget = .03 if is_held(self.scroll) else .004     # the hold's time limit still gets its turn
         for card in self.cards.values():
             if card._card is None:
                 card.materialize()
-                if perf_counter()-started >= .004:
+                if perf_counter()-started >= budget:
                     self.timer.start(0)
                     return
         # One final event-loop turn settles the complete grid under the veil.
@@ -136,7 +142,8 @@ class ModelListReveal(QObject):
         if not self.scroll.isVisible():
             return
         from ..design.ui_motion import motion_duration
-        duration = motion_duration(160)
+        from ..design.transitions import is_held
+        duration = 0 if is_held(self.scroll) else motion_duration(160)
         self.fade.setDuration(duration)
         if duration:
             self.fade.start()
@@ -149,4 +156,5 @@ class ModelListReveal(QObject):
 
     def _revealed(self):
         self.ready = True
+        self.building = False
         self.veil.hide()

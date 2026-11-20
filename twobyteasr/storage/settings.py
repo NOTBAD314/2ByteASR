@@ -72,6 +72,10 @@ DEFAULT_SETTINGS = {
         # 2026-11-16: resend still-failed format/truncation results once, thinking one level higher.
         "group_escalate_on_failure": True,
         "polish_escalate_on_failure": True,
+        # 2026-11-18: DeepSeek strict tool call for structured answers (strict_tool_output); off
+        # until measured on real material.
+        "group_strict_output": False,
+        "polish_strict_output": False,
         "ai_design_timeout_seconds": 150,
         "ai_design_cli_timeout_seconds": 300,
         "ai_design_wait_mode": "long30",

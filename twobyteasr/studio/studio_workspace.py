@@ -160,6 +160,10 @@ class ResponsiveCueTableView(QTableView):
         # Two-line reading view by default (2026-10-09, M16); the classic
         # five-column table stays available.
         self.reading = False
+        # 2026-11-18 (user: Subtitle Studio must scroll as smoothly as the rest): pixel scrolling
+        # lets the app-wide smooth wheel (design.smooth_scroll) glide this list; per-item
+        # scrolling could only jump whole rows. scrollTo / centring on the playhead work the same.
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
     def expect_selected_rows_paint(self, token: int) -> None:
         self._selection_paint_token = int(token)
@@ -391,8 +395,8 @@ class StudioWorkspaceBuilder:
         page.cue_list_toggle_button.setChecked(True)
         bind_text(page.cue_list_toggle_button, '显示或收起左侧字幕列表', property='toolTip')
         yield from _gui_slice.checkpoint()
-        page.cue_list_toggle_button.clicked.connect(
-            lambda checked: page._set_major_panel_visible("cue_list", checked)
+        page.cue_list_toggle_button.clicked.connect(      # the user's toggle slides (2026-11-18)
+            lambda checked: page._set_major_panel_visible("cue_list", checked, animate=True)
         )
         bar.addWidget(view_track)
         view_track.add(page.cue_list_toggle_button)
@@ -894,6 +898,10 @@ class StudioWorkspaceBuilder:
         # Sources own a separate decoder and never rebind that canvas.
         page.source_tabs = QTabWidget()
         page.source_tabs.setObjectName('studioSourceTabs')
+        # 2026-11-18: QTabWidget paints no style-sheet background of its own,
+        # so the tab row showed the window behind it (white under another
+        # theme). The Studio sheet's #studioSourceTabs rule fills it.
+        page.source_tabs.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         yield from _gui_slice.checkpoint()
         page.source_tabs.setMinimumWidth(275)
         page.source_tabs.addTab(page.cue_list_panel, '字幕列表')

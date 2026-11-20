@@ -819,8 +819,13 @@ def post_chat_completion_stream(
     thinking_protocol="auto",
     extra_body=None,
     batch_index=None,
+    strict_tool=None,
 ):
-    """One bounded request with byte-safe framing and an explicit final state."""
+    """One bounded request with byte-safe framing and an explicit final state.
+
+    ``strict_tool`` ({name, schema, url, description}; strict_tool_output) sends the answer
+    schema as one strict function the model must call; its arguments are the answer text.
+    """
     import requests
     from .provider_stream import request_chat, StreamProtocolError
     from .llm_config import auth_headers, endpoint_requires_key
@@ -835,6 +840,14 @@ def post_chat_completion_stream(
         body['stream_options'] = {'include_usage': True}
     if response_format is not None:
         body['response_format'] = response_format
+    tool_name = None
+    if strict_tool is not None:
+        tool_name = strict_tool['name']
+        body.pop('response_format', None)
+        body['tools'] = [{'type': 'function', 'function': {'name': tool_name, 'strict': True,
+            'description': strict_tool.get('description', ''), 'parameters': strict_tool['schema']}}]
+        body['tool_choice'] = {'type': 'function', 'function': {'name': tool_name}}
+        url = strict_tool['url']
     from .subtitle_request_policy import apply_thinking
     policy_diag = apply_thinking(body, provider=provider, base_url=base_url or url,
         enabled=enable_thinking, protocol=thinking_protocol, extra_body=extra_body)
@@ -843,6 +856,7 @@ def post_chat_completion_stream(
         body.update(gemini)
         policy_diag.update(reasoning_parameters_sent=gemini, thinking_mode='low',
                            thinking_compatibility='disable_not_supported_low_requested')
+    policy_diag['structured_output_mode'] = 'strict_tool' if tool_name else 'response_format'
     diagnostics = dict(provider=provider, model=model, endpoint=url, base_url=base_url, stream=True,
                        stage=stage, batch_id=batch_index, **policy_diag)
     _DIAGNOSTIC_LOCAL.value = diagnostics
@@ -866,7 +880,7 @@ def post_chat_completion_stream(
     try:
         try:
             value = request_chat(url, headers, body, timeout, diagnostics, public_event, cancel_check,
-                total_deadline=total_deadline,input_budget=input_budget)
+                total_deadline=total_deadline,input_budget=input_budget,tool_name=tool_name)
         except StreamProtocolError as exc:
             if 'stream_options' not in body or not _rejects_stream_usage_option(exc, diagnostics):
                 raise
@@ -879,7 +893,7 @@ def post_chat_completion_stream(
                 diagnostics.pop(key, None)
             diagnostics['stream_usage_option'] = 'rejected_by_endpoint'
             value = request_chat(url, headers, body, timeout, diagnostics, public_event, cancel_check,
-                total_deadline=total_deadline,input_budget=input_budget)
+                total_deadline=total_deadline,input_budget=input_budget,tool_name=tool_name)
         diagnostics.update(summary(diagnostics))
         if on_stream_event is not None:
             on_stream_event('public_response', summary(diagnostics))

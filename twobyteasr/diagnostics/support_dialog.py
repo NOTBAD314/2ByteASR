@@ -5,6 +5,11 @@ report button, the person's own steps below it (newest first, the one to look
 at first marked), and three views — timeline, detailed log, summary — over one
 footer that writes the description and exports the ZIP. Lifecycle (one window
 per main window, background jobs, delayed disposal) is unchanged.
+
+2026-11-18 (user: cute and rounded like the rest of the app; open on the detailed log): the
+candy windows' round frame (``CandyChrome``) with 兔白 and the title row in its own title bar,
+rounded cards, pill tabs and candy buttons; the 详细记录 tab comes first and is the one shown
+on opening. What is collected, shown, copied and exported is unchanged.
 """
 from __future__ import annotations
 import json
@@ -54,8 +59,8 @@ def open_support_dialog(owner, page=None):
         QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
         QStackedWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
         QInputDialog, QAbstractItemView)
-    from ..design.presentation import button_role
-    from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme, create_studio_menu
+    from ..design.presentation import button_role, prepare_controls
+    from ..design.studio_theme import StudioComboBox, build_secondary_surface_qss, create_studio_menu
     from ..i18n import tr
     from ..i18n_widgets import add_combo_item, bind_text
     from . import editor_diagnostics
@@ -95,6 +100,7 @@ def open_support_dialog(owner, page=None):
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose,False)
             self._closed=False;self._jobs=0;self._loading=False;self._reload_requested=False
             self._collect_cancel=threading.Event()
+            self._preparing=False
             self._exporting=False;self._cleaning=False;self._owners=[]
             self.finished.connect(self._retire)
             self._signals=Signals(self)
@@ -103,7 +109,7 @@ def open_support_dialog(owner, page=None):
             self._signals.cleaned.connect(self._cleaned)
             self._rows=[];self._filtered=[];self._offset=0;self._result=None;self._load_generation=0
             self._search_rows=[];self._analysis=None;self._selected_step=None;self._step_filter=None
-            self._only_problems=True;self._theme_key=None;self._filtered_index=[]
+            self._only_problems=True;self._filter_chosen=False;self._theme_key=None;self._filtered_index=[]
             self._filter_timer=QTimer(self);self._filter_timer.setSingleShot(True);self._filter_timer.setInterval(180)
             self._filter_timer.timeout.connect(self._filter)
             self._selected=[]
@@ -113,23 +119,34 @@ def open_support_dialog(owner, page=None):
                 for cue_id in ids:
                     cue=page._cue_lookup.get(cue_id)
                     if cue:self._selected.append(dict(subtitle_id=cue.id,text=cue.text,translation=view.get(cue.id,""),start_ms=cue.start_ms,end_ms=cue.end_ms))
-            outer=QVBoxLayout(self);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
-            self.body=views.PlainPage();self.body.setObjectName("supportBody");outer.addWidget(self.body)
+            # 2026-11-18 (user: match the app's own cute, rounded style): the candy windows'
+            # round frame with its own title bar instead of the Windows one.
+            from ..app.candy_chrome import CandyChrome
+            from ..app.rounded_window import SHADOW
+            self.chrome=CandyChrome(self,"回报问题","fa5s.bug")
+            self.chrome.layout.setContentsMargins(0,0,0,0);self.chrome.layout.setSpacing(0)
+            self.body=views.PlainPage();self.body.setObjectName("supportBody");self.chrome.layout.addWidget(self.body)
             root=QVBoxLayout(self.body);root.setContentsMargins(0,0,0,0);root.setSpacing(0)
             root.addWidget(self._build_header())
             self.views=QStackedWidget();self.views.setObjectName("supportViews")
             self.views.addWidget(self._build_timeline_view())
             self.views.addWidget(self._build_log_view())
             self.views.addWidget(self._build_summary_view())
+            # 2026-11-18 (user): the window opens on the detailed log, not the timeline.
+            self.views.setCurrentIndex(1)
             root.addWidget(self.views,1)
-            root.addWidget(self._build_footer())
-            apply_secondary_surface_theme(self)
+            footer=QWidget();footer_box=QVBoxLayout(footer);footer_box.setContentsMargins(16,0,16,12)
+            footer_box.addWidget(self._build_footer());root.addWidget(footer)
+            # The shared dialog sheet (combo popups, menus, scroll bars) plus the round frame's
+            # rules; one sheet, set once (see _dress_frame).
+            prepare_controls(self);self._secondary_theme_surface=True
+            self._dress_frame()
             self._apply_theme()
             screen=owner.screen() or QApplication.primaryScreen()
             if screen is not None:
-                available=screen.availableGeometry()
-                self.setMinimumWidth(min(760,max(320,available.width()-32)))
-                self.resize(min(960,available.width()-32),min(880,available.height()-64))
+                available=screen.availableGeometry();shadow=2*SHADOW
+                self.setMinimumWidth(min(760+shadow,max(320,available.width()-16)))
+                self.resize(min(980+shadow,available.width()-16),min(900+shadow,available.height()-32))
                 self.move(available.center()-self.rect().center())
             self._timer=QTimer(self);self._timer.setInterval(1000);self._timer.timeout.connect(self._tick);self._timer.start()
             # The complete form paints and accepts text before any diagnostic
@@ -138,8 +155,10 @@ def open_support_dialog(owner, page=None):
 
         # ---- layout ----------------------------------------------------
         def _build_header(self):
-            header=QWidget();layout=QVBoxLayout(header);layout.setContentsMargins(22,14,22,10);layout.setSpacing(8)
-            row=QHBoxLayout();row.setSpacing(10)
+            header=QWidget();layout=QVBoxLayout(header);layout.setContentsMargins(22,2,22,10);layout.setSpacing(8)
+            title_row=QHBoxLayout();title_row.setSpacing(10)
+            self.bunny=self._make_bunny()
+            if self.bunny is not None:title_row.addWidget(self.bunny,0,Qt.AlignmentFlag.AlignVCenter)
             titles=QVBoxLayout();titles.setSpacing(0)
             self.title=QLabel();self.title.setObjectName("supportTitle")
             bind_text(self.title,tr("你在 {time} 按下回报",time=local_clock(_stamp(marked["marked_at"]))))
@@ -149,31 +168,44 @@ def open_support_dialog(owner, page=None):
             self.identity.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             self.identity.setToolTip(tr("报告编号；发给开发者时可以一起附上。标记时间（UTC）：{time}",time=marked["marked_at"]))
             titles.addWidget(self.identity)
-            row.addLayout(titles,1)
+            title_row.addLayout(titles,1)
+            row=QHBoxLayout();row.setSpacing(10)
             segment=QFrame();segment.setObjectName("supportSegment")
             seg=QHBoxLayout(segment);seg.setContentsMargins(3,3,3,3);seg.setSpacing(2)
             self._view_group=QButtonGroup(self);self._view_buttons={}
-            for key,label in (("timeline","时间轴"),("log","详细记录"),("summary","摘要")):
+            # The detailed log comes first: it is the view the window opens on (2026-11-18).
+            for key,label in (("log","详细记录"),("timeline","时间轴"),("summary","摘要")):
                 button=QPushButton(label);button.setObjectName("supportViewButton");button.setCheckable(True)
                 button.setProperty("buttonRole","segment")
                 button.clicked.connect(lambda _=False,k=key:self.show_view(k))
                 self._view_group.addButton(button);seg.addWidget(button);self._view_buttons[key]=button
-            self._view_buttons["timeline"].setChecked(True)
+            self._view_buttons["log"].setChecked(True)
             row.addWidget(segment,0,Qt.AlignmentFlag.AlignVCenter)
+            row.addStretch(1)
             self.scope=StudioComboBox();self.scope.setObjectName("diagnosticScope")
             for label,key in SCOPES:add_combo_item(self.scope,label,key)
             self.scope.setToolTip(tr("“最近 15 分钟”也包含同一工程、同一任务更早的相关操作"))
             row.addWidget(self.scope,0,Qt.AlignmentFlag.AlignVCenter)
+            dates=QHBoxLayout()
+            dates.addStretch(1)
             self.start=QDateTimeEdit(QDateTime.currentDateTime().addSecs(-900));self.end=QDateTimeEdit(QDateTime.currentDateTime())
             for widget in (self.start,self.end):
                 widget.setDisplayFormat("yyyy-MM-dd HH:mm:ss");widget.setCalendarPopup(True);widget.setVisible(False)
-                row.addWidget(widget,0,Qt.AlignmentFlag.AlignVCenter)
+                dates.addWidget(widget,0,Qt.AlignmentFlag.AlignVCenter)
             self.refresh=QToolButton();self.refresh.setObjectName("diagnosticRefresh")
             self.refresh.setToolTip(tr("重新读取记录"));self.refresh.setAccessibleName(tr("重新读取记录"))
             button_role(self.refresh,"icon",icon="fa5s.sync-alt",size="compact")
             self.refresh.clicked.connect(self._load);row.addWidget(self.refresh,0,Qt.AlignmentFlag.AlignVCenter)
             self.scope.currentIndexChanged.connect(self._scope_changed)
+            # Keep the timestamp clear of the log tabs and date controls on narrow windows.
+            bar=self.chrome.title_bar.layout()
+            self.chrome.mark.hide();self.chrome.title.hide()
+            bar.setContentsMargins(20,12,12,6)
+            bar.insertLayout(bar.indexOf(self.chrome.buttons),title_row,1)
+            bar.insertSpacing(bar.indexOf(self.chrome.buttons),6)
+            bar.setAlignment(self.chrome.buttons,Qt.AlignmentFlag.AlignTop)
             layout.addLayout(row)
+            layout.addLayout(dates)
             legend_row=QHBoxLayout();legend_row.setSpacing(8)
             self._legend=[]
             for _ in range(5):
@@ -218,8 +250,8 @@ def open_support_dialog(owner, page=None):
             return view
 
         def _build_log_view(self):
-            view=views.PlainPage();layout=QVBoxLayout(view);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0)
-            bar=QHBoxLayout();bar.setContentsMargins(22,4,22,10);bar.setSpacing(8)
+            view=views.PlainPage();layout=QVBoxLayout(view);layout.setContentsMargins(22,0,22,12);layout.setSpacing(10)
+            bar=QHBoxLayout();bar.setContentsMargins(0,0,0,0);bar.setSpacing(8)
             segment=QFrame();segment.setObjectName("supportSegment")
             seg=QHBoxLayout(segment);seg.setContentsMargins(3,3,3,3);seg.setSpacing(2)
             self._filter_group=QButtonGroup(self)
@@ -228,7 +260,7 @@ def open_support_dialog(owner, page=None):
             for button,value in ((self.only_problems,True),(self.all_rows,False)):
                 button.setProperty("buttonRole","segment")
                 self._filter_group.addButton(button);seg.addWidget(button)
-                button.clicked.connect(lambda _=False,v=value:self._set_problem_filter(v))
+                button.clicked.connect(lambda _=False,v=value:self._choose_problem_filter(v))
             self.only_problems.setChecked(True)
             bar.addWidget(segment)
             self.step_filter=QPushButton();self.step_filter.setObjectName("supportStepFilter");self.step_filter.hide()
@@ -241,6 +273,8 @@ def open_support_dialog(owner, page=None):
             self.keyword.setPlaceholderText("搜索事件、模块、操作 ID 或 #序号")
             self.keyword.textChanged.connect(lambda:self._filter_timer.start());bar.addWidget(self.keyword,1)
             layout.addLayout(bar)
+            table_card=QFrame();table_card.setObjectName("supportCard")
+            table_box=QVBoxLayout(table_card);table_box.setContentsMargins(8,4,8,6);table_box.setSpacing(0)
             self.table=QTableWidget(0,6);self.table.setObjectName("diagnosticEvents")
             self.table.setHorizontalHeaderLabels(["时间","距标记","等级","所属步骤","事件","#"])
             self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -254,17 +288,18 @@ def open_support_dialog(owner, page=None):
                 header.setSectionResizeMode(column,QHeaderView.ResizeMode.Fixed);self.table.setColumnWidth(column,width)
             header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
             self.table.itemSelectionChanged.connect(self._expand)
-            layout.addWidget(self.table,1)
-            pagination=QHBoxLayout();pagination.setContentsMargins(22,4,22,4)
+            self.table.setFrameShape(QFrame.Shape.NoFrame)
+            table_box.addWidget(self.table,1)
+            pagination=QHBoxLayout();pagination.setContentsMargins(8,4,8,2)
             self.previous_page=QPushButton("上一页");self.next_page=QPushButton("下一页");self.page_label=QLabel()
             self.page_label.setObjectName("supportMuted")
             for button in (self.previous_page,self.next_page):button_role(button,"ghost",size="compact")
             self.previous_page.clicked.connect(lambda:self._page(-1));self.next_page.clicked.connect(lambda:self._page(1))
             pagination.addWidget(self.previous_page);pagination.addWidget(self.page_label);pagination.addWidget(self.next_page);pagination.addStretch(1)
-            self._pagination=QWidget();self._pagination.setLayout(pagination);layout.addWidget(self._pagination)
+            self._pagination=QWidget();self._pagination.setLayout(pagination);table_box.addWidget(self._pagination)
+            layout.addWidget(table_card,1)
             detail=QFrame();detail.setObjectName("supportCard")
-            detail.setStyleSheet("QFrame#supportCard{border-radius:0;border-left:0;border-right:0;border-bottom:0;}")
-            box=QVBoxLayout(detail);box.setContentsMargins(22,10,22,12);box.setSpacing(6)
+            box=QVBoxLayout(detail);box.setContentsMargins(16,12,16,12);box.setSpacing(6)
             head=QHBoxLayout();head.setSpacing(8)
             self.event_pill=QLabel();self.event_pill.setObjectName("supportPill");head.addWidget(self.event_pill)
             self.event_title=QLabel("选一笔记录查看详情");self.event_title.setObjectName("supportCardTitle");head.addWidget(self.event_title,1)
@@ -293,7 +328,7 @@ def open_support_dialog(owner, page=None):
 
         def _build_footer(self):
             footer=QFrame();footer.setObjectName("supportFooter")
-            layout=QVBoxLayout(footer);layout.setContentsMargins(22,10,22,10);layout.setSpacing(6)
+            layout=QVBoxLayout(footer);layout.setContentsMargins(16,12,14,10);layout.setSpacing(6)
             self.content_preview=QPlainTextEdit();self.content_preview.setReadOnly(True);self.content_preview.setMaximumHeight(110)
             self.content_preview.setObjectName("diagnosticContentPreview");self.content_preview.hide()
             layout.addWidget(self.content_preview)
@@ -352,18 +387,52 @@ def open_support_dialog(owner, page=None):
             self.clear=self.clear_action
             return footer
 
+        def _make_bunny(self):
+            """兔白 on her round disc beside the title (the save prompt's look), or None without her pictures."""
+            try:
+                from ..app.ui_zoom import px
+                from ..design.bunny_mascot import BunnyMascot
+                from ..projects.save_changes_dialog import _BunnyDisc
+                mascot=BunnyMascot(self,height=px(40),motion='swing')
+                if not mascot.available:
+                    mascot.deleteLater();return None
+                mascot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,True)
+                return _BunnyDisc(mascot,max(px(50),mascot.width()))
+            except Exception:  # noqa: BLE001 - no pictures, no bunny; the report works the same
+                return None
+
+        def _dress_frame(self):
+            """The shared dialog sheet plus the round frame's rules, as the dialog's one sheet.
+
+            The shared sheet alone paints a square QDialog background under the frame's
+            see-through shadow margin; a theme change re-sets it, so changeEvent calls this
+            again and the frame's rules come back (comparing the text is cheap, parsing is not).
+            """
+            from ..design.candy_chrome_qss import build_candy_chrome_qss
+            theme=views.active_theme()
+            sheet=build_secondary_surface_qss(theme)+build_candy_chrome_qss("QDialog#diagnosticsDialog",theme)
+            self._secondary_theme_key=theme.key
+            if self.styleSheet()!=sheet:self.setStyleSheet(sheet)
+
         def _apply_theme(self):
             from ..design.theme_manager import theme_key
             key=theme_key()
             if key==self._theme_key:return
             self._theme_key=key
-            self.body.setStyleSheet(views.support_qss(views.active_theme()))
+            sheet=views.support_qss(views.active_theme())
+            self.body.setStyleSheet(sheet);self.chrome.title_bar.setStyleSheet(sheet)
             self._render_legend()
             for widget in (self.timeline,self.steps.viewport()):widget.update()
             if self._analysis is not None:self.select_step(self._selected_step,force=True)
+            if self._analysis is not None and not getattr(self,'_log_pending',True):
+                # The log is the first view: its level colours and the open record's details
+                # are painted in theme colours too, so they follow a theme change at once.
+                row=self.table.currentRow();self._page(0)
+                if 0<=row<self.table.rowCount():self.table.selectRow(row)
 
         def changeEvent(self,event):
             if event.type() in (QEvent.Type.StyleChange,QEvent.Type.PaletteChange) and not getattr(self,"_closed",True) and hasattr(self,"body"):
+                self._dress_frame()
                 self._apply_theme()
             super().changeEvent(event)
 
@@ -377,6 +446,8 @@ def open_support_dialog(owner, page=None):
             if self._closed:return
             self._closed=True
             self._collect_cancel.set()
+            from .support_bundle import forget_scans
+            forget_scans()
             self._timer.stop();self._filter_timer.stop()
             self._reload_requested=False
             for ref in self._owners:
@@ -440,7 +511,8 @@ def open_support_dialog(owner, page=None):
                 began=time.perf_counter();timings={}
                 try:
                     answer=collect(editor_diagnostics.root_dir() if instance is None else instance.root,instance=instance,
-                        cancelled=self._collect_cancel.is_set,deadline=time.monotonic()+30,**options)
+                        cancelled=self._collect_cancel.is_set,deadline=time.monotonic()+30,
+                        context_records=False,recent_only=True,**options)
                     timings['collect_ms']=(time.perf_counter()-began)*1000
                     if self._collect_cancel.is_set():raise InterruptedError('closed')
                     phase=time.perf_counter()
@@ -481,6 +553,7 @@ def open_support_dialog(owner, page=None):
             self._analysis=data["analysis"]
             if self._result is None:self.summary.setPlainText(data['summary'])
             self._render()
+            self._prepare_export()
             # Populate the 600-cell log table only when its page is requested.
             self._log_pending=True
             if self.views.currentIndex()==1:self._filter()
@@ -488,6 +561,31 @@ def open_support_dialog(owner, page=None):
             if not self._exporting and self._result is None and not getattr(owner,'_diagnostic_export_active',None):
                 bind_text(self.note,tr("{count} 笔记录（约 {size} KiB）。诊断包只在本机生成，不含字幕全文、媒体、提示词与 AI 回复，由你自己发送。",
                                        count=f"{len(self._rows):,}",size=f"{size/1024:.0f}"))
+
+        def _prepare_export(self):
+            """2026-11-19 (user: the window took over ten seconds to load and the export as long
+            again): the window itself now reads only the sessions written in its range. The old
+            sessions (their records of this project and task go into the package) are read once
+            here, in the background after the window is drawn, and kept for the export
+            (``support_bundle.forget_scans`` when the window closes)."""
+            if self._closed or self._preparing:return
+            self._preparing=True
+            options=self._options()
+            def work():
+                try:
+                    time.sleep(0.6)             # the window's first frames come first
+                    if not self._collect_cancel.is_set():
+                        collect(editor_diagnostics.root_dir() if instance is None else instance.root,instance=instance,
+                            cancelled=self._collect_cancel.is_set,deadline=time.monotonic()+30,
+                            context_records=False,reuse_scans=True,**options)
+                except Exception:pass          # the export reads whatever is missing itself
+                finally:
+                    self._preparing=False
+                    if self._collect_cancel.is_set():
+                        from .support_bundle import forget_scans
+                        forget_scans()
+            try:threading.Thread(target=work,name="diagnostic-prepare",daemon=True).start()
+            except Exception:self._preparing=False
 
         # ---- presentation -----------------------------------------------
         def _render_legend(self):
@@ -509,6 +607,7 @@ def open_support_dialog(owner, page=None):
                 bind_text(self.title,tr("记录到 {time} 为止",time=local_clock(analysis.anchor)))
             quiet=not any(analysis.counts.get(k) for k in ("act","check","stall"))
             self.banner.setVisible(quiet)
+            if self.bunny is not None:self.bunny.mascot.set_mood("happy" if quiet else "")
             self.steps.set_analysis(analysis)
             if analysis.running:
                 bind_text(self.running,tr("仍在执行：{items}（通常正常）",items=" · ".join(str(n) for n in analysis.running)))
@@ -541,10 +640,15 @@ def open_support_dialog(owner, page=None):
             if not button.isChecked():button.setChecked(True)
 
         def show_step_log(self,step_id):
+            self._filter_chosen=True
             self._set_step_filter(step_id,refilter=False)
             self._set_problem_filter(False,refilter=False)
             self._filter()
             self.show_view("log")
+
+        def _choose_problem_filter(self,value):
+            self._filter_chosen=True
+            self._set_problem_filter(value)
 
         def _set_problem_filter(self,value,refilter=True):
             self._only_problems=value
@@ -565,6 +669,11 @@ def open_support_dialog(owner, page=None):
             analysis=self._analysis
             if analysis is None:return
             problems=sum(analysis.event_problem)
+            if not self._filter_chosen:
+                # The log is the first view now: with nothing to flag it shows every record
+                # instead of an empty 「只看问题 0」 table, until the person picks a filter.
+                self._only_problems=problems>0
+                (self.only_problems if self._only_problems else self.all_rows).setChecked(True)
             bind_text(self.only_problems,tr("只看问题 {count}",count=problems))
             bind_text(self.all_rows,tr("全部 {count}",count=f"{len(self._rows):,}"))
             for button in (self.only_problems,self.all_rows):
@@ -728,7 +837,11 @@ def open_support_dialog(owner, page=None):
             emit("export.start",result="started",report_id=report_id,target_path=target)
             def work():
                 try:
-                    result=export_report(target,root=instance.root if instance else editor_diagnostics.root_dir(),instance=instance,**options)
+                    result=export_report(target,root=instance.root if instance else editor_diagnostics.root_dir(),instance=instance,
+                                         reuse_scans=True,**options)
+                    if self._collect_cancel.is_set():
+                        from .support_bundle import forget_scans
+                        forget_scans()
                     emit("export.end",result=result["status"],report_id=report_id,bytes=result["bytes"])
                 except Exception as exc:
                     from .support_bundle import export_failure_details

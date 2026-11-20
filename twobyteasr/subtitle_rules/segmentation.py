@@ -1490,6 +1490,96 @@ def missing_hard_break_offsets(source_text, hard_offsets, boundaries):
     )
 
 
+BREAK_MARK_OPEN, BREAK_MARK_CLOSE = "‹", "›"  # ‹N›
+
+
+def japanese_break_candidates(source_text, mandatory=()):
+    """Offsets a Japanese cut may use: bunsetsu ends, the mandatory breaks and the end.
+
+    None when the text cannot be marked by content offsets (the request then keeps the
+    per-character index). Without a morphology document every offset is a candidate.
+    """
+    content = content_exact(source_text)
+    total = len(content)
+    if total <= 0 or sum(len(content_exact(char)) for char in source_text) != total:
+        return None
+    from .japanese_morphology import document_phrase_spans
+    spans = document_phrase_spans(content)
+    allowed = set(range(1, total + 1)) if spans is None else {end for _start, end, _word in spans}
+    allowed.update(int(offset) for offset in mandatory if 0 < int(offset) < total)
+    allowed.add(total)
+    return sorted(offset for offset in allowed if 0 < offset <= total)
+
+
+def marked_break_text(source_text, candidates):
+    """``source_text`` with ‹N› before the content character that follows each candidate N."""
+    wanted = set(candidates)
+    pieces, count, pending = [], 0, None
+    for char in source_text:
+        counted = bool(content_exact(char))
+        if counted and pending is not None:
+            pieces.append(f"{BREAK_MARK_OPEN}{pending}{BREAK_MARK_CLOSE}")
+            pending = None
+        pieces.append(char)
+        if counted:
+            count += 1
+            if count in wanted:
+                pending = count
+    if pending is not None:
+        pieces.append(f"{BREAK_MARK_OPEN}{pending}{BREAK_MARK_CLOSE}")
+    return "".join(pieces)
+
+
+def snap_to_break_candidates(boundaries, candidates):
+    """Each boundary on its nearest candidate (the later one on a tie); returns (boundaries, moved)."""
+    allowed = sorted(set(candidates))
+    if not allowed:
+        return list(boundaries), []
+    import bisect
+    snapped, moved = set(), []
+    for value in boundaries:
+        if value in allowed:
+            snapped.add(value)
+            continue
+        index = bisect.bisect_left(allowed, value)
+        options = [allowed[i] for i in (index - 1, index) if 0 <= i < len(allowed)]
+        target = min(options, key=lambda option: (abs(option - value), -option))
+        snapped.add(target)
+        moved.append({'given': value, 'used': target})
+    return sorted(snapped), moved
+
+
+def with_mandatory_breaks(source_text, boundaries, hard_offsets=(), protected_offsets=()):
+    """Boundaries with every locally known mandatory break present; returns (boundaries, added).
+
+    A model only chooses semantic breaks; speaker changes, long pauses and protected source
+    edges are measured here, so a missing one is put back instead of failing the batch.
+    A hard break inside a word goes to the word edge it snaps to; when there is no such edge
+    the measured offset itself is used (a real pause outranks the segmenter's word).
+    2026-11-18 (鳴潮 special, batch 120): a per-speaker turn of an overlapping batch had a
+    hard break the model never saw; both attempts and the escalation fell back.
+    """
+    total = display_length(source_text)
+    present = {int(value) for value in boundaries if 0 < int(value) <= total}
+    added = []
+    for offset in sorted({int(value) for value in protected_offsets}):
+        if 0 < offset < total and offset not in present:
+            present.add(offset)
+            added.append(offset)
+    for offset in missing_hard_break_offsets(source_text, hard_offsets, sorted(present)):
+        if not 0 < offset < total:
+            continue
+        images = [image for image in snap_boundaries_away_from_word_interiors(source_text, [offset])
+                  if 0 < image < total]
+        image = images[0] if images else offset
+        if image not in present:
+            present.add(image)
+            added.append(image)
+    if total > 0:
+        present.add(total)
+    return sorted(present), sorted(added)
+
+
 def texts_from_boundary_offsets(
     segment_batch,
     boundary_offsets,

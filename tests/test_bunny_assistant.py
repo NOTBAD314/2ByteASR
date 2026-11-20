@@ -1,6 +1,8 @@
 """「问问兔白」 persona, world book and reply parsing (2026-11-14)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from twobyteasr.app import bunny_lore, bunny_persona
@@ -96,11 +98,30 @@ def test_a_json_reply_keeps_only_known_places_and_moods():
 
 def test_a_long_or_plain_reply_is_still_short_bubbles():
     reply = bunny_persona.parse_reply('好的。我帮你看看！第三句？第四句。', _keys())
-    assert not reply.structured and reply.lines == ['好的。', '我帮你看看！', '第三句？']
-    long = bunny_persona.parse_reply('{"lines": ["' + '喵' * 200 + '", "2", "3", "4"]}', _keys())
+    assert not reply.structured and reply.lines == ['好的。', '我帮你看看！', '第三句？', '第四句。']
+    long = bunny_persona.parse_reply('{"lines": ["' + '喵' * 200 + '", "2", "3", "4", "5", "6", "7"]}', _keys())
     assert len(long.lines) == bunny_persona.MAX_LINES
     assert len(long.lines[0]) == bunny_persona.HARD_LINE_LIMIT
     assert bunny_persona.parse_reply('', _keys()).lines
+
+
+def test_the_detail_card_is_bounded_rows_and_never_comes_with_tools():
+    """2026-11-18 (user: too little in one answer): steps and causes go in ``detail``, a card under her words."""
+    reply = bunny_persona.parse_reply(
+        '{"lines": ["照这样做～"], "detail": ["1. 点 **模型工坊**", "- 下载 ==不花钱==", "", "3. 回首页"]}', _keys())
+    assert reply.detail == ('1. 点 **模型工坊**', '· 下载 ==不花钱==', '3. 回首页')
+    as_text = bunny_persona.parse_reply('{"lines": ["好"], "detail": "第一行\\n第二行"}', _keys())
+    assert as_text.detail == ('第一行', '第二行')
+    many = bunny_persona.parse_reply(
+        json.dumps({'lines': ['好'], 'detail': ['字' * 300] * 40}, ensure_ascii=False), _keys())
+    assert len(many.detail) <= bunny_persona.DETAIL_ROWS
+    assert all(len(row) <= bunny_persona.DETAIL_ROW_CHARS for row in many.detail)
+    assert sum(len(row) for row in many.detail) <= bunny_persona.DETAIL_CHARS
+    working = bunny_persona.parse_reply(
+        '{"lines": ["我来～"], "detail": ["1. 不该出现"], "tools": [{"name": "open_page", "args": {"page": "home"}}]}', _keys())
+    assert working.tools and working.detail == ()
+    assert bunny_persona.parse_reply('{"lines": ["好"]}', _keys()).detail == ()
+    assert 'detail' in bunny_persona.REPLY_FORMAT and bunny_persona.MAX_LINES >= 5
 
 
 def test_without_ai_she_still_points_at_the_place():
@@ -384,8 +405,11 @@ def test_she_is_a_friend_not_a_subtitle_salesperson():
 
 def test_words_stay_whole_across_lines(app_qt):
     from PySide6.QtGui import QFont, QTextDocument
+    from twobyteasr.app import tour_mascot
     from twobyteasr.app.tour_mascot import WORD_JOINER, _layout_lines, marked_html
     colors = {'accent': '#f00', 'mark': '#ff0', 'mark_text': '#000'}
+    tour_mascot.warm_words()                       # the word list loads in the background first
+    assert tour_mascot._words_ready.wait(60)
     html_text = marked_html('想先随便试试的话，首页有新手引导', colors, keep_words=True)
     assert f'新{WORD_JOINER}手' in html_text and f'引{WORD_JOINER}导' in html_text
     assert WORD_JOINER not in marked_html('新手引导', colors)                     # the tutorial is unchanged

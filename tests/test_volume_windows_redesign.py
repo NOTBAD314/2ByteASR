@@ -215,4 +215,4 @@ def test_the_ask_bunny_button_is_a_pill_with_or_without_words(app):
     QTest.mouseClick(full, Qt.MouseButton.LeftButton)
     assert clicks == [1] and not full.grab().isNull()
     full.hide()
-    assert not full._breath.state() == full._breath.State.Running
+    assert not full._breath.isActive()

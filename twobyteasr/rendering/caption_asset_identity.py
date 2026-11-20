@@ -133,14 +133,22 @@ def asset_key(props, first=None, last=None, *, still=False, fingerprint=None):
     return hashlib.sha256(json.dumps([fingerprint or _renderer_cache_fingerprint(),asset_dependencies(props,first,last,still=still)],
         ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
-def asset_windows(props,total_frames):
+def asset_windows(props,total_frames,holds=None):
+    """Frame windows the browser renders; ``holds`` (cue id -> first, last) are
+    drawn as stills elsewhere and are cut out of their cue's window."""
     from .advanced_renderer import _web_theme_composition
     if _web_theme_composition(props):return [(0,total_frames-1)]
     rate=Fraction(str(props.get('fps') or 30)).limit_denominator(100100)
+    holds=holds or {}
     spans=[]
     for cue in props.get('cues',[]):
         a=max(0,math.ceil(Fraction(cue['startMs'],1000)*rate))
         b=min(total_frames-1,math.ceil(Fraction(cue['endMs'],1000)*rate)-1)
+        hold=holds.get(cue.get('sourceId',cue['id']))
+        if hold:
+            for x,y in ((a,hold[0]-1),(hold[1]+1,b)):
+                if y>=x:spans.append((x,y))
+            continue
         if b>=a:spans.append((a,b))
     result=[]
     for a,b in sorted(spans):

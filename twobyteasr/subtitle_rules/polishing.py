@@ -135,6 +135,12 @@ SPACED_STRUCTURED_SPLIT_MAX_DEPTH = 1
 def structured_split_limit():
     from .language_rules import is_spaced
     return SPACED_STRUCTURED_SPLIT_MAX_DEPTH if is_spaced() else STRUCTURED_SPLIT_MAX_DEPTH
+
+
+TRUNCATION_SPLIT_CATEGORIES = frozenset({'structured_output_truncated', 'structured_output_truncated_before_answer'})
+FORMAT_SPLIT_CATEGORIES = frozenset({'structured_schema_error', 'structured_json_parse_error',
+                                     'structured_output_schema', 'structured_output', 'structured_empty_response'})
+FORMAT_SPLIT_MAX_DEPTH = 1
 POLISH_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -216,6 +222,70 @@ def _alias_cue_id_fields(value, segments):
                 aliased.append(cue_id)
         rows.append(row)
     return ({**value, 'cues': rows} if aliased else value), aliased
+
+
+def _regroup_flat_edits(value, segments):
+    """Read a flat ``edits`` list keyed by ``cue_id`` as the ``cues`` the contract asks for.
+
+    2026-11-18 (user's 鳴潮 special, deepseek-v4-flash): 3 of 55 batches, 54 cues, answered
+    ``{"type":"json_object","checked_ids":[...],"edits":[{"cue_id":400,"from":...}],
+    "suspect_results":[...]}``; every edit was sound, yet each batch fell back and the
+    thinking-escalation round spent 5.6 minutes re-asking. Only an answer with no ``cues``
+    at all, whose every edit names one cue of this batch by a whole-number ``cue_id``/``id``,
+    is regrouped; cues without edits get an empty list. The stray ``type: json_object`` (the
+    request's response_format echoed) is dropped. Anything else stays invalid. Returns the
+    value and the edited cue IDs, or None when the answer was not regrouped.
+    """
+    if not isinstance(value, dict) or 'cues' in value or not isinstance(value.get('edits'), list):
+        return value, None
+    batch = [segment.segment_id for segment in segments]
+    grouped = {cue_id: [] for cue_id in batch}
+    for edit in value['edits']:
+        if not isinstance(edit, dict):
+            return value, None
+        cue_id = edit.get('cue_id', edit.get('id'))
+        if 'cue_id' in edit and 'id' in edit and edit['id'] != edit['cue_id']:
+            return value, None
+        if type(cue_id) is not int or cue_id not in grouped:
+            return value, None
+        grouped[cue_id].append({key: item for key, item in edit.items() if key not in ('cue_id', 'id')})
+    rest = {key: item for key, item in value.items() if key != 'edits'
+            and not (key == 'type' and item == 'json_object')}
+    rest['cues'] = [{'id': cue_id, 'edits': grouped[cue_id]} for cue_id in batch]
+    return rest, sorted(cue_id for cue_id, edits in grouped.items() if edits)
+
+
+LISTENING_REVIEW_RULES = frozenset({'japanese_semantic_needs_listening', 'japanese_particle_preservation'})
+LISTENING_REVIEW_FAMILY_NAMES = {'qwen3_asr': 'Qwen3-ASR', 'review': 'Qwen3-ASR', 'firered': 'FireRed',
+                                 'moss': 'MOSS'}
+
+
+def _review_listening_suggestions(segment, rejected_edits, batch_index=None, batch_total=None):
+    """Turn a rejected edit an independent transcript also heard into a review item.
+
+    2026-11-18 (鳴潮 special): 41 Japanese suggestions such as 実記 → 実機 (Qwen3-ASR heard
+    実機 too) were rejected by japanese_semantic_needs_listening and only counted. The
+    acceptance rule stays (one transcript plus the model must not rewrite Japanese; see
+    test_japanese_reference_contract); the suggestion now reaches the review list with
+    its evidence so the user can confirm it by listening. Text is never changed here.
+    """
+    added = 0
+    for edit in rejected_edits:
+        if not isinstance(edit, dict) or edit.get('rule_id') not in LISTENING_REVIEW_RULES:
+            continue
+        families = list((edit.get('evidence') or {}).get('actual_independent_families') or ())
+        source, target = str(edit.get('from') or ''), str(edit.get('to') or '')
+        if not families or not source or not target or source == target:
+            continue
+        heard = '、'.join(dict.fromkeys(LISTENING_REVIEW_FAMILY_NAMES.get(name, name) for name in families))
+        add_review_item(segment.start, 'ASR分歧',
+                        f'AI 建议把「{source}」改为「{target}」，{heard} 也这样识别；日语改字需听音确认，未自动替换。',
+                        segment.text, priority=2, severity='review', batch_index=batch_index,
+                        batch_total=batch_total, cue_id=segment.segment_id,
+                        suggestion={'from': source, 'to': target, 'rule_id': edit.get('rule_id'),
+                                    'independent_families': families})
+        added += 1
+    return added
 
 
 def _normalize_verified_keep_edits(value, segments):
@@ -313,6 +383,10 @@ class CueValidationFailures(dict):
 def _validate_polish_response(value, segments, batch_index, quarantined=None):
     from jsonschema import ValidationError, validate
     from ..providers.ai_providers import AIProviderError
+    value, regrouped = _regroup_flat_edits(value, segments)
+    if regrouped is not None:
+        record_run_event('polishing_response_shape_regrouped', batch_index=batch_index,
+                         shape='edits[].cue_id', read_as='cues[].edits', edited_cue_ids=regrouped)
     value = _without_null_optional_fields(value)
     value, aliased = _alias_cue_id_fields(value, segments)
     if aliased:
@@ -990,7 +1064,9 @@ def call_correction_api(
         # The failed-result retry: same service and model, one thinking level higher.
         # Its own fingerprint keeps cache entries and task-local rejections apart.
         import dataclasses
-        snapshot = dataclasses.replace(snapshot, enable_thinking=_thinking)
+        from ..providers.subtitle_request_policy import escalated_output_tokens
+        snapshot = dataclasses.replace(snapshot, enable_thinking=_thinking,
+                                       max_output_tokens=escalated_output_tokens(snapshot))
     rejected = (_retry_budget.snapshot_rejection('polished', snapshot.fingerprint)
         if not _messages_only else None)
     if rejected:
@@ -1203,7 +1279,12 @@ def call_correction_api(
                 if _retry_budget.expired:
                     from ..providers.ai_providers import AIProviderError
                     raise AIProviderError('校对任务总时限已用完，丢弃迟到结果。', category='total_timeout')
-                value = _validate_polish_response(value, segment_batch, batch_index, quarantined)
+                try:
+                    value = _validate_polish_response(value, segment_batch, batch_index, quarantined)
+                except Exception as exc:
+                    # Keep the answer for the failure record; this path has no raw text otherwise.
+                    exc.raw_content = json.dumps(value, ensure_ascii=False, default=str)
+                    raise
                 return json.dumps(value, ensure_ascii=False, separators=(',', ':')), quarantined
             # Legacy injectable providers still receive the same schema. The
             # production AIClient always owns structured_complete.
@@ -1410,6 +1491,7 @@ def call_correction_api(
                         for row in receipt.get('suspect_results', ())):
                     receipt['quality_state'] = 'pending_suspect_adjudication'
                 receipt['rejected_edit_count'] = len(receipt['rejected_edits'])
+                _review_listening_suggestions(segment, receipt['rejected_edits'], batch_index, batch_total)
                 protected = getattr(quarantined, 'protected', {}).get(segment.segment_id, [])
                 if protected:
                     receipt['rejected_edits'].extend(protected)
@@ -1484,6 +1566,16 @@ def call_correction_api(
                     )
                 except Exception:
                     pass
+            elif getattr(exc, 'raw_content', ''):
+                try:
+                    record_structured_output_failure(
+                        exc, content=exc.raw_content, diagnostics=get_last_llm_response_diagnostics(),
+                        stage="polished", batch_index=batch_index, attempt=attempt,
+                        provider=endpoint.get("provider", "custom"), model=endpoint.get("model", ""),
+                        base_url=endpoint.get("base_url", ""), url=endpoint.get("url", ""),
+                        api_key=endpoint.get("api_key", ""))
+                except Exception:
+                    pass
             response = getattr(exc, "response", None)
             status_code = getattr(response, "status_code", None)
             if status_code in {400, 401, 403, 404}:
@@ -1539,13 +1631,14 @@ def call_correction_api(
                     from ..recognition.service import CancelledError
                     raise CancelledError('校对任务已取消。')
 
+    # 2026-11-18: a batch whose answers keep missing the contract is halved once before it
+    # falls back (smaller answers are copied more faithfully); truncation may go deeper.
+    split_limit = (structured_split_limit() if last_category in TRUNCATION_SPLIT_CATEGORIES
+                   else min(structured_split_limit(), FORMAT_SPLIT_MAX_DEPTH)
+                   if last_category in FORMAT_SPLIT_CATEGORIES else 0)
     if (
-        last_category in {
-            "structured_output_truncated",
-            "structured_output_truncated_before_answer",
-        }
-        and len(segment_batch) > 1
-        and _split_depth < structured_split_limit()
+        len(segment_batch) > 1
+        and _split_depth < split_limit
         and not _retry_budget.expired
     ):
         midpoint = len(segment_batch) // 2
@@ -1558,7 +1651,8 @@ def call_correction_api(
             source_cue_count=len(segment_batch),
             child_cue_counts=[midpoint, len(segment_batch) - midpoint],
             category=last_category,
-            policy='bounded_output_truncation_fanout_v1',
+            policy=('bounded_output_truncation_fanout_v1' if last_category in TRUNCATION_SPLIT_CATEGORIES
+                    else 'bounded_format_failure_halving_v1'),
         )
         merged = PolishBatchResult(succeeded=(),batches=0)
         for child_index,child in enumerate((segment_batch[:midpoint], segment_batch[midpoint:]),1):
@@ -2027,7 +2121,7 @@ def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, p
     import dataclasses
     from ..providers.asr_provider_snapshot import task_provider_snapshot
     from ..providers.provider_input_budget import RetryBudget
-    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+    from ..providers.subtitle_request_policy import (retry_thinking, escalation_cue_limit,
                                                      task_escalation_enabled)
     candidates, categories = [], {}
     for index, batch, *_ in jobs:
@@ -2042,7 +2136,7 @@ def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, p
     count = sum(len(rows) for *_, rows in candidates)
     snapshot = task_provider_snapshot('polish')
     endpoint = snapshot.endpoint()
-    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
+    level = retry_thinking(snapshot, categories, 'polish',
         base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=snapshot.protocol)
     limit = escalation_cue_limit(len(segments))
     skipped = ('disabled' if not task_escalation_enabled('polish') else
@@ -2064,10 +2158,12 @@ def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, p
     for index, batch, rows in candidates:
         size = max(1, (len(batch) + 1) // 2)  # thinking text also uses the output budget
         chunks.extend((index, rows[start:start + size]) for start in range(0, len(rows), size))
-    escalated = dataclasses.replace(snapshot, enable_thinking=level)
+    from ..providers.subtitle_request_policy import escalated_output_tokens
+    escalated = dataclasses.replace(snapshot, enable_thinking=level,
+                                    max_output_tokens=escalated_output_tokens(snapshot))
     budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * len(chunks))
-    print(f"   [提高思考重试] {count} 条字幕格式或截断仍失败，用同一模型、思考等级 {level} 再请求一轮"
-          f"（{len(chunks)} 个请求）。")
+    print(f"   [提高思考重试] {count} 条字幕格式或截断仍失败，用同一模型、思考等级 {level}、"
+          f"输出上限 {escalated.max_output_tokens} 再请求一轮（{len(chunks)} 个请求）。")
     record_run_event('ai_escalation_round', state='started', thinking=level, requests=len(chunks), **event)
     owner = get_runtime_context()
     succeeded_all, failed_all, extra_reviews = set(), {}, []

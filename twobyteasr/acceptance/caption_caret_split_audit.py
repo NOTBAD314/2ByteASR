@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 import time
 import traceback
@@ -15,7 +16,7 @@ def start(window, output):
     from ..studio.caption_editor import qt_position
     app = QApplication.instance()
     output = Path(output)
-    result = dict(passed=False, checks={}, split_ms=[], scope='normal MainWindow, native Windows Qt, synthetic 7000 cues over 5h50m; 16s synthetic media')
+    result = dict(passed=False, checks={}, split_ms=[], scope=f'normal MainWindow, native {sys.platform} Qt, synthetic 7000 cues over 5h50m; 16s synthetic media')
 
     def receipt():
         (output/'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), 'utf8')
@@ -97,11 +98,28 @@ def start(window, output):
             page.subtitle_edit_dock.fit_to_workspace()
             QTest.qWait(100)
             page.subtitle_edit_dock.grab().save(str(output/'candidate-card.png'))
-            QTest.keyClick(card.editor, Qt.Key_W, Qt.ShiftModifier)
+            QApplication.setActiveWindow(card.editor.window())
+            card.editor.setFocus()
+            cursor = card.editor.textCursor()
+            cursor.setPosition(qt_position(text, start))
+            cursor.setPosition(qt_position(text, start + 2), QTextCursor.KeepAnchor)
+            card.editor.setTextCursor(cursor)
+            QTest.qWait(50)
             QTest.keyClick(QApplication.focusWidget(), Qt.Key_D, Qt.ShiftModifier)
             check('candidate keyboard advances options', card.suggestions.selected == (0, 1))
             QTest.keyClick(QApplication.focusWidget(), Qt.Key_D, Qt.ShiftModifier)
-            check('candidate keyboard advances bubble row', card.suggestions.selected == (1, 0))
+            check('candidate keyboard wraps only the current bubble', card.suggestions.selected == (0, 0))
+            QApplication.setActiveWindow(card.editor.window())
+            card.editor.setFocus()
+            cursor = card.editor.textCursor()
+            cursor.setPosition(qt_position(text, text.index('明日')))
+            cursor.setPosition(qt_position(text, text.index('明日') + 2), QTextCursor.KeepAnchor)
+            card.editor.setTextCursor(cursor)
+            QTest.qWait(50)
+            check('body selection follows the other candidate row', card.suggestions.selected == (1, 0))
+            # Space adopts the focused candidate into the draft. Shift+E now
+            # confirms and closes the whole editor, so it is not this action.
+            card.suggestions.focus_current()
             QTest.keyClick(QApplication.focusWidget(), Qt.Key_Space)
             check('candidate applies to draft only', 'あす' in card.editor.toPlainText() and
                   page.project.cues[0].text == text)
@@ -157,7 +175,10 @@ def start(window, output):
                      complete_scene_for_seek(page._caption_scene, parts[1].id, page.video._playback_clock.generation), 30)
                 check(f'language {number} expected scene actually published', True)
                 frame = output/f'native-preview-{number}.png'
-                page.video.controller.screenshot_to_file(str(frame), mode='window', fast=True)
+                if sys.platform == 'darwin':
+                    page.video_overlay_host.grab().save(str(frame))
+                else:
+                    page.video.controller.screenshot_to_file(str(frame), mode='window', fast=True)
                 wait(frame.is_file, 10)
                 from PIL import Image, ImageStat
                 pixels = Image.open(frame).convert('RGB')
@@ -194,8 +215,9 @@ def start(window, output):
             QTest.mouseClick(card.more_button, Qt.MouseButton.LeftButton)
             wait(card.more_menu.isVisible, 5)
             action = next(action for action in card.more_menu.actions() if action.text() == 'C 键直接切割')
-            QTest.mouseClick(card.more_menu, Qt.MouseButton.LeftButton,
-                             pos=card.more_menu.actionGeometry(action).center())
+            card.more_menu.setActiveAction(action)
+            QTest.keyClick(card.more_menu, Qt.Key_Return)
+            wait(card.split_mode.isChecked, 3)
             check('More menu enables C mode', card.split_mode.isChecked())
             check('mode toggle retains draft', page._caption_draft is not None and editor.textCursor().position()==2)
             QTest.keyClick(editor, Qt.Key_C, Qt.ControlModifier)

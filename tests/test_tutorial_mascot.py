@@ -80,6 +80,20 @@ def test_the_voice_skips_punctuation_and_keeps_a_gap(monkeypatch):
     assert len(sounds) >= 8                                         # a babble, not one repeated blip
 
 
+def test_her_voice_never_drops_low_or_dark():
+    """2026-11-19 (user picked 「A 修正版」): long answers sounded like a low, tonal 「吧」「啊」."""
+    from twobyteasr.app import tour_mascot
+    voice = tour_mascot.MascotVoice()
+    text = '兔白这一步按不了麻烦小兔纸自己点一下框里的保存好耶工程会自动打开哦'
+    drawn = [voice.syllable_for(char) for char in text]
+    assert {vowel for _c, vowel, _s, _g in drawn} <= set('aie')
+    assert {consonant for consonant, *_ in drawn} <= set('bdmnly') | {''}
+    assert voice.syllable_for('o')[:2] == ('', 'o')                 # a typed vowel keeps its sound
+    assert min(tour_mascot.SPREAD) >= 0 and min(tour_mascot.GLIDES) >= -0.03
+    for semitones, stretch, bend, _vibrato, _loud in tour_mascot.VOICE_MOODS.values():
+        assert semitones >= 0 and stretch <= 1.05 and bend >= -0.02
+
+
 def test_the_babble_syllables_are_short_distinct_and_in_the_output_format():
     import numpy as np
     from twobyteasr.app.tour_mascot import RATE, SYLLABLE_S, syllable_pcm
