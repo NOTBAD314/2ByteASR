@@ -4,7 +4,7 @@ def run(window, page, output, check):
     import shiboken6
     from types import SimpleNamespace
     from PySide6.QtCore import QPoint, QTimer
-    from PySide6.QtWidgets import QApplication, QMenu, QPushButton, QListWidget
+    from PySide6.QtWidgets import QApplication, QPushButton, QListWidget
     from PySide6.QtTest import QTest
     from ..app import bunny_chat, bunny_memory, bunny_permissions
     from ..app.bunny_tools import run_turn, undo_records, snapshot
@@ -64,17 +64,42 @@ def run(window, page, output, check):
         bunny_memory.clear_chats();card._save_chat();card._sync_chat_context()
         check('round4 clear prevents open chat resurrection',not bunny_memory.load_chat(key) and not any('ROUND4_CHAT_PRIVATE' in m['content'] for m in card.messages_for('新问题')))
         card.close_chat();card=None;app.processEvents()
-        # Drive the actual context-menu action; the menu stays a real native Qt widget.
-        chosen=[]
-        def choose():
-            menu=app.activePopupWidget()
-            if isinstance(menu,QMenu):
-                action=next((a for a in menu.actions() if a.text()=='问兔白这条'),None)
-                if action is not None:
-                    chosen.append(True);action.trigger()
-                menu.close()
-        QTimer.singleShot(150,choose)
-        page._show_timeline_menu(page.project.cues[0].id,page.mapToGlobal(QPoint(300,300)))
+        # Capture the actual menu from its factory so another popup cannot consume the input.
+        from ..studio import studio_ui
+        from PySide6.QtCore import Qt
+        original_factory = studio_ui.create_studio_menu
+        chosen = []
+
+        def capture_menu(*args, **kwargs):
+            menu = original_factory(*args, **kwargs)
+            timer = QTimer(menu)
+            timer.setInterval(25)
+            attempts = 0
+
+            def choose():
+                nonlocal attempts
+                attempts += 1
+                action = next((a for a in menu.actions() if a.text() == '问兔白这条'), None)
+                if menu.isVisible() and action is not None:
+                    timer.stop()
+                    menu.setActiveAction(action)
+                    QTest.keyClick(menu, Qt.Key_Return)
+                    chosen.append(True)
+                    if menu.isVisible():
+                        menu.close()
+                elif attempts >= 120:
+                    timer.stop()
+                    menu.close()
+
+            timer.timeout.connect(choose)
+            menu.aboutToShow.connect(timer.start)
+            return menu
+
+        studio_ui.create_studio_menu = capture_menu
+        try:
+            page._show_timeline_menu(page.project.cues[0].id, page.mapToGlobal(QPoint(300, 300)))
+        finally:
+            studio_ui.create_studio_menu = original_factory
         card=getattr(window,'_bunny_chat',None)
         check('round4 actual subtitle context menu opens populated chat',bool(chosen) and card is not None and '第 1 条' in card.input.text())
         card.grab().save(str(output/'round4-context.png'))

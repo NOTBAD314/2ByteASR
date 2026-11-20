@@ -3218,6 +3218,9 @@ class ModelCard(QFrame):
         set_layout(self._root,margins=(12,8,12,8),spacing=6)
         set_layout(self._row,margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
         set_layout(self.info_host.layout(),margins=(0,0,0,0),spacing=WORKSHOP_COLUMN_SPACING)
+        if os.environ.get('TWOBYTEASR_WORKSHOP_COLUMNS_ONLY') == '1':
+            from ..app.ui_zoom import effective_factor
+            self._column_sync_sample = dict(factor=effective_factor(self),language=self.language_row.width(),metrics=self.metrics_host.width(),action=self.action_host.width())
 
     def apply_ui_zoom(self,factor):
         self._set_wide_languages(_workshop_wide_languages(self.width()/factor))
@@ -3226,9 +3229,40 @@ class ModelCard(QFrame):
         if getattr(self,'_logo_factor',None)!=factor:
             self._logo_factor=factor;self._paint_monogram()
 
+    def _queue_owner_columns(self):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_owner_columns()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, 'language_row') and event.type() in (QEvent.Type.StyleChange, QEvent.Type.FontChange):
+            self._queue_owner_columns()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._compact_title_pending = True
+        if not self.isVisible():
+            # A hidden workshop is laid out by any grab() elsewhere; the card
+            # catches up when it shows (2026-11-19, opening a project).
+            self._resize_pending = True
+            return
+        self._apply_resize()
+
+    def showEvent(self, event):
+        if getattr(self, '_resize_pending', False):
+            self._resize_pending = False
+            self._apply_resize()
+        super().showEvent(event)
+
+    def _apply_resize(self):
         available_width = self.width()
         ancestor = self.parentWidget()
         while ancestor is not None:
@@ -3239,6 +3273,7 @@ class ModelCard(QFrame):
         from ..app.ui_zoom import logical
         self._set_wide_languages(_workshop_wide_languages(logical(self.width(),self)))
         self._apply_compact_layout(logical(available_width,self) < 760)
+        self._sync_column_sizes()
 
     def _set_wide_languages(self, wide: bool):
         if wide == self._wide_languages:
@@ -3326,6 +3361,12 @@ class ModelCard(QFrame):
 
     def refresh_theme_palette(self):
         self._paint_monogram()
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ModelWorkshopPage):
+                parent._queue_column_sync()
+                break
+            parent = parent.parentWidget()
 
     def set_state_badge(self, text: str, tone: str = "muted"):
         label = str(text or "").strip()
@@ -6133,18 +6174,57 @@ class ModelWorkshopPage(QWidget):
         QTimer.singleShot(0, self._periodic_temp_cleanup)
 
     def ensure_ui(self):
-        if self._ui_built:
+        if self._ui_built and not self.__dict__.get('_ui_refresh_pending', False):
             return
-        self._build()
-        self._ui_built = True
+        if not self._ui_built:
+            self._build()
+            self._ui_built = True
+        self._ui_refresh_pending = False
         self.refresh(registry=self._registry, check_status=False)
         if self._density_comfortable is not None:
             density, self._density_comfortable = self._density_comfortable, None
             self.apply_density(density)
 
+    def prepare_hidden_steps(self):
+        """Build the page, its cards and their polish while it is hidden (2026-11-18).
+
+        The first visit used to build the UI, three cards and their styles
+        before its first frame (300-470 ms). Home's idle preparation runs
+        these steps; each ``yield`` gives the event loop a turn. Once the page
+        is shown the normal visit paths take over and the steps stop.
+        """
+        if self.isVisible():
+            return
+        if not self._ui_built:
+            self._build()
+            self._ui_built = True
+            self._ui_refresh_pending = True
+            yield
+        if self.isVisible():
+            return
+        if self.__dict__.get('_ui_refresh_pending', False):
+            self.ensure_ui()
+            yield
+        # The remaining cards stay deferred: built hidden, their layouts were
+        # flushed by any later full-window layout pass (Studio's hub entry
+        # paid 130 ms for 24 cards). They still build behind the veil on show.
+        from ..design.gui_slices import GuiSlice
+        from shiboken6 import isValid
+        budget = GuiSlice(12)
+        for widget in reversed(self.findChildren(QWidget)):
+            if self.isVisible() or not isValid(self):
+                return
+            if isValid(widget):
+                widget.ensurePolished()
+            if budget.due():
+                yield
+                budget.resume()
+        self.ensurePolished()
+
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
+        self._queue_column_sync()
 
 
     def _mac_cpu_runtime_checked(self, result):
@@ -6232,12 +6312,36 @@ class ModelWorkshopPage(QWidget):
         self.role_subtitle.setVisible(self.height() >= 480)
 
     def apply_ui_zoom(self,factor):
+        self._queue_column_sync()
         if hasattr(self,'detail_monogram'):
             model=next((m for m in MODELS if m.key==self.detail_model_key),None)
             if model is not None:
                 edge=round((38 if model.logo_asset else 24)*factor)
                 size=QSize(edge,edge)
                 self.detail_monogram.setPixmap(_model_logo(model,size).pixmap(size))
+
+    def _queue_column_sync(self):
+        # Native style repolishing can restore old fixed widths after the
+        # zoom traversal. Finish the shared table geometry after that pass.
+        if getattr(self, '_column_sync_pending', False):
+            return
+        self._column_sync_pending = True
+        QTimer.singleShot(0, self._sync_list_columns)
+
+    def _sync_list_columns(self):
+        from shiboken6 import isValid
+        if not isValid(self):
+            return
+        self._column_sync_pending = False
+        header = getattr(self, 'list_header', None)
+        if header is None:
+            return
+        from ..app.ui_zoom import effective_factor
+        header.apply_ui_zoom(effective_factor(self))
+        for wrapper in getattr(self, '_cards', {}).values():
+            card = wrapper.__dict__.get('_card')
+            if card is not None and isValid(card):
+                card._sync_column_sizes()
 
     def _show_compact_details(self):
         if self._responsive_detail.parentWidget() is not self._responsive_split:
@@ -6632,6 +6736,11 @@ class ModelWorkshopPage(QWidget):
         self.empty_label.setMinimumHeight(100)
         self.card_layout.addWidget(self.empty_label)
         self.card_layout.addStretch(1)
+        # Laid out only while the page shows (see showEvent): a grab or render
+        # anywhere in the app flushes every posted layout request, hidden pages
+        # included, and the card list was 0.2-0.3 s of opening a project in the
+        # workbench (2026-11-19).
+        self.card_layout.setEnabled(self.isVisible())
         scroll.setWidget(host)
         if self._async_status:
             self._card_viewport = _CardViewport(scroll, self._cards)
@@ -6870,7 +6979,20 @@ class ModelWorkshopPage(QWidget):
     def background_busy(self) -> bool:
         return self._registry_check_running
 
+    def page_settled(self) -> bool:
+        """The page and its model list are built (the main window shows a page only then:
+        ``design.transitions.PageHold``). A status check still running only updates badges."""
+        if not self._ui_built:
+            return False
+        viewport = getattr(self, '_card_viewport', None)
+        return not getattr(viewport, 'building', False)
+
     def showEvent(self, event):
+        layout = getattr(self, 'card_layout', None)
+        if layout is not None and not layout.isEnabled():
+            layout.setEnabled(True)
+            layout.invalidate()
+            layout.activate()
         super().showEvent(event)
         self._download_activity_timer.start()
         self._temp_cleanup_timer.start()
@@ -6885,6 +7007,9 @@ class ModelWorkshopPage(QWidget):
             timer = getattr(self,name,None)
             if timer is not None: timer.stop()
         super().hideEvent(event)
+        layout = getattr(self, 'card_layout', None)
+        if layout is not None and not self.isVisible():
+            layout.setEnabled(False)
 
     def _check_registry_in_background(self, *, force=False):
         if self._registry_check_running:
@@ -7562,16 +7687,28 @@ class ModelWorkshopPage(QWidget):
             bind_text(self.download_estimate, '预计新增下载：{value0}', value0=ui_literal('、'.join(missing_sizes)) if missing_sizes else tr('无需下载'))
 
     def _set_role(self, role: str):
-        self.browser_role = role
-        self._refresh_role_subtitle()
-        for button in self.tab_group.buttons():
-            button.setChecked(button.property("role") == role)
-        selected = self._cards.get(self.detail_model_key)
-        if selected is None or role not in _browser_groups(selected.model):
-            replacement = next((model.key for model in MODELS if role in _browser_groups(model)), None)
-            if replacement:
-                self.detail_model_key = replacement
-        self.refresh(registry=self._registry, check_status=False)
+        # 2026-11-18 (user: every switch inside the workshop should move): switching 主力转写 /
+        # 字幕时间轴 / 文字复核 / 在线API reorders the same cards in place, so the list's old picture
+        # fades over the new one (design.transitions.content_change); nothing waits for it.
+        from ..design.transitions import content_change
+        scroll = getattr(getattr(self, '_drag_scroll', None), 'scroll', None)
+        changing = content_change(scroll) if scroll is not None and role != self.browser_role else None
+        if changing is not None:
+            changing.__enter__()
+        try:
+            self.browser_role = role
+            self._refresh_role_subtitle()
+            for button in self.tab_group.buttons():
+                button.setChecked(button.property("role") == role)
+            selected = self._cards.get(self.detail_model_key)
+            if selected is None or role not in _browser_groups(selected.model):
+                replacement = next((model.key for model in MODELS if role in _browser_groups(model)), None)
+                if replacement:
+                    self.detail_model_key = replacement
+            self.refresh(registry=self._registry, check_status=False)
+        finally:
+            if changing is not None:
+                changing.__exit__(None, None, None)
 
     def _refresh_role_subtitle(self):
         label = getattr(self, "role_subtitle", None)

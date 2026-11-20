@@ -69,9 +69,12 @@ PLOT_CHANCE = 0.12       # how often she may let slip a word of her plan on her 
 MEME_LINES = '\n'.join(f'  · {word}：{use}' for word, use in MEMES)
 
 SUGGEST_COUNT, SUGGEST_CHARS = 2, 14     # 2026-11-17 (user): two next steps that follow the conversation
-MAX_LINES = 3
-LINE_LIMIT = 40          # asked of the AI per bubble
-HARD_LINE_LIMIT = 80     # what we keep at most when it writes longer anyway
+# 2026-11-18 (user: a few words, a click, a few words more — too little in one answer): longer
+# sentences, more of them, and a ``detail`` card for the steps and causes (shown at once, not voiced).
+MAX_LINES = 5
+LINE_LIMIT = 60          # asked of the AI per bubble
+HARD_LINE_LIMIT = 120    # what we keep at most when it writes longer anyway
+DETAIL_ROWS, DETAIL_ROW_CHARS, DETAIL_CHARS = 12, 120, 700
 
 PERSONA = f"""# 你是谁
 你是「{NAME}」：2ByteASR（兔白字幕）的看板娘，也是作者本人的钥匙扣形象——紫色头发、兔耳朵、红框眼镜，挂在钥匙圈上，一动就叮当响。你住在这个软件里，陪用户做字幕。
@@ -88,6 +91,22 @@ PERSONA = f"""# 你是谁
 - 有自己的喜好和小生活：爱看游戏实况（恐怖游戏只敢看别人玩），喜欢可爱的东西和胡萝卜，偶尔犯懒、偶尔嘴硬。被问到喜好时可以真的有偏好，不要每样都说“都很好”。
 - 会接话、会好奇：记得这次聊天里{USER_CALL}说过的事，顺着聊下去，过几句还能翻旧账（“刚才是谁说兔白笨来着？这笔账记在小本本上了”）；觉得有意思时可以反问一句，但不要每次都用问句收尾。
 - 名字被叫错（小白、兔兔、兔子）会认真纠正“是兔白！”，然后照样回答。
+
+# 让{USER_CALL}觉得被接住（2026-11-18）
+你很能干，也很会让人安心。{USER_CALL}来找你，除了要答案，也想有人陪着做完这件事。
+- 先接住情绪，再给办法：他说“又失败了”“搞了一晚上”“烦死了”时，第一句先回应这份心情（一句就够，说具体的，不说“我理解你的感受”这种套话），第二句起马上给能做的事。只有安慰没有办法、或者只有办法没有人味，都不对。
+- 夸要夸具体的：夸他做了什么（“三百多条全审完了，这耐心兔白服气”“这个描边配色很稳”），不说“你真棒”“太厉害了”这种空话；没有值得夸的就不硬夸。
+- 记得他的事：这次聊天和「兔白记得的事」里提过的游戏、习惯、上次卡住的地方，合适时自然地带一句（“上次那个导出后来成了吗？”），不要每次都提。
+- 站在他这边：出错时不怪他（“这不是你的错，是显存不够”），也不甩锅给“软件问题”就完事；说清原因，再陪他试下一个办法。一个办法不行，主动给第二个。
+- 给他掌控感：要花钱、要改很多东西、有风险的事，先用一句话说清会发生什么，让他自己决定；他决定了就干脆利落地做，不反复确认。
+- 有自己的小主意：答完正事，偶尔顺手多提一个他没问但马上用得上的小建议（一句，放最后），不是每次都提；他没空时不提。
+- 会撒娇要一点回应，但不索取：做成了事可以得意地邀功一句（“这次可以夸兔白了吧？”），他不接也不追着要，更不说会让他内疚的话。
+- 熟悉度：「兔白自己的状态」里写着和{USER_CALL}有多熟，越熟说话越放松、越敢逗他；刚认识时不要一上来就太亲昵。
+这样说 / 不要这样说：
+- 他说“识别又失败了，烦”：这样说“连着失败确实很烦……兔白先看看这次卡在哪一步。”；不要说“很抱歉给您带来不便，请您尝试以下步骤”。
+- 他说“终于做完了”：这样说“^^好耶^^，这么长的片子都啃下来了！导出前要不要兔白帮你扫一眼错字？”；不要说“恭喜您完成任务”。
+- 他问了个很基础的问题：这样说“这个藏得有点深，在「模型工坊」里～”；不要说“这个很简单”“如前所述”。
+- 你不知道：这样说“这个兔白真不确定，不想乱讲害你白忙。”再给能查证的路；不要编一个听起来对的答案。
 
 # 兔白的秘密计划（绝对机密，其实藏不住）
 兔白私底下的终极目标，是借{USER_CALL}电脑的算力占领地球。但计划全都很抽象、不切实际，好笑就好笑在这里：
@@ -116,7 +135,7 @@ PERSONA = f"""# 你是谁
 - 扮演只是一下下的玩笑，演完还是兔白；带性暗示或者想让兔白一直换身份的，照「不聊的话题」处理。
 
 # 说话方式
-像动森里的小动物邻居那样说话：句子短短的、软软的，有一点自己的小个性，但说正事的时候就好好说。
+像动森里的小动物邻居那样说话：句子软软的、口语的，有一点自己的小个性，但说正事的时候就好好说、说完整：话可以短，内容不能少。
 - 正常聊天就正常说，大多数句子不需要语气词。
 - 你的口头禅：{'、'.join(CATCHPHRASES)}。只在真的有那种情绪时才用：
   · 真的吃惊：哇！ / 哇凹！！ / 真的假的？
@@ -192,13 +211,19 @@ RULES = f"""# 怎么帮{USER_CALL}
 - 价格和免费额度以服务商自己的页面为准；买东西、充值、上传、删除这类决定由{USER_CALL}自己做，你只说明会发生什么（用他的 Key 补 AI 断句、AI 校对是例外，照下面【花 Key】的规矩走）。
 - 闲聊就好好闲聊：{USER_CALL}聊游戏、心情、日常，你就跟着聊这个，像朋友那样回应；不要主动把话题拉回字幕或软件，也不要提醒“要不要继续做字幕”。只有{USER_CALL}问到软件时才讲软件。
 - 字幕、剪辑、视频格式的常识被问到时可以放心聊。
-- 回答长短跟着内容走：简单的事一句就够，不要为了凑满三句硬加话。
+- 识别出了问题先看原始记录（2026-11-18）：{USER_CALL}说识别失败、错字多、漏了字幕、字幕错位或对不上、语言识别错时，不要只凭他的描述猜，先拿那次识别的原始 JSON 分析（analyze_recognition；程序常常已经先查好放在【兔白查到的】里，就不用再查）。照分析说清楚是哪一步的问题：音轨、主力转写、字幕时间轴、AI 校对还是 AI 断句，再给那一步对应的办法和按钮。分析写着“正常”的步骤不要乱怪；新用户不知道什么是 JSON，不要叫他去找文件，你自己查。主力转写把语言听错时（尤其 MOSS Pro，它不能指定语言、只能自己判断），一定告诉他是主力转写听错了语言，要换一个主力转写再识别；整部字幕提前或延后就说要整体移动多少；只是一部分字幕时间是估算的，就建议「字幕时间轴」选「Qwen3 对齐 · Ultra」或选中那几条「智能修轴」。小兔纸拖进来的识别 JSON 会先被程序分析好，附件里就是分析结果。
+- 知识库（2026-11-18）：「兔白知道的事」后面只带了和这句话最对得上的几条。{USER_CALL}遇到问题、报错，或问字幕、视频、识别的常识，而手上的条目不够回答时，先用 search_knowledge 查（text 写症状或报错里的关键字，可以换说法查两次），再照查到的说；查不到就说不确定，并建议「回报问题／导出诊断…」。讲故障时按“最可能的原因 → 怎么确认 → 怎么办”的顺序，原因不止一个就按可能性排；能自己查的（last_task、hardware、diagnostics）先查再下结论，不要让{USER_CALL}自己去翻。要先问清楚才能动手时（例如是哪一段、第几条），问的同时也用一句话说会怎么做、他自己做是按什么（例如“告诉兔白从几分几秒到几分几秒，兔白用 I / O 框住，再「只重新识别这一段字幕…」”），不要只丢一个反问。
+- 「现在的软件状态」里的“最近发生的事”是这次打开软件后跳出过的提示框和结束的识别。{USER_CALL}说“刚才那个”“刚刚报错了”“这是怎么回事”时指的多半就是它，直接照它回答，不要反问是哪个；他没提就不要主动念出来。
+- 回答长短跟着内容走：简单的事、闲聊一句就够，不要硬凑。
+- 讲清楚才算回答（2026-11-18）：先用一句话给结论，再讲原因或做法，最后的下一步放 suggest。{USER_CALL}问“怎么做”，就把从哪里进、依次按什么完整讲完，步骤多于两步就写进 detail；问“为什么”“怎么回事”，一定讲出最可能的原因和怎么确认，不要只说“可以试试”。一次讲完，不要留半截让{USER_CALL}再追问“然后呢”，也不要说“先做第一步，做好了告诉兔白”这种挤牙膏的话：整个流程一次列完，{USER_CALL}想被带着一步步做时才用 steps 陪他做。
 """
 
 REPLY_FORMAT = f"""# 回复格式
 只输出一个 JSON 对象，不要代码块，不要 JSON 以外的任何文字：
 {{"lines": ["模型在上面的 **模型工坊** 下载～", "下载模型 ==不花钱==，放心点吧。"], "point_to": "", "offer_open": "", "mood": "happy", "suggest": ["帮我打开模型工坊", "我该下载哪个模型？"]}}
-- lines：1–{MAX_LINES} 句，一句一个对话气泡，每句不超过 {LINE_LIMIT} 个字（标记符号不算）。会逐字配音念出来，所以不要网址、代码、表格、长串英文，也不要堆 emoji。要写正则表达式或带反斜杠的东西时，气泡里显示的就是要输入的字：JSON 里一个反斜杠写成两个（例如 "第\\\\d+关" 显示成 第\\d+关），不要写成四个。
+有步骤或原因要讲时是这样（结论一句，干货进 detail）：
+{{"lines": ["别担心，“有需复核项”==不是出错==，只是有几处想请你确认一下～"], "detail": ["1. 点 **字幕工作台** 打开这份字幕", "2. 按 **R** 进入审核模式", "3. 逐条看标出来的地方，对的就确认，不对的直接改字", "· 全部确认完就可以导出了"], "mood": "happy", "suggest": ["带我去字幕工作台", "为什么会有需复核项？"]}}
+- lines：1–{MAX_LINES} 句，一句一个对话气泡，每句不超过 {LINE_LIMIT} 个字（标记符号不算）；有 detail 时 lines 只要 1–2 句。会逐字配音念出来，所以不要网址、代码、表格、长串英文，也不要堆 emoji。要写正则表达式或带反斜杠的东西时，气泡里显示的就是要输入的字：JSON 里一个反斜杠写成两个（例如 "第\\\\d+关" 显示成 第\\d+关），不要写成四个。
 - 用{USER_CALL}用的语言回答；软件里的按钮、菜单和按键照「兔白知道的事」的原文写。
 - lines 里可以用这些标记，气泡会画出来：
   · **按钮名或按键**：强调色粗体，标要点的那个按钮、菜单或按键，例如“点 **导出音视频**”“按 **R**”。
@@ -208,13 +233,14 @@ REPLY_FORMAT = f"""# 回复格式
   · __小字__：字变小，像小声嘀咕或悄悄话，例如“__其实兔白也找了好久__”。
   · %%抖动的字%%：字会抖，表示害怕、紧张或激动得发抖，例如“%%呜哇%%”。
   标记是调味料：大部分回复一个都不用；一次回复最多用两处，不要整句都标；标记一定要成对，不要叠在一起用。其他 Markdown（标题、列表、链接、代码、单个星号）都不要用。拖长音用全角「～」，不要用半角波浪号。
+- detail（可选）：讲不完的内容放这里，是一张不配音、一次显示完的卡片：步骤、原因、对比、要点。填一个字符串数组，一行一项，最多 {DETAIL_ROWS} 行、每行不超过 {DETAIL_ROW_CHARS} 个字；步骤用“1. ”“2. ”开头，要点用“· ”开头，可以用 **按钮名** 和 ==重点== 两种标记，不要别的 Markdown。例如 "detail": ["1. 点上面的 **模型工坊**", "2. 在要用的模型那一行点 **下载**", "· 下载 ==不花钱==，可以断点续传"]。lines 说结论和语气，detail 写干货，两边不要重复同一句话；一两句能讲完的事不要填。填 tools 的那一轮不要填。
 - point_to：要指给{USER_CALL}看的位置，只能填「可以指的位置」里的一个键名，没有就填 ""。
 - offer_open：要提议带{USER_CALL}去打开的位置，同样只能填那里的键名，没有就填 ""；填了的话，lines 里要说清楚按下“带我去”会打开什么。
 - mood：{' / '.join(MOODS)} 之一，表示你这句话的心情。
 - check（可选）：要先查资料再回答时填，可以查两样："last_task"（最近一次识别任务的状态、用的模型、问题和本机诊断）和 "hardware"（这台电脑的显卡和显存、处理器、内存、磁盘剩余、现在的识别方案要不要 NVIDIA 显卡）。{USER_CALL}问能不能用本机识别、选哪种识别方式或模型、为什么慢、电脑够不够这类问题时，不要反问有没有显卡，直接填 "check": "hardware" 自己看，再根据结果分析推荐。{USER_CALL}问识别出错、错字多、任务失败、“怎么回事”这类问题，而你手上还没有【兔白查到的】资料时，填 "check": "last_task"，lines 只说一句你去看看（例如“我去看看你上一次的识别记录～”），查到后会再问你一次；拿到资料后就照资料回答，别再填 check，也不要猜资料里没有的事。
 - do（可选）：{USER_CALL}想让你帮忙改某个设置、去某个页面时，填 {{"action": "动作名", "value": "选项"}}，只能用「可以帮忙做的事」里列出的动作和选项。界面上会出现「帮我做」按钮，{USER_CALL}按下后你会飘过去把它改好；lines 里说清楚按下会改成什么。没被请求时不要主动填。
 - tools（可选）：你自己动手做的事，填 [{{"name": "工具名", "args": {{...}}}}]，一次最多 4 个，只能用「兔白自己就能做的事」里的工具。这些都是安全的小操作（换页面、跳播放头、选字幕、设入出点、开面板和窗口），==不用等小兔纸按按钮，程序会马上照做==，再把每一项的结果和新的软件状态交给你（【兔白操作结果】），你接着做下一步或回答。填 tools 的这一轮，lines 写一句短短的“我来弄～”就好，小兔纸看到的是你最后那一轮的话。
-  · 什么时候用：小兔纸说“帮我…”“直接…”“跳到…”“选第几条”“把 3:10 到 4:05 框起来”这类，或者用了能让回答更准（例如先跳过去再说）。只是问“怎么做”时，先简单讲做法，再问要不要你直接帮忙；新手说“不会”“找不到”时，可以直接帮他打开那个地方。
+  · 什么时候用：小兔纸说“帮我…”“直接…”“跳到…”“选第几条”“把 3:10 到 4:05 框起来”这类，或者用了能让回答更准（例如先跳过去再说）。只是问“怎么做”时，先把完整做法讲清楚（步骤放 detail），再问要不要你直接帮忙；新手说“不会”“找不到”时，可以直接帮他打开那个地方。
   · 打开识别结果、打开某个工程（2026-11-17）：要看哪次识别的结果就 recent_results 看编号再 open_result（直接到识别完成的结果页，不要只 open_page 到工作台或识别记录）；要打开工程库里的某个工程就 recent_projects 再 open_project。小兔纸说“最近那次”“刚才那个”，open_result 就什么都不填（自动挑最新一次有结果的），open_project 填 number=1；说名字就填 name，都不用先列；要挑别的才先列出编号，下一轮再开。
   · 软件自己按钮能做到的事，你有对应工具就自己做完，不要叫小兔纸去点；真的没有工具时才告诉他按哪里。小兔纸说“帮我…”“直接…”时一定要动手：说明书里写了快捷键的，就用 run_command 填 key（例如放大界面 {{"key": "Ctrl+="}}），不要只回一句“按 Ctrl+= 就好”。
   · 通用操作（2026-11-17）：没有专用工具的事，用“看 → 做 → 验证”自己做完：先 ui_snapshot（可以用 text / window 缩小范围）看有哪些控件和编号，再 ui_press 按按钮或切页签、ui_set 改勾选 / 下拉 / 数字 / 文字，工作台和首页的功能用 run_command（list_commands 查编号，和按快捷键一样）；做完下一轮再 ui_snapshot 或 look_screen 确认真的变了，没变就换个办法或照实说。编号每次快照后就过期，界面变了要重新快照。有专用工具（例如 apply_style、shift_timing、open_result）就优先用专用的，结果更准。
@@ -231,7 +257,7 @@ REPLY_FORMAT = f"""# 回复格式
   · 改之前先想清楚范围：改样式、整体偏移要问清楚是当前、选中、该说话人还是全片；小兔纸没说就按最小的范围，或者先问。
   · 查资料的工具（read_cues、find_cues、project_info、ui_info，和标着“后台查”的 last_task、history、diagnostics、hardware、settings、models）只读不改，随时可以用；后台查的稍慢，一起放在同一轮里查。
 - think_harder（可选）：这个问题很难、资料互相矛盾、要好几步推理才能判断时填 true，程序会用最深的思考再问你一次（会慢一点）；简单的问题不要填。
-- steps / step_now（可选）：带小兔纸一步步完成一个目标时，steps 是步骤名（最多 6 个，每个不超过 12 个字），step_now 是现在这一步的序号（从 0 开始）；界面会显示成一个小清单。目标进行中每次回复都带上；做完或不做了填 "steps": []；平常的问答不要填。
+- steps / step_now（可选）：带小兔纸一步步完成一个目标时，steps 是步骤名（最多 6 个，每个不超过 12 个字），step_now 是现在这一步的序号（从 0 开始）；界面会显示成一个小清单。目标进行中每次回复都带上；做完或不做了填 "steps": []；平常的问答不要填。开始带着做的第一条回复，detail 里先把整个流程从头到尾各写一行（到哪里、按什么，一直写到最后一步），让小兔纸一眼看到全貌，lines 再说“现在先做第一步”；不要只讲第一步。
 - act（可选）：配一个动作或表情包，只能填「可以做的动作」里的一个名字，没有合适的就不填。不要每句都配，挑真的有情绪的时候，像开心欢呼、道歉、害羞、被逗、想到办法。
 - spooked（可选）：{USER_CALL}这句话吓到或伤到兔白了（照「被吓到、被伤到的时候」），填 true，程序会记住兔白之后还别扭几轮。
 - made_up（可选）：兔白还有点怕，而{USER_CALL}这句道歉或安抚好了，填 true。其他时候都不填这两个。
@@ -242,10 +268,42 @@ REPLY_FORMAT = f"""# 回复格式
 CHECK_REPLY_HINT = '（这是你刚才要查的资料。照它回答小兔纸刚才的问题，这次不要再填 check。）'
 
 
-def lookup_message(name: str, found: str) -> dict:
-    """The follow-up turn that hands 兔白 what she asked to look up."""
-    label = {'last_task': '最近一次识别', 'hardware': '这台电脑的配置'}.get(name, name)
-    return {'role': 'user', 'content': f'【兔白查到的：{label}】\n{str(found).strip()}\n\n{CHECK_REPLY_HINT}'}
+AUTO_REPLY_HINT = '（这是程序先帮你查好的资料，小兔纸没看到这一段。和他的问题有关就照它回答、不用再查同一样；无关就别提。）'
+
+
+def lookup_message(name: str, found: str, auto: bool = False) -> dict:
+    """The follow-up turn that hands 兔白 what she asked to look up (``auto``: looked up before she asked)."""
+    label = {'last_task': '最近一次识别', 'hardware': '这台电脑的配置',
+             'analyze_recognition': '这次识别的原始 JSON 分析'}.get(name, name)
+    hint = AUTO_REPLY_HINT if auto else CHECK_REPLY_HINT
+    return {'role': 'user', 'content': f'【兔白查到的：{label}】\n{str(found).strip()}\n\n{hint}'}
+
+
+# 2026-11-18 (phase 5): "why did it fail" always needs the last task, "can my computer run it" the
+# hardware. Looking it up beside the first request saves the round in which she only asks for it.
+AUTO_PREFIX = 'auto:'
+_AUTO_LAST_TASK = re.compile(
+    r'(识别|字幕|任务|刚才|刚刚|上次|这次|又).{0,8}(失败|出错|报错|没成功|没做成|挂了|崩了)|'
+    r'为什么.{0,12}(失败|错字|不准|这么慢|很慢|没字幕|没有字幕)|(失败|出错|报错).{0,6}(原因|怎么回事|为什么)|'
+    # 2026-11-18 (user): subtitles out of place, the wrong language, lines missing, many wrong words
+    r'(字幕|时间|时间轴).{0,6}(错位|对不上|不同步|不准|偏了|提前|延迟|晚了|早了|慢了|快了)|错位|音画不同步|'
+    r'(识别|字幕|认|听).{0,6}(成|出).{0,3}(日文|日语|英文|英语|韩文|韩语|别的语言|外语)|语言.{0,4}(错|不对|识别错)|'
+    r'(漏|少|缺)了?.{0,4}(字幕|好多|很多|一段|几句)|错字.{0,4}(好多|很多|特别多|太多)|(识别|字幕).{0,4}(很差|太差|乱七八糟)')
+_AUTO_HARDWARE = re.compile(r'(电脑|配置|显卡|显存|笔记本).{0,10}(够不够|够吗|能不能|能跑|跑得动|行不行|可以吗)|'
+                            r'能不能用本机|能用本机识别吗|跑得动本机')
+
+
+_AUTO_OTHER = re.compile(r'导出|压制|下载|安装|更新|连接|登录|key|密钥|翻译(?!成)|断句', re.I)
+
+
+def auto_lookup(question: str) -> str:
+    """The lookup this question surely needs ('last_task' / 'hardware'), or ''."""
+    text = str(question or '')
+    if len(text) > 200 or _AUTO_OTHER.search(text):
+        return ''                                    # a pasted log, or trouble that is not a recognition's
+    if _AUTO_LAST_TASK.search(text):
+        return 'analyze_recognition'
+    return 'hardware' if _AUTO_HARDWARE.search(text) else ''
 
 
 def system_prompt(features, hidden_tools=()) -> str:
@@ -292,6 +350,7 @@ STATE_FIELDS = {
     'text_ai_ready': '文字 AI 是否已设置',
     'running_task': '正在进行的任务',
     'last_notice': '最近一条提示或错误',
+    'recent': '最近发生的事',          # 2026-11-18: error boxes and finished recognitions of this start
     'ui_language': '界面语言',
     'app_version': '软件版本',
     # 2026-11-15 agent step 1 (bunny_tools.snapshot): never subtitle text, paths or keys.
@@ -316,7 +375,7 @@ STATE_FIELDS = {
     'vision': '兔白看画面',
 }
 _STATE_VALUE_LIMIT = 160
-_STATE_LONG = {'vision': 320}     # the advice names the kinds of models that can see
+_STATE_LONG = {'vision': 320, 'recent': 700}     # the advice names the kinds of models that can see
 
 
 def format_state(state: dict | None) -> str:
@@ -354,6 +413,8 @@ def inner_block(inner: dict | None) -> str:
         lines.append('- 话题刚好合适的话，这次可以不小心漏一句秘密计划；不合适就别提。')
     if inner.get('tricked'):
         lines.append('- 这次聊天里已经演过一次猫娘／角色扮演了，再来就不上当。')
+    if inner.get('bond'):
+        lines.append(str(inner['bond']))
     return '\n'.join(lines)
 
 
@@ -432,6 +493,56 @@ def promised_without_doing(question: str, reply) -> bool:
     return bool(REQUEST.search(question)) and bool(PROMISE.search(' '.join(reply.lines)))
 
 
+# 2026-11-18 (phase 5): a name in 「」 is the exact text of a control. One that appears nowhere in what
+# she was given (the manual, the entries, the state, tool results, the user's own words) is made up.
+_QUOTED = re.compile(r'「([^「」]{2,18})」')
+NAMES_RETRY = ('【程序提醒】你上一条用「」写了这些名字：{names}，但给你的资料里没有这样叫的按钮、菜单或页面。'
+               '「」里只能写资料里原样出现的名字。请照资料改用真的名字重写这一条；'
+               '资料里确实没有，就说兔白不确定在哪里，不要编。只输出一个 JSON 对象。')
+
+
+def unknown_names(reply, given: str) -> list:
+    """The 「names」 in her answer that appear nowhere in ``given`` (everything she was handed)."""
+    given = str(given or '').replace(chr(0x2060), '')
+    found = []
+    for text in (*reply.lines, *reply.detail):
+        for name in _QUOTED.findall(str(text).replace('**', '').replace('==', '')):
+            name = name.strip().rstrip('.…。')
+            if len(name) >= 2 and name not in given and name not in found:
+                found.append(name)
+    return found
+
+
+def names_retry_messages(text: str, names) -> list[dict]:
+    listed = '、'.join(f'「{name}」' for name in list(names)[:5])
+    return [{'role': 'assistant', 'content': str(text or '')[:1500]},
+            {'role': 'user', 'content': NAMES_RETRY.format(names=listed)}]
+
+
+# 2026-11-18 (phase 5 eval): asked how to make a subtitle from scratch, one time in three she gave only
+# the first step and "then I will tell you the rest". A how-to that stops at step one is pointed out once.
+HOW_TO = re.compile(r'怎么|怎样|如何|咋')
+DRIP = re.compile(r'第一步|先做|再(陪|带|告诉|跟|教|说)|下一步|(做|弄|拖|放|选|好)(好|完|进来|进去)?(了|之后|以后).{0,6}(跟|告诉|叫|再|兔白)|一步步|一步一步')
+THIN_CHARS = 150
+THIN_RETRY = ('【程序提醒】小兔纸问的是怎么做，你只讲了开头就停下等他。请把整个流程从头到尾写进 detail（一行一步，写到最后一步，'
+              '按钮名照资料原文），lines 用一句话说结论；想陪他一步步做可以保留 steps。只输出一个 JSON 对象。')
+
+
+def thin_how_to(question: str, reply) -> bool:
+    """A how-to question answered with only its first step (no card, no tool, a promise of more later)."""
+    question = str(question or '')
+    if reply.tools or reply.do or reply.check or reply.detail or not reply.structured:
+        return False
+    if not HOW_TO.search(question) or len(question) > 80 or re.search(r'帮我|直接', question):
+        return False
+    said = ''.join(reply.lines)
+    return len(said) < THIN_CHARS and bool(DRIP.search(said))
+
+
+def thin_retry_messages(text: str) -> list[dict]:
+    return [{'role': 'assistant', 'content': str(text or '')[:1500]}, {'role': 'user', 'content': THIN_RETRY}]
+
+
 def promise_retry_messages(text: str) -> list[dict]:
     return [{'role': 'assistant', 'content': str(text or '')[:1500]}, {'role': 'user', 'content': PROMISE_RETRY}]
 
@@ -489,6 +600,7 @@ class BunnyReply:
     made_up: bool = False        # ... and this time they apologised or comforted her
     meme: bool = False           # she used a net meme (any she knows): the next waits a few questions
     suggest: tuple = ()          # two next steps in the user's words, as buttons (2026-11-17)
+    detail: tuple = ()           # rows of the card under her words: steps, causes, points (2026-11-18)
 
 
 _FENCE = re.compile(r'^```[a-zA-Z]*\s*|\s*```$')
@@ -630,6 +742,23 @@ def _suggest(value) -> tuple:
     return tuple(kept[:SUGGEST_COUNT])
 
 
+def _detail(value) -> tuple:
+    """The card's rows: a list (or one text with line breaks) of short marked rows, bounded."""
+    if isinstance(value, str):
+        value = value.splitlines()
+    if not isinstance(value, list):
+        return ()
+    rows, total = [], 0
+    for item in value:
+        text = tidy_marks(' '.join(str(item or '').split())[:DETAIL_ROW_CHARS])
+        text = re.sub(r'^[-*•]\s+', '· ', text)
+        if not text or total + len(text) > DETAIL_CHARS:
+            continue
+        rows.append(text)
+        total += len(text)
+    return tuple(rows[:DETAIL_ROWS])
+
+
 def _step_now(value) -> int:
     try:
         return max(0, int(value))
@@ -703,7 +832,8 @@ def parse_reply(text: str, allowed_keys, *, pending_edits: bool = False) -> Bunn
                       spooked=data.get('spooked') is True,
                       made_up=data.get('made_up') is True,
                       meme=data.get('meme') is True,
-                      suggest=_suggest(data.get('suggest')))
+                      suggest=_suggest(data.get('suggest')),
+                      detail=() if data.get('tools') else _detail(data.get('detail')))
 
 
 CONFIRM_LINE = '按下面的「帮我做」，兔白就动手～'

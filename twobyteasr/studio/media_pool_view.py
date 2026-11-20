@@ -1,12 +1,14 @@
 """One virtualized asset model/view for list and thumbnail presentations."""
 from __future__ import annotations
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QTimer, Signal, QRectF
+from PySide6.QtCore import (QAbstractListModel, QModelIndex, QPersistentModelIndex, QPointF, QSize, Qt, QTimer,
+                            Signal, QRectF)
 from PySide6.QtGui import QColor, QDrag, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QListView, QStyledItemDelegate, QStyle)
 
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_definition
+from ..media.animated_gif import is_frame_image, is_still_image
 from ..timeline.source_selection import SourceSelection, source_capabilities
 from ..timeline.studio_media_pool import media_usage
 from .studio_source_monitor import source_mime
@@ -45,6 +47,8 @@ class MediaPoolModel(QAbstractListModel):
         state = '文件缺失' if asset.offline else '已使用' if self.usage.get(asset.asset_id) else '未使用'
         video, audio = source_capabilities(asset)
         kind = '视频+音频' if video and audio else '视频 · 无音轨' if video else '音频'
+        if is_frame_image(asset.canonical_source):
+            kind = '图片' if is_still_image(asset.canonical_source) else 'GIF 动图'
         if role == Qt.ItemDataRole.DisplayRole:
             return asset.display_name
         if role == Qt.ItemDataRole.UserRole:
@@ -54,7 +58,7 @@ class MediaPoolModel(QAbstractListModel):
         if role == Qt.ItemDataRole.UserRole+2:
             return f'{kind} · {duration_text(asset.duration_ms)} · {state}'
         if role == Qt.ItemDataRole.ToolTipRole:
-            return f'{asset.display_name}\n{kind} · {duration_text(asset.duration_ms)} · {state}\n{asset.canonical_source}\n双击源预览 · 拖动当前选段到时间线'
+            return f'{asset.display_name}\n{kind} · {duration_text(asset.duration_ms)} · {state}\n{asset.canonical_source}\n点 + 加到播放头 · 拖到时间线任意位置 · 双击预览 / 选段'
         if role == Qt.ItemDataRole.UserRole+3:
             return ' '.join((asset.display_name, asset.canonical_source, kind, state))
 
@@ -104,7 +108,8 @@ class MediaPoolDelegate(QStyledItemDelegate):
                                      round(x), round(thumb.center().y()-float(lo)*thumb.height()*.4))
             else:
                 painter.drawText(thumb, Qt.AlignmentFlag.AlignCenter, '♫ 音频' + (' · 波形加载中' if self.view.thumbnail_mode else ''))
-        name_rect = QRectF(rect.left()+8, thumb.bottom()+4, rect.width()-16, 23) if self.view.thumbnail_mode else QRectF(thumb.right()+8, rect.top()+5, rect.right()-thumb.right()-14, 23)
+        # List rows keep 30 px at the right end for the "+".
+        name_rect = QRectF(rect.left()+8, thumb.bottom()+4, rect.width()-16, 23) if self.view.thumbnail_mode else QRectF(thumb.right()+8, rect.top()+5, rect.right()-thumb.right()-44, 23)
         state = '文件缺失' if asset.offline else '已使用' if self.view.page.media_pool_panel.model.usage.get(asset.asset_id) else ''
         if state:
             badge = QRectF(thumb.left()+3, thumb.top()+3, min(thumb.width()-6, 62), 20)
@@ -113,12 +118,28 @@ class MediaPoolDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(badge, 4, 4)
             painter.setPen(QColor(theme.surface))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, state)
+        hovered = QPersistentModelIndex(index) == self.view.hover_index
+        if (hovered or selected) and not asset.offline:
+            # 2026-11-18: one click adds the source at the playhead (as in 剪映).
+            plus = self.view.plus_rect(option.rect)
+            pressed = hovered and self.view.hover_plus
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.accent_hover if pressed else theme.accent))
+            painter.drawEllipse(plus)
+            painter.setPen(QPen(QColor(theme.surface), 2))
+            center, arm = plus.center(), plus.width() * .24
+            painter.drawLine(QPointF(center.x()-arm, center.y()), QPointF(center.x()+arm, center.y()))
+            painter.drawLine(QPointF(center.x(), center.y()-arm), QPointF(center.x(), center.y()+arm))
         painter.setPen(QColor(theme.text))
         name = painter.fontMetrics().elidedText(asset.display_name, Qt.TextElideMode.ElideRight, int(name_rect.width()))
         painter.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
         painter.setPen(QColor(theme.text_muted))
         kind = '视+音' if video and audio else '视频' if video else '音频'
         meta = f'{kind}   {duration_text(asset.duration_ms)}'
+        if is_frame_image(asset.canonical_source):
+            # Their length is whatever the clip is dragged to; "00:00" for a
+            # half-second GIF said nothing.
+            meta = '图片   可拉长' if is_still_image(asset.canonical_source) else 'GIF   拉长会循环'
         painter.drawText(name_rect.translated(0, 23), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(meta, Qt.TextElideMode.ElideRight, int(name_rect.width())))
         painter.restore()
@@ -126,11 +147,17 @@ class MediaPoolDelegate(QStyledItemDelegate):
 
 class MediaPoolView(QListView):
     visible_assets = Signal(object)
+    add_requested = Signal(str, str)      # asset id, 'auto' / 'video' / 'audio'
+    preview_requested = Signal(str)
+    relink_requested = Signal(str)
 
     def __init__(self, page, wave_cache, parent=None):
         super().__init__(parent)
         self.page, self.wave_cache = page, wave_cache
         self.card_width = 172; self.thumbnail_mode = True
+        self.hover_index = QPersistentModelIndex(); self.hover_plus = False
+        self._plus_press = QPersistentModelIndex()
+        self.setMouseTracking(True)
         self.wave_keys = {}
         self.thumbnails = FilmstripCache(self, memory_bytes=16*1024*1024)
         self.thumbnails.updated.connect(lambda *_: self.viewport().update())
@@ -203,6 +230,95 @@ class MediaPoolView(QListView):
 
     def hideEvent(self, event):
         self.thumbnails.set_view(()); super().hideEvent(event)
+
+    def plus_rect(self, item_rect):
+        """The round "+" of a card: bottom right of the thumbnail / right end of a row."""
+        rect = QRectF(item_rect).adjusted(3, 3, -3, -3)
+        if self.thumbnail_mode:
+            thumb_bottom = rect.top() + 6 + max(24, rect.height() - 58)
+            return QRectF(rect.right() - 36, thumb_bottom - 30, 26, 26)
+        return QRectF(rect.right() - 32, rect.center().y() - 12, 24, 24)
+
+    def _on_plus(self, point):
+        index = self.indexAt(point)
+        asset = index.data(Qt.ItemDataRole.UserRole+1) if index.isValid() else None
+        return index, bool(asset is not None and not asset.offline
+                           and self.plus_rect(self.visualRect(index)).contains(QPointF(point)))
+
+    def _set_hover(self, index, on_plus):
+        index = QPersistentModelIndex(index)
+        if index != self.hover_index or on_plus != self.hover_plus:
+            self.hover_index, self.hover_plus = index, on_plus
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if on_plus else Qt.CursorShape.ArrowCursor)
+            self.viewport().update()
+
+    def mouseMoveEvent(self, event):
+        if self._plus_press.isValid():
+            return  # a press on "+" is a click, never the start of a drag
+        self._set_hover(*self._on_plus(event.position().toPoint()))
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._set_hover(QModelIndex(), False)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        index, on_plus = self._on_plus(event.position().toPoint())
+        if on_plus and event.button() == Qt.MouseButton.LeftButton:
+            self.setCurrentIndex(index)
+            self._plus_press = QPersistentModelIndex(index)
+            self._set_hover(index, True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._plus_press.isValid():
+            pressed, self._plus_press = self._plus_press, QPersistentModelIndex()
+            index, on_plus = self._on_plus(event.position().toPoint())
+            if on_plus and QPersistentModelIndex(index) == pressed:
+                self.add_requested.emit(str(index.data(Qt.ItemDataRole.UserRole) or ''), 'auto')
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._on_plus(event.position().toPoint())[1]:
+            # A fast second click on "+" adds again; it is not "open the preview".
+            self.mousePressEvent(event)
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.currentIndex().isValid():
+            self.add_requested.emit(str(self.currentIndex().data(Qt.ItemDataRole.UserRole) or ''), 'auto')
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event):
+        index = self.indexAt(event.pos())
+        asset = index.data(Qt.ItemDataRole.UserRole+1) if index.isValid() else None
+        if asset is None:
+            return
+        self.setCurrentIndex(index)
+        from ..design.studio_theme import create_studio_menu
+        from ..i18n import tr
+        from .studio_widgets import _icon
+        video, audio = source_capabilities(asset)
+        menu = create_studio_menu(self)
+        add = menu.addAction(_icon('fa5s.plus'), tr('加到时间线（播放头处）'),
+                             lambda: self.add_requested.emit(asset.asset_id, 'auto'))
+        add.setEnabled(not asset.offline)
+        if video and audio:
+            for mode, icon, label in (('video', 'fa5s.film', '只加画面'), ('audio', 'fa5s.music', '只加声音')):
+                action = menu.addAction(_icon(icon), tr(label),
+                                        lambda mode=mode: self.add_requested.emit(asset.asset_id, mode))
+                action.setEnabled(not asset.offline)
+        menu.addSeparator()
+        menu.addAction(_icon('fa5s.play'), tr('预览 / 选一段再加'), lambda: self.preview_requested.emit(asset.asset_id))
+        menu.addAction(_icon('fa5s.link'), tr('重新定位…'), lambda: self.relink_requested.emit(asset.asset_id))
+        menu.exec(event.globalPos())
 
     def startDrag(self, actions):
         project, index = self.page.project, self.currentIndex()

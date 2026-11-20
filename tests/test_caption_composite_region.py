@@ -68,3 +68,18 @@ def test_alpha_union_covers_faint_first_last_frames_and_cache_digest(tmp_path):
     assert moving_alpha_bounds(movie,width=width,height=height,frames=3,cached=movie)==bounds
     assert moving_alpha_bounds(movie,width=width,height=height,frames=301,cached=movie) is None
 
+
+def test_alpha_union_reads_quicktime_rle_argb_overlays(tmp_path):
+    # Animated caption windows are encoded as QuickTime RLE ARGB (2026-11-19).
+    width,height=160,90
+    frames=np.zeros((3,height,width,4),dtype=np.uint8)
+    frames[:,:,:,0]=200
+    frames[:,30:50,50:80,3]=255
+    frames[0,2,1,3]=1
+    frames[2,74,109,3]=1
+    movie=tmp_path/'moving-rle.mov'
+    run_hidden_subprocess([str(ffmpeg_tool()),'-v','error','-f','rawvideo','-s',f'{width}x{height}',
+        '-pix_fmt','rgba','-r','30','-i','pipe:0','-c:v','qtrle','-pix_fmt','argb',str(movie)],
+        purpose='RLE alpha fixture',input=frames.tobytes(),capture_output=True,check=True,timeout=20)
+    assert moving_alpha_bounds(movie,width=width,height=height,frames=3)==[1,2,110,75]
+

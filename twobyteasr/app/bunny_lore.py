@@ -58,6 +58,8 @@ class LoreEntry:
     title: str
     keywords: tuple
     text: str
+    hints: str = ''          # 2026-11-18: more words to match by (a symptom), counted lightly
+    pages: tuple = ()        # ... and the pages where this entry is most likely what is meant
 
 
 def _feature_entries(window) -> list[LoreEntry]:
@@ -177,7 +179,9 @@ def build_entries(window=None) -> list[LoreEntry]:
     a feature gets the steps, not only the place; 兔白's own entries (``SELF``) come last.
     """
     from .bunny_howto import HOWTO
-    return [*HOWTO, *_feature_entries(window), *_guide_entries(), *_shortcut_entries(), _tip_entry(), *SELF]
+    from .bunny_troubleshoot import entries as trouble_entries
+    return [*HOWTO, *_feature_entries(window), *_guide_entries(), *_shortcut_entries(), _tip_entry(),
+            *trouble_entries(), *SELF]
 
 
 def feature_index(window=None) -> list[tuple[str, str, str]]:
@@ -192,16 +196,24 @@ def _bigrams(text: str) -> set:
     return {text[index:index + 2] for index in range(len(text) - 1)}
 
 
-def rank(question: str, items) -> list:
+HINT_WEIGHT, HINT_CAP, PAGE_BONUS, SEEN_SHARE = 0.25, 12, 2.0, 0.5
+
+
+def rank(question: str, items, page: str = '', seen: str = '') -> list:
     """Items (anything with ``title`` and ``keywords``) whose words the question uses, best first.
 
     A keyword found in the question counts most (longer keywords more, so 「千问ai平台」 beats
     「ai」); shared two-character pieces of the title break ties.
     """
-    text = str(question or '').casefold()
-    if not text.strip():
+    if not str(question or '').strip():
         return []
-    pieces = _bigrams(text)
+    # 2026-11-18 (knowledge base v2): colloquial wording is widened first; an entry's symptom words
+    # count lightly; what is on screen (a dialog's title, ``seen``) counts half; an entry made for the
+    # page the user is on comes before an equal one that is not.
+    from .bunny_troubleshoot import expand
+    text = expand(question).casefold()
+    seen = str(seen or '').casefold()
+    pieces = _bigrams(str(question).casefold())
     scored = []
     for index, item in enumerate(items):
         score = 0.0
@@ -209,14 +221,21 @@ def rank(question: str, items) -> list:
             word = str(keyword).casefold().strip()
             if word and word in text:
                 score += 3 + min(len(word), 6) * 0.5
+            elif word and len(word) > 1 and word in seen:
+                score += (3 + min(len(word), 6) * 0.5) * SEEN_SHARE
         score += 0.5 * len(pieces & _bigrams(item.title))
+        hints = getattr(item, 'hints', '')
+        if hints:
+            score += HINT_WEIGHT * min(HINT_CAP, len(pieces & _bigrams(hints)))
+        if score >= 1 and page and page in getattr(item, 'pages', ()):
+            score += PAGE_BONUS
         if score >= 1:
             scored.append((-score, index, item))
     return [item for _score, _index, item in sorted(scored, key=lambda row: (row[0], row[1]))]
 
 
-def select(question: str, entries, limit: int = 6) -> list[LoreEntry]:
-    return rank(question, entries)[:limit]
+def select(question: str, entries, limit: int = 6, page: str = '', seen: str = '') -> list[LoreEntry]:
+    return rank(question, entries, page, seen)[:limit]
 
 
 # 2026-11-15: the manual, every how-to entry and every default key are in the fixed system prompt
@@ -224,8 +243,12 @@ def select(question: str, entries, limit: int = 6) -> list[LoreEntry]:
 FIXED_PREFIXES = ('howto:', 'shortcuts:')
 
 
-def select_extra(question: str, entries, limit: int = 4) -> list[LoreEntry]:
-    return select(question, [entry for entry in entries if not entry.key.startswith(FIXED_PREFIXES)], limit)
+EXTRA_LIMIT = 6              # 2026-11-18: was 4, before the troubleshooting entries came
+
+
+def select_extra(question: str, entries, limit: int = EXTRA_LIMIT, page: str = '', seen: str = '') -> list[LoreEntry]:
+    return select(question, [entry for entry in entries if not entry.key.startswith(FIXED_PREFIXES)], limit,
+                  page, seen)
 
 
 def fixed_knowledge() -> str:

@@ -51,6 +51,66 @@ def run(window, output):
         fixture=output/'fixture.2byteproj'
         measure('open',lambda:opened(fixture))
         check('opened',page.project is not None)
+        if os.environ.get('TWOBYTEASR_SUPPORT_REPORT_ONLY') == '1':
+            from zipfile import ZipFile
+            from PySide6.QtWidgets import QToolButton
+            from shiboken6 import isValid
+            from ..diagnostics.event_log import emit
+
+            emit('report.acceptance_fixture', level='ERROR', result='failed',
+                 api_key='fixture-report-private-secret')
+            button = page.report_problem_button
+            if button.isVisible():
+                QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            else:
+                overflow = next(control for control in page.studio_toolbar.findChildren(QToolButton)
+                                if control.property('commandSource') == '更多工作区操作' and control.isVisible())
+                menu = overflow.menu()
+                menu.popup(overflow.mapToGlobal(overflow.rect().bottomLeft()))
+                QTest.qWait(80)
+                action = next(action for action in menu.actions() if action.text() == button.text())
+                action.trigger()
+                menu.hide()
+            check('report opens from the Studio toolbar', getattr(page, '_support_dialog', None) is not None)
+            dialog = page._support_dialog
+            wait(lambda: not dialog._loading and hasattr(dialog, '_analysis')
+                 and dialog._analysis is not None and dialog.table.rowCount() > 0, 'initial detailed log')
+            check('opens on the detailed log', dialog.views.currentIndex() == 1
+                  and dialog._view_buttons['log'].isChecked() and dialog.table.isVisible())
+            check('uses the rounded report chrome', bool(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
+                  and dialog.chrome.title_bar.isVisible())
+            check('keeps selected text private by default', not dialog.content.isChecked())
+            _capture(dialog, output / 'report-detail-default.png')
+            dialog.all_rows.click()
+            dialog._load()
+            wait(lambda: not dialog._loading, 'refresh with the manually selected filter')
+            check('keeps the chosen filter after refresh', dialog.all_rows.isChecked() and dialog.table.rowCount() > 0)
+            dialog.table.selectRow(0)
+            check('selects a detailed event', dialog.table.currentRow() == 0 and dialog.copy_event.isEnabled())
+            for name, index in (('timeline', 0), ('summary', 2), ('log', 1)):
+                dialog._view_buttons[name].click()
+                check(f'report switches to {name}', dialog.views.currentIndex() == index)
+            destination = output / 'report.zip'
+            dialog.description.setText('Local report acceptance')
+            dialog._export_to(destination)
+            wait(lambda: dialog._result is not None, 'local diagnostic bundle')
+            check('saves the diagnostic bundle locally', destination.is_file() and not dialog._result.get('error'))
+            with ZipFile(destination) as archive:
+                check('bundle is valid and omits the fixture key', archive.testzip() is None
+                      and b'fixture-report-private-secret' not in archive.read('events.jsonl'))
+            dialog.resize(820, 680)
+            QTest.qWait(200)
+            _capture(dialog, output / 'report-detail-compact.png')
+            check('compact report keeps the log and footer available',
+                  dialog.table.viewport().height() >= dialog.table.rowHeight(0) and dialog.export.isVisible()
+                  and dialog.chrome.title_bar.rect().contains(dialog.chrome.buttons.geometry()))
+            check('compact report keeps the complete timestamp readable',
+                  dialog.title.fontMetrics().horizontalAdvance(dialog.title.text()) <= dialog.title.width())
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+            wait(lambda: not isValid(dialog), 'report closes with Escape')
+            check('report closes with Escape', not isValid(dialog))
+            result['passed'] = True
+            return 0
         if os.environ.get('TWOBYTEASR_SUPPORT_TOOLTIPS'):
             # Tooltip-only pass (2026-10-21): with the interface zoom the run preset,
             # show real tooltips on the bar, the Tool Panel and the report window,
@@ -177,6 +237,11 @@ def run(window, output):
             dialog=getattr(page,'_support_dialog',None) or getattr(window,'_support_dialog',None)
             wait(lambda:dialog is not None and hasattr(dialog,'_data'),'report preview')
             check('default_content_excluded',not dialog.content.isChecked())
+            # 2026-11-18: the window opens on the detailed log (user request), inside the candy frame.
+            check('opens_on_detailed_log',dialog.views.currentIndex()==1 and dialog._view_buttons['log'].isChecked())
+            wait(lambda:dialog.table.rowCount()>0,'detailed log rows')
+            check('rounded_report_chrome',bool(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
+                  and dialog.chrome.title_bar.isVisible())
             dialog.description.setText('合併雙語字幕後檢查譯文與時間線；本包含可控 AI／子程序失敗，用來示範定位。')
             dialog._load();wait(lambda:dialog.refresh.isEnabled(),'preview refresh')
             dialog._export_to(output/'example-diagnostics.zip');wait(lambda:dialog._result is not None,'background ZIP',45)
@@ -195,6 +260,7 @@ def run(window, output):
                 check('mapping_and_scroll_evidence',any(r.get('after',{}).get('mapping') and 'list_scroll' in r['after'] for r in rows if isinstance(r.get('after'),dict)))
                 check('translation_before_after',any(r['event_name']=='data.commit' and r.get('before',{}).get('translation_view_count',0)>=2 and r['before']['cue_count']==r['after']['cue_count']+1 for r in rows))
             # 2026-10-21 layout: timeline + the person's steps + three views.
+            dialog.show_view('timeline');QTest.qWait(80)
             analysis=dialog._analysis
             check('triage_counts',analysis.counts.get('act',0)>=2 and analysis.counts.get('stall',0)>=1
                   and analysis.counts.get('auto',0)>=1 and analysis.counts.get('check',0)>=1,analysis.counts)

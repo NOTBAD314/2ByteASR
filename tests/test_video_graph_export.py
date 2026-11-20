@@ -50,6 +50,21 @@ def frame_at(path, tmp_path):
 
 
 def test_native_export_consumes_v3_and_range(fixture, tmp_path):
+    # Scaled/positioned V2/V3 composite in the direct FFmpeg graph (2026-11-19).
+    project, job = fixture
+    progress = []
+    output = run_render_job(FFMPEG, job, progress=progress.append)
+    image = frame_at(output, tmp_path)
+    assert image.pixelColor(10, 10).red() > 230
+    assert image.pixelColor(40, 45).blue() > 230
+    assert image.pixelColor(120, 45).green() > 230
+    assert not any(p.get('stage')=='compose_video' for p in progress)
+    assert not list(tmp_path.glob(".video-composition-*"))
+
+
+def test_raster_export_consumes_v3_and_range(fixture, tmp_path, monkeypatch):
+    from twobyteasr.exports import export_filtergraph
+    monkeypatch.setattr(export_filtergraph, 'simple_video_clips', lambda graph: None)
     project, job = fixture
     previews, progress = [], []
     job.preview_callback = lambda image,t,phase: previews.append((image.copy(),t,phase))
@@ -58,10 +73,15 @@ def test_native_export_consumes_v3_and_range(fixture, tmp_path):
     assert image.pixelColor(10, 10).red() > 230
     assert image.pixelColor(40, 45).blue() > 230
     assert image.pixelColor(120, 45).green() > 230
-    composed = [row for row in previews if row[2].startswith('视频轨合成')]
-    assert composed and composed[0][1] >= 200
-    assert any(p.get('stage')=='compose_video' and float(p.get('percent',0))>0 for p in progress)
+    # Composed frames stream straight into the final encode (2026-11-19): its
+    # progress and burned-caption preview replace the intermediate pass.
+    assert not any(row[2].startswith('视频轨合成') for row in previews)
+    assert any(p.get('stage')=='encode' for p in progress)
     assert any(row[2]=='已烧录字幕' for row in previews)
+    # Two output frames, three active layers each.
+    assert (tmp_path / 'result.decode-requests.jsonl').read_text(encoding='utf-8').count('\n') == 6
+    clock = __import__('json').loads((tmp_path / 'result.composition-frame-clock.json').read_text(encoding='utf8'))
+    assert clock['status'] == 'raster_written' and clock['written_frames'] == 2
     assert not list(tmp_path.glob(".video-composition-*"))
 
 
@@ -86,6 +106,28 @@ def test_blend_chroma_and_alpha_use_preview_math(fixture, tmp_path, mode):
                     "multiply": (127, 0, 0), "overlay": (255, 0, 0),
                     "softLight": (255, 0, 0), "addition": (255, 0, 127)}[mode]
         assert all(abs(v-e) <= 4 for v,e in zip(pixel.getRgb()[:3], expected)), pixel.getRgb()
+
+
+def test_raster_bottom_layer_preserves_source_alpha(tmp_path):
+    source = tmp_path / "alpha.mkv"
+    run_hidden_subprocess(
+        [str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=red@0.5:s=160x90:r=10:d=1,format=bgra", "-c:v", "ffv1", str(source)],
+        purpose="alpha-bearing bottom layer fixture", check=True, timeout=10,
+    )
+    project = SubtitleProject(media=StudioMedia(str(source), duration_ms=1000, width=160, height=90))
+    project.validate()
+    inset = add_media_asset(project, source, duration_ms=1000,
+                            video_metadata={"has_video": True}, audio_metadata={"has_audio": False})
+    track = create_video_track(project)
+    clip = add_video_clip(project, track.id, inset.asset_id, source_out_ms=1000)
+    clip.transform = VideoTransform(scale_x=.25, scale_y=.25, position_x=.75, position_y=.75)
+    job = RenderJob(str(source), "", str(tmp_path / "result.mkv"),
+                    RenderSettings(width=160, height=90, fps=10, audio_codec="none"),
+                    duration_seconds=.2, video_graph=capture_video_graph(project))
+    with prepared_video_job(FFMPEG, job) as prepared:
+        pixel = frame_at(Path(prepared.media_path), tmp_path).pixelColor(10, 10)
+    assert 120 <= pixel.red() <= 135 and pixel.green() < 5 and pixel.blue() < 5
 
 
 def test_cancel_removes_intermediate_and_children(fixture, tmp_path):

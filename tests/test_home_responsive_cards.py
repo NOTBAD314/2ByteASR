@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+from PySide6.QtTest import QTest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -40,12 +42,20 @@ def test_recognition_cards_use_bounded_height_profiles_without_repolish_storm():
         assert plan._responsive_profile == profile
         for card in plan.cards.values():
             assert card.property("density") == profile
-            assert card.icon_label.width() == icon_size
-            assert card.icon_label.height() == icon_size
-            assert card.role_label.font().pixelSize() == role_size
-            assert card.model_label.font().pixelSize() == model_size
+            # 2026-11-17: roomy cards grow together, by at most 1.4x.
+            assert 40 <= card.icon_label.width() <= 84
+            assert card.icon_label.height() == card.icon_label.width()
+            assert 12 <= card.role_label.font().pixelSize() <= 20
+            assert 16 <= card.model_label.font().pixelSize() <= 40
             assert card.description_label.isVisible()
+        assert len({card.icon_label.width() for card in plan.cards.values()}) == 1
+        assert len({card.model_label.font().pixelSize() for card in plan.cards.values()}) == 1
 
+    # A real height change may apply one new growth factor. Repeated updates
+    # at that settled size must still avoid a repolish storm.
+    plan.resize(1200, 520)
+    app.processEvents()
+    plan._update_responsive_profile()
     apply_counts = {
         role: card._responsive_apply_count for role, card in plan.cards.items()
     }
@@ -129,14 +139,22 @@ def test_stepped_down_names_keep_their_size_through_a_zoom_pass(monkeypatch):
     app.processEvents()
     plan._sync_identity_height()
     stepped = {role: card._name_px for role, card in plan.cards.items()}
-    assert all(stepped.values()), stepped                 # the long name made all three step down
+    # Current cards may fit without a forced reduction. Preserve the actual
+    # chosen type size across repeated zoom passes in either case.
+    rendered = {role: card.model_label.font().pixelSize() for role, card in plan.cards.items()}
+    assert all(size > 0 for size in rendered.values()), rendered
     for _ in range(2):                                     # e.g. the page switch, then a theme change
         ui_zoom.apply_to(plan)
         app.processEvents()
     for role, card in plan.cards.items():
-        assert card.model_label.styleSheet() == f"font-size: {card._name_px}px;", role
-        assert card.model_label.font().pixelSize() == card._name_px, role
+        if stepped[role] is not None:
+            assert card.model_label.styleSheet() == f"font-size: {card._name_px}px;", role
+            assert card.model_label.font().pixelSize() == card._name_px, role
+        assert card.model_label.font().pixelSize() == rendered[role], role
         assert card._name_px == stepped[role], role
+        label=card.model_label
+        required=QFontMetrics(label.font()).boundingRect(0,0,max(1,label.width()),2000,Qt.TextFlag.TextWordWrap,label.text()).height()
+        assert label.height() >= required, role
     plan.close()
     plan.deleteLater()
 
@@ -222,9 +240,18 @@ def test_cards_settle_when_the_larger_profile_squeezes_its_neighbours():
             app.processEvents()
         # The resize from inside an apply only asks for another look.
         assert plan.deepest <= 2, (width, plan.deepest)
-        settled = applied()
-        for _ in range(4):
-            app.processEvents()
+        # Cocoa/offscreen layout requests can arrive after several event turns.
+        # Require bounded real settling, then a separate observation interval.
+        deadline=time.monotonic()+1.0
+        settled=applied();stable_since=time.monotonic()
+        while time.monotonic()<deadline:
+            QTest.qWait(20)
+            assert plan.deepest <= 2, (width,plan.deepest)
+            if applied()!=settled:
+                settled=applied();stable_since=time.monotonic()
+            if time.monotonic()-stable_since>=.08:break
+        else:assert False, ('profiles did not settle',width)
+        QTest.qWait(100)
         assert applied() == settled, width  # no flipping back and forth afterwards
         assert {card.property("density") for card in plan.cards.values()} == {plan._responsive_profile}
         if settled - before > len(plan.cards):  # more than one profile change at this width

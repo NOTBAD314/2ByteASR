@@ -232,3 +232,54 @@ def test_cold_runtime_probe_is_cancellable_and_releases_its_owned_tree(monkeypat
         with pytest.raises(CancelledError):
             backend._execution_probe('fixture','stamp','cpu',None,context.job_id)
     assert closed==['closed']
+
+
+def test_worker_identity_ignores_only_the_gpu_reading():
+    # 2026-11-18: one slow nvidia-smi on either side must not stop the worker loading.
+    from twobyteasr.recognition.alignment_backend import worker_comparable
+    requested=dict(profile('qwen_ultra_aligner'),execution=dict(python='p',packages={'torch':'2'},gpu='unavailable',
+        resolved_execution=dict(device='cuda:0',dtype='torch.bfloat16'),cuda_visible_devices=None))
+    observed=copy.deepcopy(requested);observed['execution']['gpu']='GPU-1234, 621.14'
+    assert worker_comparable(requested)==worker_comparable(observed)
+    assert requested['execution']['gpu']=='unavailable'  # the request keeps its own reading
+    for key,value in (('resolved_execution',dict(device='cpu',dtype='torch.float32')),('cuda_visible_devices','1'),('packages',{'torch':'3'})):
+        changed=copy.deepcopy(observed);changed['execution'][key]=value
+        assert worker_comparable(requested)!=worker_comparable(changed)
+
+
+def test_gpu_query_allows_a_waking_gpu(monkeypatch):
+    import subprocess
+    from twobyteasr.recognition import alignment_backend as backend
+    seen=[]
+    def run(command,**kwargs):
+        seen.append(kwargs['timeout'])
+        return SimpleNamespace(returncode=0,stdout='GPU-1234, 621.14\n')
+    monkeypatch.setattr(subprocess,'run',run)
+    backend._gpu_identity.cache_clear()
+    try:
+        assert backend._gpu_identity('fixture-gpu-timeout')=='GPU-1234, 621.14'
+    finally:
+        backend._gpu_identity.cache_clear()
+    assert seen==[backend.GPU_QUERY_TIMEOUT_S] and backend.GPU_QUERY_TIMEOUT_S>=15
+
+
+def test_cold_runtime_probe_may_take_longer_than_a_minute(monkeypatch):
+    # A cold CUDA PyTorch import (antivirus, slow disk) passed the old 60 s limit.
+    import subprocess,time
+    from twobyteasr.recognition import alignment_backend as backend
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    from twobyteasr.system import processes
+    clock=[1000.]
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    def communicate(**kwargs):
+        clock[0]+=10.
+        if clock[0]<1090.:
+            raise subprocess.TimeoutExpired('fixture',.1)
+        return json.dumps(dict(device='cpu',dtype='torch.float32',torch_version='2',cuda_available=False))+'\n',''
+    process=SimpleNamespace(pid=321,returncode=0,communicate=communicate,
+        _request_job=SimpleNamespace(close=lambda **kwargs:None),wait=lambda **kwargs:0,poll=lambda:0)
+    monkeypatch.setattr(processes,'popen_hidden_subprocess',lambda *args,**kwargs:process)
+    context=RuntimeContext()
+    with activate_runtime_context(context):
+        result=backend._execution_probe('fixture-slow','stamp','cpu',None,context.job_id)
+    assert result['device']=='cpu' and clock[0]>=1090. and backend.EXECUTION_PROBE_TIMEOUT_S>=300

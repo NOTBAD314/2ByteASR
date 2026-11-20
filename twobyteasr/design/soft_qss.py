@@ -448,6 +448,21 @@ QTabWidget#contextDrawer QTabBar::tab:hover {{ background: {k.fill}; color: {t.t
 QTabWidget#contextDrawer QTabBar::tab:selected {{
     background: {k.chip}; color: {t.accent_text}; font-weight: 700; border: 0;
 }}
+
+/* ---- 字幕列表 / 源素材 tabs (2026-11-18): the row sits on the panel colour,
+   not on whatever the window behind paints; tabs match the tool panel's. ---- */
+QTabWidget#studioSourceTabs {{ background: {t.panel}; border: 0; }}
+QTabWidget#studioSourceTabs::pane {{ background: {t.panel}; border: 0; border-top: 1px solid {t.border}; top: 0; }}
+QTabWidget#studioSourceTabs QTabBar {{ background: transparent; }}
+QTabWidget#studioSourceTabs QTabBar::tab {{
+    background: transparent; color: {t.text_muted}; border: 0; border-radius: 10px;
+    min-height: 28px; max-height: 28px; margin: 4px 0 4px 6px; padding: 0 12px; font-weight: 600;
+}}
+QTabWidget#studioSourceTabs QTabBar::tab:hover {{ background: {k.fill}; color: {t.text}; }}
+QTabWidget#studioSourceTabs QTabBar::tab:selected {{
+    background: {k.chip}; color: {t.accent_text}; font-weight: 700; border: 0;
+}}
+QTabWidget#studioSourceTabs QTabBar::tab:disabled {{ background: transparent; color: {t.disabled}; }}
 """
 
 

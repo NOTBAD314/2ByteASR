@@ -40,12 +40,15 @@ POLICIES={
     # and a screenshot can ride in one request. Before this the 0-image limit refused every picture.
     # 2026-11-17 (user): several pictures and long text files go with one question (up to 6 + a screenshot).
     'bunny_chat':InputPolicy(98304,16384,131072,8,1600,500_000,8_000_000),
-    'polish':InputPolicy(20000,262144,32768,0,0,0,180_000),
+    # 2026-11-18: polish/group windows 32768 -> 65536 so a thinking retry's 32768-token output
+    # budget fits beside its input (the input allocation stays 20000; a model's smaller reported
+    # context still wins).
+    'polish':InputPolicy(20000,262144,65536,0,0,0,180_000),
     'domain_terms':InputPolicy(18000,8192,32768,0,0,0,160_000),
     # 联网词库更新：64 词条 × 全证据字段（sources/evidence）≈ 9-12k 输出；
     # 沿用 domain_terms 的 8k 输出上限，实测会让模型丢弃全部来源字段。
     'glossary_update':InputPolicy(18000,16000,49152,0,0,0,240_000),
-    'group':InputPolicy(20000,262144,32768,0,0,0,180_000),
+    'group':InputPolicy(20000,262144,65536,0,0,0,180_000),
 }
 
 

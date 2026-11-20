@@ -13,9 +13,23 @@ QStackedWidget, QSplitter {background: transparent;}
 '''
 
 
+_MANAGED_NAMES = frozenset({'subtitleStudio', 'applicationSettings'})
+_TYPE_HAS_BUILT_PAGE: dict = {}
+
+
 def managed_window(root):
-    return root.objectName() in {'subtitleStudio', 'applicationSettings'} or (
-        hasattr(root, 'built_page') and hasattr(root, 'pages'))
+    # Called for every ancestor of every shown widget (a page switch shows
+    # hundreds). A missing attribute on a Qt instance costs ~4 us, so look at
+    # the class once per type and at the instance dict, never hasattr first.
+    if root.objectName() in _MANAGED_NAMES:
+        return True
+    kind = type(root)
+    has_page = _TYPE_HAS_BUILT_PAGE.get(kind)
+    if has_page is None:
+        has_page = _TYPE_HAS_BUILT_PAGE[kind] = hasattr(kind, 'built_page')
+    if not has_page and 'built_page' not in getattr(root, '__dict__', ()):
+        return False
+    return hasattr(root, 'built_page') and hasattr(root, 'pages')
 
 
 def prepare(root):
@@ -88,11 +102,25 @@ def prepare_steps(root, *, branch=None, all_branches=False):
     budget = GuiSlice()
     prepare(root)
     apply_scope(root)
+    if budget.due():
+        yield GUI_YIELD
+        budget.resume()
+    # 2026-11-18: polish leaf-first, in slices. ensurePolished() recurses into
+    # every unpolished child, so one call on the root polished all of Studio
+    # in a single 0.6-0.8 s step while its loading card was up.
+    children = root.findChildren(QWidget)
+    for widget in reversed(children):
+        if not isValid(widget):
+            continue
+        widget.ensurePolished()
+        if budget.due():
+            yield GUI_YIELD
+            budget.resume()
     root.ensurePolished()
     if budget.due():
         yield GUI_YIELD
         budget.resume()
-    for widget in reversed(root.findChildren(QWidget)):
+    for widget in reversed(children):
         if not isValid(widget) or widget.layout() is None:
             continue
         if branch is not None and widget is not branch and not branch.isAncestorOf(widget):

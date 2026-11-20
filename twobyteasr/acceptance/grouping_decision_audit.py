@@ -29,6 +29,10 @@ def replay(fixture, *, workers=1, reverse_completion=False):
     def complete(messages, **options):
         body = json.loads(messages[1]['content'])
         requests.append(dict(batch=options.get('batch_index'), body=body, system=messages[0]['content']))
+        if 'windows' in body:
+            # A recorded answer has no second opinion: keep each window.
+            return json.dumps({'windows': [dict(id=w['id'], boundaries=w['current_boundaries'])
+                                           for w in body['windows']]})
         if 'failed_constraints' in body:
             return json.dumps({'boundaries': body['current_boundaries']})
         ids = [row['id'] for row in body['segments']]
@@ -63,7 +67,8 @@ def replay(fixture, *, workers=1, reverse_completion=False):
             ''.join(c.text for c in cues if c.speaker == speaker) == ''.join(s.text for s in rows if s.speaker == speaker)
             for speaker in {s.speaker for s in rows}),
             all_at_most_14=all(core.display_length(c.text) <= 14 for c in cues),
-            four_recorded_main_responses=len([r for r in requests if 'failed_constraints' not in r['body']]) == 4,
+            four_recorded_main_responses=len([r for r in requests if 'failed_constraints' not in r['body']
+                                              and 'windows' not in r['body']]) == 4,
             no_fallback=not any(e['event'] == 'grouping_api_fallback' for e in events),
             upstream_reviews_retained=all(item in context.review_items for item in fixture.get('upstream_reviews',[])),
             idempotent=all(d['stable'] for d in details))

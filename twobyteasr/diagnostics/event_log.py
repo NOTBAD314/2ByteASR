@@ -87,10 +87,38 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+_COUNT_SUFFIXES = ("_count", "_characters", "_bytes", "_included", "_tokens")
+_OMITTED_KEYS = {"message", "error", "error_message", "stderr", "stdout", "command", "original_command", "args",
+                 "request", "response", "reason_text", "speaker_name", "project_name", "label", "window_title", "title"}
+_PROJECT_KEYS = {"project_id", "origin_project_id", "current_project_id", "source_project_id"}
+_HASH_KEYS = {"snapshot_hash", "text_hash", "source_text_hash", "cue_digest", "caption_hash"}
+
+
 class Sanitizer:
     def __init__(self, salt=None):
         self.salt = salt or _FALLBACK_SALT
         self._key_cache = {}
+        # 2026-11-19: what a field name means and what a short text becomes are worked out once
+        # and remembered. Both depend only on the name / the text (and this salt). Scrubbing a
+        # record spent most of its time normalizing the same few hundred names and re-running
+        # every pattern over the same short values ("INFO", "MainThread", ...).
+        self._info_cache = {}
+        self._string_cache = {}
+
+    def _key_info(self, key):
+        """What a field name means to ``clean``: (a count, headers, never kept, a project id, a
+        content hash, a path)."""
+        normal = str(key).casefold().replace("-", "_").replace(".", "_").replace(" ", "_")
+        info = (normal.endswith(_COUNT_SUFFIXES),
+                "headers" in normal,
+                bool(_PRIVATE_KEY.search(normal) or normal.replace("_", "") in _SECRET_ALIASES or normal in _OMITTED_KEYS),
+                normal in _PROJECT_KEYS,
+                normal in _HASH_KEYS,
+                normal.endswith("path") or normal in {"file", "filename"})
+        if type(key) is str:
+            if len(self._info_cache) >= 8192: self._info_cache.clear()
+            self._info_cache[key] = info
+        return info
 
     def key(self, value):
         value=str(value)
@@ -119,6 +147,16 @@ class Sanitizer:
         return kind + "-" + digest + ext
 
     def string(self, value):
+        if type(value) is str and len(value) <= 96:
+            cached = self._string_cache.get(value)
+            if cached is None:
+                cached = self._string(value)
+                if len(self._string_cache) >= 16384: self._string_cache.clear()
+                self._string_cache[value] = cached
+            return cached
+        return self._string(value)
+
+    def _string(self, value):
         value = str(value)[:12000]
         if _PLAIN.fullmatch(value):
             # Without whitespace, ':', '=', '/', '\\' or '@' no header, URL,
@@ -146,10 +184,13 @@ class Sanitizer:
     def clean(self, value, key="", depth=0):
         if depth > 8:
             return "<depth-limit>"
-        key = str(key).casefold().replace("-", "_").replace(".", "_").replace(" ", "_")
-        if isinstance(value,(int,float,bool)) and key.endswith(("_count","_characters","_bytes","_included","_tokens")):
+        info = self._info_cache.get(key) if type(key) is str else None
+        if info is None:
+            info = self._key_info(key)
+        countish, headers, omitted, project, fingerprint, pathish = info
+        if countish and isinstance(value,(int,float,bool)):
             return value if not isinstance(value,float) or math.isfinite(value) else None
-        if "headers" in key:
+        if headers:
             def header_value(name, item):
                 flat=re.sub(r"[^a-z0-9]","",str(name).casefold())
                 return self.clean(item,"",depth+1) if flat in _PUBLIC_HEADERS else "<omitted>"
@@ -169,42 +210,60 @@ class Sanitizer:
                 if len(value)>64:result.append({"_omitted_items":len(value)-64})
                 return result
             return None if value is None else "<omitted>"
-        if _PRIVATE_KEY.search(key) or key.replace("_","") in _SECRET_ALIASES or key in {"message", "error", "error_message", "stderr", "stdout", "command", "original_command", "args", "request", "response", "reason_text", "speaker_name", "project_name", "label", "window_title", "title"}:
+        if omitted:
             return "<omitted>"
-        if key in {"project_id", "origin_project_id", "current_project_id", "source_project_id"}:
+        if project:
             return self.alias(value, "project")
-        if key in {"snapshot_hash", "text_hash", "source_text_hash", "cue_digest", "caption_hash"}:
+        if fingerprint:
             return self.alias(value, "fingerprint")
-        if isinstance(value, (Path, os.PathLike)) or (isinstance(value, str) and (key.endswith("path") or key in {"file", "filename"})):
+        # The plain types first (nearly every value); the rules and their order are the ones below.
+        kind = type(value)
+        if kind is str:
+            return self.alias(value, "path") if pathish else self.string(value)
+        if value is None or kind is int or kind is bool:
+            return value
+        if kind is float:
+            return value if math.isfinite(value) else None
+        if kind is dict:
+            return self._clean_mapping(value, depth)
+        if kind is list:
+            return self._clean_items(value, depth)
+        if isinstance(value, (Path, os.PathLike)) or (isinstance(value, str) and pathish):
             return self.alias(value, "path")
         if isinstance(value, dict):
-            # Some transports expose headers/parameters as {name|key, value}
-            # records instead of a mapping keyed by the actual header name.
-            value_key=value.get("key") or value.get("name")
-            if "value" in value:
-                for candidate in (value.get("key"),value.get("name")):
-                    if not isinstance(candidate,str):continue
-                    normalized=candidate.casefold().replace("-","_").replace(".","_").replace(" ","_")
-                    if _PRIVATE_KEY.search(normalized) or normalized.replace("_","") in _SECRET_ALIASES:
-                        value_key=candidate
-                        break
-            result = {self.key(k): self.clean(v, value_key if k=="value" and isinstance(value_key,str) else str(k), depth+1)
-                      for k, v in itertools.islice(value.items(), 80)}
-            if len(value) > 80:
-                result["_omitted_fields"] = len(value)-80
-            return result
+            return self._clean_mapping(value, depth)
         if isinstance(value, (list, tuple, deque, set, frozenset)):
-            result = [self.clean(v, "", depth+1) for v in itertools.islice(iter(value), 64)]
-            if len(value) > 64:
-                result.append({"_omitted_items": len(value)-64})
-            return result
+            return self._clean_items(value, depth)
         if isinstance(value, str):
             return self.string(value)
-        if value is None or isinstance(value, (bool, int)):
+        if isinstance(value, (bool, int)):
             return value
         if isinstance(value, float):
             return value if math.isfinite(value) else None
         return type(value).__name__
+
+    def _clean_mapping(self, value, depth):
+        # Some transports expose headers/parameters as {name|key, value}
+        # records instead of a mapping keyed by the actual header name.
+        value_key=value.get("key") or value.get("name")
+        if "value" in value:
+            for candidate in (value.get("key"),value.get("name")):
+                if not isinstance(candidate,str):continue
+                normalized=candidate.casefold().replace("-","_").replace(".","_").replace(" ","_")
+                if _PRIVATE_KEY.search(normalized) or normalized.replace("_","") in _SECRET_ALIASES:
+                    value_key=candidate
+                    break
+        result = {self.key(k): self.clean(v, value_key if k=="value" and isinstance(value_key,str) else str(k), depth+1)
+                  for k, v in itertools.islice(value.items(), 80)}
+        if len(value) > 80:
+            result["_omitted_fields"] = len(value)-80
+        return result
+
+    def _clean_items(self, value, depth):
+        result = [self.clean(v, "", depth+1) for v in itertools.islice(iter(value), 64)]
+        if len(value) > 64:
+            result.append({"_omitted_items": len(value)-64})
+        return result
 
 
 def exception_info(exc):

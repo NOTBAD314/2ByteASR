@@ -56,6 +56,40 @@ def library_domain(library) -> tuple[str, str]:
     return "", ""
 
 
+def _domain_fold(text: str) -> str:
+    from ..subtitle_rules.chinese_script import to_simplified
+    return re.sub(r"[\s·・:：_\-]+", " ", to_simplified(str(text or ""))).strip().casefold()
+
+
+def _names_domain(explicit: str, identity: str, label: str) -> bool:
+    """Does the Home game field name this library domain?
+
+    The field is free text ("鸣潮声优特别节目" for the 鳴潮 library): compare
+    after folding script, case and separators, and accept a name that contains
+    the domain (or the reverse). A Latin domain must stand as a whole word so
+    "LoL" does not match "LoLita"; one-character names never match by part.
+    """
+    wanted = _domain_fold(explicit)
+    if not wanted:
+        return False
+    for name in (identity, label):
+        folded = _domain_fold(name)
+        if not folded:
+            continue
+        if folded.replace(" ", "") == wanted.replace(" ", ""):
+            return True
+        shorter, longer = sorted((folded, wanted), key=len)
+        if re.fullmatch(r"[a-z0-9 ]+", shorter):
+            if len(shorter) >= 2 and re.search(
+                    r"(?<![a-z0-9])" + re.escape(shorter) + r"(?![a-z0-9])", longer):
+                return True
+            continue
+        shorter, longer = shorter.replace(" ", ""), longer.replace(" ", "")
+        if len(shorter) >= 2 and shorter in longer:
+            return True
+    return False
+
+
 def resolve_content_scene(context, snapshot=None) -> ContentScene:
     from dataclasses import replace
     scene = _resolve_content_scene(context, snapshot)
@@ -85,7 +119,7 @@ def _resolve_content_scene(context, snapshot=None) -> ContentScene:
     explicit = str(getattr(context, "game_name", "") or "").strip()
     if explicit:
         # Matching metadata supplies a stable ID without changing the user's label.
-        ids = tuple(key for key, label in domains if explicit in (key, label))
+        ids = tuple(key for key, label in domains if _names_domain(explicit, key, label))
         return ContentScene(explicit, ids or (explicit,), "user_selected", content_type="game_commentary", glossary_versions=versions)
     if len(by_name) == 1:
         matching = next(iter(by_name.values()))

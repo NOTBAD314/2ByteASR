@@ -1335,7 +1335,7 @@ class CaptionReviewList(QWidget):
                 tuple(sorted(start for cue, start in self.find.get("excluded") or () if cue == row["cue_id"])),
                 tuple(sorted(str(index) for cue, index in self.expanded if cue == row["cue_id"])),
                 row.get('group_first', True), row.get('group_last', True), row.get('translation_missing', False),
-                self.paired,
+                self.paired, row["cue_id"] in getattr(self, "held_ids", ()),
                 tuple((i["kind"], i["span"], i["checked"], i["stale"], i["reviewed"], i["replacement"],
                        i.get("default")) for i in row["issues"]))
 
@@ -1424,7 +1424,14 @@ class CaptionReviewList(QWidget):
     def _has_status(self, row):
         """已写回 · 还原这句, expired proposals or 忽略本行建议 under the text."""
         return bool(row["base"] != row.get("origin", row["base"]) or any(issue["stale"] for issue in row["issues"])
-                    or self._row_ignore_shown(row) or row.get('association_missing'))
+                    or self._row_ignore_shown(row) or row.get('association_missing')
+                    or row["cue_id"] in getattr(self, "held_ids", ()))
+
+    def _held_note(self, row):
+        """Why an edited caption is still in a list it no longer matches."""
+        if row["cue_id"] not in getattr(self, "held_ids", ()):
+            return ""
+        return tr("已还原 · 切换筛选后移出") if row["base"] == row.get("origin", row["base"]) else tr("切换筛选后移出")
 
     def _row_ignore_shown(self, row):
         """忽略本行建议 for a retained caption, unless its one open bubble's ✕
@@ -1558,8 +1565,8 @@ class CaptionReviewList(QWidget):
             self._sync_bar()
 
     def wheelEvent(self, event):
-        self.bar.setValue(self.bar.value() - round(event.angleDelta().y() / 120 * self.LINE * 3))
-        event.accept()
+        from ..design.smooth_scroll import glide_wheel
+        glide_wheel(self.bar, event, self.LINE * 3)   # 2026-11-18: glides like every other list
 
     def _slot_at(self, y):
         y = int(y) + self._offset
@@ -2207,12 +2214,17 @@ class CaptionReviewList(QWidget):
             painter.drawText(QRectF(x, rect.top(), text_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), text)
             x += text_w
         if row["base"] != row.get("origin", row["base"]):
-            written = "✓ " + tr("已写回")
+            # 2026-11-19 (user): 已修改 with what changed (古龙 → 骨龙), so a
+            # caption edited under 待确认 shows its own before → after.
+            revert = tr("还原这句")
+            room = rect.right() - x - self.small_metrics.horizontalAdvance(revert) - z(30)
+            written = self.small_metrics.elidedText(
+                "✓ " + tr("已修改") + "  " + change_summary(row["origin"], row["base"]),
+                Qt.TextElideMode.ElideRight, max(self.small_metrics.horizontalAdvance("✓ " + tr("已修改")), room))
             painter.setPen(QColor(colors["applied_line"]))
             written_w = self.small_metrics.horizontalAdvance(written) + z(8)
             painter.drawText(QRectF(x, rect.top(), written_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), written)
             x += written_w
-            revert = tr("还原这句")
             box = QRectF(x, rect.top() + z(5), self.small_metrics.horizontalAdvance(revert) + z(18), rect.height() - z(10))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.06)))
@@ -2230,7 +2242,14 @@ class CaptionReviewList(QWidget):
                              self.small_metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_w))
             x += text_w + z(8)
         if self._row_ignore_shown(row):
-            self._text_button(painter, x, rect, tr('忽略本行建议'), 'ignore', row, -1, theme)
+            x = self._text_button(painter, x, rect, tr('忽略本行建议'), 'ignore', row, -1, theme)
+        note = self._held_note(row)
+        if note and rect.right() - x > z(24):
+            painter.setFont(self.small)
+            painter.setPen(QColor(legible(theme.text_muted, theme.surface, theme, 4.5)))
+            painter.drawText(QRectF(x + z(4), rect.top(), rect.right() - x - z(4), rect.height()),
+                             int(Qt.AlignmentFlag.AlignVCenter),
+                             self.small_metrics.elidedText(note, Qt.TextElideMode.ElideRight, rect.right() - x - z(4)))
 
     def _speaker_pill(self, painter, anchor, name, color, theme):
         """A soft pill with the speaker's colour dot, vertically centred on ``anchor``."""
@@ -3795,6 +3814,9 @@ class GlossaryProofreadPage(QWidget):
         self._excluded = set()  # search hits the user excluded: {(cue_id, start)}
         self._batch_selected = set()
         self._sticky = ("", set())  # (needle, captions just replaced): kept listed
+        # (filter key, needle, speaker) and captions edited while listed there:
+        # they stay in place until the user leaves or re-picks that filter.
+        self._held = (None, set())
         self._hits = []  # listed search hits in list order: [(cue_id, start, end)]
         self._hidden_speakers = set()  # speaker ids whose captions this page hides (per project)
         self._save_timer = QTimer(self)
@@ -4288,7 +4310,7 @@ class GlossaryProofreadPage(QWidget):
             self.filter_buttons[key] = button
             segment_layout.addWidget(button)
         self.filter_buttons["all"].setChecked(True)
-        self.filter_group.buttonClicked.connect(lambda *_: self._apply_filter())
+        self.filter_group.buttonClicked.connect(self._filter_clicked)
         filters_layout.addWidget(segment)
         self.speaker_filter = QComboBox()
         self.speaker_filter.setObjectName("proofreadCombo")
@@ -5245,6 +5267,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._cue_versions = dict(getattr(self, '_cue_versions', {}))
         self._row_summaries = {}
         self._filter_context = None
+        self._held = (None, set())
         self._row_indexes = {row['cue_id']: index for index, row in enumerate(rows)}
         self._filter_members = set()
         self._raw_visible = set()
@@ -5485,6 +5508,34 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
     def _speaker_hidden(self, row):
         return row.get("speaker_id", "") in self._hidden_speakers
 
+    def _hold_context(self):
+        button = self.filter_group.checkedButton()
+        key = str(button.property("filterKey")) if button is not None else "all"
+        return key, self._needle(), self.speaker_filter.currentData() or ""
+
+    def _hold_row(self, cue_id):
+        """2026-11-19 (user): a caption edited under 有修改建议 / 待确认 stays
+        where it is, marked 已修改, instead of leaving the list under the
+        cursor; a second spot on it stays reachable. Held until the user
+        picks a filter again, changes the search or speaker, or reloads."""
+        index = self._row_indexes.get(cue_id)
+        context = self._hold_context()
+        if index is None or context[0] == "all" or index not in set(self.list.visible):
+            return
+        held_context, held = self._held
+        self._held = (context, (set(held) if held_context == context else set()) | {cue_id})
+
+    def _release_row(self, cue_id):
+        """Explicitly ignoring a caption sends it away at once (unchanged
+        contract: 主动忽略才移出)."""
+        self._held[1].discard(cue_id)
+
+    def _filter_clicked(self, *_args):
+        """Picking a filter (even the current one) is moving on: held rows go."""
+        self._held = (None, set())
+        self._filter_context = None
+        self._apply_filter()
+
     def _apply_filter(self, *_args, cue_ids=None):
         self._filter_timer.stop()
         order = tuple(row['cue_id'] for row in self._rows)
@@ -5504,6 +5555,10 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         project, _studio = self._live_project()
         project_hidden = project.hidden_speaker_ids() if project is not None else frozenset()
         sticky_needle, sticky = getattr(self, "_sticky", ("", set()))
+        held_context, held = getattr(self, "_held", (None, set()))
+        if held_context != (key, raw, speaker):
+            held = set()
+            self._held = ((key, raw, speaker), held)
         context = (key, raw, sticky_needle, frozenset(sticky), self.stutter_toggle.isChecked(), frozenset(self._hidden_speakers), speaker, project_hidden)
         incremental = cue_ids is not None and context == self._filter_context and bool(self._filter_counts)
         counts = dict(self._filter_counts) if incremental else dict(all=0, suggested=0, pending=0, changed=0)
@@ -5511,6 +5566,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             adopted=0, asked=0, suspects=0, changed=0, ignored=0, remaining=0)
         visible = set(getattr(self, '_raw_visible', self.list.visible)) if incremental else set()
         members = set(getattr(self, '_filter_members', ())) if incremental else set()
+        kept = set(getattr(self, '_kept_by_hold', ())) & held if incremental else set()
         if not incremental:
             self._filter_included = {}
         indices = [self._row_indexes[c] for c in cue_ids if c in self._row_indexes] if incremental else range(len(self._rows))
@@ -5559,20 +5615,27 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 counts["suggested"] += suggested
                 counts["pending"] += pending
                 counts["changed"] += changed
-            if key == "suggested" and not suggested or key == "pending" and not pending or key == "changed" and not changed:
+            kept.discard(identity)
+            outside = key == "suggested" and not suggested or key == "pending" and not pending or key == "changed" and not changed
+            if outside and identity not in held:
                 continue
-            if needle and needle not in (row["base"] + " " + row["origin"] + " " + " ".join(
+            unmatched = bool(needle) and needle not in (row["base"] + " " + row["origin"] + " " + " ".join(
                     f"{i['original']} {i['replacement']}" for i in row["issues"])).casefold() and not (
-                    raw == sticky_needle and row["cue_id"] in sticky):
+                    raw == sticky_needle and row["cue_id"] in sticky)
+            if unmatched and identity not in held:
                 # Captions just replaced stay listed (changed) until the
                 # search changes: the result does not vanish under the user.
                 continue
+            if outside or unmatched:
+                kept.add(identity)  # listed only because it was just edited here
             members.add(index)
             if not hidden:
                 visible.add(index)
         # A hit or filter on either field displays the complete stable group.
         # Raw membership remains field-scoped for incremental updates.
         self._raw_visible = set(visible)
+        self._kept_by_hold = kept
+        self.list.held_ids = frozenset(kept)
         grouped_members = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in members}
         grouped_visible = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in visible}
         shown = sorted(i for group in grouped_visible for i in self._group_indices.get(group, ()))
@@ -5762,6 +5825,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             for cue_id in decisions:
                 self._cue_versions[cue_id] = self._cue_versions.get(cue_id, 0)+1
                 self._apply_decisions(self._by_id[cue_id], {})
+                self._release_row(cue_id)
             self._persist_soon(project, studio)
             self._apply_filter(cue_ids=set(decisions))
         self._set_status(tr("已忽略 {rows} 行、{issues} 处建议，保留当前文字 · 可一次撤销", rows=len(decisions), issues=total)
@@ -6284,6 +6348,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         # The proposal's direction either way: 巫 → 乌.
         summary = change_summary(row["base"], text) if adopt else change_summary(text, row["base"])
         label = tr("采用建议：{what}", what=summary) if adopt else tr("取消采用：{what}", what=summary)
+        self._hold_row(cue_id)
         if self._write({cue_id: text}, label=label, kinds={cue_id: {part["kind"] for part in parts}},
                        operation="adopt" if adopt else "revert", focus=cue_id,
                        operation_id=operation_id,
@@ -6322,6 +6387,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._apply_decisions(row, {})
         self._persist_soon(project, studio)
         self._set_status(tr("已忽略本行 {count} 处建议（{number}，保留当前文字）· 可撤销", count=len(unresolved), number=row["number"]))
+        self._release_row(cue_id)
         self._apply_filter(cue_ids={cue_id})
 
     def _ignore_group(self, cue_id, index):
@@ -6400,6 +6466,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             return
         if text == row["base"]:
             return
+        self._hold_row(cue_id)
         if self._write({cue_id: text}, label=tr("修改字幕 {number}", number=row["number"]), manual=True,
                        operation="manual_edit", focus=cue_id):
             self._set_status(tr("已写回 {number}：{text} · {saved}", number=row["number"], text=text[:40],
@@ -6409,6 +6476,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         row = self._by_id.get(cue_id)
         if row is None or row["base"] == row["origin"]:
             return
+        self._hold_row(cue_id)
         if self._write({cue_id: row["origin"]}, label=tr("还原 {number}", number=row["number"]), manual=True,
                        operation="restore", focus=cue_id):
             self._set_status(tr("已把 {number} 还原为打开本页时的文字 · 可撤销", number=row["number"]))
@@ -6733,6 +6801,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self.list.commit_pending_edit()
         sticky_needle, sticky = self._sticky
         self._sticky = (old, (set(sticky) if sticky_needle == old else set()) | {cue_id})
+        self._hold_row(cue_id)
         label = tr("替换「{old}」→「{new}」（{hits} 处）", old=old, new=new, hits=1)
         if not self._write({cue_id: row["base"][:start] + new + row["base"][end:]}, label=label, manual=True,
                            operation="find_replace"):

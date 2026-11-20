@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, is_dataclass
+import os
 from pathlib import Path
 from time import perf_counter, perf_counter_ns
 from typing import Any, Mapping
@@ -34,6 +35,7 @@ def _resolved(path: str) -> Path:
     return resolved
 
 from ..timeline.clip_time_mapper import frame_tolerance_ms
+from ..media.animated_gif import is_frame_image
 from .audio_playback_graph import AudioPlaybackDecision, AudioPlaybackGraph
 from .secondary_video import SecondaryVideoSource, SourceState
 from .studio_mpv import VIDEO_OVERLAY_ID, VIDEO_TRANSFORM_OVERLAY_ID
@@ -69,27 +71,74 @@ def apply_chroma_key(image: QImage, chroma: Mapping[str, Any]) -> QImage:
     if width <= 0 or height <= 0:
         return image
     source = image.convertToFormat(QImage.Format.Format_ARGB32)
-    pixels = np.frombuffer(
-        source.constBits(), dtype=np.uint8, count=source.sizeInBytes()
-    ).reshape(source.height(), source.bytesPerLine() // 4, 4)[:, :width, :].copy()
-    bgr = pixels[:, :, :3].astype(np.float32)
+    result = QImage(width, height, QImage.Format.Format_ARGB32)
+    pixels = np.ndarray((height, width, 4), dtype=np.uint8, buffer=result.bits(),
+                        strides=(result.bytesPerLine(), 4, 1))
+    pixels[...] = np.ndarray((height, width, 4), dtype=np.uint8, buffer=source.constBits(),
+                             strides=(source.bytesPerLine(), 4, 1))
+    arguments = (key_r, key_g, key_b, similarity, smoothness, spill)
+    bands = _chroma_bands(height, width)
+    if len(bands) == 1:
+        _chroma_key_rows(pixels, *arguments)
+    else:
+        # Rows are independent and NumPy releases the GIL in these ufuncs.
+        list(_chroma_pool().map(lambda band: _chroma_key_rows(pixels[band[0]:band[1]], *arguments), bands))
+    return result
+
+
+_CHROMA_POOL = None
+
+
+def _chroma_bands(height, width):
+    if width * height < 600_000:
+        return [(0, height)]
+    count = max(1, min(4, (os.cpu_count() or 2) // 2))
+    step = -(-height // count)
+    return [(top, min(height, top + step)) for top in range(0, height, step)]
+
+
+def _chroma_pool():
+    global _CHROMA_POOL
+    if _CHROMA_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _CHROMA_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix='chroma-key')
+    return _CHROMA_POOL
+
+
+def _chroma_key_rows(pixels, key_r, key_g, key_b, similarity, smoothness, spill):
+    """Key one band of BGRA rows in place.
+
+    Same float32 operations in the same order as the original formulation
+    (bit-identical output), without full-frame temporaries per step and
+    without boolean fancy indexing; export keys every 1080p frame with this.
+    """
     # ARGB32 在小端 Windows 上按字节序是 B,G,R,A。
-    blue = bgr[:, :, 0]
-    green = bgr[:, :, 1]
-    red = bgr[:, :, 2]
-    distance = np.sqrt(
-        (red - key_r) ** 2 + (green - key_g) ** 2 + (blue - key_b) ** 2
-    ) / 441.673
-    mask = np.clip((distance - similarity) / max(smoothness, 1e-3), 0.0, 1.0)
+    blue = pixels[:, :, 0].astype(np.float32)
+    green = pixels[:, :, 1].astype(np.float32)
+    red = pixels[:, :, 2].astype(np.float32)
+    distance = np.subtract(red, key_r, dtype=np.float32)
+    np.square(distance, out=distance)
+    term = np.subtract(green, key_g, dtype=np.float32)
+    np.square(term, out=term)
+    distance += term
+    np.subtract(blue, key_b, out=term, dtype=np.float32)
+    np.square(term, out=term)
+    distance += term
+    np.sqrt(distance, out=distance)
+    distance /= np.float32(441.673)
+    mask = distance
+    mask -= np.float32(similarity)
+    mask /= np.float32(max(smoothness, 1e-3))
+    np.clip(mask, 0.0, 1.0, out=mask)
     if spill:
-        edge = mask < 1.0
-        green[edge] = np.minimum(green[edge], np.maximum(red[edge], blue[edge]) + 30.0)
-        pixels[:, :, 1] = green.astype(np.uint8)
-    pixels[:, :, 3] = (pixels[:, :, 3].astype(np.float32) * mask).astype(np.uint8)
-    result = QImage(
-        pixels.tobytes(), width, height, source.bytesPerLine(), QImage.Format.Format_ARGB32
-    )
-    return result.copy()
+        np.maximum(red, blue, out=term)
+        term += np.float32(30.0)
+        np.minimum(green, term, out=term)
+        np.copyto(green, term, where=mask < 1.0)
+        pixels[:, :, 1] = green
+    alpha = pixels[:, :, 3].astype(np.float32)
+    alpha *= mask
+    pixels[:, :, 3] = alpha
 
 
 def _transform_dict(value: object) -> dict[str, Any]:
@@ -508,7 +557,7 @@ class VideoCompositionScene(QWidget):
             # 叠加层顶替成为 base，被误判"mpv 正在承载它"而直接跳过，叠加轨
             # 永不渲染。改为只认显式 primary_media 标记或源路径与 mpv 相等。
             served_by_mpv = bool(layer.get("primary_media"))
-            animated = source.lower().endswith('.gif')
+            animated = is_frame_image(source)
             if animated:
                 served_by_mpv = False
             if mpv_binding is not None:

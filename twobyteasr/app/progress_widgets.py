@@ -569,6 +569,49 @@ class StageProgressBar(QProgressBar):
         self._fade = QTimer(self)
         self._fade.setInterval(40)
         self._fade.timeout.connect(self._fade_step)
+        # 2026-11-18 (user: numbers and progress should glide): the drawn fill catches up with the
+        # real value on the calm VALUE spring; value() itself is always the real one.
+        self._shown = 0.0
+        self._shown_vel = 0.0
+        self._glide_last = 0.0
+        self._glide = QTimer(self)
+        self._glide.setTimerType(Qt.TimerType.PreciseTimer)
+        self._glide.setInterval(16)
+        self._glide.timeout.connect(self._glide_step)
+        self.valueChanged.connect(self._value_moved)
+
+    def _value_moved(self, value) -> None:
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion() or not self.isVisible() or value <= self.minimum() or value < self._shown - 50:
+            self._shown, self._shown_vel = float(value), 0.0      # a new run, hidden, or no motion: snap
+            self._glide.stop()
+            return
+        if not self._glide.isActive():
+            self._glide_last = time.perf_counter()
+            self._glide.start()
+
+    def _glide_step(self) -> None:
+        from ..design.motion_tokens import VALUE
+        from ..design.ui_motion import reduced_motion
+        if reduced_motion() or not self.isVisible():
+            self._value_moved(self.value())
+            self.update()
+            return
+        now = time.perf_counter()
+        dt = min(1 / 40, max(0.0, now - self._glide_last))
+        self._glide_last = now
+        stiffness, coefficient = VALUE.constants()
+        target = float(self.value())
+        left = dt
+        while left > 0:
+            step = min(left, 1 / 480)
+            self._shown_vel += (-stiffness * (self._shown - target) - coefficient * self._shown_vel) * step
+            self._shown += self._shown_vel * step
+            left -= step
+        if abs(self._shown - target) < 0.5 and abs(self._shown_vel) < 2:
+            self._shown, self._shown_vel = target, 0.0
+            self._glide.stop()
+        self.update()
 
     def setRange(self, minimum, maximum):  # noqa: N802 - Qt API
         # Old callers asked for (0, 0) "busy" mode; this bar stays real.
@@ -611,7 +654,8 @@ class StageProgressBar(QProgressBar):
             painter.fillRect(QRectF(rect.left() + start * rect.width(), rect.top(),
                                     max(2.0, (end - start) * rect.width()), rect.height()), band)
         span = max(1, self.maximum() - self.minimum())
-        fill = (self.value() - self.minimum()) / span * rect.width()
+        shown = self._shown if self._glide.isActive() else self.value()
+        fill = (shown - self.minimum()) / span * rect.width()
         if fill > 0:
             painter.fillRect(QRectF(rect.left(), rect.top(), fill, rect.height()), QColor(theme.accent))
         if self._segments > 1:

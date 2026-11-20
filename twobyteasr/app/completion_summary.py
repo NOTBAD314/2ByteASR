@@ -44,6 +44,9 @@ _COPY = {
     '识别产出 {count} 条字幕 · 工程当前 {current} 条 · {saved}': ('{count} subtitles recognized · {current} in the project now · {saved}', '認識時 {count} 件 · 現在のプロジェクト {current} 件 · {saved}'),
     '工程：{path}': ('Project: {path}', 'プロジェクト：{path}'),
     '工程位置未记录；可在更多操作中恢复已有结果': ('Project path unrecorded; recover results from More actions', 'プロジェクトの場所は未記録。「その他」で結果を復元できます'),
+    '词库{names}未套用：领域与游戏名称「{domain}」不符，{count} 处别名没有替换': (
+        'Glossary {names} not applied: its domain does not match the game name "{domain}"; {count} aliases left unchanged',
+        '用語集{names}を適用せず：ゲーム名「{domain}」と領域が一致しないため、別名 {count} 件を置換していません'),
     '待审核：{count} 处疑似术语未召回{scope}': ('Review: {count} suspected terms had no candidate{scope}', '要確認：候補がない疑わしい用語 {count} 件{scope}'),
     '（{count} 条处理记录）': (' ({count} processing records)', '（処理記録 {count} 件）'),
     'AI建议被保护规则拒绝 {count} 处{reason}': ('Safety rules rejected {count} AI edits{reason}', '保護ルールでAI変更 {count} 件を却下{reason}'),
@@ -176,6 +179,16 @@ def completion_summary(report, outcome, *, media_path='', project_path='', proje
         gap_cues = _count(context.get('recall_gap_cues'))
         warnings.append(line('待审核：{count} 处疑似术语未召回{scope}', count=gaps,
                              scope=line('（{count} 条处理记录）', count=gap_cues) if gap_cues is not None else ''))
+    for row in events:
+        if row.get('event') != 'terminology_library_domain_blocked':
+            continue
+        blocked = _rows(row.get('libraries'))
+        count = sum(_count(item.get('skipped_matches')) or 0 for item in blocked)
+        if blocked and count:
+            warnings.append(line('词库{names}未套用：领域与游戏名称「{domain}」不符，{count} 处别名没有替换',
+                names='、'.join('「' + str(item.get('library_name') or item.get('library_id')) + '」' for item in blocked),
+                domain=str(row.get('scene_domain') or ''), count=count))
+            break
     if rejected:
         reasons = []
         for row in finals:

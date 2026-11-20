@@ -41,20 +41,31 @@ def tone_text(theme, tone):
 
 
 def support_qss(t):
-    """Rules for the report window's own objects, layered over the dialog sheet."""
+    """Rules for the report window's own objects, layered over the dialog sheet.
+
+    2026-11-18 (user: make 回报问题 look like the rest of the app, cute and rounded): the
+    candy windows' look — the round frame's surface underneath, rounded cards on it, pill
+    tabs whose chosen one is the accent, round fields and candy buttons (the export button
+    has the thicker bottom edge of a pressable candy) instead of the plain Windows-like ones.
+    The body's own sheet wins over the dialog's, so these rules hold whatever the shared
+    dialog sheet says about buttons, fields and tables.
+    """
     from ..design.ui_theme import blend_hex
-    hover = blend_hex(t.surface, t.selected, 0.6)
+    hover = blend_hex(t.input_surface, t.text, .05 if t.is_light else .08)
+    card = t.surface_elevated
+    accent_low = blend_hex(t.accent, '#000000', .22)
+    field_border = blend_hex(t.input_surface, t.border_strong, .7)
     return f"""
-QWidget#supportBody {{ background: {t.app_background}; color: {t.text}; }}
-QFrame#supportCard {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
-QFrame#supportFooter {{ background: {t.panel}; border: 0; border-top: 1px solid {t.border}; }}
-QFrame#supportBanner {{ background: {t.info_soft}; border: 0; border-radius: 10px; }}
+QWidget#supportBody {{ background: transparent; color: {t.text}; }}
+QFrame#supportCard {{ background: {card}; border: 1px solid {t.border}; border-radius: 18px; }}
+QFrame#supportFooter {{ background: {card}; border: 1px solid {t.border}; border-radius: 18px; }}
+QFrame#supportBanner {{ background: {t.info_soft}; border: 0; border-radius: 16px; }}
 QLabel {{ background: transparent; color: {t.text}; }}
-QLabel#supportTitle {{ font-size: 18px; font-weight: 700; }}
+QLabel#supportTitle {{ font-size: 19px; font-weight: 800; }}
 QLabel#supportMuted, QLabel#supportIdentity {{ color: {t.text_muted}; font-size: 12px; }}
-QLabel#supportCardTitle {{ font-size: 14px; font-weight: 700; }}
-QLabel#supportLegend {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 10px;
-    padding: 2px 10px; color: {t.text_secondary}; font-size: 12px; }}
+QLabel#supportCardTitle {{ font-size: 14px; font-weight: 800; }}
+QLabel#supportLegend {{ background: {t.input_surface}; border: 0; border-radius: 10px;
+    padding: 3px 11px; color: {t.text_secondary}; font-size: 12px; }}
 QLabel#supportStepName {{ font-size: 17px; font-weight: 700; }}
 QLabel#supportHeadline {{ color: {t.text_secondary}; font-size: 13px; }}
 QLabel#supportIssueTitle {{ font-size: 14px; font-weight: 700; }}
@@ -62,35 +73,88 @@ QLabel#supportRelation {{ color: {t.text_secondary}; border: 1px solid {t.border
     padding: 1px 8px; font-size: 11px; }}
 QLabel#supportAdvice {{ color: {t.text_secondary}; font-size: 13px; }}
 QLabel#supportDev {{ color: {t.text_muted}; font-size: 11px; }}
-QLabel#supportStartChip {{ background: {t.accent}; color: {t.text_on_accent}; border-radius: 8px;
-    padding: 2px 8px; font-size: 12px; font-weight: 700; }}
-QLabel#supportPill {{ border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600; }}
+QLabel#supportStartChip {{ background: {t.accent}; color: {t.text_on_accent}; border-radius: 11px;
+    padding: 2px 10px; font-size: 12px; font-weight: 800; }}
+QLabel#supportPill {{ border-radius: 11px; padding: 2px 10px; font-size: 11px; font-weight: 700; }}
 QLabel#supportBannerText {{ color: {t.text}; font-size: 13px; }}
 QLabel#supportKeyValues {{ color: {t.text_secondary}; font-size: 12px; }}
-QFrame#supportSegment {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 9px; }}
+
+QFrame#supportSegment {{ background: {t.input_surface}; border: 0; border-radius: 17px; }}
 QPushButton#supportViewButton, QPushButton#supportFilterButton {{
-    background: transparent; color: {t.text_muted}; border: 0; border-radius: 7px;
-    min-height: 28px; max-height: 28px; padding: 0 14px; font-size: 13px; font-weight: 500; }}
+    background: transparent; color: {t.text_secondary}; border: 0; border-radius: 14px;
+    min-height: 28px; max-height: 28px; padding: 0 15px; font-size: 13px; font-weight: 600; }}
 QPushButton#supportViewButton:hover, QPushButton#supportFilterButton:hover {{ color: {t.text}; background: {hover}; }}
 QPushButton#supportViewButton:checked, QPushButton#supportFilterButton:checked {{
-    background: {t.surface_elevated}; color: {t.text}; font-weight: 700; }}
-QPushButton#supportStepFilter {{ background: {t.accent_soft}; color: {t.text}; border: 1px solid {t.accent};
-    border-radius: 14px; min-height: 28px; max-height: 28px; padding: 0 12px; font-size: 12px; }}
-QToolButton#diagnosticMore {{ padding: 0 12px; }}
+    background: {t.accent}; color: {t.text_on_accent}; font-weight: 800; }}
+QPushButton#supportViewButton:focus, QPushButton#supportFilterButton:focus {{ outline: 0; }}
+QPushButton#supportStepFilter {{ background: {t.accent_soft}; color: {t.text}; border: 2px solid {t.accent};
+    border-radius: 15px; min-height: 26px; max-height: 26px; padding: 0 12px; font-size: 12px; font-weight: 700; }}
+
+QPushButton[buttonRole="secondary"], QToolButton[buttonRole="secondary"] {{
+    background: {t.input_surface}; color: {t.text}; border: 2px solid {field_border}; border-radius: 17px;
+    min-height: 30px; max-height: 30px; padding: 0 16px; font-size: 13px; font-weight: 700; }}
+QPushButton[buttonRole="secondary"][controlSize="compact"] {{ border-radius: 14px; min-height: 24px; max-height: 24px;
+    padding: 0 12px; font-size: 12.5px; }}
+QPushButton[buttonRole="secondary"]:hover, QToolButton[buttonRole="secondary"]:hover {{
+    background: {hover}; border-color: {t.accent}; }}
+QPushButton[buttonRole="secondary"]:pressed, QToolButton[buttonRole="secondary"]:pressed {{ background: {t.accent_soft}; }}
+QPushButton[buttonRole="ghost"] {{ background: transparent; color: {t.text_secondary}; border: 2px solid transparent;
+    border-radius: 14px; min-height: 24px; max-height: 24px; padding: 0 12px; font-size: 12.5px; font-weight: 700; }}
+QPushButton[buttonRole="ghost"]:hover {{ background: {t.input_surface}; color: {t.text}; }}
+QPushButton[buttonRole="secondary"]:disabled, QToolButton[buttonRole="secondary"]:disabled,
+QPushButton[buttonRole="ghost"]:disabled {{ color: {t.disabled}; background: transparent; border-color: {t.border}; }}
+QPushButton[buttonRole="ghost"]:disabled {{ border-color: transparent; }}
+QPushButton#diagnosticExportButton {{ background: {t.accent}; color: {t.text_on_accent}; border: 2px solid {t.accent};
+    border-bottom: 5px solid {accent_low}; border-radius: 18px; min-height: 30px; max-height: 30px;
+    padding: 0 20px; font-size: 14px; font-weight: 800; }}
+QPushButton#diagnosticExportButton:hover {{ background: {t.accent_hover}; border-color: {t.accent_hover};
+    border-bottom: 5px solid {accent_low}; }}
+QPushButton#diagnosticExportButton:pressed {{ background: {t.accent_pressed}; border-bottom: 2px solid {accent_low};
+    margin-top: 3px; }}
+QPushButton#diagnosticExportButton:disabled {{ background: {t.input_surface}; color: {t.disabled};
+    border-color: {t.border}; border-bottom: 5px solid {t.border}; }}
+QPushButton:focus, QToolButton:focus {{ outline: 0; }}
+QPushButton[buttonRole="secondary"]:focus, QToolButton[buttonRole="secondary"]:focus,
+QToolButton#diagnosticRefresh:focus {{ border-color: {t.focus}; }}
+QPushButton#diagnosticExportButton:focus {{ border-top-color: {t.focus}; border-left-color: {t.focus};
+    border-right-color: {t.focus}; }}
+QToolButton#diagnosticMore {{ padding: 0 14px; }}
 QToolButton#diagnosticMore::menu-indicator {{ image: none; width: 0px; }}
+QToolButton#diagnosticRefresh {{ background: {t.input_surface}; border: 2px solid {field_border}; border-radius: 17px;
+    min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; padding: 0; }}
+QToolButton#diagnosticRefresh:hover {{ background: {hover}; border-color: {t.accent}; }}
+QToolButton#diagnosticRefresh:disabled {{ border-color: {t.border}; }}
+
+QLineEdit#diagnosticKeyword, QLineEdit#diagnosticDescription, QDateTimeEdit {{
+    background: {t.input_surface}; color: {t.text}; border: 2px solid {field_border}; border-radius: 17px;
+    min-height: 30px; max-height: 30px; padding: 0 14px; selection-background-color: {t.accent};
+    selection-color: {t.text_on_accent}; }}
+QLineEdit#diagnosticKeyword:focus, QLineEdit#diagnosticDescription:focus, QDateTimeEdit:focus {{ border-color: {t.accent}; }}
+QComboBox#diagnosticScope, QComboBox#diagnosticLevel {{ background: {t.input_surface}; color: {t.text};
+    border: 2px solid {field_border}; border-radius: 17px; min-height: 30px; max-height: 30px; padding: 0 10px 0 14px; }}
+QComboBox#diagnosticScope:hover, QComboBox#diagnosticLevel:hover {{ border-color: {t.accent}; }}
+QComboBox#diagnosticScope::drop-down, QComboBox#diagnosticLevel::drop-down {{ border: 0; width: 26px; }}
+QCheckBox#diagnosticIncludeContent {{ color: {t.text_secondary}; spacing: 8px; background: transparent; }}
+QCheckBox#diagnosticIncludeContent:disabled {{ color: {t.text_muted}; }}
+QCheckBox#diagnosticIncludeContent::indicator {{ width: 16px; height: 16px; border-radius: 7px;
+    border: 2px solid {t.border_strong}; background: {t.input_surface}; }}
+QCheckBox#diagnosticIncludeContent::indicator:checked {{ background: {t.accent}; border-color: {t.accent}; }}
+QCheckBox#diagnosticIncludeContent::indicator:disabled {{ border-color: {field_border}; background: {t.input_surface}; }}
+
 QListWidget#supportSteps {{ background: transparent; border: 0; padding: 0; outline: 0; }}
 QListWidget#supportSteps::item, QListWidget#supportSteps::item:selected, QListWidget#supportSteps::item:hover {{
     background: transparent; border: 0; padding: 0; margin: 0; }}
 QScrollArea#supportIssueScroll, QScrollArea#supportIssueScroll > QWidget > QWidget {{ background: transparent; border: 0; }}
-QTableWidget#diagnosticEvents {{ background: {t.surface}; alternate-background-color: {t.surface};
-    color: {t.text}; border: 0; gridline-color: transparent; selection-background-color: {t.selected};
-    selection-color: {t.text}; }}
+QTableWidget#diagnosticEvents {{ background: transparent; alternate-background-color: transparent;
+    color: {t.text}; border: 0; gridline-color: transparent; selection-background-color: {t.accent_soft};
+    selection-color: {t.text}; outline: 0; }}
 QTableWidget#diagnosticEvents::item {{ padding: 0 6px; border: 0; border-bottom: 1px solid {t.border}; border-radius: 0; }}
-QTableWidget#diagnosticEvents::item:selected {{ background: {t.selected}; color: {t.text}; }}
-QHeaderView::section {{ background: {t.app_background}; color: {t.text_muted}; border: 0;
-    border-bottom: 1px solid {t.border}; padding: 4px 6px; font-size: 12px; }}
-QPlainTextEdit#diagnosticsText {{ background: {t.input_surface}; color: {t.text_secondary}; border: 1px solid {t.border};
-    border-radius: 10px; padding: 10px 12px; }}
+QTableWidget#diagnosticEvents::item:selected {{ background: {t.accent_soft}; color: {t.text}; }}
+QHeaderView {{ background: transparent; border: 0; }}
+QHeaderView::section {{ background: transparent; color: {t.text_muted}; border: 0;
+    border-bottom: 1px solid {t.border}; padding: 6px 6px 4px 6px; font-size: 12px; font-weight: 700; }}
+QPlainTextEdit#diagnosticsText, QPlainTextEdit#diagnosticContentPreview {{ background: {t.input_surface};
+    color: {t.text_secondary}; border: 0; border-radius: 16px; padding: 10px 12px; }}
 """
 
 

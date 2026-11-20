@@ -164,8 +164,15 @@ def themed_icon(name: str, role: str = "primary", theme: ThemeDefinition | None 
     if is_app_icon(name):  # 2026-11-14: icons the font lacks (工程音量, 次要角色)
         return app_icon(name, color, active.disabled)
     _prime_platform_font_fallback()
-    return QIcon(_CachedIconEngine(qta.icon(name, color=color, color_active=color, color_disabled=active.disabled,
-                                            **_OPTICAL_OPTIONS.get(str(name), {}))))
+    return QIcon(_themed_qicon(str(name), color, active.disabled))
+
+
+@lru_cache(maxsize=512)
+def _themed_qicon(name: str, color: str, disabled: str) -> QIcon:
+    # One raster cache per glyph and colours, shared by every button showing
+    # it (2026-11-19: the Studio's first paint rasterized each copy itself).
+    return QIcon(_CachedIconEngine(qta.icon(name, color=color, color_active=color, color_disabled=disabled,
+                                            **_OPTICAL_OPTIONS.get(name, {}))))
 
 
 def cached_icon_pixmap(

@@ -146,6 +146,71 @@ class DialogSurface(QFrame):
 
 
 
+class _FadingBackdrop(QFrame):
+    """The dim behind a dialog: it fades in with the dialog's growth and out with its shrinking
+    (2026-11-19; it used to appear at full strength and vanish at once, so closing a dialog showed
+    a bright Home between the dialog and its shrinking picture)."""
+
+    ALPHA = 140
+
+    def __init__(self, host, color):
+        super().__init__(host)
+        self.setObjectName("modalBackdrop")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setAutoFillBackground(False)
+        self.color = QColor(color)
+        self.alpha = 0.0
+        self._fade = None
+
+    def set_color(self, color) -> None:
+        self.color = QColor(color)
+        self.update()
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt override
+        if self.alpha <= 0.0:
+            return
+        painter = QPainter(self)
+        fill = QColor(self.color)
+        fill.setAlpha(max(0, min(255, round(self.alpha))))
+        painter.fillRect(self.rect(), fill)
+        painter.end()
+
+    def fade_to(self, alpha: float, tween, then=None) -> None:
+        """Move the dim to ``alpha`` over ``tween`` (at once without motion); ``then`` after."""
+        import time
+        from PySide6.QtCore import QTimer
+        from . import motion_tokens as tokens
+        from .transitions import enabled
+        if self._fade is not None:
+            self._fade.stop()
+            self._fade = None
+        start = self.alpha
+        if not enabled() or tween.ms <= 0:
+            self.alpha = alpha
+            self.repaint()
+            if callable(then):
+                then()
+            return
+        curve = tokens.easing_curve(tween)
+        began = time.perf_counter()
+        timer = self._fade = QTimer(self)
+        timer.setTimerType(Qt.TimerType.PreciseTimer)
+
+        def step():
+            k = min(1.0, (time.perf_counter() - began) * 1000 / tween.ms)
+            self.alpha = start + (alpha - start) * curve.valueForProgress(k)
+            self.update()
+            if k >= 1.0:
+                timer.stop()
+                self._fade = None
+                if callable(then):
+                    then()
+
+        timer.timeout.connect(step)
+        timer.start(8)
+        step()
+
+
 class SpringDialog(QDialog):
     """Solid dialog base that follows the current ThemeDefinition."""
 
@@ -232,9 +297,10 @@ class SpringDialog(QDialog):
         else:
             self.setStyleSheet(retheme_qss(APP_QSS, theme) + build_secondary_surface_qss(theme))
         if self._modal_backdrop is not None:
-            self._modal_backdrop.setStyleSheet(
-                f"background: {theme.media}; border: 0;"
-            )
+            if hasattr(self._modal_backdrop, 'set_color'):
+                self._modal_backdrop.set_color(theme.media)
+            else:
+                self._modal_backdrop.setStyleSheet(f"background: {theme.media}; border: 0;")
         if self.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
             self._apply_native_window_style(theme)
         self._applied_theme_key = applied_theme_key
@@ -300,15 +366,7 @@ class SpringDialog(QDialog):
         if self._use_backdrop and parent is not None and self._modal_backdrop is None:
             host = parent.window()
             theme = _active_theme()
-            backdrop = QFrame(host)
-            backdrop.setObjectName("modalBackdrop")
-            backdrop.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            backdrop.setAutoFillBackground(False)
-            color = QColor(theme.media)
-            color.setAlpha(140)
-            backdrop.setStyleSheet(
-                f"background: rgba({color.red()}, {color.green()}, {color.blue()}, 140); border: 0;"
-            )
+            backdrop = _FadingBackdrop(host, theme.media)
             backdrop.setGeometry(host.rect())
             # Close on release so the complete click is consumed by the
             # backdrop and cannot activate an underlying destructive button.
@@ -324,14 +382,20 @@ class SpringDialog(QDialog):
             backdrop.mouseReleaseEvent = _release_backdrop
             backdrop.show()
             backdrop.raise_()
-            # Paint the whole dim now, before the dialog window is mapped, so
-            # the darkening lands in one frame instead of trailing behind it.
-            backdrop.repaint()
+            # 2026-11-19: the dim fades in while the dialog grows out of its button (it used to
+            # land in one frame and the dialog followed 0.15 s later).
+            from . import motion_tokens as tokens
+            backdrop.fade_to(_FadingBackdrop.ALPHA, tokens.SCRIM_IN)
             self._modal_backdrop = backdrop
         self._apply_native_window_style()
         super().showEvent(event)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.update()
+        # 2026-11-18: when the app-wide dialog motion (design.transitions) grows this dialog out of
+        # its button, the old fade-and-rise stands down and the opacity is left to it.
+        from .transitions import handles
+        if handles(self):
+            return
         duration = motion_duration(MOTION_STANDARD_MS) if self.ENTRY_ANIMATED else 0
         if duration:
             final_pos = QPoint(self.pos())
@@ -353,7 +417,12 @@ class SpringDialog(QDialog):
             self.setWindowOpacity(1.0)
 
     def done(self, result):
-        duration = motion_duration(MOTION_FAST_MS) if self.EXIT_ANIMATED else 0
+        from .transitions import closing_now, handles
+        if self.isVisible() and handles(self) and not getattr(self, "_exit_pending", False):
+            # 2026-11-19 (user: closing the settings flashes): the shrinking picture is up before
+            # the window hides, so Home never shows between the two.
+            closing_now(self)
+        duration = motion_duration(MOTION_FAST_MS) if self.EXIT_ANIMATED and not handles(self) else 0
         if not duration or not self.isVisible():
             return super().done(result)
         if getattr(self, "_exit_pending", False):
@@ -376,10 +445,16 @@ class SpringDialog(QDialog):
         if self in visible:
             visible.remove(self)
         if self._modal_backdrop is not None:
+            backdrop, self._modal_backdrop = self._modal_backdrop, None
             try:
-                self._modal_backdrop.hide()
-                self._modal_backdrop.deleteLater()
+                if hasattr(backdrop, 'fade_to') and not QApplication.closingDown():
+                    # The dim lifts while the dialog shrinks back; clicks already reach Home.
+                    from . import motion_tokens as tokens
+                    backdrop.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                    backdrop.fade_to(0.0, tokens.SCRIM_OUT, then=lambda b=backdrop: (b.hide(), b.deleteLater()))
+                else:
+                    backdrop.hide()
+                    backdrop.deleteLater()
             except Exception:
                 pass
-            self._modal_backdrop = None
         super().hideEvent(event)

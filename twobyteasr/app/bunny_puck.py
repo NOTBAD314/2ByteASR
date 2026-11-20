@@ -51,12 +51,22 @@ class _Carrier(QWidget):
     inside it; its mask is her rectangle, so every other click goes to what is under it.
     """
 
+    # 2026-11-18 (user: while she moves she stutters or vanishes for a moment): the mask used to be
+    # her exact rectangle, set again on every frame. On Windows that is a SetWindowRgn per frame,
+    # applied at once while her new picture is painted a little later, so for a frame the window
+    # showed only the region where she no longer was — she blinked out. Now, while she moves, the
+    # mask is a roomy box that always holds both where she was and where she is, and is changed
+    # only when she leaves it; once she rests it shrinks back to her rectangle.
+    MOVE_ROOM = 64
+
     def __init__(self, window, floating: bool):
         super().__init__(window, _tool_flags(True) | Qt.WindowType.WindowDoesNotAcceptFocus if floating
                          else Qt.WindowType.Widget)
         self.setObjectName('bunnyCarrier')
         self.window_ = window
         self.floating = floating
+        self._held = QRect()
+        self._mask_rect = QRect()
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         if floating:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -66,17 +76,33 @@ class _Carrier(QWidget):
     def cover(self):
         """Lie exactly over the main window's inside."""
         window = self.window_
-        rect = QRect(window.mapToGlobal(QPoint(0, 0)), window.size()) if self.floating else window.rect()
-        if self.geometry() != rect:
-            self.setGeometry(rect)
+        if self.floating:
+            from . import floating_anchor
+            floating_anchor.cover_window(self, window)      # in physical pixels (2026-11-19)
+        elif self.geometry() != window.rect():
+            self.setGeometry(window.rect())
 
-    def hold(self, mascot, at: QPoint):
-        """Her widget's top-left at ``at`` (window coordinates); only her rectangle takes clicks."""
+    def _set_mask_rect(self, rect: QRect):
         from PySide6.QtGui import QRegion
+        if rect != self._mask_rect:
+            self._mask_rect = QRect(rect)
+            self.setMask(QRegion(rect))
+
+    def hold(self, mascot, at: QPoint, moving: bool = False):
+        """Her widget's top-left at ``at`` (window coordinates); only near her do clicks stop here."""
+        rect = QRect(at, mascot.size())
+        previous, self._held = self._held, rect
         mascot.move(at)
-        region = QRegion(QRect(at, mascot.size()))
-        if region != self.mask():
-            self.setMask(region)
+        if not moving or previous.isNull():
+            self._set_mask_rect(rect)
+        elif not self._mask_rect.contains(rect):
+            room = self.MOVE_ROOM
+            self._set_mask_rect(rect.adjusted(-room, -room, room, room).united(previous))
+
+    def rest(self):
+        """She stopped: clicks stop only on her own rectangle again."""
+        if not self._held.isNull():
+            self._set_mask_rect(self._held)
 
 
 class _EdgeGlow(QWidget):
@@ -98,10 +124,13 @@ class _EdgeGlow(QWidget):
     def show_hit(self, x: float, y: float, power: float, side: str, window_rect: QRect, floating: bool, window):
         self.flash = (x, y, power, time.perf_counter(), side)
         if floating:
-            self.setGeometry(QRect(window.mapToGlobal(QPoint(0, 0)), window_rect.size()))
+            from . import floating_anchor
+            floating_anchor.cover_window(self, window)
         else:
             self.setGeometry(window_rect)
         self.show()
+        if floating:
+            floating_anchor.cover_window(self, window)      # its native window exists only from here
         self.raise_()
         self._timer.start()
 
@@ -174,6 +203,8 @@ class BunnyPuck:
         self.shake.setDuration(SHAKE_MS)
         self.shake.valueChanged.connect(self._shake_step)
         self.shake.finished.connect(lambda: self._set_impact(QPointF()))
+        if self.floating:
+            self.carrier.winId()       # its native window now, not on the first pick-up (a hitch)
         self._shake_dir = QPointF()
         self._shake_power = 0.0
         # 2026-11-15 (user): picked up and thrown, her chat card comes along instead of staying
@@ -207,13 +238,17 @@ class BunnyPuck:
         self.carrier.cover()
         if not self.docked:
             # 2026-11-15 (user): carried, her card comes along in the same frame (it used to ease
-            # after her and lagged a beat); then she moves inside the clear layer, which is put
-            # back in front so a click on the card or the window never buries her.
+            # after her and lagged a beat); then she moves inside the clear layer. Moving the card
+            # puts the layer back in front of it (BunnyChat.place); a still card cannot bury her,
+            # so the layer is no longer raised on every frame (2026-11-18: a z-order change per
+            # frame on top of the move).
             if self.card_at is not None:
                 self.card_at = QPointF(at)
                 self.chat.follow_bunny(self.card_at)
-            self.carrier.hold(self.mascot, at.toPoint())
-            self.carrier.raise_()
+            self.carrier.hold(self.mascot, at.toPoint(), moving=self._moving())
+
+    def _moving(self) -> bool:
+        return self.timer.isActive() or self.glide.state() == QVariantAnimation.State.Running
 
     # ------------------------------------------------------------ on and off the card
     def undock(self):
@@ -223,12 +258,16 @@ class BunnyPuck:
         start = self.home_point()
         self.docked = False
         self.chat.mascot_docked = False
+        # 2026-11-18: the layer is shown (already masked to her place) before she moves onto it,
+        # and its native window exists since the chat opened, so there is no gap where she is on
+        # neither the card nor the layer.
         self.carrier.cover()
+        self.carrier.hold(self.mascot, start.toPoint())
+        self.carrier.show()
+        self.carrier.raise_()
         self.mascot.setParent(self.carrier)
         self.mascot.show()
         self._place(start)
-        self.carrier.show()
-        self.carrier.raise_()
 
     def dock(self):
         """Back beside the card, right away."""
@@ -263,24 +302,28 @@ class BunnyPuck:
         from PySide6.QtCore import QEvent
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            point = QPointF(event.globalPosition())
+            # 2026-11-19: the pointer in window coordinates, read in physical pixels (floating_anchor):
+            # with screens at different scales the event's own position jumped as she crossed an edge.
+            from . import floating_anchor
+            pointer = floating_anchor.Pointer(self.window, self.mascot, event)
+            point = pointer.at(event)
             caught = not self.docked and (self.timer.isActive() or self.glide.state() == QVariantAnimation.State.Running)
             self.timer.stop()
             self.glide.stop()
             self.home_timer.stop()
-            self.press = dict(start=point, grab=QPointF(event.position()), moved=caught)
+            self.press = dict(start=point, grab=QPointF(event.position()), moved=caught, pointer=pointer)
             if caught:
                 self._hold(point)
             return True
         if kind == QEvent.Type.MouseMove and self.press is not None:
-            point = QPointF(event.globalPosition())
+            point = self.press['pointer'].at(event)
             if not self.press['moved']:
                 delta = point - self.press['start']
                 if abs(delta.x()) + abs(delta.y()) < 4:
                     return True
                 self.press['moved'] = True
                 self._hold(point)
-            self.target = QPointF(self.window.mapFromGlobal(point.toPoint())) - self.press['grab']
+            self.target = point - self.press['grab']
             return True
         if kind == QEvent.Type.MouseButtonRelease and self.press is not None:
             press, self.press = self.press, None
@@ -288,6 +331,7 @@ class BunnyPuck:
                 if self.docked:
                     self.chat.poke()
                 else:
+                    self.carrier.rest()
                     self.chat.poke()
                     self.home_timer.start(REST_BEFORE_HOME_MS)
                 return True
@@ -304,7 +348,7 @@ class BunnyPuck:
         self.mascot.grabMouse()                    # the press's hold, kept across the reparenting
         self.mascot.setCursor(Qt.CursorShape.ClosedHandCursor)
         self.history = [(time.perf_counter(), QPointF(self.pos))]
-        self.target = QPointF(self.window.mapFromGlobal(point.toPoint())) - self.press['grab']
+        self.target = QPointF(point) - self.press['grab']       # ``point`` is in window coordinates
         self.velocity = QPointF()
         self.last = time.perf_counter()
         self.timer.start()
@@ -375,6 +419,7 @@ class BunnyPuck:
             mascot.stretch = 0.0
             mascot.update()
             self.timer.stop()
+            self.carrier.rest()
             if getattr(self, 'hard_hits', 0) >= 3:      # A11: thrown about too hard, she is dizzy
                 mascot.act('dizzy')
             self.hard_hits = 0
@@ -492,6 +537,7 @@ class BunnyPuck:
 
     def _glide_done(self):
         then, self._glide_then = self._glide_then, None
+        self.carrier.rest()
         if self.mascot is not None:
             self.mascot.stretch = 0.0
             self.mascot.update()

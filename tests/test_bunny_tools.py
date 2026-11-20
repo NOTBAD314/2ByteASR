@@ -748,10 +748,15 @@ def test_the_settings_page_holds_her_memory_and_the_knowledge_base(app, tmp_path
         assert '密钥' in dialog.bunny_teach_status.text() and len(bunny_memory.load()) == 1
         dialog.bunny_allow_paid.setChecked(True)
         dialog.bunny_remember.setChecked(False)
+        from twobyteasr.app import bunny_chat
+        assert not dialog.bunny_click_lines.isChecked() and not bunny_chat.click_lines()   # she goes on by herself
+        dialog.bunny_click_lines.setChecked(True)
         dialog._save_bunny_permissions()
         saved = bunny_permissions.load()
         assert saved['allow_paid'] is True and saved['remember'] is False
+        assert bunny_chat.click_lines()
     finally:
+        bunny_chat.set_click_lines(False)
         bunny_permissions.save(dict(bunny_permissions.DEFAULTS))
         bunny_memory.clear()
         dialog._input_baseline = dict(dialog._input_values())

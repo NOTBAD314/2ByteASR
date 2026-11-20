@@ -372,7 +372,15 @@ class StudioReadiness(QObject):
                 if self.loading.active:
                     reject = getattr(page.window(), '_reject_studio_loading', None)
                     if callable(reject):
-                        reject()
+                        queue = getattr(page, '_persistence_queue', None)
+                        save_pending = (queue is not None and queue.busy
+                                        and getattr(page, '_navigation_after_manual_save', None) is not None)
+                        # Returning to the editor during a save must leave the
+                        # dirty guard's continuation available to the save queue.
+                        if save_pending:
+                            reject(keep_save_navigation=True)
+                        else:
+                            reject()
                     else:
                         self.loading.abort()
                 self.on_ready = None
@@ -813,8 +821,21 @@ class StudioReadiness(QObject):
             return False
         # QWidget.grab renders a hidden widget without showing it. This is
         # timeline preparation, never a screenshot request to the mpv actor.
+        # A visible timeline paints itself: grab() also re-ran the layout of the
+        # whole window, other hidden pages included (2026-11-19: 0.21 s of the
+        # model workshop's cards while a project opened; repaint() 12 ms).
+        # Qt skips a repaint it cannot show (updates held by the loading
+        # transition); the timeline then builds its picture off-screen. Only a
+        # hidden timeline still needs grab().
         epoch = self.generation
-        timeline.grab()
+        if timeline.isVisible():
+            timeline.repaint()
+            prepare = getattr(timeline, 'prepare_static_picture', None)
+            if not self.painted and self._owns_request(epoch) and callable(prepare) and prepare():
+                self.painted = True
+                self.profile['timeline_prepared_offscreen'] = True
+        if not self.painted and self._owns_request(epoch):
+            timeline.grab()
         if not self._owns_request(epoch):
             return False
         self.profile['timeline_surface_prepared'] = True

@@ -24,8 +24,9 @@ def _rate(clip):
 
 
 def media_edit_limit(asset):
-    """GIF cycles repeat within an explicitly finite, undoable clip span."""
-    return 2_147_483_647 if str(asset.canonical_source).lower().endswith('.gif') else asset.duration_ms
+    """GIF cycles repeat (and a picture holds) within an explicitly finite, undoable clip span."""
+    from ..media.animated_gif import is_frame_image
+    return 2_147_483_647 if is_frame_image(asset.canonical_source) else asset.duration_ms
 
 
 def trim_bounds(clip, asset_duration):

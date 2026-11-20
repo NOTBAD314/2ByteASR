@@ -50,18 +50,35 @@ class TeachHintStore:
                 pass
             raise
 
-    def should_show(self, key: str) -> bool:
-        return str(key) in KNOWN_HINTS and str(key) not in self.load()["seen"]
+    def _state(self) -> dict:
+        # Read once per store; this store's own writes keep it current.
+        state = getattr(self, "_cached", None)
+        if state is None:
+            state = self._cached = self.load()
+        return state
 
-    def mark_shown(self, key: str) -> bool:
+    def prefetch(self) -> None:
+        """Read the file on a worker now, before the first should_show()."""
+        _WRITER.submit(self._state)
+
+    def should_show(self, key: str) -> bool:
+        return str(key) in KNOWN_HINTS and str(key) not in self._state()["seen"]
+
+    def mark_shown(self, key: str, *, background: bool = False) -> bool:
+        """``background``: write on the ordered worker (the GUI thread must
+        not wait for a file write and fsync; 2026-11-19)."""
         key = str(key)
         if key not in KNOWN_HINTS:
             return False
-        payload = self.load()
+        payload = self._state()
         if key in payload["seen"]:
             return False
         payload["seen"][key] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        self._save(payload)
+        snapshot = {"schema_version": SCHEMA_VERSION, "seen": dict(payload["seen"])}
+        if background:
+            _WRITER.submit(self._save, snapshot)
+        else:
+            self._save(snapshot)
         return True
 
     def dismiss(self, key: str) -> None:
@@ -69,4 +86,12 @@ class TeachHintStore:
             self.mark_shown(key)
 
     def reset(self) -> None:
+        _WRITER.submit(lambda: None).result()  # earlier background writes land first
+        self._cached = {"schema_version": SCHEMA_VERSION, "seen": {}}
         self._save({"schema_version": SCHEMA_VERSION, "seen": {}})
+
+
+from concurrent.futures import ThreadPoolExecutor
+
+#: One ordered writer for hint files, so a later reset is never overtaken.
+_WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="teach-hint-writer")

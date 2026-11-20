@@ -73,7 +73,8 @@ def test_every_recognition_hint_receives_the_names_first():
         mosi = cloud_request_hints({"model": MOSI_MODEL}, {})
         filetrans = cloud_request_hints({"model": FILETRANS}, {})
     listed = qwen.split("用户已确认的专名写法：", 1)[1].split("。", 1)[0].split("、")
-    assert NAMES <= set(listed[:7]) and len(listed) < len(snapshot().canonical_terms)
+    # 2026-11-18: the head grew from 64 to QWEN_CONTEXT_MAX_TERMS names; the names still come first.
+    assert NAMES <= set(listed[:7]) and len(listed) <= min(asr.QWEN_CONTEXT_MAX_TERMS, len(snapshot().canonical_terms))
     assert NAMES <= set(mosi["mosi_keyterms"]) and len(mosi["mosi_keyterms"]) == 20
     sent = filetrans["filetrans_context"][0]["content"][0]["text"]
     assert all(name in sent for name in NAMES)

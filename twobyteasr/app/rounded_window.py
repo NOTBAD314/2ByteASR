@@ -14,13 +14,16 @@ over the border); the title areas move the window and double-click maximizes.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 RADIUS = 12
 SHADOW = 16
 GRIP = 6
+
+_SHADOWS: dict = {}                    # (width, height, margin, radius, ratio) -> shadow picture
+_SHADOWS_KEPT = 3
 
 
 def _theme():
@@ -151,6 +154,8 @@ class RoundedWindow(QObject):
         self.title_areas = list(title_areas)
         self.maximized = False
         self._normal: QRect | None = None
+        self._shadow_key = None
+        self._shadow_picture = None
         if buttons is not None:
             buttons.on_toggle = self.toggle_maximized
             buttons.is_maximized = lambda: self.maximized
@@ -238,6 +243,8 @@ class RoundedWindow(QObject):
 
     # -------------------------------------------------------------- events
     def eventFilter(self, watched, event):
+        if 'window' not in self.__dict__:      # an event during teardown, after the attributes are gone
+            return False
         kind = event.type()
         if watched is self.window:
             if kind == QEvent.Type.Paint and self.margin():
@@ -264,14 +271,74 @@ class RoundedWindow(QObject):
         self._shadow_layers(painter, QRectF(self.content_rect()))
         painter.end()
 
+    # 2026-11-19 (user: 「回报问题」 and other rounded windows stutter; the diagnostic package showed
+    # 0.5-0.6 s blocks in ``_shadow_layers``): the shadow was sixteen window-sized, antialiased
+    # rounded rectangles on every paint of the window, also for a blinking cursor or one frame of
+    # the bunny. It is drawn once per size into a picture (only its ring: what lies under the
+    # content is one flat fill) and every paint copies the part it needs.
+    SHADOW_PICTURE_LIMIT = 40_000_000       # device pixels; above it the shadow is drawn directly
+
     def _shadow_layers(self, painter: QPainter, rect: QRectF):
         """A soft shadow around ``rect`` (the content), slightly below it."""
+        margin = self.margin()
+        picture = self._shadow_for(margin) if margin else None
+        if picture is None:
+            self._draw_shadow(painter, rect)
+            return
+        from ..design.device_pixels import draw_picture
+        draw_picture(painter, rect.topLeft() - QPointF(margin, margin), picture)   # 1:1 at 125/175 % too
+
+    def _shadow_for(self, margin: int):
+        from math import ceil
+        from .ui_zoom import px
+        window = self.window
+        ratio = window.devicePixelRatioF() or 1.0
+        key = (window.width(), window.height(), margin, px(self.radius), round(ratio * 1000))
+        if key != self._shadow_key:
+            self._shadow_key = key
+            self._shadow_picture = _SHADOWS.pop(key, None)
+            width, height = ceil(window.width() * ratio), ceil(window.height() * ratio)
+            if self._shadow_picture is None and 0 < width * height <= self.SHADOW_PICTURE_LIMIT:
+                picture = QPixmap(width, height)
+                picture.setDevicePixelRatio(ratio)
+                picture.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(picture)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._draw_shadow(painter, QRectF(self.content_rect()))
+                painter.end()
+                self._shadow_picture = picture
+            if self._shadow_picture is not None:
+                # 2026-11-19: shared by every window of that size (the shadow has one colour in
+                # every theme): a dialog opened again (settings, tutorial) used to draw its
+                # sixteen layers once more inside its first paint, 40-117 ms under its opening
+                # motion (VM2, real window). The most recent few sizes are kept.
+                _SHADOWS[key] = self._shadow_picture
+                while len(_SHADOWS) > _SHADOWS_KEPT:
+                    _SHADOWS.pop(next(iter(_SHADOWS)))
+        return self._shadow_picture
+
+    def _draw_shadow(self, painter: QPainter, rect: QRectF):
         from .ui_zoom import px
         radius = px(self.radius)
         steps = max(1, self.margin())
+        painter.save()
         painter.setPen(Qt.PenStyle.NoPen)
+        # Every layer covers the inside of the content fully: there the sum is one colour. Only
+        # the ring around it (and the corners, where the layers curve) needs the layers.
+        inset = radius + steps + 4
+        inner = rect.adjusted(inset, inset, -inset, -inset)
+        layered = QRegion(rect.adjusted(-steps - 1, -steps - 1, steps + 1, steps + 5).toAlignedRect())
+        if inner.width() > 8 and inner.height() > 8:
+            inner_rect = inner.toAlignedRect()
+            clear = 1.0
+            for step in range(steps, 0, -1):
+                clear *= 1 - int(26 * (1 - step / (steps + 1)) ** 2) / 255
+            painter.fillRect(inner_rect, QColor(40, 26, 14, round((1 - clear) * 255)))
+            layered = layered.subtracted(QRegion(inner_rect))
+        painter.setClipRegion(layered, Qt.ClipOperation.IntersectClip)
         for step in range(steps, 0, -1):
             strength = (1 - step / (steps + 1)) ** 2
             painter.setBrush(QColor(40, 26, 14, int(26 * strength)))
             grown = rect.adjusted(-step, -step + 3, step, step + 3)
             painter.drawRoundedRect(grown, radius + step, radius + step)
+        painter.restore()

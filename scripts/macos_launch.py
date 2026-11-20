@@ -66,6 +66,27 @@ def dismiss_first_wizard_for_desktop_audit(app, output: Path) -> None:
     app._macos_wizard_audit_timer=timer
 
 
+def dispatch_pipe_worker(argv: list[str]) -> int | None:
+    """Existing data-only protocols share real pipes and never enter the GUI."""
+    if len(argv) != 2 or argv[1] not in {
+        '--asr-api-worker', '--subtitle-export-worker', '--glossary-summary-worker', '--studio-qc-worker'
+    }:
+        return None
+    for name, descriptor, mode in (('stdout', 1, 'w'), ('stderr', 2, 'w'), ('stdin', 0, 'r')):
+        if getattr(sys, name) is None:
+            setattr(sys, name, os.fdopen(os.dup(descriptor), mode, encoding='utf8', buffering=1))
+    # Keep imports explicit so the frozen application collects every worker.
+    if argv[1] == '--asr-api-worker':
+        from twobyteasr.providers.cloud_api_worker import main as worker_main
+    elif argv[1] == '--subtitle-export-worker':
+        from twobyteasr.exports.subtitle_export_process import main as worker_main
+    elif argv[1] == '--glossary-summary-worker':
+        from twobyteasr.glossary.summary_process import main as worker_main
+    else:
+        from twobyteasr.subtitle_rules.qc_process import main as worker_main
+    return int(worker_main() or 0)
+
+
 def main() -> int:
     # PyInstaller's hook diverts spawn/resource-tracker children before any
     # QApplication, single-instance guard, defaults or normal GUI is created.
@@ -123,17 +144,9 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-video-worker':
         from twobyteasr.playback.video_decode_worker import main as video_main
         return video_main()
-    if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
-        # Cloud recognition child (2026-10-13): needs no local model runtime.
-        # The parent owns real pipes even when the windowed .app has None.
-        if sys.stdout is None:
-            sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
-        if sys.stderr is None:
-            sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
-        if sys.stdin is None:
-            sys.stdin = os.fdopen(os.dup(0), 'r', encoding='utf8')
-        from twobyteasr.providers.cloud_api_worker import main as cloud_api_worker_main
-        return cloud_api_worker_main()
+    pipe_result = dispatch_pipe_worker(sys.argv)
+    if pipe_result is not None:
+        return pipe_result
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-mlx':
         # Apple Silicon MLX runtime + models (2026-10-13); never opens a GUI.
         if sys.stdout is None:

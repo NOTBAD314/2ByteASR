@@ -491,12 +491,18 @@ def main() -> None:
         raise RuntimeError("Aligner manifest is empty")
     from twobyteasr.recognition.alignment_items import verify_items
     verify_items(jobs,audio_spec)
-    from twobyteasr.recognition.alignment_backend import request_identity
+    from twobyteasr.recognition.alignment_backend import request_identity, worker_comparable
     identity = policy.get('alignment_identity') or {}
     backend = identity.get('backend')
-    actual_identity = request_identity(backend, sys.executable, passes=passes, batch_size=batch_size)
-    if identity != actual_identity:
+    observed_identity = request_identity(backend, sys.executable, passes=passes, batch_size=batch_size)
+    if worker_comparable(identity) != worker_comparable(observed_identity):
         raise RuntimeError('Worker alignment identity differs from requested configuration/runtime')
+    observed_gpu = (observed_identity.get('execution') or {}).get('gpu')
+    if observed_gpu != (identity.get('execution') or {}).get('gpu'):
+        # Only the nvidia-smi reading differs (e.g. one side timed out); the
+        # request identity, with the parent's reading, stays the loaded one.
+        _emit('gpu_identity_differs', requested=(identity.get('execution') or {}).get('gpu'), observed=observed_gpu)
+    actual_identity = identity
     if actual_identity['execution']['packages'].get('qwen-asr') != '0.0.6':
         raise RuntimeError('The slot implementation requires qwen-asr==0.0.6')
     _emit('verifying', model=actual_identity['model'], model_revision=actual_identity['model_revision'])
