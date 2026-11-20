@@ -11,6 +11,9 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication
 
 MAX_BYTES = 24 * 1024 * 1024
+# Chat card, tutorial, save and recovery questions, loading pages: a few sizes at once, each well
+# under a megabyte at normal zoom, so the prepared ones stay instead of being prepared again.
+MAX_SIZES = 8
 
 
 class MascotAssets(QObject):
@@ -92,12 +95,19 @@ class MascotAssets(QObject):
         if size > MAX_BYTES:
             self.failed.add(key)
             return
-        while self.cache and (len(self.cache) >= 4 or self.bytes+size > MAX_BYTES):
+        while self.cache and (len(self.cache) >= MAX_SIZES or self.bytes+size > MAX_BYTES):
             _, (_, _, old_size) = self.cache.popitem(last=False)
             self.bytes -= old_size
         self.cache[key] = ({name: QPixmap.fromImage(image) for name,image in images.items()}, offsets, size)
         self.bytes += size
         self.ready.emit(key)
+
+
+def prewarm(heights, ratio):
+    """Start preparing her layers for these heights in the background (nothing waits for it)."""
+    assets = provider()
+    for height in heights:
+        assets.request(height, ratio)
 
 
 def provider():

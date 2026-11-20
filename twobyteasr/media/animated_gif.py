@@ -27,14 +27,38 @@ MAX_FRAME_PIXELS = 16_777_216
 _build_lock = threading.Lock()
 
 
+# 2026-11-18 (user: adding pictures should be as easy as in Premiere / 剪映):
+# a still picture is a one-frame animation. It rides the GIF path everywhere
+# (preview frames, export, no audio lane, right edge drags longer), so the
+# callers ask ``is_frame_image`` instead of comparing the suffix with ".gif".
+STILL_IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp', '.bmp')
+FRAME_IMAGE_SUFFIXES = ('.gif',) + STILL_IMAGE_SUFFIXES
+STILL_IMAGE_DURATION_MS = 5000   # length of a picture when first placed
+STILL_IMAGE_FPS = 30.
+STILL_IMAGE_MAX_SIDE = 4096      # larger photos are scaled down once, on import
+_FRAME_FORMATS = {'GIF', 'PNG', 'JPEG', 'MPO', 'WEBP', 'BMP'}
+
+
 def is_gif(path):
     return str(path).lower().endswith('.gif')
 
 
+def is_still_image(path):
+    return str(path).lower().endswith(STILL_IMAGE_SUFFIXES)
+
+
+def is_frame_image(path):
+    """A GIF or a picture: frames come from this module, never from a video decoder."""
+    return str(path).lower().endswith(FRAME_IMAGE_SUFFIXES)
+
+
 def sampling_fps(metadata):
     """A frame lattice preserving every GIF delay boundary, not average FPS."""
+    durations = metadata['frame_durations_ms']
+    if len(durations) == 1 and int(durations[0]) >= 1000:
+        return STILL_IMAGE_FPS   # a picture has no delays to preserve
     step = 0
-    for duration in metadata['frame_durations_ms']:
+    for duration in durations:
         step = gcd(step, int(duration))
     return 1000. / max(10, step)
 
@@ -86,17 +110,24 @@ def prepare_gif(path, *, cancelled=None):
         started = time.perf_counter()
         try:
             with Image.open(source) as gif, closing(sqlite3.connect(temporary)) as db:
-                if gif.format != 'GIF':
-                    raise ValueError('文件内容不是有效 GIF')
-                if gif.width * gif.height > MAX_FRAME_PIXELS:
+                picture = not is_gif(source)
+                if gif.format != 'GIF' if not picture else gif.format not in _FRAME_FORMATS:
+                    raise ValueError('文件内容不是有效图片' if picture else '文件内容不是有效 GIF')
+                # Photos are often larger than 16 MP; they are scaled to the
+                # 4K box below instead of being refused.
+                if not picture and gif.width * gif.height > MAX_FRAME_PIXELS:
                     raise ValueError('GIF 单帧超过 1600 万像素，请先缩小素材尺寸')
+                animated = not picture or gif.format in ('PNG', 'WEBP')
                 loop = gif.info.get('loop')
+                size = None
                 db.execute('create table frames (id integer primary key, png blob not null)')
                 db.execute('create table metadata (json text not null)')
                 starts, durations, elapsed, stored = [], [], 0, 0
                 index = 0
                 while True:
                     _cancel(cancelled)
+                    if index and not animated:
+                        break  # e.g. a camera MPO: only its first picture
                     try:
                         gif.seek(index)
                     except EOFError:
@@ -105,7 +136,15 @@ def prepare_gif(path, *, cancelled=None):
                     # one explicit 100ms fallback, shared by every consumer.
                     duration = int(gif.info.get('duration') or 100)
                     duration = max(10, duration)
-                    rgba = gif.convert('RGBA')
+                    frame = gif
+                    if picture and index == 0:
+                        # Phone photos are stored sideways with a rotation tag.
+                        from PIL import ImageOps
+                        frame = ImageOps.exif_transpose(gif)
+                    rgba = frame.convert('RGBA')
+                    if picture and max(rgba.size) > STILL_IMAGE_MAX_SIDE:
+                        rgba.thumbnail((STILL_IMAGE_MAX_SIDE, STILL_IMAGE_MAX_SIDE), Image.Resampling.LANCZOS)
+                    size = size or rgba.size
                     buffer = io.BytesIO()
                     rgba.save(buffer, format='PNG', compress_level=1)
                     payload = buffer.getvalue()
@@ -118,7 +157,10 @@ def prepare_gif(path, *, cancelled=None):
                     index += 1
                 if not starts:
                     raise ValueError('GIF 没有可解码画面')
-                data = dict(identity=identity, width=gif.width, height=gif.height,
+                if picture and index == 1:
+                    # One frame: a still. It shows for as long as its clip is.
+                    durations, elapsed = [STILL_IMAGE_DURATION_MS], STILL_IMAGE_DURATION_MS
+                data = dict(identity=identity, width=size[0], height=size[1],
                     frame_starts_ms=starts, frame_durations_ms=durations, duration_ms=elapsed,
                     frame_count=index, loop=loop, compressed_bytes=stored,
                     preparation_ms=round((time.perf_counter()-started)*1000, 2))

@@ -1149,8 +1149,8 @@ class _PreviewList(QWidget):
         self._sync_bar()
 
     def wheelEvent(self, event):
-        self.bar.setValue(self.bar.value() - event.angleDelta().y() // 120 * self.ROW * 3)
-        event.accept()
+        from ..design.smooth_scroll import glide_wheel
+        glide_wheel(self.bar, event, self.ROW * 3)    # 2026-11-18: glides like every other list
 
     def mouseMoveEvent(self, event):
         index = (int(event.position().y()) + self._offset) // self.ROW

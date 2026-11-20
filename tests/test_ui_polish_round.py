@@ -176,6 +176,12 @@ def _open_terms(win) -> TermLibraryDialog:
     win.show()
     win._manage_terms()
     _app().processEvents()
+    # The first visit builds the library after the page's first frame (2026-11-18).
+    for _ in range(1000):
+        if win.term_library_page.library is not None:
+            break
+        QTest.qWait(10)
+    _app().processEvents()
     return win.term_library_page.library
 
 

@@ -75,7 +75,7 @@ def test_user_guidance_replaces_only_the_guidance(task):
     assert prompt.startswith(head) and prompt.endswith(tail)
     assert custom.strip() in prompt and built_in not in prompt
     # The program-owned protocol and the hard limits survive any guidance.
-    assert '"segmented_text"' in prompt and 'cue maximum 26' in prompt and 'duration maximum 7s' in prompt
+    assert 'marked_text' in prompt and '"boundaries"' in prompt and 'cue maximum 26' in prompt         and 'duration maximum 7s' in prompt
     assert key.endswith('+custom-'+sha(custom.strip())[:12])
     # Saving the built-in text unchanged, or nothing, is the built-in prompt.
     for same in ("", "   ", gr.default_grouping_guidance("ja") + "\n"):

@@ -114,6 +114,9 @@ class CoverEditor(QDialog):
         QTimer.singleShot(0, self.view.fit_canvas)
 
     def _build(self):
+        # The sheet first: each control is styled once as it is shown, not built and then
+        # restyled as a finished subtree (2026-11-19, user: windows stutter when they open).
+        self.refresh_theme_palette()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
@@ -388,7 +391,6 @@ class CoverEditor(QDialog):
         self.open_folder.clicked.connect(lambda: self.open_result(folder=True))
         bottom.addWidget(self.open_folder)
         layout.addLayout(bottom)
-        self.refresh_theme_palette()
 
     def refresh_theme_palette(self):
         from ..design.theme_manager import theme_key

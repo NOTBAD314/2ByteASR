@@ -35,7 +35,7 @@ def test_adopt_two_different_lengths_retains_row_and_toggles_locally(page):
     assert visible(w)==['middle','later']
     w._toggle_issue('middle',1)
     assert p.cues[0].text=='大骨龙和火笼来了'
-    assert visible(w)==['later']
+    assert visible(w)==['middle','later']  # edited here: stays until the filter is picked again
     count=w._live_stack().count()
     w._toggle_issue('middle',0)
     assert p.cues[0].text=='古龙和火笼来了'
@@ -45,7 +45,7 @@ def test_adopt_two_different_lengths_retains_row_and_toggles_locally(page):
 def test_manual_rewrite_retains_even_all_stale_and_dismiss_keeps_edit(page):
     w,p=page
     w._edit_committed('middle','手动改成完整的新句子')
-    assert visible(w)==['later']
+    assert visible(w)==['middle','later']
     w._dismiss_group('middle',-1)
     assert visible(w)==['later']
     assert p.cues[0].text=='手动改成完整的新句子'
@@ -65,7 +65,7 @@ def test_ignore_without_edit_is_not_changed_and_does_not_revive(page):
 def test_adopted_row_can_be_dismissed_undo_redo_and_restored_from_disk(page,tmp_path):
     w,p=page
     w._toggle_issue('middle',0);w._toggle_issue('middle',1)
-    assert 'middle' not in visible(w)
+    assert 'middle' in visible(w)
     w._dismiss_group('middle',0)
     assert visible(w)==['later']
     w._undo();assert 'middle' not in visible(w)
@@ -203,7 +203,7 @@ def test_shift_r_uses_same_retained_adoption_and_r_stays_text_in_editor(page):
     QTest.keyClick(w.list,Qt.Key.Key_R,Qt.KeyboardModifier.ShiftModifier)
     assert p.cues[0].text=='大骨龙和火龙来了' and 'middle' in visible(w)
     QTest.keyClick(w.list,Qt.Key.Key_R,Qt.KeyboardModifier.ShiftModifier)
-    assert p.cues[0].text=='大骨龙和火笼来了' and 'middle' not in visible(w)
+    assert p.cues[0].text=='大骨龙和火笼来了' and 'middle' in visible(w)
     w._edit('middle');w.list.editor.setText('')
     QTest.keyClick(w.list.editor,Qt.Key.Key_R)
     assert w.list.editor.text()=='r' and p.cues[0].text=='大骨龙和火笼来了'

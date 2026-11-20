@@ -73,7 +73,29 @@ def sse_data(chunks, diagnostics, cancel_check=None):
         raise StreamProtocolError('Provider在SSE事件中间断开', 'structured_output_truncated')
 
 
-def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
+def _tool_arguments(calls, tool_name):
+    """Argument text of the one expected strict function call in a delta or message."""
+    if not isinstance(calls, list):
+        raise StreamProtocolError('tool_calls必须为数组', 'provider_tool_request')
+    text = []
+    for call in calls:
+        if not isinstance(call, dict) or call.get('index', 0) != 0:
+            raise StreamProtocolError('收到多个或无效的工具调用', 'provider_tool_request')
+        function = call.get('function') or {}
+        if not isinstance(function, dict):
+            raise StreamProtocolError('工具调用缺少function对象', 'provider_tool_request')
+        if function.get('name') not in (None, '', tool_name):
+            raise StreamProtocolError('模型调用了未请求的工具', 'provider_tool_request')
+        arguments = function.get('arguments') or ''
+        if not isinstance(arguments, str):
+            raise StreamProtocolError('工具参数必须为字符串', 'provider_tool_request')
+        text.append(arguments)
+    return ''.join(text)
+
+
+def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None, tool_name=None):
+    """``tool_name``: the answer arrives as that strict function's arguments (strict_tool_output)."""
+    finals = {'stop', 'tool_calls'} if tool_name else {'stop'}
     parts = []
     finish = None
     done = False
@@ -122,13 +144,16 @@ def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
             raise StreamProtocolError('SSE delta必须为对象')
         if delta.get('refusal'):
             raise StreamProtocolError('Provider拒绝生成业务正文', 'provider_refusal')
-        if delta.get('tool_calls'):
+        if delta.get('tool_calls') and not tool_name:
             raise StreamProtocolError('主题请求返回工具调用，缺少最终正文', 'provider_tool_request')
         for field in ('content', 'reasoning_content', 'reasoning'):
             if delta.get(field) is not None and not isinstance(delta[field], str):
                 raise StreamProtocolError(f'SSE delta.{field}必须为字符串')
         reasoning = delta.get('reasoning_content') or delta.get('reasoning') or ''
         text = delta.get('content') or ''
+        if tool_name:
+            # Only the function arguments are the answer; free text beside a forced call is not.
+            text = _tool_arguments(delta['tool_calls'], tool_name) if delta.get('tool_calls') else ''
         if finish is not None and (reasoning or text or choice.get('finish_reason')):
             raise StreamProtocolError('终态之后出现第二个正文或终态', 'conflicting_final')
         if reasoning:
@@ -147,14 +172,14 @@ def chat_body(chunks, diagnostics, emit=lambda *_: None, cancel_check=None):
         if choice.get('finish_reason') is not None:
             finish = choice['finish_reason']
             diagnostics['finish_reason'] = finish
-            if finish != 'stop':
+            if finish not in finals:
                 category = ('structured_output_truncated' if finish in {'length', 'max_tokens'} else
                     'provider_refusal' if finish in {'refusal', 'content_filter', 'safety'} else
                     'provider_tool_request' if finish in {'tool_calls', 'function_call'} else 'provider_terminal_error')
                 raise StreamProtocolError(f'Provider未完整生成正文（finish_reason={finish}，正文{diagnostics["content_chars"]}字符）', category)
     if cancel_check and cancel_check():
         raise StreamProtocolError('流式请求已取消', 'cancelled')
-    if not done or finish != 'stop':
+    if not done or finish not in finals:
         raise StreamProtocolError('Provider连接结束但未收到完整终态', 'structured_output_truncated')
     body = ''.join(parts)
     if not body.strip():
@@ -283,7 +308,7 @@ from .usage_ledger import tracked_diagnostics, dispatch
 
 
 @tracked_diagnostics('diagnostics')
-def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=None, *, protocol='chat', total_deadline=None, input_budget=None):
+def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=None, *, protocol='chat', total_deadline=None, input_budget=None, tool_name=None):
     """One cancellable request; never retries a partially received response."""
     import requests
     # Match requests' JSON encoding at the final transport boundary. Only
@@ -410,6 +435,9 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                         choice = choices[0]
                         content = choice['message']['content']
                         reason = choice['finish_reason']
+                        if tool_name:
+                            content = _tool_arguments(choice['message'].get('tool_calls') or [], tool_name)
+                            reason = 'stop' if reason in ('stop', 'tool_calls') else reason
                         reasoning = choice['message'].get('reasoning_content') or choice['message'].get('reasoning')
                         if isinstance(reasoning,str) and reasoning:send('thinking',reasoning)
                         public_summary = choice['message'].get('reasoning_summary')
@@ -437,7 +465,10 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     from .anthropic_messages import messages_body as parser
                 else:
                     parser = responses_body if protocol == 'responses' else chat_body
-                content = parser(chunks(1024), diagnostics, send, stop.is_set)
+                if parser is chat_body and tool_name:
+                    content = chat_body(chunks(1024), diagnostics, send, stop.is_set, tool_name=tool_name)
+                else:
+                    content = parser(chunks(1024), diagnostics, send, stop.is_set)
             send('complete', content)
         except BaseException as exc:
             send('error', exc)

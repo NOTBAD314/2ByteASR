@@ -182,6 +182,21 @@ class AIProvider:
         **kwargs: Any,
     ) -> dict[str, Any]:
         mode = self.structured_output_mode()
+        endpoint = getattr(self, 'endpoint', None)
+        if mode is StructuredOutputMode.JSON_MODE and isinstance(endpoint, dict):
+            # 2026-11-18: optional strict tool call (strict_tool_output); JSON mode on any rejection.
+            from . import strict_tool_output
+            strict = strict_tool_output.request_for(endpoint, schema,
+                streamed=kwargs.get('on_stream_event') is not None,
+                stage='polish' if kwargs.get('operation_kind') == 'polish' else 'group')
+            if strict is not None:
+                try:
+                    return strict_tool_output.drop_strict_nulls(_extract_json_object(self.complete(
+                        messages, json_schema=dict(schema), strict_tool=strict, **kwargs)), schema)
+                except AIProviderError as error:
+                    if str(getattr(error, 'category', '')) not in strict_tool_output.FALLBACK_CATEGORIES:
+                        raise
+                    strict_tool_output.remember_rejection(endpoint, error)
         if mode is StructuredOutputMode.STRICT_JSON_SCHEMA:
             content = self.complete(messages, json_schema=dict(schema), **kwargs)
         elif mode is StructuredOutputMode.JSON_MODE:
@@ -356,6 +371,9 @@ class OpenAICompatibleProvider(AIProvider):
                                             cancel_check=cancel_check, stage=stage, operation=operation,
                                             json_wanted=json_schema is not None or kwargs.get("response_format") is not None,
                                             on_stream_event=on_stream_event, **kwargs)
+        strict_tool = kwargs.pop("strict_tool", None)
+        if strict_tool is not None and (on_stream_event is None or protocol == "responses"):
+            raise AIProviderError("严格结构化输出只用于流式请求。", category="configuration_error")
         if on_stream_event is not None and protocol != "responses":
             from .llm_adapter import LLMRequestError, post_chat_completion_stream
 
@@ -369,13 +387,15 @@ class OpenAICompatibleProvider(AIProvider):
                     temperature=temperature,
                     timeout=timeout,
                     response_format=(
-                        {"type": "json_object"} if json_schema is not None
+                        None if strict_tool is not None
+                        else {"type": "json_object"} if json_schema is not None
                         else kwargs.get("response_format")
                     ),
                     provider=self.endpoint.get("provider", "custom"),
                     base_url=self.endpoint.get("base_url", ""),
                     stage=stage,
                     key_source=str(self.endpoint.get("key_source") or ""),
+                    strict_tool=strict_tool,
                     on_stream_event=on_stream_event,
                     cancel_check=cancel_check,
                     enable_thinking=True if design_thinking else False if implementation_only else kwargs.get("enable_thinking"),

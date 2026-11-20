@@ -295,15 +295,16 @@ def alignment_audio_basis(project, cue_id):
     return fingerprint(dict(plan=diagnostic, files=files))
 
 
-def start_realign(page, cue_ids, on_done=None) -> None:
+def start_realign(page, cue_ids, on_done=None, on_fail=None, *, undo_label='') -> bool:
     """Context-menu action: measure in the background, apply as one undo step.
 
-    ``on_done(results)`` runs after the receipts are applied (split at the cursor re-plans then).
+    ``on_done(results)`` runs after the receipts are applied (split at the cursor re-plans then);
+    ``on_fail(reason)`` when nothing was applied (cancelled, failed, no reliable time; 2026-11-18).
     """
     from ..i18n import bind_text, tr
     project = page.project
     if not project or not cue_ids:
-        return
+        return False
 
     def message(text):
         label = getattr(page, "save_state", None)
@@ -313,13 +314,13 @@ def start_realign(page, cue_ids, on_done=None) -> None:
     from ..timeline.studio_caption_timeline import independent_captions
     if not independent_captions(project):
         message(tr("这个工程还没有转换成时间轴字幕，无法重新对齐"))
-        return
+        return False
     snapshot = copy.deepcopy(project)
     try:
         audio_revisions = {str(key):alignment_audio_basis(snapshot,key) for key in cue_ids}
     except Exception as exc:
         message(tr("无法重新对齐：{error}",error=str(exc)[:160]))
-        return
+        return False
     from ..recognition.service import CancellationToken
     from ..recognition.run_context import RuntimeContext, activate_runtime_context
     previous_token = getattr(page, '_realign_cancel', None)
@@ -375,14 +376,19 @@ def start_realign(page, cue_ids, on_done=None) -> None:
     message(tr("正在重新对齐 {count} 条字幕，并用第二份证据检查切点…", count=len(cue_ids)))
 
     def finish(result):
-        page._realign_signals = None
+        if getattr(page, '_realign_signals', None) is signals:
+            page._realign_signals = None
         if token.is_cancelled or getattr(page,'_realign_cancel',None) is not token:
             end_task(cancelled=True,error='已取消，已有时间保留')
             message(tr('重新对齐已取消，已有字词时间保留'))
+            if callable(on_fail):
+                on_fail('cancelled')
             return
         if isinstance(result, Exception):
             end_task(error=str(result)[:160])
             message(tr("重新对齐失败：{error}", error=str(result)[:160]))
+            if callable(on_fail):
+                on_fail(str(result)[:160])
             return
         if token.is_cancelled or getattr(page, '_realign_cancel', None) is not token:
             return
@@ -402,15 +408,23 @@ def start_realign(page, cue_ids, on_done=None) -> None:
         if not fresh:
             end_task(error='未取得可用于当前字幕的可靠时间，已有时间保留')
             message(tr("未取得可用于当前字幕的可靠时间，已有字词时间保留；可检查原文、素材或稍后重试。"))
+            if callable(on_fail):
+                on_fail('no_reliable_time')
             return
-        page.undo_stack.push(RealignWordsCommand(project, fresh))
-        end_task(applied=set(fresh),error='该字幕没有新的可靠时间或已被编辑，已有时间保留')
-        from ..recognition.boundary_grades import counts
-        graded = counts([row for value in fresh.values() for row in value.get("boundaries") or ()])
-        message(tr("已重新对齐 {count} 条字幕：可独立切 {independent} 处、只能整词 {whole} 处、不可靠 {unreliable} 处",
-                   count=len(fresh), **graded))
-        if callable(on_done):
-            on_done(fresh)
+        if undo_label:
+            page.undo_stack.beginMacro(undo_label)
+        try:
+            page.undo_stack.push(RealignWordsCommand(project, fresh))
+            end_task(applied=set(fresh),error='该字幕没有新的可靠时间或已被编辑，已有时间保留')
+            from ..recognition.boundary_grades import counts
+            graded = counts([row for value in fresh.values() for row in value.get("boundaries") or ()])
+            message(tr("已重新对齐 {count} 条字幕：可独立切 {independent} 处、只能整词 {whole} 处、不可靠 {unreliable} 处",
+                       count=len(fresh), **graded))
+            if callable(on_done):
+                on_done(fresh)
+        finally:
+            if undo_label:
+                page.undo_stack.endMacro()
 
     signals.done.connect(finish)
 
@@ -449,3 +463,4 @@ def start_realign(page, cue_ids, on_done=None) -> None:
             pass  # The page was destroyed; its cancellation token is already set.
 
     threading.Thread(target=work, name="caption-realign", daemon=True).start()
+    return True

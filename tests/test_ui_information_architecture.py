@@ -460,6 +460,16 @@ def test_modal_host_uses_stable_direct_painted_backdrop():
     app.processEvents()
 
 
+def _wait_for_term_library(win):
+    """The first visit builds the library after the page's first frame (2026-11-18)."""
+    for _ in range(1000):
+        if win.term_library_page.library is not None:
+            break
+        QTest.qWait(10)
+    assert win.term_library_page.library is not None
+    _app().processEvents()
+
+
 def test_term_library_is_resident_page_and_batch_picker_remains_modal():
     app = _app()
     win = _window()
@@ -469,6 +479,7 @@ def test_term_library_is_resident_page_and_batch_picker_remains_modal():
     assert win.term_library_page.library is None
     win._manage_terms()
     app.processEvents()
+    _wait_for_term_library(win)
     host = win._modal_host
     dialog = win._term_library_dialog
     table_model = dialog.listing.model()
@@ -513,6 +524,7 @@ def test_repeated_term_library_navigation_reuses_page_and_table_model():
 
     win._manage_terms()
     app.processEvents()
+    _wait_for_term_library(win)
     dialog = win._term_library_dialog
     table_model = dialog.listing.model()
     for _ in range(20):
@@ -533,6 +545,7 @@ def test_repeated_term_library_navigation_reuses_page_and_table_model():
 
     win._manage_terms()
     app.processEvents()
+    _wait_for_term_library(win)
     assert win.pages.currentWidget() is win.term_library_page
     assert win._term_library_dialog.isVisible()
     assert host.isHidden()
@@ -564,6 +577,7 @@ def test_smart_glossary_close_does_not_hide_shared_modal_body():
 
     win._manage_terms()
     app.processEvents()
+    _wait_for_term_library(win)
     assert win.pages.currentWidget() is win.term_library_page
     assert win._term_library_dialog.isVisible()
     assert host.isHidden()

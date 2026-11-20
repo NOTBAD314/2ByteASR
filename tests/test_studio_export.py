@@ -118,6 +118,32 @@ def test_export_workspace_21_exposes_range_rich_settings_and_state_pages(tmp_pat
     app.processEvents()
 
 
+def test_export_workspace_sheet_goes_on_once_before_its_controls(tmp_path, monkeypatch):
+    """2026-11-19 (user: dialogs stutter when they open): set after the build, the sheet
+    restyled the finished subtree, about a third of the time the workspace took to open."""
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    project = SubtitleProject(
+        media=StudioMedia(path=str(tmp_path / "video.mp4"), duration_ms=60_000, width=1920, height=1080)
+    )
+    built_when_styled = []
+    original = StudioExportWorkspace._apply_workspace_theme
+
+    def counted(self):
+        built_when_styled.append(hasattr(self, "preview_scrub"))
+        original(self)
+
+    monkeypatch.setattr(StudioExportWorkspace, "_apply_workspace_theme", counted)
+    workspace = StudioExportWorkspace(project, str(tmp_path / "preview.ass"))
+    assert built_when_styled == [False]
+    assert workspace.styleSheet()
+    assert workspace.preview_scrub._colors                     # the scrub still gets its colours
+    workspace.refresh_theme_palette()                          # a later theme change still restyles
+    assert built_when_styled == [False, True]
+    workspace.deleteLater()
+    app.processEvents()
+
+
 def test_export_workspace_compact_layout_scrolls_without_cta_overlap(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))

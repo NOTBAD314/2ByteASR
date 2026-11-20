@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import struct
+import threading
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,30 @@ def local_faces() -> tuple[FontMetadata, ...]:
         try: found.extend(read_faces(str(path)))
         except (OSError, KeyError, struct.error, ValueError): pass
     return tuple(found)
+
+
+_WARM_LOCK = threading.Lock()
+_WARM_THREAD: list = []
+
+
+def local_faces_ready() -> bool:
+    """True once local_faces() has been read (no disk access here)."""
+    return local_faces.cache_info().currsize > 0
+
+
+def warm_local_faces() -> None:
+    """Read every installed face's metadata on a daemon thread, once.
+
+    2026-11-19 (user: opening a project froze the workbench): the style
+    panel's font field read all installed fonts on its first paint, on the
+    GUI thread; with many fonts installed that took most of a second.
+    """
+    with _WARM_LOCK:
+        if _WARM_THREAD or local_faces_ready():
+            return
+        thread = threading.Thread(target=local_faces, daemon=True, name='font-metadata-warmup')
+        _WARM_THREAD.append(thread)
+    thread.start()
 
 
 @lru_cache(maxsize=512)

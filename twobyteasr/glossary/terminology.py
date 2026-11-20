@@ -82,6 +82,29 @@ def _hotword_tier(term: TermEntry) -> int:
     return 4 if category in _ORDINARY_CATEGORIES else 3
 
 
+_KANA_READING = re.compile(r"[ぁ-ゖァ-ヺーヽヾ]{2,}")
+
+
+def recognition_hotword_readings(snapshot: Any, canonicals=None, *, per_term: int = 2) -> dict[str, tuple[str, ...]]:
+    """Kana aliases of confirmed, correction-enabled names: how a written name is heard.
+
+    Only names whose written form is not itself kana, and only whole-kana aliases (the
+    user's 「常被聽錯成サメイ」), at most ``per_term`` each, in ``canonicals`` order.
+    """
+    wanted = list(canonicals) if canonicals is not None else list(recognition_hotwords(snapshot))
+    found: dict[str, list[str]] = {}
+    for library in getattr(snapshot, 'libraries', ()) or ():
+        for term in library.terms:
+            if not (term.confirmed and term.correction_enabled) or _KANA_READING.fullmatch(term.canonical):
+                continue
+            for alias in term.aliases:
+                if _KANA_READING.fullmatch(alias) and alias != term.canonical:
+                    rows = found.setdefault(term.canonical, [])
+                    if alias not in rows and len(rows) < per_term:
+                        rows.append(alias)
+    return {name: tuple(found[name]) for name in wanted if found.get(name)}
+
+
 def recognition_hotwords(snapshot: Any) -> tuple[str, ...]:
     """Ranked hotwords; objects that only carry canonical_terms keep their order."""
     ranked = getattr(snapshot, "hotword_terms", None)
@@ -548,6 +571,21 @@ class TermResolver:
         pieces.append(text[cursor:])
         return Resolution("".join(pieces), tuple(hits), tuple(skipped), tuple(conflicts.values()))
 
+    def domain_blocked_libraries(self, scene) -> list[dict]:
+        """Libraries whose aliases a user-selected scene of another domain blocks (see resolve)."""
+        if scene is None or getattr(scene, 'source', '') != 'user_selected':
+            return []
+        from ..recognition.content_scene import library_domain
+        rows = []
+        for library in self.snapshot.libraries:
+            domain_id, domain_name = library_domain(library)
+            if (domain_id and domain_id not in scene.domain_ids and domain_name != scene.domain
+                    and any(term.aliases for term in library.terms)):
+                rows.append({'library_id': library.id, 'library_name': library.name,
+                             'domain_id': domain_id, 'domain_name': domain_name,
+                             'aliases': {self._key(alias) for term in library.terms for alias in term.aliases}})
+        return rows
+
     def resolve(self, text: str, *, scene=None, context_text: str = "") -> Resolution:
         original = str(text)
         conflicts = dict(self._conflicts)
@@ -717,6 +755,50 @@ def remap_literal_words(original: str, result: Resolution, words: Iterable[WordU
     return mapped, proofs
 
 
+def _report_domain_blocked_libraries(resolver, scene, scanned, segments, legacy) -> list[dict]:
+    """Say once, visibly, that an enabled library was not applied because of the scene.
+
+    2026-11-18 (user's 鳴潮 special): the Home game field 「鸣潮声优特别节目」 did not name the
+    鳴潮 library's domain, so all 51 confirmed サメ → 鎖暝 replacements were skipped and the
+    only trace was ``alias_domain_conflict`` in the journal. Only libraries that actually
+    lost a match in this run are reported.
+    """
+    blocked = resolver.domain_blocked_libraries(scene)
+    if not blocked:
+        return []
+    counts = {row['library_id']: 0 for row in blocked}
+    for row in scanned:
+        for hit in row['matches']:
+            if hit.get('reason') != 'alias_domain_conflict':
+                continue
+            key = resolver._key(hit.get('source', ''))
+            for library in blocked:
+                if key in library['aliases']:
+                    counts[library['library_id']] += 1
+    reported = [{**{k: v for k, v in row.items() if k != 'aliases'}, 'skipped_matches': counts[row['library_id']]}
+                for row in blocked if counts[row['library_id']]]
+    if not reported or legacy is None:
+        return reported
+    legacy.record_run_event('terminology_library_domain_blocked', scene_domain=scene.domain,
+                            scene_source=scene.source, libraries=reported)
+    add = getattr(legacy, 'add_review_item', None)
+    try:
+        from ..recognition.run_context import get_runtime_context
+        existing = list(get_runtime_context().review_items or ())
+    except Exception:
+        existing = []
+    # The resolver runs before and after proofreading; one review item per task is enough.
+    if callable(add) and not any(item.get('category') == '词库未套用' for item in existing if isinstance(item, dict)):
+        names = '、'.join(f"「{row['library_name']}」" for row in reported)
+        total = sum(row['skipped_matches'] for row in reported)
+        first = segments[0].start if segments else 0.0
+        add(first, '词库未套用',
+            f'词库{names}的领域与首页游戏名称「{scene.domain}」不符，{total} 处已确认别名没有替换。'
+            '把游戏名称改成词库的领域名（或留空）后重新处理即可套用。',
+            '', priority=2, severity='warning')
+    return reported
+
+
 def apply_to_segments(segments: list, snapshot: GlossarySnapshot, legacy: Any | None = None) -> list:
     resolver = TermResolver(snapshot)
     from ..recognition.content_scene import runtime_content_scene
@@ -758,6 +840,7 @@ def apply_to_segments(segments: list, snapshot: GlossarySnapshot, legacy: Any | 
             "requires_acoustic_alignment": not case_only and not source_span_mapped}
         segment.caption_arbitration.setdefault("terminology_normalization", []).append(receipt)
         changes.append({"segment_id": segment.segment_id, **receipt})
+    _report_domain_blocked_libraries(resolver, scene, scanned, segments, legacy)
     if legacy is not None:
         legacy.record_run_event("terminology_applied", snapshot_digest=snapshot.digest,
             segment_count=len(changes), replacement_count=sum(len(x["hits"]) for x in changes),

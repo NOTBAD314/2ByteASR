@@ -68,6 +68,10 @@ class StudioLoadingView(QFrame):
         self._cover_painted_region = QRegion()
         self._cover_painted_stamp = self._cover_submitted_stamp = None
         self.setObjectName('studioLoadingSurface')
+        # 2026-11-18 (user: entering Studio should be smooth): the loading card fades in and, when
+        # Studio is ready, fades out over it instead of cutting (design.transitions).
+        from ..design.transitions import fade_on_show_and_hide
+        fade_on_show_and_hide(self)
         self._owns_theme_sheet = True
         if self.uses_native_cover:
             # The format is immutable once the native resource exists.
@@ -922,6 +926,7 @@ class StudioLoadingSession(QObject):
             self._native_present_pending = None
             self._native_pending_token = None
             self._native_waiting_owner = False
+            self._cover_before_hide()
             self.view.hide()
             if generation != self.generation:
                 return
@@ -939,6 +944,7 @@ class StudioLoadingSession(QObject):
             self._sync_surface()
             return
         visible = self.view.isVisible()
+        self._cover_before_hide()
         self.view.hide()
         if visible:
             # Hide invalidates the backing store. Flush that transition before
@@ -947,6 +953,17 @@ class StudioLoadingSession(QObject):
         if callable(self.on_retired):
             self.on_retired()
         self._sync_surface()
+
+    def _cover_before_hide(self):
+        # 2026-11-19 (user: entering the workbench still flashes): the card's picture is put over it
+        # while it is still on the screen, then fades; Qt's Hide event came after the card's native
+        # window had gone, so the editor showed for a moment before the fade window covered it.
+        fade = getattr(self.view, '_show_hide_fade', None)
+        if fade is not None:
+            try:
+                fade.before_hide()
+            except Exception:  # noqa: BLE001 - the card is hidden either way
+                pass
 
     def _hold_native_visibility(self):
         return self.handoff_scope() if callable(self.handoff_scope) else nullcontext()

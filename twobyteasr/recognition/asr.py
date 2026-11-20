@@ -1337,17 +1337,35 @@ def build_qwen_asr_context(media_path):
     record_run_event("asr_content_context_prepared", model="Qwen3-ASR",
         prompt_version="qwen-context-v2-shared-scene", content_scene=scene.to_dict(),
         context_characters=len(context))
-    from ..glossary.terminology import recognition_hotwords, runtime_snapshot
+    from ..glossary.terminology import recognition_hotword_readings, recognition_hotwords, runtime_snapshot
+    snapshot = runtime_snapshot()
     terms = []
     cost = 0
-    for term in recognition_hotwords(runtime_snapshot()):
-        if len(terms) >= 64 or cost + len(term) > 600:
+    for term in recognition_hotwords(snapshot):
+        if len(terms) >= QWEN_CONTEXT_MAX_TERMS or cost + len(term) > QWEN_CONTEXT_MAX_CHARS:
             break
         terms.append(term)
         cost += len(term) + 1
     if terms:
         context += "用户已确认的专名写法：" + "、".join(terms) + "。仅在实际语音提到时采用，保持大小写和数字，不得补写未说内容。"
+    # 2026-11-18 (鳴潮 special): a written form alone (鎖暝) does not tell the model how the
+    # name sounds; the user's kana aliases (サメイ) do. Only names already listed above.
+    readings, spent = [], 0
+    for canonical, kana in recognition_hotword_readings(snapshot, terms).items():
+        item = canonical + "＝" + "／".join(kana)
+        if spent + len(item) > QWEN_CONTEXT_READING_CHARS:
+            break
+        readings.append(item)
+        spent += len(item) + 1
+    if readings:
+        context += "这些专名的读音：" + "、".join(readings) + "。听到这些读音时写成等号左边的写法。"
     return context
+
+
+# Qwen3-ASR reads this context in every window: keep it a bounded hint, not a dictionary.
+QWEN_CONTEXT_MAX_TERMS = 96
+QWEN_CONTEXT_MAX_CHARS = 900
+QWEN_CONTEXT_READING_CHARS = 600
 
 
 def _qwen_context_receipt(context):

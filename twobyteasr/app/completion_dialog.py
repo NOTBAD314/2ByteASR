@@ -185,7 +185,9 @@ class CompletionDialog(SpringDialog):
             geometry = self.frameGeometry()
             geometry.moveCenter(parent.window().frameGeometry().center())
             self.move(geometry.topLeft())
-        self.setWindowOpacity(0.0)
-        self._fade_in.stop()
-        self._fade_in.start()
+        from ..design.transitions import handles
+        if not handles(self):              # 2026-11-18: else the app-wide dialog motion opens it
+            self.setWindowOpacity(0.0)
+            self._fade_in.stop()
+            self._fade_in.start()
         self.confirm_button.setFocus(Qt.FocusReason.ActiveWindowFocusReason)

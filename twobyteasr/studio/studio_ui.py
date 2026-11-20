@@ -34,6 +34,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QPoint,
     QPropertyAnimation,
+    QRect,
     QSize,
     Qt,
     QTimer,
@@ -210,6 +211,16 @@ _GEOMETRY_EVENT_TYPES = frozenset({
     QEvent.Type.Show,
     QEvent.Type.DevicePixelRatioChange,
 })
+
+
+def _no_change():
+    """A do-nothing stand-in for ``design.transitions.content_change`` when nothing changes."""
+    from contextlib import nullcontext
+    return nullcontext()
+
+
+# (path, mtime_ns, size) -> studio preferences of studio_settings_path().
+_STUDIO_PREFERENCES_CACHE: dict[str, tuple] = {}
 
 
 class SubtitleStudioPage(
@@ -569,10 +580,12 @@ class SubtitleStudioPage(
             or not bool(getattr(getattr(self, 'video', None), '_paused', True))))
         self.destroyed.connect(self._project_heap.close)
         self.setObjectName("subtitleStudio")
-        # Construction placeholder; the complete native Qt window sheet is
-        # installed before display, retaining parent and inline style rules.
-        from ..design.theme_scopes import SHELL_QSS
-        self.setStyleSheet(SHELL_QSS)
+        # 2026-11-18: the complete window sheet from the start, while nothing
+        # is polished yet. With the shell placeholder every widget was
+        # polished during the build and then unpolished and polished again by
+        # one setStyleSheet on the finished tree (0.6-0.8 s in one step).
+        from ..design.theme_scopes import apply_scope
+        apply_scope(self)
         self.session = StudioSession()
         self.project_controller = StudioProjectController(self, self.session)
         self.cue_controller = StudioCueController(self, self.session)
@@ -596,8 +609,10 @@ class SubtitleStudioPage(
         self._subtitle_track_visibility: dict[str, bool] = {}
         self._manual_text_baselines: dict[str, str] = {}
         self._learning_store = GlossaryLearningStore()
-        from ..subtitle_rules.stutter_cleanup import warm_text_analysis
-        warm_text_analysis()
+        # 2026-11-18: no dictionary warm-up here. jieba/pypinyin hold the
+        # interpreter lock for most of their load, so starting it while this
+        # page builds froze the loading card for 0.3-0.9 s. StudioReadiness
+        # warms them 1.5 s after a Chinese project is ready (_warm_text_analysis).
         # Evidence tokens recorded per cue (typing chains) so an undo can revert
         # exactly the evidence whose resulting text no longer holds.
         self._learning_evidence_tokens: dict[str, list[str]] = {}
@@ -606,6 +621,7 @@ class SubtitleStudioPage(
         self._pending_qc_cue_ids: set[str] = set()
         self._qc_full_scan_pending = False
         self._teach_hints = TeachHintStore()
+        self._teach_hints.prefetch()
         self._session_teach_hints: set[str] = set()
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(500)
@@ -779,7 +795,7 @@ class SubtitleStudioPage(
         )
         self._workspace_ready = False
         self._workspace_build_profile = []
-        self._workspace_steps = builder.build_steps()
+        self._workspace_steps = self._with_language_pass(builder.build_steps())
         self._workspace_build_timer = QTimer(self)
         self._workspace_build_timer.setSingleShot(True)
         self._workspace_build_timer.timeout.connect(self._advance_workspace_build)
@@ -788,6 +804,22 @@ class SubtitleStudioPage(
         for _stage in self._workspace_steps:
             pass
         self._finish_workspace_initialization()
+
+    def _with_language_pass(self, steps):
+        """The build, then the interface-language pass in GUI slices.
+
+        2026-11-19 (user: opening a project froze the workbench): the first
+        switch into the workbench translated the whole page in one go
+        (0.03-0.26 s). Done here, between build slices, the page arrives
+        stamped and MainWindow._prepare_page_presentation skips it.
+        """
+        yield from steps
+        from ..i18n_widgets import apply_steps, install_language_events
+        owner = self.window()
+        language = getattr(owner, '_ui_language', None) or current_language()
+        install_language_events()
+        yield from apply_steps(self, language)
+        self.setProperty('_2b_language_applied', language)
 
     def resume_workspace_construction(self):
         if not self._workspace_ready and self._workspace_steps is not None and not self._close_requested:
@@ -1186,12 +1218,25 @@ class SubtitleStudioPage(
         return bool(host is not None and host.isVisible())
 
     def _studio_preferences(self) -> dict[str, object]:
+        # Read again only when the file changed (2026-11-19: the library and
+        # autosave re-read it on the GUI thread, 0.1-0.25 s on a busy disk).
+        path = studio_settings_path()
         try:
-            payload = json.loads(studio_settings_path().read_text(encoding="utf-8"))
+            stat = path.stat()
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return {}
+        cached = _STUDIO_PREFERENCES_CACHE.get('value')
+        if cached is not None and cached[0] == key:
+            return dict(cached[1])
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
             value = payload.get("studio_preferences", {}) if isinstance(payload, dict) else {}
-            return dict(value) if isinstance(value, dict) else {}
+            value = dict(value) if isinstance(value, dict) else {}
         except (OSError, ValueError, TypeError):
             return {}
+        _STUDIO_PREFERENCES_CACHE['value'] = (key, value)
+        return dict(value)
 
     def _schedule_autosave(self) -> None:
         self._autosave_generation += 1
@@ -1412,7 +1457,12 @@ class SubtitleStudioPage(
         if event_type == QEvent.Type.Resize and self._hub_ui_ready and not self._close_requested:
             scroll = state.get('project_library_scroll')
             if scroll is not None and watched is scroll.viewport():
-                if self.project is None and hasattr(self, '_hub_card_widgets'):
+                # Not while a project is opening: the library is about to be
+                # left, and rebuilding it there was 0.2 s of the page switch.
+                loading = getattr(self.window(), '_studio_loading_session', None)
+                opening = (getattr(state.get('_readiness'), 'active', False)
+                           or getattr(loading, 'state', '') == 'preparing')
+                if self.project is None and hasattr(self, '_hub_card_widgets') and not opening:
                     self._refresh_studio_empty_state(rescan=False)
         if (event_type in _GEOMETRY_EVENT_TYPES
                 and watched not in (self, state.get('video'), state.get('context_drawer'), state.get('video_overlay_host'))
@@ -1802,9 +1852,9 @@ class SubtitleStudioPage(
         remembered = getattr(self, '_caption_canvas_edit_target', None)
         if (not on_timeline and remembered is not None
                 and remembered[:2] == (id(self.project), self.session.generation)
-                and remembered[2].read(self.project) is not None):
-            # A video-canvas edit explicitly chose a language layer; timeline
-            # E instead always resolves the current project clock, even gaps.
+                and remembered[2].read(self.project) is not None
+                and not self._playhead_overrides_selection(remembered[2].cue_id)):
+            # Keep the canvas language layer while its explicit target owns E.
             if self._studio_preferences().get('caption_pause_on_edit', True) is not False:
                 self.video.set_paused(True)
             self._open_caption_editor()
@@ -2249,8 +2299,10 @@ class SubtitleStudioPage(
         }
         if key not in messages or key in self._session_teach_hints or not self._teach_hints.should_show(key):
             return
+        # Written on the store's worker: the file write and fsync were up to
+        # 0.5 s on the GUI thread while a project opened (2026-11-19).
         try:
-            self._teach_hints.mark_shown(key)
+            self._teach_hints.mark_shown(key, background=True)
         except OSError:
             pass
         self._session_teach_hints.add(key)
@@ -2333,12 +2385,17 @@ class SubtitleStudioPage(
         dialog.exec()
 
     def _open_find_replace(self) -> None:
+        self._open_find_replace_with('')
+
+    def _open_find_replace_with(self, find_text: str = '') -> None:
         if not self.project:
             studio_message_box(self, QMessageBox.Icon.Information, tr('批量替换'), tr('请先打开字幕工程。'))
             return
         from .studio_find_replace import FindReplaceDialog
 
         dialog = FindReplaceDialog(self, self)
+        if find_text:
+            dialog.prefill_find(find_text)
         dialog.exec()
 
     def _open_ai_cleanup(self) -> None:
@@ -2997,6 +3054,48 @@ class SubtitleStudioPage(
             self._last_context_tab = int(index)
 
     def _show_context_panel(self) -> None:
+        """Open the tool panel now (code paths that use it right after rely on that)."""
+        self._context_sliding = False
+        self._show_context_panel_now(reveal=False)
+
+    def _show_context_panel_animated(self) -> None:
+        # 2026-11-18 evening (user: the tool panel should fold to the right, not fade): when the
+        # user opens it, its picture, rendered at its final width, slides in from the right edge and
+        # the real panel takes over when it lands (design.transitions.slide_panel_in).
+        if not self.context_panel.isVisible() and not getattr(self, '_context_sliding', False):
+            from ..design.transitions import slide_panel_in
+            width = self.context_panel.width()
+            if width < 370:
+                total = max(1110, sum(self.upper_splitter.sizes()))
+                width = min(430, max(380, round(total * 0.22)))
+            splitter = self.upper_splitter
+            target = QRect(splitter.width() - width, 0, width, splitter.height())
+            self.context_drawer.setCurrentIndex(self._last_context_tab)
+
+            def land():
+                from shiboken6 import isValid
+                if not isValid(self) or not getattr(self, '_context_sliding', False):
+                    return                 # opened or closed some other way meanwhile
+                self._context_sliding = False
+                if self.context_expand_button.isChecked():
+                    self._show_context_panel_now(reveal=False)
+            self._context_sliding = True
+            if slide_panel_in(self.context_panel, target, 'right', land):
+                self._mark_context_shown()
+                return
+            self._context_sliding = False
+        self._show_context_panel_now(reveal=False)
+
+    def _mark_context_shown(self) -> None:
+        self.context_expand_button.setChecked(True)
+        action = getattr(self, "workspace_actions", {}).get("context")
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(True)
+            action.blockSignals(False)
+
+    def _show_context_panel_now(self, reveal: bool = False) -> None:
+        was_hidden = not self.context_panel.isVisible()
         self.context_panel.show()
         self.context_drawer.setCurrentIndex(self._last_context_tab)
         self.context_expand_button.setChecked(True)
@@ -3012,12 +3111,15 @@ class SubtitleStudioPage(
             context = min(430, max(380, round(total * 0.22)))
             self.upper_splitter.setSizes([left, max(420, total - left - context), context])
         from ..design.ui_motion import reveal_cue
-        if getattr(self, '_project_view_state', '') == 'open':
+        if was_hidden and getattr(self, '_project_view_state', '') == 'open':
             reveal_cue(self.context_panel)
 
     def _collapse_context_panel(self) -> None:
-        self._last_context_tab = self.context_drawer.currentIndex()
-        self.context_panel.hide()
+        self._context_sliding = False
+        from ..design.transitions import panel_slide_out
+        with panel_slide_out(self.context_panel, 'right'):   # its picture folds away to the right
+            self._last_context_tab = self.context_drawer.currentIndex()
+            self.context_panel.hide()
         self.context_expand_button.setChecked(False)
         action = getattr(self, "workspace_actions", {}).get("context")
         if action is not None:
@@ -3027,7 +3129,7 @@ class SubtitleStudioPage(
 
     def _toggle_context_panel(self, checked: bool | None = None) -> None:
         show = bool(checked) if checked is not None else not self.context_panel.isVisible()
-        self._show_context_panel() if show else self._collapse_context_panel()
+        self._show_context_panel_animated() if show else self._collapse_context_panel()
 
     def _open_clip_assistant(self) -> None:
         if self.project is None or getattr(self, "_project_view_state", "") == "hub":
@@ -3102,12 +3204,32 @@ class SubtitleStudioPage(
         if empty:
             hint.raise_()
 
-    def _set_major_panel_visible(self, panel: str, visible: bool) -> None:
+    def _set_major_panel_visible(self, panel: str, visible: bool, animate: bool = False) -> None:
+        """Show or hide a major panel now; ``animate`` (the user's own toggles) slides it."""
         visible = bool(visible)
         if panel == "cue_list":
-            self.source_tabs.setVisible(visible)
+            # 2026-11-18 evening (user: the subtitle list folds to the left): slides out to the left
+            # and in from it (see the context panel). Code paths get it at once.
+            from ..design.transitions import panel_slide_out, slide_panel_in
+            was_visible = self.source_tabs.isVisible()
+            if not animate:
+                self.source_tabs.setVisible(visible)
+            elif visible and not was_visible:
+                width = max(380, self.source_tabs.width())
+                target = QRect(0, 0, width, self.upper_splitter.height())
+                if not slide_panel_in(self.source_tabs, target, 'left',
+                                      lambda: self.source_tabs.setVisible(
+                                          bool(self.cue_list_toggle_button.isChecked())
+                                          if hasattr(self, 'cue_list_toggle_button') else True)):
+                    self.source_tabs.setVisible(True)
+            else:
+                with panel_slide_out(self.source_tabs, 'left') if was_visible and not visible else _no_change():
+                    self.source_tabs.setVisible(visible)
         elif panel == "context":
-            self._show_context_panel() if visible else self._collapse_context_panel()
+            if visible:
+                self._show_context_panel_animated() if animate else self._show_context_panel()
+            else:
+                self._collapse_context_panel()
         action = self.workspace_actions.get(panel)
         if action is not None and action.isChecked() != visible:
             action.blockSignals(True)
@@ -3179,7 +3301,7 @@ class SubtitleStudioPage(
         self._apply_default_timeline_height()
 
     def _toggle_cue_list(self) -> None:
-        self._set_major_panel_visible("cue_list", not self.source_tabs.isVisible())
+        self._set_major_panel_visible("cue_list", not self.source_tabs.isVisible(), animate=True)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         from .caption_clipboard import handle_key as caption_key

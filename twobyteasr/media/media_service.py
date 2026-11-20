@@ -243,9 +243,10 @@ class MediaService:
         governor: ResourceGovernor | None = None,
         probe_runner: Callable[..., object] | None = None,
     ) -> None:
-        root = Path(__file__).resolve().parents[2]
+        from ..runtime_paths import detect_install_root
         from ..system.platform_media import ffmpeg_tool
-        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool("ffprobe", root=root))
+        root = detect_install_root()
+        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool('ffprobe', root=root))
         self.ffmpeg_path = Path(ffmpeg_path or ffmpeg_tool(root=root))
         if os.name == "nt":
             default_cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "2ByteASR" / "cache" / "media"
@@ -301,13 +302,14 @@ class MediaService:
         return value
 
     def _probe(self, source: Path) -> MediaMetadataSnapshot:
-        if source.suffix.lower() == '.gif':
+        from .animated_gif import is_frame_image
+        if is_frame_image(source):
             from .animated_gif import prepare_gif, sampling_fps
             _, data = prepare_gif(source)
             identity = data['identity']
             return MediaMetadataSnapshot(source_path=str(source), source_size=identity['size'],
                 source_mtime_ns=identity['mtime_ns'], duration_ms=data['duration_ms'],
-                has_video=True, has_audio=False, video_codec='gif',
+                has_video=True, has_audio=False, video_codec='gif' if source.suffix.lower() == '.gif' else 'image',
                 width=data['width'], height=data['height'], fps=sampling_fps(data),
                 video_timebase='1/1000', video_stream_end_ms=data['duration_ms'],
                 fingerprint=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest())

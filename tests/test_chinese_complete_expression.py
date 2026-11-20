@@ -247,7 +247,7 @@ def test_full_grouping_entry_stub_and_failed_ai_follow_same_policy(monkeypatch, 
 def test_non_chinese_profiles_and_exact_custom_guidance():
     from twobyteasr.subtitle_rules.segmentation_profiles import profile_for, fixed_constraints
     from twobyteasr.subtitle_rules.grouping_request import custom_grouping_guidance, compose_grouping_prompt
-    assert [profile_for(tag).hard_max for tag in ['zh', 'ja', 'en']] == [14, 26, 84]
+    assert [profile_for(tag).hard_max for tag in ['zh', 'ja', 'en']] == [14, 26, 40]
     text = '中位约8字，但我需要自己的字幕节奏'
     assert custom_grouping_guidance('zh', {'grouping_prompts': {'zh': text}}) == text
     prompt = compose_grouping_prompt('zh', 16, 5, text)

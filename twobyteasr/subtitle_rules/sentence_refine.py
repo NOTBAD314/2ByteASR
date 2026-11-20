@@ -568,7 +568,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     json_mode = True
     terminal_request_failure = None
     candidate_actions = {}
-    from ..providers.subtitle_request_policy import provider_policy
+    from ..providers.subtitle_request_policy import endpoint_escalated_budget, provider_policy
     policy = provider_policy(provider)
     preferred, hard_limit, measure = refinement_limits(language)
     neighbors = {}
@@ -652,7 +652,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             continue
         token_budget = min(policy['max_output_tokens'], max(768, len(group) * 80 + sum(len(unit.cue.text) for unit in group) + 512))
         if escalation:
-            token_budget = policy['max_output_tokens']  # thinking text also uses the output budget
+            token_budget = endpoint_escalated_budget(policy['max_output_tokens'], operation_kind or 'group',
+                                                     getattr(provider, 'endpoint', {}) or {})
         if repair:
             if extras_left <= 0 or extra_tokens_left < token_budget:
                 continue

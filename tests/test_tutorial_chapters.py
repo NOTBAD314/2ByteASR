@@ -360,6 +360,50 @@ def test_the_speaker_chapter_closes_its_manager():
     assert newbie_tasks.BY_KEY['speakers'].chapter == 'speakers'
 
 
+@pytest.mark.parametrize('floating', [False, True])
+def test_speaker_practice_uses_a_host_the_tour_can_cover(monkeypatch, floating):
+    from PySide6.QtWidgets import QDialog, QLineEdit, QVBoxLayout
+    from twobyteasr.studio import studio_speaker_manager
+    _app()
+    monkeypatch.setattr(GuidedTour, 'FLOATING', floating)
+    window = QWidget()
+    window.resize(1280, 900)
+    page = QWidget(window)
+    page.setGeometry(window.rect())
+    page.project = SimpleNamespace(speakers=[SimpleNamespace(id='S00', name='主播')])
+    monkeypatch.setattr(tutorial_chapters._Studio, 'ready', lambda _self: True)
+    monkeypatch.setattr(tutorial_chapters._Studio, 'page', lambda _self: page)
+    class PracticeManager(QDialog):
+        def __init__(self, parent):
+            super().__init__(parent)
+            card = QWidget(self)
+            card.name_edit = QLineEdit('主播', card)
+            card_layout = QVBoxLayout(card)
+            card_layout.addWidget(card.name_edit)
+            layout = QVBoxLayout(self)
+            layout.addWidget(card)
+            self.cards = {'S00': card}
+            self.resize(700, 500)
+    monkeypatch.setattr(studio_speaker_manager, 'SpeakerManagerDialog', PracticeManager)
+    window.show()
+    steps = tutorial_chapters.speakers_steps(window)
+    steps[1].actions[0].run()
+    manager = window._tutorial_speakers
+    _until(lambda: manager.isVisible() and manager.cards['S00'].name_edit.isVisible())
+    tour = GuidedTour(window, steps)
+    assert tour._is_ready(2)
+    assert manager.isWindow() is floating
+    if not floating:
+        assert manager.parentWidget() is window and steps[2].host is None
+        assert manager.cards['S00'].name_edit.window() is window
+    else:
+        assert steps[2].host() is manager
+    tour.close_tour(False)
+    tutorial_chapters.cleanup(window, 'speakers')
+    assert '_tutorial_speakers' not in window.__dict__
+    window.close()
+
+
 def test_the_sound_chapter_tells_the_three_volumes_apart():
     window = SimpleNamespace(pages=QStackedWidget() if _app() else None, built_page=lambda _name: None)
     words = ' '.join(f'{step.text() if callable(step.text) else step.text} {step.note}'

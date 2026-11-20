@@ -183,20 +183,43 @@ def _settings() -> QSettings:
     return QSettings(SETTINGS_ORG, SETTINGS_APP)
 
 
+# 2026-11-19 (user: opening a project froze the workbench). Painting asked
+# for the theme several times per list row and timeline lane, and every ask
+# opened the settings store (the registry on Windows). One answer now serves
+# a short window; save_theme_key forgets it at once, and the window bounds how
+# long a write by another process or settings object can go unseen.
+THEME_KEY_REUSE_S = 0.25
+_theme_key_memo: tuple = (None, 0.0, "")
+
+
 def theme_key() -> str:
+    global _theme_key_memo
+    factory, at, value = _theme_key_memo
+    now = time.monotonic()
+    if factory is _settings and now - at < THEME_KEY_REUSE_S:
+        return value
     settings = _settings()
     stored = settings.value("appearance/theme")
     value = str(stored or _volatile_theme_keys.get(settings.fileName(), DEFAULT_THEME_KEY))
-    return value if value in THEMES else DEFAULT_THEME_KEY
+    value = value if value in THEMES else DEFAULT_THEME_KEY
+    _theme_key_memo = (_settings, now, value)
+    return value
+
+
+def _forget_theme_key() -> None:
+    global _theme_key_memo
+    _theme_key_memo = (None, 0.0, "")
 
 
 def save_theme_key(key: str) -> str:
     normalized = str(key or DEFAULT_THEME_KEY)
     if normalized not in THEMES:
         normalized = DEFAULT_THEME_KEY
+    _forget_theme_key()
     settings = _settings()
-    settings.setValue("appearance/theme", normalized)
-    settings.sync()
+    if str(settings.value("appearance/theme") or "") != normalized:      # every start called this: write only a change
+        settings.setValue("appearance/theme", normalized)
+        settings.sync()
     settings_id = settings.fileName()
     if str(settings.value("appearance/theme") or "") == normalized:
         _volatile_theme_keys.pop(settings_id, None)
@@ -427,7 +450,7 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
     theme = theme_definition(normalized)
     from .popup_corners import install_rounded_popups
     install_rounded_popups(app, theme.border_strong)
-    if getattr(app, "_applied_theme_key", None) == normalized and app.styleSheet():
+    if getattr(app, "_applied_theme_key", None) == normalized and getattr(app, "_theme_root_filter", None) is not None:
         # Same theme already live: stylesheet churn would only re-polish
         # every widget for no visual change.
         return theme
@@ -472,7 +495,13 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
             app._theme_root_filter = _ThemeRootFilter(app)
             from .app_events import listen
             listen(app._theme_root_filter, (QEvent.Type.Paint, _PARENT_CHANGE, _SHOW))
-            app.setStyleSheet("/* Window-owned theme sheets; see _ThemeRootFilter. */")
+            # 2026-11-19 (startup): no application-level sheet any more, not even the comment that
+            # stood here. With any text in it Qt gives every widget a style-sheet style at once,
+            # and then each time a built part is put into its parent (the app builds its pages
+            # bottom-up) it walks that whole part again to hand the style down: a fifth of the
+            # start, sampled. The windows own their sheets (_ThemeRootFilter), so nothing was
+            # styled by it; measured: main-window construction 0.97 s -> 0.77 s, and Home, the
+            # workshop, term library, history, settings and report windows are pixel-identical.
         for root in app.topLevelWidgets():
             if root.parentWidget() is None and root.objectName() != "subtitleStudio" and root.isVisible():
                 app._theme_root_filter.apply_root(root)

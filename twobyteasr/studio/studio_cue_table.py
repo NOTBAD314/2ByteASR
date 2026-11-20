@@ -41,9 +41,32 @@ def _speaker_name(project: SubtitleProject | None, speaker_id: str) -> str:
     if project:
         for speaker in project.speakers:
             if speaker.id == speaker_id:
-                from ..projects.speaker_names import display_speaker_name
-                return display_speaker_name(project, speaker)
+                return _lazy('display_speaker_name')(project, speaker)
     return speaker_id
+
+
+# Per-row helpers run for every painted cell. An import statement in them ran
+# PySide's import hook each time (1200 hook calls per list repaint); the
+# functions are bound once instead (the modules import this one, so lazily).
+_LAZY: dict[str, object] = {}
+
+
+_LAZY_HOMES = {
+    'display_speaker_name': '..projects.speaker_names',
+    'theme_key': '..design.theme_manager',
+    'theme_definition': '..design.ui_theme',
+    'source_cue_id_of': '..timeline.studio_edit_sequence',
+}
+
+
+def _lazy(name: str):
+    # The module is bound once; the function is looked up on it each call, so
+    # a replaced attribute (a theme preview, a test) is still honoured.
+    module = _LAZY.get(name)
+    if module is None:
+        import importlib
+        module = _LAZY[name] = importlib.import_module(_LAZY_HOMES[name], __package__)
+    return getattr(module, name)
 
 
 def _speaker_color(project: SubtitleProject | None, speaker_id: str, palette: TimelinePalette | None = None) -> QColor:
@@ -58,11 +81,16 @@ def _speaker_color(project: SubtitleProject | None, speaker_id: str, palette: Ti
     return QColor(fallbacks[stable % len(fallbacks)])
 
 
+def _paint_theme():
+    """(theme, timeline palette, status colors) of the active theme: one
+    settings read per painted row instead of five."""
+    key = _lazy('theme_key')()
+    return _lazy('theme_definition')(key), timeline_palette(key), studio_status_colors()
+
+
 def _source_key(cue: StudioCue) -> str:
     """工程状态映射（状态/审核/QC）按源 cue id 键控；派生 id 解析回源。"""
-    from ..timeline.studio_edit_sequence import source_cue_id_of
-
-    return source_cue_id_of(str(cue.id))
+    return _lazy('source_cue_id_of')(str(cue.id))
 
 
 def _review_key(project, cue):
@@ -158,8 +186,6 @@ class CueTableModel(QAbstractTableModel):
             if scope is not None:
                 if cue.id not in scope:
                     continue
-            status = _cue_status(self.project, cue, risks)
-            speaker = _speaker_name(self.project, cue.speaker_id)
             if cue.id == self.review_anchor_id:
                 self._rows.append(row)
                 continue
@@ -169,7 +195,9 @@ class CueTableModel(QAbstractTableModel):
             elif self.filter_status == "critical":
                 if _cue_review_level(self.project, cue, risks) != "high":
                     continue
-            elif self.filter_status != "all" and status != self.filter_status:
+            elif self.filter_status != "all" and _cue_status(self.project, cue, risks) != self.filter_status:
+                # Only status filters need the status (2026-11-19: every cue's
+                # status on each open of the full list was 0.5 s on a busy PC).
                 continue
             if not self.matches_query(cue, needle):
                 continue
@@ -648,13 +676,13 @@ class CueReadingDelegate(QStyledItemDelegate):
         model = index.model()
         cue = model.cue_at(index.row())
         project = model.project
-        palette = timeline_palette()
+        # One theme lookup per row (2026-11-19: five settings reads per row
+        # were half of every list repaint while a project opened).
+        theme, palette, status_colors = _paint_theme()
         rect = option.rect
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        from ..design.theme_manager import theme_key as _theme_key
-        from ..design.ui_theme import theme_definition as _theme_definition
-        fill, outline, outline_width = self.card_colors(option, _theme_definition(_theme_key()))
+        fill, outline, outline_width = self.card_colors(option, theme)
         painter.setPen(QPen(QColor(outline), outline_width))
         painter.setBrush(QColor(fill))
         painter.drawRoundedRect(self.card_rect(option), 10, 10)
@@ -663,9 +691,6 @@ class CueReadingDelegate(QStyledItemDelegate):
         top = rect.top() + self.PAD_Y
         line_h = max(22, meta_metrics.height() + 6)
         x = rect.left() + self.PAD_X
-        from ..design.theme_manager import theme_key
-        from ..design.ui_theme import theme_definition
-        theme = theme_definition(theme_key())
         text_color = QColor(theme.text)
         muted = QColor(theme.text_muted)
         # start time
@@ -677,7 +702,7 @@ class CueReadingDelegate(QStyledItemDelegate):
         x += meta_metrics.horizontalAdvance(stamp) + 10
         # speaker chip (display name of the stable identity)
         name = _speaker_name(project, cue.speaker_id)
-        color = _speaker_color(project, cue.speaker_id)
+        color = _speaker_color(project, cue.speaker_id, palette)
         dark = palette.dark
         chip_w = meta_metrics.horizontalAdvance(name) + 16
         chip = QRectF(x, top + 2, chip_w, line_h - 4)
@@ -694,15 +719,16 @@ class CueReadingDelegate(QStyledItemDelegate):
         painter.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), name)
         x += chip_w + 8
         # status (or review level in the priority filters)
-        status_colors = studio_status_colors()
-        if _cue_review_level(project, cue) != "confident":
-            high = _cue_review_level(project, cue) == "high"
+        risks = cached_review_risks(project)
+        level = _cue_review_level(project, cue, risks)
+        if level != "confident":
+            high = level == "high"
             fill_color, status_color = status_colors["issue" if high else "pending"]
-            label = tr({"high": "需要检查", "suggested": "建议确认"}.get(_cue_review_level(project, cue), "待确认"))
+            label = tr({"high": "需要检查", "suggested": "建议确认"}.get(level, "待确认"))
         else:
-            status = _cue_status(project, cue)
+            status = _cue_status(project, cue, risks)
             fill_color, status_color = status_colors[status]
-            label = _cue_status_label(project, cue)
+            label = tr({'pending': '未审核', 'issue': '有问题', 'done': '已处理'}[status])
             if status == 'pending':
                 fill_color = 'transparent'
                 status_color = option.palette.color(QPalette.ColorRole.PlaceholderText)
@@ -714,7 +740,7 @@ class CueReadingDelegate(QStyledItemDelegate):
         painter.setPen(QColor(status_color))
         painter.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), label)
         x += status_w + 8
-        if _cue_review_level(project, cue) != "confident":
+        if level != "confident":
             confirm = self._confirm_rect(option, model, index.row())
             reason = self._review_reason(project, cue)
             room = int(confirm.left() - 8 - x)

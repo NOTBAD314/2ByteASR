@@ -130,6 +130,65 @@ def test_now_and_then_a_tip_on_her_own_but_never_over_a_pending_button(app, chat
     assert not chat._idle_tip_due(time.monotonic() + 60)   # not again for minutes
 
 
+def test_an_answer_gives_way_only_once_read_and_the_user_came_back():
+    """2026-11-19 (user): a tip came while her answer was still being read and pushed it out."""
+    from twobyteasr.app.bunny_chat import READ_MIN_S, answer_may_give_way, reading_seconds
+    assert reading_seconds(0) == READ_MIN_S and reading_seconds(10) == READ_MIN_S
+    assert reading_seconds(400) > reading_seconds(200) > READ_MIN_S        # a longer answer is given longer
+    shown, chars = 1000.0, 200
+    read = shown + reading_seconds(chars)
+    assert answer_may_give_way(5000.0, None, 0, 0.0)                       # no answer on screen
+    assert not answer_may_give_way(read - 1, shown, chars, read - 2)       # still being read
+    assert not answer_may_give_way(read + 600, shown, chars, shown - 30)   # read long ago, but nobody came back
+    assert not answer_may_give_way(read + 600, shown, chars, shown)        # (her own words don't count)
+    assert answer_may_give_way(read, shown, chars, shown + 1)              # read, and the user was back since
+
+
+def test_an_idle_tip_never_pushes_out_the_answer_on_screen(app, chat_env, monkeypatch):
+    bunny_chat, window = chat_env
+    from twobyteasr.app import bunny_persona, bunny_tips
+    chat = bunny_chat.open_bunny_chat(window)
+    chat.reveal_all()
+    answer = ['导出在右上角的 **导出** 按钮里。', '选好格式，再按「开始导出」就行啦。']
+    steps = tuple(f'{n}. ' + '先在工作台里检查一遍字幕，再选好格式和位置，' * 4 for n in range(1, 4))
+    chat.stand_in = lambda question: bunny_persona.BunnyReply(lines=list(answer), detail=steps)
+    chat.input.setText('怎么导出字幕？')
+    chat.send()
+    deadline = time.monotonic() + 5
+    while chat._answer_shown_at is None and time.monotonic() < deadline:
+        app.processEvents()
+        chat.reveal_all()
+        time.sleep(0.01)
+    shown = chat._answer_shown_at
+    assert shown is not None and chat._answer_chars >= sum(len(line) for line in answer) - 8
+    if chat.mascot is not None and chat.mascot.current_move:
+        chat.mascot.stop_move(chat.mascot.current_move)
+
+    def last_said():
+        return [text for who, text in chat.transcript if who == 'bunny'][-len(answer):]
+    # Long quiet, no tip for ages: before 2026-11-19 she said one here over the answer.
+    chat._active_at = chat._last_idle_tip = time.monotonic() - 1000
+    assert not chat._idle_tip_due(time.monotonic())
+    chat._heartbeat()
+    chat.reveal_all()
+    assert last_said() == answer                                          # the answer is still what she shows
+    # The user came back just after it was all there and went quiet; a long answer takes longer to read.
+    chat._active_at = shown + 1
+    reading = bunny_chat.reading_seconds(chat._answer_chars)
+    assert reading > max(bunny_chat.IDLE_TIP_AFTER_S) + 1
+    assert not chat._idle_tip_due(shown + max(bunny_chat.IDLE_TIP_AFTER_S) + 1)   # quiet enough, not yet read
+    assert not chat._idle_tip_due(shown + reading - 1)
+    # Read, the user was back since and has been quiet a while: now a tip may come.
+    later = max(shown + bunny_chat.reading_seconds(chat._answer_chars), shown + 1 + chat._idle_tip_after) + 1
+    assert chat._idle_tip_due(later)
+    # Her own chatter (a poke's tip) is not an answer to keep.
+    monkeypatch.setattr(bunny_chat, 'POKE_TIP_SHARE', 1.0)
+    chat.poke()
+    chat.reveal_all()
+    assert not chat._answering and chat._answer_shown_at == shown
+    assert [text for who, text in chat.transcript if who == 'bunny'][-2] in bunny_tips.OPENERS
+
+
 def test_the_workbench_list_row_has_ask_bunny_and_it_opens_her_chat(app, tmp_path, monkeypatch):
     from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     from twobyteasr.studio import studio_bunny_entry

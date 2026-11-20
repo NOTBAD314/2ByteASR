@@ -33,6 +33,11 @@ def chat(app, monkeypatch):
     app.processEvents()
     card = bunny_chat.open_bunny_chat(window)
     card.reveal_all()
+    # 2026-11-18: the box keeps a whole answer now, so the first-time notice makes it tall; these
+    # tests carry her with a short sentence in the box, as they did when it showed one at a time.
+    from twobyteasr.app import bunny_persona
+    card.say(bunny_persona.BunnyReply(lines=['嗯。']))
+    card.reveal_all()
     if card.puck is None:
         pytest.skip('no mascot pictures in this build')
     yield card
@@ -111,14 +116,48 @@ def test_carried_she_moves_inside_one_still_layer_and_the_card_keeps_step(app, c
         layer = layer or puck.carrier.geometry()
         assert puck.carrier.geometry() == layer and mascot.parent() is puck.carrier
         assert mascot.geometry().topLeft() == puck.pos.toPoint()
-        # Only her rectangle takes clicks; everything else reaches the window under it.
-        assert puck.carrier.mask() == QRegion(QRect(puck.pos.toPoint(), mascot.size()))
+        # While she moves, the layer's clickable part is a box around her that holds her whole
+        # rectangle (2026-11-18: no per-frame mask that could clip her for a frame); the rest of
+        # the window still gets its clicks.
+        here = QRect(puck.pos.toPoint(), mascot.size())
+        assert puck.carrier.mask().boundingRect().contains(here)
+        assert puck.carrier.mask().boundingRect().width() < window.width()
         # The card is exactly where she is, in the same frame.
         slot = chat.geometry().topLeft() + chat.mascot_slot
         if chat._home_rect().topLeft() == chat.geometry().topLeft():      # not held back by the window's edge
             assert slot == puck.pos.toPoint(), (slot, puck.pos)
     assert layer is not None
     chat.eventFilter(mascot, _mouse(QEvent.Type.MouseButtonRelease, grab, target))
+    assert _until(app, lambda: not puck.timer.isActive() or puck.docked, seconds=16)
+    if not puck.docked:
+        # At rest only her own rectangle takes clicks again.
+        assert puck.carrier.mask() == QRegion(QRect(puck.pos.toPoint(), mascot.size()))
+
+
+def test_a_moving_bunny_never_falls_outside_the_clickable_layer(app, chat):
+    """2026-11-18 (user: she stutters or vanishes for a moment while moving): every step of a glide
+    keeps both her last and her new rectangle inside the layer's mask, and the mask is not reset on
+    every frame."""
+    from PySide6.QtCore import QPointF, QRect
+    puck, mascot = chat.puck, chat.mascot
+    puck.undock()
+    changes = []
+    real = puck.carrier.setMask
+    puck.carrier.setMask = lambda region: (changes.append(region), real(region))
+    previous = QRect(puck.pos.toPoint(), mascot.size())
+    puck.glide_to(QPointF(40, 40))
+    frames = 0
+    while puck.glide.state().name == 'Running' and frames < 400:
+        app.processEvents()
+        time.sleep(0.004)
+        here = QRect(puck.pos.toPoint(), mascot.size())
+        box = puck.carrier.mask().boundingRect()
+        assert box.contains(here) and box.contains(previous), (box, here, previous)
+        previous = here
+        frames += 1
+    assert frames > 5
+    assert len(changes) < frames, (len(changes), frames)
+    assert puck.carrier.mask().boundingRect() == QRect(puck.pos.toPoint(), mascot.size())
 
 
 def test_before_her_layers_are_ready_she_is_drawn_at_her_real_size(app):
@@ -173,9 +212,12 @@ def test_out_on_her_own_she_is_kept_above_the_card(app, chat, monkeypatch):
     raised = []
     monkeypatch.setattr(puck.carrier, 'raise_', lambda: raised.append(1))
     puck.undock()
+    assert raised, 'out of the card she starts on top'
     raised.clear()
-    puck._place(puck.pos)
-    assert raised, 'every move puts her back on top'
+    from PySide6.QtCore import QPointF
+    puck.card_at = QPointF(puck.pos)             # carried: the card moves along
+    puck._place(puck.pos + QPointF(-30, -20))
+    assert raised, 'the card moving along never buries her'
     raised.clear()
     from PySide6.QtCore import QEvent
     chat.event(QEvent(QEvent.Type.WindowActivate))

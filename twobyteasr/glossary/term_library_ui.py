@@ -6,6 +6,8 @@ Split out of ``app/ui.py`` on 2026-10-15; ``ui`` still exports these names.
 """
 from __future__ import annotations
 
+import os
+import sys
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -201,6 +203,20 @@ def build_term_library_page_qss(theme=None) -> str:
     return retheme_qss(TERM_LIBRARY_PAGE_QSS, active) + build_semantic_qss(active)
 
 
+# Imported by the library's construction; Home's idle preparation loads them
+# first, one per turn (from the first visit's module list, 2026-11-18).
+_LIBRARY_MODULES = (
+    'twobyteasr.glossary.glossary_page_parts', 'twobyteasr.glossary.learning_review_ui',
+    'twobyteasr.glossary.multilingual_terms', 'twobyteasr.glossary.multilingual_terms_ui',
+    'twobyteasr.glossary.terminology', 'twobyteasr.glossary.glossary_lint',
+    'twobyteasr.glossary.smart_glossary', 'twobyteasr.glossary.summary_process',
+    'twobyteasr.glossary.glossary_task_manager', 'twobyteasr.glossary.glossary_skill',
+    'twobyteasr.glossary.glossary_skill_ui', 'twobyteasr.glossary.glossary_hub',
+    'twobyteasr.glossary.glossary_hub_ui', 'twobyteasr.subtitle_rules.chinese_punctuation',
+)
+_VISIT_SLICE_MS = 25   # construction work per event-loop turn on a first visit
+
+
 class TermLibraryPage(QWidget):
     """Resident workbench shell around the existing high-performance library."""
 
@@ -248,10 +264,21 @@ class TermLibraryPage(QWidget):
     def refresh_theme_palette(self) -> None:
         self.setStyleSheet(build_term_library_page_qss())
 
-    def _ensure_library(self):
-        if self.library is not None:
+    def _pending(self):
+        """The library widget under construction (2026-11-18); ``library`` stays
+        None until it is complete, so callers never see a half-built page."""
+        pending = self.__dict__.get('_pending_library')
+        if pending is None:
+            pending = self._pending_library = TermLibraryDialog(self.owner, self, page_mode=True, deferred=True)
+            pending.hide()
+        return pending
+
+    def _attach_library(self):
+        library, self._pending_library = self.__dict__.get('_pending_library'), None
+        if library is None:
             return self.library
-        self.library = TermLibraryDialog(self.owner, self, page_mode=True)
+        library.finish_construction()
+        self.library = library
         self.owner._term_library_dialog = self.library
         self._content_layout.replaceWidget(self._placeholder, self.library)
         self._placeholder.hide()
@@ -261,8 +288,118 @@ class TermLibraryPage(QWidget):
         self.setProperty("_2b_language_applied", language)
         return self.library
 
+    def _ensure_library(self):
+        if self.library is not None:
+            return self.library
+        self._pending()
+        return self._attach_library()
+
+    def prepare_hidden_steps(self):
+        """Build the library while the page is hidden (Home's idle preparation).
+
+        2026-11-18: the first visit imported the glossary modules and built the
+        library (300-500 ms) after the page switch. Each ``yield`` gives the
+        event loop a turn; a visit in the middle finishes the rest itself.
+        """
+        from shiboken6 import isValid
+        from ..app.studio_module_preload import import_module
+        from ..design.gui_slices import GuiSlice
+
+        def interrupted():
+            return not isValid(self) or self.isVisible() or self.library is not None
+
+        if interrupted():
+            return
+        for name in _LIBRARY_MODULES:
+            import_module(name)
+            yield
+            if interrupted():
+                return
+        library = self._pending()
+        yield
+        for _ in library.construction_steps():
+            yield
+            if interrupted():
+                return
+        if interrupted():   # finished by a visit while this waited
+            return
+        self._attach_library()
+        yield
+        if not isValid(self) or self.isVisible():
+            return
+        target = library._canonical(library.game_box_text())
+        if not target and library.game_list.count():
+            target = str(library.game_list.item(0).data(Qt.ItemDataRole.UserRole) or '')
+        library.prepare_game_data(target)
+        yield
+        # 2026-11-19 (user: going to the term library stalls, then there is no motion to feel): the
+        # first game is selected and its rows are made here too; the first visit made them behind
+        # the old page's picture (0.2-0.25 s) before anything moved.
+        if os.environ.get('TWOBYTEASR_TERMS_PRESELECT', '1') != '0' and library.game_list.currentItem() is None:
+            self._select_initial()
+            yield
+        budget = GuiSlice(12)
+        for widget in reversed(self.findChildren(QWidget)):
+            if not isValid(self) or self.isVisible():
+                return
+            if isValid(widget):
+                widget.ensurePolished()
+            if budget.due():
+                yield
+                budget.resume()
+
+    def _visit_steps(self):
+        from ..app.studio_module_preload import import_module
+        for name in _LIBRARY_MODULES:
+            if name not in sys.modules:
+                import_module(name)
+                yield
+        library = self._pending()
+        yield
+        yield from library.construction_steps()
+
+    def _build_after_first_frame(self):
+        """A visit before the idle preparation finished: build in turns."""
+        if self.__dict__.get('_building_queued', False):
+            return
+        self._building_queued = True
+        from ..design.gui_slices import GuiSlice
+        steps = self._visit_steps()
+        budget = GuiSlice(_VISIT_SLICE_MS)
+
+        def run():
+            if self.library is not None:   # completed by _ensure_library() meanwhile
+                self._building_queued = False
+                if self.isVisible():
+                    self._select_initial()
+                return
+            budget.resume()
+            for _ in steps:
+                if budget.due():
+                    QTimer.singleShot(0, self, run)
+                    return
+            self._building_queued = False
+            self._attach_library()
+            if self.isVisible():
+                self._select_initial()
+
+        run()
+
+    def page_settled(self) -> bool:
+        """The library is built and in place (the main window shows a page only then:
+        ``design.transitions.PageHold``), not the 「正在载入术语库…」 placeholder."""
+        return self.library is not None and not self.__dict__.get('_building_queued', False)
+
     def prepare_for_show(self):
         self.workspace_navigation.set_active("terms")
+        pending = self.__dict__.get('_pending_library')
+        if self.library is None and (pending is None or pending.construction_pending):
+            # The placeholder (正在载入术语库…) stays up while the rest is built.
+            self._build_after_first_frame()
+            return
+        self._select_initial()
+
+    def _select_initial(self):
         library = self._ensure_library()
         current = library.game_list.currentItem()
         target = library._canonical(library.game_box_text())

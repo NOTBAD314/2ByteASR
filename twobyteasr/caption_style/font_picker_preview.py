@@ -192,12 +192,19 @@ def draw_glyph_text(painter,face,text,rect,color):
     painter.scale(scale,scale);painter.drawGlyphRun(QPointF(0,0),shaped.run);painter.restore()
 
 
-def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True,name_first=False):
+def draw_font_preview(painter,rect,name,request,ui_font,color,*,allow_load=True,name_first=False,
+                      defer_metadata=False):
     """Two text columns inside one existing control; return truthful paint state.
 
     ``name_first`` (the collapsed field, 2026-11-12, user): the font name is
-    never cut for the sample; the sample uses what is left, or is left out."""
-    face,warning=preview_face(request,preview_pixels(ui_font),load=allow_load)
+    never cut for the sample; the sample uses what is left, or is left out.
+    ``defer_metadata``: while the installed fonts are still unread, read them
+    on a worker and paint as loading (the caller repaints) instead of
+    reading them all in this paint (2026-11-19)."""
+    from .font_metadata import local_faces_ready,warm_local_faces
+    if defer_metadata and not local_faces_ready():
+        warm_local_faces();face,warning=None,'正在加载字形'
+    else:face,warning=preview_face(request,preview_pixels(ui_font),load=allow_load)
     metrics=QFontMetricsF(ui_font);gap=12.
     glyph_sample=face.sample()if face is not None else ''
     prefix='示例'
