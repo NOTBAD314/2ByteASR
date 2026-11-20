@@ -61,10 +61,21 @@ internal static class TwoByteAsrLauncher
                 packagedInfo.EnvironmentVariables["TWOBYTEASR_STARTUP_RUN_ID"] =
                     Guid.NewGuid().ToString("N");
                 packagedInfo.EnvironmentVariables["TWOBYTEASR_LAUNCH_MODE"] = "packaged";
+                // 2026-11-19: Home's skeleton is on the screen at once and moves until the
+                // app's real window has painted (LaunchCover.cs); none when anything is unusual.
+                LaunchCover packagedCover = LaunchCover.TryCreate(root, args);
+                if (packagedCover != null)
+                {
+                    packagedInfo.EnvironmentVariables["TWOBYTEASR_LAUNCH_COVER"] = packagedCover.EventName;
+                }
                 Process child = LaunchProcess(packagedInfo);
                 if (child == null)
                 {
                     throw new InvalidOperationException("无法启动 2ByteASR 主程序。");
+                }
+                if (packagedCover != null)
+                {
+                    packagedCover.Run(child);
                 }
                 child.Dispose();
                 return 0;
@@ -169,6 +180,11 @@ internal static class TwoByteAsrLauncher
         // Developer / source mode: the packaged build is absent, so this tree
         // falls back to the venv interpreter explicitly labelled as dev.
         startInfo.EnvironmentVariables["TWOBYTEASR_LAUNCH_MODE"] = "source-dev";
+        LaunchCover cover = LaunchCover.TryCreate(root, args);
+        if (cover != null)
+        {
+            startInfo.EnvironmentVariables["TWOBYTEASR_LAUNCH_COVER"] = cover.EventName;
+        }
 
         try
         {
@@ -177,9 +193,13 @@ internal static class TwoByteAsrLauncher
             {
                 throw new InvalidOperationException("无法创建 Python 工作台进程。");
             }
+            if (cover != null)
+            {
+                cover.Run(child);
+            }
             // The Qt process owns the visible window and sets the same AppID.
-            // Let this tiny bootstrapper exit immediately so Task Manager and
-            // the taskbar do not retain an unnecessary second process.
+            // Let this tiny bootstrapper exit as soon as it is not needed (at once,
+            // or when the cover has faded) so no second process stays around.
             child.Dispose();
             return 0;
         }

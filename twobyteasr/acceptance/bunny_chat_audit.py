@@ -54,6 +54,35 @@ def audit(win, output: Path, theme: str) -> int:
 
     def script():
         yield 3.0
+        from PySide6.QtTest import QTest
+        from twobyteasr.app import bunny_events
+        resident = getattr(win, '_bunny_resident', None)
+        check('assistant appears without opening the chat', resident is not None and resident.isVisible() and chat() is None)
+        if resident is None:
+            raise AssertionError('resident main-window timer did not install the assistant')
+        shot('00-resident-default')
+        QTest.mouseClick(resident.body, Qt.MouseButton.LeftButton)
+        yield lambda: chat() is not None
+        check('resident click opens chat and hides the resident', not resident.isVisible())
+        chat().close_chat()
+        yield lambda: resident.isVisible()
+        resident.set_mode('off')
+        resident.notify('recognition_failed')
+        check('turning proactive hints off suppresses the bubble', not resident.bubble.isVisible())
+        from PySide6.QtWidgets import QMessageBox
+        error = QMessageBox(QMessageBox.Icon.Critical, '导出失败',
+                            '显卡编码器 h264_nvenc 不可用 token=audit-private-token',
+                            QMessageBox.StandardButton.Ok, win)
+        error.show()
+        yield 0.15
+        error.accept()
+        yield lambda: 'h264_nvenc' in bunny_events.recent_text()
+        check('closed errors enter recent context with credentials redacted',
+              'audit-private-token' not in bunny_events.recent_text())
+        error.deleteLater()
+        resident.away_for_good()
+        check('resident can be disabled and remembers the choice',
+              not resident.isVisible() and bunny_events.load()['resident'] is False)
         menus = []
 
         def capture_exec(menu, position, *args, **kwargs):
@@ -74,7 +103,11 @@ def audit(win, output: Path, theme: str) -> int:
               button.isVisible() and button.geometry().right() <= win.app_settings_button.geometry().left(),
               [button.geometry().getRect(), win.app_settings_button.geometry().getRect()])
         shot('01b-ask-bunny-button', button.parentWidget())
-        QTimer.singleShot(0, button.click)
+        def open_chat():
+            started = time.perf_counter()
+            button.click()
+            notes['first_chat_click_ms'] = round(1000 * (time.perf_counter() - started), 1)
+        QTimer.singleShot(0, open_chat)
         yield lambda: chat() is not None
         yield 1.2
         card = chat()
@@ -111,6 +144,7 @@ def audit(win, output: Path, theme: str) -> int:
         answer = json.dumps({'lines': ['哇！下载模型要去上面的 **模型工坊** 哦～', '~~兔白才不会说它很好找~~ 这一步 ==不花钱==！'],
                              'point_to': 'model_workshop', 'offer_open': 'model_workshop', 'mood': 'excited'},
                             ensure_ascii=False)
+        worker_run = bunny_chat.BunnyChatWorker.run
         bunny_chat.BunnyChatWorker.run = lambda worker: worker.answered.emit(answer)
         card.close_chat()
         yield lambda: chat() is None
@@ -136,6 +170,123 @@ def audit(win, output: Path, theme: str) -> int:
         check('「带我去」 is offered', card.go_button.isVisible() and card.go_button.text().endswith('模型工坊'),
               card.go_button.text())
         check('jokes are crossed out, key words marked', 'line-through' in ''.join(lines(card)), lines(card))
+        detail_answer = json.dumps({
+            'lines': ['先检查设置。', '然后重试。'],
+            'detail': ['1. 打开 **模型工坊**', '2. 检查所选模型']}, ensure_ascii=False)
+        bunny_chat.BunnyChatWorker.run = lambda worker: worker.answered.emit(detail_answer)
+        card.input.setText('怎么检查模型？')
+        card.send()
+        yield lambda: card._detail_card is not None and card._detail_card.isVisible()
+        check('sentences finish without a click and show a detail card',
+              len(lines(card)) == 2 and '模型工坊' in card._detail_card.label.text().replace(chr(0x2060), ''))
+        shot('04b-automatic-detail', card)
+        # Run the real worker against a controlled provider. Verify the data handed to
+        # the first request before checking what the chat actually renders.
+        from twobyteasr.app import bunny_lookup, bunny_permissions, bunny_persona
+        from twobyteasr.providers import ai_providers
+        worker_stub = bunny_chat.BunnyChatWorker.run
+        provider_original = ai_providers.provider_for_stage
+        lookup_original = bunny_lookup.run_check
+        newest_original = bunny_lookup.newest_report
+        report = output / 'recognition-fixture.json'
+        report.write_text(json.dumps({
+            'status': 'completed', 'stages': [],
+            'media': {'name': 'audit-private-filename.mp4'},
+            'settings': {'subtitle_language': {'requested_language': 'zh'},
+                         'models': {'primary_asr_backend': 'api', 'qwen_asr_api_provider': 'mosi_moss_pro'}},
+            'events': [{'event': 'cloud_language_policy', 'language_control': 'automatic_only'},
+                       {'event': 'asr_language_request', 'request_index': 0, 'start': 0, 'end': 20,
+                        'transcript': {'language': 'ja', 'text': 'audit-private-subtitle'}}],
+            'result': {'cue_count': 2},
+        }), encoding='utf-8')
+        permissions = bunny_permissions.load()
+        sent, looked = [], []
+        responses = iter((
+            {'lines': ['刚才的错误需要检查显卡编码器。'], 'suggest': ['看看设置']},
+            {'lines': ['兔白可以帮你看看。'], 'suggest': ['好的']},
+            {'lines': ['先做第一步，之后兔白再告诉你。']},
+            {'lines': ['点「虚构字幕面板」后继续。'],
+             'detail': ['1. 打开「虚构字幕面板」', '2. 选模型', '3. 导出字幕']},
+            {'lines': ['可以在首页完成。'], 'suggest': ['好的'],
+             'detail': ['1. 拖入视频', '2. 选择方案并开始', '3. 完成后导出字幕']},
+            {'lines': ['MOSS Pro 把语言听成了日语。']},
+        ))
+
+        class ControlledProvider:
+            def complete(self, messages, **_kwargs):
+                if messages[-1].get('content') == bunny_persona.SUGGEST_ONLY:
+                    return '{"suggest": ["好的"]}'
+                sent.append([message.get('content') for message in messages])
+                return json.dumps(next(responses), ensure_ascii=False)
+
+        def lookup(name, **_kwargs):
+            looked.append(name)
+            return '本机诊断：显卡编码器不可用'
+
+        try:
+            bunny_chat.BunnyChatWorker.run = worker_run
+            ai_providers.provider_for_stage = lambda *_args: ControlledProvider()
+            bunny_lookup.run_check = lookup
+            bunny_lookup.newest_report = lambda: report
+            card.new_conversation()
+            card.ask_now('刚才报错了是怎么回事')
+            yield lambda: not card.busy
+            card.reveal_all()
+            first = '\n'.join(str(content) for content in sent[0])
+            check('the first request includes the recent redacted error and one lookup',
+                  len(sent) == 1 and not looked and '最近发生的事' in first
+                  and 'h264_nvenc' in first and 'audit-private-token' not in first
+                  and '【兔白查到的：这次识别的原始 JSON 分析】' in first
+                  and 'MOSS Pro 云端 把语言听错了' in first and 'audit-private-' not in first
+                  and '显卡编码器' in ''.join(lines(card)), [len(sent), looked])
+            shot('04c-recent-error', card)
+
+            bunny_permissions.save({'read_diagnostics': False})
+            card.ask_now('识别又失败了')
+            yield lambda: not card.busy
+            card.reveal_all()
+            second = '\n'.join(str(content) for content in sent[1])
+            check('disabling diagnostic reads suppresses both recent events and report prefetch',
+                  len(sent) == 2 and not looked and 'h264_nvenc' not in second
+                  and '【兔白查到的：这次识别的原始 JSON 分析】' not in second, [len(sent), looked])
+            bunny_permissions.save(permissions)
+
+            card.new_conversation()
+            card.ask_now('怎么从头做一份字幕？')
+            yield lambda: not card.busy
+            card.reveal_all()
+            yield lambda: card._detail_card is not None and card._detail_card.isVisible()
+            detail = card._detail_card.label.text().replace(chr(0x2060), '')
+            check('a first-step-only answer and an unknown control each get one retry',
+                  len(sent) == 5 and sent[3][-1] == bunny_persona.THIN_RETRY
+                  and '虚构字幕面板' in sent[4][-1] and '导出字幕' in detail
+                  and '虚构字幕面板' not in detail, [len(sent), detail])
+            shot('04d-checked-detail', card)
+            from PySide6.QtCore import QMimeData, QUrl
+            card.new_conversation()
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(str(report))])
+            check('recognition JSON is accepted as one summarized attachment', card.attach_mime(mime) == 1)
+            card.ask_now('看看这份报告')
+            yield lambda: not card.busy
+            card.reveal_all()
+            attached = '\n'.join(str(content) for content in sent[-1])
+            check('provider receives the dropped report summary only',
+                  len(sent) == 6 and '语言听错' in attached and '识别记录分析.txt' in attached
+                  and 'audit-private-' not in attached)
+            shot('04e-recognition-report', card)
+        finally:
+            bunny_chat.BunnyChatWorker.run = worker_stub
+            ai_providers.provider_for_stage = provider_original
+            bunny_lookup.run_check = lookup_original
+            bunny_lookup.newest_report = newest_original
+            bunny_permissions.save(permissions)
+            bunny_events.forget_recent()
+        card.input.setText('模型去哪里下载')
+        bunny_chat.BunnyChatWorker.run = lambda worker: worker.answered.emit(answer)
+        card.send()
+        yield lambda: not card.busy and card.spotlight.isVisible()
+        card.reveal_all()
         card.spotlight.anim.pause()
         card.spotlight.level = 1.0
         card.spotlight.update()
@@ -207,11 +358,32 @@ def audit(win, output: Path, theme: str) -> int:
                 Qt.MouseButton.NoButton if kind == QEvent.Type.MouseButtonRelease else Qt.MouseButton.LeftButton,
                 Qt.KeyboardModifier.NoModifier)
             app.sendEvent(mascot, event)
-        pointer(QEvent.Type.MouseButtonPress, origin)
-        for index in range(1, 11):
-            pointer(QEvent.Type.MouseMove, origin+(target-origin)*(index/10))
-            yield .03
-        yield 1.3
+        frames = []
+        place = puck._place
+
+        def record_frame(point):
+            place(point)
+            frames.append((mascot.geometry(), puck.carrier.mask().boundingRect(),
+                           mascot.isVisible() and puck.carrier.isVisible()))
+
+        puck._place = record_frame
+        try:
+            pointer(QEvent.Type.MouseButtonPress, origin)
+            for index in range(1, 11):
+                pointer(QEvent.Type.MouseMove, origin+(target-origin)*(index/10))
+                yield .03
+            yield 1.3
+        finally:
+            puck._place = place
+
+        notes['carry_positions_and_masks'] = [
+            [current.getRect(), region.getRect(), shown] for current, region, shown in frames
+        ]
+        check('carrier stays visible and contains the bunny throughout the drag',
+              bool(frames) and all(shown and region.contains(current) for current, region, shown in frames))
+        check('several moved frames share a single native mask',
+              len({current.getRect() for current, _, _ in frames}) >
+              len({region.getRect() for _, region, _ in frames}))
         check('carrying bunny moves and flips the chat card', card.flipped and card.box.flipped
               and card.pos().x() < start_card.x()-150 and card.pos().y() < start_card.y()-80)
         check('whole carried bunny stays inside the stationary mask', puck.carrier.rect().contains(mascot.geometry())

@@ -34,6 +34,57 @@ def append_region_overlay(filters, base, pixels, *, bounds, width, height,
     return output
 
 
+def merge_moving_overlays(segments, folder, ffmpeg, *, width, height, fps, regions=None):
+    """All animated caption windows as one concat input, transparent between them.
+
+    Returns (first_frame, last_frame, list_path), or None when a window is not
+    canvas-sized QuickTime RLE (older ProRes caches keep separate inputs).
+    One transparent RLE clip of the longest gap fills every gap via
+    ``outpoint`` half a frame early; the composite re-stamps frames by number
+    (``overlay_pts_shift``), so each window lands on its own output frames.
+    When every window has alpha bounds, their union is the merged bounds.
+    """
+    import av
+    from fractions import Fraction
+    from pathlib import Path
+    from ..system.processes import run_hidden_subprocess
+    segments = sorted((int(a), int(b), Path(path)) for a, b, path in segments)
+    folder = Path(folder)
+    for _, _, path in segments:
+        try:
+            with av.open(str(path)) as container:
+                stream = container.streams.video[0]
+                if stream.codec_context.name != 'qtrle' or (stream.width, stream.height) != (width, height):
+                    return None
+        except (OSError, ValueError, IndexError, av.error.FFmpegError):
+            return None
+        if path.parent.resolve() != folder.resolve():
+            return None
+    gaps = [b[0] - a[1] - 1 for a, b in zip(segments, segments[1:])]
+    if any(gap < 0 for gap in gaps):
+        return None
+    rate = Fraction(str(fps)).limit_denominator(100100)
+    gap_clip = folder / 'moving-gap.mov'
+    if max(gaps, default=0) > 0:
+        run_hidden_subprocess([str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y', '-nostdin',
+            '-f', 'lavfi', '-i', f'color=c=black@0.0:s={width}x{height}:r={rate},format=argb',
+            '-frames:v', str(max(gaps)), '-c:v', 'qtrle', '-pix_fmt', 'argb', '-video_track_timescale', '90000',
+            str(gap_clip)], purpose='transparent caption gap', check=True, capture_output=True, timeout=600)
+    lines = ['ffconcat version 1.0']
+    for index, (_, _, path) in enumerate(segments):
+        lines.append(f"file '{path.name}'")
+        if index < len(gaps) and gaps[index] > 0:
+            lines += [f"file '{gap_clip.name}'", f'outpoint {float((gaps[index] - Fraction(1, 2))/rate):.9f}']
+    target = folder / 'moving-overlays.ffconcat'
+    target.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    if regions is not None:
+        boxes = [regions.get(str(path)) for _, _, path in segments]
+        if all(boxes):
+            regions[str(target)] = [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                                    max(b[2] for b in boxes), max(b[3] for b in boxes)]
+    return segments[0][0], segments[-1][1], target
+
+
 def moving_alpha_bounds(path, *, width, height, frames, cached=None, cancelled=None):
     """Union every decoded alpha sample, including faint 10/12-bit glows.
 
@@ -58,6 +109,8 @@ def moving_alpha_bounds(path, *, width, height, frames, cached=None, cancelled=N
         except (OSError, ValueError): pass
     import av
     import numpy as np
+    # Packed RGB overlays (QuickTime RLE ARGB since 2026-11-19): alpha byte index.
+    packed_alpha = {'argb': 0, 'abgr': 0, 'rgba': 3, 'bgra': 3}
     result, count = None, 0
     with av.open(str(path)) as container:
         container.streams.video[0].codec_context.thread_count = 2
@@ -65,13 +118,19 @@ def moving_alpha_bounds(path, *, width, height, frames, cached=None, cancelled=N
             if cancelled and cancelled(): raise InterruptedError('render cancelled')
             count += 1
             if count > frames or frame.width != width or frame.height != height: return None
-            if len(frame.planes) != 4 or not frame.format.name.startswith('yuva444p'): return None
-            bits = frame.format.components[3].bits
-            if bits > 8 and not frame.format.name.endswith('le'): return None
-            dtype = np.dtype('<u2') if bits > 8 else np.dtype('u1')
-            plane = frame.planes[3]
-            alpha = np.ndarray((height, width), dtype=dtype, buffer=plane,
-                strides=(plane.line_size, dtype.itemsize))
+            name = frame.format.name
+            if name in packed_alpha:
+                plane = frame.planes[0]
+                alpha = np.ndarray((height, width), dtype=np.uint8, buffer=plane,
+                    offset=packed_alpha[name], strides=(plane.line_size, 4))
+            else:
+                if len(frame.planes) != 4 or not name.startswith('yuva444p'): return None
+                bits = frame.format.components[3].bits
+                if bits > 8 and not name.endswith('le'): return None
+                dtype = np.dtype('<u2') if bits > 8 else np.dtype('u1')
+                plane = frame.planes[3]
+                alpha = np.ndarray((height, width), dtype=dtype, buffer=plane,
+                    strides=(plane.line_size, dtype.itemsize))
             rows = np.flatnonzero(np.any(alpha, axis=1))
             if not rows.size: continue
             columns = np.flatnonzero(np.any(alpha[rows[0]:rows[-1]+1], axis=0))

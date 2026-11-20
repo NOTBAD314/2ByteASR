@@ -9,6 +9,7 @@ import os
 import platform
 from pathlib import Path
 import sys
+import threading
 import time
 import uuid
 import zipfile
@@ -93,9 +94,156 @@ def _session_files(directory, missing):
     return files
 
 
+class _Pending:
+    """One stored record that is parsed but not scrubbed yet.
+
+    ``collect`` chooses by time, session, project and task before scrubbing. Those come from the
+    stored line; the three identities go through the same scrub as the whole record would give
+    them (remembered per value in ``identity``), so the choice is the one the scrubbed record
+    would have had. ``finish`` does the full scrub and the checks, once; a record that fails
+    them is noted as unreadable and left out. Only the stored line is kept (not the parsed
+    record), so a whole scan can be remembered for the export that follows the viewer."""
+    __slots__=('raw','legacy_session','session','file','line','started','session_id','project_id','task_id',
+               'stamp','order','clean','_done','_told')
+
+    def __init__(self,row,raw,legacy_session,session,file,line,started,identity):
+        self.raw=raw;self.legacy_session=legacy_session
+        self.session=session;self.file=file;self.line=line;self.started=started
+        self.clean=None;self._done=False;self._told=None
+        self.session_id=self._identity(row.get('session_id'),'session_id',identity)
+        self.project_id=self._identity(row.get('project_id'),'project_id',identity)
+        self.task_id=self._identity(row.get('task_id'),'task_id',identity)
+        # A record without a time gets its session's start, as the scrubbed record does.
+        self.stamp=_stamp(row['time'] if 'time' in row else (started or now()))
+        def number(value):
+            try:return int(value)
+            except (TypeError, ValueError, OverflowError):return 0
+        self.order=(self.stamp or 0,number(row.get('pid')),number(row.get('sequence')))
+
+    @property
+    def raw_bytes(self):
+        return len(self.raw)
+
+    @staticmethod
+    def parse(line,legacy_session):
+        """The stored line as a record, or ValueError. Also refuses what the scrub leaves as it
+        is and then refuses, so an unreadable record is reported whether or not it is chosen."""
+        if not line.endswith(b"\n"):
+            raise ValueError("incomplete_line")
+        row=json.loads(line)
+        if not isinstance(row,dict): raise ValueError("not_object")
+        if "event_name" not in row:
+            row.update(format_version=0,event_name=str(row.get("kind","legacy")).lower().replace("_","."),
+                       level="INFO",message="舊版技術狀態記錄",result="observed",session_id=legacy_session)
+        for key in ('level','result','time'):
+            if key in row and not isinstance(row[key],str):raise ValueError('invalid_event_field')
+        for key in ('session_id','task_id'):
+            value=row.get(key)
+            if value is not None and not isinstance(value,str) \
+                    and not (isinstance(value,float) and not math.isfinite(value)):
+                raise ValueError('invalid_event_identity')
+        return row
+
+    @staticmethod
+    def _identity(value,key,identity):
+        if value is None:return None
+        if not isinstance(value,str):return ('?',key)      # not text: ``finish`` decides what it is
+        memo=identity.get((key,value))
+        if memo is None:
+            memo=identity[(key,value)]=identity['sanitizer'].clean(value,key)
+        return memo
+
+    def finish(self,sanitizer,missing,call):
+        """The scrubbed record, or None (noted in ``missing`` once per ``call``)."""
+        if not self._done:
+            clean=None
+            try:
+                row=self.parse(self.raw,self.legacy_session)
+                # Keep only schema keys that were explicitly populated; scrub twice.
+                message=sanitizer.string(row.get("message","技術狀態記錄"))
+                clean=sanitizer.clean(row)
+                clean["message"]=message
+                clean["event_name"]=sanitizer.string(row["event_name"])
+                for key,default in (('level','INFO'),('result','observed'),('time',self.started or now())):
+                    clean.setdefault(key,default)
+                    if not isinstance(clean[key],str):raise ValueError('invalid_event_field')
+                for key in ('session_id','task_id','project_id'):
+                    if clean.get(key) is not None and not isinstance(clean[key],str):
+                        raise ValueError('invalid_event_identity')
+                json.dumps(clean,allow_nan=False)
+            except (ValueError,TypeError,UnicodeError):
+                clean=None
+            self.clean=clean;self._done=True
+        if self.clean is None and self._told is not call:
+            self._told=call
+            missing.append(dict(session=self.session,file=self.file,line=self.line,reason="invalid_or_partial_line"))
+        return self.clean
+
+
+# 2026-11-19: one scan per ended session, kept while 「回报问题」 is open (``reuse_scans``): the
+# viewer's background pass reads the old sessions once and the export that follows uses them.
+# Per session folder: (its files' names, sizes and times; the scrub's salt; records; unreadable
+# lines; bytes read). A session that changed or another salt is read again.
+_SCANS={}
+_SCANS_LOCK=threading.Lock()
+
+
+def forget_scans():
+    """Drop the remembered scans (the viewer closed)."""
+    with _SCANS_LOCK:_SCANS.clear()
+
+
+def _session_signature(directory):
+    rows=[]
+    for path in directory.iterdir():
+        if path.name == "session.json" or (path.name.startswith("events") and path.suffix == ".jsonl"):
+            state=path.stat()
+            rows.append((path.name,state.st_size,state.st_mtime_ns))
+    return tuple(sorted(rows))
+
+
+def _newest_record_time(directory):
+    """When the session's records were last written (0 when that cannot be read)."""
+    newest=0.0
+    try:
+        for path in directory.iterdir():
+            if path.name.startswith("events") and path.suffix == ".jsonl":
+                newest=max(newest,path.stat().st_mtime)
+    except OSError:
+        return 0.0
+    return newest
+
+
+def _scan_session(directory,files,meta,identity,checkpoint):
+    """(records, unreadable lines, bytes) of one session's stored event files."""
+    records=[];unreadable=[];size=0
+    legacy_session=meta.get("session_id",directory.name);started=meta.get('started_at')
+    for name,data in files.items():
+        if not name.endswith(".jsonl"):continue
+        size+=len(data)
+        for index,line in enumerate(data.splitlines(keepends=True)):
+            if index % 512 == 0:checkpoint()
+            try:
+                row=_Pending.parse(line,legacy_session)
+                records.append(_Pending(row,line,legacy_session,directory.name,name,index+1,started,identity))
+            except (ValueError,TypeError,UnicodeError):
+                unreadable.append(dict(session=directory.name,file=name,line=index+1,reason="invalid_or_partial_line"))
+    return records,unreadable,size
+
+
 def collect(root, *, instance=None, scope="recent", start=None, end=None, report=None,
-            cancelled=None, deadline=None):
-    """Runs on an export/viewer worker, never on the GUI thread."""
+            cancelled=None, deadline=None, context_records=True, recent_only=False, reuse_scans=False):
+    """Runs on an export/viewer worker, never on the GUI thread.
+
+    The viewer asks for less, so it is there at once (2026-11-19, user: it took over ten seconds):
+
+    * ``context_records=False``: the background records of this project and task outside the
+      range are counted by their stored size (``context_count``), not scrubbed and returned;
+    * ``recent_only=True``: sessions whose records were all written before the range are not
+      read at all (so nothing of them is counted either), except the last one that did not end
+      cleanly and this one.
+
+    ``reuse_scans=True`` keeps each ended session's scan for the next call (``forget_scans``)."""
     root=Path(root)
     def checkpoint():
         if cancelled and cancelled():raise InterruptedError('diagnostic collection cancelled')
@@ -103,11 +251,17 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             raise TimeoutError('diagnostic collection deadline exceeded')
     checkpoint()
     missing=[]; sessions=[]; events=[]; losses=Counter(); consumed=0; cutoff=None
+    identity={}; call=object()
+    # Hidden date controls belong only to the explicit range. A report can
+    # remain open for hours: recent must use one fresh, consistent clock.
+    upper=_stamp(end) if scope=='range' and end else _stamp(now())
+    lower=_stamp(start) if scope=='range' and start else (upper-900 if scope!='range' else None)
     try:
         sanitizer=instance.sanitizer if instance else Sanitizer((root/".alias-key").read_bytes() if (root/".alias-key").is_file() else None)
     except OSError as exc:
         missing.append(dict(stage='alias_key',reason=type(exc).__name__))
         sanitizer=Sanitizer()
+    identity['sanitizer']=sanitizer
     snapshot=None
     try:
         if instance and instance.root.resolve()==root.resolve():snapshot=instance.snapshot()
@@ -152,8 +306,23 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         if consumed >= MAX_EXPORT_BYTES:
             missing.append(dict(reason="scan_limit",session=directory.name)); continue
         try:
-            files=snapshot["files"] if snapshot and directory==instance.directory else _session_files(directory,missing)
-            meta=metadata.get(directory) or json.loads(files.get("session.json",b"{}"))
+            live=bool(snapshot and directory==instance.directory)
+            if recent_only and not live and scope!='previous' \
+                    and metadata.get(directory,{}).get('session_id',directory.name)!=previous_id:
+                # Nothing of it can be in the range: its last record is older (a minute's slack
+                # for clocks and for a write still on its way to the file).
+                written=_newest_record_time(directory)
+                if scope=='session' or (lower is not None and written and written<lower-60):
+                    continue
+            signature=None;scan=None
+            if reuse_scans and not live:
+                signature=(_session_signature(directory),sanitizer.salt)
+                with _SCANS_LOCK:kept=_SCANS.get(str(directory))
+                if kept is not None and kept[0]==signature:scan=kept[1:]
+            files=None
+            if scan is None:
+                files=snapshot["files"] if live else _session_files(directory,missing)
+            meta=metadata.get(directory) or json.loads((files or {}).get("session.json",b"{}"))
             if not isinstance(meta,dict) or not meta:
                 missing.append(dict(session=directory.name,reason="missing_session_metadata"));continue
             if meta.get('session_id') is not None and not isinstance(meta['session_id'],str):
@@ -162,88 +331,85 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
             if meta.get("status")=="running" and not current and not _alive(meta): meta["status"]="previous_not_cleanly_ended"
             meta["directory"]=directory.name
             sessions.append(sanitizer.clean(meta))
-            for name,data in files.items():
-                if not name.endswith(".jsonl"):continue
-                consumed+=len(data)
-                lines=data.splitlines(keepends=True)
-                for index,line in enumerate(lines):
-                    if index % 128 == 0:checkpoint()
-                    try:
-                        if not line.endswith(b"\n"):
-                            raise ValueError("incomplete_line")
-                        row=json.loads(line)
-                        if not isinstance(row,dict): raise ValueError("not_object")
-                        if "event_name" not in row:
-                            row.update(format_version=0,event_name=str(row.get("kind","legacy")).lower().replace("_","."),
-                                       level="INFO",message="舊版技術狀態記錄",result="observed",session_id=meta.get("session_id",directory.name))
-                        # Keep only schema keys that were explicitly populated; scrub twice.
-                        message=sanitizer.string(row.get("message","技術狀態記錄"))
-                        clean=sanitizer.clean(row)
-                        clean["message"]=message
-                        clean["event_name"]=sanitizer.string(row["event_name"])
-                        for key,default in (('level','INFO'),('result','observed'),('time',meta.get('started_at') or now())):
-                            clean.setdefault(key,default)
-                            if not isinstance(clean[key],str):raise ValueError('invalid_event_field')
-                        for key in ('session_id','task_id','project_id'):
-                            if clean.get(key) is not None and not isinstance(clean[key],str):
-                                raise ValueError('invalid_event_identity')
-                        json.dumps(clean,allow_nan=False)
-                        events.append(clean)
-                    except (ValueError,TypeError,UnicodeError):
-                        missing.append(dict(session=directory.name,file=name,line=index+1,reason="invalid_or_partial_line"))
+            if scan is None:
+                scan=_scan_session(directory,files,meta,identity,checkpoint)
+                if signature is not None:
+                    with _SCANS_LOCK:_SCANS[str(directory)]=(signature,*scan)
+            records,unreadable,size=scan
+            events.extend(records);missing.extend(unreadable);consumed+=size
             for key,value in (meta.get('losses') or {}).items() if isinstance(meta.get('losses'),dict) else ():
                 if isinstance(value,(int,float)) and math.isfinite(value) and value>=0:losses[key]+=value
                 else:missing.append(dict(session=directory.name,reason='invalid_loss_counter',field=str(key)[:80]))
             if isinstance(meta.get('dropped'),(int,float)) and math.isfinite(meta['dropped']) and meta['dropped']>0:losses['legacy_dropped']+=meta['dropped']
         except (OSError,ValueError,TypeError,UnicodeError) as exc:
             missing.append(dict(session=directory.name,reason=type(exc).__name__))
-    events.sort(key=_event_order)
+    # 2026-11-19 (user: 「回报问题」 took over ten seconds to load, the export as long again): every
+    # line of every retained session (up to 32 MiB, ~30,000 records) used to be scrubbed here
+    # (8.3 s of 8.3 s measured), and only the last 15 minutes plus this project's background were
+    # kept. Now the lines are only parsed; what is kept is chosen by time, session, project and
+    # task (values the scrub leaves as they are, see ``_Pending``), and only that is scrubbed.
+    events.sort(key=lambda e:e.order)
     sessions.sort(key=lambda s:_stamp(s.get('started')) or 0, reverse=True)
     newest=max(sessions,key=lambda s:_stamp(s.get('started')) or 0) if sessions else {}
     newest=newest.get('session_id',newest.get('directory'))
     current_id=instance.session_id if snapshot else newest
     if scope=="session":
-        selected=[e for e in events if e.get("session_id")==current_id]
+        selected=[e for e in events if e.session_id==current_id]
     elif scope=="previous":
         prior=next((s for s in sessions if s.get("status") in {"previous_not_cleanly_ended","not_cleanly_ended"}),None)
-        selected=[e for e in events if prior and e.get("session_id")==prior.get("session_id",prior.get("directory"))]
+        selected=[e for e in events if prior and e.session_id==prior.get("session_id",prior.get("directory"))]
         if prior is None:missing.append(dict(reason="no_retained_unclean_session"))
     else:
-        # Hidden date controls belong only to the explicit range. A report can
-        # remain open for hours: recent must use one fresh, consistent clock.
-        upper=_stamp(end) if scope=='range' and end else _stamp(now())
-        lower=_stamp(start) if scope=='range' and start else (upper-900 if scope!='range' else None)
-        selected=[e for e in events if (stamp:=_stamp(e.get('time'))) is not None
-                  and (lower is None or stamp>=lower) and stamp<=upper]
+        selected=[e for e in events if e.stamp is not None
+                  and (lower is None or e.stamp>=lower) and e.stamp<=upper]
+    selected=[e for e in selected if e.finish(sanitizer,missing,call) is not None]
     # Pull the retained upstream provenance for this project/task, even across sessions.
-    project_ids={e.get("project_id") for e in selected if e.get("project_id")}
-    task_ids={e.get("task_id") for e in selected if e.get("task_id")}
+    project_ids={e.project_id for e in selected if e.project_id}
+    task_ids={e.task_id for e in selected if e.task_id}
     if report and report.get("project_id"):project_ids.add(sanitizer.alias(report["project_id"],"project"))
     for e in events:
-        if e.get("project_id") in project_ids and e.get("task_id"):task_ids.add(e["task_id"])
+        if e.project_id in project_ids and e.task_id:task_ids.add(e.task_id)
     included={id(e) for e in selected}
-    context=[]; context_bytes=0
+    context=[]; context_bytes=0; context_count=0; misses=0
     if scope in {'recent','session'} and previous_id:
         # Reserve bounded terminal context, independent of the user's current
         # project/task and of the 15 minute range. Never invent an exit code.
-        tail=[e for e in events if e.get('session_id')==previous_id][-160:]
-        for e in reversed(tail):
+        tail=[]
+        for e in reversed([e for e in events if e.session_id==previous_id]):
+            if e.finish(sanitizer,missing,call) is not None:tail.append(e)     # its last 160 readable records
+            if len(tail)>=160:break
+        for e in tail:
             if id(e) in included:
                 continue
-            size=len(json.dumps(e,ensure_ascii=False).encode('utf8','replace'))
+            clean=e.clean
+            size=len(json.dumps(clean,ensure_ascii=False).encode('utf8','replace'))
             if context_bytes+size>min(MAX_CONTEXT_BYTES,512*1024):
                 losses['previous_tail_omitted_by_budget']+=1
                 continue
-            context.append(dict(e,context_only=True,previous_abnormal_tail=True))
+            context.append(dict(clean,context_only=True,previous_abnormal_tail=True))
             context_bytes+=size
             included.add(id(e))
     for e in events:
-        if id(e) not in included and ((e.get("project_id") and e.get("project_id") in project_ids) or (e.get("task_id") and e.get("task_id") in task_ids)):
-            size=len(json.dumps(e,ensure_ascii=False).encode('utf8','replace'))
-            if context_bytes+size>MAX_CONTEXT_BYTES:
+        if id(e) not in included and ((e.project_id and e.project_id in project_ids) or (e.task_id and e.task_id in task_ids)):
+            if not context_records:
+                if context_bytes+e.raw_bytes>MAX_CONTEXT_BYTES:losses['context_omitted_by_budget']+=1
+                else:context_count+=1;context_bytes+=e.raw_bytes
+                continue
+            if misses>=32:
+                # The budget is used up (32 records in a row did not fit): the rest is counted,
+                # not scrubbed only to be measured and dropped.
                 losses['context_omitted_by_budget']+=1
                 continue
-            context.append(dict(e,context_only=True));context_bytes+=size
+            clean=e.finish(sanitizer,missing,call)
+            if clean is None:
+                continue
+            size=len(json.dumps(clean,ensure_ascii=False).encode('utf8','replace'))
+            if context_bytes+size>MAX_CONTEXT_BYTES:
+                losses['context_omitted_by_budget']+=1;misses+=1
+                continue
+            misses=0
+            context.append(dict(clean,context_only=True));context_bytes+=size
+    selected=[dict(e.clean) for e in selected]      # copies: a remembered scan keeps its own
     selected.sort(key=_event_order)
     used_ids={e.get("session_id") for e in selected+context}
     selected_sessions=[s for s in sessions if s.get("session_id",s.get("directory")) in used_ids or s.get("session_id") in {current_id,previous_id}]
@@ -251,7 +417,8 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         meta.setdefault('exit_code', 'unknown')
         meta.setdefault('exit_code_source', 'not_observed')
         meta.setdefault('native_dump_path', 'unknown')
-    return dict(events=selected,context_events=context,sessions=selected_sessions,missing=missing[:128],missing_count=len(missing),
+    return dict(events=selected,context_events=context,context_count=len(context)+context_count,
+                sessions=selected_sessions,missing=missing[:128],missing_count=len(missing),
                 losses=dict(losses),cutoff_sequence=cutoff,scope=scope,upstream_task_ids=sorted(task_ids),
                 scanned_bytes=consumed,sanitizer=sanitizer)
 
@@ -304,8 +471,9 @@ def summary(data, report_id, description="", report=None):
         extra.append(tr("本程序记录截至 #{sequence}，其他进程只读完整的行", sequence=data["cutoff_sequence"]))
     if data.get("missing"):
         extra.append(tr("读不到的部分：{detail}", detail=json.dumps(data["missing"][:8], ensure_ascii=False)))
-    if data.get('context_events'):
-        extra.append(tr('另附 {count} 笔范围外的工程/任务背景记录，不计入本页时间轴。',count=len(data['context_events'])))
+    background=len(data.get('context_events') or ()) or int(data.get('context_count') or 0)
+    if background:
+        extra.append(tr('另附 {count} 笔范围外的工程/任务背景记录，不计入本页时间轴。',count=background))
     generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     scope = data.get("scope") or "recent"
     return render_summary(analysis, report_id=report_id, description=description, generated=generated, version=version,
@@ -314,8 +482,8 @@ def summary(data, report_id, description="", report=None):
 
 
 def export_report(target, *, root, instance=None, scope="recent", start=None, end=None,
-                  description="", report=None, content=None, settings=None):
-    data=collect(root,instance=instance,scope=scope,start=start,end=end,report=report)
+                  description="", report=None, content=None, settings=None, reuse_scans=False):
+    data=collect(root,instance=instance,scope=scope,start=start,end=end,report=report,reuse_scans=reuse_scans)
     sanitizer=data.pop("sanitizer")
     report_id=(report or {}).get("report_id") or "report-"+uuid.uuid4().hex[:16]
     report=dict(report or {},report_id=report_id)

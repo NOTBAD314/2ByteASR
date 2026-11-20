@@ -41,6 +41,10 @@ from twobyteasr.subtitle_rules.segmentation import (
     source_segment_character_offsets,
     text_boundary_hints,
     texts_from_boundary_offsets,
+    with_mandatory_breaks,
+    japanese_break_candidates,
+    marked_break_text,
+    snap_to_break_candidates,
 )
 
 
@@ -314,6 +318,14 @@ def cues_from_resegmented_texts(
             length = sum(display_length(item.text) for item in turn)
             relative = sorted(offset - cursor for offset in boundaries
                               if cursor < offset < cursor + length) + [length]
+            # A turn measures its own pauses; ones the shared request could not show the model
+            # are added here rather than failing the whole batch (2026-11-18, batch 120).
+            relative, added = with_mandatory_breaks(
+                "".join(clean_subtitle_text(item.text) for item in turn), relative,
+                hard_break_character_offsets(turn, firered_tokens))
+            if added:
+                record_run_event('grouping_turn_mandatory_breaks_added',
+                                 source_segment_ids=[item.segment_id for item in turn], offsets=added)
             turn_texts = texts_from_boundary_offsets(turn, relative, firered_tokens)
             cues.extend(cues_from_resegmented_texts(turn, turn_texts, firered_tokens,
                          speech_regions, comfort_max_chars=comfort_max_chars))
@@ -784,6 +796,16 @@ def call_grouping_api(
         "quality_version": QUALITY_VERSION,
         "time_domain": "source_seconds",
     }
+    japanese_candidates = None
+    if prompt_language == "ja":
+        # 2026-11-18: the model picks numbered phrase ends instead of copying the text.
+        japanese_candidates = japanese_break_candidates(
+            source_text, set(hard_break_offsets) | set(protected_source_offsets))
+        if japanese_candidates is not None:
+            request_body.pop("indexed_content", None)
+            request_body.pop("source_text", None)
+            request_body["marked_text"] = marked_break_text(source_text, japanese_candidates)
+            request_body["break_candidate_count"] = len(japanese_candidates)
     if _quality_enabled():
         inherited_allowed = segment_batch[0].caption_arbitration.get('grouping_request_allowed') if len(segment_batch)==1 else None
         if inherited_allowed is not None:
@@ -983,6 +1005,11 @@ def call_grouping_api(
                 closing_added=lambda total: record_run_event(
                     "grouping_closing_boundary_added", batch_index=batch_index,
                     attempt=attempt, total_length=total))
+            if japanese_candidates is not None:
+                boundary_offsets, moved = snap_to_break_candidates(boundary_offsets, japanese_candidates)
+                if moved:
+                    record_run_event("grouping_marked_boundaries_snapped", batch_index=batch_index,
+                                     attempt=attempt, moved=moved[:20], moved_count=len(moved))
             model_boundaries = list(boundary_offsets)
             source_identity = capture_grouping_source(segment_batch,
                 job_id=get_runtime_context().job_id, batch_id=batch_index).identity()
@@ -996,20 +1023,22 @@ def call_grouping_api(
                 quality = quality_for_segments(segment_batch, firered_tokens,
                     protected=set(hard_break_offsets) | set(protected_source_offsets))
                 from .ai_boundary_policy import inspect, minimal_fallback, annotate
-                diag["model_quality_issues"] = inspect(quality, model_boundaries)
+                diag["model_quality_issues"] = inspect(quality, model_boundaries, advisory=True)
                 diag['semantic_advice'] = quality.inspect(model_boundaries)
                 source_cuts = sorted(set(source_boundary_offsets) | {total_length})
                 model_state = ('unchanged_with_violations' if diag['model_quality_issues'] else 'unchanged_valid') if model_boundaries == source_cuts else 'regrouped'
                 diag['model_quality_state'] = model_state
                 record_run_event('grouping_model_quality', batch_index=batch_index, state=model_state,
                     protocol_valid=True, content_conserved=True, issues=diag['model_quality_issues'])
+                retry_statuses = {}
                 boundary_offsets = retry_quality_windows(quality, model_boundaries, model_boundaries,
                     provider=provider, snapshot=snapshot, schema=GROUPING_SCHEMA,
                     budget=_quality_budget, record=record_run_event, batch_index=batch_index,
-                    source_spans=segment_payload,receipts=boundary_receipts,
+                    source_spans=segment_payload,receipts=boundary_receipts,statuses=retry_statuses,
                     cancel_check=lambda: bool(abort_event is not None and abort_event.is_set()) or bool(
                         getattr(get_runtime_context().cancellation_token,"is_cancelled",False)))
-                boundary_offsets, local_receipts = minimal_fallback(quality,boundary_offsets,record=record_run_event)
+                boundary_offsets, local_receipts = minimal_fallback(quality,boundary_offsets,record=record_run_event,
+                                                                    statuses=retry_statuses)
                 boundary_receipts.extend(local_receipts)
                 result, boundary_offsets, quality_issues = cues_from_quality(segment_batch,
                     boundary_offsets, firered_tokens,
@@ -1180,10 +1209,7 @@ def call_grouping_api(
                     ]
                 # A hard break the repairs above moved off (or away from its word
                 # edge) is still a real pause: put its word-edge image back.
-                for offset in missing_hard_break_offsets(source_text, hard_break_offsets, boundary_offsets):
-                    images = snap_boundaries_away_from_word_interiors(source_text, [offset])
-                    boundary_offsets = sorted(set(boundary_offsets) | {
-                        image for image in images if 0 < image <= total_length})
+                boundary_offsets, _restored = with_mandatory_breaks(source_text, boundary_offsets, hard_break_offsets)
                 if before_validate != boundary_offsets:
                     print(f"   [断句校验] batch={batch_index} 已应用云端模型竖线校正与本地护栏。")
                 proposed_texts = texts_from_boundary_offsets(
@@ -1421,7 +1447,7 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
     import dataclasses
     from ..providers.asr_provider_snapshot import GroupedBatchResult
     from ..providers.provider_input_budget import RetryBudget
-    from ..providers.subtitle_request_policy import (escalated_thinking, escalation_cue_limit,
+    from ..providers.subtitle_request_policy import (retry_thinking, escalation_cue_limit,
                                                      task_escalation_enabled)
     from .ai_boundary_policy import provenance
     candidates = [job for job in jobs if not job[-1] and fallback_reasons.get(job[0]) in GROUPING_ESCALATION_CATEGORIES]
@@ -1432,7 +1458,7 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
         categories[fallback_reasons[index]] = categories.get(fallback_reasons[index], 0) + 1
     count = sum(len(batch) for _, _, batch, *_ in candidates)
     endpoint = snapshot.endpoint()
-    level = escalated_thinking(snapshot.enable_thinking, snapshot.thinking_protocol,
+    level = retry_thinking(snapshot, categories, 'group',
         base_url=endpoint.get('base_url') or endpoint.get('url', ''), endpoint_protocol=snapshot.protocol)
     limit = escalation_cue_limit(len(ordered_segments))
     skipped = ('disabled' if not task_escalation_enabled('group') else
@@ -1445,7 +1471,9 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
     if skipped:
         record_run_event('ai_escalation_round', skipped_reason=skipped, **event)
         return set(), []
-    escalated = dataclasses.replace(snapshot, enable_thinking=level)
+    from ..providers.subtitle_request_policy import escalated_output_tokens
+    escalated = dataclasses.replace(snapshot, enable_thinking=level,
+                                    max_output_tokens=escalated_output_tokens(snapshot, 'group'))
     work = []
     for job in candidates:
         batch = job[2]
@@ -1453,8 +1481,8 @@ def _escalate_failed_grouping(jobs, results, fallback_reasons, ordered_segments,
         work.append((job, [batch] if len(batch) == 1 else [batch[:middle], batch[middle:]]))
     requests = sum(len(halves) for _, halves in work)
     budget = RetryBudget(0, total_seconds=float(snapshot.timeout_policy.total) * requests)
-    print(f"   [提高思考重试] {len(candidates)} 个断句批次格式或截断仍失败，用同一模型、思考等级 {level} 再请求一轮"
-          f"（{requests} 个请求）。")
+    print(f"   [提高思考重试] {len(candidates)} 个断句批次格式或截断仍失败，用同一模型、思考等级 {level}、"
+          f"输出上限 {escalated.max_output_tokens} 再请求一轮（{requests} 个请求）。")
     record_run_event('ai_escalation_round', state='started', thinking=level, requests=requests, **event)
     owner = get_runtime_context()
     resolved, improved, still_failed, extra_reviews, number = set(), [], [], [], 0

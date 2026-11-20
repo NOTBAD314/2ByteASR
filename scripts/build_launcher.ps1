@@ -1,13 +1,19 @@
 [CmdletBinding()]
-param()
+param(
+    # 2026-11-19: refresh_root_launcher.ps1 builds the launcher alone into a staging folder.
+    [string]$OutputDirectory = "",
+    [switch]$LauncherOnly
+)
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $SourcePath = Join-Path $ProjectRoot "launcher\2ByteASRLauncher.cs"
 $ConfigureSourcePath = Join-Path $ProjectRoot "launcher\2ByteASRConfigure.cs"
+$CoverSourcePath = Join-Path $ProjectRoot "launcher\LaunchCover.cs"   # 2026-11-19: Home's skeleton while the app starts
 $ShortcutSourcePath = Join-Path $ProjectRoot "launcher\ShortcutIdentity.cs"
 $IconPath = Join-Path $ProjectRoot "assets\app_icon.ico"  # face-cropped Taskbar/EXE icon (80-90% face)
-$OutputPath = Join-Path $ProjectRoot "2ByteASR.exe"
+$OutputFolder = if ($OutputDirectory) { $OutputDirectory } else { $ProjectRoot }
+$OutputPath = Join-Path $OutputFolder "2ByteASR.exe"
 $ConfigureOutputPath = Join-Path $ProjectRoot "2ByteASR-Configure.exe"
 $ShortcutToolPath = Join-Path $PSScriptRoot "ShortcutIdentity.exe"
 $CompilerCandidates = @(
@@ -33,9 +39,14 @@ if (-not (Test-Path -LiteralPath $IconPath)) {
 }
 
 & $Compiler /nologo /target:winexe /optimize+ "/win32icon:$IconPath" `
-    /codepage:65001 /reference:System.Windows.Forms.dll "/out:$OutputPath" $SourcePath
+    /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
+    "/out:$OutputPath" $SourcePath $CoverSourcePath
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputPath)) {
     throw "Failed to build 2ByteASR.exe."
+}
+if ($LauncherOnly) {
+    Write-Host "[OK] Built the launcher: $OutputPath" -ForegroundColor Green
+    return
 }
 
 & $Compiler /nologo /target:winexe /optimize+ "/win32icon:$IconPath" `

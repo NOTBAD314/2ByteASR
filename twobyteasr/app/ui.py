@@ -51,12 +51,10 @@ import qtawesome as qta
 import requests
 from PySide6.QtCore import (
     QByteArray,
-    QEasingCurve,
     QEvent,
     QObject,
     QParallelAnimationGroup,
     QPoint,
-    QPropertyAnimation,
     QRect,
     QRectF,
     QSettings,
@@ -598,21 +596,25 @@ def _show_error(title: str, message: str) -> None:
             pass
 
 
+# The same key as app.support_entry.SUPPORT_HIDDEN_KEY (checked by a test).
+SUPPORT_HIDDEN_KEY = "ui/support_entry_hidden"
+
+
+def _support_entry_hidden_now() -> bool:
+    """2026-11-19 (startup): read without importing app.support_entry, whose letter dialogs cost
+    35-55 ms of the main window's construction for one setting."""
+    from ..design.theme_manager import SETTINGS_APP, SETTINGS_ORG
+    return QSettings(SETTINGS_ORG, SETTINGS_APP).value(SUPPORT_HIDDEN_KEY, False, type=bool)
+
+
 def _register_bundled_fonts() -> None:
-    """Register bundled Source Han Sans OTFs so every machine renders alike."""
-    from PySide6.QtGui import QFontDatabase
-    root = Path(__file__).resolve().parents[2]
-    candidates = [root / "assets" / "fonts", root / "tools" / "fonts"]
-    found = 0
-    for directory in candidates:
-        if not directory.is_dir():
-            continue
-        for font_path in sorted(directory.glob("*.otf")) + sorted(directory.glob("*.ttf")):
-            try:
-                QFontDatabase.addApplicationFont(str(font_path))
-                found += 1
-            except Exception:
-                pass
+    """Register bundled Source Han Sans OTFs so every machine renders alike.
+
+    2026-11-19: normally done already by the font warm-up thread (design.font_warmup), which was
+    started with the application object; this then only waits for it. Otherwise they are
+    registered here, as before."""
+    from ..design.font_warmup import register_bundled_fonts
+    found = register_bundled_fonts()
     if found:
         print(f"[fonts] registered {found} bundled font file(s)")
 
@@ -828,7 +830,7 @@ def persist_ai_configuration(
         models["provider_profiles"] = profile_view["models"].get("provider_profiles", {})
     for stage, values in (('polish', polish), ('group', group)):
         for key, default in (("max_output_tokens", 10000), ("enable_thinking", False), ("thinking_protocol", "auto"),
-                             ("escalate_on_failure", True)):
+                             ("escalate_on_failure", True), ("strict_output", False)):
             models[f"{stage}_{key}"] = values.get(key, models.get(f"{stage}_{key}", default))
         models[f'{stage}_json_mode'] = bool(values.get('json_mode', True))
         models[f'{stage}_structured_output'] = bool(values.get('structured_output', True))
@@ -1204,7 +1206,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         # built_page()，不会因此把整页建出来。
         self.term_library_page = TermLibraryPage(self)
         self.term_library_page.recognition_requested.connect(self._return_to_settings)
-        self.term_library_page.workshop_requested.connect(self._open_model_workshop)
+        self.term_library_page.workshop_requested.connect(lambda: self._open_model_workshop(defer=True))
         self.term_library_page.history_requested.connect(self._open_recognition_history)
         self.pages.addWidget(self.term_library_page)
         self._studio_recognition_context = None
@@ -1224,7 +1226,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.pages.currentChanged.connect(self._page_changed)
         self.pages.currentChanged.connect(self._update_bottom_bar_visibility)
         # Apply sane default geometry once (after construction) to avoid tiny/offscreen windows.
-        QTimer.singleShot(0, self, self._apply_sane_initial_geometry)
+        QTimer.singleShot(0, self, self._apply_initial_geometry_once)
         from ..storage.storage_ui import IdleStorageMaintenance
         self._storage_maintenance = IdleStorageMaintenance(self)
         self.drop_overlay = DropOverlay(self)
@@ -1373,7 +1375,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             )
             self._history_page_instance = page
             page.recognition_requested.connect(self._return_to_settings)
-            page.workshop_requested.connect(self._open_model_workshop)
+            page.workshop_requested.connect(lambda: self._open_model_workshop(defer=True))
             page.terms_requested.connect(self._open_terms_from_history)
             page.result_requested.connect(self._open_completion_from_history)
             page.diagnose_requested.connect(self._open_history_diagnosis)
@@ -1604,7 +1606,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         row.addWidget(subtitle)
         row.addSpacing(12)
         row.addStretch(1)
-        from .support_entry import support_entry_hidden
         from ..design.presentation import button_role
         self.support_button = button_role(QPushButton(), "secondary", size="compact")
         self.support_button.setObjectName("supportEntry")
@@ -1614,7 +1615,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         row.addWidget(self.support_button)
         # After adoption: showing a parentless button made it a native
         # top-level window for a moment (~0.3 s at startup).
-        self.support_button.setVisible(not support_entry_hidden())
+        self.support_button.setVisible(not _support_entry_hidden_now())
         self.update_button = AnimatedButton("检查更新")
         self.update_button.setObjectName("softAction")
         install_themed_icon(self.update_button, "fa5s.sync-alt", "accent")
@@ -1629,7 +1630,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.model_workshop_button = AnimatedButton("模型工坊")
         self.model_workshop_button.setObjectName("softAction")
         install_themed_icon(self.model_workshop_button, "fa5s.cubes", "accent")
-        self.model_workshop_button.clicked.connect(self._open_model_workshop)
+        self.model_workshop_button.clicked.connect(lambda: self._open_model_workshop(defer=True))
         row.addWidget(self.model_workshop_button)
         self.return_recognition_button = AnimatedButton("返回字幕识别")
         # 2026-11-11 (user): the outlined button looked unlike every other
@@ -1939,9 +1940,57 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             from ..studio.studio_video_canvas import MpvCanvas
             surfaces = studio.findChildren(MpvCanvas)
         departing = self.pages.currentWidget() is studio and widget is not studio
+        studio_side = studio is not None and (self.pages.currentWidget() is studio or widget is studio)
         loading = self.__dict__.get('_studio_loading_session')
-        native_cover_mode = bool(loading is not None and getattr(loading, 'uses_native_cover', False))
+        # 2026-11-19 (user: Home and the workshop flash back and forth two or three times): the
+        # loading cover exists from a few seconds after startup, and from then on *every* switch
+        # took the cover's path: the new page was painted at once, and then the generic stack fade
+        # laid the old page's picture back over it. The cover's path is for switches it is part
+        # of: into or out of Studio, or while it is up.
+        native_cover_mode = bool(loading is not None and getattr(loading, 'uses_native_cover', False)
+                                 and (studio_side or getattr(loading, 'state', '') in {'preparing', 'failed', 'finishing'}))
+        # 2026-11-18 (user: no motion anywhere): the old page's picture fades out over the live new
+        # page, Studio included: with its video up, the picture comes from the desktop and the fade
+        # is a click-through window above the video (design.transitions). Not under the loading cover.
+        old_page_picture = None
+        early_cover = self.__dict__.pop('_page_cover_ahead', None)
+        card_up = bool(loading is not None and getattr(loading, 'uses_native_cover', False)
+                       and loading.view.isVisible())
+        from ..design.transitions import capture_page, stage_cover
+        if early_cover is not None:
+            old_page_picture = early_cover.pixmap       # already on the screen (_return_to_settings)
+        elif not native_cover_mode or (studio_side and not card_up and stage_cover(self.pages) is not None):
+            # Under the loading cover's rules too when no card is up (a kept editor entered at
+            # once): only with the kept cover, so the picture is up before the video is touched.
+            with navigation_phase('navigation.capture_old_page'):
+                old_page_picture = capture_page(self.pages)
+        # 2026-11-19 (user: going into and out of the workbench still flashes): into or out of
+        # Studio the old picture is on the screen, in the window's kept cover, *before* anything
+        # under it changes, and fades once the new page is painted. It used to be laid over
+        # afterwards in a window made for it, which reached the screen 80-150 ms late: Home was
+        # seen, then the workbench came back over it and faded (transitions.StageCover).
+        # 2026-11-19: where the page we leave had its sidebar highlight (the switch slides along
+        # the navigation; see _page_motion). Read now, while that page is still laid out.
+        previous_page = self.pages.currentWidget()
+        previous_nav = self._nav_rect(previous_page)
+        previous_sidebar = self._sidebar_rect(previous_page) is not None
+        # Home's start bar lies under the page stack and is shown on Home only. Leaving Home it
+        # leaves with the old page's picture; coming Home it arrives with the new page.
+        bar = getattr(self, 'bottom_bar', None)
+        bar_veil = None
+        if old_page_picture is not None and not studio_side and early_cover is None and bar is not None:
+            if widget is not self.settings_scroll and bar.isVisible():
+                old_page_picture = self._with_bottom_bar(old_page_picture, bar)
+            elif widget is self.settings_scroll and not bar.isVisible():
+                bar_veil = True
+        if early_cover is None and old_page_picture is not None and studio_side:
+            from ..design.transitions import cover_page
+            early_cover = cover_page(self.pages, old_page_picture)
+            if early_cover is None and native_cover_mode:
+                old_page_picture = None                 # never laid over afterwards there
         with ExitStack() as presentation:
+            if early_cover is not None:
+                presentation.callback(early_cover.release)
             if native_cover_mode:
                 # Retire native video before changing its parent's rectangle.
                 # During loading the separately held card already covers this.
@@ -1975,17 +2024,165 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                         self.content_layout.activate()
             # Native pages have their own paint target. Repainting only the
             # shell can leave their previous pixels beneath the resumed video.
+            fade_started = False
             if native_cover_mode:
                 with navigation_phase('navigation.paint_shell'):
                     self.repaint()
                 with navigation_phase('navigation.paint_pages'):
                     self.pages.repaint()
+            elif old_page_picture is not None and not studio_side:
+                # 2026-11-18: the old page's picture covers the switch, so the two synchronous
+                # repaints (32-53 ms measured) are not needed. 2026-11-19: the picture stays until
+                # the new page has finished building, then one fade between two pictures
+                # (design.transitions.PageHold). Studio switches keep theirs for the video hand-off.
+                from ..design.transitions import start_page_hold
+                if bar_veil:
+                    bar_veil = self._veil_until_motion(bar)
+                start_page_hold(self.pages, old_page_picture, settled=lambda page=widget: self._page_settled(page),
+                                wait=not self._page_shown_before(widget),
+                                on_settled=lambda page=widget, veil=bar_veil: self._note_page_shown(page, veil),
+                                motion=self._page_motion(previous_page, widget, previous_nav, previous_sidebar))
+                fade_started = True
             else:
                 with navigation_phase('navigation.paint_pages'):
                     self.pages.repaint()
                 with navigation_phase('navigation.paint_shell'):
                     self.repaint()
+        if early_cover is None and old_page_picture is not None and not fade_started:
+            from ..design.transitions import start_page_crossfade
+            start_page_crossfade(self.pages, old_page_picture)
         reveal_cue(self.app_header if self.app_header.isVisible() or studio is None else studio.studio_toolbar)
+
+    # 2026-11-19 (user: option 1's sideways slide with option 3's cascade, right to left or left
+    # to right, "lively, good looking and with a direction"): the page switch slides along this
+    # order, Home first; a page further down comes in from the right.
+    def _page_order(self, page):
+        if page is None:
+            return None
+        if page is self.settings_scroll or page is self.pages.widget(1) or page is self.pages.widget(2):
+            return 0
+        if page is self.built_page('workshop'):
+            return 1
+        if page is getattr(self, 'term_library_page', None):
+            return 2
+        if page is self.built_page('history'):
+            return 3
+        return None
+
+    def _nav_key(self, page):
+        if page is None:
+            return None
+        if page is self.built_page('workshop'):
+            return 'workshop'
+        if page is getattr(self, 'term_library_page', None):
+            return 'terms'
+        if page is self.built_page('history'):
+            return 'history'
+        return None
+
+    def _nav_button(self, page, key=None):
+        from shiboken6 import isValid
+        from ..design.ui_navigation import WorkspaceNavigation
+        key = key or self._nav_key(page)
+        if not key or page is None or not isValid(page):
+            return None
+        navigation = page.findChild(WorkspaceNavigation)
+        return navigation.buttons.get(key) if navigation is not None else None
+
+    def _nav_rect(self, page, key=None):
+        """The sidebar item in page-stack coordinates."""
+        button = self._nav_button(page, key)
+        if button is None or button.width() <= 0:
+            return None
+        return QRect(button.mapTo(self.pages, QPoint(0, 0)), button.size())
+
+    def _sidebar_rect(self, page):
+        from shiboken6 import isValid
+        from ..design.ui_navigation import WorkspaceSidebar
+        if page is None or not isValid(page):
+            return None
+        sidebar = page.findChild(WorkspaceSidebar)
+        if sidebar is None or sidebar.width() <= 0 or sidebar.isHidden():
+            return None
+        return QRect(sidebar.mapTo(self.pages, QPoint(0, 0)), sidebar.size())
+
+    def _page_motion(self, previous, page, previous_nav, previous_sidebar):
+        """What the switch to ``page`` moves (design.transitions.PageMotion), worked out when the
+        new page has been drawn: the direction, the sidebar both pages share (it stays), its
+        highlight's way to the new item and the new page's parts in the order they arrive."""
+        def build():
+            from PySide6.QtGui import QColor
+            from ..design.theme_manager import theme_definition, theme_key
+            from ..design.transitions import PageMotion, page_parts
+            before, after = self._page_order(previous), self._page_order(page)
+            direction = -1 if before is not None and after is not None and after < before else 1
+            keep = self._sidebar_rect(page) if previous_sidebar else None
+            target = self._nav_rect(page)
+            start = previous_nav if keep is not None else self._nav_rect(page, 'recognition')
+            glide = (start, target) if start is not None and target is not None and start != target else None
+            theme = theme_definition(theme_key())
+            motion = PageMotion(direction, keep=keep, glide=glide, parts=page_parts(page, self.pages, keep),
+                                background=QColor(theme.app_background), selected_button=self._nav_button(page))
+            motion.accent = theme.accent
+            return motion
+        return build
+
+    def _page_settled(self, page) -> bool:
+        """The page has nothing more to build or load for its first picture."""
+        from shiboken6 import isValid
+        if not isValid(page):
+            return True
+        settled = getattr(page, 'page_settled', None)
+        if callable(settled):
+            return bool(settled())
+        busy = getattr(page, 'background_busy', None)
+        return not (callable(busy) and busy())
+
+    def _page_shown_before(self, page) -> bool:
+        """A page that was complete on screen once is shown at once on later visits."""
+        return page is self.settings_scroll or bool(page.property('_2b_page_shown'))
+
+    def _note_page_shown(self, page, veil=None) -> None:
+        from shiboken6 import isValid
+        if veil is not None and veil is not True:
+            veil.release()                  # the start bar fades in as the page arrives
+        if isValid(page) and self._page_settled(page):
+            page.setProperty('_2b_page_shown', True)
+
+    def _with_bottom_bar(self, picture, bar):
+        """The page stack's picture continued down over Home's start bar (the stack takes its place
+        once Home is left), so the bar leaves with the old page instead of vanishing first."""
+        try:
+            from PySide6.QtGui import QColor, QPainter, QPixmap
+            from ..design.theme_manager import theme_definition, theme_key
+            top, below = self.pages.geometry(), bar.geometry()
+            if bar.parentWidget() is not self.pages.parentWidget() or below.top() < top.bottom():
+                return picture
+            ratio = picture.devicePixelRatio() or 1.0
+            height = below.bottom() - top.top() + 1
+            whole = QPixmap(round(top.width() * ratio), round(height * ratio))
+            whole.setDevicePixelRatio(ratio)
+            whole.fill(QColor(theme_definition(theme_key()).app_background))
+            painter = QPainter(whole)
+            painter.drawPixmap(0, 0, picture)
+            painter.drawPixmap(below.left() - top.left(), below.top() - top.top(), bar.grab())
+            painter.end()
+            return whole
+        except Exception:  # noqa: BLE001 - the bar then simply goes at once, as before
+            return picture
+
+    def _veil_until_motion(self, bar):
+        """Home's start bar is kept under a veil of its own background until the page arrives."""
+        try:
+            from PySide6.QtGui import QColor
+            from ..design.theme_manager import theme_definition, theme_key
+            from ..design.transitions import PageCrossfade
+            veil = PageCrossfade(bar, None, step_back=False, color=QColor(theme_definition(theme_key()).app_background))
+            veil.start(hold=True)
+            QTimer.singleShot(900, veil.release)          # never left up, whatever happens to the hold
+            return veil
+        except Exception:  # noqa: BLE001
+            return None
 
     def _update_bottom_bar_visibility(self, index: int = None):
         # Bottom CTA is only relevant on the main settings page (index 0).
@@ -1998,6 +2195,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 self.bottom_bar.setVisible(self.pages.widget(idx) is self.settings_scroll and not busy)
         except Exception:
             pass
+
+    def _apply_initial_geometry_once(self):
+        """2026-11-19 (startup): the saved place and size before the first show (run_desktop_app),
+        so the page is laid out once, at its real size. It used to be applied by a timer right
+        after the show, which had just laid everything out at the default 1320 x 880. The timer
+        stays for windows shown by other paths; whichever comes first does it."""
+        if self.__dict__.get('_initial_geometry_applied', False):
+            return
+        self._initial_geometry_applied = True
+        self._apply_sane_initial_geometry()
 
     def _apply_sane_initial_geometry(self):
         """Apply a sane default/restore geometry using QScreen.availableGeometry().
@@ -2055,6 +2262,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             from .window_constraints import install_window_bounds
             install_window_bounds(self, native_events=True)
             if maximize:
+                from .launch_picture import adopt as _adopt_launch_picture
+                _adopt_launch_picture(self)        # the kept picture stays above the unpainted window
                 self.showMaximized()
             # Persist on close
             try:
@@ -2065,9 +2274,25 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             # Never break startup on geometry heuristics
             pass
 
-    def _open_model_workshop(self):
+    def _open_model_workshop(self, *, defer=False):
         self._interaction_busy_until = time.perf_counter() + .35
         self._ensure_recognition_page()
+        page = self.workshop_page
+        if defer and not getattr(page, '_ui_built', True):
+            # 2026-11-18 (user: no load over 0.2 s): opened before the idle preparer built it, the
+            # page is shown first (the old page's picture fades over it) and built after that
+            # first frame, instead of ~150 ms of building before anything moves.
+            self._switch_page(page)
+
+            def build_after_first_frame():
+                from shiboken6 import isValid
+                if not isValid(page) or self.pages.currentWidget() is not page:
+                    return
+                page.ensure_ui()
+                page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+                page.restore_active_navigation()
+            QTimer.singleShot(16, page, build_after_first_frame)
+            return
         self.workshop_page.ensure_ui()
         self.workshop_page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
         self.workshop_page.restore_active_navigation()
@@ -2437,10 +2662,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             path, options = request
             self.open_studio_project(path, **options)
 
-    def _cancel_pending_studio_entries(self):
+    def _cancel_pending_studio_entries(self, *, keep_save_navigation=False):
         self._studio_navigation_cancel_generation = int(getattr(self, '_studio_navigation_cancel_generation', 0)) + 1
-        from ..projects.studio_save import cancel_navigation_after_save
-        cancel_navigation_after_save(self.built_page('studio'))
+        if not keep_save_navigation:
+            from ..projects.studio_save import cancel_navigation_after_save
+            cancel_navigation_after_save(self.built_page('studio'))
 
     def _cancel_studio_construction(self):
         self._cancel_pending_studio_entries()
@@ -2477,12 +2703,12 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         else:
             reveal()
 
-    def _reject_studio_loading(self):
-        """Declining the dirty guard cancels the request, never the old project."""
+    def _reject_studio_loading(self, *, keep_save_navigation=False):
+        """Restore the old project while a save is pending or after cancellation."""
         session = self.__dict__.get('_studio_loading_session')
         if session is None:
             return
-        self._cancel_pending_studio_entries()
+        self._cancel_pending_studio_entries(keep_save_navigation=keep_save_navigation)
         origin = getattr(session, 'origin_widget', None)
         studio = self.built_page('studio')
         if studio is not None and studio.project is not None:
@@ -2653,17 +2879,40 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
     @navigation_timed('home.return')
     def _return_to_settings(self):
         self._interaction_busy_until = time.perf_counter() + .4
+        # 2026-11-19 (user: leaving the workbench flashes): the workbench's picture is put over the
+        # window first. Re-reading the AI settings below takes about 0.25 s, and meanwhile the video
+        # had already been swapped for its placeholder on the screen (see _switch_page).
+        self._cover_before_leaving_studio()
+        try:
+            loading = self.__dict__.get('_studio_loading_session')
+            if loading is not None and (loading.active or loading.state == 'failed'):
+                loading.return_target = 'home'
+                self._cancel_studio_construction()
+            else:
+                self._cancel_pending_studio_entries()
+            self._ensure_recognition_page()
+            self._apply_saved_ai_configuration(source='home')
+            self._refresh_available_asr_choices()
+            self._restore_global_recognition_plan_for_home()
+            self._switch_page(self.settings_scroll)
+        finally:
+            leftover = self.__dict__.pop('_page_cover_ahead', None)
+            if leftover is not None:
+                leftover.release()          # no switch took it: fade it anyway, never leave it up
+
+    def _cover_before_leaving_studio(self):
+        studio = self.built_page('studio')
+        if studio is None or self.pages.currentWidget() is not studio or self.__dict__.get('_page_cover_ahead'):
+            return
         loading = self.__dict__.get('_studio_loading_session')
-        if loading is not None and (loading.active or loading.state == 'failed'):
-            loading.return_target = 'home'
-            self._cancel_studio_construction()
-        else:
-            self._cancel_pending_studio_entries()
-        self._ensure_recognition_page()
-        self._apply_saved_ai_configuration(source='home')
-        self._refresh_available_asr_choices()
-        self._restore_global_recognition_plan_for_home()
-        self._switch_page(self.settings_scroll)
+        if loading is not None and getattr(loading, 'uses_native_cover', False) and loading.view.isVisible():
+            return                          # the loading card is up: its own fade covers it
+        from ..design.transitions import capture_page, cover_page, stage_cover
+        if stage_cover(self.pages) is None:
+            return
+        cover = cover_page(self.pages, capture_page(self.pages))
+        if cover is not None:
+            self._page_cover_ahead = cover
 
     def _restore_global_recognition_plan_for_home(self) -> None:
         """返回主页只刷新当前设置的视图；历史方案书签不拥有设置写权限。"""
@@ -3040,7 +3289,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             item[0] for item in getattr(self, "_missing_saved_asr_backends", ())
         }
         for key in pending_keys:
-            current_models[key] = saved_models.get(key, current_models.get(key))
+            fallback = "none" if key == "primary_asr_backend" else "off"
+            if current_models.get(key) == fallback:
+                current_models[key] = saved_models.get(key, fallback)
         live_settings = {
             "models": {
                 **saved_models,
@@ -3409,7 +3660,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         if automatic_checks_allowed():
             from .application_settings import update_reminder_enabled
             QTimer.singleShot(automatic_check_delay_ms(update_reminder_enabled()), self, self._auto_check_updates)
+        # 2026-11-19: the kept, transparent window over this one that fades over video draw into
+        # synchronously (design.transitions.StageCover).
+        from ..design.transitions import install_stage_cover
+        QTimer.singleShot(0, self, lambda: install_stage_cover(self))
         QTimer.singleShot(2500, self, self._warm_studio_module)
+        QTimer.singleShot(1800, self, self._install_bunny_resident)
+        # 2026-11-19: the workshop, the term library and the history are built while Home is idle,
+        # before Studio's modules, so a visit shows a finished page (idle_prepare.page_steps).
+        QTimer.singleShot(700, self, self._prepare_pages_when_idle)
+        QTimer.singleShot(3000, self, self._keep_launch_picture)
         # Hardware, models and cloud setup are checked off the GUI thread.
         QTimer.singleShot(0, self, self._refresh_next_step)
 
@@ -3501,6 +3761,15 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._refresh_next_step()
         elif action == "tour":
             self._start_home_tour()
+
+    def _install_bunny_resident(self):
+        """兔白 in a corner of the window by default (2026-11-18); 「兔白权限」 or a right-click sends her away."""
+        try:
+            from . import bunny_events, bunny_resident
+            if bunny_resident.auto_start_allowed() and bunny_events.load()['resident']:
+                bunny_resident.install(self)
+        except Exception as exc:  # noqa: BLE001 - never in the way of the app starting
+            print(f'[bunny] resident not started: {type(exc).__name__}')
 
     def _open_bunny_chat(self):
         """「问问兔白」 (2026-11-14): 兔白's chat card at the window's lower right."""
@@ -3760,6 +4029,26 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 and not (tour is not None and tour.mode not in ('idle','closed') and tour.isVisible())
                 and time.perf_counter() >= self.__dict__.get('_interaction_busy_until', 0))
 
+    def _keep_launch_picture(self, attempt: int = 0):
+        """Home as it looks after a start, kept for the next start (app.launch_picture)."""
+        from .launch_picture import remember
+        kept = False
+        if QApplication.mouseButtons() == Qt.MouseButton.NoButton and not QApplication.activePopupWidget():
+            kept = remember(self)
+        # 2026-11-19: Home was not clean (another page, a dialog, a fade): try again a little later,
+        # so a start that left Home at once still leaves the loading screen for the next one.
+        if not kept and attempt < 4:
+            QTimer.singleShot(5000, self, lambda: self._keep_launch_picture(attempt + 1))
+
+    def _prepare_pages_when_idle(self):
+        if os.environ.get('TWOBYTEASR_TEST_ROOT') and os.environ.get('TWOBYTEASR_IDLE_PAGES') != '1'                 and os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+            return                         # unit tests build their pages themselves
+        try:
+            from .idle_prepare import start_pages
+            start_pages(self)
+        except Exception as exc:  # noqa: BLE001 - preparation is optional; the click path still works
+            print(f"[ui] page preparation failed to start: {exc}")
+
     def _warm_studio_module(self):
         """Warm dependencies without a monolithic GUI-thread import."""
         if (not self._studio_idle_allowed() or QApplication.mouseButtons() != Qt.MouseButton.NoButton
@@ -3776,6 +4065,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             QTimer.singleShot(16, self, self._warm_studio_module)
             return
         self._ensure_studio_loading_surface()
+        # 2026-11-18: then the settings window, the workshop and Studio's
+        # sheet, so their first opening shows within 0.2 s (idle_prepare).
+        from .idle_prepare import start as _start_idle_preparation
+        _start_idle_preparation(self)
 
     def _ensure_studio_modules(self):
         module = sys.modules.get('twobyteasr.studio.studio_ui')
@@ -5980,9 +6273,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         layout.addWidget(hero)
         self._recognition_live_work = {}
         self._phase_degraded = {}
-        self._progress_motion = QPropertyAnimation(self.progress_bar, b"value", self)
-        self._progress_motion.setDuration(460)
-        self._progress_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         phase_row = QHBoxLayout()
         phase_row.setSpacing(14)
@@ -11605,6 +11895,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._console_lines = []
             self._console_fragments = []
         self._console_lines.append(compact)
+        self._quota_watch().feed(compact)
         lowered = compact.lower()
         if getattr(self, "_studio_recognition_context", None):
             if "cuda" in lowered or "显存" in compact:
@@ -11620,8 +11911,17 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._console_fragments.append(fragment)
         append_log_html_keep_left(self.console_log, fragment)
 
+    def _quota_watch(self):
+        """The run's balance-error alert (``quota_alert.QuotaWatch``), made on first use."""
+        watch = self.__dict__.get('_quota_alert_watch')
+        if watch is None:
+            from .quota_alert import QuotaWatch
+            watch = self._quota_alert_watch = QuotaWatch(self)
+        return watch
+
     def _reset_progress_presentation(self):
         """Fresh per-run presentation state (2026-10-08, M12)."""
+        self._quota_watch().reset()
         self._stage_live = {}
         self._parallel_work = {}
         self._parallel_counts = {}
@@ -11832,11 +12132,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self.progress_bar.set_segments(total if media_total == 1 else 0,
                                            () if terminal else active_spans(total, active_ids, media_index, media_total, ended))
         self.progress_bar.setRange(0, 1000)
-        if self.progress_bar.value() != value:
-            self._progress_motion.stop()
-            self._progress_motion.setStartValue(self.progress_bar.value())
-            self._progress_motion.setEndValue(value)
-            self._progress_motion.start()
+        self.progress_bar.setValue(value)
         self.progress_percent.setText(percent_text(fraction))
         done = len(ended)
         steps = getattr(self, 'progress_steps', None)
@@ -12488,6 +12784,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 self._skipped_stages.add(event.stage_index)
             self._feed_stage(event)
         elif event.kind in {"stage_failed", "media_failed"}:
+            # 2026-11-18 (user): out of MOSS / Qwen / AI balance pops up at once, not only in the report.
+            self._quota_watch().feed(str(event.error or ''), str((event.payload or {}).get('category') or ''))
             if event.stage_index:
                 self._active_stages.pop(event.stage_index, None)
                 self._failed_stages.add(event.stage_index)
@@ -12776,8 +13074,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 except Exception:
                     pass
         self._active_stages.clear()
-        if hasattr(self, '_progress_motion'):
-            self._progress_motion.stop()
         self._refresh_progress_cards()
         self.workflow.set_active(3, finished=True)
         self._completion_tasks = []
@@ -13098,6 +13394,13 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             if not self._confirm_application_close(studio, worker_running):
                 event.ignore()
                 return
+            # 2026-11-19 (user: the app is closed but the confirmation is still there until its
+            # animation has played): closing is decided, so no picture of a dialog stays behind.
+            from ..design.transitions import end_all as _end_all_motion
+            _end_all_motion(suspend_s=4.0)
+            # The window's place and (on Home) its picture, for the next start (app.launch_picture).
+            from .launch_picture import remember as _remember_launch_picture
+            _remember_launch_picture(self)
             self._retire_studio_loading_for_close()
         if worker_running:
             self.token.cancel()
@@ -13212,6 +13515,9 @@ def run_desktop_app(
     app.setApplicationDisplayName("2ByteASR")
     app.setWindowIcon(_app_icon())
     app.setStyle("Fusion")
+    # The two icon fonts the app uses now, the other ten only on demand (0.13 s of the start).
+    from ..design.icon_fonts import install as _install_icon_fonts
+    _install_icon_fonts()
     apply_application_theme(app)
     from ..design.loading_font import loading_font
     loading_font()
@@ -13288,6 +13594,18 @@ def run_desktop_app(
         def eventFilter(self, watched, event):
             if watched is window and event.type() == QEvent.Type.Paint:
                 _startup_mark("FIRST_PAINT")
+                # After this event the real window has its first frame on screen: the kept picture goes.
+                from .launch_picture import dismiss as _dismiss_launch_picture
+                QTimer.singleShot(0, _dismiss_launch_picture)
+                # Qt has made its own graphics-card check with the first window; the warm-up's
+                # Direct3D object is no longer needed (system.gpu_probe_warmup).
+                from ..system.gpu_probe_warmup import elapsed_ms as _gpu_probe_ms, release as _release_gpu_probe
+                QTimer.singleShot(3000, _release_gpu_probe)
+                if _gpu_probe_ms() is not None:
+                    _startup_mark("GPU_PROBE_WARMED", duration_ms=_gpu_probe_ms())
+                from ..design.font_warmup import elapsed_ms as _font_warm_ms
+                if _font_warm_ms() is not None:
+                    _startup_mark("FONT_DATABASE_WARMED", duration_ms=_font_warm_ms())
                 QTimer.singleShot(0, lambda: _startup_mark("INTERACTIVE"))
                 QTimer.singleShot(0, window._after_startup_interactive)
                 if os.environ.get("TWOBYTEASR_STARTUP_EXIT_AFTER_INTERACTIVE") == "1":
@@ -13298,7 +13616,13 @@ def run_desktop_app(
     paint_probe = _FirstPaintProbe(window)
     window._startup_paint_probe = paint_probe
     window.installEventFilter(paint_probe)
+    from .launch_picture import adopt as _adopt_launch_picture, dismiss as _dismiss_launch_picture
+    _adopt_launch_picture(window)
+    window._apply_initial_geometry_once()      # place and size (or maximized) before the first layout
     window.show()
+    # Normally the first paint takes the kept picture away. Should no paint come (a window that
+    # Windows considers fully covered gets none without desktop composition), it goes anyway.
+    QTimer.singleShot(400, _dismiss_launch_picture)
     _startup_mark("FIRST_SHOW")
     # 2026-10-14: a fresh install is offered the quick chooser once, after the
     # window shows; upgraded users and double-clicked projects never are.
@@ -13626,7 +13950,6 @@ def _preview(screenshot_path: str, state: str = "settings") -> int:
         window._append_console_line("   校对批次 1/3")
         window._append_console_line("   [缓存命中] polished_batch，复用已完成批次。")
         window._refresh_progress_cards()
-        window._progress_motion.setCurrentTime(window._progress_motion.duration())
         window._update_progress_clock()
     elif state == "result":
         window.pages.setCurrentIndex(2)

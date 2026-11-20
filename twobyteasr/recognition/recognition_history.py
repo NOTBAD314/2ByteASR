@@ -2380,6 +2380,11 @@ class RecognitionHistoryPage(QWidget):
         """True while reports are being read or the index written."""
         return bool(self._jobs) or self._save_timer.isActive()
 
+    def page_settled(self) -> bool:
+        """Its reports are read (the main window shows a page only then:
+        ``design.transitions.PageHold``); writing the index afterwards changes nothing on screen."""
+        return not self._jobs
+
     def _roots(self) -> list[Path]:
         from .task_journal import task_root
         roots = [task_root(), Path(self.report_root)]
@@ -3057,7 +3062,10 @@ class RecognitionHistoryPage(QWidget):
             # The 排查原因 window opens after this one has closed (no nested modal loops).
             detail.diagnose_requested.connect(lambda selected: (dialog.accept(), QTimer.singleShot(
                 0, lambda: self.diagnose_requested.emit(selected))))
-            scroll.setWidget(detail)
+            # 2026-11-18: 「加载中」 gives way to the report with a fade, not a cut.
+            from ..design.transitions import content_change
+            with content_change(scroll):
+                scroll.setWidget(detail)
             if dialog.property("_uiZoomApplied") is not None:
                 from ..app.ui_zoom import apply_to
                 apply_to(detail)

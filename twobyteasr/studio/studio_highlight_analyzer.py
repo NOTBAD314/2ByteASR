@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import copy
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -109,8 +111,70 @@ class HighlightSkillAdapter:
             if preferred_hit >= 2:
                 break
         if not prompts:
-            return cls()
-        return cls(path=" | ".join(paths), prompt="\n\n".join(prompts), found=True)
+            found = cls()
+        else:
+            found = cls(path=" | ".join(paths), prompt="\n\n".join(prompts), found=True)
+        if roots is None:
+            _remember_skill(found)
+        return found
+
+
+# 2026-11-19 (user: opening a project froze the workbench). The local skill
+# search walks the agent folders in the user's home (iterdir/stat/read of
+# every skill), 0.4-1.6 s each time on a busy disk, and opening a project
+# asked for it up to four times on the GUI thread. The panel now shows the
+# last answer and refreshes it on a worker; analysis (a worker) still
+# searches afresh.
+SKILL_CACHE_SECONDS = 300.0
+_SKILL_STATE: dict[str, Any] = {"adapter": None, "at": 0.0, "thread": None, "waiters": []}
+_SKILL_LOCK = threading.Lock()
+
+
+def _remember_skill(adapter: HighlightSkillAdapter) -> None:
+    with _SKILL_LOCK:
+        _SKILL_STATE["adapter"] = adapter
+        _SKILL_STATE["at"] = time.monotonic()
+
+
+def cached_skill_adapter(max_age_s: float = SKILL_CACHE_SECONDS) -> HighlightSkillAdapter | None:
+    """The last default-root search, or None when there is none this recent."""
+    with _SKILL_LOCK:
+        adapter = _SKILL_STATE["adapter"]
+        if adapter is None or time.monotonic() - float(_SKILL_STATE["at"]) > max_age_s:
+            return None
+        return adapter
+
+
+def discover_skill_in_background(done: Callable[[HighlightSkillAdapter], None] | None = None) -> None:
+    """Search the default roots on a daemon thread; ``done`` runs there.
+
+    Concurrent requests share one search. Callers marshal ``done`` to their
+    own thread (a Qt signal); it is never called on the caller's stack.
+    """
+    with _SKILL_LOCK:
+        if done is not None:
+            _SKILL_STATE["waiters"].append(done)
+        if _SKILL_STATE["thread"] is not None:
+            return
+
+        def work() -> None:
+            try:
+                adapter = HighlightSkillAdapter.discover()
+            except Exception:  # an unreadable folder must not lose the waiters
+                adapter = HighlightSkillAdapter()
+                _remember_skill(adapter)
+            with _SKILL_LOCK:
+                waiters, _SKILL_STATE["waiters"] = _SKILL_STATE["waiters"], []
+                _SKILL_STATE["thread"] = None
+            for waiter in waiters:
+                try:
+                    waiter(adapter)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=work, daemon=True, name="highlight-skill-discovery")
+        _SKILL_STATE["thread"] = thread
+    thread.start()
 
 
 def _default_skill_roots() -> list[Path]:

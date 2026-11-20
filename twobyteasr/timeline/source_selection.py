@@ -26,7 +26,8 @@ def source_capabilities(asset):
     if video is None:
         video = Path(asset.canonical_source).suffix.lower() not in {
             '.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wma'}
-    audio = asset.audio_metadata.get('has_audio', not str(asset.canonical_source).lower().endswith('.gif'))
+    from ..media.animated_gif import is_frame_image
+    audio = asset.audio_metadata.get('has_audio', True) and not is_frame_image(asset.canonical_source)
     return bool(video), bool(audio)
 
 
@@ -116,6 +117,53 @@ def plan_source_insert(project, selection, position_ms, video_target='new', audi
         _available(audio, start, end)
     return dict(start_ms=start, end_ms=end, video_track_id=video.id if video else 'new',
                 audio_track_id=audio.id if audio else 'new', mode=selection.mode)
+
+
+def _lane_free(track, start, end):
+    return not track.locked and not any(c.timeline_in_ms < end and start < c.timeline_out_ms for c in track.clips)
+
+
+def resolve_insert_targets(project, selection, position_ms, pointer_video='', pointer_audio=''):
+    """Where a source lands when it is simply dropped or added (2026-11-18).
+
+    Like Premiere / 剪映: the track under the pointer when that time is free
+    there, else the next free track above it, else a new track. A taken spot
+    or a locked track is skipped, never refused. Without a pointer the main
+    track is left to the main video and the lowest free track above it is
+    used. Returns (video_target, audio_target), each a track id or 'new',
+    for ``plan_source_insert`` / ``SourceInsertCommand``.
+    """
+    start = max(0, int(position_ms)); end = start + selection.duration_ms
+    lanes = {t.id: t for t in project.audio_tracks}
+    groups = {g.video_track_id: g for g in project.av_track_groups if g.video_track_id}
+    if selection.mode == 'audio':
+        paired = {g.audio_track_id for g in groups.values()}
+        ordered = [lanes.get(pointer_audio)] + [t for t in project.audio_tracks if t.id not in paired]
+        for track in ordered:
+            if track is not None and track.stream_ordinal < 0 and _lane_free(track, start, end):
+                return 'new', track.id
+        return 'new', 'new'
+    if pointer_audio and not pointer_video:
+        pointer_video = next((g.video_track_id for g in groups.values() if g.audio_track_id == pointer_audio), '')
+    tracks = list(project.video_tracks)
+    ids = [t.id for t in tracks]
+    if pointer_video in ids:
+        candidates = tracks[ids.index(pointer_video):]
+    else:
+        primary = primary_video_track_id(project)
+        candidates = [t for t in tracks if t.id != primary or not t.clips]
+
+    def usable(track):
+        if not _lane_free(track, start, end):
+            return False
+        group = groups.get(track.id)
+        if selection.mode != 'av' or group is None:
+            return True
+        lane = lanes.get(group.audio_track_id)
+        return group.linked and lane is not None and _lane_free(lane, start, end)
+
+    target = next((t.id for t in candidates if usable(t)), 'new')
+    return target, 'new'
 
 
 class SourceInsertCommand(QUndoCommand):

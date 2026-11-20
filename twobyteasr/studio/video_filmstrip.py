@@ -338,6 +338,21 @@ class FilmstripCache(QObject):
                         self.metrics['disk_hits']+=1;self._deliver(key,image,generation);continue
                     if self._cancelled(generation):continue
                     source=job[1]
+                    from ..media.animated_gif import is_frame_image
+                    if is_frame_image(source):
+                        # 2026-11-18: GIFs and pictures come from the frame
+                        # cache, which answers any clip time. A video decoder
+                        # ends after the last frame, so a picture card and the
+                        # tiles of a stretched clip stayed empty.
+                        from ..media.animated_gif import GifFrames
+                        frames=GifFrames(source)
+                        try:(w,h,pixels),_start,_end,_index=frames.frame_at(job[2],(128,72))
+                        finally:frames.close()
+                        self.metrics['decoded']+=1;self.refined.add(key)
+                        image=QImage(pixels,w,h,w*4,QImage.Format_ARGB32).copy()
+                        if priority<4:self._deliver(key,image,generation)
+                        else:self.completed.add(key)
+                        continue
                     identity=key.split('-')[0]
                     decode_source=self._decode_source(source)
                     if decode_source is None:

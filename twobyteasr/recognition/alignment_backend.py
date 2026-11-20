@@ -18,6 +18,12 @@ POSTPROCESS = 'official-fix-once+sentence-granularity-v5-independent-points-cont
 SPAN_MAPPING = 'nfkc-grapheme-original-spans-v1'
 COMPANION_VERSION = '0.1.1'
 COMPANION_WHEEL = 'companion/dist/qwen_fa_ultra-0.1.1-py3-none-any.whl'
+# 2026-11-18: nvidia-smi can take seconds while a laptop's GPU wakes from power
+# saving or the GPU is busy; 3 s turned that into 'unavailable' on one side only.
+GPU_QUERY_TIMEOUT_S = 15
+# Cold CUDA PyTorch import (first run, antivirus scanning its DLLs, slow disk)
+# can pass a minute; the post-download validator already allows 300 s.
+EXECUTION_PROBE_TIMEOUT_S = 300
 
 
 def selected_backend(settings=None):
@@ -69,7 +75,7 @@ def _gpu_identity(visible):
     try:
         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
         result = subprocess.run(['nvidia-smi', '--query-gpu=uuid,driver_version', '--format=csv,noheader'],
-                                capture_output=True, text=True, timeout=3, **options)
+                                capture_output=True, text=True, timeout=GPU_QUERY_TIMEOUT_S, **options)
         return result.stdout.strip() if result.returncode == 0 else 'unavailable'
     except (OSError, subprocess.TimeoutExpired):
         return 'unavailable'
@@ -93,7 +99,7 @@ print(json.dumps(dict(device=device,dtype=dtype,torch_version=torch.__version__,
     process=popen_hidden_subprocess(python_utf8_command([str(python),'-I','-c',program]),
         purpose='alignment device/precision probe',own_process_tree=True,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace')
-    deadline=time.monotonic()+60
+    deadline=time.monotonic()+EXECUTION_PROBE_TIMEOUT_S
     succeeded=False
     try:
         record_run_event('alignment_progress',engine='QWEN3-ALIGNER',worker_pid=process.pid,
@@ -153,6 +159,23 @@ def runtime_identity(python):
                 requested_device=requested, precision='cpu-float32/cuda-bfloat16-or-float16-v1',
                 cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
                 gpu=gpu)
+
+
+def worker_comparable(identity):
+    """The request identity a worker must reproduce exactly, without the GPU reading.
+
+    ``execution.gpu`` (nvidia-smi uuid/driver) is evidence, not a runtime choice:
+    the parent's reading is cached per process while the worker reads it again,
+    and one slow nvidia-smi made the two differ and the worker refuse to load
+    (2026-11-18). Device, precision, CUDA_VISIBLE_DEVICES, packages and the
+    interpreter are still compared; the request's reading stays in receipts.
+    """
+    if not isinstance(identity, dict):
+        return identity
+    execution = identity.get('execution')
+    if not isinstance(execution, dict):
+        return dict(identity)
+    return dict(identity, execution={key: value for key, value in execution.items() if key != 'gpu'})
 
 
 def request_identity(backend, python, *, passes=('word', 'char'), batch_size=8):

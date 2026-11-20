@@ -179,6 +179,50 @@ def run(window,output):
                     for asset in rendered.media_pool:asset.offline=False
                     _,bus=freeze_baseline(rendered,ffmpeg_tool())
                     files[kind]=analyze_baseline(ffmpeg_tool(),bus)
+                if os.environ.get('TWOBYTEASR_EXPORT_PERFORMANCE_AUDIT') == '1':
+                    from dataclasses import replace
+                    from ..projects.studio_project import StudioCue, SubtitleStyle
+                    from ..rendering.advanced_renderer import AdvancedRendererBackend
+
+                    codec = dict(container='mp4', width=960, height=540, fps=12)
+                    graph = capture_video_graph(frozen)
+                    graph['video_tracks'][-1]['clips'][0]['effects'] = {'blendMode': 'multiply'}
+                    preview_frames = []
+                    settings = RenderSettings(**codec, encoder='libx264', preset='ultrafast')
+                    raster_job = RenderJob(frozen.media.path, str(ass), str(output/'raster-stream.mp4'),
+                        settings=settings, duration_seconds=4, video_graph=graph,
+                        audio_graph=capture_audio_graph(frozen),
+                        preview_callback=lambda image, ms, phase: preview_frames.append((ms, phase)))
+                    run_render_job(ffmpeg_tool(), raster_job)
+                    metrics['raster_preview_frames'] = preview_frames
+
+                    subtitle_project = SubtitleProject(
+                        media=StudioMedia(frozen.media.path, duration_ms=327000, width=960, height=540),
+                        styles=[SubtitleStyle('fade', 'Fade', font_size=72)],
+                        cues=[StudioCue('in-out', 200, 3300, 'Animated subtitle', style_id='fade')])
+                    subtitle_project.style_recipes['fade'] = {
+                        'name': 'Fade', 'engine': 'remotion',
+                        'motion': {'mode': 'explicit', 'entrance': {'type': 'slide', 'duration_ms': 350},
+                                   'exit': {'type': 'fade', 'duration_ms': 350}},
+                        'colors': {'fill': {'type': 'linear-gradient', 'angle': 0, 'stops': [
+                            {'position': 0, 'color': '#FFFFE040'}, {'position': 1, 'color': '#FF40E0FF'}]}}}
+                    subtitle_project.validate()
+                    trace = []
+                    animated_job = replace(raster_job, output_path=str(output/'animated-hold.mp4'),
+                        video_graph=None, audio_graph=None, preview_callback=None,
+                        export_context={}, completion_metadata={})
+                    AdvancedRendererBackend().render(subtitle_project, ffmpeg_tool(), animated_job,
+                        trace=lambda name, value: trace.append((name, value)))
+                    metrics['animated_hold_stills'] = max(
+                        animated_job.completion_metadata.get('advanced_timings', {}).get('hold_stills', 0),
+                        max((value['captions'] for name, value in trace if name == 'mixed_static_captions'), default=0))
+
+                    metrics['native_caption_motion'] = next(
+                        (value for name, value in trace if name == 'native_caption_motion'), {})
+
+                    nvenc_job = RenderJob(frozen.media.path, str(ass), str(output/'nvenc.mp4'),
+                        settings=RenderSettings(**codec, encoder='h264_nvenc', preset='p4'), duration_seconds=4)
+                    run_render_job(ffmpeg_tool(), nvenc_job)
             except Exception:export_errors.append(traceback.format_exc())
         thread=threading.Thread(target=export);thread.start()
         heartbeats=0
@@ -186,6 +230,15 @@ def run(window,output):
         while thread.is_alive() and time.monotonic()<until:settle(.04);heartbeats+=1
         check('actual audio and video export complete',not thread.is_alive() and not export_errors,export_errors)
         metrics['exports']=files;metrics['gui_heartbeats_during_export']=heartbeats
+        if os.environ.get('TWOBYTEASR_EXPORT_PERFORMANCE_AUDIT') == '1':
+            check('single-encode raster delivers burned subtitle frames',
+                  any(phase == '已烧录字幕' for _, phase in metrics['raster_preview_frames']))
+            check('animated subtitle uses the still hold route', metrics['animated_hold_stills'] > 0)
+            native_motion = metrics['native_caption_motion']
+            check('animated subtitle uses two native motion windows without browser fallback',
+                  native_motion.get('windows') == 2 and native_motion.get('browser_fallback') == 0,
+                  native_motion)
+            check('NVENC test writes the complete output', (output/'nvenc.mp4').is_file())
         check('WAV within target 0.5 LU',abs(files['audio']['integrated']+14)<=.5,files['audio'])
         check('AAC within target 0.5 LU',abs(files['video']['integrated']+14)<=.5,files['video'])
         check('actual output truepeak safe',all(value['true_peak']<=-1 for value in files.values()),files)

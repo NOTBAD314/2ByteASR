@@ -107,11 +107,18 @@ def run_streaming_with_preview(command, job, runner, *, warning=None, **kwargs):
     preview = ExportPreview(job.preview_callback, job.start_seconds or 0, job=job, warning=warning)
     try:
         command = list(command)
-        graph_at = command.index('-filter_complex') + 1
         map_at = command.index('-map') + 1
         original = command[map_at]
-        command[graph_at] += (f';{original}split=2[finalpreviewbase][previewfull];'
+        preview_graph = (f';{original}split=2[finalpreviewbase][previewfull];'
             '[previewfull]fps=2:round=up:start_time=0:eof_action=pass,scale=640:-2[exportpreview]')
+        if '-/filter_complex' in command:
+            # A long graph lives in a script file (many streamed caption windows).
+            from pathlib import Path
+            script = Path(command[command.index('-/filter_complex') + 1])
+            script.write_text(script.read_text(encoding='utf-8') + preview_graph, encoding='utf-8')
+        else:
+            graph_at = command.index('-filter_complex') + 1
+            command[graph_at] += preview_graph
         command[map_at] = '[finalpreviewbase]'
         if job.duration_seconds:
             command += ['-t', f'{job.duration_seconds:.9f}']

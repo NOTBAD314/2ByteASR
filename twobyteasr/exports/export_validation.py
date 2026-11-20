@@ -4,6 +4,7 @@ import math
 import os
 import subprocess
 import time
+import uuid
 from functools import wraps
 from inspect import signature
 from pathlib import Path
@@ -228,8 +229,10 @@ def _checked_decode(command, path, *, cancelled, timeout, purpose, require_frame
     """No unread pipes, cancellable bounded child lifetime, retained error context."""
     from .export_run_log import note_export
     from ..system.processes import stop_process_tree
-    log = path.with_suffix(path.suffix + '.validation.log')
-    progress = path.with_suffix(path.suffix + '.validation.progress')
+    # Sample windows decode concurrently: each child owns its log/progress pair.
+    unique = uuid.uuid4().hex[:8]
+    log = path.with_suffix(path.suffix + f'.validation-{unique}.log')
+    progress = path.with_suffix(path.suffix + f'.validation-{unique}.progress')
     _check_cancelled(cancelled)
     try:
         with log.open('wb') as stderr, progress.open('wb') as stdout:
@@ -326,9 +329,10 @@ def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, pr
     if video_duration is None:
         raise RuntimeError('导出验证失败：无法确认独立视频时间轴时长')
     decode_started = time.monotonic()
-    decoded = []
     windows = [(0., video_duration)] if mode == 'full' else validation_windows(video_duration, rate, cut_points)
-    for start, end in windows:
+
+    def decode_window(window):
+        start, end = window
         command = [str(ffmpeg), '-v', 'error', '-xerror', '-nostdin']
         if mode == 'quick':
             command += ['-ss', f'{start:.9f}']
@@ -339,11 +343,12 @@ def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, pr
         frames = _checked_decode(command, path, cancelled=cancelled,
             timeout=max(30, video_duration*2) if mode == 'full' else 30,
             purpose='complete staged export decode' if mode == 'full' else 'bounded staged export decode')
-        decoded.append(dict(start_seconds=start, end_seconds=end, decoded_video_frames=frames))
-    decode_seconds = time.monotonic() - decode_started
+        return dict(start_seconds=start, end_seconds=end, decoded_video_frames=frames)
+
     # A poster is independent of integrity checking and has its own bounded input.
-    preview_seconds = 0.
-    if preview_path:
+    preview_timing = {}
+
+    def make_poster():
         at = time.monotonic()
         command = [str(ffmpeg), '-v', 'error', '-nostdin', '-y', '-ss', '0', '-t', f'{min(3., video_duration):.9f}',
             '-i', str(path), '-map', '0:v:0', '-an', '-vf',
@@ -352,7 +357,18 @@ def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, pr
             '-progress', 'pipe:1', '-nostats', str(preview_path)]
         _checked_decode(command, path, cancelled=cancelled, timeout=30,
             purpose='bounded export completion poster', require_frames=False)
-        preview_seconds = time.monotonic() - at
+        preview_timing['seconds'] = time.monotonic() - at
+
+    # Bounded sample windows (and the poster) are independent short decodes;
+    # one after another they cost seconds on every export.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, min(4, len(windows))), thread_name_prefix='export-validation') as pool:
+        poster = pool.submit(make_poster) if preview_path else None
+        decoded = list(pool.map(decode_window, windows))
+        decode_seconds = time.monotonic() - decode_started
+        if poster is not None:
+            poster.result()
+    preview_seconds = preview_timing.get('seconds', 0.)
     data['validation'] = dict(mode=mode, full_decode=mode == 'full',
         coverage='complete_video_and_audio_decode' if mode == 'full' else 'metadata_and_bounded_samples',
         windows=decoded, decode_seconds=decode_seconds, preview_seconds=preview_seconds,

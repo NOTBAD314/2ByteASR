@@ -385,6 +385,31 @@ class ApplicationSettingsDialog(SpringDialog):
             bind_text(self.bunny_idle_tips, '兔白不定期说小窍门', property='accessibleName')
             row(reading, '兔白不定期说小窍门', self.bunny_idle_tips,
                 '聊天框开着、你一阵子没动时，兔白偶尔冒个小气泡教你一招（几分钟最多一次，不会盖掉要你按的按钮）；点兔白也会说')
+            # 2026-11-18 (user): she is in the window by default and speaks up; both can be turned off.
+            from . import bunny_events
+            hints = bunny_events.load()
+            self.bunny_resident = toggle(hints['resident'])
+            self.bunny_resident.setObjectName('bunnyResidentSetting')
+            bind_text(self.bunny_resident, '启动时让兔白待在窗口里', property='accessibleName')
+            row(reading, '启动时让兔白待在窗口里', self.bunny_resident,
+                '窗口右下角的小兔白：点一下聊天，可以拖到别处，右键能让她今天先别出来。关掉后顶栏「问问兔白」照常能用')
+            self.bunny_hint_mode = field_width(StudioComboBox(), 'preferred')
+            self.bunny_hint_mode.setObjectName('bunnyHintModeSetting')
+            for value in bunny_events.MODES:
+                self.bunny_hint_mode.addItem(tr(bunny_events.MODE_LABELS[value]), value)
+            self.bunny_hint_mode.setCurrentIndex(max(0, self.bunny_hint_mode.findData(hints['mode'])))
+            bind_text(self.bunny_hint_mode, '兔白主动提醒', property='accessibleName')
+            row(reading, '兔白主动提醒', self.bunny_hint_mode,
+                '识别做完、出错、跳出报错时，小兔白会冒一个气泡。气泡里的话是本机写好的，不花 Key；你按了气泡上的按钮才会去问 AI。'
+                '同一类提醒被你关掉两次，她一周内不再提')
+            # 2026-11-18 (user: every few words needed another click): she goes on by herself now;
+            # the old one-sentence-per-click box stays for those who liked it.
+            from .bunny_chat import click_lines
+            self.bunny_click_lines = toggle(click_lines())
+            self.bunny_click_lines.setObjectName('bunnyClickLinesSetting')
+            bind_text(self.bunny_click_lines, '兔白一句一句说，点一下才说下一句', property='accessibleName')
+            row(reading, '兔白一句一句说，点一下才说下一句', self.bunny_click_lines,
+                '关着时兔白会自己把话说完，点一下对话框就全部显示；打开就回到每句都等你点一下的样子')
             self._build_bunny_memory(bunny, section, row, toggle, values)
             thinking = section(bunny)
             self.bunny_reasoning = field_width(StudioComboBox(), 'preferred')
@@ -1386,6 +1411,16 @@ class ApplicationSettingsDialog(SpringDialog):
                                 'see_screen': self.bunny_see_screen.isChecked()})
         from .bunny_tips import set_idle_allowed
         set_idle_allowed(self.bunny_idle_tips.isChecked())
+        from .bunny_chat import set_click_lines
+        set_click_lines(self.bunny_click_lines.isChecked())
+        from . import bunny_events, bunny_resident
+        hints = {'resident': self.bunny_resident.isChecked(), 'mode': self.bunny_hint_mode.currentData() or 'all'}
+        if hints['resident'] and not bunny_events.load()['resident']:
+            hints['quiet_day'] = ''                      # asked back: today's 「今天先别出来」 is over too
+        bunny_events.save(hints)
+        owner = self.parentWidget().window() if self.parentWidget() else None
+        if owner is not None and bunny_resident.auto_start_allowed():
+            bunny_resident.refresh(owner)
         reasoning = self.bunny_reasoning.currentData()
         if reasoning:
             save_state(dict(load_state(), **{REASONING_KEY: reasoning}))

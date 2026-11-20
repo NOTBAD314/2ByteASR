@@ -137,6 +137,17 @@ class BunnyMascot(QWidget):
     def available(self) -> bool:
         return self.rig is not None
 
+    # Her drawn body on the rig canvas, ears to feet, without the keyring above her head
+    # (alpha bounds of the layers in rig.json): what "centred" means when she sits on something.
+    BODY_BOX = (178, 80, 739, 667)
+
+    def body_center(self) -> QPointF:
+        """The middle of her body (ears to feet, keyring left out) in this widget's coordinates."""
+        left, top, right, bottom = self.BODY_BOX
+        s = self.scale
+        return QPointF(self.pad_x + ((left + right) / 2 - self.trim[0]) * s,
+                       self.pad_top + ((top + bottom) / 2 - self.trim[1]) * s)
+
     def set_mascot_height(self, height: int) -> None:
         self.mascot_height = int(height)
         self.scale = self.mascot_height / float(self.trim[3])

@@ -48,6 +48,16 @@ def prompt_checks(window, page, out, check, ready):
                   and len(box.buttons()) == 3 and all(b.isVisible() and b.width() > 70 for b in box.buttons()))
             check(theme+' save defaults to save and names the project', box.save_button.isDefault()
                   and bool(box.informativeText()) and bool(box.windowFlags() & Qt.WindowType.FramelessWindowHint))
+            disc = box.bunny_disc
+            if disc is None:
+                check(theme+' save prompt shows the bunny charm', False)
+            else:
+                mascot = disc.mascot
+                body = mascot.body_center() + mascot.pos()
+                check(theme+' bunny body is centred in the visible charm',
+                      mascot.isVisible() and abs(body.x() - disc.centre.x()) <= 1
+                      and abs(body.y() - disc.centre.y()) <= 1
+                      and mascot.pos().y() + mascot.pad_top >= 0)
             check(theme+' prompt screenshot '+value, box.grab().save(str(out/('save-'+theme+'-'+value+'.png'))))
             if value == 'cancel':
                 QTest.keyClick(box, Qt.Key.Key_Escape)
@@ -116,3 +126,33 @@ def prompt_checks(window, page, out, check, ready):
     hub()
     window.open_studio_project(str(out/'p12/project.2byteproj'))
     yield lambda: ready(out/'p12/project.2byteproj')
+
+    from PySide6.QtGui import QUndoCommand
+    original = out/'p12/project.2byteproj'
+    draft_text = '加载遮罩上点保存 · acceptance'
+    page.project.cues[0].text = draft_text
+    page.undo_stack.push(QUndoCommand('Mark the changed fixture dirty'))
+    target = out/'p2000/project.2byteproj'
+    QTimer.singleShot(0, window, lambda: window.open_studio_project(str(target)))
+    yield lambda: visible(SaveChangesDialog) is not None
+    box = visible(SaveChangesDialog)
+    loading = window._studio_loading_session
+    check('dirty project prompts on the actual loading cover',
+          loading.active and loading.view.isVisible() and loading._input_lease.held
+          and app.activeModalWidget() is box)
+    QTest.keyClick(box, Qt.Key.Key_Escape)
+    yield lambda: ready(original)
+    check('cancelling over the cover retains the original dirty project',
+          guard.is_dirty() and load_project(original).cues[0].text != draft_text)
+
+    QTimer.singleShot(0, window, lambda: window.open_studio_project(str(target)))
+    yield lambda: visible(SaveChangesDialog) is not None
+    box = visible(SaveChangesDialog)
+    check('save confirmation over loading cover captured',
+          box.grab().save(str(out/'save-over-loading.png')))
+    QTest.mouseClick(box.save_button, Qt.MouseButton.LeftButton)
+    yield lambda: ready(target)
+    check('clicking Save through the cover commits before switching projects',
+          visible(SaveChangesDialog) is None and load_project(original).cues[0].text == draft_text)
+    window.open_studio_project(str(original))
+    yield lambda: ready(original)

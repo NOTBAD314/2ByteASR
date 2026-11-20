@@ -90,10 +90,17 @@ def _string_list(value: Any) -> list[str]:
 
 def _mapping(value: Any, *, owned: bool = False) -> dict[str, Any]:
     """A dict of ``value``; deep-copied unless the caller owns the data
-    (fresh ``json.loads`` or revision thaw output that nothing else holds)."""
+    (fresh ``json.loads`` or revision thaw output that nothing else holds).
+
+    The copy is plain JSON data made in one C call (``copy_json_value``), not
+    a per-node ``copy.deepcopy`` that runs object hooks and yields the GIL.
+    """
     if not isinstance(value, Mapping):
         return {}
-    return dict(value) if owned else copy.deepcopy(dict(value))
+    if owned:
+        return dict(value)
+    from .project_snapshot import copy_json_value
+    return copy_json_value(dict(value), field="project field")
 
 
 @dataclass
@@ -585,7 +592,8 @@ def _normalized_media_source(value: str) -> str:
 
 
 def _asset_has_audio(asset: MediaAsset) -> bool:
-    if str(asset.canonical_source).lower().endswith('.gif'):
+    from ..media.animated_gif import is_frame_image
+    if is_frame_image(asset.canonical_source):
         return False
     metadata = _mapping(asset.audio_metadata)
     if "has_audio" in metadata:
@@ -731,6 +739,7 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
         if group.video_track_id
     }
     detached_tracks = {g.audio_track_id for g in project.av_track_groups if not g.linked}
+    from ..media.animated_gif import is_frame_image
     detached_clip_ids = {c.linked_video_clip_id for t in project.audio_tracks
                          if t.id in detached_tracks for c in t.clips if c.linked_video_clip_id}
     for video_index, video_track in enumerate(project.video_tracks, 1):
@@ -740,7 +749,7 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
         # user audio/groups are preserved, including detached or muted lanes.
         if group is None and video_track.clips and all(
                 clip.asset_id in assets
-                and str(assets[clip.asset_id].canonical_source).lower().endswith('.gif')
+                and is_frame_image(assets[clip.asset_id].canonical_source)
                 and not _asset_has_audio(assets[clip.asset_id]) for clip in video_track.clips):
             continue
         # Detached audio owns its timing/content. Validation must not recreate,
@@ -1700,6 +1709,27 @@ def _private_project_payload(project: SubtitleProject) -> dict[str, Any]:
         else:
             payload[item.name] = value
     payload["audio_tracks"] = [audio_track_payload(track) for track in project.audio_tracks]
+    return payload
+
+
+def detached_snapshot_payload(project: SubtitleProject) -> dict[str, Any]:
+    """``to_dict`` of a snapshot the caller already owns (export worker input).
+
+    ``document_snapshot`` has detached every field, so validation runs
+    without copying again and the payload is detached in one plain-data copy
+    instead of ``asdict`` walking the whole evidence graph node by node on the
+    GUI thread (2026-11-19 export-start crash). The payload shares nothing
+    with ``project``.
+    """
+    from ..timeline.studio_edit_sequence import persist_sequence
+    from .project_snapshot import copy_json_value
+
+    persist_sequence(project)
+    project.validate(owned=True)
+    payload = copy_json_value(_private_project_payload(project), field="project")
+    state = payload.get("studio_state", {})
+    if isinstance(state, dict):
+        state.pop("review_risks", None)
     return payload
 
 

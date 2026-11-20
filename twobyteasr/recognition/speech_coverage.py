@@ -415,8 +415,179 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
     return result
 
 
-def audit_primary(payload, speech, context, *, duration, legacy, runner=None, source=''):
-    """Shared local/cloud entry after raw responses and before admission/alignment."""
+# 2026-11-19: an independent recognizer (FireRedASR2-AED, run alongside an
+# online primary) that wrote real words inside a VAD-only gap is the second,
+# independent source the VAD posterior lacks. In the reported job MOSS Pro's
+# one response stopped at 642.65 s of 667.44 s while FireRed heard 88
+# characters there; the four tail gaps had 3–66 FireRed characters, every
+# other gap 0–1 (an edge character of the neighbouring line).
+MIN_INDEPENDENT_CHARS = 3
+FILL_SOURCE = 'firered_evidence'
+FILL_ROW_SOURCE = 'firered-gap-fill'
+TAIL_SECONDS = 2.0
+
+
+def _token_mid(token):
+    return (float(token['start'])+float(token['end']))/2
+
+
+def _usable_tokens(tokens):
+    result = []
+    for token in tokens or ():
+        try:
+            start, end = float(token['start']), float(token['end'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(start) and math.isfinite(end) and end >= start and _content(token.get('text')):
+            result.append(dict(text=str(token.get('text')), start=start, end=end,
+                               confidence=token.get('confidence')))
+    kept = []
+    for token in sorted(result, key=lambda t: (t['start'], t['end'])):
+        # Overlapping recognition windows hear the seam twice (五五十十六六).
+        if kept and _content(kept[-1]['text']) == _content(token['text']):
+            previous = kept[-1]
+            overlap = min(previous['end'], token['end'])-max(previous['start'], token['start'])
+            if overlap > .5*max(.01, min(token['end']-token['start'], previous['end']-previous['start'])):
+                continue
+        kept.append(token)
+    return kept
+
+
+def corroborate(state, tokens, *, source='firered'):
+    """Promote VAD-only gaps an independent recognizer actually transcribed."""
+    tokens = _usable_tokens(tokens)
+    promoted = []
+    for gap in pending(state):
+        if gap.get('classification') != 'uncertain_speech' or gap.get('first_missing_stage') != 'parsed_response':
+            continue
+        inside = [t for t in tokens if gap['start'] <= _token_mid(t) <= gap['end']]
+        text = ''.join(t['text'] for t in inside)
+        if len(_content(text)) < MIN_INDEPENDENT_CHARS:
+            continue
+        evidence = gap.setdefault('evidence', {})
+        evidence['speech_corroborated'] = True
+        evidence['independent_text'] = dict(source=source, characters=len(_content(text)), text=text[:120],
+                                            basis='independent_asr_words_inside_gap')
+        gap.update(classification='supported_speech_gap', status='pending')
+        promoted.append(gap['id'])
+    return promoted
+
+
+def _fill_rows(tokens, low, high, label):
+    rows, current = [], []
+    for token in tokens:
+        if not low <= _token_mid(token) <= high:
+            continue
+        # A short pause, a long line or a long stretch starts a new row; the
+        # grouping stage re-segments these like any primary sentence.
+        if current and (token['start']-current[-1]['end'] >= .35 or len(current) >= 16
+                        or token['end']-current[0]['start'] > 6.):
+            rows.append(current)
+            current = []
+        current.append(token)
+    if current:
+        rows.append(current)
+    result = []
+    for part in rows:
+        start, end = part[0]['start'], max(t['end'] for t in part)
+        if end <= start:
+            end = start+.01
+        scores = [float(t['confidence']) for t in part if isinstance(t.get('confidence'), (int, float))]
+        result.append(dict(text=''.join(t['text'] for t in part), start=round(start, 3), end=round(end, 3),
+                           speaker=label, confidence=round(sum(scores)/len(scores), 3) if scores else .6,
+                           source=FILL_ROW_SOURCE, timestamp_source='firered_aed_characters'))
+    return result
+
+
+def fill_from_independent(state, rows, tokens, *, duration):
+    """Fill corroborated gaps the primary could not recover with the independent words.
+
+    The words of the whole hole between the neighbouring primary lines are
+    used, so short speech between two gap pieces is not dropped. Each filled
+    gap keeps a review item: the text came from the evidence model.
+    """
+    tokens = _usable_tokens(tokens)
+    result = list(rows)
+    filled = []
+    for gap in pending(state):
+        independent = (gap.get('evidence') or {}).get('independent_text')
+        if not independent or not gap.get('remaining_ranges'):
+            continue
+        target = [list(r) for r in gap['remaining_ranges']]
+        # Rows an earlier gap's hole already filled (a tail hole reaches the end).
+        used = [r for r in filled if any(_overlaps((float(r['start']), float(r['end'])), tuple(t)) for t in target)]
+        covered = text_ranges(result)
+        candidates, holes = [], []
+        for low, high in subtract(target, text_ranges(used), tolerance=TOLERANCE, minimum=MIN_GAP):
+            before = max((b for a, b in covered if b <= low+TOLERANCE), default=0.0)
+            after = min((a for a, b in covered if a >= high-TOLERANCE), default=duration)
+            hole = (before+TOLERANCE if before else 0.0, after-TOLERANCE if after < duration else duration)
+            if hole[1] <= hole[0]:
+                continue
+            holes.append(hole)
+            label = f'RECOVERY_{round(low*16000)}_FIRERED'
+            candidates.extend(_fill_rows(tokens, hole[0], hole[1], label))
+        accepted = []
+        if candidates:
+            result, accepted = merge_rows(result, candidates, holes)
+            filled.extend(accepted)
+        if not used and not accepted:
+            continue
+        update_gap(gap, [*used, *accepted], source=FILL_SOURCE, request_count=0)
+        gap['independent_fill'] = dict(source=independent.get('source'), target_ranges=target,
+                                       holes=[list(h) for h in holes], rows=len(accepted),
+                                       shared_rows=len(used),
+                                       characters=sum(len(_content(r['text'])) for r in accepted),
+                                       review='listen_and_confirm')
+        # VAD edges outside the words (breath, trailing room tone): the model
+        # that heard this hole wrote nothing there. The fill's own review
+        # item covers the hole; do not report the same stretch twice.
+        rest = gap.get('remaining_ranges') or []
+        if rest and not any(a <= _token_mid(t) <= b for a, b in rest for t in tokens):
+            gap['independent_fill']['unworded_ranges'] = [list(r) for r in rest]
+            gap.update(remaining_ranges=[], status='recovered')
+    return result
+
+
+def discard_independent_fill(state, payload):
+    """Undo the fill when the task language rules out the evidence model."""
+    def keep(row):
+        return row.get('source') != FILL_ROW_SOURCE
+    for key in ('segments', 'references'):
+        if isinstance(payload.get(key), list):
+            payload[key] = [row for row in payload[key] if keep(row)]
+    for gap in (state or {}).get('gaps', []):
+        fill = gap.pop('independent_fill', None)
+        if (gap.get('evidence') or {}).pop('independent_text', None):
+            gap['evidence']['speech_corroborated'] = False
+            if gap.get('status') == 'pending':
+                gap.update(status='needs_confirmation', classification='uncertain_speech')
+        if fill:
+            gap['remaining_ranges'] = fill['target_ranges']
+            gap['recovered_ranges'] = [list(r) for r in subtract(gap.get('recovered_ranges', []), fill['target_ranges'])]
+            gap['recovery_source'] = None
+            gap.update(status='needs_confirmation', classification='uncertain_speech',
+                       independent_fill_discarded='task_language')
+
+
+def tail_gaps(gaps, duration):
+    """Primary-response gaps after the last primary line, when speech reaches the end."""
+    tail = [g for g in gaps if g.get('first_missing_stage') == 'parsed_response'
+            and 'next_text' in g and not g.get('next_text')]
+    if not tail or float(duration or 0)-max(g['end'] for g in tail) > TAIL_SECONDS:
+        return []
+    return tail
+
+
+def audit_primary(payload, speech, context, *, duration, legacy, runner=None, source='',
+                  independent=(), fill_independent=False):
+    """Shared local/cloud entry after raw responses and before admission/alignment.
+
+    ``independent``: global word rows of an evidence recognizer that already
+    finished (FireRed beside an online primary). Their words corroborate VAD
+    gaps (which then get the normal primary retry) and, with
+    ``fill_independent``, fill what the retry did not recover.
+    """
     execution = payload.get('execution') or {}
     refused = [(g['start'], g['end']) for g in payload.get('cloud_gaps', [])]
     state = make_state(speech, payload.get('segments', []), duration=duration, excluded=refused,
@@ -483,6 +654,10 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
             if row.get('asr_language_receipt') and _overlaps((gap['start'], gap['end']),
                 (float(row['asr_language_receipt']['start']), float(row['asr_language_receipt']['end'])))]
     checkpoint(state, 'parsed_response', payload.get('segments', []))
+    if independent:
+        promoted = corroborate(state, independent)
+        if promoted:
+            state['independent_evidence'] = dict(source='firered', corroborated_gap_ids=promoted)
     if runner is not None:
         old = payload.get('segments', [])
         cancel = getattr(context.cancellation_token, 'raise_if_cancelled', lambda: None)
@@ -494,6 +669,13 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
         state['worker_recovery_cost'] = copy.deepcopy(spent)
         added = [row for row in payload['segments'] if row not in old]
         payload.setdefault('references', []).extend(copy.deepcopy(added))
+    if independent and fill_independent:
+        old = payload.get('segments', [])
+        payload['segments'] = fill_from_independent(state, old, independent, duration=duration)
+        added = [row for row in payload['segments'] if row not in old]
+        if added:
+            payload.setdefault('references', []).extend(copy.deepcopy(added))
+            state.setdefault('independent_evidence', dict(source='firered'))['filled_rows'] = len(added)
     context.speech_coverage = state
     legacy.record_run_event('speech_coverage', **state, pending_gap_count=len(pending(state)))
     return state
@@ -504,12 +686,32 @@ def finalize(context, cues, legacy):
     if not state:
         return
     checkpoint(state, 'final_cues', cues, excluded=state.get('excluded_ranges', []))
-    for gap in pending(classify_state(state)):
+    rows = pending(classify_state(state))
+    tail = tail_gaps(rows, state.get('duration'))
+    if tail:
+        # 2026-11-19: speech running to the end of the media with no line
+        # after it is one obvious problem, not one more warning among dozens
+        # of short VAD blips (39 in the reported job). One item names it.
+        start, end = min(g['start'] for g in tail), max(g['end'] for g in tail)
+        legacy.add_review_item(start, '片尾语音没有字幕',
+            f"{start:.3f}–{end:.3f}s · 主力转写在 {start:.1f}s 后没有文字，结尾还有人声；请试听，或框选这段重新识别",
+            priority=1, severity='warning')
+    tail_ids = {g['id'] for g in tail}
+    for gap in rows:
+        if gap['id'] in tail_ids:
+            continue
+        detail = f"{gap['start']:.3f}–{gap['end']:.3f}s · {gap['first_missing_stage']} · {gap['reason']}"
         label = ('语音处理失败' if gap['classification'] == 'processing_failure' else
                  '语音缺口待恢复' if gap['classification'] == 'supported_speech_gap' else '疑似语音待试听确认')
-        legacy.add_review_item(gap['start'], label,
-            f"{gap['start']:.3f}–{gap['end']:.3f}s · {gap['first_missing_stage']} · {gap['reason']}",
-            priority=3, severity='warning')
+        legacy.add_review_item(gap['start'], label, detail, priority=3, severity='warning')
+    for gap in state.get('gaps', []):
+        fill = gap.get('independent_fill')
+        if fill and fill.get('rows'):
+            low = min(h[0] for h in fill['holes']) if fill.get('holes') else gap['start']
+            high = max(h[1] for h in fill['holes']) if fill.get('holes') else gap['end']
+            legacy.add_review_item(low, 'FireRed 补字待试听',
+                f"{low:.3f}–{high:.3f}s · 主力转写没有这段文字，已用 FireRedASR2 识别结果补上 {fill.get('characters', 0)} 字；请试听确认",
+                priority=2, severity='warning')
     legacy.record_run_event('speech_coverage_final', **state, pending_gap_count=len(pending(state)))
 
 

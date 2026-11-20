@@ -268,13 +268,18 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
             return
         position = self.timeline.playhead_ms
         selected_target = self._resolve_caption_edit_target()
+        if selected_target is not None and self._playhead_overrides_selection(selected_target.cue_id):
+            # The selection is older than the clock: release it so the
+            # playhead target below (and the follow editor) take over.
+            self.timeline.explicit_subtitle_id = ''
+            self._caption_canvas_edit_target = None
+            selected_target = None
         if selected_target is not None:
             # E owns the explicit selection, including its language layer.
             self._open_caption_editor(selected_target.cue_id, selected_target.layer)
             return
         cue = self.cue_controller.sync_playhead_target(position, force=True)
-        self._caption_follow_track = (selected_target.track_id if selected_target is not None else
-                                      cue.speaker_id if cue else self.session.preferred_subtitle_speaker)
+        self._caption_follow_track = cue.speaker_id if cue else self.session.preferred_subtitle_speaker
         self._caption_follow_layer = self.timeline.active_subtitle_layer
         self._caption_follow_fallback_original = False
         self._caption_following = True
@@ -282,6 +287,40 @@ class StudioCanvasEditMixin(CaptionEditorMixin):
         self._follow_caption_editor(position, force=True)
         self._set_subtitle_editor_visible(True)
         self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def _playhead_overrides_selection(self, cue_id) -> bool:
+        """True when E should follow the playhead instead of the selection.
+
+        2026-11-18 (user): selecting a caption, playing on and pressing E
+        still edited the old selection. The selection owns E while the
+        playhead is inside it, while the playhead sits in a gap with no
+        caption under it, or while the playhead has not moved since the
+        caption was chosen. Otherwise the caption under the playhead wins.
+        """
+        project = getattr(self, 'project', None)
+        controller = getattr(self, 'cue_controller', None)
+        if project is None or controller is None or not cue_id:
+            return False
+        if getattr(self, '_review_mode', False):
+            # Review replays cross neighbouring captions; the reviewed one
+            # keeps E.
+            return False
+        position = int(self.timeline.playhead_ms)
+        from ..timeline.studio_commands import cue_by_id
+        try:
+            selected = cue_by_id(project, str(cue_id))
+        except KeyError:
+            return False
+        if selected.start_ms <= position < selected.end_ms:
+            return False
+        stamp = getattr(self, '_explicit_selection_clock', None)
+        if stamp == (self.session.generation, str(selected.id), position):
+            # Chosen with the playhead exactly here and not moved since:
+            # the explicit choice still owns E.
+            return False
+        under = controller.resolve_playhead_target(position)
+        return (under is not None and under.id != selected.id
+                and under.start_ms <= position < under.end_ms)
 
     def _begin_canvas_inline_edit(self) -> None:
         return self._open_caption_editor()

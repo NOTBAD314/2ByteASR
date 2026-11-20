@@ -1182,6 +1182,12 @@ class FindReplaceDialog(CooperativeFind, _TextPreviewDialog):
             self._do_preview()
         self._do_apply_preview()
 
+    def prefill_find(self, text: str) -> None:
+        """Start from text chosen elsewhere: it is the search, and the cursor
+        waits in 替换为 so the old wording is never typed again."""
+        self.find_edit.setText(text)
+        self.replace_edit.setFocus()
+
     def _swap_fields(self) -> None:
         find, replace = self.find_edit.text(), self.replace_edit.text()
         self.find_edit.setText(replace)

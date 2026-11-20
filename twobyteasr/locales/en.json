@@ -10289,5 +10289,19 @@
   "新对话": "New conversation",
   "好～重新开始！刚才的聊天清掉了，记住的习惯和知识库还在。": "Okay, fresh start! The chat so far is cleared; what I remember and the knowledge base are still here.",
   "发送（Enter）": "Send (Enter)",
-  "有冲突": "Conflicts"
+  "有冲突": "Conflicts",
+  "已加入 {value0}；Ctrl+Z 撤销": "Added to {value0}. Ctrl+Z to undo",
+  "加到时间线（播放头处）": "Add to Timeline (at Playhead)",
+  "只加画面": "Add Picture Only",
+  "只加声音": "Add Sound Only",
+  "预览 / 选一段再加": "Preview / Pick a Range First",
+  "重新定位…": "Relink…",
+  "加到时间线": "Add to Timeline",
+  "预览 / 选段": "Preview / Range",
+  "核对预览": "Review",
+  "替换字幕": "Replace subtitles",
+  "每行就是一条字幕，<b>换行的地方就是断句的地方</b>。<br>只用这个工程已有的字级时间对齐，文字我不会改。": "Each line becomes one subtitle: <b>every line break is where a subtitle ends</b>.<br>Only this project's existing word timings are used; I won't change your text.",
+  "不调用识别模型或 AI，也不上传；替换全部字幕后可用 Ctrl+Z 一步恢复。": "No recognition model or AI is used and nothing is uploaded; after replacing all subtitles, Ctrl+Z restores them in one step.",
+  "切换筛选后移出": "Leaves this list when you switch filters",
+  "已还原 · 切换筛选后移出": "Restored · leaves this list when you switch filters"
 }

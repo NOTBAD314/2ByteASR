@@ -22,7 +22,10 @@ def project():
 def test_mixed_split_requires_disjoint_time_spans_and_does_not_modify_cues():
     value = project()
     static, moving = split_mixed_captions(value)
-    assert [c.id for c in static.cues] == ['s'] and [c.id for c in moving.cues] == ['m']
+    # An isolated entry/exit-only cue also holds as a still (2026-11-19).
+    assert [c.id for c in moving.cues] == ['m']
+    assert [c.id for c in static.cues] == (['s', 'm'] if static._hold_cue_ids else ['s'])
+    assert static._hold_cue_ids == moving._hold_cue_ids
     assert [c.id for c in value.cues] == ['s', 'm']
     value.cues[1].start_ms = 1999
     assert split_mixed_captions(value) is None
@@ -133,11 +136,14 @@ def test_sparse_integer_frame_boundaries_do_not_round_trip_through_float(tmp_pat
 
 def test_cuda_comparison_keeps_software_filter_frames_and_skips_ffv1_intermediates():
     from dataclasses import replace
-    from twobyteasr.exports.studio_render import RenderJob, video_input_acceleration
+    from twobyteasr.exports.studio_render import RenderJob, RenderSettings, video_input_acceleration
     job = RenderJob('', '', '', export_context={'decode_backend':'cuda'})
     assert video_input_acceleration(job) == ['-hwaccel', 'cuda']
     assert video_input_acceleration(replace(job, composition_resolved=True)) == []
     assert '-hwaccel_output_format' not in video_input_acceleration(job)
+    automatic = RenderJob('', '', '', RenderSettings(encoder='h264_nvenc'))
+    assert video_input_acceleration(automatic) == ['-hwaccel', 'auto']
+    assert video_input_acceleration(replace(automatic, export_context={'decode_backend': 'software'})) == []
 
 
 def test_target_encoder_probe_checks_real_geometry_and_depth(monkeypatch):

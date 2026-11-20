@@ -571,13 +571,16 @@ def media_has_audio(ffmpeg_path: str | os.PathLike[str], media_path: str | os.Pa
 
 
 def video_input_acceleration(job):
-    """Opt-in CUDA decode comparison returning software frames to ASS/overlays.
+    """Try hardware decode for NVENC while keeping CPU filter frames.
 
-    This deliberately omits hwaccel_output_format=cuda. Raster FFV1
-    intermediates retain software decode; it is not a GPU-only pipeline.
+    FFmpeg automatic device selection can fall back to software when a device
+    cannot decode the input. Benchmarks can request CUDA or software explicitly.
+    Composed input retains software decode.
     """
-    if job.export_context.get('decode_backend') == 'cuda' and not job.composition_resolved:
-        return ['-hwaccel', 'cuda']
+    backend = job.export_context.get('decode_backend') or (
+        'auto' if str(job.settings.encoder or '').endswith('_nvenc') else 'software')
+    if backend in ('auto', 'cuda') and not job.composition_resolved:
+        return ['-hwaccel', backend]
     return []
 
 
@@ -734,9 +737,21 @@ def build_render_command(
         if job.duration_seconds is not None:
             command.extend(["-t", f"{max(0.05, float(job.duration_seconds)):.3f}"])
     else:
-        if job.start_seconds is not None and not job.composition_resolved:
+        raw = (job.export_context or {}).get('raw_video_input')
+        audio_map = '0:a?'
+        if raw:
+            # Composed frames arrive on stdin; the prepared PCM track is input 1.
+            command.extend(['-f', 'rawvideo', '-pix_fmt', 'bgra', '-s', f"{int(raw['width'])}x{int(raw['height'])}",
+                            '-framerate', f"{float(raw['fps']):.9f}", '-thread_queue_size', '64', '-i', 'pipe:0'])
+            if raw.get('audio'):
+                command.extend(['-i', str(media)])
+                audio_map = '1:a?'
+            else:
+                audio_map = None
+        elif job.start_seconds is not None and not job.composition_resolved:
             command.extend(["-ss", f"{max(0.0, float(job.start_seconds)):.3f}"])
-        command.extend([*video_input_acceleration(job), "-i", str(media)])
+        if not raw:
+            command.extend([*video_input_acceleration(job), "-i", str(media)])
         if job.duration_seconds is not None:
             command.extend(["-t", f"{max(0.05, float(job.duration_seconds)):.3f}"])
         # Input seeking resets the encoded segment to a zero-based timeline. Put
@@ -751,11 +766,14 @@ def build_render_command(
             filters.append("setpts=PTS-STARTPTS")
         if scale:
             filters.append(scale)
+        audio_maps = ['-map', audio_map] if audio_map else []
         if job.preview_url:
             chain = '[0:v]' + ','.join(filters) + ',split=2[vfinal][previewfull];[previewfull]fps=2:round=up:start_time=0:eof_action=pass,scale=640:-2[exportpreview]'
-            command.extend(['-filter_complex', chain, '-map', '[vfinal]', '-map', '0:a?'])
+            command.extend(['-filter_complex', chain, '-map', '[vfinal]', *audio_maps])
         else:
-            command.extend(["-map", "0:v:0", "-map", "0:a?", "-vf", ",".join(filters)])
+            command.extend(["-map", "0:v:0", *audio_maps, "-vf", ",".join(filters)])
+        if raw and not audio_map:
+            command.append('-an')
     command.extend(["-c:v", encoder, *_quality_arguments(encoder, settings)])
     preset = encoder_preset(encoder, settings.preset)
     if preset:
@@ -882,8 +900,12 @@ def _run_render_attempt(
             duration_seconds=float(job.duration_seconds or 0) or None))
     try:
         from .export_performance import export_phase
-        with export_phase("final_pipeline", overlaps="decode+filters+encode+audio+mux+faststart"):
-            code, output_log = _run_streaming_process(command, on_line=on_line, cancelled=cancelled, purpose="ffmpeg studio render")
+        from .video_export import composed_stream_feeder
+        feeder = composed_stream_feeder(job)
+        with export_phase("final_pipeline", overlaps="decode+filters+encode+audio+mux+faststart"
+                          + ("+raster composition on stdin" if feeder else "")):
+            code, output_log = _run_streaming_process(command, on_line=on_line, cancelled=cancelled,
+                                                      purpose="ffmpeg studio render", stdin_feeder=feeder)
         if trace: trace('exit_code', code)
         from .export_run_log import note_export
         note_export('encoding_finished', dict(returncode=code, includes_mux_and_faststart=True))
@@ -948,7 +970,7 @@ def run_render_job(
         from .export_filtergraph import simple_video_clips
         if simple_video_clips(job.video_graph) is not None:
             from .export_run_log import note_export
-            route = dict(route='direct_filtergraph', reason='nonoverlapping default-geometry video clips', intermediate_video=False)
+            route = dict(route='direct_filtergraph', reason='concatenated default-geometry clips and FFmpeg overlay layers', intermediate_video=False)
             note_export('export_route', route)
             if trace:
                 trace('export_route', route)
@@ -962,9 +984,28 @@ def run_render_job(
             prepared = replace(job, direct_video_graph=graph, video_graph=None, edit_segments=(),
                                duration_seconds=job.duration_seconds or graph['duration_ms']/1000-(job.start_seconds or 0),
                                settings=replace(job.settings, fps=job.settings.fps or source_fps))
-            return run_render_job(ffmpeg_path, prepared, progress=progress, cancelled=cancelled, trace=trace)
+            try:
+                return run_render_job(ffmpeg_path, prepared, progress=progress, cancelled=cancelled, trace=trace)
+            except Exception as error:
+                # The direct graph runs FFmpeg with -xerror; damaged recordings
+                # (bad packets) stop it. The raster compositor skips damaged
+                # packets like players do, so retry the export there once.
+                if isinstance(error, InterruptedError) or (cancelled and cancelled()):
+                    raise
+                from .export_failure import ExportFailure
+                if not isinstance(error, ExportFailure):
+                    raise
+                fallback = dict(route='raster_compositor', reason='direct FFmpeg graph failed; retrying with the damage-tolerant compositor',
+                                direct_error=str(error)[:2000])
+                note_export('export_route_fallback', fallback)
+                if trace:
+                    trace('export_route_fallback', fallback)
+                if progress:
+                    progress({'notice': '直接压制遇到源视频解码错误，已改用逐帧合成路线重新压制。'})
         from .video_export import prepared_video_job
-        with prepared_video_job(ffmpeg_path, job, cancelled=cancelled, progress=progress) as prepared:
+        # Native captions burn in the same final encode: stream composed
+        # frames into it instead of writing and re-reading a lossless file.
+        with prepared_video_job(ffmpeg_path, job, cancelled=cancelled, progress=progress, stream=True) as prepared:
             return run_render_job(ffmpeg_path, prepared, progress=progress, cancelled=cancelled, trace=trace)
     output = Path(job.output_path).resolve()
     if output.exists() and not job.overwrite_existing:

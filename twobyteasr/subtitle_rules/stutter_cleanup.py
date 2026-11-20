@@ -83,9 +83,33 @@ def warm_text_analysis():
     if _WARMING:
         return
     import threading
-    thread = threading.Thread(target=warm_lexicon, name="text-dictionary-warmup", daemon=True)
+    thread = threading.Thread(target=_warm_in_short_slices, name="text-dictionary-warmup", daemon=True)
     _WARMING.append(thread)
     thread.start()
+
+
+#: GIL hand-over while the dictionaries load (Python's default is 5 ms).
+WARM_SWITCH_INTERVAL_S = 0.001
+
+
+def _warm_in_short_slices():
+    """``warm_lexicon`` with a short GIL switch interval while it runs.
+
+    2026-11-19 (user: the workbench froze after opening a project): jieba's
+    dictionary load is a long pure-Python loop. Every Qt call the GUI thread
+    makes releases the GIL, and getting it back waited up to the 5 ms switch
+    interval each time, so the first timeline and list paints after opening
+    took ten times longer. A 1 ms interval only while loading bounds that.
+    """
+    import sys
+    previous = sys.getswitchinterval()
+    short = min(previous, WARM_SWITCH_INTERVAL_S)
+    sys.setswitchinterval(short)
+    try:
+        warm_lexicon()
+    finally:
+        if sys.getswitchinterval() == short:  # unless someone else changed it meanwhile
+            sys.setswitchinterval(previous)
 
 
 def word_frequency(word):

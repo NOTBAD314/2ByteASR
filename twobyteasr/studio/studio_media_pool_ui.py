@@ -46,7 +46,7 @@ from ..i18n import tr
 
 
 MEDIA_FILTER = (
-    "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.gif *.wav *.mp3 "
+    "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.gif *.png *.jpg *.jpeg *.webp *.bmp *.wav *.mp3 "
     "*.m4a *.flac *.aac);;所有文件 (*)"
 )
 
@@ -171,11 +171,24 @@ class StudioMediaPoolPanel(QWidget):
         # competing for the user's attention.
         divider.hide(); self.track_selector.hide(); self.add_track_button.hide()
 
-        self.add_to_track_button = QPushButton("打开源预览 / 选择片段")
-        self.add_to_track_button.setObjectName("studioPrimary")
-        self.add_to_track_button.setIcon(themed_icon("fa5s.arrow-right", "primary"))
+        # 2026-11-18: the main button adds in one step; the preview (pick a
+        # range, picture or sound only) is the second choice beside it.
+        place_row = QHBoxLayout()
+        place_row.setSpacing(8)
+        self.quick_add_button = QPushButton("加到时间线")
+        self.quick_add_button.setObjectName("studioPrimary")
+        self.quick_add_button.setIcon(themed_icon("fa5s.plus", "primary"))
+        self.quick_add_button.clicked.connect(lambda: self.add_to_timeline())
+        place_row.addWidget(self.quick_add_button, 1)
+        self.add_to_track_button = QPushButton("预览 / 选段")
+        self.add_to_track_button.setObjectName("studioButton")
+        self.add_to_track_button.setIcon(themed_icon("fa5s.play", "primary"))
         self.add_to_track_button.clicked.connect(self._open_selected)
-        layout.addWidget(self.add_to_track_button)
+        place_row.addWidget(self.add_to_track_button)
+        layout.addLayout(place_row)
+        self.assets.add_requested.connect(self.add_to_timeline)
+        self.assets.preview_requested.connect(self._open_selected)
+        self.assets.relink_requested.connect(lambda _asset_id: self._relink_selected())
         self._sync_actions()
 
     def _button(self, icon_name: str, label: str, callback) -> QPushButton:
@@ -300,6 +313,8 @@ class StudioMediaPoolPanel(QWidget):
         self.relink_button.setEnabled(bool(project and asset_id))
         self.add_to_track_button.setEnabled(bool(project and asset_id))
         self.add_to_track_button.setToolTip('双击或点击打开源预览；设置入出点后选择音视频方式加入')
+        self.quick_add_button.setEnabled(bool(project and asset_id))
+        self.quick_add_button.setToolTip('把选中的素材加到播放头处：有空轨用空轨，没有就新建一条（Enter）。也可以直接拖到时间线')
         unused = (
             sum(1 for used in media_usage(project).values() if not used)
             if project else 0
@@ -395,6 +410,15 @@ class StudioMediaPoolPanel(QWidget):
     def _add_selected_to_track(self):
         self._open_selected()
 
+    def add_to_timeline(self, asset_id: str = '', mode: str = 'auto') -> bool:
+        """The source at the playhead, on a free track or a new one; one undo step."""
+        from .media_quick_add import add_source_at_playhead
+        added, message = add_source_at_playhead(self.page, asset_id or self.selected_asset_id(), mode)
+        if hasattr(self.page, 'save_state'):
+            self.page.save_state.setText(message)
+        self.page.source_monitor.status.setText('' if added else message)
+        return added
+
     def _open_selected(self, *_):
         asset_id = self.selected_asset_id()
         if self.page.project is None or not asset_id:
@@ -483,7 +507,7 @@ class StudioMediaPoolPanel(QWidget):
                 command=media_pool_import_command(project, add)
                 if command is not None:self.page.undo_stack.push(command)
             errors = [str(Path(path).name)+': '+error for path, _, error in results if error]
-            self.preview_contract.setText('；'.join(errors) if errors else f'已添加 {len(results)} 个素材；双击预览，拖动选段加入')
+            self.preview_contract.setText('；'.join(errors) if errors else f'已添加 {len(results)} 个素材；点 + 或拖到时间线，双击预览')
         elif results:
             path, identity, error = results[0]
             asset = next((a for a in project.media_pool if a.asset_id == asset_id and a.canonical_source == path), None)

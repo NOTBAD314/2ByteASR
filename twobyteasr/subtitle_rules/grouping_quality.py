@@ -29,6 +29,13 @@ from functools import lru_cache
 _dictionary_identity = lru_cache(maxsize=1)(_dictionary_identity)
 
 QUALITY_VERSION = "grouping-quality-v6-ai-owned-boundaries"
+MODAL_WORDS = frozenset({'可以', '能', '能够', '会', '要', '应该', '应当', '得'})
+MEASURE_CHARS = frozenset('个条位张块枚轮只次本部件项份台名届种套款把支首段句集期页步回')
+AGENT_SUFFIXES = frozenset({'人', '者', '员', '们', '家'})
+SUBJECT_MARKERS = frozenset({'是', '就是', '也是', '会', '能', '可以', '要'})
+LOCALIZERS = frozenset({'后', '里', '中', '内', '时', '之后', '以后', '里面', '之前', '以前'})
+DEMONSTRATIVE_OBJECTS = frozenset({'这个', '那个', '这里', '那里', '这边', '那边'})
+CLAUSE_TAKING_VERBS = frozenset({'记得', '记住', '别忘了', '别忘', '忘了', '注意', '建议', '试着', '打算'})
 STANDALONE_RESPONSES = frozenset({'对撞', '不急', '等一下', '没错', '明白', '知道了', '好的', '对的', '是的', '好吧', '可以的'})
 
 
@@ -109,6 +116,7 @@ class BoundaryQuality:
         self.stable_boundaries = set()
         self.confirmed_expressions = []
         self.soft_dependencies = set()
+        self.subject_predicate_edges = set()
         self.semantic_required = set()
         self.independent_edges = set()
         self.source_ranges = set()
@@ -161,7 +169,8 @@ class BoundaryQuality:
             # Generic grammar units absent from a general-purpose word lexicon.
             patterns = (
                 r"[这那哪每本此该](?:一|两|几|\d+)?[场个种次位条件项份台名届]",
-                r"[上下前后](?:一|两|几|\d+)次",
+                # 上一条/下一个/前两次: a direction-number-measure phrase.
+                r"[上下前后](?:一|两|几|\d+)[次条个位张页集期步回段句行项轮]",
                 r"[一二三四五六七八九十\d]+代[团队机车]",
                 r"(?:总体|整体|总的|综合|一般|相对)(?:来说|来讲|而言)",
                 r"[男女][团队]",
@@ -262,7 +271,22 @@ class BoundaryQuality:
                     self.named_entity_interiors.add(start+word_end)
                     self.named_component_interiors.update(range(start+word_start+1,
                         start+word_end+len(following.word)))
-                dependent = (token.flag in {"d","p","c"} and following.flag[0] in "vanrdmp")
+                dependent = (token.flag in {"d","p","c","ad"} and following.flag[0] in "vanrdmpb")
+                # 2026-11-18 (兔白字幕教学 regressions). jieba tags a modal
+                # after an adverb as a conjunction (也/d 可以/c).
+                dependent = dependent or (token.flag == "d" and following.word in MODAL_WORDS)
+                # Numeral/measure and its head noun (两个|快捷键, 换个|颜色).
+                dependent = dependent or (token.flag in {"m","q"} and token.word[-1:] in MEASURE_CHARS
+                                          and (following.flag.startswith("n") or following.flag in {"vn","an"}))
+                # A one-character agent/person suffix (说话|人, 主持|人).
+                dependent = dependent or (len(following.word) == 1 and following.word in AGENT_SUFFIXES
+                                          and token.flag[:1] in "vn" and len(token.word) >= 2
+                                          and self.pauses.get(start+word_end, 0.) < .18)
+                # A verb that takes the following clause (记得|在主页检查更新).
+                dependent = dependent or (token.word in CLAUSE_TAKING_VERBS and following.flag[:1] in "pvdr")
+                # A one-character modifier never ends a cue (大|肥鱼).
+                dependent = dependent or (len(token.word) == 1 and token.flag in {"a","b","ag"}
+                                          and following.flag.startswith("n"))
                 if token.word in {'其实','本来','原本'} and following.flag == 'p':
                     dependent = False
                     self.soft_dependencies.add(start+word_end)
@@ -278,17 +302,48 @@ class BoundaryQuality:
                     adjective = adjective or tagged[previous].flag.startswith("a")
                     previous -= 1
                 complete_judgement = adjective and previous >= 0 and tagged[previous].word=="是"
-                modifier = (token.flag == "uj" and following.flag.startswith("n")
+                modifier = (token.flag == "uj" and (following.flag.startswith("n") or following.flag in {"vn","an"})
                             and not complete_judgement and start+word_end not in self.restarts)
                 if not terminal and (dependent or modifier):
                     self.forbidden.add(start+word_end)
                     self.pos_dependency_edges.add(start+word_end)
                     if token.flag=="c":
                         self.restarts.add(start+word_start)
+                # 2026-11-18: a following pronoun usually opens the next
+                # clause (说话人|每人), so it is no longer a soft dependency.
                 if (not terminal and (token.flag.startswith("n") or token.flag=="r")
-                        and (following.flag[0] in "dvtr" or following.word in {"还是","就是","也是","应该","可能","需要","能够"})
+                        and (following.flag[0] in "dvt" or following.word in {"还是","就是","也是","应该","可能","需要","能够"})
                         and self.pauses.get(start+word_end,0.) < .18):
                     self.soft_dependencies.add(start+word_end)
+                    # A long subject before its predicate is a natural
+                    # subtitle cut (大肥鱼|只会收到…): a small cost only.
+                    self.subject_predicate_edges.add(start+word_end)
+                # Soft costs, never bans: a noun compound (安全|审核, 字幕|工作台),
+                # 的 before a predicate (大肥鱼的|设置了), and a verb's
+                # demonstrative object (点击|这个 创建).
+                if not terminal and self.pauses.get(start+word_end,0.) < .18:
+                    if token.flag.startswith("n") and (following.flag.startswith("n") or following.flag == "vn"):
+                        self.soft_dependencies.add(start+word_end)
+                    if token.word == "的" and following.flag[:1] in "vad":
+                        self.soft_dependencies.add(start+word_end)
+                    if token.flag.startswith("v") and (following.flag.startswith("n") or following.flag == "eng"):
+                        after = tagged[i+2] if i+2 < len(tagged) else None
+                        if after is not None and after.word in SUBJECT_MARKERS:
+                            # 合并 | 快捷键是…: the noun opens the next clause.
+                            self.clause_edges.add(start+word_end)
+                        else:
+                            self.soft_dependencies.add(start+word_end)   # verb | object
+                    if (token.flag[:1] in "vf" and following.word in DEMONSTRATIVE_OBJECTS
+                            and i+2 < len(tagged) and tagged[i+2].flag.startswith("v")
+                            and tagged[i+2].word not in MODAL_WORDS
+                            and not tagged[i+2].word.startswith(("不","没","是","就","都","也","还","会"))):
+                        self.soft_dependencies.add(start+word_end)
+                        self.restarts.discard(start+word_end)
+                        self.clause_edges.add(start+word_end+len(following.word))
+                    # A localizer belongs to its noun (设置AI|后, 游戏|里的).
+                    if (following.flag == "f" and following.word in LOCALIZERS
+                            and (token.flag[:1] in "nv" or token.flag == "eng")):
+                        self.soft_dependencies.add(start+word_end)
             phrase_spans, clauses, conditions = syntax_boundary_evidence(local_index, self.max_chars)
             for left, right, reason in phrase_spans:
                 self.syntax_spans.append((start+left, start+right, reason))
@@ -528,6 +583,14 @@ class BoundaryQuality:
                         and not relax_time):
                     continue
                 cost = 20.  # Optional breaths never pay for extra short cues.
+                # A one/two-character piece that only completes a neighbour
+                # (做成｜字幕) reads as a stranded tail.
+                if (length <= 2 and (start, end) not in self.source_ranges
+                        and not self.independent_short(start, end)):
+                    cost += 18.
+                # A mild preference for balanced pieces breaks ties between
+                # otherwise equal semantic candidates.
+                cost += .04*min(length, self.max_chars)**2
                 if (self.units and duration < self.display_floor
                         and not self.independent_short(start,end)):
                     cost += 30. + 20.*(self.min_seconds-duration)**2
@@ -535,7 +598,8 @@ class BoundaryQuality:
                 cost += 25.*max(0., duration-self.max_seconds)**2
                 if end < right:
                     cost += 25. if end in self.awkward else 0.
-                    cost += 14. if end in self.soft_dependencies else 0.
+                    if end in self.soft_dependencies:
+                        cost += 6. if end in self.subject_predicate_edges else 14.
                     cost += -2. if end in original else 2.
                     cost -= 1. if end in self.source_edges else 0.
                     cost -= min(3.5, self.pauses.get(end, 0.)*10.)

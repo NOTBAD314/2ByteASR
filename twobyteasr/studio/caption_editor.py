@@ -7,7 +7,7 @@ from time import perf_counter
 import json
 import uuid
 from PySide6.QtCore import QEvent, Qt, Signal, QTimer, QSignalBlocker
-from PySide6.QtGui import QTextCursor, QUndoCommand
+from PySide6.QtGui import QKeySequence, QTextCursor, QUndoCommand
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QHBoxLayout, QWidget, QVBoxLayout
 
 from .review_marked_text import ReviewMarkedText, MORE, BASE
@@ -447,12 +447,12 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         if not force and ((draft is None and target is None) or
                           (self._caption_owns_draft(draft) and draft.target == target)):
             return
+        self._install_caption_editor_tools()
         self._clear_caption_binding()
         if target is not None:
             self._bind_caption_editor(target)
             self.subtitle_edit_card.title.setText('跟随 · 译文' if target.role == 'translation' else '跟随 · 原文')
         else:
-            self._install_caption_editor_tools()
             self.subtitle_edit_card.reset()
             self.subtitle_edit_title.setText('当前位置无字幕')
             self.subtitle_edit_card.meta.clear()
@@ -972,6 +972,33 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self.subtitle_edit_card.update_hint()
         return True
 
+    def _caption_find_shortcut(self, event):
+        """The page's find keys (Ctrl+F, Ctrl+H unless rebound) pressed in the editor."""
+        if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            return False
+        pressed = QKeySequence(event.keyCombination())
+        values = getattr(self, '_shortcut_values', None) or {}
+        for name, default in (('find', 'Ctrl+F'), ('find_replace', 'Ctrl+H')):
+            sequence = values.get(name, default)
+            if sequence and QKeySequence(sequence) == pressed:
+                return True
+        return False
+
+    def _find_replace_from_caption_editor(self):
+        """2026-11-19 (user): text chosen in the E editor goes straight into
+        批量替换's search, with the cursor waiting in 替换为. The draft is
+        confirmed first, so the replace sees it and nothing typed is lost; a
+        draft that cannot be confirmed keeps the editor open instead."""
+        cursor = self.subtitle_edit_input.textCursor()
+        chosen = cursor.selectedText() if cursor.hasSelection() else ''
+        # A selection over a line break keeps its first line (the search is one line).
+        chosen = chosen.replace(' ', ' ').split(' ')[0]
+        if not self._caption_trigger_commit('find_replace'):
+            return False
+        # After this key event returns: the dialog runs its own event loop.
+        QTimer.singleShot(0, lambda: self._open_find_replace_with(chosen))
+        return True
+
     def _caption_editor_key(self, event, *, text_focus=False):
         if (not getattr(self, '_caption_following', False)
                 or not self.subtitle_edit_dock.isVisible()):
@@ -982,6 +1009,11 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         key = event.key()
         if key == Qt.Key.Key_S and mods == Qt.KeyboardModifier.ControlModifier:
             self.save()
+            return True
+        if self._caption_find_shortcut(event):
+            self._caption_consumed_commit_key = key
+            if not event.isAutoRepeat():
+                self._find_replace_from_caption_editor()
             return True
         # While composing text, Shift+R observes the same IME guard as Enter.
         # Let the IME finish its candidate first, exactly like Enter.

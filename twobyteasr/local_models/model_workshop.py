@@ -3229,6 +3229,20 @@ class ModelCard(QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._compact_title_pending = True
+        if not self.isVisible():
+            # A hidden workshop is laid out by any grab() elsewhere; the card
+            # catches up when it shows (2026-11-19, opening a project).
+            self._resize_pending = True
+            return
+        self._apply_resize()
+
+    def showEvent(self, event):
+        if getattr(self, '_resize_pending', False):
+            self._resize_pending = False
+            self._apply_resize()
+        super().showEvent(event)
+
+    def _apply_resize(self):
         available_width = self.width()
         ancestor = self.parentWidget()
         while ancestor is not None:
@@ -6133,14 +6147,52 @@ class ModelWorkshopPage(QWidget):
         QTimer.singleShot(0, self._periodic_temp_cleanup)
 
     def ensure_ui(self):
-        if self._ui_built:
+        if self._ui_built and not self.__dict__.get('_ui_refresh_pending', False):
             return
-        self._build()
-        self._ui_built = True
+        if not self._ui_built:
+            self._build()
+            self._ui_built = True
+        self._ui_refresh_pending = False
         self.refresh(registry=self._registry, check_status=False)
         if self._density_comfortable is not None:
             density, self._density_comfortable = self._density_comfortable, None
             self.apply_density(density)
+
+    def prepare_hidden_steps(self):
+        """Build the page, its cards and their polish while it is hidden (2026-11-18).
+
+        The first visit used to build the UI, three cards and their styles
+        before its first frame (300-470 ms). Home's idle preparation runs
+        these steps; each ``yield`` gives the event loop a turn. Once the page
+        is shown the normal visit paths take over and the steps stop.
+        """
+        if self.isVisible():
+            return
+        if not self._ui_built:
+            self._build()
+            self._ui_built = True
+            self._ui_refresh_pending = True
+            yield
+        if self.isVisible():
+            return
+        if self.__dict__.get('_ui_refresh_pending', False):
+            self.ensure_ui()
+            yield
+        # The remaining cards stay deferred: built hidden, their layouts were
+        # flushed by any later full-window layout pass (Studio's hub entry
+        # paid 130 ms for 24 cards). They still build behind the veil on show.
+        from ..design.gui_slices import GuiSlice
+        from shiboken6 import isValid
+        budget = GuiSlice(12)
+        for widget in reversed(self.findChildren(QWidget)):
+            if self.isVisible() or not isValid(self):
+                return
+            if isValid(widget):
+                widget.ensurePolished()
+            if budget.due():
+                yield
+                budget.resume()
+        self.ensurePolished()
 
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
@@ -6632,6 +6684,11 @@ class ModelWorkshopPage(QWidget):
         self.empty_label.setMinimumHeight(100)
         self.card_layout.addWidget(self.empty_label)
         self.card_layout.addStretch(1)
+        # Laid out only while the page shows (see showEvent): a grab or render
+        # anywhere in the app flushes every posted layout request, hidden pages
+        # included, and the card list was 0.2-0.3 s of opening a project in the
+        # workbench (2026-11-19).
+        self.card_layout.setEnabled(self.isVisible())
         scroll.setWidget(host)
         if self._async_status:
             self._card_viewport = _CardViewport(scroll, self._cards)
@@ -6870,7 +6927,20 @@ class ModelWorkshopPage(QWidget):
     def background_busy(self) -> bool:
         return self._registry_check_running
 
+    def page_settled(self) -> bool:
+        """The page and its model list are built (the main window shows a page only then:
+        ``design.transitions.PageHold``). A status check still running only updates badges."""
+        if not self._ui_built:
+            return False
+        viewport = getattr(self, '_card_viewport', None)
+        return not getattr(viewport, 'building', False)
+
     def showEvent(self, event):
+        layout = getattr(self, 'card_layout', None)
+        if layout is not None and not layout.isEnabled():
+            layout.setEnabled(True)
+            layout.invalidate()
+            layout.activate()
         super().showEvent(event)
         self._download_activity_timer.start()
         self._temp_cleanup_timer.start()
@@ -6885,6 +6955,9 @@ class ModelWorkshopPage(QWidget):
             timer = getattr(self,name,None)
             if timer is not None: timer.stop()
         super().hideEvent(event)
+        layout = getattr(self, 'card_layout', None)
+        if layout is not None and not self.isVisible():
+            layout.setEnabled(False)
 
     def _check_registry_in_background(self, *, force=False):
         if self._registry_check_running:
@@ -7562,16 +7635,28 @@ class ModelWorkshopPage(QWidget):
             bind_text(self.download_estimate, '预计新增下载：{value0}', value0=ui_literal('、'.join(missing_sizes)) if missing_sizes else tr('无需下载'))
 
     def _set_role(self, role: str):
-        self.browser_role = role
-        self._refresh_role_subtitle()
-        for button in self.tab_group.buttons():
-            button.setChecked(button.property("role") == role)
-        selected = self._cards.get(self.detail_model_key)
-        if selected is None or role not in _browser_groups(selected.model):
-            replacement = next((model.key for model in MODELS if role in _browser_groups(model)), None)
-            if replacement:
-                self.detail_model_key = replacement
-        self.refresh(registry=self._registry, check_status=False)
+        # 2026-11-18 (user: every switch inside the workshop should move): switching 主力转写 /
+        # 字幕时间轴 / 文字复核 / 在线API reorders the same cards in place, so the list's old picture
+        # fades over the new one (design.transitions.content_change); nothing waits for it.
+        from ..design.transitions import content_change
+        scroll = getattr(getattr(self, '_drag_scroll', None), 'scroll', None)
+        changing = content_change(scroll) if scroll is not None and role != self.browser_role else None
+        if changing is not None:
+            changing.__enter__()
+        try:
+            self.browser_role = role
+            self._refresh_role_subtitle()
+            for button in self.tab_group.buttons():
+                button.setChecked(button.property("role") == role)
+            selected = self._cards.get(self.detail_model_key)
+            if selected is None or role not in _browser_groups(selected.model):
+                replacement = next((model.key for model in MODELS if role in _browser_groups(model)), None)
+                if replacement:
+                    self.detail_model_key = replacement
+            self.refresh(registry=self._registry, check_status=False)
+        finally:
+            if changing is not None:
+                changing.__exit__(None, None, None)
 
     def _refresh_role_subtitle(self):
         label = getattr(self, "role_subtitle", None)

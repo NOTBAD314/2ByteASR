@@ -280,6 +280,10 @@ def main() -> int:
 
     multiprocessing.freeze_support()
     os.environ["TWOBYTEASR_PROCESS_ROLE"] = "main-gui"
+    # 2026-11-19: Qt asks Direct3D 9 for the graphics card inside its first window (0.3-0.45 s on
+    # the GUI thread). The same question is asked now, on a thread of its own, beside the imports.
+    from twobyteasr.system.gpu_probe_warmup import start as _start_gpu_probe
+    _start_gpu_probe()
     from twobyteasr.app.settings_profile import configure_gui_settings_profile
     configure_gui_settings_profile()
     from twobyteasr.media.media_intake import parse_media_arguments
@@ -293,6 +297,12 @@ def main() -> int:
     app = QApplication.instance() or QApplication([sys.argv[0]])
     from twobyteasr.design.hover_hints import install_hover_hint_policy
     install_hover_hint_policy(app)
+    from twobyteasr.design.smooth_scroll import install as install_smooth_scroll
+    install_smooth_scroll(app)   # 2026-11-18: wheel notches glide on the calm spring
+    from twobyteasr.design.press_motion import install as install_press_motion
+    install_press_motion(app)    # 2026-11-18: every button gives a little when pressed
+    from twobyteasr.design.transitions import install as install_dialog_motion
+    install_dialog_motion(app)   # 2026-11-18: dialogs grow out of their button and shrink back
     _startup_mark("EARLY_QT_READY")
     instance_guard = SingleInstanceGuard(SingleInstanceGuard.application_name(application_root()))
     _startup_mark("EARLY_INSTANCE_GUARD_CREATED")
@@ -305,6 +315,18 @@ def main() -> int:
                         "现有实例未确认接收。请稍后重试；如窗口无响应，请关闭该实例后重开。文件没有被修改。")
             return 2
     _startup_mark("EARLY_INSTANCE_OWNER")
+    # 2026-11-19 (user: opening takes five seconds, it should be under one): Home as it was last
+    # time is on screen from here on, while the imports and the main window are done
+    # (app.launch_picture).
+    from twobyteasr.app import launch_picture
+    launch_window = launch_picture.show(app, arguments=media_arguments)
+    if launch_window is not None:
+        _startup_mark("LAUNCH_PICTURE_SHOWN", kind=launch_window.kind)
+    del launch_window
+    # 2026-11-19: Qt loads every installed font family the first time a text needs a fallback font
+    # (0.2 s or more). That first measurement is made now, on a thread of its own, beside the imports.
+    from twobyteasr.design.font_warmup import start as _start_font_warmup
+    _start_font_warmup()
     app._instance_guard = instance_guard
     app.aboutToQuit.connect(instance_guard.release)
     from twobyteasr.diagnostics.editor_diagnostics import install_early
@@ -385,6 +407,7 @@ def main() -> int:
             instance_guard=instance_guard,
         )
         _append_startup_log(f"run_desktop_app returned {rc}")
+        launch_picture.flush()          # the picture kept at closing is on disk before the process ends
         if diagnostic_session is not None:
             diagnostic_session.finish(clean=(rc == 0))
     except SystemExit as exit_request:
@@ -394,6 +417,7 @@ def main() -> int:
         rc = exit_request.code if isinstance(exit_request.code, int) else 0
         _append_startup_log(f"run_desktop_app raised SystemExit({rc})")
     except Exception as exc:
+        launch_picture.dismiss(fade=False)   # the error box is not hidden behind the kept picture
         _write_full_traceback(exc)
         recovery = (
             "请重新运行本版本安装包修复程序文件；模型环境可在模型工坊中重试。\n"

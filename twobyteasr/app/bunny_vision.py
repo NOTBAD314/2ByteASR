@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 LONG_SIDE = 1280             # px, the long side of what is sent
 THUMB_SIDE = 220             # px, the long side of the picture shown in the chat
 JPEG_QUALITY = 80
-SKIP_NAMES = frozenset({'bunnyChat', 'bunnyCarrier', 'bunnyLog', 'bunnyChatMascot'})
+SKIP_NAMES = frozenset({'bunnyChat', 'bunnyCarrier', 'bunnyLog', 'bunnyChatMascot', 'stageCover'})
 SKIP_CLASSES = frozenset({'Spotlight', 'QTipLabel', 'QComboBoxPrivateContainer', 'QMenu'})
 
 # Kinds of models that can see images, for the explanation (in the user's words, not ids).

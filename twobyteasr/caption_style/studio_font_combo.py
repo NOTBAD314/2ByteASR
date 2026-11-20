@@ -39,8 +39,10 @@ class FontPreviewEdit(QLineEdit):
         visible=QRectF(self.contentsRect()).intersected(QRectF(combo.rect()).translated(-self.x(),-self.y()))
         combo._last_font_preview=draw_font_preview(painter,visible.adjusted(2,3,-2,-3),
             self.text(),combo.preview_request_for(self.text(),current=True),self.font(),
-            option.palette.color(QPalette.ColorRole.Text),name_first=True)
+            option.palette.color(QPalette.ColorRole.Text),name_first=True,defer_metadata=True)
         painter.end()
+        if combo._last_font_preview.get('loading'):
+            QTimer.singleShot(150,self.update)  # the font list is being read on a worker
 
     def event(self,event):
         if event.type()==QEvent.Type.ToolTip:

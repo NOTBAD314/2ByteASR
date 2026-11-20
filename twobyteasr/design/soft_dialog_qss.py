@@ -73,7 +73,7 @@ def build_script_match_qss(t) -> str:
     hover = _tone(t, t.text, 0.06, 0.1)
     done = t.success
     return f"""
-QDialog#homeScriptMatchDialog {{ background: transparent; color: {t.text}; }}
+QDialog#homeScriptMatchDialog, QDialog#scriptMatchDialog {{ background: transparent; color: {t.text}; }}
 QWidget#scriptWizardRoot {{ background: {t.surface}; border: 0; }}
 QStackedWidget#scriptWizardPages, QWidget#scriptWizardPage {{ background: transparent; border: 0; }}
 QLabel#scriptWizardTitle {{ font-family: {TITLE_FONT_STACK}; font-size: 18px; font-weight: 900; color: {t.text};
@@ -92,10 +92,11 @@ QFrame#scriptDropZone {{ background: {t.surface_elevated}; border: 2px dashed {t
 QFrame#scriptDropZone[dragging="true"] {{ border-color: {t.accent}; background: {t.accent_soft}; }}
 QLabel#scriptDropTitle {{ font-size: 16px; font-weight: 700; color: {t.text}; background: transparent; }}
 QLabel#scriptDropHint, QLabel#homeScriptMatchMedia {{ font-size: 12.5px; color: {t.text_muted}; background: transparent; }}
-QFrame#scriptEditorFrame {{ background: {t.surface_elevated}; border: 2px solid {t.border}; border-radius: 20px; }}
+QFrame#scriptEditorFrame, QFrame#scriptPreviewFrame {{ background: {t.surface_elevated}; border: 2px solid {t.border};
+    border-radius: 20px; }}
 QFrame#scriptEditorFrame[focused="true"] {{ border-color: {t.accent}; }}
-QPlainTextEdit#homeScriptMatchInput {{ background: transparent; border: 0; padding: 8px 10px; font-size: 14px;
-    color: {t.text}; selection-background-color: {t.accent_soft}; selection-color: {t.text}; }}
+QPlainTextEdit#homeScriptMatchInput, QPlainTextEdit#scriptMatchInput {{ background: transparent; border: 0;
+    padding: 8px 10px; font-size: 14px; color: {t.text}; selection-background-color: {t.accent_soft}; selection-color: {t.text}; }}
 QPushButton#scriptEditorTool {{ background: {t.input_surface}; color: {t.text}; border: 0; border-radius: 15px;
     min-height: 30px; max-height: 30px; padding: 0 12px; font-size: 12.5px; }}
 QPushButton#scriptEditorTool:hover {{ background: {hover}; }}
@@ -109,6 +110,15 @@ QPushButton#scriptLanguageChip:disabled {{ color: {t.disabled}; }}
 QPushButton#scriptLanguageChip::menu-indicator {{ image: none; width: 0px; }}
 QLabel#homeScriptMatchRuns {{ font-size: 12px; color: {t.text_muted}; background: transparent; }}
 QLabel#homeScriptMatchStatus {{ font-size: 12.5px; color: {t.text_secondary}; background: transparent; }}
+QTableWidget#scriptMatchPreview {{ background: transparent; border: 0; outline: 0; font-size: 13px; color: {t.text};
+    selection-background-color: {t.accent_soft}; selection-color: {t.text}; }}
+QTableWidget#scriptMatchPreview::item {{ background: transparent; border: 0; border-bottom: 1px solid {t.border};
+    border-radius: 0; margin: 0; padding: 0 8px; }}
+QTableWidget#scriptMatchPreview::item:hover {{ background: {hover}; }}
+QTableWidget#scriptMatchPreview::item:selected {{ background: {t.accent_soft}; color: {t.text}; }}
+QTableWidget#scriptMatchPreview QHeaderView {{ background: transparent; border: 0; }}
+QTableWidget#scriptMatchPreview QHeaderView::section {{ background: transparent; color: {t.text_muted}; border: 0;
+    border-bottom: 1px solid {t.border}; padding: 4px 8px; font-size: 12px; font-weight: 600; }}
 """
 
 
