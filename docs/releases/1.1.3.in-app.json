@@ -1,0 +1,4 @@
+{
+  "zh": "· 字幕查找替换：Ctrl+F 或 Ctrl+H 带选中文字打开批量替换。\n· 工程打开更流畅：切片规则在后台准备，储存确认可以正常点击。\n· 启动和切页更平滑：Windows 可先显示上次首页，主要页面切换更连贯。\n· 导出更省时：部分字幕动画复用停留帧，分层合成减少中间步骤。\n· 线上识别补救：提前结束时尝试补齐，并标出疑似漏识别区间。",
+  "en": "Bring selected subtitle text into batch replace with Ctrl+F or Ctrl+H. Projects open with more background preparation and a clickable save prompt. Windows transitions from the last Home screen on startup. Supported subtitle and layered exports do less work, and interrupted online recognition can flag suspected gaps."
+}
