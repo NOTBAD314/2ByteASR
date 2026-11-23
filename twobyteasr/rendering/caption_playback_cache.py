@@ -622,7 +622,8 @@ class PlaybackCaptionCache(QObject):
                             from .live_web_preview import prepare_web_configuration
                             from ..caption_style.speaker_labels import template_speaker
                             speaker = template_speaker(project, cue)
-                            web = prepare_web_configuration(theme,snapshot.text,speaker,(cue.end_ms-cue.start_ms)/1000.,
+                            from ..caption_style.visual_snapshot import web_theme_text
+                            web = prepare_web_configuration(theme,web_theme_text(snapshot),speaker,(cue.end_ms-cue.start_ms)/1000.,
                                 snapshot.style_recipe.get('layout',{}).get('webPlacement'), translation=snapshot.translation)
                         # Repeated caption text can share first-frame pixels while
                         # keeping cue identity/revision guards on publication.

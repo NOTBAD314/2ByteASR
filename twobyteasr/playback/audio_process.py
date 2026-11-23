@@ -16,6 +16,8 @@ import time
 from collections import deque
 from multiprocessing.connection import Client, Listener
 from .platform_audio import audio_endpoint, valid_audio_endpoint, cleanup_audio_endpoint, audio_backend
+from .audio_diagnostics import AudioStderr
+from .audio_recovery import COLD_OUTPUT_TIMEOUT_S, WARM_CONTROL_TIMEOUT_S
 
 from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Signal, Slot
 
@@ -42,7 +44,8 @@ class AudioProcessBridge(QObject):
         self._endpoint_generation = 0
         self._broken = False
         self._ack_pending = False
-        self._sync_timeout = 10.
+        self._sync_timeout = COLD_OUTPUT_TIMEOUT_S
+        self._audible_control_pending = False
         self._sent_at = self._last_received_at = 0.
         self._attempts = deque(maxlen=3)
         from .audio_recovery import EndpointRecovery
@@ -72,27 +75,53 @@ class AudioProcessBridge(QObject):
             from ..system.processes import stop_process_tree
             stop_process_tree(process)
         if connection is not None:connection.close()
-        if self._stderr is not None:self._stderr.close();self._stderr=None
-        if getattr(self, 'log_path', None):
+        if self._stderr is not None:
+            collector, reader = self._stderr
+            self._stderr = None
+            reader.join(timeout=.25)
+            summary = collector.text()
+            if summary:
+                self._diagnostic('stderr_summary', child_pid=process.pid, summary=summary)
+        else:
+            summary = ''
+        return summary
+
+    def _report_failure(self, phase, pid, exit_code, stderr=''):
+        from ..diagnostics.event_log import emit
+        emit('audio.endpoint.failure', level='ERROR', result='failed', phase=phase, child_pid=pid, exit_code=exit_code,
+             endpoint_generation=self._endpoint_generation, recovery_attempt=self._recovery.attempts,
+             program=sys.executable, media_tool=str(self.ffmpeg), stderr=stderr)
+        if stderr:
             try:
-                from ..providers.provider_diagnostics import redact_diagnostics
-                with self.log_path.open('rb') as stream:
-                    stream.seek(max(0, self.log_path.stat().st_size-4096))
-                    tail = redact_diagnostics(stream.read().decode('utf8', errors='replace'))[-1200:]
-                if tail:self._diagnostic('stderr_summary', summary=tail)
-            except OSError:pass
+                from ..runtime_paths import user_data_root
+                directory = user_data_root() / 'logs'
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / f'audio-endpoint-{secrets.token_hex(6)}.log').write_text(stderr, encoding='utf-8')
+            except OSError:
+                pass
 
     def _check_health(self):
         if self._closed or self.process is None:return
         if not self._failure_emitted and (self.process.poll() is not None or self._broken
                 or (self._ack_pending and time.monotonic()-self._sent_at>self._sync_timeout)):
+            status = self.process.poll()
+            phase = ('child_exited' if status is not None else
+                     'cold_output_timeout' if self.cold_output_pending else 'control_unresponsive')
+            self._report_failure(phase,
+                                 self.process.pid, status, self._stderr[0].text() if self._stderr else '')
             self._broken=True
             self._failure_emitted=True
             self._ack_pending=False
             self.telemetry.emit({'state':'ENDPOINT_FAILED','session_generation':self._session,
                 'endpoint_pid':self.process.pid,'endpoint_generation':self._endpoint_generation,
-                'pipe_state':'failed','decoder_error':'音频端点无响应；将在当前播放位置受控恢复'})
+                'pipe_state':'failed','decoder_error':(
+                    '等待默认输出设备超时。请在系统声音设置中确认输出设备，然后重试音频。'
+                    if phase == 'cold_output_timeout' else '音频端点无响应；将在当前播放位置受控恢复')})
             self.synchronize_complete.emit()
+
+    @property
+    def cold_output_pending(self):
+        return self._sync_timeout == COLD_OUTPUT_TIMEOUT_S and not self._broken
 
     def _ensure(self, control_epoch=None):
         epoch=self._control_epoch if control_epoch is None else control_epoch
@@ -110,7 +139,7 @@ class AudioProcessBridge(QObject):
         # Qt's first native device enumeration can exceed the ordinary
         # control deadline. Give each new endpoint one bounded cold sync,
         # then retain the short deadline for pause/seek and later requests.
-        self._sync_timeout=10.
+        self._sync_timeout = COLD_OUTPUT_TIMEOUT_S
         self._endpoint_generation+=1
         generation=self._endpoint_generation
         if self._watchdog is None:
@@ -134,20 +163,30 @@ class AudioProcessBridge(QObject):
         args = [address, key.hex(), str(self.ffmpeg)]
         command = ([sys.executable, '--studio-audio-worker', *args] if getattr(sys, 'frozen', False)
                    else [sys.executable, '-m', 'twobyteasr.playback.audio_process', *args])
-        log_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home())))/'2ByteASR'/'logs'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path = log_dir/f'audio-endpoint-{secrets.token_hex(6)}.log'
-        self._stderr = self.log_path.open('wb')
+        frozen = bool(getattr(sys, 'frozen', False))
+        cwd = Path(sys.executable).parent if frozen else Path(__file__).resolve().parents[2]
+        # This is the SAME PyInstaller application. Preserve bootloader state
+        # and DLL search context. External model workers still sanitize theirs.
+        env = dict(os.environ) if frozen else None
         try:
             self.process = popen_hidden_subprocess(command, purpose='Studio audio endpoint',
                 log_command=[*command[:-3], '<private-pipe>', '<ephemeral-key>', str(self.ffmpeg)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=self._stderr,
-                cwd=str(Path(sys.executable).parent) if getattr(sys,'frozen',False) else str(Path(__file__).parents[2]))
-        except BaseException:
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                cwd=str(cwd), env=env)
+            collector = AudioStderr()
+            stream = self.process.stderr
+            def drain():
+                with stream:
+                    collector.drain(stream)
+            reader = threading.Thread(target=drain, name='audio-endpoint-stderr', daemon=True)
+            self._stderr = (collector, reader)
+            reader.start()
+        except BaseException as exc:
             listener.close()
             cleanup_audio_endpoint(address)
+            self._report_failure('process_launch', None, None, f'{type(exc).__name__}: {exc}')
             raise
-        self._diagnostic('process_created', child_pid=self.process.pid, cwd=str(Path(sys.executable).parent) if getattr(sys,'frozen',False) else str(Path(__file__).parents[2]))
+        self._diagnostic('process_created', child_pid=self.process.pid, cwd=str(cwd))
         cancel=self._cancel_io
         def cancelled():return cancel.is_set() or epoch!=self._control_epoch
         deadline=time.monotonic()+8.
@@ -158,18 +197,18 @@ class AudioProcessBridge(QObject):
             exit_code=self.process.poll()
             reason=('parent_cancelled' if cancelled() else
                     'child_exited_before_handshake' if exit_code is not None else 'parent_handshake_timeout')
-            from ..diagnostics.event_log import emit
-            emit('audio.endpoint.failure', phase=reason, child_pid=self.process.pid,
-                exit_code=exit_code, endpoint_generation=generation,
-                recovery_attempt=self._recovery.attempts)
-            self._retire()
+            pid = self.process.pid
+            stderr = self._retire()
+            if not cancelled():
+                self._report_failure(reason, pid, exit_code, stderr)
             listener.close()
             cleanup_audio_endpoint(address)
             if cancelled():
                 self._recovery.attempts=max(0,self._recovery.attempts-1)
                 self._recovery.next_attempt_at=0.
                 raise InterruptedError('音频准备已取消')
-            raise RuntimeError(result.get('error', f'Audio endpoint {reason}; exit={exit_code}; {self.log_path}'))
+            details = f'（退出码 {exit_code}）' if exit_code is not None else '（连接超时）'
+            raise RuntimeError('Studio 音频端点未能启动' + details + '。请在诊断中查看音频端点日志。')
         if cancelled():
             result['connection'].close()
             self._retire()
@@ -182,6 +221,7 @@ class AudioProcessBridge(QObject):
         cleanup_audio_endpoint(address)
         self._diagnostic('ipc_connected', child_pid=process.pid)
         def receive():
+            failed_decoder = None
             try:
                 while not self._closed and connection is self.connection:
                     try:
@@ -199,6 +239,15 @@ class AudioProcessBridge(QObject):
                     self._last_received_at=time.monotonic()
                     if message.get('kind') == 'telemetry':
                         state = message['payload']
+                        decoder_code = state.get('decoder_returncode')
+                        decoder_pid = state.get('decoder_pid')
+                        if decoder_code not in (None, 0) and (decoder_pid, decoder_code) != failed_decoder:
+                            from ..diagnostics.event_log import emit
+                            failed_decoder = (decoder_pid, decoder_code)
+                            emit('audio.decoder.failure', level='ERROR', result='failed',
+                                 phase='decode_pcm', child_pid=decoder_pid, endpoint_pid=process.pid,
+                                 exit_code=decoder_code, program=str(self.ffmpeg),
+                                 stderr=state.get('decoder_error'))
                         state.setdefault('endpoint_pid', process.pid)
                         state['launcher_pid']=process.pid
                         state['endpoint_backend'] = audio_backend()
@@ -211,7 +260,8 @@ class AudioProcessBridge(QObject):
                     elif message.get('kind') == 'milestone':
                         self._diagnostic(str(message.get('phase', 'worker_progress')), **message.get('payload', {}))
                     elif message.get('kind') == 'ack':
-                        self._sync_timeout=3.
+                        if self._audible_control_pending:
+                            self._sync_timeout = WARM_CONTROL_TIMEOUT_S
                         self._ack_pending=False
                         self.synchronize_complete.emit()
             except (EOFError, OSError, ValueError):
@@ -253,6 +303,7 @@ class AudioProcessBridge(QObject):
                 for layer in [payload,*payload.get('mix_layers',())]:
                     layer['source_ms']=int(layer.get('source_ms',0)+elapsed*float(layer.get('playback_rate',1.))*float(payload.get('transport_rate',1.)))
             self._sent_at=time.monotonic();self._ack_pending=True
+            self._audible_control_pending = bool(payload.get('audible'))
             _send(self.connection, {'kind':'sync','payload':payload})
         except InterruptedError:
             self.synchronize_complete.emit()
@@ -271,6 +322,7 @@ class AudioProcessBridge(QObject):
         if self._closed:return
         self._retire()
         self._recovery.reset()
+        self._sync_timeout = COLD_OUTPUT_TIMEOUT_S
         self._failure_emitted=False
         self._broken=False
 
@@ -297,8 +349,7 @@ class AudioProcessBridge(QObject):
         except (OSError, EOFError):
             pass
         finally:
-            if self.connection is not None: self.connection.close()
-            if self._stderr is not None: self._stderr.close()
+            self._retire()
             QThread.currentThread().quit()
 
 
@@ -313,7 +364,7 @@ def main(args=None):
         faults.before_connect()
     connection = Client(address, family='AF_PIPE' if os.name=='nt' else 'AF_UNIX', authkey=bytes.fromhex(key))
     app = QCoreApplication([])
-    if os.environ.get("TWOBYTEASR_STALL_WATCHDOG", "1").strip() not in {"0", "false", "off"}:
+    if sys.stderr is not None and os.environ.get("TWOBYTEASR_STALL_WATCHDOG", "1").strip() not in {"0", "false", "off"}:
         # The endpoint's Qt thread services sync requests and the sink; a
         # blocked thread delays every pause/seek. Stacks go to this process's
         # own log (stderr = audio-endpoint-*.log), only when it is stuck.

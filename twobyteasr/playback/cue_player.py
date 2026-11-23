@@ -5,7 +5,6 @@ request IDs fence preparation and paused intent fences late auto-starts.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import time
 import weakref
@@ -37,20 +36,24 @@ class _PreviewThread(QThread):
                 pass
 
     def run(self):
-        from ..studio.studio_video_track import ffmpeg_executable
+        from ..system.platform_media import ffmpeg_tool
+        from ..system.processes import popen_hidden_subprocess
+        from ..diagnostics.event_log import emit
+        from .audio_diagnostics import AudioStderr
         started = time.perf_counter()
         row = {"event": "proofread_preview_prepare", **self.plan.diagnostic()}
+        ffmpeg = ffmpeg_tool()
         try:
             # Recognition's 16 kHz mono PCM is analysis input, never audition
             # audio. Interpolating it cannot restore bandwidth or stereo.
-            command, receipts = preview_command(self.plan, ffmpeg_executable(), cancelled=lambda: self._cancelled)
+            command, receipts = preview_command(self.plan, ffmpeg, cancelled=lambda: self._cancelled)
             row.update(layers=self.plan.diagnostic()["layers"],
                        source_clocks={k: {"kind": v.get("kind"), "path": v.get("path")} for k, v in receipts.items()},
                        graph_ready_ms=round((time.perf_counter() - started) * 1000, 2))
             if self._cancelled:
                 raise InterruptedError("superseded")
-            self._process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             creationflags=0x08000000 if os.name == "nt" else 0)
+            self._process = popen_hidden_subprocess(command, purpose='Cue audition PCM decoder',
+                                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             # cancel may race the Popen; do not wait on a superseded decoder.
             if self._cancelled:
                 self.cancel()
@@ -58,7 +61,11 @@ class _PreviewThread(QThread):
             if self._cancelled:
                 raise InterruptedError("superseded")
             if self._process.returncode or not payload:
-                raise PreviewUnavailable(errors.decode("utf-8", "replace").strip()[-240:] or "解码器没有返回声音")
+                collector = AudioStderr()
+                collector.append(errors)
+                row['stderr'] = collector.text()
+                raise PreviewUnavailable("FFmpeg 退出码 " + str(self._process.returncode)
+                                         if self._process.returncode else "解码器没有返回声音")
             row.update(outcome="decoded", source="original_media_graph", format="s16le", sample_rate=48000,
                        channels=2, pcm_frames=len(payload)//4, pcm_bytes=len(payload),
                        elapsed_ms=round((time.perf_counter()-started)*1000, 2))
@@ -69,6 +76,12 @@ class _PreviewThread(QThread):
         except Exception as exc:
             record_preview({**row, "outcome": "failed", "error": str(exc)[:400]})
             if not self._cancelled:
+                process = self._process
+                emit('audio.cue.failure', level='ERROR', result='failed', phase='decode_cue',
+                     request_id=self.request_id, program=str(ffmpeg),
+                     child_pid=process.pid if process is not None else None,
+                     exit_code=process.poll() if process is not None else None,
+                     stderr=row.get('stderr'), error=str(exc))
                 self.failed.emit(self.request_id, f"这一句的音频无法读取：{str(exc)[:240]}")
         finally:
             process = self._process

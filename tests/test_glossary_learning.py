@@ -45,6 +45,24 @@ def test_general_sentence_edits_and_ai_edits_are_not_learned(tmp_path):
     assert not (tmp_path / "learning.json").exists()
 
 
+def test_learning_store_uses_the_selected_user_data_root(tmp_path, monkeypatch):
+    default = tmp_path / "default"
+    isolated = tmp_path / "isolated"
+    monkeypatch.setenv("LOCALAPPDATA", str(default))
+    monkeypatch.delenv("2BYTEASR_USER_DATA_ROOT", raising=False)
+    default_store = GlossaryLearningStore()
+    default_store.record_manual_edit("那维来特", "那维莱特")
+    assert default_store.pending()
+
+    monkeypatch.setenv("2BYTEASR_USER_DATA_ROOT", str(isolated))
+    isolated_store = GlossaryLearningStore()
+    assert isolated_store.path == isolated / "2ByteASR" / "SubtitleStudioPreview" / "glossary-learning.json"
+    assert not isolated_store.pending()
+    isolated_store.record_manual_edit("夏落蒂", "夏洛蒂")
+    assert isolated_store.pending()[0]["corrected_term"] == "夏洛蒂"
+    assert default_store.pending()[0]["corrected_term"] == "那维莱特"
+
+
 def test_ignored_candidate_does_not_resurface(tmp_path):
     store = GlossaryLearningStore(tmp_path / "learning.json", threshold=2)
     store.record_manual_edit("那维来特登场", "那维莱特登场")

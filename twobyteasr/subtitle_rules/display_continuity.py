@@ -76,10 +76,14 @@ def handoff_ends(rows, threshold=MAX_GAP_MS, *, micro=None, full_track=True,
 
 def visible_display_cues(project, cues=None, *, mode=None):
     from ..caption_style.subtitle_visibility import any_layer_visible
+    from ..caption_style.bilingual_layout import settings_from_state
+    mode = mode or settings_from_state(project.studio_state).mode
+    hidden_speakers = getattr(project, 'hidden_speaker_ids', lambda: ())()
     result=[]
     for cue in project.cues if cues is None else cues:
         transform=getattr(cue,'transform',{}) or {}
-        if any_layer_visible(project,cue,mode=mode) and not transform.get('hidden') and transform.get('visible',True):
+        if (not transform.get('hidden') and transform.get('visible', True)
+                and any_layer_visible(project, cue, mode=mode, hidden_speakers=hidden_speakers)):
             result.append(cue)
     return result
 

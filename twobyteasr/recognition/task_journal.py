@@ -256,6 +256,10 @@ class TaskJournal:
                               if k in {"label", "resource", "elapsed_seconds", "error"}})
                 stage["status"] = {"stage_started":"running", "stage_completed":"completed",
                                    "stage_failed":"failed", "stage_cancelled":"cancelled"}.get(kind, "skipped")
+                if kind == "stage_completed" and payload.get("pending_ranges"):
+                    stage.update(status="partial", pending_ranges=public_config(payload["pending_ranges"]))
+                else:
+                    stage.pop("pending_ranges", None)
                 task["current_stage"] = str(stage.get("label") or "")
             if kind=='pipeline_work_progress':
                 work_id=str(payload.get('work_id') or '')
@@ -348,11 +352,11 @@ class TaskJournal:
             if task.get('attempts') and task['attempts'][-1].get('status')=='running':
                 self.record['result']['elapsed_seconds']=task.get('elapsed_seconds',0.)+max(0.,time.time()-task.get('attempt_started_epoch',time.time()))
             task["elapsed_seconds"] = self.record["result"].get("elapsed_seconds",0.)
-            if status in {'interrupted','failed','cancelled'}:
-                for stage in self.record['stages']:
-                    if stage.get('status')=='running':stage['status']=status
-                for work in task.get('work_items',{}).values():
-                    if work.get('state') in {'running','queued','retry'}:work['state']=status
+            stopped = status if status in {'failed','cancelled'} else 'interrupted'
+            for stage in self.record['stages']:
+                if stage.get('status')=='running':stage['status']=stopped
+            for work in task.get('work_items',{}).values():
+                if work.get('state') in {'running','queued','retry'}:work['state']=stopped
             task["last_error"] = error or task.get("last_error", "")
             if results:
                 task["results"] = [asdict(r) for r in results]
@@ -384,10 +388,13 @@ def reconcile(path):
         return row
 
 
-def history_paths(root=None):
+def history_paths(root=None, *, reconcile_records=True):
     base=Path(root or task_root())
     paths=set(base.glob('*/task.json'))|{p.with_name('task.json') for p in base.glob('*/task.previous.json')}
     for path in sorted(paths):
+        if not reconcile_records:
+            yield path
+            continue
         try:
             if not path.is_file():
                 with FileLease(path.parent/'executor.lock'):
@@ -423,6 +430,38 @@ def depends_on(path, references):
                for ref in references)
 
 
+def dependency_matcher(references):
+    """``depends_on`` prepared once for many paths (2026-11-23).
+
+    Storage cleanup asked ``depends_on`` for every cache file, normalizing every
+    reference again each time: tens of thousands of thumbnails times thousands of
+    unfinished-task files kept one core busy for minutes. The references are now
+    normalized once and each path checks only its own folders.
+    """
+    exact = set()
+    folders = set()
+    for ref in references:
+        normalized = os.path.normcase(os.path.abspath(ref))
+        exact.add(normalized)
+        folders.add(normalized.rstrip('\\/'))
+    if not exact:
+        return lambda _path: False
+
+    def matches(path):
+        candidate = os.path.normcase(os.path.abspath(path))
+        if candidate in exact:
+            return True
+        current = candidate
+        while True:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return False
+            current = parent
+            if current.rstrip('\\/') in folders:
+                return True
+    return matches
+
+
 def report_payload(path):
     row = read_record(path)
     if row['status']=='running':
@@ -439,6 +478,46 @@ def report_payload(path):
         except (OSError, ValueError, TypeError):
             pass
     return row
+
+
+def history_report(path, *, cancel=None, summary=False, select_event=None, map_event=None):
+    """Read list metadata or project the selected report for display."""
+    from .report_stream import INLINE_BYTES, ReportCancelled, project_report
+
+    def read(source):
+        if source.stat().st_size > INLINE_BYTES:
+            return project_report(source, cancel=cancel, collect_pages=not summary, select_event=select_event,
+                                  map_event=map_event)
+        return json.loads(source.read_text(encoding="utf-8-sig")), None
+
+    path = Path(path)
+    if path.name != "task.json":
+        return read(path)
+
+    row = reconcile(path) if summary else read_record(path)
+    task = row["task"]
+    if row["status"] == "running":
+        row["result"]["elapsed_seconds"] = task.get("elapsed_seconds", 0.) + max(
+            0., time.time() - task.get("attempt_started_epoch", time.time()))
+    reports = ([task["optional_report"]] if task.get("optional_report") else []) + task.get("reports", [])
+    if summary or not reports:
+        return row, None
+    source = Path(reports[0])
+    try:
+        final, pages = read(source)
+        if isinstance(final, dict) and final.get("job_id") == row["job_id"]:
+            for key in ("result", "review_items", "polishing_summary", "terminology_status", "events"):
+                if key in final:
+                    row[key] = final[key]
+            return row, pages
+    except ReportCancelled:
+        raise
+    except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
+        row["report_read_error"] = "引用的完整报告无法读取；这里显示的是任务记录。"
+        row["report_reference"] = str(source)
+    else:
+        row["report_read_error"] = "引用报告的任务身份不一致；这里显示的是任务记录。"
+    return row, None
 
 
 def record_optional_result(project,report,unit,path):

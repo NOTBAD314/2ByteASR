@@ -541,6 +541,78 @@ class StoragePanel(QWidget):
         self._run(lambda c:(adopt(self.service,items,cancel=c),self.service.scan(c)),adopted)
 
 
+class StorageMaintenanceProcess(QObject):
+    """The window's side of ``maintenance_process`` (2026-11-23).
+
+    The pass itself runs in a helper process. This object tells it whether the
+    app is busy (looked at here, on the GUI thread, each 250 ms) and ends it.
+    """
+    finished = Signal()
+    POLL_MS = 250
+
+    def __init__(self, busy, parent=None):
+        super().__init__(parent)
+        self.busy = busy; self.cancel = threading.Event(); self.process = None; self._sent = None
+        self.timer = QTimer(self); self.timer.setInterval(self.POLL_MS); self.timer.timeout.connect(self._poll)
+
+    def start(self):
+        from .maintenance_process import start_helper
+        self.process = start_helper()
+        self._poll()
+        if self.isRunning():
+            self.timer.start()
+
+    def isRunning(self):
+        return self.process is not None and self.process.poll() is None
+
+    def _send(self, word):
+        try:
+            self.process.stdin.write(word.encode('ascii') + b'\n'); self.process.stdin.flush()
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def _poll(self):
+        if self.process is None:
+            return
+        if self.process.poll() is not None:
+            self.timer.stop(); self.finished.emit(); return
+        if self.cancel.is_set():
+            self.stop(); return
+        try: busy = bool(self.busy())
+        except Exception: busy = True
+        if busy != self._sent and self._send('busy' if busy else 'idle'):
+            self._sent = busy
+
+    def stop(self):
+        """Ask the helper to end; a closed pipe also cancels it. Never waits on the GUI thread."""
+        self.cancel.set(); self.timer.stop()
+        if self.process is None or self.process.poll() is not None:
+            return
+        self._send('stop')
+        try: self.process.stdin.close()
+        except (OSError, ValueError, AttributeError): pass
+        process = self.process
+
+        def reap():
+            try: process.wait(timeout=10)
+            except Exception:
+                try: process.kill()
+                except OSError: pass
+        threading.Thread(target=reap, name='storage-maintenance-reap', daemon=True).start()
+
+
+def _maintenance_busy(owner):
+    """Busy for the helper: ``app_busy`` or any project open in the editor.
+
+    The helper has no view of an open, possibly unsaved project, so it only
+    works while none is open."""
+    if app_busy(owner):
+        return True
+    studio = existing_page(owner, 'studio')
+    return getattr(studio, 'project', None) is not None and not getattr(studio, '_close_requested', False)
+
+
 class IdleStorageMaintenance:
     """Run only after UI readiness, then at most once each six hours, no exit scan.
 
@@ -548,6 +620,7 @@ class IdleStorageMaintenance:
     used to run the whole pass a minute later: on the user's PC ~2 minutes of
     one core inside the GUI process (cache 39 s, walking every runtime file
     81 s, uv 8 s), competing with the window for the GIL.
+    2026-11-23: the pass runs in a helper process (``StorageMaintenanceProcess``).
     """
     STATE='idle-maintenance.json'
     def __init__(self,owner):
@@ -558,7 +631,7 @@ class IdleStorageMaintenance:
         self.last_attempt=None
     def stop(self):
         self.cancel.set();self.timer.stop()
-        if self.worker:self.worker.cancel.set()
+        if self.worker:self.worker.stop()
     def request_soon(self,delay_ms=5000):
         """After a successful install, maintain now instead of within six hours (2026-10-16).
         check() still waits until nothing else runs; the 15-minute timer retries until then."""
@@ -567,11 +640,11 @@ class IdleStorageMaintenance:
         QTimer.singleShot(delay_ms,self.owner,self.check)
     def check(self):
         self.timer.start()
-        if self.cancel.is_set() or app_busy(self.owner):return
+        if self.cancel.is_set() or _maintenance_busy(self.owner):return
         import time
         if self.last_attempt is not None and time.time()-self.last_attempt<6*3600:return
         if self.worker and self.worker.isRunning():return
-        service=StorageService(busy=lambda:self.cancel.is_set() or app_busy(self.owner),media_references=lambda:loaded_media_graph(self.owner))
+        service=StorageService()
         if self.last_attempt is None:
             try:self.last_attempt=float(_read_receipt(service,self.STATE).get('last_attempt') or 0)
             except (TypeError,ValueError,AttributeError):self.last_attempt=0
@@ -581,8 +654,11 @@ class IdleStorageMaintenance:
         self.last_attempt=time.time()
         try:_write_maintenance_receipt(service,self.STATE,dict(last_attempt=self.last_attempt))
         except (OSError,ValueError):pass
-        worker=StorageWorker(lambda cancel:maintain_registered_storage(service,cancel));self.worker=worker
+        worker=StorageMaintenanceProcess(lambda:self.cancel.is_set() or _maintenance_busy(self.owner),self.owner);self.worker=worker
         def finish():
             if self.worker is worker:self.worker=None
             worker.deleteLater()
-        worker.finished.connect(finish);worker.start()
+        worker.finished.connect(finish)
+        try:worker.start()
+        except OSError:
+            self.worker=None;worker.deleteLater()

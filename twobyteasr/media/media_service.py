@@ -139,10 +139,12 @@ class MediaMetadataSnapshot:
     # and identity fingerprints. Container duration is not video duration.
     video_stream_end_ms: float = 0.0
     schema_version: int = MEDIA_METADATA_SCHEMA
+    duration_state: str = 'unknown'
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload.pop("video_stream_end_ms", None)
+        payload.pop("duration_state", None)
         payload.update(
             size=self.source_size,
             mtime_ns=self.source_mtime_ns,
@@ -243,10 +245,9 @@ class MediaService:
         governor: ResourceGovernor | None = None,
         probe_runner: Callable[..., object] | None = None,
     ) -> None:
-        root = Path(__file__).resolve().parents[2]
         from ..system.platform_media import ffmpeg_tool
-        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool("ffprobe", root=root))
-        self.ffmpeg_path = Path(ffmpeg_path or ffmpeg_tool(root=root))
+        self.ffprobe_path = Path(ffprobe_path or ffmpeg_tool("ffprobe"))
+        self.ffmpeg_path = Path(ffmpeg_path or ffmpeg_tool())
         if os.name == "nt":
             default_cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "2ByteASR" / "cache" / "media"
         else:
@@ -310,7 +311,7 @@ class MediaService:
                 source_mtime_ns=identity['mtime_ns'], duration_ms=data['duration_ms'],
                 has_video=True, has_audio=False, video_codec='gif' if source.suffix.lower() == '.gif' else 'image',
                 width=data['width'], height=data['height'], fps=sampling_fps(data),
-                video_timebase='1/1000', video_stream_end_ms=data['duration_ms'],
+                video_timebase='1/1000', video_stream_end_ms=data['duration_ms'], duration_state='known',
                 fingerprint=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest())
         completed = self._probe_runner(
             [
@@ -375,6 +376,13 @@ class MediaService:
         fingerprint = hashlib.sha256(
             json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:20]
+        duration_state = 'known' if core['duration_ms'] > 0 else 'unknown'
+        if duration_state == 'unknown':
+            try:
+                if float(format_info.get('duration')) == 0.0:
+                    duration_state = 'zero'
+            except (TypeError, ValueError):
+                pass
         return MediaMetadataSnapshot(
             source_path=core["path"],
             source_size=core["size"],
@@ -406,6 +414,7 @@ class MediaService:
             audio_streams=probe_audio_streams(streams, container_start_ms),
             video_stream_end_ms=(video_start_ms + _stream_duration_ms(video) - container_start_ms)
             if video and _stream_duration_ms(video) else 0.0,
+            duration_state=duration_state,
         )
 
     def start_proxy(

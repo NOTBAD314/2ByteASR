@@ -61,6 +61,24 @@ def test_search_displays_both_fields_and_visits_every_hit(review):
     assert w.list.find['current'][0]=='stable-source'
 
 
+def test_clear_cancels_pending_literal_search_without_rebuilding_review(review, monkeypatch):
+    w, project = review
+    w._search_aliases = {'规范词': {'ギリギリ'}}
+    w.speaker_filter.setCurrentIndex(w.speaker_filter.findData('A'))
+    w._apply_filter()
+    expected = [w._rows[i]['cue_id'] for i in w.list.visible]
+    monkeypatch.setattr(w, '_groups', lambda *_: pytest.fail('search must not rebuild suggestions'))
+    monkeypatch.setattr(w, '_persist_soon', lambda *_: pytest.fail('search must not write review state'))
+    w.search.setText('规范词')
+    w._apply_search_view()
+    assert {w._rows[i]['group_id'] for i in w.list.visible} == {'stable-source'}
+    w.search.setText('[(' + chr(92))
+    assert w._filter_timer.isActive()
+    w.search.clear()
+    assert not w._filter_timer.isActive()
+    assert [w._rows[i]['cue_id'] for i in w.list.visible] == expected
+
+
 def test_edit_replace_undo_and_bulk_translation_use_their_own_address(review):
     w,p=review
     translated=next(row for row in w._rows if row['target'].storage=='translation' and row['group_id']=='stable-source')

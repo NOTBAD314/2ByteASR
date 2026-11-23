@@ -72,6 +72,7 @@ class StudioLoadingView(QFrame):
         # Studio is ready, fades out over it instead of cutting (design.transitions).
         from ..design.transitions import fade_on_show_and_hide
         fade_on_show_and_hide(self)
+        self.setProperty('enterMotion', True)   # 2026-11-20: shown = a step inside (moves left, grows)
         self._owns_theme_sheet = True
         if self.uses_native_cover:
             # The format is immutable once the native resource exists.

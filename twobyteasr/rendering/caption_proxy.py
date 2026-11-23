@@ -42,7 +42,7 @@ def with_quality(prepared, quality):
 def runtime_digest():
     from ..runtime_paths import detect_install_root
     root = Path(detect_install_root())
-    paths = ['renderer/service.mjs','renderer/src/webThemeMotion.js','renderer/src/webThemeClock.js','renderer/package-lock.json']
+    paths = ['renderer/service.mjs','renderer/src/webThemeMotion.js','renderer/src/webThemeTemplates.js','renderer/src/webThemeClock.js','renderer/package-lock.json']
     h = hashlib.sha256(VERSION.encode())
     for name in paths:
         h.update((root/name).read_bytes())

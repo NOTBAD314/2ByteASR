@@ -76,6 +76,44 @@ def test_badges_keep_their_pill_shape_and_the_close_button_is_round(centre, app)
         centre.hide()
 
 
+# 2026-11-20 (user: the preview was mostly empty space and the card tall and thin).
+def test_the_preview_card_is_landscape_and_has_no_empty_space(centre, app):
+    from PySide6.QtWidgets import QWidget
+    assert (centre.width(), centre.height()) == (980, 620)
+    centre.parentWidget().resize(1400, 900)        # the dialog stays inside its main window
+    centre.show()
+    app.processEvents()
+    try:
+        card, picture = centre.preview_card, centre.picture
+        wide = centre.width() >= 960                    # the offscreen screen is only 800 px wide
+        if wide:
+            assert card.width() > card.height()                               # not tall and thin
+            assert centre._learn_columns == 2 and '<table' in centre.preview_learn.text()
+        inner = card.width() - 32
+        assert abs(picture.height() - round(inner * centre.PICTURE_RATIO)) <= 2   # the still keeps its shape
+        title_top = centre.preview_title.mapTo(card, centre.preview_title.rect().topLeft()).y()
+        assert picture.geometry().bottom() < title_top                         # nothing squeezed under it
+        button_bottom = centre.start_button.mapTo(card, centre.start_button.rect().bottomLeft()).y()
+        assert card.height() - button_bottom <= 24                             # the button ends the card
+        centre.resize(860, 540)
+        app.processEvents()
+        assert centre.picture.geometry().bottom() < centre.preview_title.mapTo(
+            card, centre.preview_title.rect().topLeft()).y()
+        assert isinstance(centre.chapters_page, QWidget)
+    finally:
+        centre.hide()
+
+
+def test_wide_cards_list_the_points_in_two_columns(centre):
+    centre._learn_columns = 2
+    centre._render_learn()
+    text = centre.preview_learn.text()
+    assert '<table' in text and text.count('<tr>') == 2 and '1.</span>' in text and '4.</span>' in text
+    centre._learn_columns = 1
+    centre._render_learn()
+    assert '<table' not in centre.preview_learn.text()
+
+
 def test_the_picked_row_is_highlighted_under_the_halo_not_over_it(centre):
     sheet = centre.styleSheet()
     assert 'QPushButton#chapterRow:checked' in sheet and 'background: transparent' in sheet.split('QPushButton#chapterRow', 1)[1][:260]

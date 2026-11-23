@@ -45,10 +45,105 @@
       node.replaceChildren(fragment);
     }
   }
+  // Per-cue marks (Markdown bold, highlight, strike, heading, colour) written by
+  // the user or by AI 生动标记. The host sends ranges with the cue's own text;
+  // this only groups the characters that are already there and never adds one.
+  // Bold and highlight join the theme's own emphasis (.wt-focus), so every theme
+  // that designed an emphasis shows them in its own language. The rules below have
+  // no specificity: any rule a theme writes for these classes wins.
+  const MARK_CLASSES=new Set(['wt-b','wt-i','wt-hl','wt-s','wt-h1','wt-h2','wt-h3','wt-h4','wt-h5','wt-h6']);
+  const MARK_DEFAULTS=':where(.wt-mark.wt-b){font-weight:bolder}:where(.wt-mark.wt-i){font-style:italic}'
+    +':where(.wt-mark.wt-h1){font-size:1.6em}:where(.wt-mark.wt-h2){font-size:1.4em}:where(.wt-mark.wt-h3){font-size:1.25em}'
+    +':where(.wt-mark.wt-h4){font-size:1.12em}:where(.wt-mark.wt-h5){font-size:.9em}:where(.wt-mark.wt-h6){font-size:.78em}'
+    +':where(.wt-focus-plain),:where(.wt-focus-plain .wt-w){text-decoration:underline;text-decoration-thickness:.07em;text-underline-offset:.16em}'
+    +':where(.wt-focus-plain .wt-hl){box-shadow:inset 0 -.42em 0 rgba(255,221,87,.6)}'
+    // A bar in the glyphs' own colour disappears into Chinese strokes.
+    +':where(.wt-mark.wt-s),:where(.wt-mark.wt-s .wt-w){text-decoration:line-through;text-decoration-color:#FF4D6D;text-decoration-thickness:.09em}';
+  function prepareMarks(root) {
+    let touched=false;
+    for(const node of root.querySelectorAll('[data-caption-text][data-cue-marks]')){
+      let marks;
+      try{marks=JSON.parse(node.getAttribute('data-cue-marks'));}catch(error){continue;}
+      if(!Array.isArray(marks)||!marks.length)continue;
+      // One leaf per character, in reading order, keeping the host's nodes.
+      const leaves=[];
+      const walk=(parent,focus)=>{
+        for(const child of Array.from(parent.childNodes)){
+          if(child.nodeType===3){for(const char of Array.from(child.textContent))leaves.push({node:document.createTextNode(char),focus});}
+          else if(child.nodeType===1&&child.matches('.wt-w'))leaves.push({node:child,focus});
+          else if(child.nodeType===1)walk(child,focus||child.matches('.wt-focus'));
+        }
+      };
+      walk(node,false);
+      const attrs=leaves.map(()=>null);
+      for(const mark of marks){
+        if(!Array.isArray(mark))continue;
+        const classes=String(mark[2]||'').split(' ').filter(name=>MARK_CLASSES.has(name));
+        const color=/^#[0-9a-fA-F]{6}$/.test(mark[3]||'')?mark[3]:'';
+        const font=/^[\w \-぀-ヿ一-鿿]{1,60}$/.test(mark[4]||'')?mark[4]:'';
+        if(!classes.length&&!color&&!font)continue;
+        for(let i=Math.max(0,mark[0]|0);i<Math.min(leaves.length,mark[1]|0);i++){
+          const row=attrs[i]||(attrs[i]={classes:new Set(),color:'',font:''});
+          classes.forEach(name=>row.classes.add(name));
+          if(color)row.color=color;
+          if(font)row.font=font;
+        }
+      }
+      if(!attrs.some(Boolean))continue;
+      const names=i=>Array.from(attrs[i].classes).sort().join(' ');
+      const signature=i=>attrs[i]?names(i)+'|'+attrs[i].color+'|'+attrs[i].font:'';
+      const focused=i=>leaves[i].focus||Boolean(attrs[i]&&(attrs[i].classes.has('wt-b')||attrs[i].classes.has('wt-hl')));
+      const rebuilt=document.createDocumentFragment();
+      for(let i=0;i<leaves.length;){
+        const focus=focused(i);
+        const group=focus?document.createElement('span'):rebuilt;
+        let j=i,themed=false;
+        while(j<leaves.length&&focused(j)===focus){
+          const key=signature(j);
+          let target=group;
+          if(key){
+            target=document.createElement('span');target.className=('wt-mark '+names(j)).trim();
+            if(attrs[j].color){target.style.color=attrs[j].color;target.style.webkitTextFillColor=attrs[j].color;}
+            if(attrs[j].font)target.style.fontFamily=JSON.stringify(attrs[j].font);
+            group.appendChild(target);
+          }
+          for(;j<leaves.length&&focused(j)===focus&&signature(j)===key;j++){themed=themed||leaves[j].focus;target.appendChild(leaves[j].node);}
+        }
+        if(focus){group.className=themed?'wt-focus':'wt-focus wt-focus-mark';rebuilt.appendChild(group);}
+        i=j;
+      }
+      node.replaceChildren(rebuilt);node.normalize();touched=true;
+    }
+    if(!touched)return;
+    const document_=root.ownerDocument;
+    if(!document_.getElementById('wt-mark-defaults')){
+      const style=document_.createElement('style');style.id='wt-mark-defaults';style.textContent=MARK_DEFAULTS;
+      document_.head.appendChild(style);
+    }
+    // A theme without an emphasis of its own still has to show the mark.
+    const shown=['color','fontSize','fontFamily','backgroundImage','backgroundColor','textShadow','webkitTextStrokeWidth',
+      'webkitTextFillColor','filter','transform','borderBottomWidth','boxShadow','display','letterSpacing'];
+    for(const group of root.querySelectorAll('.wt-focus-mark')){
+      group.classList.remove('wt-focus-plain');
+      const probe=document_.createElement('span');group.parentElement.appendChild(probe);
+      const own=getComputedStyle(group),plain=getComputedStyle(probe);
+      let designed=shown.some(name=>own[name]!==plain[name])
+        ||getComputedStyle(group,'::before').content!=='none'||getComputedStyle(group,'::after').content!=='none';
+      const letter=group.querySelector('.wt-w');
+      if(!designed&&letter){
+        const twin=document_.createElement('span');twin.className='wt-w';probe.appendChild(twin);
+        const inside=getComputedStyle(letter),outside=getComputedStyle(twin);
+        designed=['color','backgroundImage','textShadow','webkitTextFillColor'].some(name=>inside[name]!==outside[name])
+          ||getComputedStyle(letter,'::after').content!=='none'||getComputedStyle(letter,'::before').content!=='none';
+      }
+      probe.remove();
+      if(!designed)group.classList.add('wt-focus-plain');
+    }
+  }
   function prepareCaptionPunctuation(root) {
     // Opt in only the new host components. A closing mark stays with its
     // preceding glyph, while both original .wt-w animation targets survive.
-    for(const node of root.querySelectorAll('.cap-type [data-caption-text], .cap-type .wt-focus, .bui-copy [data-caption-text], .bui-copy .wt-focus')){
+    for(const node of root.querySelectorAll('.cap-type [data-caption-text], .cap-type .wt-focus, .cap-type .wt-mark, .bui-copy [data-caption-text], .bui-copy .wt-focus, .vhs-type [data-caption-text], .vhs-type .wt-focus, .vhs-type .wt-mark, .hud-type [data-caption-text], .hud-type .wt-focus, .hud-type .wt-mark')){
       for(const child of Array.from(node.children)){
         if(!child.matches('.wt-w')||! /^[，。！？、；：,.!?;:）】》」』”’]+$/.test(child.textContent))continue;
         const previous=child.previousSibling;
@@ -71,6 +166,7 @@
     if(prior&&prior.first===first)return prior.promise;
     root.style.visibility='hidden';
     prepareEmphasis(root);
+    prepareMarks(root);
     prepareCaptionPunctuation(root);
     const promise=(async()=>{
       root.getBoundingClientRect();

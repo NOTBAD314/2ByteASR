@@ -280,38 +280,31 @@ def test_page_parts_follow_the_widgets_rows_and_leave_the_sidebar(app):
         stack.deleteLater()
 
 
-def test_the_new_page_slides_in_from_the_side_and_the_sidebar_stays(app, window):
-    from PySide6.QtCore import QRect
+def test_the_entire_page_slides_as_one_surface(app, window):
     from PySide6.QtGui import QColor, QImage
-    from twobyteasr.design import motion_tokens as tokens, transitions
+    from twobyteasr.design import transitions
     hold = transitions.PageHold(window.pages, _picture('#ff0000'), wait=False)
     hold.new = _picture('#0000ff')
-    keep = QRect(0, 0, 120, hold.height())
-    hold.choreo = transitions.PageMotion(1, keep=keep, parts=[QRect(200, 40, 300, 120)], background=QColor('#101010'))
+    hold.choreo = transitions.PageMotion(1, axis='y', background=QColor('#101010'))
     hold.choreo.prepare(hold)
     hold.phase = 'fade'
 
     def frame(ms):
         hold._elapsed = ms / 1000
         image = QImage(hold.size(), QImage.Format.Format_RGB32)
-        image.fill(QColor('#000000'))
         hold.render(image)
         return image
 
     start = frame(0)
-    assert start.pixelColor(60, 200).blue() == 255                    # the kept sidebar is the new one at once
-    assert start.pixelColor(400, 300).red() == 255                    # the rest is still the old page
-    middle = frame(tokens.PAGE_SLIDE_OLD.ms)
-    assert middle.pixelColor(400, 300).red() < 40                     # the old page has gone by now
+    assert start.pixelColor(60, 200).red() == start.pixelColor(400, 200).red() == 255
+    mid = frame(hold.choreo.total_ms * .4)
+    assert mid.pixelColor(60, 200) == mid.pixelColor(400, 200)
+    assert mid.pixelColor(60, 1) == mid.pixelColor(400, 1)
+    assert mid.pixelColor(60, 1).red() == 255
+    assert mid.pixelColor(60, 200).blue() == 255
+    assert mid.pixelColor(60, 200).red() == 0
     end = frame(hold.choreo.total_ms)
-    assert end.pixelColor(400, 300).blue() == 255 and end.pixelColor(250, 100).blue() == 255
-    assert hold.choreo.total_ms < 1200
-    # Further down the navigation the new page comes from the right; up it, from the left.
-    early = tokens.PAGE_SLIDE_DELAY_MS + 30
-    assert hold.choreo._arrival(tokens.PAGE_SLIDE_DELAY_MS, early)[0] > 0
-    back = transitions.PageMotion(-1, parts=[])
-    back.prepare(hold)
-    assert back._arrival(tokens.PAGE_SLIDE_DELAY_MS, early)[0] < 0
+    assert end.pixelColor(400, 300).blue() == end.pixelColor(60, 100).blue() == 255
     hold.finish()
 
 

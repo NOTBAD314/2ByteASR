@@ -60,6 +60,17 @@ def main(output_directory, fixture):
 
                 def complete(messages, **options):
                     body = json.loads(messages[1]["content"])
+                    if "windows" in body:
+                        round_number = body["round"]
+                        answers = []
+                        for window in body["windows"]:
+                            canned = shard.get("quality_replies", {}).get(window["source_text"], [])
+                            cuts = canned[round_number - 1] if round_number <= len(canned) else window["current_boundaries"]
+                            requests.append(dict(shard=shard["id"], batch=options.get("batch_index"),
+                                                 source_text=window["source_text"], retry=True, round=round_number,
+                                                 marked_text=window.get("marked_text"), reply=cuts))
+                            answers.append(dict(id=window["id"], boundaries=cuts))
+                        return json.dumps(dict(windows=answers))
                     requests.append(dict(shard=shard["id"], batch=options.get("batch_index"),
                                          source_text=body["source_text"], retry="failed_constraints" in body))
                     if "failed_constraints" in body:
@@ -159,7 +170,7 @@ def main(output_directory, fixture):
                     item in context.review_items for item in fixture.get("delivery_reviews", []))
                 serialized = core.serialize_cues(cues)
                 result = dict(passed=all(checks.values()), checks=checks, events=events, requests=requests,
-                    real_provider_requests=0, quality_retry_candidates="deterministic offline baseline echo",
+                    real_provider_requests=0, quality_retry_candidates="deterministic offline fixture replies or echo",
                     quality_version=QUALITY_VERSION, identity=load_build_identity().to_dict(),
                     source_segments=len(sources), final_cues=serialized, project=str(output/"replay.2byteproj"),
                     review_items=context.review_items, review_counts=dict(Counter(item["category"] for item in context.review_items)),

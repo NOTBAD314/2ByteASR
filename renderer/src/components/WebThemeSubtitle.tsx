@@ -3,6 +3,7 @@ import {AbsoluteFill, cancelRender, continueRender, delayRender} from 'remotion'
 import {gsap as themeGsap} from 'gsap';
 import {bundledThemeFontCss, cssFontStack} from '../webThemeFonts';
 import '../webThemeMotion.js';
+import '../webThemeTemplates.js';
 import '../webThemeClock.js';
 (globalThis as any).gsap=themeGsap;
 
@@ -66,9 +67,19 @@ const substitutePlaceholders = (
   speaker: string,
   translation = '',
 ): string => {
+  // The cue's own marks follow the text (web_theme_marks.py); webThemeClock.js groups the characters.
+  const cut = text.indexOf('\u0001');
+  let cueMarks = '';
+  if (cut >= 0) {
+    const raw = text.slice(cut + 1);
+    try {
+      if (JSON.parse(raw).length) cueMarks = ` data-cue-marks="${escapeHtml(raw).replace(/"/g, '&quot;')}"`;
+    } catch (error) { /* a malformed suffix is dropped, never shown */ }
+    text = text.slice(0, cut);
+  }
   text=text.replace(/\r\n|[\r\u2028\u2029]/g,'\n');
-  const escapedText = `<span data-caption-text="true">${escapeHtml(text)}</span>`;
-  const words = '<span data-caption-text="true">'+Array.from(text)
+  const escapedText = `<span data-caption-text="true"${cueMarks}>${escapeHtml(text)}</span>`;
+  const words = `<span data-caption-text="true"${cueMarks}>`+Array.from(text)
     .map((char) => (/\s/.test(char) ? char : `<span class="wt-w">${escapeHtml(char)}</span>`))
     .join('')+'</span>';
   const escapedSpeaker = escapeHtml(speaker);

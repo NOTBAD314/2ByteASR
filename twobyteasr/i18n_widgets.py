@@ -184,8 +184,11 @@ def apply_steps(root, language, *, visible_only=False):
             property_text(obj, "title", obj.title(), obj.setTitle)
         for prop in ('informativeText', 'detailedText'):
             getter = getattr(obj, prop, None)
-            if callable(getter):
-                property_text(obj, prop, getter(), getattr(obj, 'set'+prop[0].upper()+prop[1:]))
+            # 2026-11-22: SaveChangesDialog keeps QMessageBox's informativeText() but has no setter;
+            # the language pass raised on it every time and left the prompt hanging (bunny eval run).
+            setter = getattr(obj, 'set'+prop[0].upper()+prop[1:], None)
+            if callable(getter) and callable(setter):
+                property_text(obj, prop, getter(), setter)
         if isinstance(obj, QWidget):
             for prop in ("toolTip", "statusTip", "whatsThis", "accessibleName", "accessibleDescription", "windowTitle"):
                 value = getattr(obj, prop)()

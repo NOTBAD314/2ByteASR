@@ -25,7 +25,7 @@ def test_all_web_font_faces_are_in_contract():
     root=Path(__file__).resolve().parents[1]
     required=set(re.findall(r"\['([^']+\.(?:ttf|otf|woff2))'",(root/'renderer/src/webThemeFonts.ts').read_text('utf8')))
     pinned={item['file'] for item in json.loads((root/'packaging/renderer_fonts.json').read_text('utf8'))['fonts']}
-    assert len(required)==7 and required<=pinned
+    assert len(required)==8 and required<=pinned
     module.validate_renderer_fonts(root)
 
 def test_font_contract_is_distributed():

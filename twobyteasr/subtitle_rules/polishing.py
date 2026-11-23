@@ -484,6 +484,19 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
                             or original[start:end] != edit['from']):
                         quote = edit['from']
                         positions = [match.start() for match in re.finditer('(?=' + re.escape(quote) + ')', original)] if quote else []
+                        if quote and edit.get('to') == quote:
+                            # A no-op suggestion (钓饵→钓饵) changes nothing; it is
+                            # not a reason to drop the whole cue (2026-11-22).
+                            continue
+                        if len(positions) > 1 and type(start) is int:
+                            # The quote occurs more than once and the given offset
+                            # missed by a character or two (炸糖 at 6 for 8, at 11
+                            # for 12): the nearest occurrence is the intended one
+                            # when it is within two characters and clearly nearer
+                            # than any other (va va: 2 is not clearly 0 or 3).
+                            distance = sorted((abs(position - start), position) for position in positions)
+                            if distance[0][0] <= 2 and distance[1][0] > 2 * distance[0][0]:
+                                positions = [distance[0][1]]
                         if len(positions) == 1:
                             # The quoted source is authoritative only when it
                             # identifies exactly one span. Local correction
@@ -2103,9 +2116,12 @@ def retry_failed_polish(segments, media_title, previous_summary, cache_context=N
 
 # 2026-11-16: "the model did not answer in the contract" failures. A semantic rejection
 # (the model answered and was wrong) is never resent; neither are auth/quota/HTTP 4xx failures.
+# 2026-11-22 (user: AI only): a cue whose answer failed validation (a quote that
+# no longer locates, overlapping edits) is asked again in the same round.
 POLISH_ESCALATION_CATEGORIES = frozenset({
     'structured_json_parse_error', 'structured_schema_error', 'structured_output', 'structured_output_schema',
-    'structured_empty_response', 'structured_output_truncated', 'structured_output_truncated_before_answer'})
+    'structured_empty_response', 'structured_output_truncated', 'structured_output_truncated_before_answer',
+    'semantic_validation'})
 
 
 def _escalate_failed_polish(jobs, results, segments, *, glossary, media_title, project_context,
@@ -2543,6 +2559,13 @@ def polish_subtitles(segments, media_title, cache_context=None):
                     'applied_before_word_remapping': True,
                     'acoustic_verified_spelling': False}
         if segment.text != formatted:
+            if segment.text.casefold() != formatted.casefold():
+                segment.caption_arbitration.setdefault("before_polish_word_timing", {
+                    "text": segment.text,
+                    "words": [{"text": word.text, "start": word.start, "end": word.end}
+                              for word in segment.words],
+                    "provenance": copy.deepcopy(segment.caption_arbitration.get("word_timing", {})),
+                })
             segment.words = remap_words(segment.text, formatted, segment.words,
                 segment.start, segment.end, segment.confidence)
             if segment.text.casefold() != formatted.casefold():
@@ -2569,16 +2592,30 @@ def polish_subtitles(segments, media_title, cache_context=None):
             final_text=formatted, final_filter_changed=polished_by_id.get(segment.segment_id) != receipt.get('validated_text', formatted))
         normalized_segments.append(segment)
     normalized_segments = apply_final_segment_boundary_dedup(apply_to_segments(normalized_segments, term_snapshot))
+    # 2026-11-22 (user: typos fixed by AI without human edits): term edits the
+    # safety rule rejected for lack of a second recognizer get a blind
+    # two-order check by the same model; winners are applied.
+    if snapshot is not None:
+        from .correction_verification import verify_rejected_edits
+        verify_rejected_edits(normalized_segments, snapshot, domain=get_runtime_context().game_name or '',
+            record=record_run_event,
+            cancel_check=lambda: bool(getattr(get_runtime_context().cancellation_token, 'is_cancelled', False)))
     from ..glossary.terminology_retrieval import pending_identifier_suggestions
+    from ..glossary.terminology_support import unresolved_recall_gaps
+    from .polish_disposition import disposition, summarize_dispositions, unresolved_edit
+    from hashlib import sha256
     for segment in normalized_segments:
         receipt = segment.caption_arbitration['terminology_polish']
         receipt['final_text'] = segment.final_text = segment.text
+        receipt['initial_validated_text'] = receipt.get('validated_text', receipt.get('input_text', segment.text))
+        receipt['validated_text'] = segment.text
+        receipt['final_text_sha256'] = sha256(segment.text.encode("utf-8")).hexdigest()
         pending = pending_identifier_suggestions(segment.text, receipt.get('sent_candidates', ()), segment.segment_id)
         receipt['candidate_usage'] = {'accepted_targets': list(dict.fromkeys(
             x['to'] for x in receipt.get('accepted_edits', ()) if x.get('terminology_evidence'))),
             'unresolved_candidates': pending, 'acoustic_verified': False}
-        gaps = receipt.get('recall_gaps', ())
-        receipt['candidate_usage']['unresolved_recall_gaps'] = list(gaps)
+        gaps = unresolved_recall_gaps(receipt, segment.segment_id, segment.text)
+        receipt['candidate_usage']['unresolved_recall_gaps'] = gaps
         receipt['quality_state'] = 'term_review_needed' if pending or gaps else 'checked_no_pending_identifier_suggestions'
         if receipt.get('unreviewed_suspects') or receipt.get('new_suspects') or any(row['disposition'] in ('review', 'missing_candidate') or row.get('validation_state') == 'invalid'
                 for row in receipt.get('suspect_results', ())):
@@ -2587,6 +2624,10 @@ def polish_subtitles(segments, media_title, cache_context=None):
         if receipt['rejected_edit_count']:
             receipt.update(quality_state='rejected_proposal_diagnostic',
                 review_reason='model_edits_rejected_by_local_safety; original retained; no acoustic verification')
+        receipt["disposition"] = disposition(receipt, processed=segment.segment_id in adjudicated_ids)
+        receipt["input_sha256"] = sha256(baseline_by_id[segment.segment_id].encode("utf-8")).hexdigest()
+        receipt["source_seconds"] = [segment.start, segment.end]
+        receipt["pending_rejected_edit_count"] = sum(unresolved_edit(row) for row in receipt.get("rejected_edits", ()))
         if pending:
             add_review_item(segment.start, '术语候选待确认',
                 '校对调用已完成，但近形专名候选尚未采用；请结合上下文或原音确认。',
@@ -2616,6 +2657,8 @@ def polish_subtitles(segments, media_title, cache_context=None):
         failure_records={cue_id: category for index in range(1, len(jobs)+1)
                          for cue_id, category in getattr(results[index], 'failures', {}).items()},
         retry_action='retry_failed_polish',retry_reuses_successful_batches=True)
+    summary["disposition_counts"] = summarize_dispositions(
+        segment.caption_arbitration["terminology_polish"] for segment in normalized_segments)
     summary['term_context'] = {'snapshot_digest': term_snapshot.digest,
         'scanned_segments': len(segments),
         'retrieved': sum(len(x.caption_arbitration.get('terminology_polish', {}).get('retrieved_candidates', ())) for x in segments),
@@ -2628,7 +2671,8 @@ def polish_subtitles(segments, media_title, cache_context=None):
         'recall_gap_cues': sum(bool(x.caption_arbitration.get('terminology_polish', {})
             .get('candidate_usage', {}).get('unresolved_recall_gaps')) for x in segments),
         'rejected_edits': sum(len(x.caption_arbitration.get('terminology_polish', {}).get('rejected_edits', ())) for x in segments),
-        'pending_rejected_edit_cues': 0,
+        'pending_rejected_edit_cues': sum(bool(segment.caption_arbitration["terminology_polish"].get(
+            "pending_rejected_edit_count")) for segment in normalized_segments),
         'unreviewed_suspects': sum(len(x.caption_arbitration.get('terminology_polish', {}).get('unreviewed_suspects', ())) for x in segments),
         'invalid_new_suspect_rows': sum(row.get('validation_state') == 'invalid' for segment in segments
             for row in segment.caption_arbitration.get('terminology_polish', {}).get('new_suspects', ())),

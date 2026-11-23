@@ -383,3 +383,69 @@ def test_pending_studio_reload_retry_accepts_later_proofreading(tmp_path, owned_
     save_project(other, path)
     with pytest.raises((RecognitionResultMismatch, ValueError)):
         verify_result_reference(retry_ref, project_path=path)
+
+
+def studio_run_result(tmp_path, monkeypatch, job="studio-job"):
+    """A recognition started in the Studio: it hears the rendered timeline.wav
+    and writes an independent result next to the open project."""
+    import twobyteasr.projects.studio_project as storage
+    from twobyteasr.recognition.recognition_input import capture_recognition_snapshot
+    monkeypatch.setattr(storage, "studio_settings_path", lambda *a, **k: tmp_path / "studio_settings.json")
+    source = media(tmp_path, "我的直播.wav")
+    studio_path = Path(create(source, "home-job")["project"])
+    snapshot = capture_recognition_snapshot(load_project(studio_path), str(studio_path))
+    for path, identity in snapshot["sources"].items():
+        identity["sha256"] = media_identity_for_task(path, RuntimeContext())["sha256"]
+    rendered = media(tmp_path, "cache/timeline-inputs/x/timeline.wav")
+    identity = media_identity_for_task(rendered, RuntimeContext())
+    identity["fingerprint"] = snapshot["fingerprint"]
+    target = studio_path.parent / "recognition-results" / job / "识别结果.2byteproj"
+    result = create_studio_outputs(rendered, cues("工作台识别"), txt_path="", target_project_path=str(target),
+        generation_metadata={"job_id": job, "media_identity": identity}, recognition_snapshot=snapshot)
+    return source, studio_path, snapshot, result
+
+
+def test_studio_run_result_is_listed_under_its_project_not_timeline(tmp_path, owned_library, monkeypatch):
+    """2026-11-20 (user): after recognizing in the Studio the project was called
+    "timeline" - the library took the rendered timeline.wav input's name."""
+    from twobyteasr.projects.project_display_name import display_project_name
+    source, studio_path, _, result = studio_run_result(tmp_path, monkeypatch)
+    record, = [r for r in json.loads((tmp_path / "studio_settings.json").read_text("utf8"))["recent_projects"]
+               if r["path"] == str(Path(result["project"]).resolve())]
+    assert record["source_media"] == str(source.resolve())
+    assert record["name"] == f"{studio_path.stem} · 识别结果"
+    assert record["name_origin"] == {"kind": "recognition_result", "parent": studio_path.stem}
+    assert "timeline" not in display_project_name(record, read=False)
+    assert "timeline" not in display_project_name(record)
+
+
+def test_studio_run_result_opens_after_open_time_preparation(tmp_path, owned_library, monkeypatch):
+    """2026-11-20 (user): 识别完 → 无法打开项目 工程字幕数量或文本时间摘要与已保存
+    结果不一致. Opening prepares the document (display handoffs trim an
+    overlapping tail) before the readiness gate checks it; the Studio handoff
+    must check identity, as the completion page does, not the delivered digest."""
+    from twobyteasr.app.ui import MainWindow
+    from twobyteasr.recognition.recognition_input import project_content_revision
+    from twobyteasr.recognition.recognition_result import WORKING_SCOPE
+    _, studio_path, snapshot, result = studio_run_result(tmp_path, monkeypatch)
+    path = Path(result["project"])
+    opened = load_project(path)
+    opened.cues[0].end_ms -= 120  # what an open-time display handoff does
+    with pytest.raises(RecognitionResultMismatch, match="文本时间摘要"):
+        verify_result_reference(result["result_ref_json"], project=opened, project_path=path)
+    calls = []
+    current = SimpleNamespace(project_id=snapshot["project_id"], to_dict=lambda: {})
+    snapshot["project_revision"] = project_content_revision({})
+    studio = SimpleNamespace(project=current, note_recognition_kept_in_memory=lambda: None)
+    window = SimpleNamespace(studio_page=studio, _studio_recognition_context={"snapshot": snapshot},
+                             open_studio_project=lambda *a, **k: calls.append((a, k)))
+    MainWindow._finish_studio_recognition(window, str(path), result["result_ref_json"])
+    (args, kwargs), = calls
+    assert args == (str(path),) and kwargs["source"] == "studio_recognition"
+    ref = kwargs["expected_result_ref"]
+    assert json.loads(ref)["scope"] == WORKING_SCOPE
+    assert verify_result_reference(ref, project=opened, project_path=path) is opened
+    # Identity still holds: another project at the result path is refused.
+    opened.project_id = "someone-else"
+    with pytest.raises(RecognitionResultMismatch):
+        verify_result_reference(ref, project=opened, project_path=path)

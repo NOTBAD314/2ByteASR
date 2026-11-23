@@ -1860,6 +1860,8 @@ class SubtitleStudioPage(
             self._open_caption_editor()
         else:
             self._edit_subtitle_at_playhead()
+        # 2026-11-20 (user): E opens the card ready to type - caret in the box.
+        self._focus_caption_text()
         return True
 
     def _edit_selected_translation(self) -> bool:
@@ -3054,37 +3056,15 @@ class SubtitleStudioPage(
             self._last_context_tab = int(index)
 
     def _show_context_panel(self) -> None:
-        """Open the tool panel now (code paths that use it right after rely on that)."""
-        self._context_sliding = False
+        """Open the tool panel now for callers that use it immediately."""
+        from ..design.transitions import stop_panel_motion
+        stop_panel_motion(self.context_panel)
         self._show_context_panel_now(reveal=False)
 
     def _show_context_panel_animated(self) -> None:
-        # 2026-11-18 evening (user: the tool panel should fold to the right, not fade): when the
-        # user opens it, its picture, rendered at its final width, slides in from the right edge and
-        # the real panel takes over when it lands (design.transitions.slide_panel_in).
-        if not self.context_panel.isVisible() and not getattr(self, '_context_sliding', False):
-            from ..design.transitions import slide_panel_in
-            width = self.context_panel.width()
-            if width < 370:
-                total = max(1110, sum(self.upper_splitter.sizes()))
-                width = min(430, max(380, round(total * 0.22)))
-            splitter = self.upper_splitter
-            target = QRect(splitter.width() - width, 0, width, splitter.height())
-            self.context_drawer.setCurrentIndex(self._last_context_tab)
-
-            def land():
-                from shiboken6 import isValid
-                if not isValid(self) or not getattr(self, '_context_sliding', False):
-                    return                 # opened or closed some other way meanwhile
-                self._context_sliding = False
-                if self.context_expand_button.isChecked():
-                    self._show_context_panel_now(reveal=False)
-            self._context_sliding = True
-            if slide_panel_in(self.context_panel, target, 'right', land):
-                self._mark_context_shown()
-                return
-            self._context_sliding = False
-        self._show_context_panel_now(reveal=False)
+        from ..design.transitions import transfer_panel_visibility
+        transfer_panel_visibility(self.context_panel, 'right', True, self._show_context_panel_now)
+        self._mark_context_shown()
 
     def _mark_context_shown(self) -> None:
         self.context_expand_button.setChecked(True)
@@ -3111,14 +3091,16 @@ class SubtitleStudioPage(
             context = min(430, max(380, round(total * 0.22)))
             self.upper_splitter.setSizes([left, max(420, total - left - context), context])
         from ..design.ui_motion import reveal_cue
-        if was_hidden and getattr(self, '_project_view_state', '') == 'open':
+        if reveal and was_hidden and getattr(self, '_project_view_state', '') == 'open':
             reveal_cue(self.context_panel)
 
-    def _collapse_context_panel(self) -> None:
-        self._context_sliding = False
-        from ..design.transitions import panel_slide_out
-        with panel_slide_out(self.context_panel, 'right'):   # its picture folds away to the right
-            self._last_context_tab = self.context_drawer.currentIndex()
+    def _collapse_context_panel(self, animate: bool = True) -> None:
+        from ..design.transitions import stop_panel_motion, transfer_panel_visibility
+        self._last_context_tab = self.context_drawer.currentIndex()
+        if animate:
+            transfer_panel_visibility(self.context_panel, 'right', False, self.context_panel.hide)
+        else:
+            stop_panel_motion(self.context_panel)
             self.context_panel.hide()
         self.context_expand_button.setChecked(False)
         action = getattr(self, "workspace_actions", {}).get("context")
@@ -3208,28 +3190,18 @@ class SubtitleStudioPage(
         """Show or hide a major panel now; ``animate`` (the user's own toggles) slides it."""
         visible = bool(visible)
         if panel == "cue_list":
-            # 2026-11-18 evening (user: the subtitle list folds to the left): slides out to the left
-            # and in from it (see the context panel). Code paths get it at once.
-            from ..design.transitions import panel_slide_out, slide_panel_in
-            was_visible = self.source_tabs.isVisible()
-            if not animate:
-                self.source_tabs.setVisible(visible)
-            elif visible and not was_visible:
-                width = max(380, self.source_tabs.width())
-                target = QRect(0, 0, width, self.upper_splitter.height())
-                if not slide_panel_in(self.source_tabs, target, 'left',
-                                      lambda: self.source_tabs.setVisible(
-                                          bool(self.cue_list_toggle_button.isChecked())
-                                          if hasattr(self, 'cue_list_toggle_button') else True)):
-                    self.source_tabs.setVisible(True)
+            from ..design.transitions import stop_panel_motion, transfer_panel_visibility
+            if animate:
+                transfer_panel_visibility(self.source_tabs, 'left', visible,
+                                          lambda: self.source_tabs.setVisible(visible))
             else:
-                with panel_slide_out(self.source_tabs, 'left') if was_visible and not visible else _no_change():
-                    self.source_tabs.setVisible(visible)
+                stop_panel_motion(self.source_tabs)
+                self.source_tabs.setVisible(visible)
         elif panel == "context":
             if visible:
                 self._show_context_panel_animated() if animate else self._show_context_panel()
             else:
-                self._collapse_context_panel()
+                self._collapse_context_panel(animate)
         action = self.workspace_actions.get(panel)
         if action is not None and action.isChecked() != visible:
             action.blockSignals(True)
@@ -3389,7 +3361,7 @@ class SubtitleStudioPage(
         # One risk table and QC result for the whole pass (per-cue lookups
         # rebuilt the table each time: O(n^2), ~0.5 s per edit at 3000 cues).
         from ..subtitle_rules.studio_review import cached_review_risks
-        risks = cached_review_risks(self.project)
+        risks = cached_review_risks(self.project, refresh=False)
         qc_result = cached_qc_result(self.project)
         for cue in counted_cues:
             status = _cue_status(self.project, cue, risks)
@@ -3399,11 +3371,16 @@ class SubtitleStudioPage(
             if _cue_review_level(self.project, cue, risks) == "high":
                 counts["critical"] += 1
         captions = {"all": "全部", "priority": "建议确认", "critical": "需要检查", "pending": "未审核", "issue": "有问题", "done": "已处理"}
-        from ..subtitle_rules.current_issues import current_issue_view
-        issue_view=current_issue_view(self.project)
+        from ..subtitle_rules.current_issues import published_issue_view
+        issue_view=published_issue_view(self.project)
         counted_ids={c.id for c in counted_cues}
-        current_rows=[r for r in issue_view.records if r.disposition=='actionable' and r.cue_id in counted_ids]
-        issue_summary=f'{len({r.cue_id for r in current_rows})} 条字幕，包含 {len(current_rows)} 个问题点'
+        current_rows=[r for r in issue_view.records if r.disposition=='actionable'
+                      and counted_ids.intersection(r.cue_ids or (r.cue_id,))]
+        review_ids = {key for row in current_rows for key in row.cue_ids or (row.cue_id,)} & counted_ids
+        issue_summary=f'{len(review_ids)} 条字幕，包含 {len(current_rows)} 个问题点'
+        unmapped = issue_view.statistics().get('segmentation_fallback', {}).get('unmapped', 0)
+        if unmapped:
+            issue_summary += f'，另有 {unmapped} 个历史断句范围待定位'
         self._current_issue_summary=issue_summary
         for key, button in self.cue_filter_buttons.items():
             if key in {'priority', 'critical'}:

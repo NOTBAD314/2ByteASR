@@ -83,6 +83,7 @@ PREVIEW_TAGS = {
     "polished_changed": ("已校对 · 有修改", "info"),
     "polish_fallback": ("保留原文", "warning"),
     "grouped": ("已断句", "info"),
+    "grouping_pending": ("断句待重试", "warning"),
     "final": ("已保存", "success"),
 }
 

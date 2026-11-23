@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass, field
 
 CUDA_TIMELINE = {'local'}             # FireRed AED
-CUDA_REVIEW = {'local', 'firered_llm'}
+CUDA_REVIEW = {'local', 'firered', 'firered_llm'}
 CPU_TIMELINE = {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head', 'whisper_turbo', 'paraformer', 'mfa_aligner'}
 # 2026-10-19: Montreal Forced Aligner (experimental): Chinese and Japanese only,
 # CPU, a Windows conda runtime. Other languages are aligned by Qwen3 instead.
@@ -30,7 +30,7 @@ APPLE_GPU_PLAN_MODELS = frozenset({'moss', 'firered_vad', 'speaker_embedding', '
 MLX_PRIMARY = {'mlx_qwen3_asr': 'Apple Silicon 本地 Qwen3-ASR 0.6B（MLX）',
                'mlx_qwen3_asr_1_7b': 'Apple Silicon 本地 Qwen3-ASR 1.7B（MLX）'}
 REVIEW_LABELS = {'api': '云端识别服务', 'whisper_turbo': 'Whisper', 'sensevoice': 'SenseVoice',
-                 'funasr_nano': 'Fun-ASR Nano', 'firered_llm': 'FireRed LLM'}
+                 'funasr_nano': 'Fun-ASR Nano', 'firered': 'FireRedASR2-AED', 'firered_llm': 'FireRedASR2-LLM'}
 # 2026-10-18: Japanese and English (2026-10-19: and Korean) audio is timed by Qwen3-ForcedAligner
 # whatever timeline model is chosen; FireRed / Whisper / Paraformer are Chinese
 # timing tools here and are rerouted (moss_firered_pipeline.run_firered_stage).
@@ -101,7 +101,7 @@ def unavailable_on_host(role: str, backend: str, host: HostProfile | None = None
         return 'Ultra 尚未完成 Mac 独立验收；请使用现有 MLX 或官方兼容版'
     if backend in needs_cuda and not host.cuda_possible:
         if host.system == 'darwin' and backend in {'primary': APPLE_GPU_PRIMARY,
-                                                   'timeline': APPLE_GPU_TIMELINE}.get(role, set()):
+                                                   'timeline': APPLE_GPU_TIMELINE, 'review': {'firered'}}.get(role, set()):
             return '' if host.apple_silicon else '只能在 Apple Silicon Mac 上运行'
         return '需要 NVIDIA 显卡'
     if backend in {'mlx_qwen3_asr', 'mlx_qwen3_asr_1_7b', 'mlx_qwen_aligner'} and not host.apple_silicon:

@@ -212,6 +212,13 @@ class WizardDialog(QDialog):
         top.addWidget(self.close_button)
         self.body.addWidget(self.header)
 
+    SURFACE_MOTION = True
+
+    def done(self, result):
+        from ..design.transitions import animate_done
+        if not animate_done(self, result):
+            super().done(result)
+
     def reject(self):
         if not self.busy():
             super().reject()

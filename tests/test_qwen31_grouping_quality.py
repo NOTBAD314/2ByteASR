@@ -234,7 +234,9 @@ def test_local_correction_input_budget_is_distinct_and_never_dispatched(monkeypa
     attempts=[e for e in events if e["event"]=="grouping_quality_retry"]
     assert len(calls)==1 and attempts
     assert all(e["reason"]=="input_budget_conflict" and not e["request_dispatched"] for e in attempts)
-    assert not result.validated and "".join(c.text for c in result)==text
+    # 2026-11-22: an unsplittable unit over the limit is the correct final
+    # answer, not an unfinished range; the windows are still never dispatched.
+    assert result.validated and "".join(c.text for c in result)==text
 
 
 def test_true_oversized_single_source_still_reaches_multiple_ai_requests(monkeypatch):
@@ -291,7 +293,9 @@ def test_quality_retry_budget_is_shared_and_has_an_absolute_time_cap():
     clock=[0.]
     budget=QualityRetryBudget(clock=lambda:clock[0])
     assert budget.take(10000)==(256,7.5)
-    clock[0]=91.
+    clock[0]=91.  # 2026-11-22: four correction rounds; the cap is 600 s
+    assert budget.take(10000) is not None
+    clock[0]=601.
     assert budget.take(10000) is None and budget.refusal_reason()=='task_time_limit'
 
 

@@ -161,15 +161,79 @@ class _FadingBackdrop(QFrame):
         self.color = QColor(color)
         self.alpha = 0.0
         self._fade = None
+        self._under = None             # the window under the dim, held while the dim moves
+        self._grabbing = False
+        self.shade = None
+        self.flight_owned = False
+        host.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize:
+            self._release_window()
+            self.setGeometry(watched.rect())
+        return False
+
+    def set_progress(self, alpha) -> None:
+        self.alpha = alpha
+        if self.shade is not None:
+            self.shade.update()
+        else:
+            self.update()
+
+    def retire(self) -> None:
+        if self.shade is not None:
+            self.shade.hide()
+            self.shade.deleteLater()
+            self.shade = None
+        self.hide()
+        self.deleteLater()
+
+    def paint_shade(self, target):
+        if self.alpha > 0:
+            painter = QPainter(target)
+            fill = QColor(self.color)
+            fill.setAlpha(max(0, min(255, round(self.alpha))))
+            painter.fillRect(target.rect(), fill)
 
     def set_color(self, color) -> None:
         self.color = QColor(color)
+        self.set_progress(self.alpha)
+
+    def _hold_window(self) -> None:
+        """2026-11-20 (user: the settings open at a low frame rate): a translucent dim made Qt draw
+        the whole window under it again for every step of its fade (every 8 ms), Home's cards and
+        all, on the thread that also draws the dialog's motion. While the dim moves it paints a
+        picture of the window taken once, and is opaque, so nothing under it is drawn again."""
+        host = self.parentWidget()
+        if host is None or self._under is not None:
+            return
+        self._grabbing = True
+        try:
+            picture = host.grab(self.geometry())
+        finally:
+            self._grabbing = False
+        if picture.isNull():
+            return
+        self._under = picture
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    def _release_window(self) -> None:
+        if self._under is None:
+            return
+        self._under = None
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.update()
 
     def paintEvent(self, _event):  # noqa: N802 - Qt override
-        if self.alpha <= 0.0:
+        if self.shade is not None or self._grabbing:
+            return                         # the window's picture is taken without the dim
+        under = self._under
+        if self.alpha <= 0.0 and under is None:
             return
         painter = QPainter(self)
+        if under is not None:
+            from .device_pixels import draw_picture
+            draw_picture(painter, QPoint(0, 0), under)
         fill = QColor(self.color)
         fill.setAlpha(max(0, min(255, round(self.alpha))))
         painter.fillRect(self.rect(), fill)
@@ -186,8 +250,7 @@ class _FadingBackdrop(QFrame):
             self._fade = None
         start = self.alpha
         if not enabled() or tween.ms <= 0:
-            self.alpha = alpha
-            self.repaint()
+            self.set_progress(alpha)
             if callable(then):
                 then()
             return
@@ -195,20 +258,43 @@ class _FadingBackdrop(QFrame):
         began = time.perf_counter()
         timer = self._fade = QTimer(self)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
+        if self.shade is None:
+            self._hold_window()
 
         def step():
             k = min(1.0, (time.perf_counter() - began) * 1000 / tween.ms)
-            self.alpha = start + (alpha - start) * curve.valueForProgress(k)
-            self.update()
+            self.set_progress(start + (alpha - start) * curve.valueForProgress(k))
             if k >= 1.0:
                 timer.stop()
                 self._fade = None
+                self._release_window()
                 if callable(then):
                     then()
 
         timer.timeout.connect(step)
-        timer.start(8)
+        from .transitions import _frame_ms
+        timer.start(_frame_ms(self))       # one step a screen frame (it was every 8 ms)
         step()
+
+
+class _SettingsShade(QWidget):
+    """One scrim above every native child, including the page stack."""
+    def __init__(self, backdrop, cover):
+        super().__init__(cover)
+        self.backdrop = backdrop
+        self.setObjectName('settingsShade')
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setGeometry(cover.rect())
+        cover.installEventFilter(self)
+        self.show()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize:
+            self.setGeometry(watched.rect())
+        return False
+
+    def paintEvent(self, event):
+        self.backdrop.paint_shade(self)
 
 
 class SpringDialog(QDialog):
@@ -218,6 +304,7 @@ class SpringDialog(QDialog):
     # 用户反馈弹窗动画带来约 1 秒等待感（2026-09-19 轮）。
     ENTRY_ANIMATED = True
     EXIT_ANIMATED = True
+    UNIFIED_TRANSITION = False
 
     # A parentless dialog always sits in a reference cycle (WindowBounds);
     # left to the cycle collector it must not be torn down wrapper by wrapper.
@@ -380,13 +467,20 @@ class SpringDialog(QDialog):
                     self.reject()
             backdrop.mousePressEvent = _press_backdrop
             backdrop.mouseReleaseEvent = _release_backdrop
+            from . import motion_tokens as tokens
+            from .transitions import handles, stage_cover
+            self._modal_backdrop = backdrop
+            if self.UNIFIED_TRANSITION:
+                cover = stage_cover(host)
+                if cover is not None:
+                    cover.stack_over_owner()
+                    backdrop.shade = _SettingsShade(backdrop, cover)
+                backdrop.flight_owned = handles(self)
             backdrop.show()
             backdrop.raise_()
-            # 2026-11-19: the dim fades in while the dialog grows out of its button (it used to
-            # land in one frame and the dialog followed 0.15 s later).
-            from . import motion_tokens as tokens
-            backdrop.fade_to(_FadingBackdrop.ALPHA, tokens.SCRIM_IN)
-            self._modal_backdrop = backdrop
+            if not backdrop.flight_owned:
+                backdrop.fade_to(_FadingBackdrop.ALPHA,
+                                 tokens.SETTINGS_TRANSITION if self.UNIFIED_TRANSITION else tokens.SCRIM_IN)
         self._apply_native_window_style()
         super().showEvent(event)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -417,7 +511,9 @@ class SpringDialog(QDialog):
             self.setWindowOpacity(1.0)
 
     def done(self, result):
-        from .transitions import closing_now, handles
+        from .transitions import animate_done, closing_now, handles
+        if animate_done(self, result):
+            return
         if self.isVisible() and handles(self) and not getattr(self, "_exit_pending", False):
             # 2026-11-19 (user: closing the settings flashes): the shrinking picture is up before
             # the window hides, so Home never shows between the two.
@@ -447,14 +543,17 @@ class SpringDialog(QDialog):
         if self._modal_backdrop is not None:
             backdrop, self._modal_backdrop = self._modal_backdrop, None
             try:
-                if hasattr(backdrop, 'fade_to') and not QApplication.closingDown():
-                    # The dim lifts while the dialog shrinks back; clicks already reach Home.
+                backdrop.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                if backdrop.alpha <= 0:
+                    backdrop.retire()
+                elif backdrop.flight_owned:
+                    pass  # The dialog flight releases the shade on its last frame.
+                elif not QApplication.closingDown():
                     from . import motion_tokens as tokens
-                    backdrop.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                    backdrop.fade_to(0.0, tokens.SCRIM_OUT, then=lambda b=backdrop: (b.hide(), b.deleteLater()))
+                    backdrop.fade_to(0.0, tokens.SETTINGS_TRANSITION if self.UNIFIED_TRANSITION else tokens.SCRIM_OUT,
+                                     then=backdrop.retire)
                 else:
-                    backdrop.hide()
-                    backdrop.deleteLater()
+                    backdrop.retire()
             except Exception:
                 pass
         super().hideEvent(event)

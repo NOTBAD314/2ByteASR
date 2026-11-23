@@ -1,10 +1,21 @@
-"""Bridge startup to Home with Home's skeleton, a cached client image or a themed rabbit screen.
+"""Bridge startup to Home with Home's skeleton (kept, or a built-in one) or a cached client image.
 
 The kept files survive program updates, and the temporary window fades after
 the real window paints. A compatible native launcher draws the saved layout
 from ``cover.txt`` and uses ``TWOBYTEASR_LAUNCH_COVER`` for the handoff signal;
 without one (the packaged daily keeps its old root launcher) the app draws the
 same skeleton itself as soon as it can.
+
+2026-11-20 (user, about the small square bunny head on the launch screen without a kept skeleton:
+"really ugly, better without this icon"; they picked draft A 「骨架微光」): a start with nothing
+kept draws Home's skeleton too, laid out from ``launch_default_cover`` for the window's size and
+theme, so the launch screen is always Home's shape and never shows the icon.
+
+2026-11-23 (user: the skeleton is "too plain and crude"; from three drafts in
+``tmp/launch-drafts-20261123`` they picked B2 「音波時間軸」): every start draws ``launch_screen`` -
+the wordmark over a waveform timeline - on the theme's background instead of Home's skeleton or the
+kept picture, and at the end the wordmark flies to Home's title while Home appears under it
+(``_land``). The kept files (place, skeleton for a native launcher) are still written at a close.
 
 The Qt window is disabled in isolated tests unless explicitly enabled.
 
@@ -28,6 +39,10 @@ _FADING = []
 _COVER_EVENT = ''                        # the launcher's skeleton is up: set this event to end it
 COVER_FORMAT = 1
 _WRITER: threading.Thread | None = None
+_SHOWN_AT = None                         # perf_counter when the launch window went up
+_LOAD_S = None                           # how long this start took until the real window was up
+_WINDOW = None                           # the real window, from ``adopt`` (the end flies onto its title)
+LAND_GRACE_MS = 600                      # the end's flight is given this long beyond its own length
 
 
 # ---------------------------------------------------------------------------- where and whether
@@ -147,7 +162,7 @@ def usable(meta: dict | None, app, *, arguments=()) -> str:
 
 def show(app, *, arguments=()):
     """Show the kept window now. Returns it, or None. Never raises."""
-    global _SHELL, _COVER_EVENT
+    global _SHELL, _COVER_EVENT, _SHOWN_AT
     try:
         cover = os.environ.pop('TWOBYTEASR_LAUNCH_COVER', '')     # not handed on to a restart
         if cover:
@@ -165,6 +180,7 @@ def show(app, *, arguments=()):
         if shell is None:
             return None
         _SHELL = shell
+        _SHOWN_AT = time.perf_counter()
         if kind == 'first':
             shell.show()                    # placed by Qt where the window opens by default
         else:
@@ -180,6 +196,7 @@ def show(app, *, arguments=()):
         deadline = time.perf_counter() + 0.25
         while not shell.painted and time.perf_counter() < deadline:
             app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        _start_motion(shell, meta)
         return shell
     except Exception:  # noqa: BLE001 - the app starts as it always did
         dismiss()
@@ -188,22 +205,23 @@ def show(app, *, arguments=()):
 
 def _make_shell(app, meta: dict, kind: str):
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+    from PySide6.QtGui import QColor, QPainter
     from PySide6.QtWidgets import QWidget
+    from . import launch_motion
+    from .launch_screen import LaunchScreen, Sprites, palette, unit_for
 
-    picture = None
-    cover = read_cover(meta) if kind == 'skeleton' else None
-    if kind == 'skeleton' and cover is None:
-        kind = 'picture' if meta.get('picture') and (_directory() / 'home.bmp').is_file() else 'plain'
-    if kind == 'picture':
-        image = QImage(str(_directory() / 'home.bmp'))
-        if image.isNull() or [image.width(), image.height()] != list(meta['client'][2:]):
-            kind = 'plain' if meta.get('background') else ''
-        else:
-            picture = QPixmap.fromImage(image)
     if not kind:
         return None
-    bunny = _bunny_pixmap() if kind in ('first', 'plain') else None
+    colors = palette(meta.get('theme'))
+    language = meta.get('language')
+    if kind == 'first':
+        x, y, width, height = meta['geometry']
+        logical = (width, height)
+    else:
+        scale = float(meta.get('scale') or 1.0) or 1.0
+        x, y = meta['client'][:2]
+        logical = (max(1, round(meta['client'][2] / scale)), max(1, round(meta['client'][3] / scale)))
+    expected = _expected_load_s(meta)
 
     class Shell(QWidget):
         def __init__(self):
@@ -217,59 +235,104 @@ def _make_shell(app, meta: dict, kind: str):
             self.setCursor(Qt.CursorShape.BusyCursor)
             self.painted = False
             self.kind = kind
+            self.colors = colors
+            self.language = language
+            self.background = str(colors['background'])
+            self.motion = None              # launch_motion.LaunchMotion once it runs
+            self.screen = None              # launch_screen.LaunchScreen, made at the window's scale
+            # Drawn moving (``launch_motion``) the still picture is only the background, the frames
+            # bring the screen in; without motion it is the whole screen at rest.
+            self.still_t = 0.0 if launch_motion.enabled() else 1.2
+
+        def ensure_screen(self):
+            if self.screen is None:
+                # Text pictures at the size they are drawn (the layout grows with the window), so
+                # the wordmark stays sharp.
+                ratio = (float(self.devicePixelRatioF()) or 1.0) * max(1.0, unit_for(self.width(), self.height()))
+                sprites = Sprites.build(colors, language, ratio)
+                self.screen = LaunchScreen(self.width(), self.height(), colors, sprites, language, expected)
+            return self.screen
 
         def paintEvent(self, _event):  # noqa: N802 - Qt override
             painter = QPainter(self)
-            if cover is not None:
-                _paint_skeleton(painter, self.rect(), cover)
-            elif picture is not None:
-                painter.drawPixmap(self.rect(), picture)
-            else:
-                painter.fillRect(self.rect(), QColor(str(meta.get('background') or '#19151c')))
-                if bunny is not None and not bunny.isNull():
-                    # 2026-11-19: the bunny's head a little above the middle, not the app's name.
-                    side = max(64, min(132, round(min(self.width(), self.height()) * .16)))
-                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                    painter.drawPixmap((self.width() - side) // 2, round(self.height() * .44) - side // 2,
-                                       side, side, bunny)
+            motion = self.motion
+            if motion is not None:
+                # The moving screen's latest frame (launch_motion), never the still picture again.
+                with motion.lock:
+                    painter.drawImage(self.rect(), motion.frame)
+                painter.end()
+                return
+            painter.fillRect(self.rect(), QColor(self.background))
+            if self.still_t > 0:
+                try:
+                    self.ensure_screen().draw(painter, self.still_t)
+                except Exception:  # noqa: BLE001 - the background alone
+                    pass
             painter.end()
             self.painted = True
 
     shell = Shell()
-    if kind == 'first':
-        shell.setGeometry(*meta['geometry'])
-    else:
-        scale = float(meta.get('scale') or 1.0) or 1.0
-        x, y, width, height = meta['client']
-        shell.setGeometry(round(x), round(y), max(1, round(width / scale)), max(1, round(height / scale)))
+    shell.setGeometry(round(x), round(y), int(logical[0]), int(logical[1]))
     # Layered from its first frame, so the fade at the end changes nothing else about the window.
     shell.setWindowOpacity(0.999)
     return shell
 
 
-def _paint_skeleton(painter, rect, cover) -> None:
-    """Home's skeleton in the window's own (logical) coordinates, as ``launcher/LaunchCover.cs``
-    draws it: panels and bars in the panel colour, blocks and pills in the surface colour, the
-    and a dashed outline around the drop area."""
-    from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QPainter, QPen
-    colors, parts = cover
-    background, panel, block, _highlight, border = (QColor(value) for value in colors)
-    painter.fillRect(rect, background)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    for kind, x, y, width, height in parts:
-        area = QRectF(x, y, width, height)
-        radius = 0.0 if kind == 'bar' else min(10.0, min(width, height) / 2)
-        if kind == 'dash':
-            pen = QPen(border, 2.0)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(area.adjusted(1, 1, -1, -1), radius, radius)
-            continue
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(panel if kind in ('panel', 'bar') else block)
-        painter.drawRoundedRect(area, radius, radius)
+def _start_motion(shell, meta: dict) -> None:
+    """The launch screen moves from its own thread while the app loads (launch_motion; B2 since
+    2026-11-23). Never raises."""
+    try:
+        from . import launch_motion
+        if not launch_motion.enabled() or not shell.painted or not shell.isVisible():
+            return
+        scale = float(shell.devicePixelRatioF()) or 1.0
+        base = shell.grab().toImage()
+        if base.isNull():
+            return
+        screen = shell.ensure_screen()
+        motion = launch_motion.LaunchMotion(
+            shell, base, kind=shell.kind, scale=scale, screen=screen, colors=shell.colors,
+            language=shell.language, background=shell.background, expected_s=_expected_load_s(meta))
+        # Not layered while it moves: pixels copied into a layered window from the thread let the
+        # desktop behind show through faintly (seen 2026-11-20). Layered again before a fade.
+        shell.motion = motion
+        shell.setWindowOpacity(1.0)
+        shell.repaint()
+        if not motion.start():
+            shell.motion = None
+            shell.still_t = 1.2
+            shell.setWindowOpacity(0.999)
+            shell.repaint()
+    except Exception:  # noqa: BLE001 - the still picture stays
+        try:
+            shell.motion = None
+        except RuntimeError:
+            pass
+
+
+def _expected_load_s(meta: dict):
+    """How long the last start took (kept at its close), for the accent line's stages; or None."""
+    try:
+        value = float(meta.get('launch_s') or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if 0.3 <= value <= 30 else None
+
+
+def _stop_motion(shell, *, layered: bool = True) -> float | None:
+    """Stop the frames; the time the last one showed (s since the start), or None."""
+    motion = getattr(shell, 'motion', None)
+    if motion is None:
+        return None
+    motion.stop()
+    shown = motion.elapsed()
+    try:
+        if layered and shell.isVisible():
+            shell.setWindowOpacity(0.999)           # layered again for the fade, painted at once
+            shell.repaint()
+    except RuntimeError:
+        pass
+    return shown
 
 
 def _fit_picture(grabbed, width: int, height: int, background: str):
@@ -291,21 +354,6 @@ def _fit_picture(grabbed, width: int, height: int, background: str):
     painter.drawImage(0, 0, image)
     painter.end()
     return fitted
-
-
-def _bunny_pixmap():
-    """The bunny's head (the app icon's artwork, transparent), or None."""
-    try:
-        from PySide6.QtGui import QPixmap
-        from ..runtime_paths import detect_install_root
-        root = detect_install_root() / 'assets'
-        for name in ('app_icon_256.png', '2byteasr-icon-transparent.png'):
-            pixmap = QPixmap(str(root / name))
-            if not pixmap.isNull():
-                return pixmap
-    except Exception:  # noqa: BLE001
-        pass
-    return None
 
 
 def _first_start_meta(app):
@@ -333,7 +381,7 @@ def _first_start_meta(app):
         from ..design.ui_theme import DEFAULT_THEME_KEY, THEMES
         key = str(settings.value('appearance/theme') or DEFAULT_THEME_KEY)
         theme = THEMES.get(key) or THEMES[DEFAULT_THEME_KEY]
-        return dict(geometry=(rect.x(), rect.y(), rect.width(), rect.height()),
+        return dict(geometry=(rect.x(), rect.y(), rect.width(), rect.height()), theme=str(theme.key),
                     background=str(theme.app_background), maximized=maximized)
     except Exception:  # noqa: BLE001
         return None
@@ -355,9 +403,11 @@ def _place(shell, meta: dict, *, size: bool = True) -> None:
 
 def adopt(window) -> None:
     """The real window is about to be shown: the picture stays above it until it has painted."""
+    global _WINDOW
     shell = _SHELL
     if shell is None:
         return
+    _WINDOW = window
     try:
         # Topmost from here until the real window has painted (a moment), so the real window is
         # never seen empty. Not as the real window's owned window: measured 2026-11-19, a window
@@ -368,20 +418,117 @@ def adopt(window) -> None:
 
 
 def dismiss(fade: bool = True) -> None:
-    """The real window is on screen (or the start failed: ``fade=False``): the picture goes, fading
-    out over the real window (``LAUNCH_HANDOFF``) where motion is on."""
-    global _SHELL
+    """The real window is on screen (or the start failed: ``fade=False``): the picture goes - the
+    wordmark flying onto Home's title as Home appears under it (``_land``), else fading out over
+    the real window (``LAUNCH_HANDOFF``) where motion is on."""
+    global _SHELL, _LOAD_S, _WINDOW
     release_cover()
     shell, _SHELL = _SHELL, None
+    window, _WINDOW = _WINDOW, None
     if shell is None:
         return
+    if fade and _SHOWN_AT is not None and _LOAD_S is None:
+        _LOAD_S = time.perf_counter() - _SHOWN_AT          # kept at the close for the next start's stages
     try:
+        if fade and _land(shell, window):
+            return
+        _stop_motion(shell)                 # holds still while it fades, as the native launcher does
         if fade and _fade_out(shell):
             return
         shell.hide()
         shell.deleteLater()
     except RuntimeError:
         pass
+
+
+def _brand_targets(shell, window) -> dict | None:
+    """Where each half of the wordmark lands, in the launch window's logical coordinates: 'en' on
+    Home's brand label (2ByteASR), 'zh' on 「兔白字幕」 next to it; their text areas. None unless both
+    are on the screen."""
+    from PySide6.QtCore import QRect
+    targets = {}
+    for prefix, name in (('en', 'brand'), ('zh', 'header_subtitle')):
+        widget = getattr(window, name, None)
+        try:
+            if widget is None or not widget.isVisible() or widget.width() < 4:
+                return None
+            inner = widget.contentsRect()
+            at = shell.mapFromGlobal(widget.mapToGlobal(inner.topLeft()))
+            # As wide as its text reads (the label can be wider): the halves land letter on letter.
+            width = min(inner.width(), max(1, round(_text_width(widget))))
+            rect = QRect(at, inner.size())
+            rect.setWidth(width)
+        except RuntimeError:
+            return None
+        if not QRect(0, 0, shell.width(), shell.height()).contains(rect.center()):
+            return None
+        targets[prefix] = (float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()))
+    return targets
+
+
+def _text_width(label) -> float:
+    """How wide ``label``'s text is drawn (rich text, like the brand, through a text document)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFontMetricsF, QTextDocument
+    text = label.text()
+    rich = label.textFormat() == Qt.TextFormat.RichText or (
+        label.textFormat() == Qt.TextFormat.AutoText and text.lstrip().startswith('<'))
+    if rich:
+        document = QTextDocument()
+        document.setDefaultFont(label.font())
+        document.setDocumentMargin(0)
+        document.setHtml(text)
+        return document.idealWidth()
+    return QFontMetricsF(label.font()).horizontalAdvance(text)
+
+
+def _land(shell, window) -> bool:
+    """B2's end (2026-11-23): the launch screen's drawer draws Home coming in under it and the
+    wordmark flying onto Home's title, ending on Home's picture; then the window goes. The drawer
+    (the helper process) keeps going while the GUI thread is busy with Home's first moments, so a
+    late ``hide`` shows nothing but Home. False when it cannot (no motion, no title): the caller
+    fades as before."""
+    try:
+        from ..design import motion_tokens as tokens
+        from ..design.transitions import enabled
+        motion = getattr(shell, 'motion', None)
+        if (window is None or motion is None or not enabled() or not shell.isVisible()
+                or os.environ.get('TWOBYTEASR_LAUNCH_FADE', '1') == '0'
+                or not window.isVisible() or window.isMinimized()):
+            return False
+        targets = _brand_targets(shell, window)
+        if targets is None:
+            return False
+        picture = window.grab().toImage()
+        if picture.isNull():
+            return False
+        from PySide6.QtCore import QPoint, Qt, QTimer
+        at = shell.mapFromGlobal(window.mapToGlobal(QPoint(0, 0)))
+        if not motion.land(picture, (float(at.x()), float(at.y())), targets):
+            return False
+        _click_through(shell)                   # clicks reach the real window during the flight
+        shell.setCursor(Qt.CursorShape.ArrowCursor)
+        began = time.perf_counter()
+        limit = (tokens.PAGE_IN.ms + LAND_GRACE_MS) / 1000
+        timer = QTimer(shell)
+        timer.setTimerType(Qt.TimerType.PreciseTimer)
+
+        def check():
+            if not motion.landed() and time.perf_counter() - began < limit:
+                return
+            timer.stop()
+            motion.stop()
+            shell.hide()
+            shell.deleteLater()
+            if shell in _FADING:
+                _FADING.remove(shell)
+
+        timer.timeout.connect(check)
+        _FADING.append(shell)
+        timer.start(16)
+        return True
+    except Exception:  # noqa: BLE001 - fades as before
+        return False
 
 
 def release_cover() -> None:
@@ -585,6 +732,11 @@ def remember(window, *, next_page: str | None = None, take_picture: bool = True)
         meta = dict(format=FORMAT, program=program_stamp(), screens=screens_signature(app), client=list(client),
                     scale=round(float(window.devicePixelRatioF()), 4), maximized=maximized,
                     next_page=str(next_page or _next_page()), saved=time.time(), picture=False, **conditions)
+        previous = read() or {}
+        if _LOAD_S is not None:
+            meta['launch_s'] = round(_LOAD_S, 2)
+        elif previous.get('launch_s'):
+            meta['launch_s'] = previous['launch_s']
         key = [meta[name] for name in _PICTURE_KEY]
         image = None
         cover = None
@@ -598,7 +750,6 @@ def remember(window, *, next_page: str | None = None, take_picture: bool = True)
                 cover = None
             # Render only Home so overlapping applications cannot enter the cache.
             image = _fit_picture(window.grab(), int(client[2]), int(client[3]), conditions['background'])
-        previous = read() or {}
         same = [previous.get(name) for name in _PICTURE_KEY] == key
         # Without a new picture (or skeleton) the old one stays only while everything it depends
         # on is the same; a close on another page keeps the skeleton as well as the picture.

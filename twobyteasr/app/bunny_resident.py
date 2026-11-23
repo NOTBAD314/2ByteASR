@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import os
 import random
+import threading
 import time
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from ..i18n import tr
@@ -122,6 +123,7 @@ class HintBubble(QFrame):
 
 
 class BunnyResident(QWidget):
+    _recognition_outcome = Signal(object)
     def __init__(self, window):
         from . import ui_zoom
         from .bunny_chat import _floating, _theme, chat_font_family, chat_sheet
@@ -130,6 +132,8 @@ class BunnyResident(QWidget):
         flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
                  | Qt.WindowType.WindowDoesNotAcceptFocus) if floating else Qt.WindowType.Widget
         super().__init__(window, flags)
+        self._recognition_outcome.connect(self._deliver_report_outcome, Qt.ConnectionType.QueuedConnection)
+        self._reading_outcome = False
         self.setObjectName('bunnyResident')
         self.window_ = window
         self.floating = floating
@@ -367,6 +371,21 @@ class BunnyResident(QWidget):
                 self.mascot.hop()
         return True
 
+    def say_line(self, line: str, seconds: float = STAY_S) -> bool:
+        """A line from the user's own extension script (2026-11-20, ``ScriptAPI.say``): shown like a hint
+        when she is free, else not at all (it is in the script log anyway)."""
+        line = str(line or '').strip()[:200]
+        if not line or self.busy() or not self.isVisible():
+            return False
+        self.hint_key = 'extension_script'
+        self.bubble.set_hint(line, [], self._button)
+        self.bubble.show()
+        self.place()
+        self._hint_until = time.monotonic() + max(3.0, float(seconds))
+        if self.mascot is not None:
+            self.mascot.hop()
+        return True
+
     def _hide_hint(self):
         if not self.hint_key:
             return
@@ -427,20 +446,37 @@ class BunnyResident(QWidget):
 
     def _report_outcome(self):
         from . import bunny_permissions
-        if not bunny_permissions.load().get('read_diagnostics'):
+        if self._reading_outcome or not bunny_permissions.load().get('read_diagnostics'):
             return
-        try:
-            from ..recognition.recognition_history import parse_recognition_report
-            from .bunny_lookup import newest_report
-            path = newest_report()
-            if path is None or time.time() - os.path.getmtime(path) > REPORT_FRESH_S:
-                return                                   # an older result opened from 「识别记录」
-            record = parse_recognition_report(path)
-            event, facts = bunny_events.outcome_event(record.status, int(record.review_count or 0))
-            bunny_events.remember(f'一次识别结束了，状态是“{record.status_label or record.status}”，'
-                                  f'字幕 {record.cue_count} 条，待复核 {record.review_count} 项')
-        except Exception:  # noqa: BLE001 - an unreadable report: she says nothing
+        self._reading_outcome = True
+
+        def read():
+            record = None
+            try:
+                from ..recognition.recognition_history import parse_recognition_report
+                from .bunny_lookup import newest_report
+                path = newest_report()
+                if path is not None and time.time() - os.path.getmtime(path) <= REPORT_FRESH_S:
+                    record = parse_recognition_report(path)
+            except Exception:
+                pass  # An unreadable report produces no notification.
+            try:
+                self._recognition_outcome.emit(record)
+            except RuntimeError:
+                pass  # The window closed while the reader was working.
+
+        threading.Thread(target=read, name='bunny-recognition-outcome', daemon=True).start()
+
+    def _deliver_report_outcome(self, record):
+        self._reading_outcome = False
+        from . import bunny_permissions
+        from .bunny_chat import current_page
+        if (record is None or current_page(self.window_) != '识别完成的结果页'
+                or not bunny_permissions.load().get('read_diagnostics')):
             return
+        event, facts = bunny_events.outcome_event(record.status, int(record.review_count or 0))
+        bunny_events.remember(f'一次识别结束了，状态是“{record.status_label or record.status}”，'
+                              f'字幕 {record.cue_count} 条，待复核 {record.review_count} 项')
         if event:
             self.notify(event, **facts)
             if event != 'recognition_failed':

@@ -141,7 +141,7 @@ def test_six_hours_hold_across_launches(service, qapp, monkeypatch):  # noqa: F8
     from twobyteasr.storage import storage_ui
     started = []
     monkeypatch.setattr(storage_ui, 'StorageService', lambda **kwargs: service)
-    monkeypatch.setattr(storage_ui.StorageWorker, 'start', lambda self: started.append(self))
+    monkeypatch.setattr(storage_ui.StorageMaintenanceProcess, 'start', lambda self: started.append(self))
 
     def launch():
         owner = QWidget()

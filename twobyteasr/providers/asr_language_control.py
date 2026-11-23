@@ -13,7 +13,7 @@ def policy(endpoint,requested):
     elif protocol=='dashscope_filetrans':
         from .qwen31_asr import filetrans_spec
         spec=filetrans_spec(model)
-        field='parameters.language' if spec.language_parameter else None
+        field='parameters.'+spec.language_field if spec.language_parameter else None
         capability='request_parameter' if field else 'automatic_only'
     elif protocol=='dashscope_multimodal' and model.startswith('qwen3-asr'):
         capability='request_parameter';field='parameters.asr_options.language'

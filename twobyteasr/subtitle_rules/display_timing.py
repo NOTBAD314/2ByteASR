@@ -128,7 +128,7 @@ def project_display_tail_plan(project, *, editorial_only=False):
                timing_locked=boundary_blocked(c,receipts.get(c.id,{})) or c.speaker_id in project.studio_state.get('locked_speakers',()),
                preserve_overlap=bool(c.transform.get('position_locked') or c.transform.get('preserve_overlap')
                                      or c.transform.get('protected_start') or receipts.get(c.id,{}).get('protected_start')),
-               display_handoff=c.transform.get('display_handoff',{})) for c in visible_display_cues(project)]
+               display_handoff=c.transform.get('display_handoff',{})) for c in visible]
     views = {}
     boundaries = {} if editorial_only else {c.id: project_word_boundaries(project, c, views=views) for c in project.cues}
     acoustic={c.id:project_acoustics(project,c,boundaries=boundaries.get(c.id,(None,None))) for c in project.cues}
@@ -276,6 +276,74 @@ def editorial_handoff_reason(left, right, *, third=False):
     return 'bounded_tail_handoff'
 
 
+_MEASURED_BOUNDARY_BASES = {"provider_word", "forced_aligner_word", "firered_word"}
+
+
+def begin_display_receipts(cues, grouped):
+    if len(cues) != len(grouped) or any(
+        (cue.speaker, cue.text) != (source.speaker, source.text) for cue, source in zip(cues, grouped)
+    ):
+        return
+    for cue, source in zip(cues, grouped):
+        pre_display = [round(source.start * 1000), round(source.end * 1000)]
+        basis = [getattr(source, f"{edge}_timing_basis", "unknown") for edge in ("start", "end")]
+        cue.display_timing_receipt = {
+            "version": 1,
+            "pre_display_ms": pre_display,
+            "acoustic_ms": [stamp if kind in _MEASURED_BOUNDARY_BASES else None
+                            for stamp, kind in zip(pre_display, basis)],
+            "timing_basis": basis,
+            "display_ms": pre_display,
+            "adjustments": [],
+        }
+    ordered = sorted(cues, key=lambda cue: (cue.start, cue.end, cue.speaker))
+    last_by_speaker = {}
+    for cue in ordered:
+        previous = last_by_speaker.get(cue.speaker)
+        if previous is not None:
+            end = previous.display_timing_receipt["acoustic_ms"][1]
+            start = cue.display_timing_receipt["acoustic_ms"][0]
+            if end is not None and start is not None and start - end >= 180:
+                previous.display_timing_receipt["measured_pause_after_ms"] = start - end
+        last_by_speaker[cue.speaker] = cue
+
+
+def record_display_receipts(cues, phase):
+    for cue in cues:
+        receipt = getattr(cue, "display_timing_receipt", None)
+        if not receipt:
+            continue
+        before = receipt["display_ms"]
+        after = [round(cue.start * 1000), round(cue.end * 1000)]
+        if before != after:
+            receipt["adjustments"].append({"phase": phase, "before_ms": before, "after_ms": after})
+            receipt["display_ms"] = after
+        receipt["net_adjustment_ms"] = [stamp - base for stamp, base in zip(after, receipt["pre_display_ms"])]
+
+
+def final_display_overlaps(cues):
+    from collections import Counter
+
+    counts = Counter()
+    pairs = []
+    active = []
+    for cue in sorted(cues, key=lambda row: (row.start, row.end, row.cue_id)):
+        active = [left for left in active if left.end > cue.start + 1e-6]
+        for left in active:
+            left_end = getattr(left, "display_timing_receipt", {}).get("acoustic_ms", (None, None))[1]
+            right_start = getattr(cue, "display_timing_receipt", {}).get("acoustic_ms", (None, None))[0]
+            scope = "same_speaker" if left.speaker == cue.speaker else "different_speaker"
+            evidence = ("unknown" if left_end is None or right_start is None
+                        else "acoustic_overlap" if left_end > right_start else "display_only")
+            counts[f"{scope}:{evidence}"] += 1
+            if len(pairs) < 200:
+                pairs.append({"left": left.cue_id, "right": cue.cue_id, "scope": scope, "evidence": evidence,
+                              "review_required": scope == "same_speaker" and evidence == "unknown",
+                              "overlap_ms": round((min(left.end, cue.end) - cue.start) * 1000)})
+        active.append(cue)
+    return {"counts": dict(counts), "pairs": pairs}
+
+
 def project_acoustics(project, cue, *, boundaries=None):
     start, end = project_word_boundaries(project, cue) if boundaries is None else boundaries
     if start is not None and end is not None and end > start:
@@ -394,7 +462,9 @@ def reconcile_editorial_handoffs(project, cue_ids=(), previous_cues=None, *, app
     previous_cues=previous_cues or {}
     owned=[c for c in cues if c.id in keys or
            c.transform.get('display_handoff',{}).get('successor_id') in keys]
-    owned.extend(c for key,c in previous_cues.items() if key in keys and c not in owned)
+    current_intervals = {(c.id, c.start_ms, c.end_ms) for c in owned}
+    owned.extend(c for key,c in previous_cues.items() if key in keys
+                 and (c.id, c.start_ms, c.end_ms) not in current_intervals)
     if keys and not owned:
         return set() if apply else {}
     if owned:
@@ -403,6 +473,18 @@ def reconcile_editorial_handoffs(project, cue_ids=(), previous_cues=None, *, app
         local=[c for c in cues if c.start_ms<high and c.end_ms>low]
     else:
         local=list(cues)
+    # Editorial handoffs only shorten an actual overlap. An existing
+    # handoff may need restoration even when its shortened edge no longer
+    # overlaps, so preserve the full planner for that case.
+    if not any(c.transform.get('display_handoff', {}).get('version') == 'editorial-handoff-v1'
+               for c in local):
+        latest_end = -1
+        for cue in sorted(local, key=lambda item: item.start_ms):
+            if cue.start_ms < latest_end:
+                break
+            latest_end = max(latest_end, cue.end_ms)
+        else:
+            return set() if apply else {}
     before={c.id:(c.end_ms,copy(c.transform)) for c in local}
     local=[copy(c) for c in local]
     receipts=project.studio_state.get('caption_timeline',{}).get('instances',{})

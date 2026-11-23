@@ -13,6 +13,12 @@ def same_media_path(left, right):
         os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right)))
 
 
+def frame_in_clip(witness, source_range):
+    position = witness.get('position')
+    return (witness.get('ready') and isinstance(position, (int, float))
+            and source_range[0] <= position * 1000 < source_range[1])
+
+
 def first_picture_seconds(project, media_path):
     """First video picture on mpv's clock, from the probe the project recorded.
 

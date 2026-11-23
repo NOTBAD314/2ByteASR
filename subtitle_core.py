@@ -2079,6 +2079,9 @@ def runtime_settings_snapshot():
             "qwen_asr_api_model": QWEN_ASR_API_MODEL,
             "qwen_asr_api_url": QWEN_ASR_API_URL,
             "firered_asr_backend": FIRERED_ASR_BACKEND,
+            "qwen_alignment_profile": ((context.asr_settings_snapshot or RUNTIME_SETTINGS).get('models') or {}).get('qwen_alignment_profile'),
+            "resolved_qwen_alignment_backend": (selected_qwen_aligner_backend() if FIRERED_ASR_BACKEND in
+                                               {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head'} else None),
             "polish_provider": polish_settings["provider"],
             "polish_model": polish_settings["model"],
             "polish_base_url": polish_settings["base_url"],
@@ -2270,6 +2273,8 @@ CACHE_STAGE_VERSIONS = {
     "polished": 28,
     "grouped": 55,
     "grouped_local": 1,
+    # 2026-11-22: AI pause spaces inside Chinese source sentences, before grouping.
+    "pause_marks": 1,
     "moss": 6,
     "firered_vad": 1,
     "lightweight_vad": 1,
@@ -2285,7 +2290,7 @@ CACHE_STAGE_VERSIONS = {
 
 # API 阶段只依赖各自逻辑版本，不再散列整个 6800 行模块。以后修改时间轴、
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
-POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
+POLISH_LOGIC_VERSION = "polish-v33-second-opinion-term-edits"
 GROUP_LOGIC_VERSION = "group-v68-japanese-ai-provenance-retention"
 # v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
 TIMING_LOGIC_VERSION = "timing-v21-editor-and-source-identity"
@@ -2737,6 +2742,9 @@ def run_timed_stage(index, total, label, resource, runner):
         execution = value.execution
         label = completion_label(value)
         get_runtime_context().vad_execution = dict(execution)
+    pending_ranges = getattr(value, "pending_ranges", ())
+    if pending_ranges:
+        execution = {**execution, "pending_ranges": pending_ranges}
     elapsed = time.perf_counter() - started
     record_run_event(
         "stage_completed",
@@ -2745,7 +2753,8 @@ def run_timed_stage(index, total, label, resource, runner):
         elapsed_seconds=round(elapsed, 3),
         **execution,
     )
-    print(f"[阶段完成] {label}：{format_elapsed(elapsed)}", flush=True)
+    state = "部分完成，断句待重试" if pending_ranges else "阶段完成"
+    print(f"[{state}] {label}：{format_elapsed(elapsed)}", flush=True)
     return value
 
 

@@ -12,6 +12,12 @@ has closed; the main window starts the tutorial (``MainWindow._start_home_tour``
 a tick once learned) on a soft line, 基础 / 进阶 as milestones on it, and the next chapter to learn
 breathing with a ring and 「你在这里」. No dark square behind the list and no thick pink frame; the
 preview is a soft gradient card with the points numbered. Same layout and the same choices as before.
+
+2026-11-20 (user: the preview on the right is mostly empty space and the card is tall and thin):
+the window opens wider and shorter (980 x 620), so the card is landscape. The still keeps its own
+proportions (it was cropped to a 180 px strip and, at 150 %, squeezed under the title); the
+minutes sit beside the title; the points to learn run in two columns once the card is wide enough;
+the start button follows the points instead of waiting at the bottom of an empty card.
 """
 from __future__ import annotations
 
@@ -239,7 +245,20 @@ class _RoundPicture(QWidget):
         super().__init__(parent)
         self.theme = theme
         self._picture = QPixmap()
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._height = 180
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def set_height(self, height: int) -> None:
+        """The height it asks for; only a hint, so it never makes the window taller (2026-11-20)."""
+        if height != self._height:
+            self._height = height
+            self.updateGeometry()
+
+    def sizeHint(self):  # noqa: N802 - Qt override
+        return QSize(200, self._height)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt override
+        return QSize(0, TutorialCentre.PICTURE_MIN)
 
     def set_picture(self, picture: QPixmap) -> None:
         self._picture = picture
@@ -267,6 +286,18 @@ class _RoundPicture(QWidget):
         painter.end()
 
 
+class _Resized(QWidget):
+    """A plain page that tells its owner when its size changes."""
+
+    def __init__(self, resized, parent=None):
+        super().__init__(parent)
+        self._resized = resized
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._resized()
+
+
 class _ChapterRow(QPushButton):
     """Let translated chapter names determine the row height."""
     def hasHeightForWidth(self):
@@ -284,6 +315,11 @@ class _ChapterRow(QPushButton):
 class TutorialCentre(SpringDialog):
     """新手教学: the chapters and the 新手任务, one choice, then it closes."""
 
+    OPEN_SIZE = QSize(980, 620)
+    PICTURE_RATIO = 187 / 440          # the stills' own height / width (TourAnim.SIZE)
+    PICTURE_MIN = 110
+    LEARN_TWO_COLUMNS = 440            # points side by side from this width of the card's text
+
     def __init__(self, window, *, tab: str = 'chapters'):
         super().__init__(window)
         from ..design.theme_manager import theme_key
@@ -296,7 +332,7 @@ class TutorialCentre(SpringDialog):
         bind_text(self, '新手教学 - 2ByteASR', property='windowTitle')
         self._theme = _Theme(theme)
         self.setStyleSheet(_qss(self._theme))
-        self.setMinimumSize(QSize(860, 560))
+        self.setMinimumSize(QSize(860, 540))
         from . import onboarding
         state = onboarding.load_state()
         self.learned = set(state.get('chapters_done') or ())
@@ -365,10 +401,11 @@ class TutorialCentre(SpringDialog):
         self._refresh_subtitle()
         self.show_tab(tab)
         self.select(self.pick)
+        self.resize(self.OPEN_SIZE)       # landscape; the window's bounds keep it on the screen
 
     # ------------------------------------------------------------ chapters
     def _build_chapters(self) -> QWidget:
-        page = QWidget()
+        page = self.chapters_page = _Resized(self._fit_preview)
         row = QHBoxLayout(page)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(14)
@@ -403,7 +440,9 @@ class TutorialCentre(SpringDialog):
         column.addStretch(1)
         scroll.setWidget(holder)
         row.addWidget(scroll)
-        row.addWidget(self._build_preview(), 1)
+        # The card is as tall as what it shows (no empty card under the button); the still grows
+        # into the page's height instead.
+        row.addWidget(self._build_preview(), 1, Qt.AlignmentFlag.AlignTop)
         return page
 
     def _chapter_row(self, chapter) -> QPushButton:
@@ -461,39 +500,40 @@ class TutorialCentre(SpringDialog):
         return pill
 
     def _build_preview(self) -> QFrame:
-        card = QFrame()
+        card = self.preview_card = QFrame()
         card.setObjectName('centrePreview')
-        column = QVBoxLayout(card)
-        column.setContentsMargins(16, 14, 16, 14)
+        column = self.preview_column = QVBoxLayout(card)
+        column.setContentsMargins(16, 16, 16, 16)
         column.setSpacing(10)
         self.picture = _RoundPicture(self._theme)
         self.picture.setObjectName('previewPicture')
-        self.picture.setFixedHeight(180)
         column.addWidget(self.picture)
         top = QHBoxLayout()
+        top.setSpacing(10)
         self.preview_title = QLabel()
         self.preview_title.setObjectName('previewTitle')
         self.preview_title.setWordWrap(True)
         self.preview_title.setMinimumWidth(0)
         top.addWidget(self.preview_title, 1)
+        self.preview_meta = QLabel()
+        self.preview_meta.setObjectName('centreMeta')
+        top.addWidget(self.preview_meta, 0, Qt.AlignmentFlag.AlignVCenter)
         self.preview_pill_holder = QHBoxLayout()
         top.addLayout(self.preview_pill_holder)
         column.addLayout(top)
-        self.preview_meta = QLabel()
-        self.preview_meta.setObjectName('centreMeta')
-        column.addWidget(self.preview_meta)
         self.preview_learn = QLabel()
         self.preview_learn.setObjectName('previewLearn')
         self.preview_learn.setTextFormat(Qt.TextFormat.RichText)
         self.preview_learn.setWordWrap(True)
         self.preview_learn.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        column.addWidget(self.preview_learn, 1)
+        column.addWidget(self.preview_learn)
+        column.addSpacing(2)
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
         self.bunny = QLabel()
         face = _bunny_face()
         if not face.isNull():
-            self.bunny.setPixmap(face.scaled(52, 52, Qt.AspectRatioMode.KeepAspectRatio,
+            self.bunny.setPixmap(face.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio,
                                              Qt.TransformationMode.SmoothTransformation))
         bottom.addWidget(self.bunny)
         self.start_button = QPushButton()
@@ -503,7 +543,53 @@ class TutorialCentre(SpringDialog):
         bottom.addWidget(self.start_button)
         bottom.addStretch(1)
         column.addLayout(bottom)
+        self._learn_columns = 1
         return card
+
+    def _fit_preview(self) -> None:
+        """Give the still its own proportions, as large as the card's width and the page's height
+        allow (everything else in the card keeps its natural height)."""
+        card = getattr(self, 'preview_card', None)
+        page = getattr(self, 'chapters_page', None)
+        if card is None or page is None or card.width() <= 0:
+            return
+        margins = self.preview_column.contentsMargins()
+        inner = max(1, card.width() - margins.left() - margins.right())
+        columns = 2 if inner >= self.LEARN_TWO_COLUMNS and len(self._learn_lines()) >= 3 else 1
+        if columns != self._learn_columns:
+            self._learn_columns = columns
+            self._render_learn()
+        layout = self.preview_column
+        total = layout.heightForWidth(card.width()) if layout.hasHeightForWidth() else layout.sizeHint().height()
+        room = page.height() - (total - self.picture.sizeHint().height())
+        wanted = round(inner * self.PICTURE_RATIO)
+        self.picture.set_height(max(self.PICTURE_MIN, min(wanted, room)))
+
+    def _learn_lines(self) -> tuple:
+        chapter = tutorial_chapters.BY_ID.get(getattr(self, 'pick', ''))
+        return tuple(chapter.learn) if chapter is not None else ()
+
+    def _render_learn(self) -> None:
+        """「会学到」 and the numbered points: one column, or two once the card is wide."""
+        accent = self._theme.accent
+        cells = [f'<span style="color:{accent}; font-weight:700">{index}.</span>&nbsp; {str(tr(line))}'
+                 for index, line in enumerate(self._learn_lines(), 1)]
+        head = f'<b>{str(tr("会学到"))}</b>'
+        if self._learn_columns == 2:
+            half = (len(cells) + 1) // 2           # read down the first column, then the second
+            rows = ''.join(
+                f'<tr><td width="50%" valign="top" style="padding:4px 14px 0 0">{cells[index]}</td>'
+                f'<td width="50%" valign="top" style="padding:4px 0 0 0">{cells[index + half] if index + half < len(cells) else ""}</td></tr>'
+                for index in range(half))
+            body = f'<table width="100%" cellspacing="0" cellpadding="0">{rows}</table>'
+        else:
+            body = ''.join(f'<div style="margin-top:4px">{cell}</div>' for cell in cells)
+        self.preview_learn.setText(head + body)
+        self._fit_after_text()
+
+    def _fit_after_text(self) -> None:
+        if getattr(self, 'chapters_page', None) is not None and self.chapters_page.isVisible():
+            self._fit_preview()
 
     def select(self, key: str) -> None:
         chapter = tutorial_chapters.BY_ID.get(key)
@@ -533,10 +619,7 @@ class TutorialCentre(SpringDialog):
         self.preview_pill_holder.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
         pill.show()
         bind_text(self.preview_meta, '约 {value0} 分钟', value0=chapter.minutes)
-        accent = self._theme.accent
-        lines = ''.join(f'<div style="margin-top:4px"><span style="color:{accent}; font-weight:700">{index}.</span>'
-                        f'&nbsp; {str(tr(line))}</div>' for index, line in enumerate(chapter.learn, 1))
-        self.preview_learn.setText(f'<b>{str(tr("会学到"))}</b>{lines}')
+        self._render_learn()
         from .home_tour import tutorial_anim_path
         path = tutorial_anim_path(chapter.picture, self._light, still=True)
         self.picture.set_picture(QPixmap(str(path)) if path is not None else QPixmap())

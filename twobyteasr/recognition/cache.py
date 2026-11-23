@@ -540,6 +540,8 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         if policy.get('reuse_candidates'):
             base['saved_candidate_reprocess'] = stable_digest(policy)
             base['reprocess_language'] = runtime_context.requested_language
+    if stage == 'firered':
+        base['firered_adapter_contract'] = 'transcribed-word-admission-v2'
     if stage in {'qwen', 'primary_qwen_local'}:
         from ..subtitle_rules.language_rules import qwen_language_name
         actual_language = runtime_context.task_language or runtime_context.requested_language
@@ -563,6 +565,7 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
     # Version ALL derived identities, including child batches. Independent audio,
     # VAD, FireRed and Qwen evidence keep their existing signatures.
     if stage in {"firered_primary", "firered_llm", "polished", "grouped", "grouped_local", "final_timing"}:
+        base["firered_admission"] = "transcribed-word-admission-v2"
         base["primary_context_contract"] = "moss-full-context-v1"
         base["local_review_contract"] = "qwen-worker-shared-float32-v1-particle-safe-v1"
         # Japanese tasks use different text rules and timing evidence. Chinese
@@ -660,6 +663,7 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
                     runtime_profile=runtime_content_profile_signature())
     elif stage == "grouped":
         from ..providers.asr_provider_snapshot import task_provider_snapshot, GROUP_CACHE_VERSION
+        from ..subtitle_rules.grouping_editor import PROMPT_VERSION, enabled as editor_enabled
         snapshot = provider_snapshot or task_provider_snapshot("group")
         endpoint = snapshot.endpoint()
         base.update(
@@ -676,6 +680,8 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
                 "runtime_profile": runtime_content_profile_signature(),
             }
         )
+        if editor_enabled(runtime_context):
+            base["grouping_editor"] = PROMPT_VERSION
     elif stage == "firered_primary":
         # 主播人数直接决定哪些 MOSS 标签进入成片。必须进入缓存签名，
         # 否则同一素材先按两人运行后再改成三人仍会命中旧的两人主稿。
@@ -688,8 +694,10 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
         }})
     elif stage == "final_timing":
         from ..subtitle_rules.number_fidelity import RULE_VERSION, preference
+        from ..providers.asr_provider_snapshot import GROUP_CACHE_VERSION
         base.update({"logic": TIMING_LOGIC_VERSION, 'fidelity_rules': RULE_VERSION,
-                     'prefer_arabic_numbers': preference(), 'cohesion_rules': 2})
+                     'prefer_arabic_numbers': preference(), 'cohesion_rules': 2,
+                     'grouping_boundary_contract': GROUP_CACHE_VERSION})
     elif stage == "firered_llm":
         base.update({"logic": file_digest(__file__)})
     if extra is not None:
@@ -985,7 +993,8 @@ def run_cached_api_batch(
         value = resume(cached_partial) if cached_partial is not None else runner()
     require_current()
     if grouped_data and (validator is None or not validator(value)):
-        raise ValueError("断句批次结果未通过来源契约；未提交或缓存。")
+        from ..subtitle_rules.grouping_contract import GroupingContractError
+        raise GroupingContractError("断句批次结果未通过来源契约；未提交或缓存。")
     require_current()
     extend_review_items(batch_review_items)
     used_fallback = any(

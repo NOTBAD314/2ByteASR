@@ -94,6 +94,8 @@ DEFAULT_SETTINGS = {
         "dialogue_coverage_mode": "all_dialogue",
         "enable_ai_polish": True,
         "use_ai_grouping": True,
+        "grouping_ai_editor": False,
+        "background_lyrics": True,
         "unified_glm_processing": True,
         "prefer_arabic_numbers": True,
         # 2026-10-13：新任务的字幕标点。original=保留原文（升级与默认都不改变输出），
@@ -347,7 +349,7 @@ def _merge_known_settings(defaults, payload):
             "none",
         },
         "qwen_asr_backend": {
-            "api", "local", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
+            "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
         },
         "firered_asr_backend": {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "mlx_qwen_aligner", "mfa_aligner", "whisper_turbo", "paraformer", "off"},
     }

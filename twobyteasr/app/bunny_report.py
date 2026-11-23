@@ -444,16 +444,40 @@ def looks_like_task(payload) -> bool:
         'stages' in payload or 'journal_version' in payload)
 
 
-MAX_FILE_BYTES = 80 * 1024 * 1024
+_ANALYSIS_EVENTS = frozenset({
+    "audio_stream_selected", "asr_language_control", "cloud_language_policy", "asr_language_request",
+    "asr_shard_ready", "grouping_timing_evidence", "polishing_api_fallback", "grouping_trace",
+    "grouping_model_quality", "grouping_minimal_fallback", "grouping_quality_retry",
+    "final_subtitle_validation", "final_display_overlap_classification", "polishing_summary",
+    "FIRERED_ALIGNMENT_STATUS", "studio_project_saved", "studio_project_failed",
+})
 
 
-def load(path, *, local_journal=False) -> dict:
+def _select_analysis_event(row):
+    if not isinstance(row, dict):
+        return False
+    name = str(row.get("event") or "")
+    return (name in _ANALYSIS_EVENTS or name == "display_boundary_phase"
+            and row.get("phase") == "final_half_open_display" or name.startswith("domain_term_"))
+
+
+def _map_analysis_event(row):
+    if row.get("event") in {"grouping_trace", "grouping_quality_retry", "grouping_model_quality"}:
+        return {key: row[key] for key in ("event", "batch_id", "status", "reason", "result_status") if key in row}
+    return row
+
+
+def load(path, *, local_journal=False, cancel=None) -> dict:
+    from ..recognition.report_stream import INLINE_BYTES, project_report
+
     path = Path(path)
-    if path.stat().st_size > MAX_FILE_BYTES:
-        raise ValueError('文件太大')
     if local_journal and path.name == 'task.json':
-        from ..recognition.task_journal import report_payload
-        return report_payload(path)
+        from ..recognition.task_journal import history_report
+        return history_report(path, cancel=cancel, select_event=_select_analysis_event,
+                              map_event=_map_analysis_event)[0]
+    if path.stat().st_size > INLINE_BYTES:
+        return project_report(path, cancel=cancel, collect_pages=False, select_event=_select_analysis_event,
+                              map_event=_map_analysis_event)[0]
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 

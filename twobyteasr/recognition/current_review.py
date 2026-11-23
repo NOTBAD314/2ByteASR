@@ -8,13 +8,29 @@ TEXT_CATEGORIES = {'多模型争议', '术语候选', '术语候选待确认', '
 WARNINGS = {'校对回退', '断句回退'}
 
 
+SHORT_SECONDS = .45
+
+
+def reading_limits(project):
+    """(text length function, warning characters per second) the review counts with."""
+    # The facade initializes text_rules and polishing together. Importing
+    # text_rules first here leaves polishing with a partially populated core.
+    from subtitle_core import REVIEW_FAST_CHARS_PER_SECOND, display_length
+    language=project.generation_metadata.get('language') or {}
+    tag=language.get('locale') or language.get('code') if isinstance(language,dict) else language
+    if tag:
+        from ..subtitle_rules.segmentation_profiles import profile_for,measure
+        return (lambda text:measure(text,tag)), profile_for(tag).warning_cps
+    return display_length, REVIEW_FAST_CHARS_PER_SECOND
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 def current_review(project, report):
     from .processing_recovery import _input_text
-    from ..subtitle_rules.review_evidence_policy import evidence_only_reason
+    from ..subtitle_rules.review_evidence_policy import evidence_only_reason, note_only
     job = str(report.get('job_id') or project.generation_metadata.get('job_id') or project.project_id)
     cues = {str(c.id): c for c in project.cues}
     refs = defaultdict(list)
@@ -44,23 +60,12 @@ def current_review(project, report):
     sources = [r for r in raw if r.get('category') not in ('阅读较快', '显示过短')]
     # These two rules are deterministic and can be recomputed from CURRENT
     # caption text/times, including edits and restored/ignored speakers.
-    # The facade initializes text_rules and polishing together. Importing
-    # text_rules first here leaves polishing with a partially populated core.
-    from subtitle_core import REVIEW_FAST_CHARS_PER_SECOND, display_length
-    language=project.generation_metadata.get('language') or {}
-    tag=language.get('locale') or language.get('code') if isinstance(language,dict) else language
-    if tag:
-        from ..subtitle_rules.segmentation_profiles import profile_for,measure
-        policy=profile_for(tag)
-        text_length=lambda text:measure(text,tag)
-        fast_limit=policy.warning_cps
-    else:
-        text_length=display_length;fast_limit=REVIEW_FAST_CHARS_PER_SECOND
+    text_length, fast_limit = reading_limits(project)
     for cue in project.cues:
         duration = max(.001, (cue.end_ms-cue.start_ms)/1000)
         length = text_length(cue.text)
         reasons = []
-        if duration < .45:
+        if duration < SHORT_SECONDS:
             reasons.append(('显示过短', f'只显示 {duration:.2f} 秒'))
         if length >= 8 and length/duration > fast_limit:
             reasons.append(('阅读较快', f'约 {length/duration:.1f} 字/秒'))
@@ -69,7 +74,7 @@ def current_review(project, report):
     for source in sources:
         row = dict(source)
         category = str(row.get('category') or '')
-        if evidence_only_reason(category):
+        if evidence_only_reason(category) or note_only(row):
             row['severity'] = 'info'
             historical.append(row)
             continue

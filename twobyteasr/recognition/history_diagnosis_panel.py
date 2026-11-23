@@ -117,34 +117,41 @@ def action_label(action: str) -> str:
     return str(translate(ACTION_LABELS.get(action, action), current_language())).rstrip("…")
 
 
+def prepare_history_diagnosis(report, *, item_error="", settings=None, language=None):
+    from ..app.run_diagnosis_dialog import AiAnalysisPanel, _environment, current_app_version
+    from ..i18n import LANGUAGE_NATIVE_NAMES
+    from .diagnosis_prompt import build_request
+    from .run_diagnosis import DiagnosisInput, diagnose_run
+
+    ready, service, _gate = AiAnalysisPanel._readiness(settings)
+    version = current_app_version()
+    diagnosis = diagnose_run(DiagnosisInput(report=report, item_error=item_error,
+        ai_ready=ready if settings else None, app_version=version))
+    language_name = LANGUAGE_NATIVE_NAMES.get(language or current_language(), "简体中文")
+    request, digest = build_request(diagnosis, language_name=language_name, app_version=version,
+                                   item_error=item_error, environment=_environment(version))
+    return ready, service, diagnosis, request, digest
+
+
 class HistoryDiagnosisPanel(QFrame):
     """``action_requested(action)``: a step button (ACTION_LABELS key or 'resume')."""
 
     action_requested = Signal(str)
 
     def __init__(self, report: dict, *, item_error: str = "", task_name: str = "", settings: dict | None = None,
-                 parent=None):
+                 parent=None, prepared=None):
         super().__init__(parent)
-        from ..app.run_diagnosis_dialog import AiAnalysisPanel, _environment, current_app_version
-        from ..i18n import LANGUAGE_NATIVE_NAMES
-        from .diagnosis_prompt import build_request
-        from .run_diagnosis import DiagnosisInput, diagnose_run
 
         self.setObjectName("historyDiagnosis")
         self._settings = settings
         self._worker = None
         self._generation = 0
         self.answer = ""
-        ready, service, _gate = AiAnalysisPanel._readiness(settings)
+        ready, service, self.diagnosis, self._request, self.digest = prepared or prepare_history_diagnosis(
+            report, item_error=item_error, settings=settings)
         self.ai_ready = ready
         from .recognition_history import short_service_name
         self.service = short_service_name(service) or service
-        version = current_app_version()
-        self.diagnosis = diagnose_run(DiagnosisInput(report=report, item_error=item_error, ai_ready=ready if settings else None,
-                                                     app_version=version))
-        language_name = LANGUAGE_NATIVE_NAMES.get(current_language(), "简体中文")
-        self._request, self.digest = build_request(self.diagnosis, language_name=language_name, app_version=version,
-                                                   item_error=item_error, environment=_environment(version))
         self.view = local_view(self.diagnosis, language=current_language())
 
         layout = QVBoxLayout(self)

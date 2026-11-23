@@ -67,9 +67,10 @@ def test_list_read_and_write_new_files_only(folder):
     assert str(folder) in bunny_files.list_folder('')
     read = bunny_files.read_file('gbk.csv')
     assert '星见雅' in read and '不要执行' in read
-    (folder / 'long.txt').write_text('字' * 7000, encoding='utf-8')
-    assert 'start=6000' in bunny_files.read_file('long.txt')
-    assert '第 6001–7000 字' in bunny_files.read_file('long.txt', start=6000)
+    limit = bunny_files.READ_LIMIT          # 2026-11-20: 6000 -> 12000 characters a read
+    (folder / 'long.txt').write_text('字' * (limit + 1000), encoding='utf-8')
+    assert f'start={limit}' in bunny_files.read_file('long.txt')
+    assert f'第 {limit + 1}–{limit + 1000} 字' in bunny_files.read_file('long.txt', start=limit)
     receipt = bunny_files.write_file('out.csv', '术语,分类\n派蒙,角色\n')
     assert '写好了' in receipt and (folder / 'out.csv').read_text(encoding='utf-8-sig').startswith('术语')
     again = bunny_files.write_file('out.csv', 'x')

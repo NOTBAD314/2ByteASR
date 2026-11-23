@@ -25,6 +25,10 @@ def paint(timeline, painter):
         painter.setPen(QPen(QColor('#e6bf7b'), 2 if drag and drag['track'] == key else 1.5))
         painter.drawLine(rect.topLeft()+QPointF(0,5), rect.topRight()+QPointF(0,5))
         painter.setBrush(QColor('#e6bf7b')); painter.drawRoundedRect(QRectF(rect.left()+5, rect.top(), 14, 10), 3, 3)
+        # 2026-11-23: the value now sits in the track header; the label over
+        # the waveform only shows while this line is hovered or dragged.
+        if not ((drag and drag['track'] == key) or getattr(timeline, '_track_gain_hover', '') == key):
+            continue
         painter.setPen(QColor('#ffffff')); painter.setBrush(QColor('#302c35'))
         label = f'{key}  轨道音量 {value:+.1f} dB'
         box = QRectF(rect.left()+25, rect.top()-16, timeline.fontMetrics().horizontalAdvance(label)+14, 20)

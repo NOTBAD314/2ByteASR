@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QLabel, QLineEdit, QPushButt
 
 from ..design.presentation import button_role
 from ..design.studio_theme import _active_theme, apply_secondary_surface_theme, build_secondary_surface_qss
+from ..recognition.background_lyrics import SPEAKER_ID as LYRICS_SPEAKER_ID
 from ..timeline.studio_edit_sequence import projected_cues
 from .studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts, planned_subtitle_files
 from .subtitle_export_widgets import (SPEAKER_CHOICES, ChipFlowLayout, FileList, SegmentedChoice,
@@ -64,9 +65,10 @@ class CompletionExportDialog(QDialog):
         body.addWidget(section_label("说话人"))
         counts = Counter(c.speaker_id for c in projected_cues(self.project))
         names = {s.id: s.name for s in self.project.speakers}
+        hidden_lyrics = LYRICS_SPEAKER_ID in self.project.hidden_speaker_ids()
         chips_host = QWidget()
         chips = ChipFlowLayout(chips_host)
-        self.all_speakers = chip("全部说话人", checked=True)
+        self.all_speakers = chip("全部说话人", checked=not (hidden_lyrics and LYRICS_SPEAKER_ID in counts))
         self.all_speakers.toggled.connect(self._select_all)
         chips.addWidget(self.all_speakers)
         self.speaker_chips: dict[str, QPushButton] = {}
@@ -75,7 +77,7 @@ class CompletionExportDialog(QDialog):
             if sid == "S00":
                 label = tr("未判定")
             button = chip("")
-            button.setChecked(True)
+            button.setChecked(sid != LYRICS_SPEAKER_ID or not hidden_lyrics)
             button.setText(tr("{name} · {count} 条", name=label, count=count))
             button.setToolTip(sid)
             button.setProperty("speakerId", sid)

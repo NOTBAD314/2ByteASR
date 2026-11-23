@@ -195,6 +195,14 @@ class StorageService:
 
     @contextmanager
     def _db(self):
+        db = self._connect()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def _connect(self):
         if not safe_path(self.db_path,(self.state_root,)):
             raise OSError('存储索引路径含链接或不可确认祖先')
         self.state_root.mkdir(parents=True, exist_ok=True)
@@ -204,11 +212,7 @@ class StorageService:
         db.execute('PRAGMA busy_timeout=5000')
         db.execute('CREATE TABLE IF NOT EXISTS entries(path TEXT PRIMARY KEY, category TEXT, producer TEXT, source TEXT, rebuild TEXT, protected TEXT, used REAL)')
         db.execute('CREATE TABLE IF NOT EXISTS leases(path TEXT, owner TEXT, token TEXT PRIMARY KEY)')
-        try:
-            with db:
-                yield db
-        finally:
-            db.close()
+        return db
 
     def register(self, path, category, *, source='', producer='', rebuild='local', protected_reason=''):
         path = str(Path(path).absolute())
@@ -320,8 +324,8 @@ class StorageService:
             # Unknown lease state must not become an executable plan.
             index_failed=True
         else:index_failed=False
-        from ..recognition.task_journal import protected_paths, depends_on
-        recognition_dependencies = protected_paths()
+        from ..recognition.task_journal import protected_paths, dependency_matcher
+        recognition_dependency = dependency_matcher(protected_paths())
         seen=set()
         for root in self.roots:
             if not root.exists():
@@ -367,7 +371,7 @@ class StorageService:
                             if path.is_relative_to(self.paths.managed_runtime_root/'download-cache'):
                                 category,producer,rebuild,protected='uv','uv','download','包管理器缓存；仅通过官方 uv 维护入口处理'
                             reason = protected
-                            if depends_on(path, recognition_dependencies):
+                            if recognition_dependency(path):
                                 reason = '未完成识别任务的恢复产物；保留以供继续处理'
                             warning=''
                             if protected.startswith('仅手动确认：'):
@@ -568,24 +572,33 @@ class StorageService:
             media_blocks,reference_snapshot=self._media_reference_state(media,cancel)
         else:media_blocks={};reference_snapshot=None
         adoption_skips={}
-        from ..recognition.task_journal import protected_paths, depends_on
-        recognition_dependencies = protected_paths()
+        from ..recognition.task_journal import protected_paths, dependency_matcher
+        recognition_dependency = dependency_matcher(protected_paths())
         if adopt_legacy:
             from .storage_legacy import adopt
             legacy=[i for i in items if i.producer.endswith('_legacy') and i.manual_cleanable]
             if legacy:
                 adoption=adopt(self,legacy,cancel=cancel)
                 adoption_skips={i['path']:i['reason'] for i in adoption['skipped'] if 'path' in i}
-        for item in items:
+        # One index connection for the whole pass (2026-11-23): opening it per
+        # file re-checked every ancestor folder and re-read the schema each time.
+        connection = None
+        for position, item in enumerate(items):
             if cancel.is_set():
                 result.cancelled = True
                 break
             record = dict(path=item.path, size=item.size)
-            if depends_on(item.path, recognition_dependencies):
-                result.skipped.append(dict(record, reason='未完成识别任务仍依赖此产物'));continue
             if (self.busy if automatic else self.manual_busy)():
-                result.skipped.append(dict(record, reason='应用正在识别／播放／导出／安装；稍后重试'))
+                # The busy state does not change between files: an automatic
+                # pass stops here instead of checking every remaining file.
+                reason = '应用正在识别／播放／导出／安装；稍后重试'
+                if automatic:
+                    result.skipped.extend(dict(path=rest.path, size=rest.size, reason=reason) for rest in items[position:])
+                    break
+                result.skipped.append(dict(record, reason=reason))
                 continue
+            if recognition_dependency(item.path):
+                result.skipped.append(dict(record, reason='未完成识别任务仍依赖此产物'));continue
             if item.path in adoption_skips:
                 result.skipped.append(dict(record,reason=adoption_skips[item.path]));continue
             if item.path in media_blocks:
@@ -598,7 +611,9 @@ class StorageService:
             volume = path.anchor
             try:
                 before.setdefault(volume, shutil.disk_usage(path.parent).free)
-                with self._db() as db:
+                if connection is None:
+                    connection = self._connect()
+                with connection as db:
                     db.execute('BEGIN IMMEDIATE')
                     row = db.execute('SELECT category,producer,source,rebuild,protected,used FROM entries WHERE path=?', (item.path,)).fetchone()
                     owners = db.execute('SELECT owner FROM leases WHERE path=?', (item.path,)).fetchall()
@@ -649,6 +664,12 @@ class StorageService:
                     if st.st_nlink > 1:
                         result.skipped.append(dict(record, reason='共享硬链接：需单独核对依赖'))
                         continue
+                    # The GUI can become busy while validation or SQLite waits.
+                    if automatic and (cancel.is_set() or self.busy()):
+                        result.cancelled = cancel.is_set()
+                        reason = '应用正在识别／播放／导出／安装；稍后重试'
+                        result.skipped.extend(dict(path=rest.path, size=rest.size, reason=reason) for rest in items[position:])
+                        break
                     path.unlink()
                     if path.exists():
                         raise OSError('文件仍存在')
@@ -662,6 +683,8 @@ class StorageService:
                 result.pending.append(dict(record, reason=f'权限／文件占用，等待释放后重试: {exc}'))
             except (OSError, sqlite3.Error) as exc:
                 result.failed.append(dict(record, reason=str(exc)))
+        if connection is not None:
+            connection.close()
         for volume, free in before.items():
             try:
                 result.observed_free_delta[volume] = shutil.disk_usage(volume).free-free

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
@@ -14,6 +15,22 @@ MAX_BYTES = 24 * 1024 * 1024
 # Chat card, tutorial, save and recovery questions, loading pages: a few sizes at once, each well
 # under a megabyte at normal zoom, so the prepared ones stay instead of being prepared again.
 MAX_SIZES = 8
+QUIET_WAIT_S = 2.0
+
+
+def _wait_for_quiet(until: float) -> None:
+    """Hold the next layer while a dialog or page motion plays (at most until ``until``).
+
+    2026-11-20 (user: the settings open at a low frame rate): decoding and scaling one layer is a
+    single Qt call of tens of milliseconds that keeps Python's lock, so the GUI thread could not
+    run the motion's frames; opened during a start, the settings stood still for 350 ms while
+    her layers were prepared for the window's bunny. Nothing waits on these pictures."""
+    try:
+        from .transitions import motion_playing
+        while time.monotonic() < until and motion_playing():
+            time.sleep(0.02)
+    except Exception:  # noqa: BLE001 - preparation goes on regardless
+        return
 
 
 class MascotAssets(QObject):
@@ -49,10 +66,12 @@ class MascotAssets(QObject):
                     manifest = json.loads((self.root / 'alpha-bounds.json').read_text('utf8'))
                     bounds = manifest.get('images', {})
                     factor = height / self.rig['trim'][3] * ratio
+                    quiet_until = time.monotonic() + QUIET_WAIT_S
                     for layer in self.rig['layers']:
                         for name in (layer.get('img'), layer.get('mask')):
                             if not name or name in images:
                                 continue
+                            _wait_for_quiet(quiet_until)
                             data = (self.root / name).read_bytes()
                             source = QImage.fromData(data)
                             if source.isNull():

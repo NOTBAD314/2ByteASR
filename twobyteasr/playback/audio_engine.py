@@ -881,6 +881,7 @@ class _AudioEngineWorker(QObject):
             "ffmpeg_process_alive": bool(process is not None and process_returncode is None),
             "ffmpeg_returncode": process_returncode,
             "decoder_command": list(self._decoder_command),
+            "decoder_pid": process.pid if process is not None else None,
             "decoder_read_count": self._decoder_read_count,
             "decoder_first_read_ms": round(
                 (self._decoder_first_read_at - self._decode_started_at) * 1000.0, 3
@@ -1041,11 +1042,13 @@ class _AudioEngineWorker(QObject):
         spec = self._output_spec
         raw_ratio = device._raw_ratio
         def errors():
-            from ..providers.provider_diagnostics import redact_diagnostics
-            for line in iter(process.stderr.readline, b''):
-                if self.process is not process or stop_event.is_set():return
-                self._decoder_error = redact_diagnostics(line.decode('utf8',errors='replace').strip())[-600:]
-        threading.Thread(target=errors, name='studio-audio-errors', daemon=True).start()
+            from .audio_diagnostics import AudioStderr
+            collector = AudioStderr()
+            collector.drain(process.stderr)
+            if self.process is process and not stop_event.is_set():
+                self._decoder_error = collector.text()
+        stderr_reader = threading.Thread(target=errors, name='studio-audio-errors', daemon=True)
+        stderr_reader.start()
 
         def feed() -> None:
             stream = process.stdout
@@ -1165,6 +1168,7 @@ class _AudioEngineWorker(QObject):
                     if generation == device._generation:
                         device.end_of_stream = True
                 if self.process is not process or generation!=device._generation:return
+                stderr_reader.join(timeout=.25)
                 self._decoder_returncode = process.poll()
                 self._trace_decoder(
                     "AUDIO_DECODER_EXIT",
@@ -1575,6 +1579,10 @@ class StudioAudioEngine(QObject):
                             sink_consumed_bytes=int(payload.get("sink_consumed_bytes") or 0),
                             source_path=str(payload.get("source_path") or ""),
                         )
+
+    def cold_output_pending(self):
+        return bool(self._last_payload.get('audible') and
+                    getattr(self._worker, 'cold_output_pending', False))
 
     def synchronize_mix(self, layers, *, paused: bool, transport_rate: float, volume: float) -> None:
         audible = [_with_decode_source(dict(layer)) for layer in layers if layer.get("source_path")]

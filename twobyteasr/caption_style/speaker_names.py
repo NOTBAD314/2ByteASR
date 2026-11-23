@@ -17,14 +17,59 @@ def prefix(speaker_id, speakers):
     return name + '：'
 
 
+def name_mark(speaker_id, speakers):
+    """Display attributes of a speaker's name prefix: colour, face, weight.
+
+    Empty fields follow the caption, so unstyled names render as before.
+    """
+    speaker = next((item for item in speakers if item.id == speaker_id), None)
+    mark = {}
+    color = str(getattr(speaker, 'name_color', '') or '').strip()
+    font = str(getattr(speaker, 'name_font', '') or '').strip()
+    if color:
+        mark['color'] = color
+    if font:
+        mark['font'] = font
+    if getattr(speaker, 'name_bold', False):
+        mark['bold'] = True
+    return mark
+
+
+def prefixed_marks(marks, name, mark):
+    """Body marks moved behind the name, plus the name's own mark."""
+    shifted = [dict(m, start=int(m['start'])+len(name), end=int(m['end'])+len(name))
+               for m in marks or () if isinstance(m, dict) and 'start' in m and 'end' in m]
+    return ([dict(mark, start=0, end=len(name))] if mark else []) + shifted
+
+
+def apply_name_marks(cue):
+    """Re-anchor a decorated display copy's marks after its body marks changed."""
+    name = getattr(cue, '_speaker_name_prefix', '')
+    if not name or not str(cue.text).startswith(name):
+        return cue
+    from collections.abc import Mapping
+    override = cue.appearance_override or {}
+    if not isinstance(override, Mapping):
+        from ..projects.studio_revisions import thaw_json
+        override = thaw_json(override) or {}
+    override = copy.deepcopy(dict(override))
+    marks =prefixed_marks(override.get('text_marks', []), name, getattr(cue, '_speaker_name_mark', {}))
+    if marks or 'text_marks' in override:
+        override['text_marks'] = marks
+        cue.appearance_override = override
+    return cue
+
+
 def decorate(cue, speakers):
     if not str(cue.text).strip() or getattr(cue, '_speaker_name_prefix', ''):
         return cue
     result = copy.copy(cue)
     result._speaker_name_body = cue.text
     result._speaker_name_prefix = prefix(cue.speaker_id, speakers)
+    result._speaker_name_mark = name_mark(cue.speaker_id, speakers)
     result.text = result._speaker_name_prefix + cue.text
-    return result
+    # Marks are stored on the copy, so frozen/exported display cues keep them.
+    return apply_name_marks(result)
 
 
 def display_text_cues(project, cues):

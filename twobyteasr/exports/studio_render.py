@@ -25,10 +25,17 @@ from ..system.processes import (
 )
 
 
+# 2026-11-22 (user: only this year's NVIDIA drivers accelerate; machines
+# without an NVIDIA card burn on the CPU): the bundled FFmpeg 9 builds NVENC
+# against a new SDK, so older drivers fail its probe. Media Foundation ("_mf")
+# reaches the same GPU through the encoder the display driver itself installs
+# (NVIDIA, AMD and Intel all ship one), with no SDK version to match. It comes
+# after the vendor encoders and before software; "-hw_encoding 1" keeps it
+# off Microsoft's CPU-only encoder.
 VIDEO_ENCODERS = {
-    "h264": ("h264_nvenc", "h264_qsv", "h264_amf", "libx264"),
-    "hevc": ("hevc_nvenc", "hevc_qsv", "hevc_amf", "libx265"),
-    "av1": ("av1_nvenc", "av1_qsv", "av1_amf", "libsvtav1", "libaom-av1"),
+    "h264": ("h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"),
+    "hevc": ("hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "libx265"),
+    "av1": ("av1_nvenc", "av1_qsv", "av1_amf", "av1_mf", "libsvtav1", "libaom-av1"),
 }
 HARDWARE_ENCODERS = {
     name for names in VIDEO_ENCODERS.values() for name in names if not name.startswith("lib")
@@ -43,7 +50,30 @@ _SVT_AV1_NAMED_PRESETS = {
     "speed": "10", "balanced": "8", "quality": "6",
 }
 PROBE_FRAME_SIZE = "640x360"
-CAPABILITY_SCHEMA = 3
+# 4: Media Foundation hardware encoders joined the scan; older caches never
+# probed them, so they are scanned again once.
+CAPABILITY_SCHEMA = 4
+
+
+def encoder_device_arguments(encoder: str) -> list[str]:
+    """Options that keep an encoder on the GPU (probe and render alike)."""
+    return ["-hw_encoding", "1"] if str(encoder).endswith("_mf") else []
+
+
+def encoder_accepts_profile_level(encoder: str) -> bool:
+    # Media Foundation chooses profile and level itself and rejects names
+    # such as "high" ("Unable to parse profile option value").
+    return not str(encoder).endswith("_mf")
+
+
+def encoder_pixel_format(encoder: str, pixel_format: str) -> str:
+    # Both formats are 8-bit 4:2:0. Some hardware MFTs accept only the
+    # semiplanar NV12 layout even though FFmpeg also advertises yuv420p.
+    if encoder.endswith("_mf") and pixel_format == "yuv420p":
+        return "nv12"
+    return pixel_format
+
+
 CONTAINER_CODECS = {
     "mp4": ("h264", "hevc", "av1"),
     "mkv": ("h264", "hevc", "av1"),
@@ -362,18 +392,20 @@ def probe_encoder_detail(
     if settings is not None:
         settings.validate()
     frame_size = (f'{settings.width}x{settings.height}' if settings and settings.width and settings.height else PROBE_FRAME_SIZE)
-    pixel_format = settings.pixel_format if settings else 'yuv420p'
+    pixel_format = encoder_pixel_format(encoder, settings.pixel_format if settings else 'yuv420p')
     rate = settings.fps if settings and settings.fps else 24
     command = [
         ffmpeg_path, "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", f"color=c=black:s={frame_size}:r={rate:.12g}",
         "-frames:v", "8", "-an", "-pix_fmt", pixel_format, "-c:v", encoder,
+        *encoder_device_arguments(encoder),
     ]
     if settings is not None:
         preset = encoder_preset(encoder, settings.preset)
         if preset:command += ['-preset', preset]
-        if settings.profile:command += ['-profile:v', settings.profile]
-        if settings.level:command += ['-level:v', settings.level]
+        if encoder_accepts_profile_level(encoder):
+            if settings.profile:command += ['-profile:v', settings.profile]
+            if settings.level:command += ['-level:v', settings.level]
     command += ['-f', 'null', null_target]
     result: dict[str, object] = {
         "encoder": encoder,
@@ -635,6 +667,8 @@ def _filter_path(path: str | os.PathLike[str]) -> str:
 def encoder_preset(encoder: str, preset: str) -> str:
     """Return a ``-preset`` value the selected encoder accepts ("" = encoder default)."""
     value = str(preset or "").strip()
+    if str(encoder).endswith("_mf"):
+        return ""  # Media Foundation has no speed presets.
     if encoder != "libsvtav1" or not value:
         return value
     try:
@@ -673,6 +707,17 @@ def _quality_arguments(encoder: str, settings: RenderSettings) -> list[str]:
         if mode == "target":
             return ["-rc", "vbr_peak", "-b:v", f"{settings.bitrate_kbps}k"]
         return ["-rc", "vbr_peak", "-b:v", f"{settings.bitrate_kbps}k", "-maxrate", f"{settings.max_bitrate_kbps}k"]
+    if encoder.endswith("_mf"):
+        if mode in {"cq", "crf"}:
+            # MF quality runs 0-100 (higher is better); hardware encoders map
+            # it onto QP 51..0, so the CQ number keeps the same picture.
+            quality = round((51 - float(settings.quality)) * 100 / 51)
+            return ["-rate_control", "quality", "-quality", str(max(1, min(100, quality)))]
+        if mode == "cbr":
+            return ["-rate_control", "cbr", "-b:v", f"{settings.bitrate_kbps}k"]
+        if mode == "target":
+            return ["-rate_control", "u_vbr", "-b:v", f"{settings.bitrate_kbps}k"]
+        return ["-rate_control", "pc_vbr", "-b:v", f"{settings.bitrate_kbps}k", "-maxrate", f"{settings.max_bitrate_kbps}k"]
     if mode in {"crf", "cq"}:
         return ["-crf", str(settings.quality)]
     if mode == "target":
@@ -774,16 +819,16 @@ def build_render_command(
             command.extend(["-map", "0:v:0", *audio_maps, "-vf", ",".join(filters)])
         if raw and not audio_map:
             command.append('-an')
-    command.extend(["-c:v", encoder, *_quality_arguments(encoder, settings)])
+    command.extend(["-c:v", encoder, *encoder_device_arguments(encoder), *_quality_arguments(encoder, settings)])
     preset = encoder_preset(encoder, settings.preset)
     if preset:
         command.extend(["-preset", preset])
-    if settings.profile:
+    if settings.profile and encoder_accepts_profile_level(encoder):
         command.extend(["-profile:v", settings.profile])
-    if settings.level:
+    if settings.level and encoder_accepts_profile_level(encoder):
         command.extend(["-level:v", settings.level])
     if settings.pixel_format:
-        command.extend(["-pix_fmt", settings.pixel_format])
+        command.extend(["-pix_fmt", encoder_pixel_format(encoder, settings.pixel_format)])
     if settings.fps > 0:
         command.extend(["-r", f"{settings.fps:.12g}"])
     if settings.gop > 0:
@@ -831,10 +876,10 @@ def render_fallback_job(job: RenderJob, error: BaseException) -> tuple[RenderJob
     message = str(error).lower()
     encoder = str(job.settings.encoder or "")
     hardware_markers = (
-        "nvenc", "qsv", "amf", "no capable", "device setup", "cannot load",
-        "initializing output stream", "function not implemented",
+        "nvenc", "qsv", "amf", "mft", "no capable", "device setup", "cannot load",
+        "initializing output stream", "function not implemented", "format negotiation failed",
     )
-    if encoder.endswith(("_nvenc", "_qsv", "_amf")) and any(
+    if encoder.endswith(("_nvenc", "_qsv", "_amf", "_mf")) and any(
         marker in message for marker in hardware_markers
     ):
         software = _software_encoder(job.settings.codec)

@@ -20,6 +20,8 @@ foreach ($required in @("2ByteASR.exe", "2ByteASRUpdater.exe", "2byteasr_compone
     if (-not (Test-Path -LiteralPath (Join-Path $payload $required))) { throw "Missing runtime: $required" }
 }
 $files = @(Get-ChildItem -LiteralPath $payload -File -Recurse -Force)
+$longestPayloadPath = ($files | ForEach-Object {$_.FullName.Length - $payload.Length - 1} |
+    Measure-Object -Maximum).Maximum
 $bad = @($files | Where-Object {
     $relative = $_.FullName.Substring($payload.Length + 1)
     $privateFolder = $relative -match '(^|[\\/])(\.git|__pycache__|\.pytest_cache|\.mimosa|tmp|logs|reports)([\\/]|$)'
@@ -54,7 +56,7 @@ if ($CandidateId) {
     $compilerArgs += "/DCandidateId=$CandidateId"
 }
 $numericVersion = ($version -split "[-+]")[0]
-$compilerArgs += @("/DPayloadDir=$payload", "/DReleaseDir=$release", "/DMyAppVersion=$version", "/DMyAppNumericVersion=$numericVersion", (Join-Path $projectRoot 'installer\2ByteASR-frozen.iss'))
+$compilerArgs += @("/DPayloadDir=$payload", "/DReleaseDir=$release", "/DMyAppVersion=$version", "/DMyAppNumericVersion=$numericVersion", "/DLongestPayloadPath=$longestPayloadPath", (Join-Path $projectRoot 'installer\2ByteASR-frozen.iss'))
 & $compiler @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
 $hashStream = [IO.File]::OpenRead($output)

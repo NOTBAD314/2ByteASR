@@ -40,9 +40,9 @@ def new_evidence_token() -> str:
 
 
 def glossary_learning_path(base: str | os.PathLike[str] | None = None) -> Path:
-    root = Path(base) if base is not None else Path(
-        os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
-    ) / "2ByteASR" / "SubtitleStudioPreview"
+    from ..runtime_paths import user_data_root
+
+    root = Path(base) if base is not None else user_data_root() / "SubtitleStudioPreview"
     return root / "glossary-learning.json"
 
 

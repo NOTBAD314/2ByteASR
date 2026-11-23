@@ -1270,6 +1270,10 @@ def substitute_placeholders(
 ) -> str:
     """Fill the v1 placeholders (Python side mirrors the TSX runtime)."""
     from ..caption_style.caption_text_layout import normalized_caption_text
+    from .web_theme_marks import marks_attribute, split_marked
+    # The cue's own marks arrive after the text; the shared runtime groups the characters.
+    text, cue_marks = split_marked(text)
+    cue_marks = marks_attribute(cue_marks)
     text = normalized_caption_text(text or '')
     escaped = (
         str(text or "")
@@ -1277,8 +1281,8 @@ def substitute_placeholders(
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    escaped = '<span data-caption-text="true">' + escaped + '</span>'
-    words = '<span data-caption-text="true">' + "".join(
+    escaped = f'<span data-caption-text="true"{cue_marks}>' + escaped + '</span>'
+    words = f'<span data-caption-text="true"{cue_marks}>' + "".join(
         f'<span class="wt-w">{char.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</span>'
         if not char.isspace() else char
         for char in str(text or "")
@@ -1410,15 +1414,21 @@ window.__2bytePrepareCue = function (text, speaker, translation) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
   var s = String(text == null ? '' : text);
+  // Same suffix as web_theme_marks.split_marked: the cue's own marks follow the text.
+  var cut = s.indexOf('\\u0001'), cueMarks = '';
+  if (cut >= 0) {
+    try { if (JSON.parse(s.slice(cut + 1)).length) cueMarks = ' data-cue-marks="' + esc(s.slice(cut + 1)).replace(/"/g, '&quot;') + '"'; } catch (error) {}
+    s = s.slice(0, cut);
+  }
   s=s.replace(/\\r\\n|[\\r\\u2028\\u2029]/g,'\\n');
-  var escaped = '<span data-caption-text="true">'+esc(s)+'</span>';
+  var escaped = '<span data-caption-text="true"'+cueMarks+'>'+esc(s)+'</span>';
   var words = '';
   var chars = Array.from(s);
   for (var i = 0; i < chars.length; i++) {
     var ch = chars[i];
     words += /\\s/.test(ch) ? ch : '<span class="wt-w">' + esc(ch) + '</span>';
   }
-  words='<span data-caption-text="true">'+words+'</span>';
+  words='<span data-caption-text="true"'+cueMarks+'>'+words+'</span>';
   var html = (speaker ? template : template.replace(/<([a-zA-Z][\\w:-]*)\\b[^>]*>\\s*\\{\\{\\s*speaker\\s*\\}\\}\\s*<\\/\\1\\s*>/gi, ''))
     .replace(/\\{\\{\\s*text\\s*\\}\\}/g, escaped)
     .replace(/\\{\\{\\s*words\\s*\\}\\}/g, words)
@@ -1479,6 +1489,8 @@ def theme_archive_html(
     motion_runtime=''
     if document.motion_spec:
         motion_runtime=(detect_install_root()/'renderer/node_modules/gsap/dist/gsap.min.js').read_text('utf8')+'\n'+(detect_install_root()/'renderer/src/webThemeMotion.js').read_text('utf8')
+        if document.motion_spec.get('template'):
+            motion_runtime+='\n'+(detect_install_root()/'renderer/src/webThemeTemplates.js').read_text('utf8')
     motion_json=json.dumps(document.motion_spec,ensure_ascii=False).replace('</','<\\/') if document.motion_spec else 'null'
     payload = json.dumps(document.to_dict(), ensure_ascii=False).replace("</", "<\\/")
     # 二十二轮：内嵌原始 cue 模板（含占位符），__2byteSetCue 换字不换页。

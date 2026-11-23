@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from ..storage.atomic_files import write_text_atomic
 
-VERSION = 'firered-window-v2-explicit-alignment'
+VERSION = 'firered-window-v4-ctc-gap-preserving'
 
 
 def reusable_result(value):
@@ -26,6 +26,8 @@ def reusable_row(row, duration):
     if (row.get('alignment_status')!='aligned'
             or row.get('timestamp_source')!='ctc_forced_alignment'
             or row.get('timestamp_reliability')!='measured'):
+        return False
+    if not str(row.get('text') or '').replace('<sil>', '').replace('<blank>', '').strip():
         return False
     times=row.get('timestamp')
     if not isinstance(times,list) or not times or not isinstance(row.get('text'),str):

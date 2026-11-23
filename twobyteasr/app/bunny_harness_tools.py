@@ -175,7 +175,7 @@ def _restore(legacy, library_id: str, before: dict, after_digest: str):
     return undo
 
 
-def apply_term_changes(window, library, changes) -> tuple[str, UndoRecord | None]:
+def apply_term_changes(window, library, changes, *, origin: str = ORIGIN) -> tuple[str, UndoRecord | None]:
     mcp = _mcp()
     legacy = _legacy(window)
     try:
@@ -184,7 +184,7 @@ def apply_term_changes(window, library, changes) -> tuple[str, UndoRecord | None
         raise ToolError(str(exc)) from None
     import copy
     before = copy.deepcopy(mcp._entry(legacy, mcp._games(mcp._fresh(legacy)), scope['library_id']))
-    results = mcp.apply_changes(legacy, scope['library_id'], planned, origin=ORIGIN)
+    results = mcp.apply_changes(legacy, scope['library_id'], planned, origin=origin)
     done = [row for row in results if row['status'] == 'done']
     words = {'add': '加', 'edit': '改', 'remove': '删'}
     counts = {}
@@ -328,14 +328,88 @@ def _read_file(_window, args):
     return bunny_files.read_file(args.get('path'), start=args.get('start') or 0)
 
 
+def _search_files(_window, args):
+    from . import bunny_files
+    return bunny_files.search_files(args.get('query'), args.get('path', ''))
+
+
 def _write_file(_window, args):
     from . import bunny_files
     try:
-        return bunny_files.write_file(args.get('path'), args.get('text'))
+        if 'content' in args and 'text' in args and args['content'] != args['text']:
+            raise ToolError('content 和 text 正文不同，请只提交完整 content')
+        return bunny_files.write_file(args.get('path'), args.get('content', args.get('text')))
     except FileExistsError:
         raise ToolError('同名文件刚刚出现了，再试一次') from None
     except OSError as exc:
         raise ToolError(f'没写成：{exc.strerror or exc}') from None
+
+
+def _edit_file(_window, args):
+    """2026-11-20 (user): she changes an existing file too, like a coding agent: one exact passage, or all of it."""
+    from . import bunny_files
+    every = args.get('all') in (True, 'true', 1, '1')
+    try:
+        receipt, undo = bunny_files.edit_file(args.get('path'), find=args.get('find'), replace=args.get('replace'),
+                                              text=args.get('content', args.get('text')), append=args.get('append'),
+                                              every=every)
+    except OSError as exc:
+        raise ToolError(f'没改成：{exc.strerror or exc}') from None
+    return receipt, UndoRecord('call', undo, 0)
+
+
+EXPORT_FORMATS = ('txt', 'srt', 'ass', 'json')
+EXPORT_LAYERS = {'shown': '照工作台现在显示的', 'original': '只要原文', 'translation': '只要译文', 'bilingual': '原文加译文'}
+
+
+def export_text(project, fmt: str, layer: str = 'shown') -> str:
+    """The workbench project as a subtitle file's text, the same compilers 导出字幕 uses."""
+    from ..exports import studio_subtitle_export as export
+    if layer == 'shown' or fmt in ('ass', 'json'):
+        return export._compile_format(project, fmt)
+    from ..rendering.ass_compiler import compile_txt
+    from ..subtitle_rules.subtitle_translation import translation_view
+    cues, _missing, _stale = export.layer_cues(export._export_view_cues(project), translation_view(project), layer,
+                                               project=project)
+    if not cues:
+        raise ToolError('这个工程没有' + ('译文' if layer == 'translation' else '字幕'))
+    return export.compile_srt(cues) if fmt == 'srt' else compile_txt(project, cues=cues, validated=True)
+
+
+def _export_subtitles(window, args):
+    """2026-11-20 (user): 「导出成 txt」 went through her own reading and retyping, so long projects came out cut
+    or changed. The file is now written straight from the project; her AI never retypes the subtitles."""
+    from pathlib import Path
+    from . import bunny_files
+    # The project open in the workbench, whichever page is on screen: 「帮我做」 is often pressed after the
+    # user moved on to another page (live run 2026-11-20 refused with 「现在不在字幕工作台」).
+    page = getattr(window, 'built_page', lambda _name: None)('studio')
+    if page is None or getattr(page, 'project', None) is None:
+        raise ToolError('字幕工作台还没有打开工程（先打开要导出的工程）')
+    raw = bunny_files.clean_text(args.get('path'))
+    if not raw:
+        raise ToolError('path 要写存到哪里，例如 "字幕/第一集.txt"')
+    fmt = str(args.get('format') or Path(raw).suffix or 'txt').casefold().lstrip('.')
+    if fmt not in EXPORT_FORMATS:
+        raise ToolError(f'只能导出 {"、".join(EXPORT_FORMATS)}')
+    if Path(raw).suffix.casefold() != f'.{fmt}':
+        raw = f'{raw}.{fmt}'
+    layer = str(args.get('layer') or 'shown')
+    if layer not in EXPORT_LAYERS:
+        raise ToolError(f'layer 只能是 {"、".join(EXPORT_LAYERS)}')
+    try:
+        content = export_text(page.project, fmt, layer)
+    except ValueError as exc:
+        raise ToolError(f'导不出来：{exc}') from None
+    try:
+        target, root = bunny_files.write_new(raw, content)
+    except FileExistsError:
+        raise ToolError('同名文件刚刚出现了，再试一次') from None
+    except OSError as exc:
+        raise ToolError(f'没写成：{exc.strerror or exc}') from None
+    count = len(getattr(page.project, 'cues', ()) or ())
+    renamed = '（同名文件已存在，存成了新名字）' if target.name != Path(raw).name else ''
+    return f'导出好了{bunny_files.write_receipt(target)}（{fmt.upper()}，{EXPORT_LAYERS[layer]}，工程共 {count} 条）{renamed}'
 
 
 def _import_terms_file(window, args):
@@ -391,11 +465,25 @@ def tools() -> list[Tool]:
         Tool('read_page', '{"url": "https://..."}', f'读一个网页的正文（DeepSeek，后台读，前 {PAGE_CHARS} 字），通常先 web_search 再读最相关的',
              _read_page, background=True),
         Tool('list_folder', '{"path": ""}', '授权文件夹：不填 path 列出小兔纸授权的文件夹，填了就列那个文件夹里的文件', _list_folder),
-        Tool('read_file', '{"path": "术语/原神.csv", "start": 0}', '授权文件夹：读一个文字类文件（txt/csv/json/srt/ass/md/xlsx…，'
-             '一次 6000 字，用 start 往后读）', _read_file),
-        Tool('write_file', '{"path": "整理好的术语.csv", "text": "术语,分类\\n派蒙,角色"}',
-             '【修改】授权文件夹：写一个新文件（txt/csv/tsv/json/srt/ass/vtt/md/lrc）；同名就另存成新名字，从不覆盖；总要等「帮我做」',
+        Tool('search_files', '{"query": "任务报告", "path": ""}',
+             '授权文件夹：按部分文件名搜索子文件夹，path 可限定搜索起点。', _search_files, background=True),
+        Tool('read_file', '{"path": "术语/原神.csv", "start": 0}', '授权文件夹：读一个文件（任何文字文件、字幕、xlsx、docx，'
+             '编码自动认；一次 12000 字，用 start 往后读）。文件名照抄 list_folder 列出来的，简繁写错也能找到；只给文件名会在子文件夹里找',
+             _read_file),
+        Tool('write_file', '{"path": "整理好的术语.csv", "content": "术语,分类\\n派蒙,角色"}',
+             '【修改】授权文件夹：写一个新文件（txt/csv/tsv/json/srt/ass/vtt/md/lrc/ini/yaml/xml/html/css/py…）；'
+             'content 必须包含完整非空正文；同名同内容返回既有文件，同名不同内容请改用 edit_file。'
+             '读回核验后才算写入。工作台字幕请用 export_subtitles',
              _write_file, edit=True, persistent=True),
+        Tool('edit_file', '{"path": "术语/原神.csv", "find": "派门,角色", "replace": "派蒙,角色", "all": false}',
+             '【修改】授权文件夹：改一个已经有的文字文件：find 写文件里一字不差的原文（先 read_file 看），replace 写换成什么；'
+             '出现好几次就多带前后文，或 all=true 全换；也可以给 content 整份重写，或给 append 追加。原文有备份，可撤销',
+             _edit_file, edit=True, persistent=True),
+        Tool('export_subtitles', '{"path": "字幕/第一集.txt", "format": "txt", "layer": "shown"}',
+             '【修改】工作台：把现在这个工程的字幕直接存成文件（txt/srt/ass/json），存到授权文件夹；'
+             'layer：shown 照现在显示的、original 只要原文、translation 只要译文、bilingual 原文加译文（只对 txt/srt）。'
+             '程序直接写，几千条也不会漏；同名另存新名字；写入后读回核验',
+             _export_subtitles, dict(EXPORT_LAYERS), edit=True, persistent=True),
         Tool('import_terms_file', '{"path": "原神术语.xlsx", "library": "原神"}',
              '【修改】授权文件夹：把术语表文件（csv/xlsx/json/txt，任意编码，列名任意顺序）导进一个术语库，'
              '重复和冲突的跳过；总要等「帮我做」，可撤销', _import_terms_file, edit=True, persistent=True),

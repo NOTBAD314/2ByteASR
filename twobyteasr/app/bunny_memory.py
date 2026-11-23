@@ -23,6 +23,7 @@ LIMITS = {'memory': (60, 160), 'knowledge': (30, 600), 'recipe': (20, 20)}     #
 KINDS = tuple(LIMITS)
 _SECRET = re.compile(r'(sk-[A-Za-z0-9]{8,}|api[_ -]?key|密码|password|token|secret|\b\d{12,}\b|[A-Za-z0-9+/]{32,})',
                      re.IGNORECASE)
+_CREDENTIAL_MARKER = re.compile(r'sk-[A-Za-z0-9]{8,}|api[_ -]?key|密码|password|token|secret', re.IGNORECASE)
 
 
 def store_path() -> Path:
@@ -149,12 +150,20 @@ def load_chat(key: str) -> list:
             and row[0] in ('user', 'bunny', 'detail') and isinstance(row[1], str) and row[1]][-CHAT_LIMIT:]
 
 
-def save_chat(key: str, items) -> None:
+def save_chat(key: str, items, *, verified_ids=()) -> None:
     if not key:
         return
     path = _chat_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [[who, text] for who, text in list(items)[-CHAT_LIMIT:] if not looks_secret(text)]
+    trusted = frozenset(verified_ids)
+    rows = []
+    for who, text in list(items)[-CHAT_LIMIT:]:
+        if _CREDENTIAL_MARKER.search(text):
+            continue
+        # A caption number or UUID-like substring must not discard a whole
+        # tool report. Only a task ID from the active app may bypass the mask.
+        masked = _SECRET.sub(lambda match: match[0] if who == 'bunny' and match[0] in trusted else '【已隐去】', text)
+        rows.append([who, masked])
     temp = path.with_suffix('.tmp')
     temp.write_text(json.dumps({'version': 1, 'items': rows}, ensure_ascii=False), 'utf-8')
     temp.replace(path)

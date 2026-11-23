@@ -112,6 +112,7 @@ def mpv_startup_arguments(
         "--no-config",
         "--idle=yes",
         "--keep-open=yes",
+        "--hr-seek-demuxer-offset=0.35",
         "--force-window=yes",
         "--terminal=no",
         "--input-default-bindings=no",
@@ -2176,6 +2177,16 @@ class MpvController:
 
     def set_speed(self, value: float) -> None:
         self._send(["set_property", "speed", min(8.0, max(0.1, float(value)))])
+
+    def redraw(self) -> None:
+        """Draw the current picture again at the window's present size (2026-11-23).
+
+        A paused picture was left at its old size after Studio resized the video window (a side
+        panel opened or closed): a crop of the larger frame, or a small one in the corner. A
+        change of video-zoom makes mpv render again; the first step is far below a pixel and
+        the second puts it back (the app sets video-zoom nowhere else)."""
+        self._send(["set_property", "video-zoom", 0.0001])
+        self._send(["set_property", "video-zoom", 0.0])
 
     def set_raw_overlay(
         self,

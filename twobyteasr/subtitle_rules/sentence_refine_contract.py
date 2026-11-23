@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 
-PROTOCOL_VERSION = "studio-refine-v6-ai-owned-boundaries"
+PROTOCOL_VERSION = "studio-refine-v7-semantic-range-validation"
 
 
 class RefineError(ValueError):
@@ -138,6 +138,12 @@ def boundary_candidates(text, language="", terms=()):
     for pattern in (r"[A-Za-zÀ-ɏ]+(?:['’.-][A-Za-zÀ-ɏ]+)*", r"\d+(?:[.,]\d+)*(?:\s*(?:%|％|ms|kg|km|GB|MB|Hz|fps|seconds?|minutes?|秒|分钟|公斤|公里|元|万|亿))?"):
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             blocked.update(range(match.start() + 1, match.end()))
+    if not language or language.split('-')[0] == 'zh':
+        from .number_fidelity import numeric_unsafe_cut_offsets
+        from .text_rules import content_exact
+        positions = [i for i, char in enumerate(text) if content_exact(char)]
+        for offset in numeric_unsafe_cut_offsets(text):
+            blocked.update(range(positions[offset - 1] + 1, positions[offset] + 1))
     for term in set(terms) | set(lexical_boundary_terms()):
         if len(term) < 2:
             continue

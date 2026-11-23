@@ -254,6 +254,26 @@ class CaptionEditorMixin(CaptionSplitEditorMixin):
         self.subtitle_edit_card.title.setText('跟随 · 译文' if target.role == 'translation' else '跟随 · 原文')
         self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
+    def _focus_caption_text(self):
+        """Give the open card's text box the keyboard and its caret (the E key).
+
+        2026-11-20 (user): after E the box had no caret; Ctrl+A or the arrow
+        keys needed a click into it first. The card is a tool window shown
+        without activating, so activate it and focus the box. That focus locks
+        the card on this caption like a click did, so playback can no longer
+        swap the caption being typed. With no caption bound (follow card over
+        a gap) the keyboard stays on the timeline."""
+        editor = self.subtitle_edit_input
+        dock = getattr(self, 'subtitle_edit_dock', None)
+        if (dock is None or not dock.isVisible() or not editor.isEnabled()
+                or not self._caption_owns_draft(getattr(self, '_caption_draft', None))):
+            self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            return False
+        dock.activateWindow()
+        QApplication.setActiveWindow(dock)
+        editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        return True
+
     def _bind_caption_editor(self, target, *, edit_session_id=None):
         # Keep the reused native tool atomic while its target, marks and final
         # geometry are prepared. No hide/show, focus grab or event pumping.

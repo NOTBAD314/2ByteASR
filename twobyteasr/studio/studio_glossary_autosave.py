@@ -33,13 +33,34 @@ def collect_manual_edit(page, studio_project, before, after, token, **metadata):
         existing = {(alias, term.canonical) for library in snapshot.libraries for term in library.terms
                     if term.confirmed for alias in term.aliases} if snapshot else set()
         from ..subtitle_rules.language_rules import project_language
-        return page._learning_store.record_manual_edit(before, after, token=token,
+        language = project_language(studio_project) or "und"
+        recorded = page._learning_store.record_manual_edit(before, after, token=token,
             glossary_id=ids[0] if len(ids) == 1 else "", glossary_ids=ids,
-            language=project_language(studio_project) or "und", scope="original",
+            language=language, scope="original",
             canonical_terms=terms, existing_pairs=existing, **metadata)
     except Exception as exc:
         _failed(page, exc)
         return []
+    _tell_extensions(studio_project, before, after, ids, terms, language)
+    return recorded
+
+
+def _tell_extensions(studio_project, before, after, ids, terms, language):
+    """2026-11-20: the user's own extension scripts may listen (``extension_events``); never raises."""
+    try:
+        from ..app import extension_events
+        if not extension_events.has("subtitle_edited"):
+            return
+        from ..glossary.glossary_learning import extract_term_replacements
+        try:
+            pairs = extract_term_replacements(str(before or ""), str(after or ""), canonical_terms=terms or ())
+        except Exception:
+            pairs = []
+        extension_events.emit("subtitle_edited", before=str(before or ""), after=str(after or ""),
+                              replacements=[tuple(pair) for pair in pairs], glossary_ids=list(ids),
+                              language=language, project=studio_project)
+    except Exception:
+        pass
 
 
 def revert_learning(page, tokens, *, cue_after_text=None):

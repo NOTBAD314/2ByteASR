@@ -17,6 +17,8 @@ class RefineCuesCommand(QUndoCommand):
         super().__init__("AI 断句")
         self.project = project
         self.changed = changed
+        self.refine_before = copy.deepcopy(project.studio_state.get('ai_sentence_refine'))
+        self.refine_after = self.refine_before
         self.splices = []
         self.before_receipts = {}
         self.after_receipts = {}
@@ -90,6 +92,11 @@ class RefineCuesCommand(QUndoCommand):
         def mutate():
             from ..subtitle_rules.subtitle_translation import restore_snapshot
             restore_snapshot(self.project, self.translations_before if reverse else self.translations_after)
+            refinement = self.refine_before if reverse else self.refine_after
+            if refinement is None:
+                self.project.studio_state.pop('ai_sentence_refine', None)
+            else:
+                self.project.studio_state['ai_sentence_refine'] = copy.deepcopy(refinement)
             for before_index, after_index, before, after in reversed(self.splices):
                 index, removed, inserted = (after_index, after, before) if reverse else (before_index, before, after)
                 self.project.cues[index:index + len(removed)] = copy.deepcopy(inserted)

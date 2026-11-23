@@ -113,12 +113,12 @@ def test_pending_cards_show_banner_role_buttons_and_representative_line(manager)
 def test_role_click_applies_at_once_and_one_undo_restores(manager):
     manager.cards["API_S02"].roles.buttons["game"].click()
     APP.processEvents()
-    assert speaker_ids(manager) == ["API_S01", "API_S03", "GAME_BACKGROUND"]
+    assert speaker_ids(manager) == ["API_S01", "API_S02", "API_S03"]
     assert manager.page.undo_stack.count() == 1
-    assert list(manager.cards) == ["API_S01", "API_S02", "API_S03", "GAME_BACKGROUND"]
+    assert list(manager.cards) == ["API_S01", "API_S02", "API_S03"]
     folded = manager.cards["API_S02"]
-    assert folded.data["present"] is False and folded.status_label.text() == "已归入游戏背景声。"
-    assert folded.roles.role() == "game" and not folded.name_edit.isEnabled()
+    assert folded.data["present"] is True and manager._box_index["API_S02"] == "game"
+    assert folded.roles.role() == "game" and folded.name_edit.isEnabled()
     assert "2 个待确认" in manager.banner_text.text()
     manager.page.undo_stack.undo()
     assert speaker_ids(manager) == ["API_S01", "API_S02", "API_S03"]
@@ -185,9 +185,9 @@ def test_multi_select_batch_background_and_delete_needs_confirmation(manager, mo
     manager.delete_captions_button.click()
     assert asked == ["删除人物及字幕"] and "API_S03" in speaker_ids(manager)
     manager.batch_buttons["background"].click()
-    assert speaker_ids(manager) == ["API_S01", "GAME_BACKGROUND"]
+    assert speaker_ids(manager) == ["API_S01", "API_S02", "API_S03"]
     assert manager.page.undo_stack.count() == 1
-    assert {manager._box_index[key] for key in ("API_S02", "API_S03", "GAME_BACKGROUND")} == {"game"}
+    assert {manager._box_index[key] for key in ("API_S02", "API_S03")} == {"game"}
 
 
 def test_preview_seeks_to_representative_and_second_click_stops(manager):

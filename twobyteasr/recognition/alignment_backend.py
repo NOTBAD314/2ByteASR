@@ -32,10 +32,27 @@ def selected_backend(settings=None):
         settings = get_runtime_context().asr_settings_snapshot
     backend = str(((settings or {}).get('models') or {}).get('firered_asr_backend', 'qwen_aligner'))
     backend=backend if backend in TORCH_ALIGNERS else 'qwen_aligner'
-    if backend=='qwen_aligner' and ((settings or {}).get('models') or {}).get('qwen_alignment_profile')=='ultra-v5':
+    if backend=='qwen_aligner' and (((settings or {}).get('models') or {}).get('qwen_alignment_profile')=='ultra-v5'
+                                    or _official_weights_replaced_by_ultra()):
         from .qwen_family import head_requested
         return 'qwen_ultra_head' if head_requested(settings) else 'qwen_ultra_aligner'
     return backend
+
+
+def _official_weights_replaced_by_ultra():
+    """Settings still on 'official-v1', but only Ultra is installed (GitCode #2, 2026-11-22).
+
+    The profile moves to 'ultra-v5' only on the launch after an Ultra proof or
+    when 使用 is pressed. Every install and repair downloads Ultra for this key,
+    so a task started earlier (or before Ultra was verified) asked for the
+    official 0.6B folder and failed with path_mismatch. The official weights
+    cannot run without their folder; run Ultra, whose own readiness check then
+    names the real next step (verify in the workshop). A custom official folder
+    (2BYTEASR_QWEN3_ALIGNER_DIR) keeps the official route.
+    """
+    if os.environ.get('2BYTEASR_QWEN3_ALIGNER_DIR','').strip():
+        return False
+    return not model_directory('qwen_aligner') and bool(model_directory('qwen_ultra_aligner'))
 
 
 def profile(backend=None):
@@ -203,14 +220,14 @@ def model_directory(backend=None):
     ultra = backend in ULTRA_ALIGNERS
     folder = 'Qwen3-ForcedAligner-Ultra' if ultra else 'Qwen3-ForcedAligner-0.6B'
     override = os.environ.get('2BYTEASR_QWEN3_ULTRA_ALIGNER_DIR' if ultra else '2BYTEASR_QWEN3_ALIGNER_DIR', '').strip()
-    candidates = ([Path(override).expanduser()] if override else []) + list(iter_model_dir_candidates(folder))
+    candidates = [Path(override).expanduser()] if override else iter_model_dir_candidates(folder)
     return next((str(path) for path in candidates if (path / 'config.json').is_file()), '')
 
 
 def head_directory():
     from ..runtime_paths import iter_model_dir_candidates
     override = os.environ.get('2BYTEASR_QWEN3_ULTRA_HEAD_DIR', '').strip()
-    candidates = ([Path(override).expanduser()] if override else []) + list(iter_model_dir_candidates('Qwen3-ForcedAligner-Ultra-LocalHead'))
+    candidates = [Path(override).expanduser()] if override else iter_model_dir_candidates('Qwen3-ForcedAligner-Ultra-LocalHead')
     return next((str(path) for path in candidates if (path / 'local_head/config.json').is_file()), '')
 
 

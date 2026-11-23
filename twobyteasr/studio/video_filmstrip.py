@@ -10,7 +10,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject,QRectF,Qt,Signal,QTimer
-from PySide6.QtGui import QImage,QPixmap,QColor,QPen,QPainter
+from PySide6.QtGui import QImage,QPixmap,QColor,QPen,QPainter,QPainterPath
 
 
 @dataclass(frozen=True)
@@ -451,7 +451,9 @@ class FilmstripCache(QObject):
             for container,stream in containers.values():container.close()
             for lease in container_leases.values():lease.__exit__(None,None,None)
 
-    def paint(self,painter,block,source,left,right,source_in,source_out):
+    def paint(self,painter,block,source,left,right,source_in,source_out,cells=None,radius=0.0,placeholder=None):
+        if cells is not None:
+            return self._paint_cells(painter,block,source,left,right,source_in,source_out,cells,radius,placeholder)
         painter.save();painter.setClipRect(block,Qt.ClipOperation.IntersectClip)
         painter.setRenderHint(QPainter.SmoothPixmapTransform,True)
         lod=filmstrip_lod_ms((right-left)*1000/max(1,source_out-source_in),block.height())
@@ -473,6 +475,51 @@ class FilmstripCache(QObject):
                     target.fillRect(local,QColor(255,255,255,12));target.setPen(QPen(QColor(235,241,242,55),1))
                     center=local.center();target.drawRect(QRectF(center.x()-7,center.y()-5,14,10))
                 target.setPen(QPen(QColor(0,0,0,55),1));target.drawLine(width-1,0,width-1,height)
+                target.end()
+                self._cell_rasters[key]=raster
+                self._cell_raster_bytes+=raster.width()*raster.height()*4
+                while self._cell_raster_bytes>self._cell_raster_limit and len(self._cell_rasters)>1:
+                    _,previous=self._cell_rasters.popitem(last=False)
+                    self._cell_raster_bytes-=previous.width()*previous.height()*4
+            else:self._cell_rasters.move_to_end(key)
+            painter.drawPixmap(cell,raster,QRectF(raster.rect()))
+        painter.restore()
+
+    def _paint_cells(self,painter,block,source,left,right,source_in,source_out,cells,radius,placeholder):
+        """Folder clips (2026-11-23): fixed 16:9 cells, centre-cropped, never stretched.
+
+        Each cell is rasterised once per (frame, size, radius) with its rounded
+        corners baked in, like the source-time tiles above.
+        """
+        if not cells:
+            return
+        painter.save();painter.setClipRect(block,Qt.ClipOperation.IntersectClip)
+        lod=filmstrip_lod_ms((right-left)*1000/max(1,source_out-source_in),cells[0][0].height())
+        dpr=painter.device().devicePixelRatioF()
+        hints=painter.renderHints()|QPainter.Antialiasing|QPainter.SmoothPixmapTransform
+        empty=QColor(placeholder) if placeholder is not None else QColor(255,255,255,26)
+        for cell,source_ms in cells:
+            pixmap=self.get(source,source_ms,lod_ms=lod)
+            width,height=max(1,round(cell.width())),max(1,round(cell.height()))
+            key=('cell',int(pixmap.cacheKey()) if pixmap is not None else empty.rgba(),width,height,dpr,round(float(radius)*4))
+            raster=self._cell_rasters.get(key)
+            if raster is None:
+                raster=QPixmap(max(1,round(width*dpr)),max(1,round(height*dpr)))
+                raster.setDevicePixelRatio(dpr);raster.fill(Qt.transparent)
+                target=QPainter(raster);target.setRenderHints(hints)
+                local=QRectF(0,0,width,height)
+                if radius:
+                    clip=QPainterPath();clip.addRoundedRect(local,radius,radius);target.setClipPath(clip)
+                if pixmap is not None and not pixmap.isNull():
+                    source_rect=QRectF(pixmap.rect())
+                    want=width/height;have=source_rect.width()/max(1.0,source_rect.height())
+                    if have>want:
+                        crop=source_rect.height()*want;source_rect=QRectF(source_rect.left()+(source_rect.width()-crop)/2,source_rect.top(),crop,source_rect.height())
+                    elif have<want:
+                        crop=source_rect.width()/want;source_rect=QRectF(source_rect.left(),source_rect.top()+(source_rect.height()-crop)/2,source_rect.width(),crop)
+                    target.drawPixmap(local,pixmap,source_rect)
+                else:
+                    target.fillRect(local,empty)
                 target.end()
                 self._cell_rasters[key]=raster
                 self._cell_raster_bytes+=raster.width()*raster.height()*4

@@ -379,7 +379,7 @@ def animated_caption(prepared):
         return True
     if prepared.web:
         theme=snapshot.style_recipe.get('webTheme',{})
-        return bool(theme.get('motionSpec',{}).get('tracks') or any(
+        return bool(theme.get('motionSpec',{}).get('tracks') or theme.get('motionSpec',{}).get('template') or any(
             word in str(theme.get('cueCss',''))+str(theme.get('stageCss','')) for word in ('animation','@keyframes')))
     graph=snapshot.style_recipe.get('visualGraph') or {}
     return bool(snapshot.motion_recipe.get('mode','none')!='none' or graph.get('motionGraph',{}).get('tracks'))

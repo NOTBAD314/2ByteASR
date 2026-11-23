@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import os
 import sys
 import time
@@ -12,6 +13,30 @@ from pathlib import Path
 
 def _emit(event: str, **payload: object) -> None:
     print("[2BYTEASR_FIRERED_AED] " + json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
+
+
+def _recheck_degenerate_audio(model, job):
+    """Re-decode bounded pieces of the actual window; retain evidence separately."""
+    import tempfile
+    import wave
+
+    result = []
+    with wave.open(str(job['path']), 'rb') as original, tempfile.TemporaryDirectory() as folder:
+        rate = original.getframerate()
+        count = original.getnframes()
+        for first in range(0, count, 10 * rate):
+            samples = min(10 * rate, count-first)
+            name = str(first)
+            path = Path(folder) / (name + '.wav')
+            with wave.open(str(path), 'wb') as part:
+                part.setparams(original.getparams())
+                part.writeframes(original.readframes(samples))
+            decoded = model.transcribe([name], [str(path)])
+            row = decoded[0] if decoded and str(decoded[0].get('uttid')) == name else {}
+            result.append(dict(start=job['offset']+first/rate, end=job['offset']+(first+samples)/rate,
+                text=str(row.get('text') or ''), stop=row.get('decode_stop', 'failed'),
+                disposition='evidence_only'))
+    return result
 
 
 def _install_timestamp_receipts(model):
@@ -25,12 +50,25 @@ def _install_timestamp_receipts(model):
     original=model._get_and_fix_timestamp
     receipts={}
     def observed(hyp,hyp_ids,duration):
-        measured=hyp.get('timestamp') is not None
         result=original(hyp,hyp_ids,duration)
-        receipts[id(result)]=dict(evidence_version=VERSION,transcription_status='success',
+        reason = hyp.get("timestamp_geometry", "missing_geometry_receipt")
+        raw = hyp.get("timestamp")
+        measured = reason == "validated"
+        if measured and any(token not in {"<sil>", "<blank>"} and end-start > 3.0
+                            for token, start, end in result):
+            measured = False
+            reason = "long_non_silence_token"
+        def finite_values(values):
+            return [float(value) if math.isfinite(float(value)) else None for value in values]
+
+        receipts[id(result)] = dict(evidence_version=VERSION, transcription_status='success',
             alignment_status='aligned' if measured else 'failed_or_unavailable',
-            timestamp_source='ctc_forced_alignment' if measured else 'uniform_window_estimate',
-            timestamp_reliability='measured' if measured else 'estimated')
+            timestamp_source='ctc_forced_alignment' if measured else (
+                'ctc_untrusted' if reason == "long_non_silence_token" else 'uniform_window_estimate'),
+            timestamp_reliability='measured' if measured else 'estimated',
+            timestamp_geometry=reason,
+            raw_ctc=dict(token_ids=list(hyp_ids), starts=finite_values(raw[0]), ends=finite_values(raw[1]),
+                         clock='window_seconds_before_shift') if raw is not None else None)
         return result
     model._get_and_fix_timestamp=observed
     return receipts
@@ -124,6 +162,11 @@ def main() -> None:
     from twobyteasr import read_only_weights
     from twobyteasr.model_integrity import verify_model_files
     from fireredasr2s.fireredasr2 import FireRedAsr2, FireRedAsr2Config
+    from inspect import getfile
+    from hashlib import sha256
+    engine = Path(getfile(FireRedAsr2)).resolve()
+    _emit("timestamp_engine", python=str(Path(sys.executable).resolve()), worker=str(Path(__file__).resolve()),
+          module=str(engine), module_sha256=sha256(engine.read_bytes()).hexdigest())
 
     verify_model_files("firered_aed", Path(args.model_dir), root=root)
     kind = _resolve_device(torch, args.device)
@@ -275,6 +318,10 @@ def main() -> None:
                 row.update(timestamp_receipts.get(id(value.get('timestamp')),dict(
                     transcription_status='success',alignment_status='unknown',
                     timestamp_source='unknown',timestamp_reliability='unknown')))
+                row.update(decode_stop=value.get('decode_stop'), decode_steps=value.get('decode_steps'))
+                if row['decode_stop'] in {'degenerate', 'length_limit'}:
+                    row['transcription_status'] = 'rejected_degenerate'
+                    row['local_audio_recheck'] = _recheck_degenerate_audio(model, job)
                 results.append(row)
                 if checkpoint_root and checkpoint_identity:
                     saved=save_row(checkpoint_root,job,checkpoint_identity,row)

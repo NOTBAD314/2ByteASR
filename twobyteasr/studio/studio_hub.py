@@ -1184,8 +1184,9 @@ class StudioHubMixin:
         card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         card.customContextMenuRequested.connect(lambda _pos, target=str(path): self._recent_project_menu(target))
         card._library_item_path = str(path)
+        card.pressed.connect(card.repaint)
         card.clicked.connect(
-            lambda checked=False, target=str(path): self._library_item_clicked(target, checked)
+            lambda checked=False, target=str(path): self._library_item_clicked(target, checked, card)
         )
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -1236,7 +1237,8 @@ class StudioHubMixin:
         button_role(open_button, 'primary', icon='fa5s.play')
         open_button.setCursor(Qt.CursorShape.PointingHandCursor)
         open_button.setMinimumHeight(34)
-        open_button.clicked.connect(lambda _checked=False, target=str(path): self._open_recent_project_card(target))
+        open_button.pressed.connect(open_button.repaint)
+        open_button.clicked.connect(lambda _checked=False, target=str(path): self._open_recent_project_card(target, card))
         actions.addWidget(open_button)
         actions.addStretch(1)
         more = QToolButton()
@@ -1293,7 +1295,7 @@ class StudioHubMixin:
         )
         row._library_item_path = str(path)
         row.clicked.connect(
-            lambda checked=False, target=str(path): self._library_item_clicked(target, checked)
+            lambda checked=False, target=str(path): self._library_item_clicked(target, checked, row)
         )
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -1349,7 +1351,7 @@ class StudioHubMixin:
         open_button.setMinimumHeight(32)
         bind_text(open_button, '继续编辑该工程', property='toolTip')
         open_button.clicked.connect(
-            lambda _checked=False, target=str(path): self._open_recent_project_card(target)
+            lambda _checked=False, target=str(path): self._open_recent_project_card(target, row)
         )
         layout.addWidget(open_button, 0, Qt.AlignmentFlag.AlignVCenter)
         more = QToolButton()
@@ -1711,8 +1713,10 @@ class StudioHubMixin:
             records.append(record)
         return records
 
-    def _open_recent_project_card(self, target: str) -> None:
+    def _open_recent_project_card(self, target: str, source_widget=None) -> None:
         """Card-level entry point; keeps the canonical path and reports progress."""
+        from ..design.transitions import visible_global_rect
+        origin = visible_global_rect(source_widget) if source_widget is not None else None
         project_path = Path(str(target)).expanduser()
         self._studio_trace("RECENT_CLICK", card_id=str(project_path.stem), project_path=str(project_path))
         self._studio_trace("OPEN_REQUEST", project_path=str(project_path))
@@ -1743,7 +1747,7 @@ class StudioHubMixin:
         self.hub_loading_label.repaint()
         host = self.window()
         if host is not self and hasattr(host, "open_studio_project"):
-            host.open_studio_project(str(project_path), mode="edit", source="recent_card")
+            host.open_studio_project(str(project_path), mode="edit", source="recent_card", motion_origin=origin)
         else:
             self.open_project(project_path)
 
@@ -1870,11 +1874,11 @@ class StudioHubMixin:
         if hasattr(self, "studio_empty"):
             self._rebuild_project_library()
 
-    def _library_item_clicked(self, target: str, checked: bool) -> None:
+    def _library_item_clicked(self, target: str, checked: bool, source_widget=None) -> None:
         if getattr(self, "_library_selection_mode", False):
             self._set_library_item_selected(target, checked)
         else:
-            self._open_recent_project_card(target)
+            self._open_recent_project_card(target, source_widget)
 
     def _set_library_item_selected(self, target: str, selected: bool) -> None:
         selected_paths = getattr(self, "_library_selected_paths", None)

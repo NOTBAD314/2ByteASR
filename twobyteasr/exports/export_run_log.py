@@ -126,7 +126,8 @@ class ExportRunLog:
             stderr_log=f'{identity}.stdout.log' if stderr_merged else f'{identity}.stderr.log',
             filter_scripts=filter_scripts, **encoding))
         final_encoders = {'libx264', 'libx265', 'libaom-av1', 'libsvtav1', 'h264_nvenc', 'hevc_nvenc',
-            'av1_nvenc', 'h264_qsv', 'hevc_qsv', 'av1_qsv', 'h264_amf', 'hevc_amf', 'av1_amf'}
+            'av1_nvenc', 'h264_qsv', 'hevc_qsv', 'av1_qsv', 'h264_amf', 'hevc_amf', 'av1_amf',
+            'h264_mf', 'hevc_mf', 'av1_mf'}
         if encoder in final_encoders and purpose in {'ffmpeg studio render', 'advanced preview/render child'}:
             self.manifest['last_encoding'] = dict(purpose=purpose, **encoding)
             self.job.completion_metadata.update(actual_encoder=encoder, actual_rate_control=encoding['rate_control'])

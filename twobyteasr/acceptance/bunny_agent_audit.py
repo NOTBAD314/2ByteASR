@@ -107,12 +107,29 @@ def run(window, page, output, check):
             labels=[dialog.navigation.item(i).text() for i in range(dialog.navigation.count())]
             dialog.navigation.setCurrentRow(labels.index('兔白权限'));dialog.resize(940,720);dialog.show();app.processEvents()
             check('agent permissions page renders', dialog.bunny_level.isVisible() or not dialog.bunny_read_subtitles.isHidden())
+            from PySide6.QtCore import Qt
+            from PySide6.QtTest import QTest
+            from PySide6.QtWidgets import QScrollArea
+            anywhere = dialog.bunny_files_anywhere
+            viewport_owner = anywhere.parentWidget()
+            while viewport_owner is not None and not isinstance(viewport_owner, QScrollArea):
+                viewport_owner = viewport_owner.parentWidget()
+            if viewport_owner is not None:
+                viewport_owner.ensureWidgetVisible(anywhere, 20, 120)
+                app.processEvents()
+            check('whole-computer file access is visible and off by default',
+                  not anywhere.visibleRegion().isEmpty() and not anywhere.isChecked()
+                  and not bunny_permissions.load()['files_anywhere'])
+            check('file access settings screenshot captured', dialog.grab().save(str(output/'agent-file-permissions.png')))
+            QTest.mouseClick(anywhere, Qt.MouseButton.LeftButton)
+            check('whole-computer file access toggle saves on', bunny_permissions.load()['files_anywhere'])
+            QTest.mouseClick(anywhere, Qt.MouseButton.LeftButton)
+            check('whole-computer file access toggle saves off', not bunny_permissions.load()['files_anywhere'])
             check('memory list shows saved preference', dialog.bunny_memory_list.count() == 1 and '黄色描边' in dialog.bunny_memory_list.item(0).text())
             dialog.bunny_teach.setPlainText('频道称呼：小明')
             dialog.bunny_memory_add.click()
             check('knowledge base saves through real button', any(r['kind']=='knowledge' for r in bunny_memory.load()))
             from ..design.theme_manager import request_theme
-            from PySide6.QtTest import QTest
             for theme in ('sand','midnight'):
                 request_theme(theme);QTest.qWait(350)
                 from ..design.studio_theme import refresh_secondary_surface_theme
@@ -124,6 +141,28 @@ def run(window, page, output, check):
             dialog._save_bunny_permissions()
             saved=bunny_permissions.load()
             check('agent permission choices save and read back', saved['level']=='auto' and not saved['read_subtitles'])
+            files = output / 'bunny-files'
+            files.mkdir()
+            note = files / '字幕筆記.txt'
+            note.write_text('舊文字', encoding='utf-8')
+            permissions = dict(saved, folders=[str(files)])
+            bunny_permissions.save(permissions)
+            read = run_turn(window, [('read_file', {'path': '字幕笔记.txt'})], permissions)
+            check('file tool finds traditional Chinese file names', '舊文字' in read.receipts[0])
+            calls = [('edit_file', {'path': '字幕笔记.txt', 'find': '舊文字', 'replace': '新文字'}),
+                     ('export_subtitles', {'path': '工作台.txt', 'format': 'txt'})]
+            pending = run_turn(window, calls, permissions)
+            target = files / '工作台.txt'
+            check('file edit and subtitle export wait for confirmation even in auto',
+                  len(pending.pending) == 2 and note.read_text('utf-8') == '舊文字' and not target.exists())
+            finished = run_turn(window, pending.pending, permissions, confirmed=True)
+            check('confirmed file edit preserves an undo record',
+                  len(finished.undo) == 1 and note.read_text('utf-8') == '新文字')
+            if finished.undo:
+                check('undo restores the original file', finished.undo[0].target() == '' and note.read_text('utf-8') == '舊文字')
+            from ..exports.studio_subtitle_export import _compile_format
+            check('confirmed subtitle export matches the Studio compiler byte for byte',
+                  target.is_file() and target.read_bytes() == _compile_format(page.project, 'txt').encode('utf-8'))
             dialog._input_baseline=dict(dialog._input_values())
         finally:
             dialog.reject();dialog.deleteLater();app.processEvents()

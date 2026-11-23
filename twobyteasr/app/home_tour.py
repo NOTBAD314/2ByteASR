@@ -2495,10 +2495,6 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         page = studio()
         page._set_timeline_tool('selection')
         page.select_cue(cut_cue)
-        # The example must be visible even with persistent playhead centering.
-        parts = pieces()
-        if parts:
-            page._seek(parts[0].start_ms / 1000)
 
     def cut_into_three():
         page = studio()

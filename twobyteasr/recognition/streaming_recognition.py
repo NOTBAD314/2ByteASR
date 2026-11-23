@@ -18,13 +18,20 @@ from pathlib import Path
 from .run_context import ContextExecutor, local_runtime_context
 from .alignment_backend import cache_identity
 
-VERSION = 'ready-native-shards-v6-scored-vad-translation-names'
+VERSION = 'ready-native-shards-v7-manual-source-review'
 STRIDE = 1_000_000
 
 
-def grouping_rule_identity(legacy):
+def grouping_rule_identity(legacy, context=None):
+    from ..subtitle_rules.grouping_editor import PROMPT_VERSION, enabled as editor_enabled
     from ..subtitle_rules.grouping_quality import QUALITY_VERSION
-    return {'logic': getattr(legacy, 'GROUP_LOGIC_VERSION', None), 'quality': QUALITY_VERSION}
+    rules = {'logic': getattr(legacy, 'GROUP_LOGIC_VERSION', None), 'quality': QUALITY_VERSION}
+    if editor_enabled(context):
+        rules['grouping_editor'] = PROMPT_VERSION
+    if getattr(legacy, 'FIRERED_ASR_BACKEND', None) == 'local':
+        from .firered_checkpoints import VERSION
+        rules['firered_evidence'] = VERSION
+    return rules
 
 
 def _digest(value):
@@ -205,13 +212,19 @@ class LongMediaPipeline:
         if not 0 <= index < total:raise ValueError('分片身份超出清单。')
         revision=int(payload.get('input_revision',0))
         rows = copy.deepcopy(payload.get('rows') or [])
+        switches = self.context.asr_settings_snapshot.get('switches')
+        if isinstance(switches, dict):
+            switches = dict(switches)
+            switches.pop('background_lyrics', None)  # classified after all shards are merged
+            if switches.get('grouping_ai_editor') is False:
+                switches.pop('grouping_ai_editor')
         version = _digest(dict(version=VERSION, media=self.cache_context['identity'], index=index,
             rows=[{key:row.get(key) for key in ('start','end','text','speaker','source','tokens','cloud_gap')}
                   for row in rows], language=self.context.requested_language,
             timeline=str(getattr(self.legacy,'FIRERED_ASR_BACKEND','')),
             fps=self.fps,speaker_source=self.context.speaker_source,
             grouping_prompts=self.context.asr_settings_snapshot.get('grouping_prompts'),
-            switches=self.context.asr_settings_snapshot.get('switches'),
+            switches=switches,
             timing_policy=getattr(self.legacy,'TIMING_LOGIC_VERSION',None),
             alignment_identity=cache_identity(self.context.asr_settings_snapshot),
             vad_mode='owned-shard-v1' if self.piece_vad else 'full-stage-v1',
@@ -303,7 +316,7 @@ class LongMediaPipeline:
                 return None
             data=saved['data']
             if data.get('incomplete_roles'):return None
-            if data.get('grouping_rules') != grouping_rule_identity(self.legacy):
+            if data.get('grouping_rules') != grouping_rule_identity(self.legacy, self.context):
                 return None
             from .vad import ALGORITHM
             execution=data.get('vad_execution') or {}
@@ -335,7 +348,7 @@ class LongMediaPipeline:
             return
         data=dict(vad_execution=execution,index=result.index,primary=result.primary,segments=self.legacy.serialize_segments(result.segments),
                   cues=cues,translation=result.translation,reviews=result.reviews,
-                  grouping_rules=grouping_rule_identity(self.legacy),
+                  grouping_rules=grouping_rule_identity(self.legacy, self.context),
                   incomplete_roles=bool(getattr(result,'incomplete_roles',False)),polishing_summary=result.polishing_summary)
         write_text_atomic(path,json.dumps(dict(version=result.version,checksum=_digest(data),data=data),ensure_ascii=False))
 
@@ -499,6 +512,10 @@ class LongMediaPipeline:
         left=min(row['start'] for row in primary)-2.;right=max(row['end'] for row in primary)+2.
         speech=[row for row in self.speech_regions if float(row['end'])>=left and float(row['start'])<=right]
         from ..glossary.multilingual_terms import apply_source_terms
+        from ..glossary.source_review_policy import preserve_source_for_delivery
+        import copy
+        source_segments = segments
+        segments = copy.deepcopy(segments)
         segments=apply_source_terms(segments,self.legacy)
         if self.text_plan.polish:
             segments=self._step(index,'polished','校对',lambda:self.legacy.polish_subtitles(segments,
@@ -508,6 +525,8 @@ class LongMediaPipeline:
         if context.task_language=='zh':
             segments=self.legacy.apply_editorial_segment_rules(segments)
         segments=apply_source_terms(segments,self.legacy)
+        segments=preserve_source_for_delivery(source_segments,segments,record=self.legacy.record_run_event,
+                                              summary=context.polishing_summary)
         cues=self._step(index,'grouped','断句',lambda:self.legacy.group_subtitles(segments,
             firered_tokens=tokens,speech_regions=speech,protect_all_source_boundaries=False,
             cache_context=cache,use_ai=self.text_plan.group,provider_snapshot=context.provider_snapshot))

@@ -76,6 +76,9 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'history-journal':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'model-loading':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -106,6 +109,10 @@ def isolate_acceptance_settings() -> None:
         install_guards()
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'usage-candy':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'completion-ai-repair', 'bunny-pointing'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -572,6 +579,12 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'history-journal':
+        from .history_journal_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'model-loading':
         from .model_loading_audit import start
         output = audit_directory()
@@ -933,6 +946,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-export':
         from .speaker_export_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'background-lyrics':
+        from .background_lyrics_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -1539,6 +1557,19 @@ def start_acceptance(window) -> None:
 
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'completion-todo':
         from .completion_todo_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bunny-pointing':
+        from .bunny_point_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'completion-ai-repair':
+        from .completion_ai_repair_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

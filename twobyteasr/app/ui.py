@@ -388,13 +388,14 @@ PRIMARY_MODEL_CHOICES = (
 )
 REVIEW_MODEL_CHOICES = (
     ("本地 Qwen3-ASR 1.7B（更准确，约 4.7 GB）", "local", {"qwen_asr"}),
-    ("本地 FireRedASR2-LLM（高精度，约 17.57 GiB）", "firered_llm", {"firered_llm"}),
+    ("FireRedASR2-AED · 独立文字识别（本地）", "firered", {"firered_aed"}),
+    ("FireRedASR2-LLM · 独立文字识别（本地，约 17.57 GiB）", "firered_llm", {"firered_llm"}),
     ("本地 Whisper large-v3-turbo（多语种，约 1.6 GB）", "whisper_turbo", {"whisper_turbo"}),
     ("本地 SenseVoice Small（CPU 友好，约 0.9 GB）", "sensevoice", {"sensevoice"}),
     ("本地 Fun-ASR Nano 2512（中文方言，约 2.4 GB）", "funasr_nano", {"funasr_nano"}),
 )
 TIMELINE_MODEL_CHOICES = (
-    ("FireRed 字幕时间轴（字级，推荐）", "local", {"firered_aed"}),
+    ("FireRedASR2-AED（独立听音识别及字级时间轴）", "local", {"firered_aed"}),
     ("Qwen3 对齐 · Ultra", "qwen_aligner", {"qwen_ultra_aligner"}),
     ("Whisper 字幕时间轴（多语种，短块级）", "whisper_turbo", {"whisper_turbo"}),
     ("Paraformer 字幕时间轴（中文时间戳）", "paraformer", {"paraformer"}),
@@ -438,9 +439,11 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
             if setting_key=='firered_asr_backend' and value in {'qwen_aligner','mfa_aligner'} and value not in unavailable_backends:
                 from ..local_models.model_status_cache import cached_registry
                 from ..local_models.alignment_readiness import effective_snapshot
-                snapshot=effective_snapshot(cached_registry(root),value,settings)
+                snapshot=effective_snapshot(cached_registry(root),value,settings,
+                    resolve_official=(desired.get(setting_key) == 'qwen_aligner'))
                 ready=bool(snapshot.get('ready'))
-                suffix='' if ready else ' · '+({'runtime_missing':'配置环境','inference_pending':'待验证','load_failed':'验证失败','partial':'文件不完整','missing':'未下载','experiment_unready':'精修待验证'}.get(snapshot.get('state'),'检查中'))
+                label=snapshot.get('label', label)
+                suffix='' if ready else ' · '+({'runtime_missing':'配置环境','inference_pending':'待验证','load_failed':'验证失败','partial':'文件不完整','missing':'未下载','path_mismatch':'配置或路径不一致','experiment_unready':'精修待验证'}.get(snapshot.get('state'),'检查中'))
                 rows.append((label+suffix,value,ready))
             elif required <= installed and value not in unavailable_backends:
                 rows.append((label,value,True))
@@ -499,7 +502,7 @@ def _language_preflight_values(values: dict, spoken: str, settings: dict) -> dic
     return result
 
 
-def missing_selected_local_models(values: dict, root=APP_ROOT) -> tuple[str, ...]:
+def missing_selected_local_models(values: dict, root=APP_ROOT, *, models=None) -> tuple[str, ...]:
     installed = installed_model_keys(Path(root))
     requirements = {
         "primary": {value: required for _label, value, required in PRIMARY_MODEL_CHOICES},
@@ -514,6 +517,14 @@ def missing_selected_local_models(values: dict, root=APP_ROOT) -> tuple[str, ...
     labels = {"primary": "主力转写", "review": "文字复核", "timeline": "字幕时间轴"}
     missing = []
     for role, selected in selections.items():
+        if role == 'timeline' and models is not None:
+            from ..local_models.alignment_readiness import qwen_task_snapshot
+            from ..local_models.model_status_cache import cached_registry
+            snapshot = qwen_task_snapshot(cached_registry(root), models, selected)
+            if snapshot is not None:
+                if not snapshot.get('ready'):
+                    missing.append(f"字幕时间轴：{snapshot.get('label', 'Qwen3 对齐')}（{snapshot['reason']}）")
+                continue
         required = requirements[role].get(selected, set())
         absent = sorted(required - installed)
         if absent:
@@ -537,6 +548,7 @@ class StartupModelPreflight:
 
 def required_recognition_model_keys(values: dict) -> tuple[str, ...]:
     models = values.get("models", values) if isinstance(values, dict) else {}
+    from ..recognition.alignment_backend import TORCH_ALIGNERS, ULTRA_ALIGNERS, selected_backend
     requirements = {
         "primary_asr_backend": {
             value: required for _label, value, required in PRIMARY_MODEL_CHOICES
@@ -555,7 +567,14 @@ def required_recognition_model_keys(values: dict) -> tuple[str, ...]:
     }
     required: set[str] = set()
     for key, choices in requirements.items():
-        required.update(choices.get(str(models.get(key, defaults[key])), set()))
+        choice = str(models.get(key, defaults[key]))
+        if key == 'firered_asr_backend' and choice in TORCH_ALIGNERS:
+            route = selected_backend({'models': models})
+            required.add('qwen_ultra_aligner' if route in ULTRA_ALIGNERS else route)
+            if route == 'qwen_ultra_head':
+                required.add(route)
+        else:
+            required.update(choices.get(choice, set()))
     return tuple(sorted(required))
 
 
@@ -934,7 +953,7 @@ def persist_asr_configuration(
     }:
         raise RuntimeError("主力转写后端选项无效。")
     if models["qwen_asr_backend"] not in {
-        "api", "local", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
+        "api", "local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano", "off"
     }:
         raise RuntimeError("文字复核后端选项无效。")
     # A saved user deployment can outlive a removed preset. Retain its exact
@@ -1631,15 +1650,39 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.model_workshop_button.setObjectName("softAction")
         install_themed_icon(self.model_workshop_button, "fa5s.cubes", "accent")
         self.model_workshop_button.clicked.connect(lambda: self._open_model_workshop(defer=True))
-        row.addWidget(self.model_workshop_button)
+        # 2026-11-22 (user): 识别记录 one click from Home, styled like 模型工坊.
+        self.recognition_history_button = AnimatedButton("识别记录")
+        self.recognition_history_button.setObjectName("softAction")
+        install_themed_icon(self.recognition_history_button, "fa5s.history", "accent")
+        bind_text(self.recognition_history_button, '查看每次识别的结果、耗时和原始报告', property='toolTip')
+        self.recognition_history_button.clicked.connect(lambda _checked=False: self._open_recognition_history())
         self.return_recognition_button = AnimatedButton("返回字幕识别")
         # 2026-11-11 (user): the outlined button looked unlike every other
         # header command; it is now one of the accent-tinted places to go.
         self.return_recognition_button.setObjectName("softAction")
         install_themed_icon(self.return_recognition_button, "fa5s.arrow-left", "accent")
         self.return_recognition_button.clicked.connect(self._return_to_settings)
-        self.return_recognition_button.hide()
-        row.addWidget(self.return_recognition_button)
+        # 2026-11-23 (user): 识别记录 and 模型工坊 swap places; on the workshop, term library and
+        # history pages they become 返回字幕识别, which used to be shorter than the two, so every
+        # button to its left moved. All three now share one slot as wide as the pair: switching
+        # pages swaps what the slot shows and nothing else in the header moves.
+        from PySide6.QtWidgets import QStackedLayout
+        self.header_nav_slot = QWidget()
+        slot = QStackedLayout(self.header_nav_slot)
+        slot.setContentsMargins(0, 0, 0, 0)
+        pair = QWidget()
+        pair_row = QHBoxLayout(pair)
+        pair_row.setContentsMargins(0, 0, 0, 0)
+        pair_row.setSpacing(row.spacing())
+        pair_row.addWidget(self.recognition_history_button)
+        pair_row.addWidget(self.model_workshop_button)
+        self.header_nav_pair = pair
+        slot.addWidget(pair)
+        slot.addWidget(self.return_recognition_button)
+        self.header_nav_stack = slot
+        # As tall as the buttons (the row centres it like them), as wide as the pair.
+        self.header_nav_slot.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        row.addWidget(self.header_nav_slot)
         # 2026-11-14 (user): 「问问兔白」 leaves the 说明 menu for its own button left of
         # 设置, in a colour that stands out (draft A: terracotta, breathing halo).
         from .ask_bunny_button import AskBunnyButton
@@ -1649,6 +1692,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.ask_bunny_button.clicked.connect(self._open_bunny_chat)
         row.addWidget(self.ask_bunny_button)
         self.app_settings_button = AnimatedButton("设置")
+        # Submit the source button's pressed state before any synchronous Qt
+        # layout or snapshot work that follows the release.
+        for entry in (self.app_settings_button, self.model_workshop_button, self.recognition_history_button,
+                      self.subtitle_studio_button, self.return_recognition_button):
+            entry.pressed.connect(entry.repaint)
         self.app_settings_button.setObjectName("softAction")
         install_themed_icon(self.app_settings_button, "fa5s.cog", "accent")
         bind_text(self.app_settings_button, '应用设置（界面主题、工程库、自动保存）', property='toolTip')
@@ -1663,6 +1711,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         row.addWidget(self.help_button)
         from ..design.presentation import button_role
         for button in (self.update_button, self.subtitle_studio_button, self.model_workshop_button,
+                       self.recognition_history_button,
                        self.return_recognition_button, self.app_settings_button, self.help_button):
             button_role(button, "secondary", size="default")
             button.setProperty("homeNavigation", True)
@@ -1676,7 +1725,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         # Keyboard users still Tab to every header command; a mouse click or
         # window activation no longer leaves a focus ring on the support button.
         for button in (self.support_button, self.update_button, self.subtitle_studio_button,
-                       self.model_workshop_button, self.return_recognition_button, self.app_settings_button,
+                       self.model_workshop_button, self.recognition_history_button,
+                       self.return_recognition_button, self.app_settings_button,
                        self.help_button):
             button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.language_combo = user_text(FramelessPopupCombo())
@@ -1835,12 +1885,12 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             else (18, 0, 18, 14) if completion else (18, 12, 18, 14) ))
         self.content_layout.setSpacing(0 if in_studio else 12)
         self.app_header.setVisible(not in_studio)
-        self.model_workshop_button.setVisible(current is self.settings_scroll)
         self.subtitle_studio_button.setVisible(not in_studio)
-        self.return_recognition_button.setVisible(
-            current is self.term_library_page
-            or current in {existing_page(self, "workshop"), existing_page(self, "history")}
-        )
+        workspace = (current is self.term_library_page
+                     or current in {existing_page(self, "workshop"), existing_page(self, "history")})
+        # One slot (see the header): the pair on Home, 返回字幕识别 on the sidebar pages.
+        self.header_nav_slot.setVisible(current is self.settings_scroll or workspace)
+        self.header_nav_stack.setCurrentWidget(self.return_recognition_button if workspace else self.header_nav_pair)
         # 四十三轮：主页进度页的"返回 Studio"只在 Studio 后台识别进行中显示。
         progress_page = self.pages.widget(1) if self.pages.count() > 1 else None
         if getattr(self, "back_to_studio_button", None) is not None:
@@ -1922,6 +1972,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._ensure_recognition_page()
         if widget is None or self.pages.currentWidget() is widget:
             return
+        self._page_motion_generation = self.__dict__.get('_page_motion_generation', 0) + 1
         if widget is self.settings_scroll and self.__dict__.pop("_home_inline_theme_pending", False):
             self._style_media_summary()
         if widget is self.pages.widget(1) and self.__dict__.pop("_progress_inline_theme_pending", False):
@@ -1972,11 +2023,13 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         # 2026-11-19: where the page we leave had its sidebar highlight (the switch slides along
         # the navigation; see _page_motion). Read now, while that page is still laid out.
         previous_page = self.pages.currentWidget()
-        previous_nav = self._nav_rect(previous_page)
-        previous_sidebar = self._sidebar_rect(previous_page) is not None
         # Home's start bar lies under the page stack and is shown on Home only. Leaving Home it
         # leaves with the old page's picture; coming Home it arrives with the new page.
         bar = getattr(self, 'bottom_bar', None)
+        # 2026-11-22: the old page's cards (they pour into the edge) and the start button (the
+        # recognition page grows out of it), read while the old page is still laid out.
+        leaving = (self._leaving_layout(previous_page, bar)
+                   if old_page_picture is not None and not studio_side and early_cover is None else {})
         bar_veil = None
         if old_page_picture is not None and not studio_side and early_cover is None and bar is not None:
             if widget is not self.settings_scroll and bar.isVisible():
@@ -2022,6 +2075,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                     self.pages.layout().activate()
                     if hasattr(self, "content_layout"):
                         self.content_layout.activate()
+                if widget is self.settings_scroll:
+                    self._place_home_studio_card()
             # Native pages have their own paint target. Repainting only the
             # shell can leave their previous pixels beneath the resumed video.
             fade_started = False
@@ -2031,17 +2086,12 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 with navigation_phase('navigation.paint_pages'):
                     self.pages.repaint()
             elif old_page_picture is not None and not studio_side:
-                # 2026-11-18: the old page's picture covers the switch, so the two synchronous
-                # repaints (32-53 ms measured) are not needed. 2026-11-19: the picture stays until
-                # the new page has finished building, then one fade between two pictures
-                # (design.transitions.PageHold). Studio switches keep theirs for the video hand-off.
                 from ..design.transitions import start_page_hold
                 if bar_veil:
                     bar_veil = self._veil_until_motion(bar)
-                start_page_hold(self.pages, old_page_picture, settled=lambda page=widget: self._page_settled(page),
-                                wait=not self._page_shown_before(widget),
-                                on_settled=lambda page=widget, veil=bar_veil: self._note_page_shown(page, veil),
-                                motion=self._page_motion(previous_page, widget, previous_nav, previous_sidebar))
+                start_page_hold(self.pages, old_page_picture, immediate=True,
+                                on_settled=bar_veil.release if bar_veil else None,
+                                motion=self._page_motion(previous_page, widget, leaving))
                 fade_started = True
             else:
                 with navigation_phase('navigation.paint_pages'):
@@ -2053,21 +2103,26 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             start_page_crossfade(self.pages, old_page_picture)
         reveal_cue(self.app_header if self.app_header.isVisible() or studio is None else studio.studio_toolbar)
 
-    # 2026-11-19 (user: option 1's sideways slide with option 3's cascade, right to left or left
-    # to right, "lively, good looking and with a direction"): the page switch slides along this
-    # order, Home first; a page further down comes in from the right.
-    def _page_order(self, page):
-        if page is None:
-            return None
-        if page is self.settings_scroll or page is self.pages.widget(1) or page is self.pages.widget(2):
-            return 0
-        if page is self.built_page('workshop'):
-            return 1
-        if page is getattr(self, 'term_library_page', None):
-            return 2
-        if page is self.built_page('history'):
-            return 3
-        return None
+    def _place_home_studio_card(self):
+        """Home's left card floats over the page and is placed by deferred timers. 2026-11-23
+        (user: back from the workshop, 进入字幕工作台 is missing until Home has fully loaded): the
+        switch took Home's picture before they ran, with the card still sized for the page as it
+        was, so its footer button lay outside it. Placed now, before the picture is taken."""
+        pin = self.__dict__.get('home_studio_pin')
+        if pin is None:
+            return
+        try:
+            pin.sync()
+            card = pin.card
+            if card.layout() is not None:
+                card.layout().activate()
+            fit = getattr(card, '_fit_recent_rows', None)
+            if callable(fit) and getattr(card, '_recent_layout_parts', None):
+                fit()
+                if card.layout() is not None:
+                    card.layout().activate()
+        except RuntimeError:
+            pass
 
     def _nav_key(self, page):
         if page is None:
@@ -2080,52 +2135,105 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             return 'history'
         return None
 
-    def _nav_button(self, page, key=None):
-        from shiboken6 import isValid
-        from ..design.ui_navigation import WorkspaceNavigation
-        key = key or self._nav_key(page)
-        if not key or page is None or not isValid(page):
-            return None
-        navigation = page.findChild(WorkspaceNavigation)
-        return navigation.buttons.get(key) if navigation is not None else None
+    def _page_depth(self, page) -> int:
+        """How far into the work a page is: Home 0, recognition and the sidebar pages 1, results 2.
 
-    def _nav_rect(self, page, key=None):
-        """The sidebar item in page-stack coordinates."""
-        button = self._nav_button(page, key)
-        if button is None or button.width() <= 0:
-            return None
-        return QRect(button.mapTo(self.pages, QPoint(0, 0)), button.size())
+        2026-11-22 (user: starting recognition "only slides right"): sideways switches used to come
+        from the left for every page outside the sidebar, so going forward to the recognition or
+        results page looked like going back. Deeper pages now come from the right."""
+        if page is None or page is self.settings_scroll:
+            return 0
+        if page is self.pages.widget(2):
+            return 2
+        return 1
 
-    def _sidebar_rect(self, page):
-        from shiboken6 import isValid
-        from ..design.ui_navigation import WorkspaceSidebar
-        if page is None or not isValid(page):
+    def _start_button_rect(self):
+        """The start button in the page stack's coordinates (it lies in Home's start bar, below the
+        stack while Home is shown), or None."""
+        button = getattr(self, 'start_button', None)
+        if button is None or button.width() < 2:
             return None
-        sidebar = page.findChild(WorkspaceSidebar)
-        if sidebar is None or sidebar.width() <= 0 or sidebar.isHidden():
+        try:
+            return QRect(self.pages.mapFromGlobal(button.mapToGlobal(QPoint(0, 0))), button.size())
+        except RuntimeError:
             return None
-        return QRect(sidebar.mapTo(self.pages, QPoint(0, 0)), sidebar.size())
 
-    def _page_motion(self, previous, page, previous_nav, previous_sidebar):
-        """What the switch to ``page`` moves (design.transitions.PageMotion), worked out when the
-        new page has been drawn: the direction, the sidebar both pages share (it stays), its
-        highlight's way to the new item and the new page's parts in the order they arrive."""
+    def _leaving_layout(self, previous, bar) -> dict:
+        """What the page being left looks like before the switch: its whole cards (and Home's
+        start bar, which leaves with it) as rectangles in the stack, and the start button."""
+        found = {'origin': self._start_button_rect() if previous is self.settings_scroll else None}
+        try:
+            from ..design.transitions import page_layers
+            with navigation_phase('navigation.old_page_parts'):
+                parts = page_layers(previous, self.pages) if previous is not None else []
+            if bar is not None and bar.isVisible() and previous is self.settings_scroll:
+                parts.append(QRect(self.pages.mapFromGlobal(bar.mapToGlobal(QPoint(0, 0))), bar.size()))
+            found['parts'] = parts
+        except Exception:  # noqa: BLE001 - the old page then fades as a whole
+            found['parts'] = []
+        return found
+
+    def _page_motion(self, previous, page, leaving=None):
+        from ..design.ui_navigation import WorkspaceSidebar, workspace_motion
+        leaving = leaving or {}
+        direction, axis = workspace_motion(self._nav_key(previous), self._nav_key(page))
+        if axis == 'x':
+            direction = -1 if self._page_depth(page) < self._page_depth(previous) else 1
+        progress = self.pages.widget(1)
+        # 2026-11-22 (user): starting recognition grows into the recognition page, going back
+        # shrinks it into the start button again.
+        zoom = None
+        if previous is self.settings_scroll and page is progress:
+            zoom = True
+        elif previous is progress and page is self.settings_scroll:
+            zoom = False
+
         def build():
             from PySide6.QtGui import QColor
             from ..design.theme_manager import theme_definition, theme_key
-            from ..design.transitions import PageMotion, page_parts
-            before, after = self._page_order(previous), self._page_order(page)
-            direction = -1 if before is not None and after is not None and after < before else 1
-            keep = self._sidebar_rect(page) if previous_sidebar else None
-            target = self._nav_rect(page)
-            start = previous_nav if keep is not None else self._nav_rect(page, 'recognition')
-            glide = (start, target) if start is not None and target is not None and start != target else None
-            theme = theme_definition(theme_key())
-            motion = PageMotion(direction, keep=keep, glide=glide, parts=page_parts(page, self.pages, keep),
-                                background=QColor(theme.app_background), selected_button=self._nav_button(page))
-            motion.accent = theme.accent
-            return motion
+            from ..design.transitions import PageMotion, PageZoom, page_layers
+            background = QColor(theme_definition(theme_key()).app_background)
+            if zoom is not None:
+                origin = leaving.get('origin') if zoom else self._start_button_rect()
+                return PageZoom(zoom, origin, background=background)
+            boundary = 0
+            parts = None
+            if axis == 'y':
+                sidebar = page.findChild(WorkspaceSidebar)
+                if sidebar is not None and sidebar.isVisible():
+                    edge = sidebar.mapTo(self.pages, QPoint(sidebar.width(), 0)).x()
+                    boundary = min(self.pages.width() - 1, edge + max(0, page.layout().spacing()))
+            else:
+                # Read once, when the new page is laid out (PageHold asks for the motion then).
+                def parts():
+                    with navigation_phase('navigation.page_parts'):
+                        return page_layers(page, self.pages)
+            return PageMotion(direction, axis=axis, boundary=boundary, parts=parts,
+                              old_parts=leaving.get('parts') if axis == 'x' else None,
+                              background=background)
+
         return build
+
+    def _after_page_motion(self, page, callback):
+        """Run presentation work only for the current navigation request."""
+        from ..design.transitions import PageHold
+        from shiboken6 import isValid
+        generation = self.__dict__.get('_page_motion_generation', 0)
+
+        def run():
+            if (isValid(page) and self.pages.currentWidget() is page
+                    and self.__dict__.get('_page_motion_generation', 0) == generation):
+                callback()
+
+        def dispatch():
+            QTimer.singleShot(0, page, run)
+
+        hold = next((item for item in self.pages.findChildren(
+            PageHold, options=Qt.FindChildOption.FindDirectChildrenOnly) if item.isVisible()), None)
+        if hold is None:
+            dispatch()
+        else:
+            hold.finished.connect(dispatch)
 
     def _page_settled(self, page) -> bool:
         """The page has nothing more to build or load for its first picture."""
@@ -2137,17 +2245,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             return bool(settled())
         busy = getattr(page, 'background_busy', None)
         return not (callable(busy) and busy())
-
-    def _page_shown_before(self, page) -> bool:
-        """A page that was complete on screen once is shown at once on later visits."""
-        return page is self.settings_scroll or bool(page.property('_2b_page_shown'))
-
-    def _note_page_shown(self, page, veil=None) -> None:
-        from shiboken6 import isValid
-        if veil is not None and veil is not True:
-            veil.release()                  # the start bar fades in as the page arrives
-        if isValid(page) and self._page_settled(page):
-            page.setProperty('_2b_page_shown', True)
 
     def _with_bottom_bar(self, picture, bar):
         """The page stack's picture continued down over Home's start bar (the stack takes its place
@@ -2278,28 +2375,19 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._interaction_busy_until = time.perf_counter() + .35
         self._ensure_recognition_page()
         page = self.workshop_page
-        if defer and not getattr(page, '_ui_built', True):
-            # 2026-11-18 (user: no load over 0.2 s): opened before the idle preparer built it, the
-            # page is shown first (the old page's picture fades over it) and built after that
-            # first frame, instead of ~150 ms of building before anything moves.
-            self._switch_page(page)
-
-            def build_after_first_frame():
-                from shiboken6 import isValid
-                if not isValid(page) or self.pages.currentWidget() is not page:
-                    return
+        page.restore_active_navigation()
+        if not defer:
+            page.ensure_ui()
+            page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+        self._switch_page(page)
+        if defer:
+            def prepare():
                 page.ensure_ui()
                 page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
-                page.restore_active_navigation()
-            QTimer.singleShot(16, page, build_after_first_frame)
-            return
-        self.workshop_page.ensure_ui()
-        self.workshop_page.update_runtime_settings(self.legacy.RUNTIME_SETTINGS)
-        self.workshop_page.restore_active_navigation()
-        self._switch_page(self.workshop_page)
+            self._after_page_motion(page, prepare)
 
     @navigation_timed('studio.entry.dispatch')
-    def open_studio_project(self, project_path=None, *, mode="edit", source="canonical", on_ready=None, expected_result_ref=None):
+    def open_studio_project(self, project_path=None, *, mode="edit", source="canonical", on_ready=None, expected_result_ref=None, motion_origin=None):
         """Canonical Studio navigation entry for every project-opening source."""
         if getattr(self, '_studio_close_pending', False) or getattr(self, '_studio_close_finalizing', False):
             return
@@ -2307,12 +2395,12 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         if studio is not None:
             from ..projects.studio_save import cancel_navigation_after_save, defer_navigation_until_saved
             if defer_navigation_until_saved(studio, lambda: self.open_studio_project(
-                    project_path, mode=mode, source=source, on_ready=on_ready, expected_result_ref=expected_result_ref)):
+                    project_path, mode=mode, source=source, on_ready=on_ready, expected_result_ref=expected_result_ref, motion_origin=motion_origin)):
                 return
             cancel_navigation_after_save(studio)
         if self.built_page('studio') is None:
             self._queue_studio_construction(project_path, mode=mode, source=source,
-                on_ready=on_ready, expected_result_ref=expected_result_ref)
+                on_ready=on_ready, expected_result_ref=expected_result_ref, motion_origin=motion_origin)
             return
         proofread = getattr(self, "glossary_proofread_page", None)
         if proofread is not None and project_path and not proofread.settle_writes(project_path):
@@ -2345,7 +2433,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         try:
             self._open_subtitle_studio(project_path, mode=mode,
                 skip_dirty_guard=source == 'studio_recognition', on_ready=on_ready,
-                expected_result_ref=expected_result_ref)
+                expected_result_ref=expected_result_ref, motion_origin=motion_origin)
         except Exception:
             import traceback
             error = traceback.format_exc()
@@ -2366,8 +2454,14 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 return
             self._studio_entry_start_queued = False
             generation = session.generation
-            QTimer.singleShot(0, self, lambda: self._start_studio_construction()
-                if session.active and session.generation == generation else None)
+            def dispatch():
+                if not session.active or session.generation != generation:
+                    return
+                if session.view._show_hide_fade.entering():
+                    QTimer.singleShot(17, self, dispatch)
+                else:
+                    self._start_studio_construction()
+            QTimer.singleShot(0, self, dispatch)
 
     def _ensure_studio_loading_surface(self):
         """Own the loading surface before construction, hydration or native video."""
@@ -2404,6 +2498,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         if studio is not None:
             session.attach_surface(studio.video)
         if not session.active or session.path != target:
+            if session.uses_native_cover and not session.view.isVisible():
+                from ..design.transitions import enabled, stage_cover
+                in_editor = studio is not None and self.pages.currentWidget() is studio and studio.project is not None
+                if not in_editor and enabled() and stage_cover(self) is not None:
+                    session.view._entry_picture = self.grab()
             session.recent_entries = self._loading_recent_entries()
             continuation = session.active or (session.state == 'failed' and session.path == target)
             previous_origin = session.return_target if continuation else None
@@ -2412,6 +2511,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             session.begin(target, on_cancel=self._cancel_studio_construction,
                 on_retry=lambda: self.open_studio_project(path, **options), return_target=origin, present=False)
             session.origin_widget = origin_widget
+            session.view.motion_origin = options.get('motion_origin')
         self._page_changed(self.pages.currentIndex())
         self.layout().activate()
         self.pages.layout().activate()
@@ -2752,40 +2852,41 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 getattr(studio, '_pending_recognition_result_ref', None)) or None)
 
     @navigation_timed('studio.switch_and_open')
-    def _open_subtitle_studio(self, project_path=None, *, mode="edit", skip_dirty_guard=False, on_ready=None, expected_result_ref=None):
+    def _open_subtitle_studio(self, project_path=None, *, mode="edit", skip_dirty_guard=False, on_ready=None, expected_result_ref=None, motion_origin=None):
         if self.built_page('studio') is None:
             self._queue_studio_construction(project_path, mode=mode,
                 source='studio_recognition' if skip_dirty_guard else 'legacy_entry',
-                on_ready=on_ready, expected_result_ref=expected_result_ref)
+                on_ready=on_ready, expected_result_ref=expected_result_ref, motion_origin=motion_origin)
             return
-        if expected_result_ref:
-            from ..recognition.recognition_result import verify_result_reference
-            try:
-                verify_result_reference(expected_result_ref, project_path=project_path)
-            except (OSError, ValueError, TypeError) as exc:
-                loading = self.__dict__.get('_studio_loading_session')
-                if loading is not None and loading.active and loading.path == str(Path(project_path).resolve()):
-                    loading.fail('核对识别结果', str(exc))
-                else:
-                    QMessageBox.warning(self, tr('无法确认本次识别工程'), str(exc))
-                return
         candidate = str(project_path or self.studio_page.project_path or '') if self.studio_page.project is not None else str(project_path or '')
         gate = getattr(self.studio_page, '_readiness', None)
         from ..studio.studio_readiness import project_file_identity
-        hot = bool(candidate and gate is not None and gate.ready and gate.path == str(Path(candidate).resolve())
+        # The readiness receipt can outlive the editor's loaded project when
+        # the user returns to the library and clicks the same file again.
+        # Only a retained project may bypass this entry's loading/anchor.
+        hot = bool(candidate and self.studio_page.project is not None
+                   and gate is not None and gate.ready and gate.path == str(Path(candidate).resolve())
                    and gate.loaded_file_identity == project_file_identity(candidate))
+        if hot and expected_result_ref:
+            from ..recognition.recognition_result import verify_result_reference
+            try:
+                verify_result_reference(expected_result_ref, project=self.studio_page.project, project_path=candidate)
+            except (OSError, ValueError, TypeError) as exc:
+                QMessageBox.warning(self, tr('无法确认本次识别工程'), str(exc))
+                return
         loading = None if hot else self._prepare_studio_loading(candidate, mode=mode,
             source='studio_recognition' if skip_dirty_guard else 'canonical', on_ready=on_ready,
-            expected_result_ref=expected_result_ref)
+            expected_result_ref=expected_result_ref, motion_origin=motion_origin)
         if loading is not None and getattr(loading, 'uses_native_cover', False):
             if not loading.active:
                 return
-            if not loading.native_cover_state().get('verified'):
+            if not loading.native_cover_state().get('verified') or loading.view._show_hide_fade.entering():
                 self._studio_entry_pending = (project_path, dict(mode=mode,
                     source='studio_recognition' if skip_dirty_guard else 'canonical',
-                    on_ready=on_ready, expected_result_ref=expected_result_ref))
+                    on_ready=on_ready, expected_result_ref=expected_result_ref, motion_origin=motion_origin))
                 self._studio_entry_start_queued = True
                 loading.view.update()
+                self._loading_surface_painted()
                 return
             self._studio_entry_pending = None
             self._studio_entry_start_queued = False
@@ -2879,9 +2980,6 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
     @navigation_timed('home.return')
     def _return_to_settings(self):
         self._interaction_busy_until = time.perf_counter() + .4
-        # 2026-11-19 (user: leaving the workbench flashes): the workbench's picture is put over the
-        # window first. Re-reading the AI settings below takes about 0.25 s, and meanwhile the video
-        # had already been swapped for its placeholder on the screen (see _switch_page).
         self._cover_before_leaving_studio()
         try:
             loading = self.__dict__.get('_studio_loading_session')
@@ -2891,14 +2989,21 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             else:
                 self._cancel_pending_studio_entries()
             self._ensure_recognition_page()
-            self._apply_saved_ai_configuration(source='home')
-            self._refresh_available_asr_choices()
-            self._restore_global_recognition_plan_for_home()
             self._switch_page(self.settings_scroll)
+            from ..design.transitions import enabled
+            if enabled():
+                self._after_page_motion(self.settings_scroll, self._refresh_home_after_return)
+            else:
+                self._refresh_home_after_return()
         finally:
             leftover = self.__dict__.pop('_page_cover_ahead', None)
             if leftover is not None:
                 leftover.release()          # no switch took it: fade it anyway, never leave it up
+
+    def _refresh_home_after_return(self):
+        self._apply_saved_ai_configuration(source='home')
+        self._refresh_available_asr_choices()
+        self._restore_global_recognition_plan_for_home()
 
     def _cover_before_leaving_studio(self):
         studio = self.built_page('studio')
@@ -3087,6 +3192,15 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 )
 
     def _finish_studio_recognition(self, project_path: str, expected_result_ref=None) -> None:
+        # 2026-11-20 (user): a Studio-run recognition finished, then 无法打开项目 -
+        # 工程字幕数量或文本时间摘要与已保存结果不一致. _handle_result has
+        # already checked the delivered file exactly; opening then prepares the
+        # document (display handoffs trim overlapping caption tails) before the
+        # readiness gate checks it again. Like the completion page, the open
+        # keeps the strict identity (path, project, job, stamp, media) and
+        # accepts what opening itself changes (ADR 0102).
+        from ..recognition.recognition_result import working_reference
+        open_result_ref = working_reference(expected_result_ref) or None
         context = getattr(self, "_studio_recognition_context", None) or {}
         guard, done = context.get('handoff_guard'), context.get('handoff_done')
         if callable(guard) and not guard():
@@ -3129,7 +3243,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                         return bool(loaded_path and str(Path(loaded_path).resolve()) == target)
                     studio._mcp_project_handoff = (target, guarded_handoff, done)
                 self.open_studio_project(project_path, mode="edit", source="studio_recognition",
-                    expected_result_ref=expected_result_ref, on_ready=getattr(self, '_update_completion_delivery_hint', None))
+                    expected_result_ref=open_result_ref, on_ready=getattr(self, '_update_completion_delivery_hint', None))
             else:
                 if callable(done):
                     done(False)
@@ -3236,7 +3350,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.studio_page._studio_trace('RECOGNITION_HANDOFF', project_path=str(target),
             same_open=bool(same_open), edited_during_run=bool(edited_during_run))
         self.open_studio_project(target, mode="edit", source="studio_recognition",
-                                 on_ready=_restore_after_reload, expected_result_ref=expected_result_ref)
+                                 on_ready=_restore_after_reload, expected_result_ref=open_result_ref)
 
     @observed('settings.open')
     def _open_application_settings(self, initial_section=None):
@@ -4433,6 +4547,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         install_themed_icon(self.choose_media_button, "fa5s.folder-open")
         self.choose_media_button.clicked.connect(self._choose_media)
         media_row.addWidget(self.choose_media_button)
+        # 2026-11-20 (user): a dropped video goes straight into 字幕工作台,
+        # without the bottom-left entry → 新建工程 → dropping it again.
+        self.media_studio_button = AnimatedButton("字幕工作台")
+        self.media_studio_button.setObjectName("softAction")
+        bind_text(self.media_studio_button, "字幕工作台")
+        bind_text(self.media_studio_button, "用这个素材新建工程，直接在字幕工作台里编辑", property="toolTip")
+        install_themed_icon(self.media_studio_button, "fa5s.film")
+        self.media_studio_button.clicked.connect(self._open_media_in_studio)
+        self.media_studio_button.hide()
+        media_row.addWidget(self.media_studio_button)
         self.link_download_button = AnimatedButton("链接下载")
         self.link_download_button.setObjectName("softAction")
         bind_text(self.link_download_button, "链接下载")
@@ -5517,20 +5641,30 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._last_plan_items = list(plan_items)
         # Narrow windows name the role only; the tooltip keeps the detail.
         compact = ui_zoom.logical(self.width()) < 1600
+        media_missing = not getattr(self, "media_paths", None)
+        items = []
+        if media_missing:
+            items.append(("media", translate("选择素材", language), self._choose_media))
+        actions = []
+        for role, status in plan_items:
+            action = ("安装模型" if status == "需要下载" else
+                      _HOST_LIMIT_RECOVERY if status in _HOST_LIMIT_STATUSES else "配置 API")
+            actions.append((role, action))
+            items.append(("plan", f"{translate(_ROLE_LABELS.get(role, role), language)} · {translate(status, language)}",
+                          lambda _=False, r=role, a=action: self._recognition_recovery(r, a)))
+        # 2026-11-20 (user: while a model is opened on Home, 选择素材 at the bottom left keeps
+        # twitching and flashing): the plan is re-checked many times then, and every check deleted
+        # and rebuilt the same chips. Unchanged chips stay as they are.
+        signature = (compact, language, tuple((kind, text) for kind, text, _handler in items), tuple(actions))
+        if signature == self.__dict__.get("_readiness_signature") and layout.count() == len(items):
+            self._refresh_start_tooltip(media_missing, language)
+            return
+        self._readiness_signature = signature
         while layout.count():
             item = layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().hide()  # never left visible until the deferred delete
                 item.widget().deleteLater()
-        media_missing = not getattr(self, "media_paths", None)
-        items = []
-        if media_missing:
-            items.append(("media", translate("选择素材", language), self._choose_media))
-        for role, status in plan_items:
-            action = ("安装模型" if status == "需要下载" else
-                      _HOST_LIMIT_RECOVERY if status in _HOST_LIMIT_STATUSES else "配置 API")
-            items.append(("plan", f"{translate(_ROLE_LABELS.get(role, role), language)} · {translate(status, language)}",
-                          lambda _=False, r=role, a=action: self._recognition_recovery(r, a)))
         for kind, text, handler in items:
             chip = QPushButton(text.split(" · ")[0] if compact else text)
             chip.setToolTip(text)
@@ -5544,6 +5678,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                                 "accent" if kind == "media" else "warning")
             chip.clicked.connect(handler)
             layout.addWidget(chip)
+        self._refresh_start_tooltip(media_missing, language)
+
+    def _refresh_start_tooltip(self, media_missing: bool, language) -> None:
         # One group of clickable missing items; the button only says why.
         self.start_hint.hide()
         reason = translate("先选择素材才能开始", language) if media_missing else ""
@@ -5855,6 +5992,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         """AI segmentation & proofreading settings (2026-10-08): fixed title,
         close, Cancel and Save; the form scrolls between them. Cancel restores
         every control; the home page's media, settings and scroll stay put."""
+        from ..providers.llm_config import secrets_read_once
+        with secrets_read_once():              # 2026-11-20: one key-store read for the whole opening
+            self._open_ai_settings_dialog_now(on_finished, enable_grouping=enable_grouping)
+
+    def _open_ai_settings_dialog_now(self, on_finished=None, *, enable_grouping: bool = False) -> None:
         # Direct project startup defers Home, which owns these shared controls.
         # Build them on demand without leaving Studio or losing translation scope.
         self._ensure_recognition_page()
@@ -6051,7 +6193,14 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 on_finished()
             dialog.deleteLater()
 
-        dialog.finished.connect(finished)
+        def finished_reading_keys_once(result):
+            # 2026-11-20: closing re-read the key store hundreds of times (0.2-0.6 s while the
+            # closing picture should move); one read serves the whole close.
+            from ..providers.llm_config import secrets_read_once
+            with secrets_read_once():
+                finished(result)
+
+        dialog.finished.connect(finished_reading_keys_once)
         trace('showing', 'ai')
         dialog.show()
         # CollapsibleFrame.showEvent re-caps the content height; inside the
@@ -6919,7 +7068,20 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self.result_stat_tiles[key] = tile
         self.result_stat_tiles['audio'].hide()
         self.result_stats.hide()
-        summary_layout.addWidget(self.result_stats, 0, Qt.AlignmentFlag.AlignVCenter)
+        # 2026-11-21 (user, design 乙1): 兔白's bubble sits under the numbers;
+        # it offers to fix the open items without opening Studio.
+        summary_side = QVBoxLayout()
+        summary_side.setSpacing(10)
+        summary_side.addStretch(1)
+        summary_side.addWidget(self.result_stats, 0, Qt.AlignmentFlag.AlignRight)
+        from .completion_ai_repair_ui import RepairBubble, RepairController
+        self._ai_repair = RepairController(self)
+        self.result_ai_repair_bubble = RepairBubble(self._ai_repair)
+        self.result_ai_repair_bubble.open_requested.connect(
+            lambda: self._completion_action('ai_repair', self._open_ai_repair))
+        summary_side.addWidget(self.result_ai_repair_bubble, 0, Qt.AlignmentFlag.AlignRight)
+        summary_side.addStretch(1)
+        summary_layout.addLayout(summary_side, 0)
         layout.addWidget(summary_card)
         self.result_more_button = CompletionMoreButton()
         self.result_more_button.setText('更多操作')
@@ -7110,6 +7272,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self.result_task_summary.hide()
             self.result_diagnosis_hint.set_finding(None)
             self.diagnose_result_action.setEnabled(False)
+            self._refresh_ai_repair(None, None, {}, False)
             self._refresh_completion_summaries()
             return
         item, project = task
@@ -7266,10 +7429,57 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             diagnosis.headline() if diagnosis is not None and not (outcome and outcome.core_status == 'completed') else None,
             failed=bool(outcome and outcome.core_status == 'failed'),
             others=[finding for finding in (diagnosis.findings if diagnosis is not None else ()) if finding.severity != 'tip'])
+        self._refresh_ai_repair(item, project, evidence, available)
         self._refresh_completion_summaries()
         # Another task's cards and preview have other heights; re-measure the
         # page so a shorter result leaves no stretched gaps (2026-10-30).
         self.result_content.request_adapt()
+
+    def _refresh_ai_repair(self, item, project, evidence, available):
+        """Re-plan 兔白处理 for the selected task (2026-11-21, design 乙1)."""
+        controller = self.__dict__.get('_ai_repair')
+        if controller is None:
+            return
+        if not available or item is None or project is None:
+            controller.refresh('', None, None)
+            return
+        report = evidence.get('historical_payload') or evidence.get('display_payload')
+        controller.refresh(str(item.project_path or ''), report, project)
+
+    def _open_ai_repair(self):
+        from .completion_ai_repair_ui import open_repair
+        open_repair(self)
+
+    def _ai_repair_saved(self, path):
+        """兔白 saved, undid a change or restored: the page reads the file again."""
+        from ..projects.studio_project import load_project
+        tasks = getattr(self, '_completion_tasks', [])
+        for index, (item, _project) in enumerate(list(tasks)):
+            if str(item.project_path) != str(path):
+                continue
+            evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+            try:
+                tasks[index] = (item, load_project(path))
+                evidence.pop('project_error', None)
+            except (OSError, ValueError, TypeError) as exc:
+                evidence['project_error'] = str(exc)
+        try:
+            self._completion_preview_stamps = {str(Path(path)): Path(path).stat().st_mtime_ns}
+        except OSError:
+            self._completion_preview_stamps = {}
+        index = self.result_task_selector.currentIndex()
+        if 0 <= index < len(tasks) and str(tasks[index][0].project_path) == str(path):
+            self._select_completion_task(index)
+
+    def _open_ai_repair_speech(self):
+        """The speech ranges 兔白 left, in Studio's listening list."""
+        tasks = getattr(self, '_completion_tasks', [])
+        index = self.result_task_selector.currentIndex()
+        if not 0 <= index < len(tasks) or tasks[index][1] is None:
+            return
+        from ..studio.speech_recovery_ui import open_recovery
+        self._open_completion_project(tasks[index][0].project_path, mode='edit',
+                                      source='completion_ai_repair_speech', on_ready=open_recovery)
 
     def _completion_diagnosis(self, item, evidence):
         """The local check of one task's report, computed once per task (2026-10-23)."""
@@ -7378,7 +7588,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self.result_stat_tiles['audio'].setVisible(isinstance(seconds, (int, float)) and seconds > 0)
         self.result_facts_body.set_content(summary.tiles, summary.facts)
         self.result_timing_body.set_content(summary.timings, summary.chips)
-        self.result_todo.set_rejected(summary.ai_rejected or 0, summary.rejected_reason)
+        from .completion_ai_repair import handled_rejected_count
+        report = evidence.get('historical_payload') or evidence.get('display_payload')
+        handled = handled_rejected_count(project, report) if project is not None else 0
+        self.result_todo.set_rejected(max(0, (summary.ai_rejected or 0) - handled), summary.rejected_reason)
         self.result_files_panel.set_summary_lines(summary.task_lines)
         self.result_log_panel.set_summary_lines(summary.log_lines)
         self._sync_completion_save_state()
@@ -8041,6 +8254,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                           (self.update_button, "检查更新"),
                           (self.subtitle_studio_button, "字幕工作台"),
                           (self.model_workshop_button, "模型工坊"),
+                          (self.recognition_history_button, "识别记录"),
                           (self.return_recognition_button, "返回字幕识别"),
                           (self.ask_bunny_button, "问问兔白"),
                           (self.app_settings_button, "设置"))
@@ -8506,6 +8720,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._media_input_cards = {}
         host.setVisible(len(self.media_paths) > 1)
         self.clear_single_media_button.setVisible(len(self.media_paths) == 1)
+        studio_button = getattr(self, "media_studio_button", None)
+        if studio_button is not None:
+            studio_button.setVisible(self._studio_media_path() is not None)
         if len(self.media_paths) > 1:
             header = QFrame(host)
             header_layout = QHBoxLayout(header)
@@ -8546,6 +8763,32 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             self._media_input_cards[path] = row
         if self.media_paths:
             bind_text(self.media_input_list, '已选择 %d 个素材；拖入可追加，选择素材可重新选择' % len(self.media_paths), property='toolTip')
+
+    def _studio_media_path(self):
+        """The one selected file 字幕工作台 can take, else None."""
+        if len(self.media_paths) != 1:
+            return None
+        from ..design.studio_theme import STUDIO_MEDIA_SUFFIXES
+        path = Path(str(self.media_paths[0]))
+        return path if path.suffix.lower() in STUDIO_MEDIA_SUFFIXES else None
+
+    def _open_media_in_studio(self) -> None:
+        """字幕工作台 beside 选择素材: a new project with this file, opened to edit.
+
+        The same steps as the library's 新建工程 followed by dropping the file
+        (create_blank_project, then _begin_media_drop at 0). A project already
+        open in the workbench gets its usual save prompt first."""
+        path = self._studio_media_path()
+        if path is None or not path.is_file():
+            return
+
+        def create(studio):
+            if studio is None:
+                return
+            studio.project_controller.create_blank_project(
+                on_ready=lambda: studio._begin_media_drop([path], 0))
+
+        self.open_studio_project(on_ready=create)
 
     def _remove_media_path(self, path: str) -> bool:
         if self._run_in_progress or (self.worker is not None and self.worker.isRunning()):
@@ -9961,6 +10204,16 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
             limit = unavailable_on_host(role, backend, host)
             if limit:
                 return ("本地", limit, "warn")  # downloading would not help
+            if role == 'timeline':
+                from ..local_models.alignment_readiness import qwen_task_snapshot
+                from ..local_models.model_status_cache import cached_registry
+                snapshot = qwen_task_snapshot(cached_registry(APP_ROOT), models_cfg, backend)
+                if snapshot is not None:
+                    states = {'missing': '需要下载', 'partial': '文件不完整', 'runtime_missing': '需要配置环境',
+                              'inference_pending': '待验证', 'load_failed': '验证失败',
+                              'path_mismatch': '配置或路径不一致', 'experiment_unready': '精修待验证'}
+                    status = '已就绪' if snapshot['ready'] else states.get(snapshot['state'], '检查中')
+                    return ("本地", status, "good" if snapshot['ready'] else "warn")
             needs = required[role].get(backend)
             ready = bool(needs and needs <= installed)
             return ("本地", "已就绪" if ready else "需要下载", "good" if ready else "warn")
@@ -9977,6 +10230,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 recovery = "配置 API"
             elif status in _HOST_LIMIT_STATUSES:
                 recovery = _HOST_LIMIT_RECOVERY
+            elif role == 'timeline' and backend in {'qwen_aligner', 'qwen_ultra_aligner', 'qwen_ultra_head'} and tone == 'warn':
+                recovery = '打开模型工坊'
             elif status == "需要下载":
                 recovery = "安装模型"
             else:
@@ -10238,6 +10493,8 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         api = {"配置 API", tr("配置 API")}
         if action in {_HOST_LIMIT_RECOVERY, str(tr(_HOST_LIMIT_RECOVERY))}:
             self._next_step_action("choose_plan")  # the chooser only offers what this computer can run
+        elif action in {"打开模型工坊", tr("打开模型工坊")}:
+            self._open_aligner_in_workshop()
         elif action in install or "安装" in action or "下载" in action:
             self._open_model_picker(role)
         elif action in api or "API" in action or "配置" in action:
@@ -11293,8 +11550,9 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         self._interaction_busy_until = time.perf_counter() + .35
         # Full CRUD is a resident page. The lightweight per-batch selector
         # remains in _pick_glossaries().
+        self.term_library_page.workspace_navigation.set_active("terms")
         self._switch_page(self.term_library_page)
-        QTimer.singleShot(0, self.term_library_page, self.term_library_page.prepare_for_show)
+        self._after_page_motion(self.term_library_page, self.term_library_page.prepare_for_show)
 
     def _ensure_runtime_environment(self):
         """Offer Repair Mode when preflight fails.  Versions stay in details."""
@@ -11508,15 +11766,15 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 ((getattr(self,'_studio_recognition_context',None) or {}).get('recognition_language') or self._subtitle_language_options()['recognition_language']), self.legacy.RUNTIME_SETTINGS)
             if reuse_candidates:
                 effective.update(primary_asr_backend='api', qwen_asr_backend='off')
-            missing_models = missing_selected_local_models(effective)
+            missing_models = missing_selected_local_models(effective, models=self.legacy.RUNTIME_SETTINGS.get('models', {}))
             if missing_models:
-                self._run_block_reason = "所选模型尚未下载完整：" + "、".join(missing_models)
+                self._run_block_reason = "所选模型尚未就绪：" + "、".join(missing_models)
                 if noninteractive:
                     self._run_block_code = 'configuration_required'
                     return
                 message = QMessageBox(self)
                 message.setIcon(QMessageBox.Icon.Warning)
-                bind_text(message, '所选模型尚未下载完整', property='windowTitle')
+                bind_text(message, '所选模型尚未就绪', property='windowTitle')
                 bind_text(message, '当前组合不能开始运行：')
                 message.setInformativeText("\n".join(f"• {item}" for item in missing_models))
                 open_workshop = message.addButton("打开模型工坊", QMessageBox.ButtonRole.AcceptRole)
@@ -11849,7 +12107,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         from shiboken6 import isValid
         from .progress_model import stage_record_name
         rows = self.__dict__.setdefault('_feed_stage_rows', {})
-        key = (event.media_index, event.stage_index, str(event.label))
+        key = (event.media_index, event.stage_index)
         name = tr(stage_record_name(event.label))
         technical = join_text((tr(event.label), tr(event.resource))) if event.resource else tr(event.label)
         if event.kind == 'stage_started':
@@ -11864,6 +12122,11 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         duration = self._duration_text(event.elapsed_seconds)
         if event.kind == 'stage_skipped':
             badge, template, arguments, duration = '跳过', '{stage} · 本次配置不适用', dict(stage=name), ''
+        elif event.kind == 'stage_cancelled':
+            badge, template, arguments = '已取消', '{stage}', dict(stage=name)
+        elif event.kind == 'stage_completed' and (event.payload or {}).get('pending_ranges'):
+            badge, template, arguments = '未完成', '{stage} · {count} 批待重试', dict(
+                stage=name, count=len(event.payload['pending_ranges']))
         elif event.kind == 'stage_completed' and self._is_ai_text_step(event.stage_index) and group in self._phase_degraded:
             badge, template, arguments = '已回退', '{stage} · {detail}', dict(
                 stage=name, detail=self._phase_degraded[group])
@@ -12463,7 +12726,7 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
         now = time.perf_counter()
         stopped = set(getattr(self, '_active_stages', {}) or {})
         rows = getattr(self, '_feed_stage_rows', {}) or {}
-        for (_media, stage_index, _label), card in list(rows.items()):
+        for (_media, stage_index), card in list(rows.items()):
             stopped.add(stage_index)
             if card is not None and isValid(card):
                 card.set_event(badge)
@@ -12772,9 +13035,10 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 else:
                     stage = "准备模型"
                 self.studio_page.set_recognition_runtime_stage(label or stage, label)
-        elif event.kind in {"stage_completed", "stage_skipped"}:
+        elif event.kind in {"stage_completed", "stage_skipped", "stage_cancelled"}:
             self._active_stages.pop(event.stage_index, None)
-            self._completed_stages.add(event.stage_index)
+            if event.kind != "stage_cancelled":
+                self._completed_stages.add(event.stage_index)
             getattr(self, '_stage_partial', {}).pop(event.stage_index, None)
             getattr(self, '_stage_live', {}).pop(event.stage_index, None)
             if event.kind == 'stage_completed':
@@ -13073,6 +13337,13 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                     chat.task_finished(len(result.successes))
                 except Exception:
                     pass
+            try:      # 2026-11-20: the user's own extension scripts may listen (extension_events)
+                from .extension_events import emit
+                emit('recognition_finished', count=len(result.successes),
+                     results=[{'media': item.media_path, 'srt': item.srt_path, 'txt': item.txt_path,
+                               'project': item.project_path} for item in result.successes])
+            except Exception:
+                pass
         self._active_stages.clear()
         self._refresh_progress_cards()
         self.workflow.set_active(3, finished=True)
@@ -13096,7 +13367,20 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                     pass
             report = dict(report) if isinstance(report, dict) else {}
             report.setdefault('status', item.status)
+            if item.error and not report.get('error'):
+                report['error'] = str(item.error)
             report_result = dict(report.get('result') or {})
+            if item.status == 'failed' and item.error:
+                from ..diagnostics.event_log import emit
+                settings = (report.get('settings') or {}).get('models') or {}
+                emit('recognition.task.failure', level='ERROR', result='failed',
+                     task_id=str(getattr(item, 'job_id', '') or job_id or ''),
+                     phase=report_result.get('failure_stage') or 'recognition',
+                     media_probe_status=report_result.get('media_probe_status'),
+                     error=str(item.error)[:4000],
+                     models={key: settings.get(key) for key in ('primary_asr_backend',
+                             'firered_asr_backend', 'qwen_asr_backend', 'qwen_alignment_profile',
+                             'resolved_qwen_alignment_backend')})
             project = None
             project_error = ''
             if item.project_path:
@@ -13363,7 +13647,21 @@ class MainWindow(BackgroundRecognitionMixin, QWidget):
                 self.close()
             return guard is None or guard.confirm('退出应用', on_saved=resume_close)
 
+    def _finish_repair_close(self):
+        self._repair_close_pending = False
+        self.close()
+
     def closeEvent(self, event):
+        repair = self.__dict__.get('_ai_repair')
+        if repair is not None and repair.state == 'running':
+            worker = repair.worker
+            if worker is not None:
+                if not getattr(self, '_repair_close_pending', False):
+                    self._repair_close_pending = True
+                    worker.finished.connect(self._finish_repair_close, Qt.ConnectionType.QueuedConnection)
+                repair.cancel()
+                event.ignore()
+                return
         if self.__dict__.get('_studio_entry_discarding', False):
             self._retire_studio_loading_for_close()
             self._studio_entry_pending = None

@@ -92,6 +92,7 @@ def _run():
                         return value
                     from .alignment_readiness import inspect as inspect_alignment
                     groups = {'qwen_aligner': ('qwen_ultra_aligner',),
+                              'qwen_official': ('qwen_aligner',),
                               'qwen_ultra_head': ('qwen_ultra_aligner','qwen_ultra_head'),
                               'mfa_aligner': ('mfa_aligner','mfa_aligner_ja')}
                     pending = getattr(value, 'pending_keys', ())
@@ -126,7 +127,8 @@ def _run():
             except Exception as exc:
                 from .model_registry import ModelRegistry
                 registry = ModelRegistry(Path(key), Path(key)/'models', error=str(exc)[:240])
-                registry.alignment_readiness = {k:dict(state='unreadable',ready=False,reason=str(exc)[:180]) for k in ('qwen_aligner','qwen_ultra_head','mfa_aligner')}
+                from .alignment_readiness import KEYS
+                registry.alignment_readiness = {k:dict(state='unreadable',ready=False,reason=str(exc)[:180]) for k in KEYS}
                 error = type(exc).__name__
             with _lock:
                 entry = _entries[key]

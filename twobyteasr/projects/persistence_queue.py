@@ -67,6 +67,30 @@ class SaveOutcome:
     reused: bool = False
     updated_at: str = ''
     superseded: bool = False
+    refinement: dict | None = None
+
+
+def _verify_saved_refinement(path, revision):
+    from .studio_revisions import FrozenMap, thaw_json
+    frozen = revision.studio_state
+    if not isinstance(frozen, FrozenMap):
+        return None
+    state = next((thaw_json(value) for key, value in frozen.items if key == 'ai_sentence_refine'), {})
+    output_ids = {key for row in state.get('range_results', ()) if row.get('status') == 'applied'
+                  for key in row.get('output_ids', ())}
+    if not output_ids or not state.get('task_id'):
+        return None
+    import json
+    fields = ('id', 'text', 'start_ms', 'end_ms', 'speaker_id', 'evidence_refs')
+    expected = {cue.id: tuple(cue.to_dict().get(field) for field in fields)
+                for cue in revision.cues if cue.id in output_ids}
+    saved = json.loads(Path(path).read_bytes())
+    actual = {cue['id']: tuple(cue.get(field) for field in fields)
+              for cue in saved['cues'] if cue['id'] in output_ids}
+    ok = (saved['project_id'] == revision.project_id and len(expected) == len(output_ids)
+          and actual == expected
+          and saved.get('studio_state', {}).get('ai_sentence_refine', {}).get('task_id') == state['task_id'])
+    return dict(task_id=state['task_id'], verified=ok, output_ids=sorted(output_ids) if ok else [])
 
 
 class PersistenceQueue(QObject):
@@ -194,6 +218,8 @@ class PersistenceQueue(QObject):
                                     persist_snapshot(request.draft, outcome.path)
                             outcome.updated_at = request.revision.updated_at
                             outcome.identity = file_identity(outcome.path)
+                        if request.kind == 'formal':
+                            outcome.refinement = _verify_saved_refinement(outcome.path, request.revision)
             except BaseException as exc:
                 outcome.error = exc
             try:

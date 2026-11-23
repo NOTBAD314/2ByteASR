@@ -266,3 +266,41 @@ def test_invalid_captured_cue_is_rejected_before_replacing_formal_file(page):
     assert page.errors and "invalid timing" in page.errors[0]
     assert target.read_bytes() == old_bytes
     assert not page.undo_stack.isClean()
+
+
+def test_save_in_the_leave_prompt_leaves_once_the_save_is_done(page, monkeypatch):
+    """2026-11-20 (user): 保存 in 退出工程's prompt saved and stayed in the project; leaving
+    took a second click. The save runs in the background queue; the leave resumes after it."""
+    import twobyteasr.projects.studio_project as persistence
+    from twobyteasr.studio.studio_project_flow import StudioProjectFlowMixin
+    original = persistence._atomic_json_blob_write
+    monkeypatch.setattr(persistence, '_atomic_json_blob_write',
+                        lambda path, content: (time.sleep(.15), original(path, content))[1])
+    # dirty_guard is a new ProjectDirtyGuard on every read: answer the prompt on the class.
+    monkeypatch.setattr(ProjectDirtyGuard, '_prompt', lambda self, _action: DirtyGuardChoice.SAVE)
+    left = []
+
+    def show_project_hub(*, skip_dirty_guard=False):
+        if not skip_dirty_guard and not page.project_controller.dirty_guard.confirm(
+                '关闭当前工程', on_saved=show_project_hub):
+            return False
+        left.append(skip_dirty_guard)
+        return True
+
+    page.show_project_hub = show_project_hub
+    page._confirm_leave_project = StudioProjectFlowMixin._confirm_leave_project.__get__(page)
+    StudioProjectFlowMixin._request_return_library(page)
+    assert left == [] and page._manual_save_in_progress     # still saving: not gone yet
+    drain(page)
+    assert left == [False]                                   # one leave, after the guard saw it clean
+    assert page.errors == [] and page.undo_stack.isClean()
+
+
+def test_dont_save_in_the_leave_prompt_leaves_at_once(page, monkeypatch):
+    from twobyteasr.studio.studio_project_flow import StudioProjectFlowMixin
+    monkeypatch.setattr(ProjectDirtyGuard, '_prompt', lambda self, _action: DirtyGuardChoice.DISCARD)
+    left = []
+    page.show_project_hub = lambda *, skip_dirty_guard=False: left.append(skip_dirty_guard)
+    page._confirm_leave_project = StudioProjectFlowMixin._confirm_leave_project.__get__(page)
+    StudioProjectFlowMixin._request_return_library(page)
+    assert left == [True]

@@ -1,4 +1,13 @@
-"""Distinguish measured token clocks from legacy MOSS display estimates."""
+"""Distinguish measured token clocks from legacy and suspicious timings."""
+
+import re
+
+
+_NUMERIC_TOKEN = re.compile(r"(?:[0-9０-９零〇一二两兩三四五六七八九十百千万萬亿億][.,，．点點]?)+")
+
+
+def suspicious_numeric_word(text, start, end):
+    return end - start > 3.0 and bool(_NUMERIC_TOKEN.fullmatch(str(text).strip()))
 
 
 def estimated_word_timing(row):

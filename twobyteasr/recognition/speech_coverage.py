@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import time
 import unicodedata
 from bisect import bisect_left,bisect_right
@@ -23,6 +24,28 @@ AUTO_CONFIDENCE = .85
 
 def recovery_speaker(label):
     return str(label).startswith(('UNCONFIRMED_', 'RECOVERY_', 'LOCAL_'))
+
+
+def fold_recovery_lanes(payload):
+    """Speakers turned off: recovered rows join the primary's one lane.
+
+    2026-11-22 (user): with Qwen Audio 3.1 speakers off, each recovered gap
+    still opened its own ``RECOVERY_<sample>`` lane. The original label stays
+    in ``recovered_speaker``; returns how many primary rows were moved.
+    """
+    rows = payload.get('segments') or []
+    labels = {str(r.get('speaker') or 'S00') for r in rows if not recovery_speaker(r.get('speaker') or 'S00')}
+    if len(labels) > 1:
+        return 0
+    lane = labels.pop() if labels else 'S00'
+    moved = 0
+    for field in ('segments', 'references'):
+        for row in payload.get(field) or []:
+            if isinstance(row, dict) and recovery_speaker(row.get('speaker') or ''):
+                row['recovered_speaker'] = row['speaker']
+                row['speaker'] = lane
+                moved += field == 'segments'
+    return moved
 
 
 def automatic_speech(region, *, anomalous=False):
@@ -357,6 +380,110 @@ def merge_rows(existing, candidates, ranges):
     return sorted(result, key=lambda r: (float(r['start']), float(r['end']))), accepted
 
 
+class RecoveryWindowRows(list):
+    cache_hit = False
+
+
+def transcribe_recovery_window(backend, media_path, pcm, start, end, cache_context, owner, legacy):
+    """Recognize local-clock PCM. Translate validated rows back exactly once."""
+    import hashlib
+    import json
+    import time
+    from pathlib import Path
+    from .alignment_audio import pcm_digest
+    from .cache import atomic_write_json
+
+    left = max(0, round(start * 16000))
+    right = min(len(pcm), round(end * 16000))
+    if right <= left:
+        return []
+    audio = pcm[left:right]
+    duration = len(audio) / 16000
+    digest = pcm_digest(audio)
+    identity = dict(version=1, backend=backend, pcm_sha256=digest, samples=len(audio),
+                    start_sample=left, end_sample=right, language=owner.requested_language,
+                    media=owner.media_identity.get('fingerprint'))
+    settings = owner.asr_settings_snapshot or getattr(legacy, 'RUNTIME_SETTINGS', {})
+    context = legacy.build_qwen_asr_context(media_path) if backend == 'api' else ''
+    key = hashlib.sha256(json.dumps([identity, settings, owner.asr_endpoint_snapshot, context],
+        ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+    path = Path(cache_context['cache_dir'])/'speech-recovery'/f'{key}.json'
+    rows = None
+    try:
+        saved = json.loads(path.read_bytes())
+        if (saved['key'] == key and isinstance(saved['rows'], list)
+                and (saved['rows'] or saved.get('outcome') == 'empty_success')):
+            rows = saved['rows']
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    reused = rows is not None
+    started = time.monotonic()
+    work_id = f'speech-recovery:{left}-{right}'
+    if not reused:
+        legacy.record_run_event('pipeline_work_progress', work_id=work_id, label='补识别：局部音频',
+            phase='speech_recovery', state='running', done=0, total=1)
+        try:
+            rows = legacy.transcribe_primary_reference(backend, media_path,
+                [dict(start=0., end=duration)], audio, duration)
+        except Exception as exc:
+            from .service import CancelledError
+            from ..providers.provider_diagnostics import redact_diagnostics
+            problem = getattr(exc, 'problem', None)
+            problem = problem if isinstance(problem, dict) else {}
+            cancelled = isinstance(exc, CancelledError)
+            empty_failure = 'ASR_RESPONSE_HAVE_NO_WORDS' in str(exc)
+            category = problem.get('category') or getattr(exc, 'category', None) or (
+                'provider_empty_response_failure' if empty_failure else type(exc).__name__)
+            error = problem.get('message') or str(exc).partition('\n')[0] or category
+            legacy.record_run_event('speech_recovery_window', **identity, cache_key=key,
+                exact_window_cache_hit=False, outcome='cancelled' if cancelled else 'failed',
+                error_category=category, provider_code=problem.get('code'),
+                provider_request_id=problem.get('request_id'),
+                error=redact_diagnostics(error)[:300], elapsed_seconds=round(time.monotonic()-started, 3))
+            legacy.record_run_event('pipeline_work_progress', work_id=work_id, label='补识别：局部音频',
+                phase='speech_recovery', state='cancelled' if cancelled else 'failed', done=1, total=1)
+            if empty_failure and not cancelled:
+                # Preserve the failure with this window so the other gaps and
+                # the independent-recognizer pass can still run.
+                result = RecoveryWindowRows()
+                result.failure = dict(category=category, error=redact_diagnostics(error)[:300])
+                return result
+            raise
+    if any(not 0 <= float(r['start']) < float(r['end']) <= duration + .002 for r in rows):
+        raise ValueError('缺口识别返回时间超出实际音频窗口')
+    if not reused and not any(r.get('cloud_gap') for r in rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, dict(key=key, rows=rows, outcome='transcribed' if rows else 'empty_success'))
+    if not reused:
+        legacy.record_run_event('pipeline_work_progress', work_id=work_id, label='补识别：局部音频',
+            phase='speech_recovery', state='completed', done=1, total=1)
+    legacy.record_run_event('speech_recovery_window', **identity, cache_key=key,
+        exact_window_cache_hit=reused, source_offset=left/16000, elapsed_seconds=round(time.monotonic()-started, 3),
+        outcome='blocked' if any(row.get('cloud_gap') for row in rows) else 'transcribed' if rows else 'empty_success',
+        returned_rows=[dict(start=r['start'], end=r['end'], text=r.get('text','')) for r in rows])
+    result = RecoveryWindowRows()
+    result.cache_hit = reused
+    for r in rows:
+        offset = left / 16000
+        shifted = dict(r, start=offset+float(r['start']), end=offset+float(r['end']),
+                       speaker=f"RECOVERY_{left}_{r.get('speaker') or 'UNKNOWN'}")
+        def global_words(words):
+            return [dict(w, start=float(w['start'])+offset, end=float(w['end'])+offset)
+                    for w in words]
+        for field in ('words', 'tokens'):
+            if r.get(field):
+                shifted[field] = global_words(r[field])
+        if r.get('provider_source'):
+            evidence = shifted['provider_source'] = dict(r['provider_source'])
+            for field in ('source_start', 'source_end', 'request_offset'):
+                if field in evidence:
+                    evidence[field] += offset
+            if evidence.get('valid_word_times'):
+                evidence['valid_word_times'] = global_words(evidence['valid_word_times'])
+        result.append(shifted)
+    return result
+
+
 def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24, max_audio_seconds=1800,
             max_elapsed_seconds=900, window_seconds=90, context_seconds=2):
     """A callback receives absolute task-PCM bounds and returns global rows.
@@ -366,6 +493,7 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
     recognition transaction instead of editing a project here.
     """
     started, requests, audio_used = time.monotonic(), 0, 0.0
+    cache_hits = 0
     cancel()
     result = list(rows)
     for gap in state['gaps']:
@@ -394,6 +522,9 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
                 audio_used += b-a
                 try:
                     candidates = runner(a, b)
+                    failure = getattr(candidates, 'failure', None)
+                    if failure:
+                        error = failure['error']
                     refused = next((row['cloud_gap'] for row in candidates if row.get('cloud_gap')), None)
                     if refused:
                         error = str(refused.get('detail') or refused.get('reason') or 'content_blocked')[:300]
@@ -404,13 +535,22 @@ def recover(state, rows, runner, *, source, cancel=lambda: None, max_requests=24
                     error = str(exc)[:300]
                     gap['error_category'] = getattr(exc, 'category', type(exc).__name__)
                 result, accepted = merge_rows(result, candidates, [(cursor, end)])
-                update_gap(gap, accepted, source=source, elapsed=time.monotonic()-before, error=error)
+                reused = bool(getattr(candidates, 'cache_hit', False))
+                if reused:
+                    requests -= 1
+                    audio_used -= b-a
+                    cache_hits += 1
+                update_gap(gap, accepted, source=source, elapsed=time.monotonic()-before,
+                           error=error, request_count=int(not reused))
+                gap['attempts'][-1].update(window=[a, b], exact_window_cache_hit=reused)
+                if getattr(candidates, 'failure', None):
+                    gap['attempts'][-1]['error_category'] = candidates.failure['category']
                 if error or not accepted:
                     break
                 cursor = end
             if state.get('budget_exhausted') or gap.get('error_category'):
                 break
-    state['recovery_cost'] = dict(request_count=requests, audio_seconds=round(audio_used, 3),
+    state['recovery_cost'] = dict(request_count=requests, cached_windows=cache_hits, audio_seconds=round(audio_used, 3),
                                  elapsed_seconds=round(time.monotonic()-started, 3))
     return result
 
@@ -432,14 +572,18 @@ def _token_mid(token):
 
 
 def _usable_tokens(tokens):
+    from .asr_schema import firered_text
     result = []
     for token in tokens or ():
         try:
             start, end = float(token['start']), float(token['end'])
         except (KeyError, TypeError, ValueError):
             continue
-        if math.isfinite(start) and math.isfinite(end) and end >= start and _content(token.get('text')):
-            result.append(dict(text=str(token.get('text')), start=start, end=end,
+        text = firered_text(token.get('text'))
+        if len(text) > 64 or end-start > max(4., len(text)*1.5):
+            continue  # A window or oversized token cannot anchor new speech.
+        if math.isfinite(start) and math.isfinite(end) and end > start and _content(text):
+            result.append(dict(text=text, start=start, end=end,
                                confidence=token.get('confidence')))
     kept = []
     for token in sorted(result, key=lambda t: (t['start'], t['end'])):
@@ -556,6 +700,8 @@ def discard_independent_fill(state, payload):
     for key in ('segments', 'references'):
         if isinstance(payload.get(key), list):
             payload[key] = [row for row in payload[key] if keep(row)]
+    if (state or {}).get('overlap_fill'):
+        state['overlap_fill'] = dict(state['overlap_fill'], rows=[], discarded='task_language')
     for gap in (state or {}).get('gaps', []):
         fill = gap.pop('independent_fill', None)
         if (gap.get('evidence') or {}).pop('independent_text', None):
@@ -579,6 +725,42 @@ def tail_gaps(gaps, duration):
     return tail
 
 
+FOREIGN_RUN_LETTERS = 8
+_CJK = re.compile(r'[㐀-鿿]')
+_LATIN = re.compile(r'[A-Za-z]')
+
+
+def without_foreign_runs(tokens):
+    """Drop runs of 8+ Latin letters with no Chinese character among them.
+
+    2026-11-22 (user, 1 h Chinese stream): FireRed heard background English
+    lyrics (feel it in my body feel it in my feet) where the primary wrote
+    nothing; they corroborated a speech gap and were filled into the
+    subtitles for the user to delete. Short English (OK, try again) stays.
+    Only called for a Chinese task.
+    """
+    tokens = list(tokens or ())
+    keep = [True]*len(tokens)
+    run = []
+
+    def close():
+        if sum(len(_LATIN.findall(str(tokens[i].get('text') or ''))) for i in run) >= FOREIGN_RUN_LETTERS:
+            for i in run:
+                keep[i] = False
+        run.clear()
+
+    for index, token in enumerate(tokens):
+        text = str(token.get('text') or '')
+        if _LATIN.search(text) and not _CJK.search(text):
+            if run and float(token.get('start', 0)) - float(tokens[run[-1]].get('end', 0)) > 1.:
+                close()
+            run.append(index)
+        elif _CJK.search(text):
+            close()
+    close()
+    return [token for token, kept in zip(tokens, keep) if kept]
+
+
 def audit_primary(payload, speech, context, *, duration, legacy, runner=None, source='',
                   independent=(), fill_independent=False):
     """Shared local/cloud entry after raw responses and before admission/alignment.
@@ -588,6 +770,9 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
     gaps (which then get the normal primary retry) and, with
     ``fill_independent``, fill what the retry did not recover.
     """
+    language = str(getattr(context, 'task_language', '') or getattr(context, 'requested_language', '') or '')
+    if independent and language.split('-')[0] == 'zh':
+        independent = without_foreign_runs(independent)
     execution = payload.get('execution') or {}
     refused = [(g['start'], g['end']) for g in payload.get('cloud_gaps', [])]
     state = make_state(speech, payload.get('segments', []), duration=duration, excluded=refused,
@@ -663,6 +848,7 @@ def audit_primary(payload, speech, context, *, duration, legacy, runner=None, so
         cancel = getattr(context.cancellation_token, 'raise_if_cancelled', lambda: None)
         spent = execution.get('recovery_cost') or {}
         payload['segments'] = recover(state, old, runner, source=source, cancel=cancel,
+            context_seconds=0 if source == 'api' else 2,
             max_requests=max(0, 24-int(spent.get('request_count') or 0)),
             max_audio_seconds=max(0, 1800-float(spent.get('audio_seconds') or 0)),
             max_elapsed_seconds=max(0, 900-float(spent.get('elapsed_seconds') or 0)))
@@ -703,7 +889,10 @@ def finalize(context, cues, legacy):
         detail = f"{gap['start']:.3f}–{gap['end']:.3f}s · {gap['first_missing_stage']} · {gap['reason']}"
         label = ('语音处理失败' if gap['classification'] == 'processing_failure' else
                  '语音缺口待恢复' if gap['classification'] == 'supported_speech_gap' else '疑似语音待试听确认')
-        legacy.add_review_item(gap['start'], label, detail, priority=3, severity='warning')
+        # 2026-11-22: voice activity alone, with no words from either
+        # recognizer, is a note (180 of 303 "problems" in a 1 h stream).
+        legacy.add_review_item(gap['start'], label, detail, priority=3,
+                               severity='info' if gap['classification'] == 'uncertain_speech' else 'warning')
     for gap in state.get('gaps', []):
         fill = gap.get('independent_fill')
         if fill and fill.get('rows'):
@@ -712,6 +901,19 @@ def finalize(context, cues, legacy):
             legacy.add_review_item(low, 'FireRed 补字待试听',
                 f"{low:.3f}–{high:.3f}s · 主力转写没有这段文字，已用 FireRedASR2 识别结果补上 {fill.get('characters', 0)} 字；请试听确认",
                 priority=2, severity='warning')
+    # 2026-11-20: a second voice under one primary speaker's line.
+    for row in (state.get('overlap_fill') or {}).get('rows', []):
+        if row.get('inserted') is False:
+            # Speakers turned off: one lane, so the second voice stays out.
+            legacy.add_review_item(row['start'], '叠话待试听',
+                f"{row['start']:.3f}–{row['end']:.3f}s · 说话人区分已关闭，未另开轨道；"
+                f"FireRedASR2 在这段还听到：{row.get('text', '')}。需要时请试听后手动加入",
+                row.get('text', ''), priority=2, severity='info')
+            continue
+        legacy.add_review_item(row['start'], '叠话补字待试听',
+            f"{row['start']:.3f}–{row['end']:.3f}s · 主力转写这段只有 {row.get('primary_speaker') or '一位说话人'}，"
+            f"FireRedASR2 还听到另一段话，已补上 {row.get('characters', 0)} 字；请试听确认说话人和文字",
+            priority=2, severity='warning')
     legacy.record_run_event('speech_coverage_final', **state, pending_gap_count=len(pending(state)))
 
 

@@ -21,7 +21,7 @@ def confirmed_entity_occurrences(project, *, locked_ids=(), diagnostics=None):
     fingerprints = project.media.fingerprint
     hits, seen, scoped = [], set(), []
     for row in project.generation_metadata.get('glossary_review_jobs', ()):
-        if (not isinstance(row, dict) or row.get('kind') != 'project_entity_confirmation'
+        if (not isinstance(row, dict) or row.get('kind') not in {'project_entity_confirmation', 'recognition_entity_review'}
                 or row.get('source') != 'user_confirmed'
                 or row.get('project_id') != project.project_id):
             continue
@@ -30,10 +30,12 @@ def confirmed_entity_occurrences(project, *, locked_ids=(), diagnostics=None):
                 continue
         elif not project.media.path or row.get('media_path') != project.media.path:
             continue
-        alias, canonical = row.get('alias'), row.get('canonical')
-        if not isinstance(alias,str) or not isinstance(canonical,str) or not alias or not canonical:
+        canonical = row.get('canonical')
+        if not isinstance(canonical, str) or not canonical:
             continue
-        scoped.append((alias,canonical))
+        for alias in row.get('aliases', (row.get('alias'),)):
+            if isinstance(alias, str) and alias and alias != canonical:
+                scoped.append((alias, canonical))
     destinations = {}
     for alias,canonical in scoped:
         destinations.setdefault(alias,set()).add(canonical)

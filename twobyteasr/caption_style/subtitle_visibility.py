@@ -7,7 +7,7 @@ def translation_key(project):
     return 'translation:'+container_target(project)
 
 
-def layer_visible(project,cue,layer='original'):
+def layer_visible(project,cue,layer='original', *, hidden_speakers=None):
     state=getattr(project,'studio_state',{}).get('subtitle_track_visibility',{})
     if not state.get('speaker:'+cue.speaker_id,True):
         return False
@@ -20,16 +20,18 @@ def layer_visible(project,cue,layer='original'):
         return False
     if layer=='translation':
         return state.get(translation_key(project),state.get('translation',True))
-    return state.get(cue.speaker_id,True) and cue.speaker_id not in getattr(project,'hidden_speaker_ids',lambda:())()
+    if hidden_speakers is None:
+        hidden_speakers = getattr(project,'hidden_speaker_ids',lambda:())()
+    return state.get(cue.speaker_id,True) and cue.speaker_id not in hidden_speakers
 
 
-def any_layer_visible(project,cue,*,mode=None):
+def any_layer_visible(project,cue,*,mode=None,hidden_speakers=None):
     layer=(cue.transform or {}).get('_language_materialized')
     if layer or is_companion(cue.id):
         return layer_visible(project,cue,layer or 'translation')
     mode=mode or settings_from_state(project.studio_state).mode
     translated=bool(translation_for_cue(translations_of(project.generation_metadata),cue.id))
-    return (layer_visible(project,cue,'original') and (mode!='translation' or not translated)
+    return (layer_visible(project,cue,'original',hidden_speakers=hidden_speakers) and (mode!='translation' or not translated)
             or mode in {'bilingual','translation'} and translated and layer_visible(project,cue,'translation'))
 
 

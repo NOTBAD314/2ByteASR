@@ -457,6 +457,9 @@ class StudioCue:
 _ATOMIC_CUE_VALUES = (str, int, float, bool)
 
 
+SPEAKER_NAME_STYLE_FIELDS = ("name_color", "name_font", "name_bold")
+
+
 @dataclass
 class StudioSpeaker:
     id: str
@@ -468,6 +471,11 @@ class StudioSpeaker:
     # speaker id 是 file-local 的，不承诺跨文件同一人）。
     hidden: bool = False
     is_host: bool = False
+    # 2026-11-20: how this speaker's name prefix looks in the picture (game-
+    # style subtitles). Empty/False follows the caption; written only when set.
+    name_color: str = ""
+    name_font: str = ""
+    name_bold: bool = False
 
     def validate(self) -> None:
         self.id = _clean_id(self.id, "speaker.id")
@@ -476,6 +484,9 @@ class StudioSpeaker:
         self.color = str(self.color or "").strip()
         self.hidden = bool(self.hidden)
         self.is_host = bool(self.is_host)
+        self.name_color = str(self.name_color or "").strip()
+        self.name_font = str(self.name_font or "").strip()
+        self.name_bold = bool(self.name_bold)
 
 
 @dataclass
@@ -1279,6 +1290,8 @@ class SubtitleProject:
         # Ordinary lanes are written exactly as before, so projects without
         # multi-track sources keep opening in earlier builds.
         payload["audio_tracks"] = [audio_track_payload(track) for track in self.audio_tracks]
+        # Same for speakers: name styling is written only when it is set.
+        drop_unset_speaker_name_styles(payload)
         return payload
 
     @classmethod
@@ -1494,6 +1507,8 @@ def register_recent_project(
     *,
     source_media: str = "",
     cue_count: int = 0,
+    name: str = "",
+    name_origin: Mapping[str, Any] | None = None,
 ) -> None:
     """Register a canonical project without moving or rewriting old projects."""
     target = Path(path).resolve()
@@ -1504,12 +1519,15 @@ def register_recent_project(
         payload = {}
     records = payload.get("recent_projects", []) if isinstance(payload, dict) else []
     records = [item for item in records if isinstance(item, dict) and str(item.get("path", "")) != str(target)]
-    records.insert(0, {
+    record = {
         "path": str(target),
-        "name": Path(source_media).stem if source_media else target.stem,
+        "name": str(name or (Path(source_media).stem if source_media else target.stem)),
         "cue_count": int(cue_count),
         "source_media": str(source_media or ""),
-    })
+    }
+    if name_origin:
+        record["name_origin"] = dict(name_origin)
+    records.insert(0, record)
     payload["recent_projects"] = records[:18]
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1709,7 +1727,29 @@ def _private_project_payload(project: SubtitleProject) -> dict[str, Any]:
         else:
             payload[item.name] = value
     payload["audio_tracks"] = [audio_track_payload(track) for track in project.audio_tracks]
+    drop_unset_speaker_name_styles(payload)
     return payload
+
+
+def speaker_record(speaker: "StudioSpeaker") -> dict[str, Any]:
+    """``asdict(speaker)`` without unset name styling, for records kept in metadata."""
+    result = asdict(speaker)
+    for key in SPEAKER_NAME_STYLE_FIELDS:
+        if not result.get(key):
+            result.pop(key, None)
+    return result
+
+
+def drop_unset_speaker_name_styles(payload: dict[str, Any]) -> None:
+    """Unstyled speakers keep their earlier record in files and fingerprints.
+
+    ``to_dict``, the owned payload and ``SpeakerDTO.to_dict`` must agree, or a
+    frozen autosave's fingerprint differs from the reopened project's.
+    """
+    for speaker in payload.get("speakers", ()):
+        for key in SPEAKER_NAME_STYLE_FIELDS:
+            if not speaker.get(key):
+                speaker.pop(key, None)
 
 
 def detached_snapshot_payload(project: SubtitleProject) -> dict[str, Any]:
@@ -1891,6 +1931,8 @@ def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
         project = restore_automatic_low_share(project)
         from .source_span_repair import repair as repair_source_spans
         repair_source_spans(project)
+        from ..subtitle_rules.sentence_refine_history import import_grouping_history
+        import_grouping_history(project)
         from ..recognition.speech_coverage import reconcile_legacy_text_loss
         reconcile_legacy_text_loss(project)
         if project.studio_state.get("link_imports"):
@@ -2795,8 +2837,9 @@ def project_from_runtime_cues(
                 speaker_id=speaker_id,
                 original_text=text,
                 evidence_refs=[],
-                transform={'display_handoff':copy.deepcopy(cue.display_handoff)}
-                    if getattr(cue,'display_handoff',None) else {},
+                transform={key: copy.deepcopy(getattr(cue, key))
+                           for key in ("display_handoff", "display_timing_receipt")
+                           if getattr(cue, key, None)},
             )
         )
     project = SubtitleProject(
@@ -2836,6 +2879,10 @@ def project_from_runtime_cues(
             project.generation_metadata["media_contract_probe_error"] = str(exc)
     if identity:
         hydrate_media_contract(project, identity, source_path=media_path)
+    # 2026-11-22: background-music lyrics found by recognition, after every
+    # speaker policy, on their own hidden speaker.
+    from ..recognition.background_lyrics import apply_to_project
+    apply_to_project(project)
     project.validate()
     if initialize_layout:
         from ..caption_style.subtitle_stacking import initialize_project_layout
@@ -3171,7 +3218,17 @@ def create_studio_outputs(
     if not (recognition_snapshot or {}).get("range_ms"):
         # A range run's result only feeds the open project's replacement
         # (2026-10-25); it is not another project in the library.
-        register_recent_project(project_path, source_media=str(Path(media_path).resolve()), cue_count=len(project.cues))
+        if recognition_snapshot:
+            # 2026-11-20 (user): a Studio-run result showed up as "timeline" -
+            # media_path is the rendered timeline.wav input. The library names
+            # it after the project it came from and its own source media.
+            register_recent_project(
+                project_path, cue_count=len(project.cues),
+                source_media=str(Path(project.media.path).resolve()) if project.media.path else "",
+                name=str(project.studio_state.get("project_name") or ""),
+                name_origin=project.studio_state.get("project_name_origin"))
+        else:
+            register_recent_project(project_path, source_media=str(Path(media_path).resolve()), cue_count=len(project.cues))
     outputs = {"project": str(project_path), "txt": str(txt_path)}
     if reference is not None:
         outputs["result_ref_json"] = json.dumps(reference, ensure_ascii=False)

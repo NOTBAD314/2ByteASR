@@ -8,6 +8,25 @@ from collections import defaultdict
 import hashlib
 
 
+CATALOG_RULES = frozenset({'catalog_without_local_support', 'unknown_or_mismatched_candidate_id'})
+
+
+def _scope(entries):
+    return {entry.key: (entry.target, entry.text, entry.start_ms) for entry in entries
+            if entry.target.layer == 'original'}
+
+
+def prepare_existing_review(project):
+    """Resolve saved AI candidates on the project reader, before the page opens."""
+    if not project.asr_evidence or not project.generation_metadata.get('segmentation_source_spans'):
+        return
+    from ..studio.subtitle_text_targets import text_entries
+    entries = text_entries(project, mode='original')
+    spans = project.generation_metadata['segmentation_source_spans']
+    project._prepared_recognition_review = (_scope(entries), project.asr_evidence, spans,
+                                            _build_existing_review(project, entries))
+
+
 def equal_span(before, after, start, end):
     if not (type(start) is int and type(end) is int and 0 <= start < end <= len(before)):
         return None
@@ -18,10 +37,25 @@ def equal_span(before, after, start, end):
 
 
 def existing_review(project, entries):
+    cached = getattr(project, '_prepared_recognition_review', None)
+    if (cached is not None and cached[1] is project.asr_evidence
+            and cached[2] is project.generation_metadata.get('segmentation_source_spans')):
+        current = _scope(entries)
+        if all(cached[0].get(key) == identity for key, identity in current.items()):
+            from .studio_glossary_service import GlossaryReviewPreview
+            prepared = cached[3]
+            receipt = dict(prepared.receipt, pending_rows=[r for r in prepared.receipt['pending_rows']
+                                                          if r['cue_id'] in current])
+            return GlossaryReviewPreview(tuple(hit for hit in prepared.hits if hit.target_key in current), receipt)
+    return _build_existing_review(project, entries)
+
+
+def _build_existing_review(project, entries):
     from .studio_glossary_service import GlossaryReviewPreview
     from ..studio.studio_text_tools import TextOccurrence
     from ..studio.subtitle_text_targets import bind_occurrence
     from ..subtitle_rules.proofread_identity import validate_new_suspects as _validate_new_suspects
+    from .proposal_safety import weak_proposal_reason
     entries = {e.target.cue_id:e for e in entries if e.target.layer=='original'}
     sources = {}
     for ref,row in project.asr_evidence.items():
@@ -78,9 +112,16 @@ def existing_review(project, entries):
         seen.add(identity)
         reason=str(proposal.get('evidence') or proposal.get('basis') or '识别后校对疑点，需要试听确认')
         if replacement and replacement!=surface:
+            language = entry.target.language.split('-')[0]
+            rejection = weak_proposal_reason(cue.text, (start, end), replacement,
+                evidence=bool(proposal.get('independent_text_support'))) if language in {'zh', ''} else ''
+            if rejection:
+                diagnostic['unassigned'].append({'source_segment_id': source_id,
+                    'reason': rejection, 'proposal': proposal})
+                return
             hit=TextOccurrence(cue.id,cue.start_ms,surface,replacement,(start,end),reason=reason,
                 default_selected=False,source='recognition_review',evidence=f'source_segment:{source_id}',
-                missing_evidence='未核验原音')
+                missing_evidence='未核验原音', proposal_id=proposal.get('proposal_id') or identity)
             hits.append(bind_occurrence(hit,entry))
         else:
             diagnostic['pending_rows'].append({'cue_id':entry.key,'state':'speech_review','span':[start,end],
@@ -88,6 +129,8 @@ def existing_review(project, entries):
                 'source_segment_id':source_id,'text_revision':hashlib.sha256(entry.text.encode()).hexdigest()})
 
     for source_id,(row,detail) in sources.items():
+        for proposal in detail.get('proposed_edits', ()):
+            attach(source_id, proposal, replacement=proposal.get('to') or '')
         for proposal in detail.get('new_suspects',()):
             if proposal.get('validation_state')!='invalid':attach(source_id,proposal)
         for proposal in detail.get('rejected_edits',()):
@@ -96,6 +139,18 @@ def existing_review(project, entries):
                     and len(target)==len(str(proposal.get('from') or ''))
                     and before[a:a+len(target)]==target and b==a+len(str(proposal.get('from') or ''))):
                 diagnostic['completed_no_change'].append({'source_segment_id':source_id,'proposal':proposal})
+                continue
+            # 2026-11-22 (user, 1 h stream): 58 of the 72 edits the recognition
+            # proofread proposed were glossary corrections the safety rule kept
+            # out of the subtitles for lack of a second recognizer (聪明→虫鸣,
+            # 三废→三费 …). They are exactly what the proofread page is for:
+            # shown at once as unchecked suggestions instead of being looked
+            # for again by a minutes-long match.
+            if (proposal.get('rule_id') in CATALOG_RULES and target
+                    and target != str(proposal.get('from') or '')):
+                note = proposal.get('evidence') if isinstance(proposal.get('evidence'), str) else ''
+                attach(source_id, dict(proposal, evidence=note or '识别时 AI 按词库提出，没有第二份识别佐证，请试听确认'),
+                       replacement=target)
                 continue
             if proposal.get('rule_id') not in {'length_change_without_support','local_difference_without_two_sources',
                     'unsupported_phonetic_change','insufficient_asr_support','japanese_semantic_needs_listening','japanese_particle_preservation'}:

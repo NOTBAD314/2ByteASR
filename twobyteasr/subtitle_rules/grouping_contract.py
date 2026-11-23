@@ -52,6 +52,7 @@ class GroupingSourceRow:
     words: tuple[tuple[float, float, str], ...] = ()
     timing_locked: bool = False
     word_evidence_sha256: str = ""
+    audible_basis: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class GroupingSourceSnapshot:
     @property
     def fingerprint(self):
         return _hash([(row.source_id, row.start, row.end, row.text, row.speaker,
-                       row.words, row.timing_locked, row.word_evidence_sha256) for row in self.rows])
+                       row.words, row.timing_locked, row.word_evidence_sha256, row.audible_basis) for row in self.rows])
 
     @property
     def source_text(self):
@@ -121,8 +122,12 @@ def capture_grouping_source(rows, *, job_id="", batch_id=""):
                 valid = False
             if valid:
                 words.append((float(a), float(b), word_text))
+        arbitration = _field(row, "caption_arbitration", {}) or {}
+        basis = (arbitration.get("word_timing") or {}).get("basis", "")
+        audible_basis = ("independent_acoustic_verification" if arbitration.get("acoustic_verified") is True
+                         else basis if words and basis in {"provider_words", "aligner_words"} else "")
         captured.append(GroupingSourceRow(source_id, start, end, text, speaker,
-            tuple(words), bool(_field(row, "timing_locked", False)), _hash(word_identity)))
+            tuple(words), bool(_field(row, "timing_locked", False)), _hash(word_identity), audible_basis))
     return GroupingSourceSnapshot(tuple(captured), str(job_id or ""), str(batch_id or ""))
 
 
@@ -226,7 +231,7 @@ def attach_grouping_spans(source,cues):
                     raw=row.text[lo-a:hi-a]
                     parts.append(dict(source_id=row.source_id,char_start=lo-a,char_end=hi-a,
                         raw_text=raw,index_unit='python_unicode_codepoint',source_time=[row.start,row.end],
-                        audible=bool(strip_boundary_space(raw))))
+                        audible=bool(row.audible_basis and strip_boundary_space(raw)), audible_basis=row.audible_basis))
             cue.source_spans=parts
             cue.segmentation_language=task_language_tag()
             cue.timing_basis=getattr(cue,'timing_basis','source_envelope_and_existing_word_evidence')

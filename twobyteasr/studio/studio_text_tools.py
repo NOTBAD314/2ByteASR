@@ -43,6 +43,7 @@ class TextOccurrence:
     baseline: str | None = None
     context_snapshot: object = None
     content_evidence_verified: bool = False
+    proposal_id: str = ''
 
     @property
     def target_key(self):

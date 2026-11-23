@@ -500,7 +500,7 @@ def require_cuda_runtime(components: list[str] | tuple[str, ...] = ()) -> CudaRu
 CUDA_REQUIRED_PRIMARY = {"moss", "firered", "qwen_local", "firered_llm"}
 # Qwen3-ForcedAligner runs on CPU without CUDA since 2026-10-13 (slower).
 CUDA_REQUIRED_TIMELINE = {"local"}
-CUDA_REQUIRED_REVIEW = {"local", "firered_llm"}
+CUDA_REQUIRED_REVIEW = {"local", "firered", "firered_llm"}
 # 2026-10-14: on an Apple Silicon Mac these run on the Apple GPU (MPS) instead.
 APPLE_GPU_PRIMARY = {"moss", "firered"}
 APPLE_GPU_TIMELINE = {"local"}
@@ -515,7 +515,7 @@ LOCAL_PRIMARY = {
     "sensevoice", "paraformer", "funasr_nano", "glm_asr_nano", "canary_qwen",
 }
 LOCAL_TIMELINE = {"local", "qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head", "paraformer", "whisper_turbo"}
-LOCAL_REVIEW = {"local", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano"}
+LOCAL_REVIEW = {"local", "firered", "firered_llm", "whisper_turbo", "sensevoice", "funasr_nano"}
 
 
 def selected_local_runtime_components(settings: dict) -> list[str]:
@@ -570,12 +570,9 @@ def selected_cuda_components(settings: dict) -> list[str]:
         label = "FireRed 字级时间轴" if timeline == "local" else "Qwen3 ForcedAligner 时间轴"
         if label not in selected:
             selected.append(label)
-    if review in CUDA_REQUIRED_REVIEW:
-        selected.append(
-            "FireRedASR2-LLM 文字复核"
-            if review == "firered_llm"
-            else "Qwen3-ASR 本地文字复核"
-        )
+    if review in CUDA_REQUIRED_REVIEW and not (apple_gpu and review == 'firered'):
+        selected.append({"firered": "FireRedASR2-AED 文字复核", "firered_llm": "FireRedASR2-LLM 文字复核",
+                         "local": "Qwen3-ASR 本地文字复核"}[review])
     return selected
 
 

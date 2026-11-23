@@ -119,7 +119,9 @@ def normalize_delivered_cue_text(cues, legacy=None):
     changed = []
     for cue in cues:
         text = getattr(cue, "text", None)
-        if not isinstance(text, str):
+        if not isinstance(text, str) or getattr(cue, 'grouping_origin', '') in {
+                'ai_accepted', 'ai_targeted_correction', 'unresolved', 'source_unchanged_short',
+                'source_retained_after_local_rejection'}:
             continue
         cleaned = normalize_format_whitespace(text)
         if cleaned != text and cleaned.strip():
@@ -153,12 +155,16 @@ def finalize_cues(    cues,
     import copy
     grouped_cues = copy.deepcopy(cues)
     from ..subtitle_rules.grouping_quality import QUALITY_VERSION
-    quality_managed = bool(cues) and all(
-        f'quality={QUALITY_VERSION}' in str(getattr(c,'timing_basis','')) for c in cues)
+    ai_boundaries = any(getattr(c, 'grouping_origin', '') in {
+        'ai_accepted', 'ai_targeted_correction', 'unresolved', 'source_unchanged_short',
+        'source_retained_after_local_rejection'} for c in cues)
+    quality_managed = ai_boundaries or (bool(cues) and all(
+        f'quality={QUALITY_VERSION}' in str(getattr(c,'timing_basis','')) for c in cues))
     def text_signature(rows):
         speakers = {c.speaker for c in rows}
         return {speaker:[c.text for c in rows if c.speaker==speaker] for speaker in speakers}
     immutable_text = text_signature(grouped_cues)
+    from ..subtitle_rules.display_timing import begin_display_receipts, record_display_receipts, final_display_overlaps
     def boundary_phase(name, rows):
         if quality_managed:
             import math
@@ -174,6 +180,7 @@ def finalize_cues(    cues,
             frame_ms=1000 / max(1, float(timeline_fps or 30)), half_open=True,
             cues=[dict(id=c.cue_id, speaker=c.speaker, text=c.text,
                        start_ms=round(c.start*1000), end_ms=round(c.end*1000)) for c in rows])
+        record_display_receipts(rows, name)
     boundary_phase('grouped_before_display', grouped_cues)
     if quality_managed:
         finalized = copy.deepcopy(cues)
@@ -192,20 +199,26 @@ def finalize_cues(    cues,
         segments,
     )
     if text_differences:
-        print(
-            "   [文字守恒自愈] 云端断句/超限恢复发生调序，"
-            "回退到本地源段重建；不会重新请求云端模型。"
-        )
-        legacy.record_run_event(
-            "final_text_conservation_recovery",
-            differences=text_differences,
-            previous_cue_count=len(finalized),
-        )
-        finalized = legacy.build_local_source_cues(
-            segments,
-            firered_tokens,
-        )
-        finalized = legacy.normalize_cue_times(finalized, timeline_fps)
+        if ai_boundaries:
+            from ..subtitle_rules.grouping_contract import validate_grouping_result
+            validate_grouping_result(segments, grouped_cues)
+            finalized = legacy.normalize_cue_times(grouped_cues, timeline_fps)
+        else:
+            print(
+                "   [文字守恒自愈] 云端断句/超限恢复发生调序，"
+                "回退到本地源段重建；不会重新请求云端模型。"
+            )
+            legacy.record_run_event(
+                "final_text_conservation_recovery",
+                differences=text_differences,
+                previous_cue_count=len(finalized),
+            )
+            finalized = legacy.build_local_source_cues(
+                segments,
+                firered_tokens,
+            )
+            finalized = legacy.normalize_cue_times(finalized, timeline_fps)
+    begin_display_receipts(finalized, grouped_cues)
     omitted_fillers = []
     if not quality_managed:
         finalized = legacy.validate_final_cues(finalized, segments, audio_seconds)
@@ -265,6 +278,15 @@ def finalize_cues(    cues,
         finalized.sort(key=lambda c:(c.start,c.end,c.speaker))
         for index,cue in enumerate(finalized,1):cue.cue_id=index
     boundary_phase('final_half_open_display', finalized)
+    overlaps = final_display_overlaps(finalized)
+    legacy.record_run_event('final_display_overlap_classification', **overlaps)
+    final_by_id = {cue.cue_id: cue for cue in finalized}
+    for pair in overlaps["pairs"]:
+        if pair["review_required"]:
+            cue = final_by_id[pair["right"]]
+            legacy.add_review_item(cue.start, '同说话人字幕重叠待试听',
+                f"显示重叠 {pair['overlap_ms']} ms；词级依据不足，保留两段原时间。",
+                cue.text, cue_id=cue.cue_id, severity='review', display_overlap=pair)
     legacy.collect_review_items(segments, finalized, speech_regions, firered_tokens)
     return finalized
 
@@ -382,6 +404,7 @@ def complete_media_run(
     review_classification=None,
     real_three_source_cues=None,
     cache_owners=None,
+    background_lyrics=None,
 ):
     """Write outputs transactionally, finish the report, and return public paths."""
     runtime_context = runtime_context or get_runtime_context()
@@ -401,6 +424,11 @@ def complete_media_run(
     # source and every export hold the same Traditional text.
     from ..subtitle_rules.chinese_script import convert_delivered_cues, task_script
     convert_delivered_cues(cues, runtime_context, legacy)
+    # Keep this result with the delivery checkpoint so a retry can reuse it.
+    if background_lyrics is None:
+        from .background_lyrics import mark_background_lyrics
+        background_lyrics = mark_background_lyrics(cues, runtime_context, legacy) or {}
+    delivery_arguments["background_lyrics"] = background_lyrics
     # Cached timing, optional aligners and delivered-script conversion can all
     # run after the initial finalizer. Refresh against the exact saved cues.
     from ..subtitle_rules.timing import refresh_final_cue_reviews
@@ -481,6 +509,7 @@ def complete_media_run(
                             "models": {**dict((runtime_context.asr_settings_snapshot or getattr(legacy, "RUNTIME_SETTINGS", {})).get("models", {})),
                                        "speaker_source": runtime_context.speaker_source},
                             "model_statuses": dict(model_statuses or {}),
+                            "independent_asr_runs": runtime_context.independent_asr_runs,
                             "created_by": "2ByteASR recognition pipeline",
                             "recognition_purpose": str(getattr(runtime_context, "recognition_purpose", "final") or "final"),
                             "analysis_transcript": str(getattr(runtime_context, "recognition_purpose", "final") or "final") == "analysis",
@@ -491,6 +520,8 @@ def complete_media_run(
                             "transcript_acceptance": copy.deepcopy(getattr(runtime_context, "transcript_acceptance", {}) or {}),
                             "terminology_status": dict(getattr(runtime_context,"terminology_status",{}) or {}),
                             "polishing_summary": dict(getattr(runtime_context,"polishing_summary",{}) or {}),
+                            "grouping_pending": copy.deepcopy(runtime_context.grouping_pending),
+                            "background_lyrics": copy.deepcopy(background_lyrics),
                             "translation_terminology": copy.deepcopy(runtime_context.translation_terminology),
                             "source_glossary_enabled": bool(runtime_context.enable_domain_terms),
                             "terminology_snapshot": (runtime_context.glossary_snapshot.to_dict()
@@ -607,6 +638,8 @@ def complete_media_run(
     counts.update(speech_counts(runtime_context.speech_coverage))
     status = 'needs_recovery' if output_details.get('project_error') else terminal_status(counts, len(cues), degraded=degraded or bool(
         getattr(runtime_context, 'speaker_recovery', {}).get('needs_confirmation')))
+    if runtime_context.grouping_pending and output_details.get('project'):
+        status = 'partial_recovery'
     legacy.record_run_event('subtitle_delivery', status=status, **counts)
     report_json_path, report_text_path = legacy.finish_media_report(
         status,
@@ -617,6 +650,7 @@ def complete_media_run(
         cue_count=len(cues),
         segment_count=len(segments),
         review_items=review_items,
+        grouping_pending=copy.deepcopy(runtime_context.grouping_pending),
         model_statuses=dict(model_statuses or {}),
         review_classification=dict(review_classification or {}),
         real_three_source_cues=list(real_three_source_cues or ()),
@@ -625,7 +659,7 @@ def complete_media_run(
         outputs={**output_details},
     )
     print(
-        f"\n[{'字幕待恢复' if status == 'needs_recovery' else '没有可用字幕' if status == 'empty_result' else '文件完成'} {file_index}/{file_total}] {legacy.format_elapsed(elapsed)}"
+        f"\n[{'部分完成，断句待重试' if status == 'partial_recovery' and runtime_context.grouping_pending else '字幕待恢复' if status == 'needs_recovery' else '没有可用字幕' if status == 'empty_result' else '文件完成'} {file_index}/{file_total}] {legacy.format_elapsed(elapsed)}"
         f"\n   工程：{output_details.get('project', '')}"
     )
     if report_text_path:

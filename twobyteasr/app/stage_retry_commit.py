@@ -30,8 +30,31 @@ def commit_unit_result(studio,report,unit):
     if unit.get('input') and not input_matches(project,unit['input']):raise ValueError('重试范围或译文已被编辑；未覆盖新修改')
     path=getattr(studio,'project_path',None) or getattr(studio.session,'project_path',None)
     if path is None:raise ValueError('当前工程没有保存路径，不能清除失败状态')
-    from ..projects.studio_project import SubtitleProject,StudioCue,save_project
+    from ..projects.studio_project import SubtitleProject,save_project
     candidate=SubtitleProject.from_dict(copy.deepcopy(project.to_dict()))
+    result,replacements,translation=apply_unit(candidate,unit)
+    # Save must succeed before a resolved unit becomes visible in any UI.
+    save_project(candidate,path)
+    from ..recognition.task_journal import record_optional_result
+    record_optional_result(candidate,report,result,path)
+    if replacements or translation is not None:
+        studio.session.undo_stack.push(StageResultCommand(project,candidate,getattr(studio,'_changed',None)))
+    else:
+        from ..projects.studio_runtime_state import state_for
+        with state_for(project).transaction(project,action_id='保存阶段重试状态',dirty=DirtyDomain.AUTOSAVE,
+                affected_cue_ids=tuple(result.get('cue_ids',()))):
+            project.generation_metadata=copy.deepcopy(candidate.generation_metadata)
+            project.studio_state=copy.deepcopy(candidate.studio_state)
+    return result
+
+
+def apply_unit(candidate,unit):
+    """Write one executed stage unit into a detached project copy (no save, no undo).
+
+    Shared by the Studio retry commit and the completion page's 兔白处理
+    (2026-11-21), which works on a copy without opening Studio. Returns
+    (ledger result, replacements, translation result)."""
+    from ..projects.studio_project import StudioCue
     result=copy.deepcopy(unit);translation=result.pop('translation_result',None)
     replacements=result.pop('replacements',{})
     if replacements:
@@ -62,16 +85,4 @@ def commit_unit_result(studio,report,unit):
             result.update(status='failed',reason='译文在重试期间已编辑；AI结果未覆盖人工译文')
     ledger=candidate.generation_metadata.setdefault(KEY,{'version':1,'units':{}})
     ledger.setdefault('units',{})[result['key']]=result
-    # Save must succeed before a resolved unit becomes visible in any UI.
-    save_project(candidate,path)
-    from ..recognition.task_journal import record_optional_result
-    record_optional_result(candidate,report,result,path)
-    if replacements or translation is not None:
-        studio.session.undo_stack.push(StageResultCommand(project,candidate,getattr(studio,'_changed',None)))
-    else:
-        from ..projects.studio_runtime_state import state_for
-        with state_for(project).transaction(project,action_id='保存阶段重试状态',dirty=DirtyDomain.AUTOSAVE,
-                affected_cue_ids=tuple(result.get('cue_ids',()))):
-            project.generation_metadata=copy.deepcopy(candidate.generation_metadata)
-            project.studio_state=copy.deepcopy(candidate.studio_state)
-    return result
+    return result,replacements,translation

@@ -196,7 +196,8 @@ def accept_authored_set(payload,ledger,provider,model,*,metadata_repair=None,mot
                 import jsonschema
                 for index in repair_indices:
                     row=value['candidates'][index]
-                    jsonschema.validate(row,AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items'])
+                    from .authored_repair import schema_view
+                    jsonschema.validate(schema_view(row),AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items'])
                     adapt_candidate(row,probe)
                 return
             return accept_authored_set(value,probe,provider,model,cancel_check=cancel_check,request_id=request_id)
@@ -253,9 +254,10 @@ def accept_authored_set(payload,ledger,provider,model,*,metadata_repair=None,mot
     # normalized/repaired result locally, then retain the visual code gates.
     import jsonschema
     try:
+        from .authored_repair import schema_view
         if allow_partial:
-            for row in rows:jsonschema.validate(row,AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items'])
-        else:jsonschema.validate({'candidates':rows},AUTHORED_OUTPUT_SCHEMA)
+            for row in rows:jsonschema.validate(schema_view(row),AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items'])
+        else:jsonschema.validate(schema_view({'candidates':rows}),AUTHORED_OUTPUT_SCHEMA)
     except jsonschema.ValidationError as exc:
         path='$'+''.join(f'[{part}]' if isinstance(part,int) else '.'+part for part in exc.absolute_path)
         # ValidationError.__str__ includes the entire failing instance.

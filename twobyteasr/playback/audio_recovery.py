@@ -1,6 +1,11 @@
 """A finite endpoint recovery budget per project session or explicit retry."""
 from dataclasses import dataclass
 
+# Windows device enumeration can take about 19 s on the affected machine.
+# This budget applies only to the first audible sync on each endpoint.
+COLD_OUTPUT_TIMEOUT_S = 24.0
+WARM_CONTROL_TIMEOUT_S = 3.0
+
 
 @dataclass
 class EndpointRecovery:

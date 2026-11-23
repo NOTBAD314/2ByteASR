@@ -50,6 +50,36 @@ def start(window,output):
             page=window.built_page('studio')
             wait(lambda:not window._studio_loading_session.active and not page._readiness.overlay.isVisible())
             page.video.set_paused(True)
+            if os.environ.get('TWOBYTEASR_SUBTITLE_EVIDENCE_AUDIT') == '1':
+                from .subtitle_evidence_audit import run as evidence_audit
+                evidence_audit(window, page, output, check, wait)
+                result['passed'] = all(result['checks'].values())
+                save()
+                window.close()
+                QTimer.singleShot(200, app.quit)
+                return
+            if os.environ.get('TWOBYTEASR_REFINE_RECOVERY_AUDIT') == '1':
+                from .sentence_bunny_recovery_audit import run as recovery_audit
+                recovery_audit(window, page, output, check, wait)
+                result['passed'] = all(result['checks'].values())
+                save()
+                window.close()
+                QTimer.singleShot(200, app.quit)
+                return
+            if os.environ.get('TWOBYTEASR_VM2_CUMULATIVE_AUDIT') == '1':
+                from .vm2_cumulative_audit import run as check_cumulative
+                check_cumulative(window, page, output, check, wait)
+                result['passed'] = all(result['checks'].values())
+                save()
+                window.close()
+                return
+            if os.environ.get('TWOBYTEASR_VM2_TEMPLATE_AUDIT') == '1':
+                from .vm2_cumulative_audit import render_templates
+                render_templates(output, check)
+                result['passed'] = all(result['checks'].values())
+                save()
+                window.close()
+                return
             if os.environ.get('TWOBYTEASR_PLAYHEAD_CENTER_AUDIT') == '1':
                 from .playhead_center_audit import run as check_center
                 check_center(window,page,output,check)

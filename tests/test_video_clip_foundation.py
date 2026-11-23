@@ -39,8 +39,13 @@ def test_clip_foundation_and_true_tail_survive_every_thumbnail_state(state,selec
     # A visible start/end and a base colour even with zero decoded pixels.
     if state!='partial':assert image.pixelColor(450,48)!=background
     if selected:
-        edge=image.pixelColor(350,35);expected=QColor(palette.clip_selected_border)
-        assert abs(edge.red()-expected.red())<30
+        # 2026-11-23: the selection follows the rounded clip card in the
+        # theme selection colour (antialiased, so compare with the card fill).
+        from twobyteasr.studio.media_clip_folder import media_colors
+        colors=media_colors(palette,'source.mp4');edge=image.pixelColor(350,40)
+        expected=QColor(palette.clip_selected_border)
+        distance=lambda a,b:sum(abs(x-y) for x,y in zip(a.getRgb()[:3],b.getRgb()[:3]))
+        assert distance(edge,expected)<distance(edge,colors.base)
 
 
 def test_project_switch_rejects_queued_image_before_the_next_paint(tmp_path):

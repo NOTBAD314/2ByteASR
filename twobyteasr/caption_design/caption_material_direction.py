@@ -33,6 +33,8 @@ breathe最多8条，允许repeat整数0..24和yoyo布尔值；start/end包含全
 MOTION_DELIVERY += "\nversion=2新增stagger:{amountMs:0..240,groupSize:1..8,order:forward|reverse|center}，只用于build/resolve，宿主按真实目标展开，总错峰最多占该track窗口40%。不要为每个字复制track。{{words}}生成.wt-w；data-emphasis可同时包裹匹配字组.wt-focus，optional:true仅允许重点词轨道，无匹配正常跳过。受控变量--caption-reveal(0..1)、--caption-sheen(0..100)。顺序关键帧用不重叠track，不支持任意keyframes字段。v2<=700ms稳定阅读，700..1600ms轻量动作，至少65%阅读；v1保持兼容。"
 MOTION_DELIVERY += "\n阅读期持续材质用v2的sustain:true、durationMs:真实毫秒周期、start:0/end:1，不同时指定repeat；循环次数由当前cue窗口决定，窗口结束即停止，暂停/seek/导出使用同一时钟。CRT扫描、颗粒/foil和轻微游戏wiggle应覆盖阅读期，局部微动可约0.2度/0.7像素，不把整句大幅抖动当生命力。微动容器与进退容器分开，退场接纳最后保持姿态，不能复位跳变。"
 TEXT_EMPHASIS_DELIVERY += "\nMotionSpec v2允许给.wt-focus轨道显式optional:true；{{words}}也支持data-emphasis，宿主保留字符拓扑。"
+# 2026-11-20: a caption's own marks (Markdown / AI 生动标记) reach the theme as classes.
+TEXT_EMPHASIS_DELIVERY += "\n字幕自带的局部标记由宿主分组，不改字：粗体与高亮并入.wt-focus（所以.wt-focus的设计就是每一句重点词的样子），并带.wt-mark.wt-b／.wt-mark.wt-hl；另有.wt-mark.wt-i斜体、.wt-mark.wt-s删除线、.wt-mark.wt-h1…wt-h6标题级别。这些类可选设计，不写则用宿主的低优先级默认样式；不要假设某一句一定带标记。"
 
 MOTION_DELIVERY += "\nv2可选minCueMs:0..30000；时长不足时该轨取成型阅读态。确定性wiggle及材质分层契约见reusable_effects；这些字段会保留到保存与导出，不写onUpdate回调。"
 from .pixel_motion import capability_text as _pixel_capability

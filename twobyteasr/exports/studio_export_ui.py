@@ -107,6 +107,18 @@ from ..design.ui_theme import ThemeDefinition, theme_definition
 # Real 1080p60 game footage, 120 s (2026-10-28): x264 medium CRF 20 6.2 Mb/s,
 # SSIM 0.9936; NVENC p4 CQ 20 14.8 Mb/s 0.9956; CQ 24 9.3 Mb/s 0.9937.
 AUTO_NVENC_CQ_OFFSET = 4
+# 2026-11-22: "auto" H.264 also takes AMF and Media Foundation, whose CQ scales
+# are constant-QP like NVENC, so they get the same offset (not measured on
+# those GPUs). Quick Sync ICQ is already calibrated to x264 CRF: no offset.
+AUTO_HARDWARE_CQ_OFFSET_SUFFIXES = ("_nvenc", "_amf", "_mf")
+
+
+def encoder_label(name: str) -> str:
+    return ("NVIDIA NVENC" if "nvenc" in name else
+            "Intel Quick Sync" if "qsv" in name else
+            "AMD AMF" if "amf" in name else
+            "GPU (Windows Media Foundation)" if name.endswith("_mf") else
+            f"Software {name.replace('lib', '')}")
 
 
 def _workspace_theme() -> ThemeDefinition:
@@ -338,12 +350,24 @@ class SubtitleExportDialog(QDialog):
         self.setObjectName("subtitleExportDialog")
         apply_secondary_surface_theme(self)
         theme = _active_theme(None)
-        self.setStyleSheet(emphasis_qss(build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme)))
+        # 2026-11-23 (user: the export window should not be a Windows window but rounder, like the
+        # app): frameless and rounded (RoundedWindow), its content on a card of the dialog colour.
+        self.setStyleSheet(emphasis_qss(
+            build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme)
+            + f"QDialog#subtitleExportDialog {{ background: transparent; }}"
+            f"QFrame#subtitleExportRoot {{ background: {theme.surface}; }}"))
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.chrome_root = QFrame()
+        self.chrome_root.setObjectName("subtitleExportRoot")
+        self.chrome_root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        chrome_layout = QVBoxLayout(self.chrome_root)
+        chrome_layout.setContentsMargins(0, 0, 0, 0)
+        chrome_layout.setSpacing(0)
+        root.addWidget(self.chrome_root)
         self.pages = QStackedWidget()
-        root.addWidget(self.pages)
+        chrome_layout.addWidget(self.pages)
 
         setup = QWidget()
         outer = QVBoxLayout(setup)
@@ -362,6 +386,9 @@ class SubtitleExportDialog(QDialog):
         title.setObjectName("exportDialogTitle")
         bind_text(title, "导出字幕")
         body.addWidget(title)
+        from ..app.rounded_window import RoundedWindow
+        # The title moves the window (no Windows title bar any more); Esc and 取消 close it.
+        self.chrome = RoundedWindow(self, self.chrome_root, title_areas=[title, body_host], radius=22, maximizable=False)
         from .export_preferences import output_basename
         name = QLabel()
         name.setObjectName("exportDialogMeta")
@@ -2227,13 +2254,7 @@ class StudioExportWorkspace(QWidget):
             self.ffmpeg, str(self.codec.currentData() or "h264")
         ) or []
         for choice in choices:
-            label = (
-                "NVIDIA NVENC" if "nvenc" in choice else
-                "Intel Quick Sync" if "qsv" in choice else
-                "AMD AMF" if "amf" in choice else
-                f"Software {choice.replace('lib', '')}"
-            )
-            self.encoder.addItem(label, choice)
+            self.encoder.addItem(encoder_label(choice), choice)
 
     def _resolved_encoder(self) -> str:
         codec = str(self.codec.currentData() or "h264")
@@ -2251,25 +2272,21 @@ class StudioExportWorkspace(QWidget):
         # (hardware first, only encoders whose test encode passed; SVT-AV1
         # before libaom). H.264 takes NVENC only: measured on real 1080p60
         # game footage it is 2-4.6x faster than x264 medium at the same SSIM
-        # (AUTO_NVENC_CQ_OFFSET); Quick Sync / AMF H.264 were not measured and
-        # stay a manual choice. A hardware failure still falls back to software.
+        # (AUTO_NVENC_CQ_OFFSET). A hardware failure still falls back to software.
+        # 2026-11-22 (user: no NVIDIA card or an older driver means no GPU at
+        # all): H.264 used to skip Quick Sync / AMF, so those machines always
+        # burned on the CPU. Every encoder in the list passed a real test
+        # encode, so take the first hardware one (NVENC, Quick Sync, AMF,
+        # Media Foundation); software only when none passed.
         if not choices:
             return software
-        if codec == "h264":
-            return next((name for name in choices if name.endswith("_nvenc")),
-                        software if software in choices else choices[0])
-        return choices[0]
+        return next((name for name in choices if not name.startswith("lib")), choices[0])
 
     def _encoder_changed(self, *_args) -> None:
         if not hasattr(self, "rate_control"):
             return
         encoder = self._resolved_encoder()
-        friendly = (
-            "NVIDIA NVENC" if "nvenc" in encoder else
-            "Intel Quick Sync" if "qsv" in encoder else
-            "AMD AMF" if "amf" in encoder else
-            f"Software {encoder.replace('lib', '')}"
-        )
+        friendly = encoder_label(encoder)
         bind_text(self.actual_encoder_hint, '当前将使用：{friendly}', friendly=friendly)
         previous = str(self.rate_control.currentData() or "")
         self.rate_control.blockSignals(True)
@@ -2707,7 +2724,7 @@ class StudioExportWorkspace(QWidget):
         quality = self.quality_value.value()
         rate_mode = str(self.rate_control.currentData() or ('crf' if encoder.startswith('lib') else 'cq'))
         if (str(self.encoder.currentData() or "auto") == "auto" and codec == "h264"
-                and encoder.endswith("_nvenc") and rate_mode in {"cq", "crf"}):
+                and encoder.endswith(AUTO_HARDWARE_CQ_OFFSET_SUFFIXES) and rate_mode in {"cq", "crf"}):
             # The H.264 preset numbers were always run as x264 CRF; keep that picture.
             quality += AUTO_NVENC_CQ_OFFSET
         resolution = self.resolution.currentData() or (0, 0)

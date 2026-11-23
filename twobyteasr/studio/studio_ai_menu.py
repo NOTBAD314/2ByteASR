@@ -42,6 +42,11 @@ def build_ai_menu(page, menu) -> None:
     page.ai_translate_project_action = add_rich(
         menu, _icon("fa5s.language"), tr("翻译整个工程…"), tr("生成译文，之后可切换原文 / 译文 / 双语显示"),
         lambda: page._open_translation_dialog(scope="all"))
+    # 2026-11-20 (user): captions as lively as 问问兔白's bubbles; AI adds marks, never words.
+    from .lively_marks import run_lively_marks
+    page.ai_lively_marks_action = add_rich(
+        menu, _icon("fa5s.highlighter"), tr("AI 生动标记"), tr("让 AI 给字幕加粗体、重点、删除线和标题，不改文字，可一步撤销"),
+        lambda: run_lively_marks(page))
 
     menu.addSeparator()
     add_header(menu, tr("当前 / 选中的字幕"))
@@ -60,6 +65,9 @@ def build_ai_menu(page, menu) -> None:
     page.ai_translate_selected_action = add_rich(
         menu, _icon("fa5s.globe"), tr("翻译所选字幕…"), tr("翻译或更新选中字幕的译文；已有译文会保留"),
         lambda: translate_selected(page))
+    page.ai_lively_marks_selected_action = add_rich(
+        menu, _icon("fa5s.highlighter"), tr("AI 生动标记（选中字幕）"), tr("只给选中的字幕加 Markdown 标记"),
+        lambda: run_lively_marks(page, selected=True))
 
     # 2026-11-15 (user): after I / O, people look for re-recognizing the stretch here, not only in
     # the timeline's right-click menu (studio_range_recognition).
@@ -93,8 +101,9 @@ def build_ai_menu(page, menu) -> None:
         has_project = project is not None
         selected = bool(has_project and page.selected_cue_ids())
         current = bool(has_project and getattr(page, "selected_cue_id", None))
-        for action in (page.ai_refine_project_action, page.ai_translate_project_action):
+        for action in (page.ai_refine_project_action, page.ai_translate_project_action, page.ai_lively_marks_action):
             action.setEnabled(has_project)
+        page.ai_lively_marks_selected_action.setEnabled(selected)
         for action, name in ((page.ai_optimize_action, "ai_optimize_button"),
                              (page.ai_smart_align_action, "smart_align_button"),
                              (page.ai_reasr_action, "reasr_button")):

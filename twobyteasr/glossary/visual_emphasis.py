@@ -81,7 +81,8 @@ def visual_cues(cues, snapshot):
             result.append(cue)
             continue
         shown = deepcopy(cue)
-        auto = [dict(start=a,end=b,highlight=True) for a,b in spans]
+        # Tagged so a web theme, which now shows the caption's own marks, still leaves these out.
+        auto = [dict(start=a,end=b,highlight=True,source='glossary') for a,b in spans]
         shown.appearance_override['text_marks'] = auto + list(cue.appearance_override.get('text_marks', []))
         result.append(shown)
     return result

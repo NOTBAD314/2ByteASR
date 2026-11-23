@@ -83,6 +83,14 @@ class SubtitleTask:
                         by_id[key] = row["status"]
         counts = {status: sum(value == status for value in by_id.values()) for status in TERMINAL}
         counts["processed"] = sum(value != "cancelled" for value in by_id.values())
+        if self.kind == 'AI 断句':
+            saved = getattr(self, 'saved_output_ids', set())
+            counts['validated'] = sum(len(row['cue_ids']) for row in self.rows.values()
+                                      if row.get('candidate_verified'))
+            counts['saved_verified'] = sum(len(row['cue_ids']) for row in self.rows.values()
+                if row.get('status') == 'applied' and row.get('output_ids') and set(row['output_ids']) <= saved)
+            counts['conflict'] = sum(len(row['cue_ids']) for row in self.rows.values()
+                                    if row.get('category', '').startswith('stale_'))
         counts["total"] = len(self.cue_ids)
         return counts
 

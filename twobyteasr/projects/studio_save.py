@@ -223,6 +223,12 @@ def request_formal_save(controller, *, save_project_fn, message_box_fn, on_finis
             else:
                 controller.session.project_path = Path(outcome.path)
                 project.updated_at = outcome.updated_at
+                if outcome.refinement:
+                    verified = outcome.refinement
+                    task = getattr(page, '_refine_task', None)
+                    if task is not None and task.task_id == verified['task_id']:
+                        task.saved_output_ids = set(verified['output_ids'])
+                    page._studio_trace('SentenceRefineSaved', **verified)
                 page._formal_save_error = None
                 readiness = getattr(page, '_readiness', None)
                 if readiness is not None and readiness.ready:
@@ -249,6 +255,11 @@ def request_formal_save(controller, *, save_project_fn, message_box_fn, on_finis
                 record_text_save(operation_ids, kind='formal', revision=revision_id, generation=edit_generation)
                 if token:
                     page._finish_caption_manual_save(token)
+                try:      # 2026-11-20: the user's own extension scripts may listen; never fails the save
+                    from ..app import extension_events
+                    extension_events.emit('project_saved', path=str(outcome.path), project=project)
+                except Exception:
+                    pass
             record('MANUAL_SAVE_WRITE', save_id=trace.save_id, generation=revision.generation,
                    **(outcome.phases or {}), thread='studio-persistence')
             if on_finished is not None:

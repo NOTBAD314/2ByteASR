@@ -121,13 +121,13 @@ def _cue_status(project: SubtitleProject | None, cue: StudioCue, risks: dict | N
 def _cue_review_level(project: SubtitleProject | None, cue: StudioCue, risks: dict | None = None) -> str:
     # Loops over every cue pass ``risks`` once: building it copies the whole
     # risk table, so a per-cue call made a full-list pass O(n^2).
-    risks = cached_review_risks(project) if risks is None else risks
+    risks = cached_review_risks(project, refresh=False) if risks is None else risks
     row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
     return str(row.get("level", "confident")) if isinstance(row, dict) else "confident"
 
 
 def _cue_review_score(project: SubtitleProject | None, cue: StudioCue, risks: dict | None = None) -> int:
-    risks = cached_review_risks(project) if risks is None else risks
+    risks = cached_review_risks(project, refresh=False) if risks is None else risks
     row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
     try:
         return int(row.get("score", 0)) if isinstance(row, dict) else 0
@@ -181,7 +181,7 @@ class CueTableModel(QAbstractTableModel):
         self._view_cues = list(view)
         needle = self.query.casefold().strip()
         scope = set(self.scope_ids) if self.scope_ids is not None else None
-        risks = cached_review_risks(self.project)
+        risks = cached_review_risks(self.project, refresh=False) if self.filter_status != 'all' else None
         for row, cue in enumerate(view):
             if scope is not None:
                 if cue.id not in scope:
@@ -204,13 +204,9 @@ class CueTableModel(QAbstractTableModel):
             self._rows.append(row)
         # Filters change visibility only. Every visible list, including
         # Priority, follows the same chronological order as the timeline.
-        self._rows.sort(
-            key=lambda source_row: (
-                self._view_cues[source_row].start_ms,
-                source_row,
-                self._view_cues[source_row].id,
-            )
-        )
+        # Rows were appended in source order; the stable sort retains that
+        # order for equal start times.
+        self._rows.sort(key=lambda source_row: self._view_cues[source_row].start_ms)
         self._cue_row_lookup = {
             self._view_cues[source_row].id: row
             for row, source_row in enumerate(self._rows)
@@ -331,7 +327,7 @@ class CueTableModel(QAbstractTableModel):
         self._rows = [source[key] for key in visible]
         scope = set(self.scope_ids) if self.scope_ids is not None else None
         needle = self.query.casefold().strip()
-        risks = cached_review_risks(self.project) if self.filter_status != 'all' else None
+        risks = cached_review_risks(self.project, refresh=False) if self.filter_status != 'all' else None
         for cue in sorted((c for c in self._view_cues if c.id in affected), key=lambda c: (c.start_ms, source[c.id], c.id)):
             if scope is not None and cue.id not in scope:
                 continue
@@ -421,7 +417,7 @@ class CueTableModel(QAbstractTableModel):
                 ))
             return _cue_status_label(self.project, cue)
         if role == Qt.ItemDataRole.ToolTipRole:
-            risks = cached_review_risks(self.project)
+            risks = cached_review_risks(self.project, refresh=False)
             row = risks.get(cue.id, {}) if isinstance(risks, dict) else {}
             reasons = row.get("reasons", []) if isinstance(row, dict) else []
             if reasons:
@@ -586,7 +582,7 @@ class CueReadingDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _review_reason(project, cue) -> str:
-        risks = cached_review_risks(project)
+        risks = cached_review_risks(project, refresh=False)
         row = risks.get(_review_key(project, cue), {}) if isinstance(risks, dict) else {}
         reasons = row.get("reasons", []) if isinstance(row, dict) else []
         return str(reasons[0]) if reasons else ""
@@ -719,7 +715,7 @@ class CueReadingDelegate(QStyledItemDelegate):
         painter.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), name)
         x += chip_w + 8
         # status (or review level in the priority filters)
-        risks = cached_review_risks(project)
+        risks = cached_review_risks(project, refresh=False)
         level = _cue_review_level(project, cue, risks)
         if level != "confident":
             high = level == "high"

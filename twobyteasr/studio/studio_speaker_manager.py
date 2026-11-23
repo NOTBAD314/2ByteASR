@@ -141,6 +141,7 @@ _HINTS = {
 
 
 class SpeakerManagerDialog(QDialog):
+    SURFACE_MOTION = True
     WIDTH, HEIGHT = 1100, 780
 
     def __init__(self, page: "SubtitleStudioPage"):
@@ -416,6 +417,8 @@ class SpeakerManagerDialog(QDialog):
             icon="fa5s.gamepad"))
         self.group_select_button = secondary_box.add_action(self._button(
             "全选", "speakerGhostButton", lambda: self._select_box("secondary")))
+        self.game_visibility_button = self.boxes["game"].add_action(self._button(
+            "隐藏游戏声字幕", "speakerGhostButton", self._toggle_game_visibility))
         self.group_more_button = QToolButton()
         self.group_more_button.setObjectName("speakerGhostButton")
         self.group_more_button.setIcon(themed_icon("fa5s.ellipsis-h", "secondary"))
@@ -543,9 +546,14 @@ class SpeakerManagerDialog(QDialog):
         foot.addWidget(self.show_names)
         self.name_preview = QLabel()
         self.name_preview.setObjectName('speakerNamePreview')
-        self.name_preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.name_preview.setTextFormat(Qt.TextFormat.RichText)
         self.name_preview.setMaximumWidth(320)
         foot.addWidget(self.name_preview)
+        self.name_style_button = self._button('名字样式…', 'speakerGhostButton',
+                                              lambda: self._open_name_style(self._name_style_target()),
+                                              icon='fa5s.palette', tip='设定所选说话人名字的颜色和字体')
+        self.name_style_button.setObjectName('speakerNameStyleButton')
+        foot.addWidget(self.name_style_button)
         self.status = QLabel()
         self.status.setObjectName("speakerFooterStatus")
         self.status.setWordWrap(True)
@@ -614,7 +622,14 @@ class SpeakerManagerDialog(QDialog):
             return {}
         if not self._snapshot_in_project:
             return dict(self._staged_roles)
-        return {label: str(self._snapshot.get("roles", {}).get(label, "unconfirmed")) for label in self._stats}
+        from ..projects.speaker_organization import CATEGORIES
+        project = self.page.project
+        aliases = project.generation_metadata.get('speaker_organization', {}).get('current_speaker_ids', {})
+        categories = project.studio_state.get(CATEGORIES, {})
+        roles = self._snapshot.get('roles', {})
+        return {label: ('merge:' + aliases[label] if label in aliases else
+                        'game' if categories.get(label) == 'game' else str(roles.get(label, 'unconfirmed')))
+                for label in self._stats}
 
     def _anonymous(self) -> bool:
         from ..recognition.speaker_recovery import anonymous_snapshot
@@ -664,7 +679,8 @@ class SpeakerManagerDialog(QDialog):
         speaker_id = getattr(self, '_name_preview_speaker', '')
         cue = next((c for c in project.cues if c.speaker_id == speaker_id), next(iter(project.cues), None))
         if cue is None:
-            self.name_preview.setText(tr('效果预览：角色名称：好可怕，好可怕。'))
+            from html import escape
+            self.name_preview.setText(escape(tr('效果预览：角色名称：好可怕，好可怕。')))
             return
         from ..caption_style.bilingual_layout import settings_from_state, translation_for_cue
         settings = settings_from_state(project.studio_state)
@@ -680,12 +696,68 @@ class SpeakerManagerDialog(QDialog):
             body = style_translation(body, project_mode(project), **options)
         else:
             body = style_text(body, project_mode(project), language=project_language(project) or "", **options).text
-        self.name_preview.setText(tr('效果预览：') + (prefix(cue.speaker_id, project.speakers) if shown else '') + body)
+        from html import escape
+        from .speaker_name_style import name_html, name_style_of
+        speaker = self._speaker(cue.speaker_id)
+        name = (name_html(prefix(cue.speaker_id, project.speakers), name_style_of(speaker))
+                if shown and speaker is not None else '')
+        self.name_preview.setText(escape(tr('效果预览：')) + name + escape(body))
+
+    def _name_style_target(self) -> str:
+        project = self.page.project
+        if project is None:
+            return ''
+        key = getattr(self, '_name_preview_speaker', '')
+        if self._speaker(key) is not None:
+            return key
+        cue = next(iter(project.cues), None)
+        if cue is not None and self._speaker(cue.speaker_id) is not None:
+            return cue.speaker_id
+        return project.speakers[0].id if project.speakers else ''
+
+    def _open_name_style(self, key: str) -> None:
+        """One undoable step: the name style, plus turning names on if asked."""
+        from ..caption_style.speaker_names import enabled
+        from .speaker_name_controls import SetSpeakerNamesCommand
+        from .speaker_name_style import SpeakerNameStyleDialog
+        project = self.page.project
+        speaker = self._speaker(key) if project is not None else None
+        if speaker is None:
+            return
+        self._name_preview_speaker = key
+        sample = next((cue.text for cue in project.cues if cue.speaker_id == key and str(cue.text).strip()), '')
+        shown = enabled(project.studio_state)
+        dialog = SpeakerNameStyleDialog(project, speaker, self._display_name(key), sample,
+                                        _speaker_color(project, key).name(), shown, self)
+        apply_secondary_surface_theme(dialog)
+        self._name_style_dialog = dialog
+        try:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            changes = dialog.changes()
+            turn_on = not shown and dialog.show_names.isChecked()
+        finally:
+            self._name_style_dialog = None
+        if not changes and not turn_on:
+            return
+        stack = self.page.undo_stack
+        stack.beginMacro(tr('修改说话人名字样式'))
+        try:
+            if changes:
+                self._push(SetSpeakerCommand(project, key, changes, text=tr('修改说话人名字样式'),
+                                             changed=self.page._speaker_structure_changed))
+            if turn_on:
+                stack.push(SetSpeakerNamesCommand(project, True))
+        finally:
+            stack.endMacro()
+        self._sync_name_preview()
 
     # ----------------------------------------------------------------- refresh
     def _undo_index_changed(self, *_args) -> None:
         if self.isVisible() and not self._applying:
-            if self._snapshot_in_project:
+            from ..projects.studio_runtime_state import state_for
+            delta = state_for(self.page.project).last_delta
+            if self._snapshot_in_project and getattr(delta, 'action_id', '') != 'speaker_edit':
                 self._load_snapshot()
             self.refresh()
 
@@ -741,7 +813,8 @@ class SpeakerManagerDialog(QDialog):
         """Which box shows ``key``; None for labels merged into someone else."""
         from ..recognition.speaker_recovery import candidate_destination
         data = self._data.get(key) or {}
-        if key == BACKGROUND:
+        from ..projects.speaker_organization import CATEGORIES
+        if key == BACKGROUND or self.page.project.studio_state.get(CATEGORIES, {}).get(key) == 'game':
             return "game"
         if data.get("present"):
             return "secondary" if key in self._group and key != UNIFIED else "main"
@@ -753,6 +826,17 @@ class SpeakerManagerDialog(QDialog):
         if destination == BACKGROUND:
             return "game"
         return "main" if destination == key else None
+
+    def _toggle_game_visibility(self):
+        project = self.page.project
+        visible = {speaker.id for speaker in project.speakers if not speaker.hidden}
+        game = {key for key in self._box_keys('game') if self._speaker(key) is not None}
+        if not game:
+            return
+        hidden = {speaker.id for speaker in project.speakers if speaker.hidden}
+        hidden = hidden | game if game & visible else hidden - game
+        self._push(SetSpeakersVisibilityCommand(project, hidden, self.page._speaker_structure_changed))
+        self.refresh()
 
     def _make_card(self, key: str) -> SpeakerCard:
         card = SpeakerCard(key, self, self.inspector)
@@ -849,6 +933,10 @@ class SpeakerManagerDialog(QDialog):
         for button in (self.group_merge_button, self.group_game_button, self.group_select_button):
             button.setVisible(bool(members))
         self.group_merge_button.setEnabled(len(members) >= 2)
+        game = [self._speaker(key) for key in self._box_keys('game')]
+        game = [speaker for speaker in game if speaker is not None]
+        self.game_visibility_button.setVisible(bool(game))
+        bind_text(self.game_visibility_button, '隐藏游戏声字幕' if any(not speaker.hidden for speaker in game) else '显示游戏声字幕')
         self.group_more_button.setVisible(grouped)
         all_selected = bool(members) and all(key in self._selection for key in members)
         bind_text(self.group_select_button, "取消全选" if all_selected else "全选")
@@ -1063,9 +1151,10 @@ class SpeakerManagerDialog(QDialog):
                 return ("timeline", kind)
             return ("restore", kind) if candidate else None
         if kind == "game":
+            if present:
+                return ("category", "game")
             if candidate:
                 return ("role", "game")
-            return ("background", None) if present else None
         if kind == "ignore" and candidate:
             return ("role", "ignore")
         return None
@@ -1075,14 +1164,39 @@ class SpeakerManagerDialog(QDialog):
 
     def _drop(self, keys: list[str], kind: str, target: str = "") -> None:
         """Leave the drag's event loop first, then change the project (one undo)."""
-        keys = [key for key in keys if key in self._data]
-        if target:
-            QTimer.singleShot(0, lambda: self._merge_many([key for key in keys if key != target], target))
-        else:
-            QTimer.singleShot(0, lambda: self._apply_move(keys, kind))
+        from ..projects.studio_runtime_state import state_for
+        project = self.page.project
+        if project is None or self._applying or getattr(self, '_closing_board', False):
+            return
+        keys = tuple(dict.fromkeys(key for key in keys if key in self._data))
+        revision = state_for(project).revision
+
+        def commit():
+            if (getattr(self, '_closing_board', False) or not self.isVisible()
+                    or self.page.project is not project or self._applying
+                    or state_for(project).revision != revision):
+                return
+            if target:
+                self._merge_many(keys, target)
+            else:
+                self._apply_move(keys, kind)
+
+        QTimer.singleShot(0, self, commit)
 
     def _apply_move(self, keys, kind: str) -> None:
         from .studio_speaker_board import BOX_TITLES
+        from ..projects.speaker_organization import CATEGORIES
+        if self._applying or self.page.project is not self._role_project:
+            return
+        keys = tuple(dict.fromkeys(keys))
+        effects = {key: effect for key in keys if (effect := self._move_effect(key, kind))}
+        categories = self.page.project.studio_state.get(CATEGORIES, {})
+        category_ids = {key for key, (action, _) in effects.items()
+                        if action == 'category' or action == 'timeline' and key in categories}
+        if category_ids and category_ids == effects.keys():
+            self._edit_board(category_ids, category='game' if kind == 'game' else None,
+                             label=tr("移到「{box}」", box=tr(BOX_TITLES[kind])))
+            return
         roles, background, timeline = [], set(), {}
         restore = 'unconfirmed' if self._anonymous() else 'main'
         for key in keys:
@@ -1110,7 +1224,20 @@ class SpeakerManagerDialog(QDialog):
 
     def _merge_many(self, keys: list[str], target: str, name: str = "") -> None:
         from ..recognition.speaker_recovery import candidate_destination
-        if not keys or target not in self._data:
+        if (not keys or target not in self._data or self._applying
+                or self.page.project is not self._role_project):
+            return
+        if target == BACKGROUND:
+            self._apply_move(keys, 'game')
+            return
+        keys = [key for key in dict.fromkeys(keys) if key != target and target in self._merge_targets(key)]
+        if not keys:
+            return
+        speaker = self._speaker(target)
+        if (speaker is not None and (self._snapshot_in_project or self._snapshot is None)
+                and all(self._speaker(key) is not None for key in keys)):
+            self._edit_board(keys, target=target, rename=name.strip(),
+                             label=tr("合并到 {name}", name=name.strip() or self._display_name(target)))
             return
         roles, batch = [], set()
         current = self._roles()
@@ -1139,6 +1266,24 @@ class SpeakerManagerDialog(QDialog):
         self._focus = target
         self._execute(label, roles=roles, batch=("merge", batch, target) if batch else None,
                       rename=(target, rename) if rename else None)
+
+    def _edit_board(self, keys, *, target=None, category=None, rename='', label):
+        from ..projects.speaker_organization import speaker_edit_command
+        command = speaker_edit_command(self.page.project, keys, target=target, category=category,
+                                       rename=rename, label=label, refreshed=self.page._populate_speakers)
+        if command is None:
+            return
+        self._stop_preview()
+        self._applying = True
+        try:
+            self._push(command)
+        finally:
+            self._applying = False
+        # The fast command changes only editorial aliases and categories.
+        # The raw recovery snapshot and its statistics remain identical.
+        self.refresh(target or '')
+        if not command.error:
+            self._set_status(tr("{label}。可按 Ctrl+Z 撤销。", label=label))
 
     def _merge_selection(self, target: str, name: str) -> None:
         mergeable, _targets = self._mergeable(self._ordered_selection())
@@ -1454,6 +1599,8 @@ class SpeakerManagerDialog(QDialog):
         return True
 
     def done(self, result):
+        if getattr(self, '_closing_board', False):
+            return
         self._role_timer.stop()
         self._drain_roles()
         self._stop_preview()
@@ -1464,6 +1611,9 @@ class SpeakerManagerDialog(QDialog):
                 self._apply_selection()
                 card.name_edit.setFocus()
                 return
+        # The departure animation keeps the dialog visible. Invalidate
+        # delayed drops before Qt draws the first closing frame.
+        self._closing_board = True
         try:
             self.page.undo_stack.indexChanged.disconnect(self._undo_index_changed)
         except (RuntimeError, TypeError):
@@ -1472,7 +1622,9 @@ class SpeakerManagerDialog(QDialog):
         self._voiceprint_timer.stop()
         self.page._speaker_roles_pending = False
         self.page._populate_speakers()
-        super().done(result)
+        from ..design.transitions import animate_done
+        if not animate_done(self, result):
+            super().done(result)
 
     def _voiceprint_clicked(self):
         from ..recognition.scoped_voiceprint import cue_signature, sample_windows
@@ -1703,6 +1855,8 @@ class SpeakerManagerDialog(QDialog):
         if speaker is None:
             return
         from ..caption_style.speaker_labels import SetSpeakerLabelCommand
+        name_style = menu.addAction(tr('名字颜色和字体…'))
+        name_style.triggered.connect(lambda: QTimer.singleShot(0, lambda: self._open_name_style(card.key)))
         label = menu.addAction(tr('在模板中显示姓名'))
         label.setCheckable(True)
         label.setChecked(project.studio_state.get('speaker_labels', {}).get(card.key, True))
@@ -1759,25 +1913,15 @@ class SpeakerManagerDialog(QDialog):
 
     def _card_fill_merge_menu(self, card: SpeakerCard, menu) -> None:
         menu.clear()
+        source = card.key
         for target in self._merge_targets(card.key):
             action = menu.addAction(tr("并入 {name}", name=self._display_name(target)))
-            action.triggered.connect(lambda _=False, value=target: self._merge(card.key, value))
+            action.triggered.connect(lambda _=False, value=target: self._drop([source], '', value))
         if menu.isEmpty():
             menu.addAction(tr("没有可并入的说话人")).setEnabled(False)
 
     def _merge(self, key: str, target: str) -> None:
-        from ..recognition.speaker_recovery import candidate_destination
-        if key in self._stats and self._snapshot is not None:
-            roles = self._roles()
-            if target in self._stats and (not self._snapshot_in_project
-                                          or candidate_destination(roles, target, self._anonymous()) == target):
-                self._set_role(key, "merge:" + target)
-                return
-            if target == BACKGROUND:
-                self._set_role(key, "game")
-                return
-        if self._speaker(key) is not None:
-            self._batch("merge", target=target, ids={key})
+        self._merge_many([key], target)
 
     def _card_role_clicked(self, card: SpeakerCard, role: str) -> None:
         current = self._pending_roles.get(card.key, self._roles().get(card.key, "unconfirmed"))
@@ -1794,7 +1938,15 @@ class SpeakerManagerDialog(QDialog):
         pending, self._pending_roles = self._pending_roles, {}
         if self.page.project is not self._role_project:
             return
+        game = [label for label, role in pending.items() if role == 'game' and self._speaker(label) is not None]
+        if game:
+            self._apply_move(game, 'game')
         for label, role in pending.items():
+            if label in game:
+                continue
+            if role == 'main' and self._box_index.get(label) == 'game' and self._speaker(label) is not None:
+                self._apply_move([label], 'main')
+                continue
             self._set_role(label, role)
 
     def _set_role(self, label: str, role: str) -> None:

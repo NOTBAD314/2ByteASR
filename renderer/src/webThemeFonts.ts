@@ -16,6 +16,8 @@ const faces: Record<string, [string,string]> = {
   'Smiley Sans':['SmileySans-Oblique.woff2','woff2'],
   'ZCOOL KuaiLe':['ZCOOLKuaiLe-Regular.ttf','truetype'],
   'ZCOOL QingKe HuangYou':['ZCOOLQingKeHuangYou-Regular.ttf','truetype'],
+  // Template decoration only (hud-lock PLAY/REC/time code); a 404 falls back to system mono.
+  'JetBrains Mono':['JetBrainsMono-Regular.ttf','truetype'],
 };
 export const bundledThemeFontCss = (family='') => family.split(',')
   .map(name=>name.trim().replace(/^['"]|['"]$/g,''))

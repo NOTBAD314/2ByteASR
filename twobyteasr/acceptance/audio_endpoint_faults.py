@@ -23,6 +23,17 @@ def before_connect():
 
 
 def configure_devices():
-    if mode()=='no-device':
+    fault = mode()
+    if fault == 'no-device':
         from PySide6.QtMultimedia import QAudioDevice,QMediaDevices
         QMediaDevices.defaultAudioOutput=staticmethod(QAudioDevice)
+    elif fault == 'slow-default-device':
+        from PySide6.QtMultimedia import QMediaDevices
+        resolve = QMediaDevices.defaultAudioOutput
+
+        def delayed():
+            QMediaDevices.defaultAudioOutput = staticmethod(resolve)
+            time.sleep(13)
+            return resolve()
+
+        QMediaDevices.defaultAudioOutput = staticmethod(delayed)

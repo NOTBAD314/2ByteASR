@@ -395,6 +395,7 @@ class StudioWorkspaceBuilder:
         page.cue_list_toggle_button.setChecked(True)
         bind_text(page.cue_list_toggle_button, '显示或收起左侧字幕列表', property='toolTip')
         yield from _gui_slice.checkpoint()
+        page.cue_list_toggle_button.pressed.connect(page.cue_list_toggle_button.repaint)
         page.cue_list_toggle_button.clicked.connect(      # the user's toggle slides (2026-11-18)
             lambda checked: page._set_major_panel_visible("cue_list", checked, animate=True)
         )
@@ -408,6 +409,7 @@ class StudioWorkspaceBuilder:
         page.context_expand_button.setChecked(True)
         yield from _gui_slice.checkpoint()
         bind_text(page.context_expand_button, '显示或收起右侧工具面板', property='toolTip')
+        page.context_expand_button.pressed.connect(page.context_expand_button.repaint)
         page.context_expand_button.clicked.connect(page._toggle_context_panel)
         view_track.add(page.context_expand_button)
         page.review_mode_button = QPushButton("进入审核模式")
@@ -431,6 +433,7 @@ class StudioWorkspaceBuilder:
         yield from _gui_slice.checkpoint()
         page._shortcut_tooltip(find_replace, '查找并替换字幕文字 ({find} / {replace})',
                                {'find': 'find', 'replace': 'find_replace'})
+        find_replace.pressed.connect(find_replace.repaint)
         find_replace.clicked.connect(page._open_find_replace)
         bar.addWidget(tool_track)
         tool_track.add(find_replace)
@@ -446,6 +449,7 @@ class StudioWorkspaceBuilder:
         def open_script_match():
             from .studio_script_match import open_script_match_dialog
             open_script_match_dialog(page)
+        script_match.pressed.connect(script_match.repaint)
         script_match.clicked.connect(open_script_match)
         tool_track.add(script_match)
         # 2026-09-02（用户指示）：说话人管理改为与其它工具一致的
@@ -455,6 +459,7 @@ class StudioWorkspaceBuilder:
         page.speaker_manager_button.setObjectName("studioButton")
         page.speaker_manager_button.setIcon(_icon("fa5s.users", GREEN))
         bind_text(page.speaker_manager_button, '打开 Speaker Manager', property='toolTip')
+        page.speaker_manager_button.pressed.connect(page.speaker_manager_button.repaint)
         page.speaker_manager_button.clicked.connect(page._open_speaker_manager)
         yield from _gui_slice.checkpoint()
         tool_track.add(page.speaker_manager_button)
@@ -1834,6 +1839,9 @@ class StudioWorkspaceBuilder:
         page.timeline.group_move_committed.connect(page._move_selected_clip_group)
         yield from _gui_slice.checkpoint()
         page.timeline.group_copy_committed.connect(page._copy_selected_clip_group)
+        from ..timeline.subtitle_track_drag import reorder_subtitle_track
+        page.timeline.speaker_track_reorder_requested.connect(
+            lambda source, target: reorder_subtitle_track(page, source, target))
         def show_clip_count(n):
             # Hidden while empty so it takes no room left of the transport.
             bind_text(page.clip_selection_count, '已选 {count} 个片段', count=n) if n else page.clip_selection_count.clear()
@@ -3367,6 +3375,9 @@ class StudioWorkspaceBuilder:
         page.ai_candidate_mode = QComboBox()
         for label,value in [('先生成1个完整候选','single'),('比较3个组件草案（一次设计请求）','drafts'),('生成3个完整候选','full3')]:
             page.ai_candidate_mode.addItem(label,value)
+        # 2026-11-20: three design-kit options from one request are the default. They
+        # are quicker, cost one call and differ in composition; free authoring stays a choice.
+        page.ai_candidate_mode.setCurrentIndex(page.ai_candidate_mode.findData('drafts'))
         bind_text(page.ai_candidate_mode, '草案来自可运行定义，可直接采用；后续只按明确选择增补。3个完整候选会增加模型调用与费用。', property='toolTip')
         page.ai_candidate_concurrency = QComboBox()
         yield from _gui_slice.checkpoint()
@@ -3477,7 +3488,17 @@ class StudioWorkspaceBuilder:
         page.ai_local_polish_button.setEnabled(False)
         yield from _gui_slice.checkpoint()
         result_row.addWidget(page.ai_local_polish_button)
-        for button in (save_button, ignore_button, page.ai_local_polish_button):
+        # 2026-11-20 (user): AI 设计 can also add the lively Markdown marks; it marks the
+        # captions of the apply range picked above (studio/lively_marks).
+        page.ai_lively_marks_button = QPushButton('AI 生动标记')
+        page.ai_lively_marks_button.setObjectName('studioButton')
+        bind_text(page.ai_lively_marks_button,
+                  '让 AI 给上面所选范围的字幕加粗体、重点、删除线和标题；不改文字，可一步撤销', property='toolTip')
+        from .lively_marks import run_lively_marks
+        page.ai_lively_marks_button.clicked.connect(
+            lambda: run_lively_marks(page, scope=str(page.ai_apply_scope.currentData() or 'current')))
+        result_row.addWidget(page.ai_lively_marks_button)
+        for button in (save_button, ignore_button, page.ai_local_polish_button, page.ai_lively_marks_button):
             button.setProperty("softSize", "sm")
             button.setProperty("flexibleWidth", True)
             button.setMinimumWidth(0)

@@ -123,7 +123,9 @@ def assemble(ledger, *, direction=None, schema=None, artifact_identity=None):
     if direction is None and ledger.value.get('component_drafts'):
         from .caption_components import capability_text
         count=ledger.value.get('requested_candidates',1)
-        parts['step_contract']=f'一次轻量设计请求生成{count}个可运行的完整组件作品。每项name、design简述、components组合定义；结构、字形处理和动作独立组合，不只换颜色。后续沿用同一产物，不自动重写。先给可预览可采用作品；需要自由源码的进阶改版由用户另行触发。'
+        # The word JSON must appear: DeepSeek's JSON mode answers HTTP 400 without it,
+        # which made every draft request on that service fail before any design.
+        parts['step_contract']=f'一次轻量设计请求生成{count}个可运行的完整组件作品，只返回包含candidates数组的 JSON 对象。每项name、design简述、components组合定义；结构、字形处理和动作独立组合，不只换颜色。后续沿用同一产物，不自动重写。先给可预览可采用作品；需要自由源码的进阶改版由用户另行触发。'
         parts['verified_components']=capability_text(component_style(raw))
     if direction is not None:
         from .source_artifact import contract, technical_contract

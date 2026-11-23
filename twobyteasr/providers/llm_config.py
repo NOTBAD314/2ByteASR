@@ -266,11 +266,34 @@ def _decode_payload(data: bytes) -> dict:
 # hundreds of times while building; each read was a file read plus a DPAPI
 # decrypt. Any rewrite (ours or external) changes the key.
 _DECRYPTED_SECRETS: tuple | None = None
+# 2026-11-20 (user: AI settings animate at a very low frame rate): closing the AI settings read the
+# store 318 times, each a stat (and, without a file, two more), 0.2-0.6 s of the GUI thread while
+# the closing picture should move. Inside ``secrets_read_once()`` the first read is reused; every
+# write of ours clears it, and outside such a block every read looks at the file as before.
+_RECENT_SECRETS: tuple | None = None    # (path, payload) while a block is open
+_READ_ONCE_DEPTH = 0
+
+
+class secrets_read_once:
+    """Within this block (GUI thread, one settings action) the key store is read at most once."""
+
+    def __enter__(self):
+        global _READ_ONCE_DEPTH
+        _READ_ONCE_DEPTH += 1
+        return self
+
+    def __exit__(self, *_exc):
+        global _READ_ONCE_DEPTH, _RECENT_SECRETS
+        _READ_ONCE_DEPTH = max(0, _READ_ONCE_DEPTH - 1)
+        if not _READ_ONCE_DEPTH:
+            _RECENT_SECRETS = None
+        return False
 
 
 def _write_encrypted_secrets(payload: dict) -> Path:
-    global _DECRYPTED_SECRETS
+    global _DECRYPTED_SECRETS, _RECENT_SECRETS
     _DECRYPTED_SECRETS = None
+    _RECENT_SECRETS = None
     path = secrets_path()
     if keychain_storage_enabled():
         from .macos_keychain import KeychainError, write as keychain_write
@@ -343,7 +366,23 @@ def _read_secrets(*, read_only_path: Path | None = None) -> dict:
             # Isolated acceptance can use the application's existing store
             # without copying credentials or migrating/modifying its source.
             return _decode_payload(_dpapi("unprotect", Path(read_only_path).read_bytes()))
+        global _RECENT_SECRETS
         path = secrets_path()
+        once = _READ_ONCE_DEPTH > 0 and threading.current_thread() is threading.main_thread()
+        recent = _RECENT_SECRETS
+        if once and recent is not None and recent[0] == str(path):
+            return copy.deepcopy(recent[1])
+        payload = _read_secret_file(path)
+        if once:
+            _RECENT_SECRETS = (str(path), copy.deepcopy(payload))
+        return payload
+    except (OSError, ValueError, TypeError):
+        return {"schema": 2}
+
+
+def _read_secret_file(path: Path) -> dict:
+    """The Windows store at ``path`` (migrating older stores once)."""
+    try:
         try:
             stat = path.stat()
         except FileNotFoundError:

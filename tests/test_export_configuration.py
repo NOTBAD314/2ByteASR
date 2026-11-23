@@ -163,10 +163,18 @@ def test_auto_uses_a_verified_hardware_encoder_first(workspace, monkeypatch):
     assert ui.encoder.currentData() == 'h264_nvenc'
     assert ui._render_settings().quality == 20
     ui.encoder.setCurrentIndex(ui.encoder.findData('auto'))
-    # Quick Sync / AMF H.264 were not measured: auto keeps x264 there.
+    # 2026-11-22 (user: machines without an NVIDIA card never got the GPU):
+    # auto H.264 now takes Quick Sync / AMF / Media Foundation too.
     monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
                         lambda _ffmpeg, codec: {'h264': ['h264_qsv', 'h264_amf', 'libx264']}.get(codec, []))
-    assert ui._resolved_encoder() == 'libx264'
+    assert ui._resolved_encoder() == 'h264_qsv'
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
+                        lambda _ffmpeg, codec: {'h264': ['h264_mf', 'libx264']}.get(codec, []))
+    assert ui._resolved_encoder() == 'h264_mf'
+    ui._encoder_changed()
+    assert 'Media Foundation' in ui.actual_encoder_hint.text()
+    settings = ui._render_settings()
+    assert settings.quality == 20 + studio_export_ui.AUTO_NVENC_CQ_OFFSET
     # The HEVC / AV1 presets exist only with a hardware encoder; auto must use it,
     # and AV1 without one takes SVT-AV1, never the far slower libaom.
     monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',

@@ -17,7 +17,7 @@ from .studio_qc import QCConfig, QCResult, QCSeverity, ReadabilityRule
 from .review_suggestions import model_suggestions, ReviewSuggestion, SuggestionOption, GLOSSARY, MAX_MARKS
 from .review_evidence_policy import evidence_only_reason, retired_review_reason, unsupported_repeat_pattern
 
-ISSUE_RULE_VERSION = 7
+ISSUE_RULE_VERSION = 9
 DECISIONS = "current_issue_decisions"
 LEGACY_INPUTS = 'current_issue_legacy_inputs'
 LEGACY_SCOPES = 'current_issue_legacy_scopes'
@@ -139,7 +139,7 @@ def pending_review_changes(project):
     view = current_issue_view(project)
     rows = [row for row in view.records
             if row.disposition == 'actionable' and row.level in {'high', 'suggested'}]
-    cue_ids = {row.cue_id for row in rows}
+    cue_ids = {key for row in rows for key in row.cue_ids or (row.cue_id,)}
     from datetime import datetime, timezone
     reviewed_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
     changes = {row.issue_id: {'input_version': row.input_version,
@@ -163,10 +163,10 @@ def acknowledged_issue_views(project, changes):
     active = {key: rows for key, rows in active.items() if rows}
     diagnostics = {key: tuple(rows) for key, rows in view.diagnostics.items()}
     for row in accepted.values():
-        diagnostics[row.cue_id] = (*diagnostics.get(row.cue_id, ()), row)
-    levels = dict(view.levels)
-    for row in accepted.values():
-        levels[row.cue_id] = 'confident'
+        for key in row.cue_ids or (row.cue_id,):
+            diagnostics[key] = (*diagnostics.get(key, ()), row)
+    levels = {key: 'high' if any(row.level == 'high' for row in rows) else 'suggested'
+              for key, rows in active.items()}
     after = CurrentIssueView(active, diagnostics,
         tuple(accepted.get(r.issue_id, r) for r in view.records), levels)
     parts = project._current_issue_parts
@@ -187,6 +187,9 @@ def adopt_acknowledged_view(project, prepared, *, undo=False):
     project._current_issue_parts = parts
     project._current_issue_row_cache = {}
     project._current_issue_dirty_ids = set()
+    from .segmentation_review import update_records
+    update_records(project, [row for row in view.records if row.kind.startswith('segmentation_')
+                             and row.kind in {'segmentation_semantic', 'segmentation_fallback'}])
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,8 @@ class CurrentIssue:
     suggestions: tuple = ()
     disposition: str = "actionable"
     evidence_version: str = ""
+    cue_ids: tuple = ()
+    detection_reason: str = ""
 
     @property
     def action(self):
@@ -234,7 +239,7 @@ class CurrentIssueView:
 
     def totals(self):
         active=[r for r in self.records if r.disposition=='actionable']
-        return dict(cues=len({r.cue_id for r in active}),issues=len(active))
+        return dict(cues=len({key for r in active for key in r.cue_ids or (r.cue_id,)}),issues=len(active))
 
     def candidate_groups(self):
         groups=defaultdict(list)
@@ -313,9 +318,18 @@ def _classify(issue, cue, text, language, cues):
     return ("high" if issue.severity == QCSeverity.CRITICAL else "suggested"), "actionable"
 
 
+_EMPTY_ISSUE_VIEW = CurrentIssueView({}, {}, (), {})
+
+
+def published_issue_view(project):
+    """Read the last produced review snapshot without recalculating rules."""
+    cache = getattr(project, '_current_issue_view', None)
+    return cache[2] if cache is not None else _EMPTY_ISSUE_VIEW
+
+
 def current_issue_view(project):
     if project is None:
-        return CurrentIssueView({}, {}, (), {})
+        return _EMPTY_ISSUE_VIEW
     qc = getattr(project, "_qc_result", None) or _EMPTY_QC
     # Missing metadata is the ordinary state of an existing project. Its
     # identity must be stable too: a new {} per lookup defeated every cache
@@ -560,13 +574,42 @@ def current_issue_view(project):
             issue = QCIssue("missing_translation", QCSeverity.WARNING, QCCategory.TEXT, cue.id,
                             "译文未完成", f"{target} 译文任务未完成：{record.get('error') or record.get('reason') or '可手动补充或重试'}")
             add(issue, cue, "translation", target, "")
-    levels = {cue_id: ("high" if any(r.level == "high" for r in rows) else "suggested")
-              for cue_id, rows in active.items()}
     # Preserve the full builder's rule and mapping order while sharing every
     # unchanged cue's rows. Flattening references is cheap; recalibrating tens
     # of thousands of issues/languages on every edit was seconds of GUI work.
     records = tuple(row for part, order in zip(parts, (qc.issues_by_cue, receipts, translations, translation_records))
                     for key in order for row in part.get(str(key), ()))
+    for by_cue in (active, diagnostics):
+        for key, rows in tuple(by_cue.items()):
+            remaining = [row for row in rows if row.kind not in {'segmentation_semantic', 'segmentation_fallback'}]
+            if remaining:
+                by_cue[key] = remaining
+            else:
+                del by_cue[key]
+    if qc is not _EMPTY_QC:
+        from .segmentation_review import review_rows, update_records
+        segmentation = tuple(review_rows(project, CurrentIssue, digest))
+        segmentation = tuple(replace(row, level='confident', disposition='handled')
+                             if row.disposition == 'actionable' and
+                             decisions.get(row.issue_id, {}).get('input_version') == row.input_version and
+                             decisions[row.issue_id].get('status') == 'resolved'
+                             else row for row in segmentation)
+        for row in segmentation:
+            destination = active if row.disposition == 'actionable' else diagnostics
+            for key in row.cue_ids or (row.cue_id,):
+                destination[key].append(row)
+        records += segmentation
+        update_records(project, segmentation)
+        from ..diagnostics.event_log import emit
+        diagnostic_version = digest([(row.issue_id, row.input_version, row.disposition) for row in segmentation])
+        if segmentation and diagnostic_version != getattr(project, '_segmentation_diagnostic_version', None):
+            project._segmentation_diagnostic_version = diagnostic_version
+            emit('studio.segmentation_review', project_id=project.project_id, issues=[
+                dict(issue_id=row.issue_id, cue_ids=row.cue_ids, kind=row.kind,
+                     start_ms=row.start_ms, end_ms=row.end_ms, disposition=row.disposition,
+                     input_version=row.input_version) for row in segmentation])
+    levels = {cue_id: ("high" if any(r.level == "high" for r in rows) else "suggested")
+              for cue_id, rows in active.items() if cue_id}
     result = CurrentIssueView(dict(active), dict(diagnostics), records, levels)
     project._current_issue_row_cache = next_rows_cache
     project._current_issue_parts = tuple(parts)
@@ -579,7 +622,8 @@ def _decision_version(project):
     # Cue, language/model and sequence inputs are guarded by qc_revision.
     # Review decisions are save-only and may change while that job runs.
     return digest({key: project.studio_state.get(key, {}) for key in
-                   (DECISIONS, 'review_confirmations', 'manual_caption_text', LEGACY_INPUTS,LEGACY_SCOPES)})
+                   (DECISIONS, 'review_confirmations', 'manual_caption_text', LEGACY_INPUTS, LEGACY_SCOPES,
+                    'ai_sentence_refine')})
 
 
 def issue_policy_version(project):
@@ -593,10 +637,11 @@ def issue_policy_version(project):
 def prepare_issue_cache(project):
     """Private QC-worker result; contains data only, never the worker project."""
     view = current_issue_view(project)
+    from .segmentation_review import RECORDS
     return dict(version=ISSUE_RULE_VERSION, project_id=project.project_id,
                 policy=issue_policy_version(project), decisions=_decision_version(project), view=view,
                 parts=project._current_issue_parts, rows=project._current_issue_row_cache,
-                translations=project._translation_issue_measurements)
+                translations=project._translation_issue_measurements, segmentation=project.studio_state.get(RECORDS))
 
 
 def adopt_issue_cache(project, qc, prepared):
@@ -612,4 +657,7 @@ def adopt_issue_cache(project, qc, prepared):
     project._current_issue_row_cache = prepared['rows']
     project._translation_issue_measurements = prepared['translations']
     project._current_issue_dirty_ids = set()
+    if prepared.get('segmentation') is not None:
+        from .segmentation_review import RECORDS
+        project.studio_state[RECORDS] = prepared['segmentation']
     return True

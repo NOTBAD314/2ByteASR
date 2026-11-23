@@ -75,8 +75,15 @@ MOTION_STATE_SCHEMA['properties'].update({p:{'type':'number','minimum':lo,'maxim
 def validate_motion_spec(value, *, cue_html=None, duration_ms=3000):
     if not isinstance(value,dict) or type(value.get('version')) is not int or value.get('version') not in (1,2) or value.get('runtime')!='gsap':
         raise ValueError('motionSpec 必须为 version=1或2、runtime=gsap 的对象')
-    if value['version']==2 and set(value)-{'version','runtime','buildMs','resolveMs','tracks','timingProfile'}:
+    if value['version']==2 and set(value)-{'version','runtime','buildMs','resolveMs','tracks','timingProfile','template'}:
         raise ValueError('MotionSpec v2含不支持的顶层能力字段')
+    if 'template' in value:
+        # An application-owned motion template (caption_templates.py): the
+        # runtime builds every movement itself, so no authored tracks ride along.
+        from .caption_templates import validate_template
+        if value['version']!=2 or value.get('tracks') not in ([],None) or 'timingProfile' in value:
+            raise ValueError('motionSpec.template 需要 version=2 且不带 tracks')
+        return dict(version=2,runtime='gsap',buildMs=0.,resolveMs=0.,tracks=[],template=validate_template(value['template']))
     def number(v,low,high,path='motionSpec'):
         if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not low<=v<=high:
             raise MotionRangeError(path, v, low, high)

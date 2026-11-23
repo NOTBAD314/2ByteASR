@@ -62,7 +62,8 @@ def _density_pixel_spans(spans) -> tuple[tuple[int, int, int], ...]:
 
 
 def ffmpeg_executable() -> Path:
-    return Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    from ..system.platform_media import ffmpeg_tool
+    return ffmpeg_tool()
 
 
 class VideoThumbnailCache(QObject):
@@ -169,6 +170,91 @@ def _format_duration(ms: int) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def paint_folder_media_clip(
+    painter: QPainter,
+    palette: TimelinePalette,
+    *,
+    left: float,
+    right: float,
+    top: float,
+    height: float,
+    header_width: float,
+    content_right: float,
+    source: str,
+    source_in: int,
+    source_out: int,
+    label: str,
+    duration_ms: int,
+    selected: bool,
+    offline: bool,
+    thumbnails=None,
+    join_left: bool = False,
+    join_right: bool = False,
+    flush_left: bool = False,
+    flush_right: bool = False,
+):
+    """One video clip in draft D style (2026-11-23): full-bleed 16:9 cells,
+    a source-colour bottom line and the name in a frosted pill."""
+    from .media_clip_folder import (
+        clip_shape, format_clip_duration, media_colors, paint_name_pill,
+        paint_video_card, paint_video_card_finish, thumbnail_cells, thumbnail_height,
+    )
+    from .video_filmstrip import filmstrip_lod_ms
+
+    colors = media_colors(palette, source, offline=offline)
+    shape = clip_shape(left, right, top, height, header_width, content_right,
+                       join_left=join_left, join_right=join_right,
+                       flush_left=flush_left, flush_right=flush_right)
+    if shape.body.width() <= 0:
+        return shape
+    paint_video_card(painter, shape, colors)
+    if thumbnails is not None and hasattr(thumbnails, "paint") and source and not offline and right > left:
+        lod = filmstrip_lod_ms((right - left) * 1000 / max(1, source_out - source_in), thumbnail_height(shape))
+        cells = thumbnail_cells(shape, source_in, source_out, header_width, content_right, lod)
+        if cells:
+            painter.save()
+            painter.setClipPath(shape.path(), Qt.ClipOperation.IntersectClip)
+            visible = shape.body.intersected(
+                QRectF(header_width, shape.body.top(), max(0.0, content_right - header_width), shape.body.height())
+            )
+            thumbnails.paint(painter, visible, source, left, right, source_in, source_out,
+                             cells, 0.0, mix(colors.base, colors.ink, 0.1))
+            painter.restore()
+    paint_video_card_finish(painter, shape, colors, palette, selected)
+    paint_name_pill(painter, shape, colors, label, format_clip_duration(duration_ms), header_width, content_right)
+    return shape
+
+
+def paint_cut_bridges(painter, palette, cuts, time_to_x, header_width, content_right, top, height):
+    """Draft B bridges under razor cuts inside one source.
+
+    ``cuts``: (ms, before_key, after_key, continuous, before_offline,
+    after_offline). Draw before the clips; cuts between different sources
+    get a flush seam from ``paint_cut_seams`` after the clips instead.
+    """
+    from .media_clip_folder import media_colors, paint_cut_bridge
+
+    for ms, before, after, continuous, before_offline, after_offline in cuts:
+        x = time_to_x(ms)
+        if not continuous or x < header_width - 20 or x > content_right + 20:
+            continue
+        paint_cut_bridge(painter, x, top, height,
+                         media_colors(palette, before, offline=before_offline).ink,
+                         media_colors(palette, after, offline=after_offline).ink,
+                         continuous=True)
+
+
+def paint_cut_seams(painter, palette, cuts, time_to_x, header_width, content_right, top, height):
+    """Draft D seams over cuts between two different sources (after the clips)."""
+    from .media_clip_folder import paint_cut_seam
+
+    for ms, _before, _after, continuous, _before_offline, _after_offline in cuts:
+        x = time_to_x(ms)
+        if continuous or x < header_width or x > content_right:
+            continue
+        paint_cut_seam(painter, palette, x, top, height)
+
+
 def video_track_header_action_at(x: float, y=None, row=None) -> str:
     return action_at('video', x, y, row)
 
@@ -207,51 +293,17 @@ def paint_video_track_header(
 
     _prime_platform_font_fallback()
 
-    # The track name remains draggable; a color rail replaces the six-dot
-    # grip, which collided with the V number in compact timeline lanes.
-    accent = video_track_accent(palette, track_id)
-    painter.fillRect(QRectF(0, track.top(), 228, track.height()), mix(palette.header, accent, 0.09))
-    # 2026-09-18 VIII（可变轨高）：徽章+名称按轨高垂直居中。默认 58px 时
-    # 居中公式与旧硬编码（badge top+7 / name top+31 / 色条 top+9）逐像素
-    # 一致；压到 52px 以下时名称行放不下，隐藏次要信息避免与图标重叠。
-    lane_height = track.height()
-    show_name = lane_height >= 52
-    inset = max(9.0, lane_height * 0.155)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(accent)
-    painter.drawRoundedRect(QRectF(4, track.top() + inset, 3, lane_height - 2 * inset), 1.5, 1.5)
-    if show_name:
-        badge_top = track.top() + max(7.0, (lane_height - 51) / 2)
-    else:
-        badge_top = track.top() + (lane_height - 23) / 2
-    painter.setBrush(mix(palette.header, accent, 0.18))
-    painter.setPen(QColor(palette.header_name))
-    letter = QFont(painter.font())
-    letter.setPointSize(10)
-    weighted_font(letter, 700)
-    letter.setItalic(False)
-    painter.setFont(letter)
-    painter.drawRoundedRect(QRectF(13, badge_top, 34, 23), 6, 6)
-    painter.drawText(
-        QRectF(13, badge_top, 34, 23),
-        Qt.AlignmentFlag.AlignCenter,
-        str(track_id),
-    )
-    if show_name:
-        painter.setPen(QColor(palette.header_name))
-        name_font = QFont(painter.font())
-        name_font.setPointSize(8)
-        weighted_font(name_font, QFont.Weight.Medium)
-        painter.setFont(name_font)
-        painter.drawText(
-            QRectF(13, badge_top + 24, 114, 20),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            painter.fontMetrics().elidedText(
-                (role_label if track_name in ("", track_id) else str(track_name)),
-                Qt.TextElideMode.ElideRight,
-                114,
-            ),
-        )
+    # 2026-11-23 (header draft B): the rounded card and its colour rail are
+    # painted by the timeline (one card per video lane and its linked audio);
+    # here only [V2] + name, with the layer role under a custom name.
+    from ..i18n import tr
+    from .studio_track_header import CONTENT_LEFT, paint_track_tag, paint_track_title
+
+    x = paint_track_tag(painter, palette, str(track_id), CONTENT_LEFT, track.center().y()) + 7
+    custom = track_name not in ("", track_id)
+    title = str(track_name) if custom else (role_label or tr("视频"))
+    paint_track_title(painter, palette, x, CONTROL_LEFT - 6, track, title,
+                      second_line=role_label if custom and role_label else "")
     icons = {
         "enabled": "fa5s.eye" if enabled else "fa5s.eye-slash",
         "locked": "fa5s.lock" if locked else "fa5s.unlock",
@@ -292,7 +344,6 @@ def paint_video_track(
     offline_sources: set[str] | None = None,
 ) -> None:
     video_fill = QColor(getattr(palette, "video_clip", "") or mix(palette.track_background, palette.clip_selected_border, 0.35))
-    video_border = QColor(getattr(palette, "video_clip_border", "") or palette.clip_selected_border)
     # The timeline already painted the empty canvas and time grid. Only the
     # actual clip shapes below may cover it.
     paint_video_track_header(
@@ -311,6 +362,7 @@ def paint_video_track(
     painter.save()
     painter.setClipRect(QRectF(header_width, track.top(), max(0.0, content_right - header_width), track.height()))
     visible_segments = tuple(segments) if segments is not None else tuple(sequence.segments)
+    ordered = visible_segments
     offline_sources = offline_sources or set()
     content_width = max(1.0, content_right - header_width)
     # Long overviews can have only a few hundred clips while every block is
@@ -345,6 +397,24 @@ def paint_video_track(
         visible_segments = tuple(
             item for item in visible_segments if item.id in selected_set
         )
+    by_out = {item.timeline_out_ms: item for item in ordered}
+    by_in = {item.timeline_in_ms: item for item in ordered}
+    def continuous_cut(before, after):
+        return ((before.source_path or sequence.source_path) == (after.source_path or sequence.source_path)
+                and before.source_out_ms == after.source_in_ms)
+
+    cuts = []
+    if not dense_lod:
+        for segment in ordered:
+            previous = by_out.get(segment.timeline_in_ms)
+            if previous in (None, segment):
+                continue
+            before, after = previous.source_path or sequence.source_path, segment.source_path or sequence.source_path
+            cuts.append((segment.timeline_in_ms, before, after,
+                         before == after and previous.source_out_ms == segment.source_in_ms,
+                         before in offline_sources, after in offline_sources))
+        paint_cut_bridges(painter, palette, cuts, time_to_x, header_width, content_right,
+                          track.top() + 4, track.height() - 8)
     for index, segment in enumerate(visible_segments):
         left = time_to_x(segment.timeline_in_ms)
         right = time_to_x(segment.timeline_out_ms)
@@ -352,71 +422,29 @@ def paint_video_track(
             continue
         if paint_stats is not None and track.top()+8 < paint_stats.get('viewport_height', float('inf')):
             paint_stats['video_items'] = paint_stats.get('video_items', 0) + 1
-        # Bound raster coordinates even at one-second zoom on hour-long clips.
-        # The shared silhouette puts artificial rounded ends fully outside
-        # the viewport. Sampling still uses the true left/right time mapping.
-        block, silhouette = media_clip_shape(left, right, track.top() + 4,
-                                            track.height() - 8, header_width, content_right)
-        painter.save()
-        painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
         selected = segment.id == selected_id or segment.id in (selected_ids or set())
         source = segment.source_path or sequence.source_path
         offline = source in offline_sources
-        border = QColor(palette.playhead) if offline else video_border
-        painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2.0 if selected else 1.2))
-        painter.setBrush(video_fill.lighter(108 if index % 2 == 0 else 96))
-        painter.drawPath(silhouette)
-        thumb_width = 0 if offline else min(88, max(0, int(block.width()) - 18))
-        filmstrip = thumbnails is not None and hasattr(thumbnails, 'paint') and not offline
-        if filmstrip:
-            thumbnails.paint(painter,block.adjusted(1,1,-1,-1).intersected(
-                QRectF(header_width, block.top(), content_right-header_width, block.height())),segment.source_path or sequence.source_path,
-                left,right,segment.source_in_ms,segment.source_out_ms)
-            thumb_width=0
-            painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else video_border,2 if selected else 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-        if thumbnails is not None and not filmstrip and thumb_width >= 40:
-            mid = segment.source_in_ms + segment.duration_ms // 2
-            pixmap = thumbnails.get(
-                segment.source_path or sequence.source_path,
-                mid,
-                96,
-                request_missing=request_missing_thumbnails,
-            )
-            if pixmap is not None and not pixmap.isNull():
-                thumb = QRectF(block.left() + 6, block.top() + 4, min(72, block.width() * 0.28), block.height() - 8)
-                painter.drawPixmap(thumb.toRect(), pixmap)
-        painter.setPen(QColor(palette.clip_text))
-        font = QFont(painter.font())
-        font.setPointSize(10)
-        weighted_font(font, 700)
-        painter.setFont(font)
         name_text = Path(source).name or "源视频"
         if offline:
             name_text = f"媒体脱机 · {name_text}"
-        text_left = max(header_width, block.left()) + (86 if thumb_width >= 40 else 10)
-        if filmstrip:
-            label_width=min(block.width()-16,painter.fontMetrics().horizontalAdvance(name_text)+12)
-            painter.fillRect(QRectF(text_left-3,block.top()+2,max(4,label_width),19),QColor(18,18,22,195))
-            painter.setPen(QColor('#FFFDF7'))
-        painter.drawText(
-            QRectF(text_left, block.top() + 4, max(8, min(content_right, block.right()) - text_left - 8), 18),
-            Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
-            name_text,
+        previous, following = by_out.get(segment.timeline_in_ms), by_in.get(segment.timeline_out_ms)
+        previous = None if previous is segment else previous
+        following = None if following is segment else following
+        split_left = previous is not None and continuous_cut(previous, segment)
+        split_right = following is not None and continuous_cut(segment, following)
+        paint_folder_media_clip(
+            painter, palette, left=left, right=right, top=track.top() + 4, height=track.height() - 8,
+            header_width=header_width, content_right=content_right, source=source,
+            source_in=segment.source_in_ms, source_out=segment.source_out_ms, label=name_text,
+            duration_ms=segment.duration_ms, selected=selected, offline=offline,
+            thumbnails=thumbnails, join_left=split_left, join_right=split_right,
+            flush_left=previous is not None and not split_left,
+            flush_right=following is not None and not split_right,
         )
-        weighted_font(font, 400)
-        font.setPointSize(9)
-        painter.setFont(font)
-        painter.setPen(QColor(palette.header_letter))
-        painter.drawText(
-            QRectF(text_left, block.top() + 22, max(8, min(content_right, block.right()) - text_left - 8), 16),
-            Qt.AlignmentFlag.AlignVCenter,
-            '' if filmstrip else _format_duration(segment.duration_ms),
-        )
-        painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2 if selected else 1.2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(silhouette)
-        painter.restore()
+    if not dense_lod:
+        paint_cut_seams(painter, palette, cuts, time_to_x, header_width, content_right,
+                        track.top() + 4, track.height() - 8)
     painter.restore()
 
 
@@ -438,8 +466,6 @@ def paint_project_video_track(
     clip_preview: dict[str, tuple[int, int]] | None = None,
     paint_stats: dict | None = None,
 ) -> None:
-    accent = video_track_accent(palette, video_track.id)
-    fill = mix(palette.track_background, accent, 0.13)
     paint_video_track_header(
         painter,
         palette,
@@ -462,90 +488,55 @@ def paint_project_video_track(
         )
     )
     painter.setOpacity(1.0 if video_track.enabled else 0.5)
-    for index, clip in enumerate(video_track.clips):
+    spans = {}
+    for clip in video_track.clips:
         preview = (clip_preview or {}).get(clip.id)
-        in_ms = preview[0] if preview else clip.timeline_in_ms
-        out_ms = preview[1] if preview else clip.timeline_out_ms
+        spans[clip.id] = (preview[0], preview[1]) if preview else (clip.timeline_in_ms, clip.timeline_out_ms)
+    by_out = {spans[clip.id][1]: clip for clip in video_track.clips}
+    by_in = {spans[clip.id][0]: clip for clip in video_track.clips}
+    cuts = []
+    for clip in video_track.clips:
+        previous = by_out.get(spans[clip.id][0])
+        if previous in (None, clip):
+            continue
+        before_asset, after_asset = assets.get(previous.asset_id), assets.get(clip.asset_id)
+        cuts.append((spans[clip.id][0],
+                     before_asset.canonical_source if before_asset else previous.asset_id,
+                     after_asset.canonical_source if after_asset else clip.asset_id,
+                     previous.asset_id == clip.asset_id and previous.source_out_ms == clip.source_in_ms,
+                     before_asset is None or before_asset.offline, after_asset is None or after_asset.offline))
+    paint_cut_bridges(painter, palette, cuts, time_to_x, header_width, content_right,
+                      track.top() + 4, track.height() - 8)
+    for index, clip in enumerate(video_track.clips):
+        in_ms, out_ms = spans[clip.id]
         left = time_to_x(in_ms)
         right = time_to_x(out_ms)
         if right < header_width or left > content_right:
             continue
         if paint_stats is not None and track.top()+7 < paint_stats.get('viewport_height', float('inf')):
             paint_stats['video_items'] = paint_stats.get('video_items', 0) + 1
-        block, silhouette = media_clip_shape(left, right, track.top() + 4,
-                                            track.height() - 8, header_width, content_right)
-        painter.save()
-        painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
         asset = assets.get(clip.asset_id)
         offline = asset is None or asset.offline
-        selected = clip.id == selected_clip_id
-        border = QColor(palette.playhead) if offline else accent
-        painter.setPen(
-            QPen(
-                QColor(palette.clip_selected_border) if selected else border,
-                2.2 if selected else 1.2,
-            )
-        )
-        painter.setBrush(
-            mix(palette.track_background, accent, 0.46 if not palette.dark else 0.42)
-        )
-        painter.drawPath(silhouette)
         source = asset.canonical_source if asset else ""
-        filmstrip = thumbnails is not None and hasattr(thumbnails, 'paint') and source and not offline
-        if filmstrip:
-            thumbnails.paint(painter,block.adjusted(1,1,-1,-1).intersected(
-                QRectF(header_width, block.top(), content_right-header_width, block.height())),source,left,right,clip.source_in_ms,clip.source_out_ms)
-            painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border,2.2 if selected else 1.2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-        if (
-            thumbnails is not None
-            and not filmstrip
-            and block.width() >= 92
-            and source
-            and not offline
-        ):
-            pixmap = thumbnails.get(
-                source,
-                clip.source_in_ms
-                + max(0, clip.source_out_ms - clip.source_in_ms) // 2,
-                72,
-                request_missing=request_missing_thumbnails,
-            )
-            if pixmap is not None and not pixmap.isNull():
-                thumb = QRectF(
-                    block.left() + 4,
-                    block.top() + 4,
-                    58,
-                    block.height() - 8,
-                )
-                painter.drawPixmap(thumb.toRect(), pixmap)
-        painter.setPen(QColor(palette.clip_text))
-        font = QFont(painter.font())
-        font.setPointSize(9)
-        weighted_font(font, 700)
-        painter.setFont(font)
         label = asset.display_name if asset else clip.asset_id
         if offline:
             label = f"离线 · {label}"
-        text_left = max(header_width, block.left()) + (68 if block.width() >= 92 and not filmstrip else 7)
-        available = max(4, round(min(content_right, block.right()) - text_left - 5))
-        label_rect=QRectF(text_left, block.top(), available, block.height())
-        if filmstrip:
-            available=min(available,240,painter.fontMetrics().horizontalAdvance(label)+8)
-            label_rect=QRectF(text_left,block.top()+1,available,18)
-            painter.fillRect(label_rect.adjusted(-2,0,2,0),QColor(18,18,22,195))
-            painter.setPen(QColor('#FFFDF7'))
-        painter.drawText(
-            label_rect,
-            Qt.AlignmentFlag.AlignVCenter,
-            painter.fontMetrics().elidedText(
-                label, Qt.TextElideMode.ElideRight, available
-            ),
+        previous, following = by_out.get(in_ms), by_in.get(out_ms)
+        previous = None if previous is clip else previous
+        following = None if following is clip else following
+        split_left = previous is not None and previous.asset_id == clip.asset_id and previous.source_out_ms == clip.source_in_ms
+        split_right = following is not None and following.asset_id == clip.asset_id and clip.source_out_ms == following.source_in_ms
+        paint_folder_media_clip(
+            painter, palette, left=left, right=right, top=track.top() + 4, height=track.height() - 8,
+            header_width=header_width, content_right=content_right, source=source or clip.asset_id,
+            source_in=clip.source_in_ms, source_out=clip.source_out_ms, label=label,
+            duration_ms=out_ms - in_ms, selected=clip.id == selected_clip_id, offline=offline,
+            thumbnails=thumbnails if source else None, join_left=split_left, join_right=split_right,
+            flush_left=previous is not None and not split_left,
+            flush_right=following is not None and not split_right,
         )
-        painter.setPen(QPen(QColor(palette.clip_selected_border) if selected else border, 2 if selected else 1.2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(silhouette)
-        painter.restore()
+    paint_cut_seams(painter, palette, cuts, time_to_x, header_width, content_right,
+                    track.top() + 4, track.height() - 8)
     painter.restore()
 
 

@@ -729,7 +729,7 @@ def run_optional_term_verification(segments, media_title, cache_context=None):
         glossary = list(dict.fromkeys([*glossary, *learned_canonical_terms()]))
     result = discover_global_domain_term_mappings(segments, load_content_context(media_title),
         glossary, load_verified_game_terms(), collect_stable_moss_term_candidates(segments, glossary),
-        cache_context=cache_context, unresolved_only=True,
+        cache_context=cache_context, unresolved_only=True, persist=False,
         _retry_budget=budget, _started_monotonic=started_monotonic)
     return apply_global_domain_term_mappings(segments, result)
 

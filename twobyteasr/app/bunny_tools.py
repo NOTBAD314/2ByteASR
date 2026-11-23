@@ -21,6 +21,7 @@ that cannot run raises ``ToolError`` with the reason, and she says that instead.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -163,6 +164,12 @@ def snapshot(window) -> dict:
         points = range_points(project)
         state['in_out'] = ('入点 ' + (clock(points[0]) if points[0] is not None else '未设')
                            + '，出点 ' + (clock(points[1]) if points[1] is not None else '未设'))
+        check = range_check(project, points)
+        if check:
+            state['range_check'] = check
+        export = export_state(page)
+        if export:
+            state['export'] = export
         from ..studio.studio_range_recognition import range_state
         problem, _ = range_state(page)
         state['range_reasr'] = '可以用' if not problem else f'灰的：{problem}'
@@ -189,6 +196,62 @@ def snapshot(window) -> dict:
     except Exception:  # noqa: BLE001 - a half-built page gives what it has
         pass
     return state
+
+
+STALL_SECONDS = 30               # an export this long without new progress is called stuck
+
+
+def range_check(project, points=None) -> str:
+    """The export range worked out for her (2026-11-22): its length, whether it can be exported, and
+    where the picture ends when subtitles run past it. Two raw times were not enough: an in point
+    at the video's end left a range with no picture, and she kept thinking without seeing it."""
+    from ..projects.project_range import (effective_range, picture_end_ms, range_points, range_problem)
+    from ..timeline.studio_edit_sequence import timeline_duration_ms
+    points = range_points(project) if points is None else points
+    parts = []
+    if points != (None, None):
+        start, end = effective_range(project)
+        parts.append(f'导出 {clock(start)}–{clock(end)}，共 {clock(max(0, end - start))}')
+    problem = range_problem(project)
+    if problem:
+        parts.append(f'不能导出：{problem}')
+    media_end, total = picture_end_ms(project), timeline_duration_ms(project)
+    if media_end and total > media_end:
+        parts.append(f'影片画面到 {clock(media_end)} 为止，后面到 {clock(total)} 只有字幕')
+    return '；'.join(parts)
+
+
+def export_state(page) -> str:
+    """What the 「导出音视频」 window is doing, if it is open: setup, running (stage, percent, how long
+    since the last progress), done or failed with its reason. Never a path."""
+    workspace = getattr(page, 'export_workspace', None)
+    if workspace is None:
+        return ''
+    import time
+    pages = getattr(workspace, 'pages', None)
+    current = pages.currentWidget() if pages is not None else None
+    if getattr(workspace, '_running', False):
+        payload = getattr(workspace, '_progress_payload', None) or {}
+        from ..exports.studio_render import STAGE_LABELS
+        stage = str(payload.get('stage_label') or STAGE_LABELS.get(payload.get('stage'), '准备工程'))
+        text = f'正在导出：{stage} {int(getattr(workspace, "_progress_target", 0) or 0)}%'
+        started = getattr(workspace, '_started_at', None)
+        if started:
+            text += f'，已用 {clock((time.monotonic() - started) * 1000)}'
+        progress = getattr(workspace, '_work_progress', None)
+        if progress is not None:
+            stale = int(time.monotonic() - progress.last_update)
+            if stale >= STALL_SECONDS:
+                text += f'，已经 {stale} 秒没有新进度（像是卡住了）'
+        return text
+    if current is not None and current is getattr(workspace, 'failure_page', None):
+        reason = ' '.join(str(getattr(workspace, '_last_failure', '') or '').split())[:120]
+        return '导出失败' + (f'：{reason}' if reason else '')
+    if current is not None and current is getattr(workspace, 'success_page', None):
+        return '导出完成'
+    from ..projects.project_range import range_problem
+    problem = range_problem(page.project)
+    return '开着，还没开始导出' + (f'；「导出」按钮是灰的：{problem}' if problem else '')
 
 
 def _look(window, _args) -> str:
@@ -253,12 +316,15 @@ def _set_in_out(window, args) -> str:
     end = _within(page, parse_time(args.get('end')), '出点')
     if start >= end:
         raise ToolError('入点要早于出点')
-    from ..projects.project_range import set_range
+    from ..projects.project_range import range_problem, set_range
     set_range(page.project, start, end, page.undo_stack)
     page.timeline.update()
     from ..studio.studio_range_recognition import range_state
     problem, _ = range_state(page)
     tail = '，「只重新识别这一段字幕…」现在可以用' if not problem else f'，但「只重新识别这一段字幕…」还是灰的：{problem}'
+    export = range_problem(page.project)          # 2026-11-22: say so when this range cannot be exported
+    if export:
+        tail += f'；这个范围导不出视频：{export}'
     return f'入点 {clock(start)}、出点 {clock(end)} 设好了（Ctrl+Z 可以撤销）{tail}'
 
 
@@ -324,7 +390,8 @@ def _review(window, args) -> str:
 
 WINDOWS = {'export_subtitles': '导出字幕', 'export_video': '导出音视频（导出字幕视频）', 'find_replace': '批量替换',
            'speaker_manager': '说话人管理', 'subtitle_tasks': '字幕任务进度与结果',
-           'range_recognition': '只重新识别这一段字幕', 'ai_proofread': 'AI 词库校对', 'ai_cleanup': 'AI 清理'}
+           'range_recognition': '只重新识别这一段字幕', 'ai_proofread': 'AI 词库校对', 'ai_cleanup': 'AI 清理',
+           'ai_lively_marks': 'AI 生动标记（整个工程）'}
 
 
 def _open_window(window, args) -> str:
@@ -351,7 +418,13 @@ def open_window_later(window, args) -> None:
     {'export_subtitles': lambda: page.export_subtitles(), 'export_video': lambda: page._open_render_dialog(),
      'find_replace': lambda: page._open_find_replace(), 'speaker_manager': lambda: page._open_speaker_manager(),
      'subtitle_tasks': lambda: page.show_subtitle_tasks(),
-     'ai_proofread': lambda: page.glossary_proofread_requested.emit(), 'ai_cleanup': lambda: page._open_ai_cleanup()}[name]()
+     'ai_proofread': lambda: page.glossary_proofread_requested.emit(), 'ai_cleanup': lambda: page._open_ai_cleanup(),
+     'ai_lively_marks': lambda: _lively_marks(page)}[name]()
+
+
+def _lively_marks(page) -> None:
+    from ..studio.lively_marks import run_lively_marks
+    run_lively_marks(page)
 
 
 # ------------------------------------------------------------------ step 2: reading (2026-11-15)
@@ -433,7 +506,11 @@ def _project_info(window, _args) -> str:
     counts = {}
     for cue in cues:
         counts[cue.speaker_id] = counts.get(cue.speaker_id, 0) + 1
-    speakers = [f'{getattr(s, "name", "") or s.id}（{s.id}，{counts.get(s.id, 0)} 条）' for s in getattr(project, 'speakers', ())]
+    from ..projects.speaker_organization import CATEGORIES
+    categories = project.studio_state.get(CATEGORIES, {})
+    speakers = [f'{getattr(s, "name", "") or s.id}（{s.id}，{counts.get(s.id, 0)} 条'
+                + ('，游戏声' if categories.get(s.id) == 'game' else '') + '）'
+                for s in getattr(project, 'speakers', ())]
     lines.append('说话人：' + ('、'.join(speakers) or '没有'))
     translations = project.generation_metadata.get('translations') or {}
     if translations:
@@ -451,6 +528,85 @@ def _project_info(window, _args) -> str:
     if stack is not None:
         lines.append('有还没保存的修改' if not stack.isClean() else '修改都保存了')
     return '\n'.join(lines)
+
+
+def _review_issues(window, args):
+    from collections import Counter
+    from ..subtitle_rules.current_issues import current_issue_view
+    from ..subtitle_rules.segmentation_review import history_rows, retryable_refine_ids, transcription_disagreements
+    page = _studio(window)
+    project = page.project
+    if getattr(project, '_qc_result', None) is None:
+        raise ToolError('正在扫描当前工程，请在扫描结束后读取审核')
+    active = [row for row in current_issue_view(project).records if row.disposition == 'actionable']
+    counts = Counter(row.detection_reason if row.detection_reason == 'asr_text_disagreement'
+                     else row.kind for row in active)
+    try:
+        offset = max(0, int(args.get('offset') or 0))
+    except (TypeError, ValueError):
+        raise ToolError('offset 要给问题列表的起始序号') from None
+    history = list(history_rows(project))
+    info = {
+        'active_issue_count': len(active),
+        'affected_cue_count': len({key for r in active for key in (r.cue_ids or (r.cue_id,))}),
+        'by_kind': dict(counts),
+        'historical_windows': dict(Counter(status for _, _, status in history)),
+        'retryable_refine_cue_ids': sorted(retryable_refine_ids(project,
+            ([cue.id for cue in mapped] for _, mapped, status in history if status == 'actionable')))[:80],
+        'transcription_review_cue_ids': sorted(transcription_disagreements(project))[:80],
+        'issues': [dict(id=r.issue_id, kind=r.kind, label=r.label, reason=r.detection_reason,
+                        cue_ids=r.cue_ids or (r.cue_id,), start_ms=r.start_ms, end_ms=r.end_ms)
+                   for r in active[offset:offset+20]],
+        'next_offset': offset+20 if offset+20 < len(active) else None,
+    }
+    return json.dumps(info, ensure_ascii=False)
+
+
+def _organize_speakers(window, args):
+    from ..projects.speaker_organization import speaker_edit_command, BACKGROUND, UNIFIED
+    page = _studio(window)
+    ids = args.get('speaker_ids')
+    operation = str(args.get('operation') or '')
+    known = {speaker.id for speaker in page.project.speakers} - {BACKGROUND, UNIFIED}
+    if (not isinstance(ids, list) or not ids or len(ids) > 24
+            or any(not isinstance(key, str) or key not in known for key in ids)):
+        raise ToolError('请先读取工程概况，再使用其中确切的说话人 ID')
+    target = args.get('target_id') if operation == 'merge' else None
+    if operation not in {'merge', 'game', 'restore'} or (operation == 'merge'
+            and (not isinstance(target, str) or target not in known or target in ids)):
+        raise ToolError('merge 需指定另一位有效 target_id；game 入游戏声分类，restore 清除分类')
+    label = '合并说话人' if target else '修改游戏声分类'
+    command = speaker_edit_command(page.project, set(ids), target=target,
+        category='game' if operation=='game' else None, label=label, refreshed=page._populate_speakers)
+    if command is None:
+        raise ToolError('当前工程已经是该状态，没有产生新的修改')
+    before = page.undo_stack.index()
+    page.undo_stack.push(command)
+    if command.error or page.undo_stack.index() == before:
+        raise ToolError(command.error or '没有写入说话人修改')
+    return f'已完成{label}，请重新读取工程核对；一步可撤销。', _pushed(page, before, label)
+
+
+def _save_active_project(window, _args):
+    page = _studio(window)
+    if not page.session.project_path:
+        raise ToolError('工程尚无固定保存路径，请先用工作台完成首次保存')
+    worker = getattr(page, '_refine_worker', None)
+    if worker is not None and worker.isRunning():
+        raise ToolError('AI 断句尚未完成，请先等任务终态')
+    prior = getattr(page, '_bunny_formal_save', None)
+    if prior and prior['state'] == 'pending':
+        raise ToolError('工程正在保存')
+    receipt = dict(project=page.project, state='pending', error='')
+    page._bunny_formal_save = receipt
+
+    def finished(path, error):
+        receipt.update(state='failed' if error or not path else 'saved', error=str(error or ''))
+
+    if page.project_controller.save(on_finished=finished) is None and receipt['state'] == 'pending':
+        receipt.update(state='failed', error='当前编辑状态尚不能保存')
+        raise ToolError(receipt['error'])
+    return '已提交正式保存，等到写入完成才算成功。'
 
 
 def _ui_info(window, _args) -> str:
@@ -596,6 +752,78 @@ def _disable_change(window, args):
     user_overlay_runtime.reapply()
     return f'关掉了 {entry_id}（没有删，「设置 → 我的改动」可以再打开）', UndoRecord(
         'call', _overlay_undo(snapshot, user_overlay.revision()), 0)
+
+
+# 2026-11-20 (user): she can read and fix the extension scripts too, not only add new ones, and see why
+# one failed; ``script_guide`` is the whole API with a complete example (``extension_guide``).
+SCRIPT_READ_LIMIT = 20000
+
+
+def _script_guide(_window, _args):
+    from .extension_guide import guide
+    return guide()
+
+
+def _read_change(_window, args):
+    from . import user_overlay, user_overlay_runtime
+    entry_id = str(args.get('id') or '').strip()
+    entry = user_overlay.find(entry_id)
+    if entry is None:
+        raise ToolError(f'没有编号 {entry_id} 的改动（list_changes 可以看编号）')
+    lines = [user_overlay.describe(entry)]
+    if entry.get('detail'):
+        lines.append(f'程序的说明：{entry["detail"]}')
+    if entry.get('note'):
+        lines.append(f'当时为什么改：{entry["note"]}')
+    if entry['kind'] == 'script':
+        try:
+            code = user_overlay.script_path(entry).read_text('utf-8')
+        except OSError as exc:
+            code = f'（脚本文件读不了：{exc.strerror or exc}）'
+        cut = '' if len(code) <= SCRIPT_READ_LIMIT else f'\n…（后面还有 {len(code) - SCRIPT_READ_LIMIT} 字）'
+        lines.append(f'【脚本代码开始】\n{code[:SCRIPT_READ_LIMIT]}{cut}\n【脚本代码结束】')
+        runtime = user_overlay_runtime.runtime()
+        log = runtime.script_log(entry_id) if runtime is not None else []
+        lines.append('脚本记录（最新在下面）：\n' + '\n'.join(log) if log else '脚本记录：这次启动还没有')
+    return '\n'.join(lines)
+
+
+def _edit_script(_window, args):
+    from . import user_overlay, user_overlay_runtime
+    entry_id = str(args.get('id') or '').strip()
+    entry = user_overlay.find(entry_id)
+    if entry is None or entry['kind'] != 'script':
+        raise ToolError(f'没有编号 {entry_id} 的扩展脚本（list_changes 可以看编号）')
+    code = args.get('code')
+    try:
+        user_overlay.check_script(code)
+    except user_overlay.OverlayError as exc:
+        raise ToolError(str(exc)) from None
+    was_on = bool(entry.get('enabled'))
+    fields = {'enabled': False, 'status': '', 'detail': ''}
+    if str(args.get('why') or '').strip():
+        fields['note'] = str(args['why']).strip()[:200]
+    if args.get('value'):
+        fields['value'] = str(args['value'])
+    try:
+        user_overlay.update(entry_id, **fields)
+    except user_overlay.OverlayError as exc:
+        raise ToolError(str(exc)) from None
+    runtime = user_overlay_runtime.runtime()
+    snapshot = user_overlay.snapshots()[0]['id']        # the layer before disabling or editing
+    if runtime is not None:
+        runtime.unload(entry_id)
+    user_overlay.set_code(entry_id, code)
+    user_overlay_runtime.reapply()
+    revision_after = user_overlay.revision()
+
+    def undo() -> str:
+        current = user_overlay_runtime.runtime()
+        if current is not None and user_overlay.revision() == revision_after:
+            current.unload(entry_id)
+        return _overlay_undo(snapshot, revision_after)()
+    return (f'改好了脚本 {entry_id}' + ('，它原来开着，现在先关上了' if was_on else '') +
+            '：要小兔纸在「设置 → 我的改动」看过新代码再打开'), UndoRecord('call', undo, 0)
 
 
 # ------------------------------------------------------------------ step 3: undoable edits (2026-11-15)
@@ -769,7 +997,13 @@ def _set_home(window, args):
 # User: when AI 断句 / 校对 fell back to the local rules, she should fix and fill it in herself.
 # These spend the user's own AI credit, so they wait for 「帮我做」 unless the user allowed them.
 def refine_failed_ids(project) -> list:
-    return list((project.studio_state.get('ai_sentence_refine') or {}).get('failed_cue_ids', ()) or ())
+    from ..subtitle_rules.segmentation_review import retryable_refine_ids
+    from ..subtitle_rules.sentence_refine_history import recover_grouping_windows
+    state = project.studio_state.get('ai_sentence_refine') or {}
+    history = None if 'historical_windows' in state else (
+        row['cue_ids'] for row in recover_grouping_windows(project) if row.get('status') == 'matched')
+    ids = retryable_refine_ids(project, history)
+    return [cue.id for cue in project.cues if cue.id in ids]
 
 
 def _ai_refine(window, args):
@@ -796,7 +1030,7 @@ def _ai_refine(window, args):
             raise ToolError('没有选中的字幕')
     else:
         count = len(page.project.cues)
-    page.run_sentence_refine(whole_project=scope == 'all', retry_failed=scope == 'failed')
+    task_id = page.run_sentence_refine(whole_project=scope == 'all', retry_failed=scope == 'failed')
     started = getattr(page, '_refine_worker', None)
     if started is None or not started.isRunning():
         hint = getattr(getattr(page, 'save_state', None), 'text', lambda: '')()
@@ -804,7 +1038,20 @@ def _ai_refine(window, args):
     from .bunny_subtitle_tools import watch_refine
     watch_refine(page, 'full', [])
     what = {'failed': '上次失败的', 'all': '整个工程的', 'selected': '选中的'}[scope]
-    return f'开始用 AI 重新断句{what} {count} 条（用小兔纸自己的 Key 计费）；做完会写回字幕，可以 Ctrl+Z，进度在「字幕任务进度与结果」'
+    return f'已派发 AI 重新断句：{what}范围，任务 ID {task_id}'
+
+
+def _refine_status(window, args):
+    page = _built(window, 'studio')
+    task = getattr(page, '_refine_task', None)
+    if task is None or task.task_id != args.get('task_id') or task.project is not page.project:
+        raise ToolError('这个断句任务不属于当前工程')
+    status = 'running' if task.ended is None else 'cancelled' if task.cancelled else 'finished'
+    counts = task.counts()
+    return json.dumps(dict(task_id=task.task_id, status=status, **counts,
+        remaining=counts['failed']+counts['review'],
+        historical_unmapped=sum(row['status'] == 'unmapped' for row in getattr(task, 'historical_windows', ()))),
+        ensure_ascii=False)
 
 
 def _retry_failed(window, _args):
@@ -905,6 +1152,7 @@ BACKGROUND = {
     'hardware': '这台电脑：显卡显存、处理器、内存、磁盘、现在的方案要不要 NVIDIA',
     'settings': '现在的识别和 AI 设置（模型、开关；不含 Key）',
     'models': '本机装了哪些模型、哪些不完整、哪些在下载',
+    'exports': '最近几次视频导出：成功、失败停在哪一步和原因、用的编码器（导出出问题时先查）',
 }
 
 
@@ -915,6 +1163,7 @@ def _tools() -> dict:
         Tool('look', '{}', '重新看一眼现在的软件状态（做完操作后会自动附上，一般不用单独叫）', _look),
         Tool('tool_help', '{"names": ["change_terms"], "text": ""}', '看工具的完整用法：names 填「更多工具」里的名字，'
              '或 text 填想做的事里的几个字来找合适的工具', lambda window, args: _tool_help(window, args)),
+        Tool('refine_status', '{"task_id": "断句工具返回的任务 ID"}', '读取同一断句任务的完成、应用、保存及待修复计数', _refine_status),
         Tool('open_page', '{"page": "studio"}', '切换页面', _open_page, dict(PAGES), acts=True),
         Tool('open_place', '{"key": "shortcuts"}', '打开「可以指的位置」里的一个地方（设置的某一页、AI 设置、申请 API、模型工坊……）；'
              '不能打开：' + '、'.join(sorted(OPEN_PLACE_SKIP)), _open_place, deferred=True, acts=True),
@@ -942,6 +1191,10 @@ def _tools() -> dict:
         Tool('read_cues', '{"from": 37, "count": 10}', f'工作台：读字幕（第几条开始、几条，最多 {READ_LIMIT} 条；不填 from 就读播放头附近）：时间、说话人、原文、译文、是否待检查', _read_cues),
         Tool('find_cues', '{"text": "派门"}', '工作台：找包含某些字的字幕（原文或译文），列出第几条', _find_cues),
         Tool('project_info', '{}', '工作台：工程概况：说话人和各自条数、译文有多少、待检查几条、素材和音轨、词库、有没有没保存的修改', _project_info),
+        Tool('review_issues', '{"offset":0}', '工作台：读取真实审核问题、按类别统计、历史回退解决状态，以及可重试和文字待核对的字幕 ID', _review_issues),
+        Tool('organize_speakers', '{"operation":"merge","speaker_ids":["S02"],"target_id":"S01"}',
+             '【修改】先问 project_info 取得 ID。merge 合并；game 分类到游戏声保留身份；restore 清除游戏声分类。每次一步可撤销，保留原始识别', _organize_speakers,edit=True),
+        Tool('save_project', '{}', '【保存】正式保存已具名的当前工程，请单独调用并等待真实结果', _save_active_project,edit=True),
         Tool('ui_info', '{}', '屏幕上的情况：开着哪些窗口、首页底部提示和「开始生成字幕」能不能按、工作台状态栏', _ui_info),
         Tool('look_screen', '{}', '截一张 2ByteASR 自己窗口的图（不含桌面和兔白的聊天框）给你看，图跟在操作结果后面；'
              '要看排版、颜色、遮挡、文字有没有被切掉时用。一题最多截两次', _look_screen),
@@ -953,11 +1206,18 @@ def _tools() -> dict:
              'kind=style 改一个控件的样式（target 填 #控件名 或 类名#控件名，value 填「属性: 值;」）；'
              'kind=text 把一句界面文字换个说法（target 填屏幕上看到的原句，value 填新说法）；'
              'kind=note 给自己记一条长期说明（value）；'
-             'kind=script 写 Python 扩展脚本（code 填完整代码，要有 API_VERSION = 1 和 def setup(api):；'
-             'api.window 主窗口、api.find("控件名")、api.log()、api.every(毫秒, 函数)、api.data_dir；value 写一句做什么），'
+             'kind=script 写 Python 扩展脚本（插件：code 填完整代码，要有 API_VERSION = 1 和 def setup(api):；'
+             '能监听改字幕、保存工程、识别完成，能读写术语库、问 AI；写之前先叫 script_guide 看完整用法和例子；value 写一句做什么），'
              '存下来是关着的，要小兔纸看过再打开', _propose_change, edit=True, persistent=True),
         Tool('disable_change', '{"id": "u3"}', '【修改】关掉「我的改动」里的一条（不删）', _disable_change,
              edit=True, persistent=True),
+        Tool('script_guide', '{}', '扩展脚本（插件）的完整写法：api 能用的事件、术语库、AI、后台，加一个“识别后自动整理术语”的完整例子；'
+             '小兔纸想要软件没有的功能时，先看它再写脚本', _script_guide),
+        Tool('read_change', '{"id": "u3"}', '看「我的改动」里一条的全部内容：扩展脚本的完整代码、出错原因和脚本记录（修脚本前先看）',
+             _read_change),
+        Tool('edit_script', '{"id": "u3", "code": "API_VERSION = 1\\n...", "why": "修好保存时出错"}',
+             '【修改·长期保留】改一个已有的扩展脚本（code 填改好的完整代码）；改完先关着，要小兔纸看过再打开；可撤销',
+             _edit_script, edit=True, persistent=True),
         *(Tool(name, '{}', f'（后台查，稍慢）{summary}', None, background=True) for name, summary in BACKGROUND.items()),
     )
     # 2026-11-16 (harness plan P3/P4): term libraries, the web, the user's folders, long tasks.
@@ -968,8 +1228,10 @@ def _tools() -> dict:
     from .bunny_audit import tools as audit_tools
     from .bunny_troubleshoot import tools as knowledge_tools      # 2026-11-18: she looks things up herself
     from .bunny_report import tools as report_tools                # 2026-11-18: a recognition's raw JSON, step by step
+    from .bunny_pointing import tools as pointing_tools           # 2026-11-22: point at any control, checked first
+    from .bunny_subtasks import tools as subtask_tools             # 2026-11-22: a big job split into clean-context parts
     items = (*items, *harness_tools(), *nav_tools(), *control_tools(), *audit_tools(), *knowledge_tools(),
-             *report_tools())
+             *report_tools(), *pointing_tools(), *subtask_tools())
     return {tool.name: tool for tool in items}
 
 
@@ -1129,7 +1391,8 @@ def _run_one(window, tool, name, args, permissions, confirmed, result) -> None:
         if isinstance(done, Capture):
             result.images.append(done)
             done = done.receipt
-        result.receipts.append(f'- {shown}：成功。{done}')
+        outcome = '已派发' if name in {'ai_refine', 'save_project'} else '成功'
+        result.receipts.append(f'- {shown}：{outcome}。{done}')
         if tool.deferred:
             result.later.append((name, args))
     except ToolError as exc:
@@ -1166,6 +1429,9 @@ def pending_summary(pending, window=None) -> str:
              'change_terms': lambda a: f'改《{a.get("library")}》术语库 {len(a.get("changes") or []) if isinstance(a.get("changes"), list) else 1} 条',
              'term_update': lambda a: f'《{a.get("library")}》{"从零整理词库" if a.get("mode") == "full" else "补新词"}',
              'write_file': lambda a: f'写新文件「{str(a.get("path") or "")[-24:]}」',
+             'edit_file': lambda a: f'改文件「{str(a.get("path") or "")[-20:]}」',
+             'export_subtitles': lambda a: f'把字幕存成「{str(a.get("path") or "")[-20:]}」',
+             'edit_script': lambda a: f'改扩展脚本 {a.get("id")}（改完先关着）',
              'import_terms_file': lambda a: f'把「{str(a.get("path") or "")[-20:]}」导进《{a.get("library")}》',
              # 2026-11-17 universal control
              'ui_press': lambda a: f'按「{_control_name(a)}」',
@@ -1194,6 +1460,16 @@ def pending_details(pending, window=None) -> str:
     """The exact short term changes beside the readable approval label."""
     lines = [pending_summary(pending, window)]
     for name, args in pending:
+        if name == 'edit_file':               # 2026-11-20: what exactly changes in the file
+            if args.get('text') is not None:
+                lines.append(f'整份重写成 {len(str(args.get("text")))} 字')
+            else:
+                lines.append(f'「{str(args.get("find") or "")[:60]}」→「{str(args.get("replace") or "")[:60]}」'
+                             + ('（全部）' if args.get('all') in (True, 'true', 1, '1') else ''))
+            continue
+        if name in ('edit_script', 'propose_change') and args.get('code'):
+            lines.append(f'脚本代码 {str(args.get("code")).count(chr(10)) + 1} 行，存下后是关着的')
+            continue
         if name != 'change_terms':
             continue
         changes = args.get('changes') or []
@@ -1250,7 +1526,8 @@ def run_later(window, name: str, args: dict) -> None:
 COMPACT = frozenset({'propose_change', 'disable_change', 'list_changes', 'ui_widgets', 'change_terms', 'term_update',
                      'term_task', 'check_library', 'import_terms_file', 'list_folder', 'read_file', 'write_file',
                      'save_recipe', 'use_recipe', 'learned_edits', 'estimate_cost', 'usage', 'start_task',
-                     'recent_results', 'recent_projects'})
+                     'recent_results', 'recent_projects',
+                     'edit_file', 'export_subtitles', 'script_guide', 'read_change', 'edit_script'})
 SHORT_SUMMARY = 34
 
 
@@ -1265,13 +1542,13 @@ def _short_summary(tool) -> str:
     return flags + (text if len(text) <= SHORT_SUMMARY else text[:SHORT_SUMMARY - 1] + '…')
 
 
-def describe_for_prompt(hidden=()) -> str:
+def describe_for_prompt(hidden=(), *, only=None) -> str:
     """The tool list for her prompt; ``hidden``: tools not offered now (look_screen for a text-only AI)."""
     rows, more = [], []
     for tool in TOOLS.values():
-        if tool.name in hidden:
+        if tool.name in hidden or (only is not None and tool.name not in only):
             continue
-        if tool.name in COMPACT:
+        if tool.name in COMPACT and only is None:
             more.append(f'- {tool.name}：{_short_summary(tool)}')
         else:
             rows.append(_full(tool))

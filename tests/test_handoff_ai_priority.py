@@ -155,17 +155,23 @@ def test_rejected_blue_proposal_stays_diagnostic_without_suggestion():
     assert any(r.kind=='rejected_model_proposal' and not r.suggestions for r in view.diagnostics[p.cues[0].id])
 
 
-def test_final_counts_use_same_hold_classification():
+def test_final_counts_use_saved_display_and_acoustic_bounds():
     from twobyteasr.subtitle_rules.timing import refresh_final_cue_reviews
     from twobyteasr.recognition.run_context import get_runtime_context
     context=get_runtime_context();context._display_overlap_audit=[dict(classification='bounded_display_hold')]
-    cues=[core.SubtitleCue(1,0,1,'保留文字',speaker='A')];segments=[]
+    cues = [core.SubtitleCue(454, 0, 1.017, '保留文字', speaker='A'),
+            core.SubtitleCue(455, 1, 2, '下一句话', speaker='A')]
+    cues[0].display_timing_receipt = {'acoustic_ms': [0, 1017]}
+    cues[1].display_timing_receipt = {'acoustic_ms': [1000, 2000]}
+    segments = []
     from twobyteasr.subtitle_rules.display_timing import runtime_display_signature
     context._display_overlap_signature=runtime_display_signature(cues,segments)
     events=[]
     with patch.object(core,'record_run_event',side_effect=lambda event,**kw:events.append((event,kw))):
         refresh_final_cue_reviews(cues,segments,legacy=core)
-    assert next(kw for event,kw in events if event=='final_subtitle_validation')['overlap_classification_counts']=={'bounded_display_hold':1}
+    final = next(kw for event, kw in events if event == 'final_subtitle_validation')
+    assert final['overlap_classification_counts'] == {'same_speaker:acoustic_overlap': 1}
+    assert [(pair['left'], pair['right'], pair['overlap_ms']) for pair in final['overlap_pairs']] == [(454, 455, 17)]
 
 
 def test_hide_delete_and_undo_replan_only_local_display_state():

@@ -13,7 +13,7 @@ const fonts = [
   'Cubic11.ttf', 'SmileySans-Oblique.woff2',
   'SourceHanSansSC-Heavy.otf', 'SourceHanSansSC-Medium.otf',
   'SourceHanSansSC-Medium.woff2', 'ZCOOLKuaiLe-Regular.ttf',
-  'ZCOOLQingKeHuangYou-Regular.ttf',
+  'ZCOOLQingKeHuangYou-Regular.ttf', 'JetBrainsMono-Regular.ttf',
 ];
 
 await mkdir(dst, {recursive: true});

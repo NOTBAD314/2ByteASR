@@ -36,8 +36,8 @@ class StudioProjectFlowMixin:
             probe_media_identity_fn=probe_media_identity, message_box_fn=studio_message_box
         )
 
-    def _confirm_leave_project(self, message: str) -> bool:
-        return self.project_controller.dirty_guard.confirm(message.rstrip("？?"))
+    def _confirm_leave_project(self, message: str, *, on_saved=None) -> bool:
+        return self.project_controller.dirty_guard.confirm(message.rstrip("？?"), on_saved=on_saved)
 
     def _request_back(self) -> None:
         export = getattr(self, "export_workspace", None)
@@ -50,7 +50,13 @@ class StudioProjectFlowMixin:
         self._request_return_home()
 
     def _request_return_library(self) -> None:
-        if not self._confirm_leave_project("返回工程库前是否保存当前兔白字幕修改？"):
+        # 2026-11-20 (user): 保存 in this prompt saved and then stayed in the
+        # project; leaving took a second click. The save runs in the background
+        # queue, so confirm() answers "not yet" and the leave must resume once
+        # the save is done. The resume re-checks the dirty state: a failed save
+        # asks again instead of dropping the changes.
+        if not self._confirm_leave_project("返回工程库前是否保存当前兔白字幕修改？",
+                                           on_saved=lambda: self.show_project_hub()):
             return
         self.show_project_hub(skip_dirty_guard=True)
 
@@ -136,6 +142,9 @@ class StudioProjectFlowMixin:
             self.source_monitor.reset()
             self.source_tabs.setCurrentIndex(0)
         self._cancel_media_ingest()
+        firered_candidate = getattr(self, '_firered_candidate_token', None)
+        if firered_candidate is not None:
+            firered_candidate.cancel()
         self._resource_governor.set_dragging(False)
         self._resource_governor.set_playback(False)
         ai_cancel = getattr(self, "_ai_cancel_event", None)

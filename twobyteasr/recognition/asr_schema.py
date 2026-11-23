@@ -232,6 +232,11 @@ def normalize_moss_result(
     return result
 
 
+def firered_text(text):
+    """These two literals are stripped by FireRedAsr2.transcribe itself."""
+    return str(text or "").replace("<sil>", "").replace("<blank>", "").strip()
+
+
 def normalize_firered_worker_result(
     value: Any,
     jobs: Sequence[Mapping[str, Any]],
@@ -247,6 +252,7 @@ def normalize_firered_worker_result(
         _raise_contract(producer, consumer, value, "FireRed worker results: list[dict]")
     segments: list[dict[str, Any]] = []
 
+    excluded = []
     def window(position):
         job = jobs[position] if 0 <= position < len(jobs) else None
         if not job:
@@ -266,6 +272,15 @@ def normalize_firered_worker_result(
         owned_start = (previous[1] + own[0]) / 2 if own and previous and previous[1] > own[0] else float("-inf")
         owned_end = (own[1] + following[0]) / 2 if own and following and own[1] > following[0] else float("inf")
         dropped = 0
+        if row.get('transcription_status') == 'rejected_degenerate' or row.get('decode_stop') == 'degenerate':
+            excluded.append(dict(row, offset=job.get('offset'), duration=job.get('duration'),
+                                 reason='degenerate_decoder'))
+            continue
+        text = firered_text(row.get("text"))
+        if not text:
+            excluded.append(dict(segment_id=row.get('segment_id'), reason='empty_transcript',
+                                 offset=job.get('offset'), duration=job.get('duration')))
+            continue
         timestamps = row.get("timestamp") or []
         estimated = (row.get('timestamp_reliability') in {'estimated','unknown'}
                      or row.get('alignment_status') in {'failed_or_unavailable','failed','unknown'})
@@ -274,6 +289,7 @@ def normalize_firered_worker_result(
         starts: list[float] = []
         ends: list[float] = []
         token_rows: list[dict[str, Any]] = []
+        invalid_token = False
         for timestamp in timestamps:
             if isinstance(timestamp, Mapping):
                 token = timestamp.get("text", "")
@@ -288,8 +304,15 @@ def normalize_firered_worker_result(
                 local_end = float(end)
             except (TypeError, ValueError):
                 _raise_contract(producer, consumer, timestamp, "FireRed timestamp numeric bounds")
-            if local_end <= local_start or not str(token or "").strip():
+            token = firered_text(token)
+            if local_end <= local_start or not token:
                 continue
+            if len(token) > 64 and len(token) / max(.01, local_end-local_start) > 12:
+                excluded.append(dict(segment_id=row.get('segment_id'), reason='oversized_acoustic_token',
+                    raw_text=row.get('text'), raw_timestamp=row.get('timestamp'),
+                    offset=job.get('offset'), duration=job.get('duration')))
+                invalid_token = True
+                break
             offset = float(job.get("offset", 0.0) or 0.0)
             global_start = offset + local_start
             global_end = offset + local_end
@@ -299,8 +322,9 @@ def normalize_firered_worker_result(
             starts.append(global_start)
             ends.append(global_end)
             token_rows.append({"text": str(token), "start": global_start, "end": global_end})
-        text = str(row.get("text") or "").strip()
-        if (dropped or not text) and token_rows:
+        if invalid_token:
+            continue
+        if dropped and token_rows:
             # The window text includes the overlap another window owns.
             text = "".join(item["text"] for item in token_rows).strip()
         elif dropped and not token_rows:
@@ -323,20 +347,19 @@ def normalize_firered_worker_result(
             "confidence": float(row.get("confidence", 0.0) or 0.0),
         }
         for field in ('evidence_version','transcription_status','alignment_status',
-                      'timestamp_source','timestamp_reliability'):
+                      'timestamp_source','timestamp_reliability','timestamp_geometry','raw_ctc'):
             if field in row:
                 segment[field]=row[field]
-        if token_rows:
-            segment["tokens"] = token_rows
+        segment["tokens"] = token_rows
         segments.append(_validate_segment(segment, producer=producer, consumer=consumer))
-    if not segments:
-        _raise_contract(producer, consumer, value, "non-empty FireRed ASRResult")
+    if not segments and not rows:
+        _raise_contract(producer, consumer, value, "FireRed result windows")
     return {
         "schema_version": ASR_RESULT_SCHEMA_VERSION,
         "result_type": "ASRResult",
         "segments": segments,
         "language": "zh",
-        "metadata": {"backend": "firered", "segment_count": len(segments)},
+        "metadata": {"backend": "firered", "segment_count": len(segments), "excluded_windows": excluded},
         "provenance": {
             "producer": producer,
             "normalization": "results_wrapper_to_flat_segments",
@@ -355,7 +378,7 @@ def flatten_segment_tokens(
         result,
         producer=producer,
         consumer=consumer,
-        allow_empty=False,
+        allow_empty=True,
     )
     tokens: list[dict[str, Any]] = []
     for segment in canonical["segments"]:

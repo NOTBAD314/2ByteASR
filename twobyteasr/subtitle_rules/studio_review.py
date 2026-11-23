@@ -812,12 +812,16 @@ def store_review_risks(project: SubtitleProject) -> dict[str, CueReviewRisk]:
     return risks
 
 
-def cached_review_risks(project: SubtitleProject | None) -> dict[str, Any]:
+def cached_review_risks(project: SubtitleProject | None, *, refresh=True) -> dict[str, Any]:
     if project is None:
         return {}
     if hasattr(project, '_qc_result'):
-        from .current_issues import current_issue_view
-        view = current_issue_view(project)
+        from .current_issues import current_issue_view, published_issue_view
+        if not refresh and getattr(project, '_current_issue_view', None) is None:
+            # The legacy QC snapshot is still useful while the live issue
+            # worker is preparing a replacement.
+            return getattr(project, '_review_risks_cache', {})
+        view = current_issue_view(project) if refresh else published_issue_view(project)
         result = getattr(view, '_legacy_risks', None)
         if result is None:
             result = {cue_id: {'level': level, 'score': 100 if level == 'high' else 25,

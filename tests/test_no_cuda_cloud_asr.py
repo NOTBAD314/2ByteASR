@@ -1167,3 +1167,60 @@ def test_real_worker_content_review_block_comes_back_as_a_gap(monkeypatch, tmp_p
     blocked = [kw for kind, kw in events if kind == 'cloud_asr_blocked']
     assert [row['role'] for row in blocked] == ['primary', 'review']
     assert blocked[0]['requests'][0]['task_id'] == 'loop-1' and blocked[0]['requests'][0]['end'] == 2.0
+
+
+# 2026-11-22 (user): a Chinese 4 h stream on Qwen Audio 3.1 (official Qwen
+# API) came back with 21 Japanese/Korean lines; the model was sent no language.
+# Its HTTP reference now documents parameters.language_hints (up to 4 codes).
+
+def qwen_audio_endpoint(**extra):
+    return dict(qwen3_endpoint(), model=FILETRANS, provider='qwen_cloud_filetrans',
+                url='https://maas.qianwenaiapi.com/api/v1/services/audio/asr/transcription', **extra)
+
+
+def test_qwen_audio_31_language_choice_becomes_language_hints():
+    from twobyteasr.providers.qwen31_asr import filetrans_hints_for_model, filetrans_language_parameters
+    from twobyteasr.providers.asr_language_control import policy
+    assert filetrans_hints_for_model(FILETRANS, [], language='zh')['filetrans_language'] == 'zh'
+    assert 'filetrans_language' not in filetrans_hints_for_model(FILETRANS, [], language='auto')
+    assert filetrans_language_parameters(FILETRANS, 'zh') == {'language_hints': ['zh', 'en']}
+    assert filetrans_language_parameters(FILETRANS, 'en') == {'language_hints': ['en']}
+    assert filetrans_language_parameters(QWEN3_FILETRANS, 'zh') == {'language': 'zh'}
+    receipt = policy(qwen_audio_endpoint(), 'zh')
+    assert receipt['parameter'] == 'parameters.language_hints' and receipt['parameter_sent']
+    assert not policy(qwen_audio_endpoint(), 'auto')['parameter_sent']
+
+
+def _submit(tmp_path, responses):
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    sent = []
+
+    class Client:
+        @staticmethod
+        def post(url, **kw):
+            sent.append(json.loads(json.dumps(kw['json'])))
+            return responses.pop(0)
+
+        @staticmethod
+        def get(url, **kw):
+            raise OSError('pause')
+
+    with pytest.raises(OSError):
+        filetrans(np.zeros(16000), qwen_audio_endpoint(filetrans_language='zh'), tmp_path, Storage(), client=Client)
+    return sent
+
+
+def test_qwen_audio_31_request_carries_language_hints(tmp_path):
+    sent = _submit(tmp_path, [Response({'output': {'task_id': 't1', 'task_status': 'PENDING'}})])
+    assert len(sent) == 1 and sent[0]['parameters']['language_hints'] == ['zh', 'en']
+    assert 'language' not in sent[0]['parameters']
+
+
+def test_an_endpoint_refusing_language_hints_gets_the_request_without_them(tmp_path):
+    refused = Response({'code': 'InvalidParameter', 'message': 'language_hints is not supported'}, 400)
+    refused.text = '{"code":"InvalidParameter","message":"language_hints is not supported"}'
+    sent = _submit(tmp_path, [refused, Response({'output': {'task_id': 't1', 'task_status': 'PENDING'}})])
+    assert len(sent) == 2 and 'language_hints' in sent[0]['parameters']
+    assert 'language_hints' not in sent[1]['parameters']
+    task, = tmp_path.glob('native-asr-v1/*/task.json')
+    assert json.loads(task.read_text('utf8'))['language_hints_rejected'] == ['zh', 'en']

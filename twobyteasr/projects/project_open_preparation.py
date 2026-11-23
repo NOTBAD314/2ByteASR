@@ -38,6 +38,8 @@ def prepare(project):
     current_issue_view(project)
     from ..caption_style.collision_layout import prepare_component_index
     prepare_component_index(project, store.render)
+    from ..glossary.recognition_review_import import prepare_existing_review
+    prepare_existing_review(project)
     if project.generation_metadata.get('display_overlap_audit',{}).get('status') != 'user_undone':
         from ..subtitle_rules.display_timing import project_display_tail_plan
         project._prepared_display_tail=(tail_key(project), project_display_tail_plan(project))

@@ -1049,6 +1049,7 @@ class StudioProjectController:
         profile["界面与时间轴构建"] = perf_counter() - profile_mark
         profile_mark = perf_counter()
         page._initial_preview_timer.stop()
+        page._opening_preview_tail = None
         yield from _gui_slice.checkpoint()
         profile["ASS 后台调度"] = perf_counter() - profile_mark
         profile_mark = perf_counter()
@@ -1093,7 +1094,13 @@ class StudioProjectController:
                     # the original FLV first seeks in its discontinuous PTS domain
                     # and can time out before the deferred proxy rebind is allowed.
                     target_resolver = getattr(page, "_multitrack_preview_target", None)
-                    target = target_resolver(playhead_ms) if callable(target_resolver) else None
+                    from ..timeline.studio_edit_sequence import timeline_duration_ms
+                    from ..timeline.studio_sequence_mapper import open_preview_position
+                    logical_ms, preview_ms, target, tail = open_preview_position(
+                        playhead_ms, timeline_duration_ms(project),
+                        target_resolver if callable(target_resolver) else lambda _ms: None)
+                    page._opening_preview_tail = (dict(tail, project=project, requested_at=perf_counter(),
+                                                        logical_ms=logical_ms, fallback_used=False) if tail else None)
                     if target:
                         playable_source = str(target["source_path"])
                         restore_seconds = int(target["source_ms"]) / 1000.0
@@ -1102,6 +1109,8 @@ class StudioProjectController:
                     page._studio_trace(
                         "MEDIA_RESTORE_SEEK",
                         playhead_ms=playhead_ms,
+                        preview_ms=preview_ms,
+                        restore_reason='last_clip_interior' if tail else 'timeline_cursor',
                         restore_seconds=restore_seconds,
                         sequence=sequence_of(project).id if hasattr(sequence_of(project), "id") else "",
                         media_path=str(playable_source),
@@ -1131,7 +1140,7 @@ class StudioProjectController:
                         project_id=project_id,
                         media_path=str(project.media.path or ""),
                     ):
-                        page._sync_multitrack_preview_at(playhead_ms)
+                        page._sync_multitrack_preview_at(preview_ms)
             except Exception as exc:
                 page.relink_button.setVisible(True)
                 bind_text(page.save_state, translate('媒体加载失败 · 工程仍已打开', current_language()))

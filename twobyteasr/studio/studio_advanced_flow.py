@@ -399,7 +399,8 @@ class StudioAdvancedFlowMixin:
         if prepared is not None and prepared.snapshot is snapshot and prepared.web is not None:
             worker.configure_prepared(prepared.web)
         else:
-            worker.configure(theme=theme,text=snapshot.text,speaker=speaker,duration_seconds=duration_seconds,
+            from ..caption_style.visual_snapshot import web_theme_text
+            worker.configure(theme=theme,text=web_theme_text(snapshot),speaker=speaker,duration_seconds=duration_seconds,
                 placement=snapshot.style_recipe.get('layout', {}).get('webPlacement'), **({'translation':snapshot.translation} if getattr(snapshot,'translation','') else {}))
         runtime = getattr(getattr(self, 'session', None), 'runtime', None)
         if runtime is not None:

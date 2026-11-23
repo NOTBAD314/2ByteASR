@@ -13,6 +13,28 @@ _NUMBER = r"[零〇一二两三四五六七八九十百千万亿\d]+(?:[点\.][�
 _QUANTITY = re.compile(r"(?:增加|减少|降低|提高|提升|减|加|升|降|第|负|正|[+＋－-])\s*" + _NUMBER
                        + r"|" + _NUMBER + r"\s*(?:级|次|层|点|个|秒|分钟|小时|倍|枚|颗|只|件|%|％)")
 _PARTICLES = frozenset("啊呀呢吧嘛哦哟喔呗啦呐哇唉哎诶欸" + " ，。！？、；：…,.!?;:　")
+_CLAUSE_OPENERS = re.compile(r'是吗(?=[\s，。！？!?]|$)|然后|但是|所以|不过|因为')
+
+
+def weak_proposal_reason(text, span, replacement, *, evidence=False, confirmed_alias=False):
+    """Fence model/near-term suggestions when no independent transcript supports the patch."""
+    if evidence:
+        return ''
+    start, end = span
+    source = text[start:end]
+    if any(start < match.end() and match.start() < end
+           and (start, end) != match.span() for match in _CLAUSE_OPENERS.finditer(text)):
+        return 'crosses_clause_or_question_particle'
+    if confirmed_alias or not source or not replacement:
+        return ''
+    if max(len(source), len(replacement)) > 4 or abs(len(source)-len(replacement)) > 1:
+        return 'unverified_phrase_rewrite'
+    if re.fullmatch(r'[\u3400-\u9fff]+', source) and re.fullmatch(r'[\u3400-\u9fff]+', replacement):
+        from ..subtitle_rules.text_similarity import levenshtein, phonetic_text
+        a, b = phonetic_text(source), phonetic_text(replacement)
+        if 1.0 - levenshtein(a, b) / max(1, len(a), len(b)) < .60:
+            return 'insufficient_phonetic_support'
+    return ''
 
 
 def numeric_expression_at(text, start, end):

@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 
-VERSION = 'proofread-content-v3-japanese-speech'
+VERSION = 'proofread-content-v4-manual-adoption'
 # Deliberately not Unicode ``\W``: ー, ・, apostrophes, + and name symbols
 # can carry meaning. Changing those must pass the lexical/content checks.
 PUNCTUATION = frozenset('，,。.!！?？、;；:：…“”‘’「」『』（）()[]【】《》〈〉{}')

@@ -80,6 +80,9 @@ def main(output_directory):
         raise ValueError("Audit output must be under cwd/tmp")
     fixture_path = output/"fixture.json"
     fixture = json.loads(fixture_path.read_text("utf-8"))
+    if fixture.get("audit_kind") == "grouping-recovery":
+        from .grouping_recovery_audit import main as recovery_audit
+        return recovery_audit(output, fixture)
     if fixture.get("audit_kind") == "recorded-grouping-task":
         from .recorded_grouping_audit import main as recorded_audit
         return recorded_audit(output, fixture)

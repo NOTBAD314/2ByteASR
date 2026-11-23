@@ -227,7 +227,7 @@
   };
   runtime.__2byteUnmountMotion=function(root){
     const old=mounted.get(root);if(!old)return;
-    old.context.revert();for(const surface of old.pixelSurfaces||[])surface.destroy();delete runtime.__timelines[old.id];mounted.delete(root);
+    old.context.revert();for(const surface of old.pixelSurfaces||[])surface.destroy();if(old.templateCleanup)old.templateCleanup();delete runtime.__timelines[old.id];mounted.delete(root);
   };
   runtime.__2byteMountMotion=function(root,spec,durationMs,compositionId){
     if(!root||!spec)return false;
@@ -241,12 +241,12 @@
     const duration=Math.max(.05,durationMs/1000);
     const shortCue=durationMs<=(spec.timingProfile==='readable-pixel'?260:spec.version===2?700:100);
     const exits=schedule.filter(row=>row.phase==='resolve').map(row=>row.end_ms/1000);
-    const clearAt=spec.version===2&&!shortCue&&exits.length?Math.max(...exits):duration;
+    let clearAt=spec.version===2&&!shortCue&&exits.length?Math.max(...exits):duration;
     const scale=(root.closest('.wt-scope')?.clientHeight||1080)/1080;
     const id=compositionId||root.dataset.compositionId||`2byte-cue-${++serial}`;
     if(!compositionId)root.dataset.compositionId=id;
     root.dataset.duration=String(duration);
-    const initial=new Map();const prepared=[];const animationMap=[];const pixelSurfaces=[];let timeline;
+    const initial=new Map();const prepared=[];const animationMap=[];const pixelSurfaces=[];let timeline,templateCleanup=null;
     if(!shortCue){
       const pixelTargets=new Map();
       for(const row of schedule){
@@ -259,6 +259,20 @@
     try{context.add(()=>{
       timeline=runtime.gsap.timeline({paused:true});
       timeline.set(root,{opacity:1},0);
+      if(spec.template){
+        // An application-owned motion template (webThemeTemplates.js). The AI
+        // only chose it and its bounded parameters; every frame is still a
+        // property on this one paused timeline, seeked by cue time.
+        const build=runtime.__2byteTemplates&&runtime.__2byteTemplates[spec.template.id];
+        if(!build)throw new Error('Unknown caption template: '+spec.template.id);
+        const out=build({root,gsap:runtime.gsap,timeline,params:spec.template.params||{},
+          durationMs,duration,scale,shortCue,id})||{};
+        for(const row of out.animationMap||[])animationMap.push({source:'template',template:spec.template.id,...row});
+        templateCleanup=typeof out.cleanup==='function'?out.cleanup:null;
+        if(Number.isFinite(out.clearAt))clearAt=Math.min(duration,Math.max(0,out.clearAt));
+        timeline.set(root,{opacity:0},clearAt);
+        return;
+      }
       if(shortCue){
         // Below a few display frames, preserve the author's settled reading
         // pose for the entire cue. Never extend it or borrow the previous cue.
@@ -370,7 +384,7 @@
         }});
         timeline.fromTo(driver,{cueMs:0},{cueMs:duration*1000,duration,ease:'none',immediateRender:false},0);
       }
-    });}catch(error){context.revert();for(const surface of pixelSurfaces)surface.destroy();throw error;}
+    });}catch(error){context.revert();for(const surface of pixelSurfaces)surface.destroy();if(templateCleanup)templateCleanup();throw error;}
     // Rewind through the canonical initial pose. A backwards seek from a
     // partially transformed clip can otherwise retain Chromium's rasterized
     // clip edge even though computed transforms report the correct values.
@@ -383,7 +397,7 @@
       }
       return rawSeek(position,suppressEvents);
     };
-    const state={signature,id,context,timeline,first:root.firstElementChild,duration,clearAt,animationMap,pixelSurfaces};
+    const state={signature,id,context,timeline,first:root.firstElementChild,duration,clearAt,animationMap,pixelSurfaces,templateCleanup};
     mounted.set(root,state);runtime.__timelines[id]=timeline;
     // Initialize every fromTo before the first exact-zero seek. GSAP defers
     // immediateRender:false tweens until they are visited; without this a

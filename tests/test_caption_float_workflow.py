@@ -270,3 +270,30 @@ def test_overlapping_import_tracks_follow_the_preferred_stable_track(tmp_path,mo
             assert page._caption_draft.target==target
     finally:
         page._cancel_canvas_inline_edit();page.close_page();page.deleteLater();app.processEvents()
+
+
+def test_E_puts_the_caret_in_the_box_ready_for_ctrl_a_and_arrows(page):
+    """2026-11-20 (user): after E the box needed a click before Ctrl+A or the arrow keys."""
+    page.video.set_paused(True)
+    page.timeline.setFocus()
+    assert page._shortcut_edit_at_playhead()
+    QTest.qWait(20)
+    editor = page.subtitle_edit_input
+    assert QApplication.focusWidget() is editor and page._caption_draft.target.cue_id == 'a'
+    assert page._caption_edit_locked                  # like a click: playback cannot swap the caption
+    QTest.keyClick(editor, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    cursor = editor.textCursor()
+    assert cursor.hasSelection() and cursor.selectedText() == editor.toPlainText()
+    QTest.keyClick(editor, Qt.Key.Key_Home)
+    QTest.keyClick(editor, Qt.Key.Key_Right)
+    assert editor.textCursor().position() == 1
+    page.timeline.set_playhead(3200)
+    page._follow_caption_editor(3200)
+    assert page._caption_draft.target.cue_id == 'a'
+
+
+def test_no_bound_caption_keeps_the_keyboard_on_the_timeline(page):
+    page._caption_draft = None                        # e.g. the follow card over a gap
+    page.timeline.setFocus()
+    assert page._focus_caption_text() is False
+    assert QApplication.focusWidget() is not page.subtitle_edit_input

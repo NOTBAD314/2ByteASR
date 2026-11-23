@@ -49,6 +49,7 @@ class RuntimeContext:
     speaker_source: str = "single"
     asr_provisional_cues: list[dict[str, Any]] = field(default_factory=list)
     asr_manifest_key: str = ""
+    independent_asr_runs: list[dict[str, Any]] = field(default_factory=list)
     speaker_recovery: dict[str, Any] = field(default_factory=dict)
     speech_coverage: dict[str, Any] = field(default_factory=dict)
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -109,6 +110,7 @@ class RuntimeContext:
     task_journal: Any | None = field(default=None, repr=False)
     resume: bool = False
     retry_incomplete: bool = False
+    grouping_pending: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
         from .language_decision import initialise
@@ -120,10 +122,12 @@ class RuntimeContext:
         self.review_items.clear()
         self.asr_provisional_cues.clear()
         self.asr_manifest_key = ""
+        self.independent_asr_runs.clear()
         self.speaker_recovery.clear()
         self.speech_coverage.clear()
         self.terminology_status.clear()
         self.polishing_summary.clear()
+        self.grouping_pending.clear()
         self.committed_result_ref.clear()
         self.task_language = ""
         self.language_evidence = {}
@@ -197,7 +201,7 @@ class ContextExecutor(ThreadPoolExecutor):
         return super().submit(captured.run, fn, *args, **kwargs)
 
 
-def bounded_results(pool, runner, jobs, *, limit):
+def bounded_results(pool, runner, jobs, *, limit, before_submit=None):
     """Completion-order consumption without queueing the entire corpus."""
     jobs, pending, exhausted = iter(jobs), set(), False
     while pending or not exhausted:
@@ -206,6 +210,8 @@ def bounded_results(pool, runner, jobs, *, limit):
             if job is None:
                 exhausted = True
             else:
+                if before_submit is not None:
+                    before_submit()
                 pending.add(pool.submit(runner, job))
         if pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)

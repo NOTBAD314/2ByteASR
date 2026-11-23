@@ -146,6 +146,7 @@ REFINE_SCHEMA = {
                     "split_after_chars": {"type": "array", "items": {"type": "integer"}},
                     "space_after_chars": {"type": "array", "items": {"type": "integer"}},
                     "break_after": {"type": "array", "items": {"type": "string"}},
+                    "plan_id": {"type": "string"},
                     "reason": {"type": "string", "maxLength": 120},
                 },
                 "required": ["cue_id", "action"],
@@ -550,15 +551,13 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                  operation_kind=None, *, max_extra_calls=2, max_extra_tokens=12000, max_elapsed_seconds=600,
                  on_progress=None, boundary_only=False):
     from .sentence_refine_contract import RefineError, parse_response, decode_boundary_ids
-    from .sentence_refine_ranges import make_ranges, request_windows, validate_quality, input_version, refinement_limits
+    from .sentence_refine_ranges import make_ranges, validate_quality, input_version, refinement_limits
     from .math_text import math_spans, project_enabled
     from ..providers.provider_diagnostics import redact_diagnostics
     from ..providers.asr_provider_snapshot import TimeoutPolicy
 
     ordered = sorted(cues, key=lambda cue: (cue.start_ms, cue.end_ms))
     ranges = make_ranges(ordered, project, language, combine=boundary_only)
-    units = request_windows(ranges, language) if boundary_only else ranges
-    root_by_id = {unit.cue.id: unit for unit in ranges}
     outcome = RefineOutcome(ranges=ranges)
     started = time.monotonic()
     deadline = started + max(1, float(max_elapsed_seconds))
@@ -567,41 +566,35 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     attempts_limit = max(1, min(3, int(max_attempts)))
     json_mode = True
     terminal_request_failure = None
-    candidate_actions = {}
     from ..providers.subtitle_request_policy import endpoint_escalated_budget, provider_policy
     policy = provider_policy(provider)
     preferred, hard_limit, measure = refinement_limits(language)
     neighbors = {}
     context_cues = project.cues if project else ordered
     context_positions = {cue.id: index for index, cue in enumerate(context_cues)}
-    for unit in units:
+    for unit in ranges:
         first = context_positions.get(unit.originals[0].id, 0)
         last = context_positions.get(unit.originals[-1].id, len(context_cues) - 1)
         neighbors[unit.cue.id] = (context_cues[first - 1].text if first else '',
                                 context_cues[last + 1].text if last + 1 < len(context_cues) else '')
-        if unit.owner_id:
-            root = root_by_id[unit.owner_id]
-            neighbors[unit.cue.id] = (root.cue.text[max(0, unit.char_start-80):unit.char_start],
-                root.cue.text[unit.char_start+len(unit.cue.text):unit.char_start+len(unit.cue.text)+80])
         outcome.results[unit.cue.id] = dict(range_id=unit.cue.id,
             cue_ids=[cue.id for cue in unit.originals], start_ms=unit.cue.start_ms,
             source_rows=[context_positions[cue.id]+1 for cue in unit.originals if cue.id in context_positions],
             end_ms=unit.cue.end_ms, input_text=unit.cue.text,
             input_version=input_version(unit.originals, project), status='pending',
             phase='等待处理', attempts=0, local_fallback=False)
+        outcome.results[unit.cue.id].update(
+            project_id=project.project_id if project else '',
+            media_fingerprint=project.media.fingerprint if project else '',
+            source_ids=list(dict.fromkeys(ref for cue in unit.originals for ref in cue.evidence_refs)),
+            source_span=[unit.char_start, unit.char_start + len(unit.cue.text)],
+            index_unit='zero_based_python_unicode_codepoints')
 
     def emit(unit, **updates):
         record = outcome.results[unit.cue.id]
         record.update(updates)
         if on_progress:
-            if unit.owner_id:
-                root = root_by_id[unit.owner_id]
-                on_progress(dict(range_id=unit.owner_id, cue_ids=record['cue_ids'],
-                    start_ms=root.cue.start_ms, end_ms=root.cue.end_ms, input_text=root.cue.text,
-                    status='running', phase=f"{record['phase']} · 原文字符 {unit.char_start}–{unit.char_start+len(unit.cue.text)}",
-                    attempts=record['attempts'], active_window=unit.cue.id))
-            else:
-                on_progress(dict(record))
+            on_progress(dict(record))
 
     def cancelled():
         return bool(cancel_check and cancel_check())
@@ -609,7 +602,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     # Bound both number of ranges and source size. A very long single cue is
     # retained as one owned range, never silently dropped or sliced at N chars.
     batches = []
-    for unit in units:
+    for unit in ranges:
         receipts = ((project.studio_state.get('caption_timeline') or {}).get('instances', {}) if project else {})
         locked = set(project.studio_state.get('locked_speakers', ())) if project else set()
         if (unit.cue.speaker_id in locked
@@ -618,16 +611,29 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             outcome.results[unit.cue.id].update(status='validated', phase='已保护，保持原字幕',
                                                category='protected_cue', final=True)
             continue
-        if boundary_only and len(unit.cue.text) > 1200 and not unit.candidates:
+        if boundary_only and len(unit.cue.text) > 1800:
             outcome.results[unit.cue.id].update(status='failed', phase='保留原范围',
-                category='constraint_conflict', error='完整词语本身超过长度限制，无法在不拆词的情况下处理', final=True)
+                category='input_budget_conflict', error='来源超出单次断句预算，原边界及文字保留。', final=True)
             continue
+        if boundary_only and language.split('-')[0] == 'zh':
+            from .text_rules import display_length
+            edges = [0, *sorted({display_length(unit.cue.text[:position+1])
+                                  for position in unit.candidates.values()}), display_length(unit.cue.text)]
+            indivisible = next(((a, b) for a, b in zip(edges, edges[1:]) if b-a > hard_limit), None)
+            if indivisible is not None:
+                outcome.results[unit.cue.id].update(status='failed', phase='保留原范围',
+                    category='constraint_conflict',
+                    error='不可拆单元超过字幕长度限制，保留原文等待识别证据。',
+                    issues=[dict(kind='length', start=indivisible[0], end=indivisible[1],
+                                 reason='indivisible_unit')],
+                    stop_reason='indivisible_unit', final=True)
+                continue
         if (not batches or len(batches[-1]) >= max(1, min(40, batch_size))
                 or sum(len(item.cue.text) for item in batches[-1]) + len(unit.cue.text) > 1800):
             batches.append([])
         batches[-1].append(unit)
     queue = [(batch, 1, None) for batch in batches]
-    for unit in units:
+    for unit in ranges:
         emit(unit)
     # 2026-11-16: once ordinary attempts and repairs are done, ranges that still failed on format or
     # truncation get one more request: same model, thinking one level higher (None = not started,
@@ -637,7 +643,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
     while not cancelled():
         if not queue:
             if escalation is None and terminal_request_failure is None:
-                escalation, retry_groups = _refine_escalation_round(units, outcome, provider, policy, batch_size,
+                escalation, retry_groups = _refine_escalation_round(ranges, outcome, provider, policy, batch_size,
                                                                     deadline, emit)
                 if escalation:
                     escalated_ids = [unit.cue.id for group in retry_groups for unit in group]
@@ -656,6 +662,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                                                      getattr(provider, 'endpoint', {}) or {})
         if repair:
             if extras_left <= 0 or extra_tokens_left < token_budget:
+                for unit in group:
+                    emit(unit, stop_reason='repair_request_or_token_limit')
                 continue
             extras_left -= 1
             extra_tokens_left -= token_budget
@@ -666,6 +674,9 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                      error='本次任务已达到总耗时上限，保留原字幕')
             continue
         payload = refine_payload([unit.cue for unit in group], neighbors=neighbors, project=project)
+        chinese = boundary_only and language.split('-')[0] == 'zh'
+        if chinese:
+            from subtitle_core import display_length
         for item, unit in zip(payload['cues'], group):
             previous_result=outcome.results[unit.cue.id]
             if previous_result.get('editable_windows'):
@@ -675,24 +686,56 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             previous = 0
             candidates = []
             for key, value in unit.candidates.items():
-                candidates.append(dict(id=key, text=unit.cue.text[previous:value+1]))
+                candidate = dict(id=key, text=unit.cue.text[previous:value+1])
+                if chinese:
+                    candidate['units_from_start'] = display_length(unit.cue.text[:value+1])
+                candidates.append(candidate)
                 previous = value+1
             candidates.append(dict(id=None, text=unit.cue.text[previous:]))
             item['boundary_candidates'] = candidates
             item['source_cue_ids'] = [cue.id for cue in unit.originals]
+            if len(unit.originals) > 1:
+                from ..recognition.cue_word_alignment import cue_words
+                cursor, words = 0, []
+                for source in unit.originals:
+                    aligned, _ = cue_words(project, source)
+                    words.extend(dict(after_chars=cursor+w.char_end-1-unit.char_start,
+                                      start_ms=w.start_ms, end_ms=w.end_ms) for w in aligned
+                                 if unit.char_start < cursor+w.char_end <= unit.char_start+len(unit.cue.text))
+                    cursor += len(source.text)
+                item['word_boundaries'] = words
             item['original_boundaries'] = [sum(len(cue.text) for cue in unit.originals[:i]) - 1
                                            for i in range(1, len(unit.originals))]
+            if chinese and not unit.owner_id and len(unit.cue.text) <= 48:
+                from .sentence_refine_ranges import repair_chinese_range
+                item['total_units'] = display_length(unit.cue.text)
+                item['max_units_per_piece'] = hard_limit
+                item['keep_allowed'] = True
+                try:
+                    repair_chinese_range(unit, CueRefineAction(unit.cue.id, 'keep'), project)
+                except RefineError as exc:
+                    item['keep_allowed'] = False
+                    item['original_boundary_failure'] = dict(category=exc.category, issues=getattr(exc, 'issues', ()))
+                # Positions are also useful to diagnostics, but the model's
+                # reply needs only the short, explicit string IDs.
+                item.pop('allowed_split_after_chars', None)
         if boundary_only:
             prompt = ("你为字幕重新选择自然边界，只调整时间轴断句。输入每个 cue 可能由同一人物连续字幕重组。"
                 "不增删、纠错、翻译或改写任何字符，包括空白和标点。上下文只用于理解。"
                 "只返回每个输入 cue_id 一次，action=keep 表示保留原边界。action=split 时只从"
-                " boundary_candidates 选择 break_after 编号，递增且不重复。空数组表示整段合为一条。"
+                " boundary_candidates 原样复制 break_after 的字符串 id（例如 \"b00005\"）；禁止返回数字、字符位置或片段序号。"
+                "若 keep_allowed=false，旧边界已被明确拒绝，不能选 keep。"
+                "若原文应连成一条，用 action=split, break_after=[]。数组空也表示主动合并，仍须填写 split。"
                 "优先完整意群、停顿和句末，保护专名、完整词、数字单位。真实短回答允许独立。"
                 "同一连续完整中文表达14字以内优先一条，超长后才按语义与可靠气口切分。其他语言遵循各自策略。"
                 "每条硬上限遵循本次语言策略。完整词本身超限时 keep 并说明冲突。"
                 "Python Unicode code points 的0基字符索引仅作编号说明，Emoji不能从中间拆。"
                 '只返回包含 results 数组的 JSON 对象。下列示例只演示结构，具体边界按本次输入判断。')
-            prompt += json.dumps({'results': [{'cue_id': group[0].cue.id, 'action': 'keep', 'break_after': []}]}, ensure_ascii=False)
+            prompt += json.dumps({'results': [{'cue_id': '<输入 ID>', 'action': 'split', 'break_after': []}]}, ensure_ascii=False)
+            if chinese:
+                prompt += (' 每段长度按 units_from_start 的相邻差计算；终点是 total_units，起点是 0。'
+                           '请逐段检查这个差不超过 max_units_per_piece，数字和空格勿另行估算。'
+                           'keep_allowed=true 且现有边界自然时原样保留。')
             from .segmentation_profiles import profile_for, fixed_constraints
             from .grouping_request import custom_grouping_guidance
             prompt += '\n'+profile_for(language or 'zh').guidance+'\n'+custom_grouping_guidance(language or 'zh')+'\n'+fixed_constraints(language or 'zh',index_unit='zero_based_python_unicode_codepoint_after_character')
@@ -740,7 +783,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                     rows_by_id.setdefault(cue_id if isinstance(cue_id, str) else '', []).append(row)
             group_ids = {unit.cue.id for unit in group}
             receipt['unknown_ids'] = [key for key in rows_by_id if key not in group_ids]
-            for unit in group:
+            for unit, item in zip(group, payload['cues']):
                 emit(unit, phase='校验断点与原文', format_repairs=repairs)
                 record = outcome.results[unit.cue.id]
                 record['raw_response'] = receipt['raw_response']
@@ -750,7 +793,10 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         raise RefineError('返回遗漏该范围或重复了该范围 ID', 'range_identity_error')
                     if matches[0].get('_duplicate_fields'):
                         raise RefineError('该范围结果有重复字段，保留原文并单独修复', 'duplicate_field')
-                    row = decode_boundary_ids(matches[0], unit.candidates)
+                    response_row = matches[0]
+                    if 'plan_id' in response_row:
+                        raise RefineError('只接受模型自行选择的合法断点', 'boundary_id_error')
+                    row = decode_boundary_ids(response_row, unit.candidates)
                     if row.get('action') not in {'keep', 'split', 'space'}:
                         raise RefineError('结果必须明确包含 keep、split 或 space 操作', 'structure_error')
                     if boundary_only and row.get('action') not in {'keep', 'split'}:
@@ -766,9 +812,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                             raise RefineError('断点位于公式内部', 'semantic_boundary')
                         receipt.setdefault('field_errors', []).append(dict(cue_id=unit.cue.id, category='cut_inside_formula'))
                         action = CueRefineAction(unit.cue.id, 'keep')
-                    if boundary_only and language.split('-')[0] == 'zh' and not unit.owner_id:
+                    if chinese and not unit.owner_id:
                         from .sentence_refine_ranges import repair_chinese_range
-                        from .text_rules import display_length
                         if action.action=='keep':
                             candidate=[]
                             cursor=0
@@ -783,10 +828,15 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         if windows and (any(x not in candidate for x in frozen) or
                                 any(x not in previous and not any(a<x<b for a,b in windows) for x in candidate)):
                             raise RefineError('纠错结果改变了范围外已接受的 AI 边界','frozen_boundary_changed')
-                        candidate_actions[unit.cue.id]=action
                         action, changes = repair_chinese_range(unit, action, project)
                         record['local_boundary_changes'] = changes
                     pieces = validate_quality(unit, action, language, hard_limit=hard_limit if boundary_only else None, project=project)
+                    if chinese and project is not None and action.action == 'split':
+                        from .sentence_refine_ranges import build_range_replacement, introduced_neighbor_issue
+                        proposed = build_range_replacement(unit, action, project, set())
+                        issue = introduced_neighbor_issue(project, unit, proposed)
+                        if issue:
+                            raise RefineError('断句后相邻字幕复查未通过：' + issue, 'neighborhood_boundary')
                     if boundary_only and language.split('-')[0] == 'en':
                         from .sentence_refine_ranges import build_range_replacement
                         from .english_refine_constraints import validate_piece
@@ -794,7 +844,9 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                             action = CueRefineAction(unit.cue.id, 'wrap')
                         # Reject unavailable timing BEFORE calling this result validated.
                         if action.action == 'split': build_range_replacement(unit, action, project, set())
+                    origin = 'ai_first_pass' if attempt == 1 else 'ai_retry'
                     record.update(parsed=row, validated_texts=pieces, phase='等待写回校验', status='validated',
+                                  decision_origin=origin,
                                   error='', category='')
                     outcome.actions.append(action)
                     emit(unit)
@@ -804,6 +856,12 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                         record['editable_windows']=exc.editable_windows
                         record['frozen_boundaries']=[x for x in exc.candidate_boundaries
                             if not any(a<x<b for a,b in exc.editable_windows)]
+                    record['issues'] = getattr(exc, 'issues', [])
+                    record['failure_class'] = ('rejected_keep' if matches and
+                        matches[0].get('action') == 'keep' and exc.category == 'constraint_conflict'
+                        else exc.category)
+                    receipt.setdefault('rejections', []).append(dict(cue_id=unit.cue.id, category=exc.category,
+                        error=str(exc), issues=record['issues']))
                     bad.append(unit)
                     emit(unit, status='failed', final=False, phase='校验未通过', category=exc.category, error=str(exc))
             receipt['status'] = 'validated' if not bad else 'partial' if len(bad) < len(group) else 'failed'
@@ -843,6 +901,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         finally:
             trace = getattr(provider, 'invocation_trace', None)
             receipt['transport'] = redact_diagnostics(trace() if callable(trace) else diagnostics)
+            receipt['request_number'] = len(outcome.requests) + 1
             outcome.requests.append(receipt)
         if bad:
             categories = {outcome.results[unit.cue.id].get('category') for unit in bad}
@@ -859,15 +918,36 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                     wait_until = time.monotonic()+delay
                     while time.monotonic() < wait_until and not cancelled():
                         time.sleep(min(.1, max(0., wait_until-time.monotonic())))
-                errors = [{'cue_id':unit.cue.id, 'category':outcome.results[unit.cue.id].get('category'),
-                           'error':outcome.results[unit.cue.id].get('error')} for unit in bad]
-                repair_data = dict(errors=errors, failed_response=receipt.get('raw_response', '')[:24000])
+                errors = [{key: outcome.results[unit.cue.id].get(key) for key in ('category', 'error', 'issues', 'failure_class')}
+                          | {'cue_id': unit.cue.id} for unit in bad]
+                by_id = {unit.cue.id: unit for unit in bad}
+                repair_data = dict(errors=errors)
+                # Do not resend unrelated rows or the whole rejected batch.
+                for error in errors:
+                    matches = (row for row in receipt.get('response', ()) if row.get('cue_id') == error['cue_id'])
+                    prior = next(matches, None)
+                    if prior is not None:
+                        error['prior_action'] = {name: prior[name] for name in
+                            ('action', 'break_after', 'split_after_chars', 'plan_id') if name in prior}
+                    if chinese and error['issues']:
+                        from .grouping_quality import SourceIndex
+                        index = SourceIndex.build(by_id[error['cue_id']].cue.text)
+                        error['locations'] = [
+                            dict(issue=issue['kind'], left=index.slice(max(0, issue['start']-8), issue['start']),
+                                 rejected=index.slice(issue['start'], issue['end']),
+                                 right=index.slice(issue['end'], min(len(index.content), issue['end']+8)))
+                            for issue in error['issues'][:5]]
                 # Truncated windows are reduced without changing their owned input ranges.
-                if 'incomplete_response' in categories and len(bad) > 1:
+                if len(bad) > 1 and ('incomplete_response' in categories or attempt >= 2):
                     middle = (len(bad)+1)//2
                     queue[0:0] = [(bad[:middle], attempt+1, repair_data), (bad[middle:], attempt+1, repair_data)]
                 else:
                     queue.insert(0, (bad, attempt+1, repair_data))
+            else:
+                stop_reason = ('endpoint_rejected' if fatal else 'attempt_limit' if attempt >= attempts_limit
+                               else 'repair_request_limit')
+                for unit in bad:
+                    emit(unit, stop_reason=stop_reason)
     if cancelled():
         outcome.llm_status = 'cancelled'
     if escalated_ids:
@@ -879,40 +959,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 category='' if record['status'] == 'validated' else record.get('category', ''))
         outcome.escalation.update(thinking=escalation, ranges=len(escalated_ids), succeeded=len(rescued),
                                   failed=len(escalated_ids) - len(rescued))
-    for unit in units:
+    for unit in ranges:
         record = outcome.results[unit.cue.id]
-        if (boundary_only and language.split('-')[0] == 'en' and not cancelled()
-                and record['status'] == 'failed' and not unit.owner_id):
-            from .english_refine_constraints import local_action, wrap_action
-            from .sentence_refine_ranges import build_range_replacement
-            try:
-                local = local_action(unit, project)
-                try:
-                    replacement = build_range_replacement(unit, local, project, set())
-                except RefineError as exc:
-                    if exc.category != 'time_mapping_error': raise
-                    local = wrap_action(unit, project)
-                    replacement = build_range_replacement(unit, local, project, set())
-                outcome.actions.append(local)
-                record.update(status='validated', local_fallback=True, phase='仅换行，等待可靠词时间后拆条' if local.alignment_pending else '英文词边界补救已校验',
-                    alignment_pending=local.alignment_pending, validated_texts=[cue.text for cue in replacement],
-                    remote_error=record.get('error',''), error='', category='')
-            except RefineError as exc:
-                record.update(error=str(exc), category=exc.category)
-        if (boundary_only and language.split('-')[0] == 'zh' and not cancelled()
-                and record['status'] == 'failed' and not unit.owner_id):
-            from .sentence_refine_ranges import repair_chinese_range
-            try:
-                local, changes = repair_chinese_range(unit, candidate_actions.get(unit.cue.id) or CueRefineAction(unit.cue.id, 'keep'), project, fallback=True)
-                pieces = validate_quality(unit, local, language, hard_limit=hard_limit, project=project)
-            except RefineError:
-                pass  # The failed range retains its precise original failure.
-            else:
-                outcome.actions.append(local)
-                record.update(status='validated', local_fallback=True, phase='本地规则已校验',
-                              local_boundary_changes=changes, validated_texts=pieces,
-                              remote_error=record.get('error', ''), remote_category=record.get('category', ''),
-                              error='', category='')
         if record['status'] in {'pending', 'running'}:
             emit(unit, status='cancelled' if cancelled() else 'failed', phase='未处理',
                  category='cancelled' if cancelled() else 'task_budget',
@@ -925,62 +973,50 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
         emit(unit)
     if outcome.llm_status != 'cancelled' and outcome.failed_cue_ids:
         outcome.llm_status = 'partial' if outcome.actions else 'failed'
-    if any(unit.owner_id for unit in units):
-        actions = {action.cue_id: action for action in outcome.actions}
-        for root in ranges:
-            windows = [unit for unit in units if unit.owner_id == root.cue.id]
-            if not windows:
-                continue
-            records = [outcome.results.pop(unit.cue.id) for unit in windows]
-            record = dict(range_id=root.cue.id, cue_ids=[cue.id for cue in root.originals],
-                source_rows=[context_positions[cue.id]+1 for cue in root.originals if cue.id in context_positions],
-                input_text=root.cue.text, input_version=input_version(root.originals, project),
-                start_ms=root.cue.start_ms, end_ms=root.cue.end_ms,
-                attempts=max(row['attempts'] for row in records), windows=records,
-                local_fallback=False, final=True)
-            if all(row['status'] == 'validated' for row in records):
-                boundaries = []
-                for unit in windows:
-                    action = actions.pop(unit.cue.id)
-                    boundaries.extend(index+unit.char_start for index in action.split_after_chars)
-                    if unit is not windows[-1]:
-                        boundaries.append(unit.char_start+len(unit.cue.text)-1)
-                merged_action = CueRefineAction(root.cue.id, 'split', sorted(set(boundaries)))
-                seams = {unit.char_start+len(unit.cue.text)-1 for unit in windows[:-1]}
-                for seam in sorted(seams):
-                    offsets = merged_action.split_after_chars
-                    position = offsets.index(seam)
-                    left = offsets[position-1]+1 if position else 0
-                    right = offsets[position+1]+1 if position+1 < len(offsets) else len(root.cue.text)
-                    if measure(root.cue.text[left:right]) <= hard_limit:
-                        offsets.remove(seam)
-                try:
-                    if language.split('-')[0] == 'zh':
-                        from .sentence_refine_ranges import repair_chinese_range
-                        merged_action, changes = repair_chinese_range(root, merged_action, project)
-                        record['local_boundary_changes'] = changes
-                    pieces = validate_quality(root, merged_action, language,
-                        hard_limit=hard_limit, project=project)
-                    actions[root.cue.id] = merged_action
-                    record.update(status='validated', phase='窗口合并校验完成，等待写回', validated_texts=pieces)
-                except RefineError as exc:
-                    record.update(status='failed', phase='窗口合并校验失败', category=exc.category, error=str(exc))
-            else:
-                bad_record = next(row for row in records if row['status'] != 'validated')
-                record.update(status='cancelled' if cancelled() else 'failed', phase='保留原范围',
-                    category=bad_record.get('category'), error=bad_record.get('error'))
-                for unit in windows:
-                    actions.pop(unit.cue.id, None)
-            outcome.results[root.cue.id] = record
-            if on_progress:
-                on_progress(dict(record))
-        outcome.actions = list(actions.values())
-        outcome.failed_cue_ids = [key for row in outcome.results.values() if row['status'] != 'validated'
-                                  for key in row['cue_ids']]
-        if outcome.llm_status != 'cancelled':
-            outcome.llm_status = ('partial' if outcome.actions else 'failed') if outcome.failed_cue_ids else 'completed'
     outcome.failed_cue_ids = sorted(set(outcome.failed_cue_ids))
     return outcome
+
+
+def recheck_measured_chinese_decisions(outcome, project, measured):
+    """Reuse the model's actual response only when its missing acoustic evidence arrives."""
+    from .language_rules import language_scope
+    from .sentence_refine_contract import RefineError, decode_boundary_ids
+    from .sentence_refine_ranges import (build_range_replacement, introduced_neighbor_issue,
+                                         refinement_limits, repair_chinese_range, validate_quality)
+
+    with language_scope('zh'):
+        _, limit, _ = refinement_limits('zh')
+        for unit in outcome.ranges:
+            record = outcome.results[unit.cue.id]
+            if record.get('category') != 'time_mapping_error' or not set(record['cue_ids']) <= measured.keys():
+                continue
+            for request in reversed(outcome.requests):
+                if not any(reject.get('cue_id') == unit.cue.id and reject.get('category') == 'time_mapping_error'
+                           for reject in request.get('rejections', ())):
+                    continue
+                matches = [row for row in request.get('response', ()) if row.get('cue_id') == unit.cue.id]
+                if len(matches) != 1 or matches[0].get('action') != 'split' or matches[0].get('_duplicate_fields'):
+                    continue
+                try:
+                    parsed = decode_boundary_ids(matches[0], unit.candidates)
+                    action = validate_action(unit.cue.text, parsed)
+                    if action is None:
+                        continue
+                    action, _ = repair_chinese_range(unit, action, project)
+                    pieces = validate_quality(unit, action, 'zh', hard_limit=limit, project=project)
+                    replacement = build_range_replacement(unit, action, project, set())
+                    if introduced_neighbor_issue(project, unit, replacement):
+                        continue
+                except (ValueError, RefineError):
+                    continue
+                outcome.actions.append(action)
+                record.update(status='validated', category='', error='', parsed=parsed, validated_texts=pieces,
+                              phase='已用实测词时间复核模型断点', decision_origin='ai_revalidated_measured_words')
+                break
+    outcome.failed_cue_ids = sorted({cid for r in outcome.results.values() if r['status'] != 'validated'
+                                     for cid in r['cue_ids']})
+    outcome.rejected = sum(r['status'] != 'validated' for r in outcome.results.values())
+    outcome.llm_status = 'partial' if outcome.failed_cue_ids and outcome.actions else 'failed' if outcome.failed_cue_ids else 'completed'
 
 
 def _parse_results(content: str) -> list[dict]:

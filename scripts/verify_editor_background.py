@@ -7,7 +7,10 @@ sys.path.insert(0, str(ROOT))
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
     p.add_argument('--exe',type=Path);p.add_argument('--scale',type=float,default=1)
-    p.add_argument('--baseline',action='store_true');a=p.parse_args();out=a.output.resolve()
+    p.add_argument('--baseline',action='store_true')
+    p.add_argument('--recovery-case',type=Path,help='isolated copy of the reported project for recovery acceptance')
+    p.add_argument('--evidence-case',type=Path,help='copied project with a historical report for subtitle evidence acceptance')
+    a=p.parse_args();out=a.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT/'tmp'):p.error('fresh source/tmp output required')
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out/'profile')
     from twobyteasr.test_isolation import install
@@ -25,6 +28,13 @@ def main():
     project.generation_metadata.update(translations={'a':text},translation_records=dict(version=1,target='zh',
         records={'a':st._record(text,project.cues[0].text,origin=st.ORIGIN_MANUAL)},history=[]))
     save_project(project,out/'fixture.2byteproj')
+    if a.recovery_case:
+        from shutil import copyfile
+        copyfile(a.recovery_case, out/'fixture.2byteproj')
+        copyfile(a.recovery_case.with_suffix('.replay.json'), out/'fixture.replay.json')
+    if a.evidence_case:
+        from shutil import copyfile
+        copyfile(a.evidence_case, out/'fixture.2byteproj')
     user=ctypes.windll.user32;user.SetThreadDpiAwarenessContext.restype=ctypes.c_void_p
     previous=user.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4));native=user.GetDpiForSystem()/96
     user.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
@@ -33,6 +43,10 @@ def main():
         TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         TWOBYTEASR_INVOKER_CWD=str(ROOT),EDITOR_DOWNLOAD_BASELINE='1' if a.baseline else '0',
         HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')
+    if a.recovery_case:
+        env['TWOBYTEASR_REFINE_RECOVERY_AUDIT'] = '1'
+    if a.evidence_case:
+        env['TWOBYTEASR_SUBTITLE_EVIDENCE_AUDIT'] = '1'
     from audit_launch_bridge import run_audit_on_desktop
     command=[str(a.exe.resolve())] if a.exe else [sys.executable,'-B',str(ROOT/'quick_start.py')]
     code=run_audit_on_desktop(command,cwd=ROOT,env=env,output=out,timeout=240,receipt=out/'result.json')

@@ -258,7 +258,52 @@ def models_summary(settings: dict | None = None) -> str:
     return '\n'.join(lines)
 
 
-CHECKS = ('last_task', 'hardware', 'history', 'diagnostics', 'settings', 'models')
+def export_roots() -> list[Path]:
+    import os
+    from ..projects.studio_project import studio_data_root
+    return [Path(os.environ.get('TWOBYTEASR_EXPORT_LOG_ROOT') or studio_data_root() / 'logs' / 'exports')]
+
+
+def exports_summary(limit: int = 3) -> str:
+    """The newest video exports from their run logs (2026-11-22): when, how it ended, at which stage
+    and why, the encoder and the length asked for. 兔白 had nothing to read when an export failed or
+    stopped moving; recognition had ``last_task``. Never a path, never subtitle text."""
+    import json
+    import time
+    manifests = []
+    for root in export_roots():
+        if root.is_dir():
+            manifests += [path for path in root.glob('*/*/manifest.json') if path.is_file()]
+    manifests.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    if not manifests:
+        return '没有找到视频导出的记录（这台电脑上还没导出过视频，或记录已清理）。'
+    rows = []
+    for index, path in enumerate(manifests[:limit], 1):
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        when = time.strftime('%m-%d %H:%M', time.localtime(path.stat().st_mtime))
+        settings = data.get('settings') if isinstance(data.get('settings'), dict) else {}
+        failure = data.get('failure') if isinstance(data.get('failure'), dict) else None
+        if failure:
+            from ..exports.studio_render import STAGE_LABELS
+            stage = STAGE_LABELS.get(failure.get('stage'), str(failure.get('stage') or '?'))
+            message = str(failure.get('message') or failure.get('reason') or '').split('\n\n', 1)[0]
+            ended = f'失败，停在「{stage}」：{_short(message, 140)}'
+        elif data.get('published'):
+            ended = '成功'
+        else:
+            ended = '没有结束记录（还在导出，或中途被关掉 / 卡住后关掉）'
+        encoder = (data.get('last_encoding') or {}).get('actual_encoder') or settings.get('encoder') or '?'
+        asked = data.get('requested_settings') if isinstance(data.get('requested_settings'), dict) else {}
+        size = f"{settings.get('width') or '?'}×{settings.get('height') or '?'}"
+        rows.append(f'{index}. {when}：{ended}；编码器 {encoder}，{settings.get("container") or "?"}，{size}，'
+                    f'请求的编码器 {asked.get("encoder") or data.get("requested_encoder") or "?"}')
+    return '\n'.join(rows) or '视频导出的记录读不出来。'
+
+
+CHECKS = ('last_task', 'hardware', 'history', 'diagnostics', 'settings', 'models', 'exports')
 
 
 def run_check(name: str, *, ai_ready: bool | None = None, settings: dict | None = None) -> str:
@@ -274,6 +319,8 @@ def run_check(name: str, *, ai_ready: bool | None = None, settings: dict | None 
         return settings_summary(settings)
     if name == 'models':
         return models_summary(settings)
+    if name == 'exports':
+        return exports_summary()
     return ''
 
 

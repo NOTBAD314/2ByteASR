@@ -226,7 +226,7 @@ def _word_times(segment, tokens: list[str], aligned: list[dict]) -> list[tuple[f
     return times
 
 
-def group_korean(segments, firered_tokens=(), *, breaks_for=None) -> list[SubtitleCue]:
+def group_korean(segments, firered_tokens=(), *, breaks_for=None, ai_only=False) -> list[SubtitleCue]:
     """Korean cues from recognizer utterances: one per utterance, long ones split by the rules.
 
     ``breaks_for(segment, tokens)`` may return break indexes for one utterance
@@ -244,14 +244,16 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None) -> list[Subtit
         times = _fill_times(segment, tokens, measured_times)
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
-        pieces = split_tokens(tokens, gaps, durations=durations,source_text=segment.text)
+        status = 'source_unchanged_short'
+        pieces = [(0, len(tokens))] if ai_only else split_tokens(tokens, gaps, durations=durations, source_text=segment.text)
         if breaks_for is not None and display_length(segment.text) > RULES.cue_max_chars:
-            try:
-                answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), gaps=gaps)
-            except Exception:
-                answer = None
-            if answer and len(answer) <= len(pieces):     # the AI may not chop finer than the rules
+            answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), gaps=gaps, strict=ai_only)
+            if answer and (ai_only or len(answer) <= len(pieces)):
                 pieces = answer
+                status = 'ai_accepted'
+            elif ai_only:
+                status = 'unresolved'
+                _note_sentence_kept(segment, 'ai_boundary_unresolved')
         locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
         own = []
         for (first,last),(a,b,raw_piece) in zip(pieces,slice_word_pieces(segment.text,pieces)):
@@ -274,12 +276,14 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None) -> list[Subtit
             own[0].timing_basis='original_source_sentence'
             own[0].segmentation_language='ko'
         for cue in own:
+            if ai_only:
+                cue.grouping_origin = 'unresolved' if problem else status
             cue.cue_id = len(cues) + 1
             cues.append(cue)
     return cues
 
 
-def pieces_from_breaks(tokens: list[str], breaks, gaps=None) -> list[tuple[int, int]] | None:
+def pieces_from_breaks(tokens: list[str], breaks, gaps=None, *, strict=False) -> list[tuple[int, int]] | None:
     """Ranges from 'break after word i' indexes; None when they are not valid, a piece is too long
     or a break is one the rules forbid (before an auxiliary verb, after a determiner…)."""
     if not isinstance(breaks,(list,tuple)):
@@ -287,7 +291,11 @@ def pieces_from_breaks(tokens: list[str], breaks, gaps=None) -> list[tuple[int, 
     from .segmentation_profiles import profile_for
     scores=break_scores(tokens,gaps)
     forced={i for i,gap in enumerate(gaps or ()) if gap>=profile_for('ko').long_pause_seconds}
-    cuts=sorted(forced | {v for v in breaks if type(v) is int and 0<=v<len(tokens)-1 and scores[v]>FORBIDDEN_BREAK})
+    accepted = {v for v in breaks if type(v) is int and 0 <= v < len(tokens)-1
+                and (v in forced or scores[v] > FORBIDDEN_BREAK)}
+    if strict and (len(accepted) != len(breaks) or not forced <= accepted):
+        return None
+    cuts = sorted(accepted if strict else forced | accepted)
     edges = [0] + [cut + 1 for cut in cuts] + [len(tokens)]
     pieces = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
     if any(display_length(" ".join(tokens[a:b])) > RULES.cue_max_chars and b - a > 1 for a, b in pieces):
@@ -345,12 +353,12 @@ def ai_breaks(segments, provider_snapshot, *, complete=None) -> dict:
             from ..recognition.cache import record_run_event
             record_run_event('word_grouping_batch',language='ko',prompt_version=grouping_prompt_version(),
                 batch_index=offset//40+1,source_ids=sorted(expected),received_ids=sorted(accepted),
-                partial_response=bool(decoded.partial),local_fallback_ids=sorted(expected-set(accepted)))
+                partial_response=bool(decoded.partial),source_retained_ids=sorted(expected-set(accepted)))
         except Exception as error:
             from ..recognition.cache import record_run_event
-            record_run_event('word_grouping_batch_fallback',language='ko',batch_index=offset//40+1,
+            record_run_event('word_grouping_batch_unresolved',language='ko',batch_index=offset//40+1,
                 source_ids=[key for key,tokens in batch],reason=getattr(error,'category',type(error).__name__),
-                action='local_same_language_policy; no_repeat_request')
+                action='retain_original_source')
             continue
     return found
 
@@ -358,7 +366,7 @@ def ai_breaks(segments, provider_snapshot, *, complete=None) -> dict:
 def group_korean_with_ai(segments, firered_tokens=(), provider_snapshot=None, *, complete=None) -> list[SubtitleCue]:
     answers = ai_breaks(segments, provider_snapshot, complete=complete) if (provider_snapshot or complete) else {}
     return group_korean(segments, firered_tokens,
-                        breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)))
+                        breaks_for=lambda segment, _tokens: answers.get(str(segment.segment_id)), ai_only=True)
 
 
 def grouping_prompt_version():

@@ -174,6 +174,34 @@ ISSUES: dict[str, KnownIssue] = _issues(
     ),
     # ---- 运行环境与模型 --------------------------------------------------
     KnownIssue(
+        'alignment_path_mismatch', 'environment', 'blocker', '对齐模型配置或路径不一致',
+        '预检未找到任务指定的对齐权重目录。',
+        '官方兼容版、Ultra 和 Local Head 使用各自的目录与配置。',
+        '在模型工坊准备这次任务指定的对齐模型，或返回识别设置选用已准备的模型并重新提交。',
+        actions=('model_workshop', 'pick_timeline'), supersedes=('unknown_failure',),
+    ),
+    KnownIssue(
+        'alignment_inference_pending', 'environment', 'blocker', '对齐模型待验证',
+        '文件和依赖已准备，缺少与当前模型及运行环境匹配的推理验证。',
+        '已有验证可能属于其他模型、路径或旧运行环境。',
+        '打开模型工坊，对指定的时间轴模型运行可用性验证。',
+        actions=('model_workshop',), supersedes=('unknown_failure',),
+    ),
+    KnownIssue(
+        'alignment_load_failed', 'environment', 'blocker', '对齐模型验证失败',
+        '对应对齐模型的样本验证未通过。',
+        '详细错误来自模型加载或样本推理验证。',
+        '在模型工坊查看该对齐模型的验证详情，修复后重新验证。',
+        actions=('model_workshop',), supersedes=('runtime_broken', 'worker_crashed', 'unknown_failure'),
+    ),
+    KnownIssue(
+        'legacy_alignment_component', 'environment', 'blocker', '旧版预检找不到对齐组件',
+        '原始错误为缺少新流水线组件，并点名 Qwen3 ForcedAligner 或 Ultra Local Head。',
+        '这条旧错误没有区分实际 profile、模型路径与权重完整性。',
+        '在模型工坊核对该任务的时间轴模型和验证状态，然后重新提交。',
+        actions=('model_workshop', 'pick_timeline'), supersedes=('unknown_failure',),
+    ),
+    KnownIssue(
         "model_missing", "environment", "blocker", "模型没有下载或文件不完整",
         "错误里提到「未完整安装，请先在模型工坊下载」、找不到模型或权重文件、model not found。",
         "这次方案要用的本机模型还没下载，或者下载中断、文件被杀毒软件删掉了一部分。",
@@ -192,7 +220,7 @@ ISSUES: dict[str, KnownIssue] = _issues(
       for role,label in (('main','主运行环境（main）'),('moss','MOSS 运行环境'),('firered_llm','FireRed LLM 运行环境'))),
     KnownIssue(
         "runtime_broken", "environment", "blocker", "模型运行环境缺少组件或损坏",
-        "错误里有 No module named、DLL load failed、ImportError、worker runtime missing、缺少新流水线组件。",
+        "错误里有 No module named、DLL load failed、ImportError，或明确报告运行环境缺失。",
         "模型在自己的 Python 运行环境里运行；这个环境没装完、被移动或删除，或者缺少系统组件（例如 VC++ 运行库）。",
         "打开模型工坊，在对应模型卡片上点「修复独立环境」；仍不行就把程序更新到最新版后再修复一次。",
         actions=("model_workshop", "update"),

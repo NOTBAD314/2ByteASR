@@ -72,8 +72,8 @@ class StudioReviewMixin:
         button = getattr(self, 'confirm_all_reviews_button', None)
         if button is None:
             return
-        from ..subtitle_rules.current_issues import current_issue_view
-        view = current_issue_view(self.project) if self.project else None
+        from ..subtitle_rules.current_issues import published_issue_view
+        view = published_issue_view(self.project) if self.project else None
         count = sum(row.disposition == 'actionable' and row.level in {'high','suggested'}
                     for row in view.records) if view else 0
         # 2026-11-12 (user, design A): the strip says how many are waiting;
@@ -92,6 +92,12 @@ class StudioReviewMixin:
     def _show_current_issue_details(self):
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QToolButton
         from ..subtitle_rules.current_issues import current_issue_view
+        from ..recognition.independent_review import (firered_readings, firered_status_text,
+                                                       primary_readings, supplemental_readings)
+        from ..recognition.asr_source_evidence import MODEL_LABELS, cue_source_hypotheses
+        cue = self._cue_lookup.get(self.selected_cue_id)
+        if cue is None or self.project is None:
+            return
         view = current_issue_view(self.project)
         rows = view.for_cue(self.selected_cue_id)
         diagnostic = view.diagnostics.get(self.selected_cue_id, ())
@@ -103,8 +109,9 @@ class StudioReviewMixin:
         totals=view.totals()
         parts = [f"<p>{totals['cues']} 条字幕，包含 {totals['issues']} 个问题点</p><b>当前待办</b>"]
         for index, row in enumerate(rows):
+            retry = f" · <a href='refine:{index}'>重试这处断句</a>" if row.kind.startswith('segmentation_') else ''
             parts.append(f"<p>{html.escape(row.layer + ' · ' + row.language + ' · ' + row.label)}<br>{html.escape(row.detail)}<br>"
-                f"<a href='locate:{index}'>定位试听</a> · <a href='edit:{index}'>编辑此语言层</a> · <a href='timing:{index}'>调整时间</a></p>")
+                f"<a href='locate:{index}'>定位试听</a> · <a href='edit:{index}'>编辑此语言层</a> · <a href='timing:{index}'>调整时间</a>{retry}</p>")
         peers=[]
         for group in view.candidate_groups():
             if not any(row.cue_id==self.selected_cue_id for row,_ in group):
@@ -118,16 +125,58 @@ class StudioReviewMixin:
                 f"{html.escape(' / '.join(o.text for o in suggestion.options))}；全部位置：{' · '.join(links)}</p>")
         if not rows:
             parts.append('<p>当前没有需要处理的问题。</p>')
+        parts.append('<b>独立识别来源</b>')
+        hypotheses = cue_source_hypotheses(self.project, cue)
+        for candidate in review_candidates(self.project, cue):
+            labels = ' / '.join(label for label in candidate.sources if label != 'Current')
+            if labels and not candidate.context_only:
+                parts.append(f'<p>{html.escape(labels)}<br>{html.escape(candidate.text)}</p>')
+        from itertools import islice
+        for run, raw, _ in islice(primary_readings(self.project, cue), 3):
+            model = run['model_id']
+            parts.append(f'<p>{html.escape(MODEL_LABELS.get(model, model))} · 主识别原始音频段'
+                         f' · {raw["start_ms"]/1000:.3f}–{raw["end_ms"]/1000:.3f} s'
+                         f'<br>{html.escape(raw["text"])}</p>')
+        legacy_context = {(row['model'], row.get('observed_text'), row.get('original_start_ms'), row.get('original_end_ms'))
+                          for row in hypotheses if row.get('context_only') and row.get('observed_text')
+                          and row['model'] not in {'firered', 'firered_llm'}}
+        for model, text, start, end in sorted(legacy_context, key=lambda row: (row[0], row[2] or 0)):
+            timing = f' · {start/1000:.3f}–{end/1000:.3f} s' if start is not None and end is not None else ''
+            parts.append(f'<p>{html.escape(MODEL_LABELS.get(model, model))} · 原始范围待核对{timing}'
+                         f'<br>{html.escape(text)}</p>')
+        retry_backend = 'firered'
+        mapped = {model for model, _ in supplemental_readings(self.project, cue)}
+        for run, status, windows in firered_readings(self.project, cue, hypotheses, mapped_models=mapped):
+            model = run.get('model_id')
+            if model == 'firered_llm':
+                retry_backend = model
+            parts.append(f'<p>{html.escape(firered_status_text(status))}'
+                         f'<br>{html.escape(str(run.get("reason", "")))}</p>')
+            for window in windows:
+                if window['status'] == 'decoded':
+                    source = f'{MODEL_LABELS.get(model, model)} · {run.get("backend", "")} · {run["role"]}'
+                    parts.append(f'<p>{html.escape(source)} · {window["start_ms"]/1000:.3f}–{window["end_ms"]/1000:.3f} s<br>'
+                                 f'{html.escape(window["text"])}</p>')
+        parts.append("<p><a href='firered:0'>只补跑此字幕的 FireRed 独立识别</a></p>")
+        unmapped = view.diagnostics.get('', ())
+        if unmapped:
+            parts.append(f'<b>{len(unmapped)} 个历史回退范围待定位</b>')
+            for issue in unmapped:
+                parts.append(f'<p>{issue.start_ms/1000:.3f}–{issue.end_ms/1000:.3f} s · {html.escape(issue.issue_id)}</p>')
         browser.setHtml(''.join(parts))
         browser.setOpenLinks(False)
         project = self.project
         def action(url):
             try:
                 kind, number = url.toString().split(':', 1)
+                if kind == 'firered':
+                    dialog.accept()
+                    QTimer.singleShot(0, self, lambda: self._start_firered_candidate(project, cue.id, retry_backend))
+                    return
                 row = (peers if kind=='peer' else rows)[int(number)]
             except (ValueError, IndexError):
                 return
-            if kind not in {'locate', 'edit', 'timing','peer'}:
+            if kind not in {'locate', 'edit', 'timing','peer', 'refine'}:
                 return
             dialog.accept()
             def perform():
@@ -140,12 +189,14 @@ class StudioReviewMixin:
                 self._seek(cue.start_ms/1000)
                 if kind == 'edit':
                     self._open_caption_editor(cue.id, row.layer)
+                elif kind == 'refine':
+                    self.run_sentence_refine(whole_project=False, retry_ids=row.cue_ids or (row.cue_id,))
                 elif kind == 'locate':
                     self._play_review_context()
                 else:
                     self._show_context_panel()
                     self.start_ms.setFocus()
-            QTimer.singleShot(0, perform)
+            QTimer.singleShot(0, self, perform)
         browser.anchorClicked.connect(action)
         layout.addWidget(browser)
         toggle = QToolButton(dialog)
@@ -158,6 +209,87 @@ class StudioReviewMixin:
         layout.addWidget(toggle)
         layout.addWidget(extra)
         dialog.exec()
+
+    def _start_firered_candidate(self, project, cue_id, backend):
+        from queue import Empty, SimpleQueue
+        from threading import Thread
+        from PySide6.QtWidgets import QProgressDialog
+        from ..projects.studio_runtime_state import DirtyDomain
+        from ..recognition.independent_review import (KEY, capture_candidate_audio, recognize_candidate_audio,
+                                                       firered_status_text)
+        from ..recognition.service import CancellationToken
+
+        if self.project is not project or getattr(self, '_firered_candidate_token', None) is not None:
+            return
+        cue = self._cue_lookup.get(cue_id)
+        if cue is None:
+            return
+        try:
+            snapshot = capture_candidate_audio(project, cue)
+        except (OSError, ValueError) as exc:
+            self.save_state.setText(str(exc))
+            return
+        initial = dict(snapshot)
+        generation = self.session.generation
+        token = self._firered_candidate_token = CancellationToken()
+        messages = SimpleQueue()
+        dialog = QProgressDialog('FireRed 等待执行…', '取消', 0, 0, self)
+        dialog.setWindowTitle('独立文字识别')
+        dialog.canceled.connect(token.cancel)
+        dialog.show()
+
+        def worker():
+            try:
+                result = recognize_candidate_audio(snapshot, token, messages.put, backend=backend)
+            except Exception as exc:
+                result = exc
+            messages.put(result)
+
+        timer = QTimer(self)
+
+        def poll():
+            if self.project is not project or self.session.generation != generation:
+                token.cancel()
+                dialog.close()
+                timer.stop()
+                timer.deleteLater()
+                if self._firered_candidate_token is token:
+                    self._firered_candidate_token = None
+                return
+            try:
+                result = messages.get_nowait()
+            except Empty:
+                return
+            if isinstance(result, str):
+                dialog.setLabelText(result)
+                return
+            timer.stop()
+            timer.deleteLater()
+            dialog.close()
+            dialog.deleteLater()
+            self._firered_candidate_token = None
+            if isinstance(result, Exception):
+                self.save_state.setText(f'FireRed 识别失败：{result}')
+                return
+            current = self._cue_lookup.get(cue_id)
+            try:
+                same_audio = bool(current and initial == capture_candidate_audio(project, current))
+            except (OSError, ValueError):
+                same_audio = False
+            if not same_audio:
+                self.save_state.setText('识别期间当前字幕或音频范围已变化，请重新补跑')
+                return
+            with state_for(project).transaction(project, action_id='independent_asr_run',
+                    dirty=DirtyDomain.QC | DirtyDomain.PROJECT_METADATA | DirtyDomain.AUTOSAVE,
+                    studio_state_keys=(), generation_metadata_keys=(KEY,), snapshot_cues=False):
+                project.generation_metadata[KEY] = [*project.generation_metadata.get(KEY, ()), result]
+            status = 'mapped' if result['status'] == 'completed' else result['status']
+            self._refresh_review_summary_strip()
+            self.save_state.setText(firered_status_text(status))
+
+        timer.timeout.connect(poll)
+        timer.start(80)
+        Thread(target=worker, name='studio-firered-candidate', daemon=True).start()
 
     def _adopt_highlighted_suggestion(self):
         if getattr(self, '_caption_draft', None) is not None:
@@ -427,6 +559,14 @@ class StudioReviewMixin:
         else:
             bind_text(self.review_summary_text, '这条没问题')
             reason = tr('没有待处理建议 · 来源和覆盖记录在「详情」里')
+        from ..recognition.independent_review import firered_readings, firered_status_text
+        models = tuple(dict.fromkeys(model for candidate in candidates for model in candidate.sources if model != 'Current'))
+        if len(models) >= 2 and len(candidates) == 1 and not current:
+            bind_text(self.review_summary_text, '两路识别一致')
+            reason = ' / '.join(models) + ' · 详情可查看各来源'
+        elif len(models) < 2:
+            statuses = firered_readings(self.project, cue, aggregate.hypotheses)
+            reason += ' · ' + ' / '.join(dict.fromkeys(firered_status_text(status) for _, status, _ in statuses))
         # 2026-11-16 (design A): the status is a pill, amber or green.
         self._set_review_tone('warn' if current else 'ok')
         self.review_reason_label.setText(reason)
@@ -796,6 +936,11 @@ class StudioReviewMixin:
             )
             setattr(self.project, "_qc_result", result)
             setattr(self.project, "_review_risks_cache", risks_cache)
+            if sync:
+                from ..subtitle_rules.current_issues import current_issue_view
+                current_issue_view(self.project)
+            else:
+                self._queue_review_publication()
         else:
             self._start_chunked_qc_scan(sync=bool(sync))
             return
@@ -805,6 +950,24 @@ class StudioReviewMixin:
             cue = self._cue_lookup.get(self.selected_cue_id)
             if cue is not None:
                 self._refresh_current_review_context(cue)
+
+    def _queue_review_publication(self):
+        """Coalesce edits before asking the existing QC process for a new view."""
+        timer = getattr(self, '_review_publish_timer', None)
+        if timer is None:
+            timer = self._review_publish_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._publish_review_when_idle)
+        self._review_publish_project = self.project
+        timer.start(350)
+
+    def _publish_review_when_idle(self):
+        if self.project is None or self.project is not self._review_publish_project:
+            return
+        if not getattr(self.video, '_paused', True):
+            self._review_publish_timer.start(350)
+            return
+        self._start_chunked_qc_scan()
 
 
     _QC_SCAN_CHUNK = 400
@@ -888,6 +1051,10 @@ class StudioReviewMixin:
                 timer.start(0)
                 return
             self._finish_chunked_qc_scan(project, QCResult(collected))
+            if sync:
+                from ..subtitle_rules.current_issues import current_issue_view
+                current_issue_view(project)
+                self._refresh_cue_list_summary()
 
         timer.timeout.connect(step)
         if sync:

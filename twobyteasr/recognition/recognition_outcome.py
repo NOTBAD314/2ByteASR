@@ -38,6 +38,9 @@ def review_severity(item: dict) -> str:
             and item.get('unassigned_new_suspects')
             and all(row.get('validation_state')=='invalid' for row in item['unassigned_new_suspects'])):
         return 'info'  # malformed optional metadata owns no reliable cue
+    from ..subtitle_rules.review_evidence_policy import note_only
+    if note_only(item):
+        return 'info'
     explicit = str(item.get("severity") or "").lower()
     if explicit in SEVERITIES:
         return explicit
@@ -101,6 +104,7 @@ class RecognitionOutcome:
     delivery_recovered: bool = False
     original_core_status: str = ""
     historical_core_errors: tuple[str, ...] = ()
+    polish_dispositions: tuple[tuple[str, int], ...] = ()
 
     def severity_count(self, severity: str) -> int:
         return dict(self.severity_counts).get(severity, 0)
@@ -131,6 +135,11 @@ class RecognitionOutcome:
             lines.append(line("处理记录 {records} 条 · 最终字幕 {cues} 条", records=self.processed_records, cues=self.final_cues))
         if self.accepted_edits:
             lines.append(line("实际接受文字修改 {count} 处", count=self.accepted_edits))
+        dispositions = dict(self.polish_dispositions)
+        if dispositions:
+            lines.append(line("校对裁决：无需改动 {unchanged} 条 · 已采用 {applied} 条 · 保留原文 {kept} 条 · 待确认 {pending} 条",
+                              unchanged=dispositions.get("unchanged", 0), applied=dispositions.get("applied", 0),
+                              kept=dispositions.get("kept_with_rejections", 0), pending=dispositions.get("pending", 0)))
         if self.fallback_records:
             lines.append(line("文字校对已完成 {success} 条处理记录；{fallback} 条回退到原文", success=self.success_records, fallback=self.fallback_records))
         if self.search_verified_records or self.search_unverified_records:
@@ -158,6 +167,13 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
     polish = _dict(payload.get("polishing_summary"))
     if not polish:
         polish = next((row for row in reversed(events) if row.get("event") == "polishing_summary"), {})
+    dispositions = _dict(polish.get("disposition_counts"))
+    if not dispositions:
+        from ..subtitle_rules.polish_disposition import summarize_dispositions
+        receipts = {str(row["cue_id"]): _dict(row.get("details")) for row in events
+                    if row.get("event") == "terminology_polish_final" and row.get("cue_id") is not None}
+        if receipts:
+            dispositions = summarize_dispositions(receipts.values())
     search = _dict(payload.get("terminology_summary")) or _dict(payload.get("terminology_status")) or _dict(polish.get("terminology"))
     if not search:
         search = next((row for row in reversed(events) if row.get("event") == "domain_term_verification_summary"), {})
@@ -279,6 +295,10 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         core_status, label, title = "failed", "失败", "识别未完成"
         if final_cues > 0 and save_error:
             label, title = '工程保存失败，可恢复', '字幕已生成 · 工程保存失败，可恢复'
+    elif _rows(result.get('grouping_pending')):
+        core_status, label, title = 'partial', '部分完成', '字幕草稿已保存 · 全文断句待重试'
+        for row in _rows(result['grouping_pending']):
+            problems.append(f"断句批次 {row.get('batch_id')}，{row.get('start')}–{row.get('end')} 秒：{row.get('reason', '')}")
     elif _int(transcript_counts.get('speech_gap_count')) or _int(transcript_counts.get('speech_failure_count')):
         speech_count = _int(transcript_counts.get('speech_gap_count'))
         failure_count = _int(transcript_counts.get('speech_failure_count'))
@@ -334,6 +354,7 @@ def _normalize_report_outcome(payload: dict[str, Any] | None) -> RecognitionOutc
         search_verified_records=_int(search.get("verified_count")) if evidence_verified else 0,
         search_unverified_records=max(_int(search.get("candidate_count")), _int(search.get("unverified_count"))) if unproved_search else _int(search.get("unverified_count")),
         elapsed_seconds=float(result.get("elapsed_seconds") or 0),
+        polish_dispositions=tuple(sorted(dispositions.items())),
     )
 
 

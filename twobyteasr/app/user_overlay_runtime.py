@@ -22,7 +22,7 @@ import re
 import sys
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QTimer
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import user_overlay
@@ -175,6 +175,165 @@ class ScriptAPI:
         timer.start()
         return timer
 
+    # -------------------------------------------------------------- 2026-11-20: still API_VERSION 1, more to use
+    def on(self, event: str, callback) -> None:
+        """``callback(payload: dict)`` at a moment of ``extension_events.EVENTS`` (GUI thread)."""
+        from . import extension_events
+        extension_events.on(self.script_id, event, callback)
+
+    def say(self, text) -> bool:
+        """兔白 says one short line in her bubble when she is free; always written to the script log too."""
+        self.log(f'兔白说：{text}')
+        resident = getattr(self.window, '_bunny_resident', None)
+        try:
+            return bool(resident is not None and resident.say_line(str(text)))
+        except RuntimeError:
+            return False
+
+    def in_background(self, work, on_done=None) -> None:
+        """``work()`` on a worker thread; then ``on_done(result, error)`` back on the GUI thread."""
+        import threading
+        bridge = self._runtime.bridge()
+        owner = sys.modules.get(f'twobyteasr_user_script_{self.script_id}')
+
+        def run():
+            try:
+                result, error = work(), None
+            except Exception as exc:  # noqa: BLE001 - handed to on_done
+                result, error = None, exc
+            bridge.finished.emit(self.script_id, on_done, (owner, result, error))
+        threading.Thread(target=run, name=f'user-script-{self.script_id}', daemon=True).start()
+
+    def ai(self, prompt, on_done, *, system: str = '', max_tokens: int = 2000) -> None:
+        """Ask the user's own text AI (AI 设置; it spends their key); ``on_done(text, error)`` on the GUI thread."""
+        from .bunny_chat import runtime_settings
+        settings = runtime_settings(self.window)
+        messages = ([{'role': 'system', 'content': str(system)}] if system else []) + [
+            {'role': 'user', 'content': str(prompt)}]
+
+        def work():
+            if not settings:
+                raise RuntimeError('还没有 AI 设置')
+            from ..providers.ai_providers import provider_for_stage
+            return provider_for_stage(settings, 'polish').complete(
+                messages, max_tokens=int(max_tokens), temperature=0.2, timeout=(15, 180), stage='extension_script')
+        self.in_background(work, on_done)
+
+    def project(self):
+        """The project open in the workbench (``.cues``: text, start_ms, end_ms, speaker_id), or None."""
+        page = getattr(self.window, 'built_page', lambda _name: None)('studio')
+        return getattr(page, 'project', None) if page is not None else None
+
+    def learned(self) -> list[dict]:
+        """The program's record of the user's own repeated corrections (original_term → corrected_term,
+        occurrence_count, status, glossary_id), the same list 术语库 → 学习建议 shows."""
+        from ..glossary.glossary_learning import GlossaryLearningStore
+        page = getattr(self.window, 'built_page', lambda _name: None)('studio')
+        store = getattr(page, '_learning_store', None) or GlossaryLearningStore()
+        return [dict(item) for item in store.load().get('candidates') or ()]
+
+    @property
+    def glossary(self):
+        return ScriptGlossary(self)
+
+
+class ScriptGlossary:
+    """Term libraries for an extension script: read, create, add (written with origin 「扩展脚本 uN」)."""
+
+    def __init__(self, api: ScriptAPI):
+        self._api = api
+
+    def _legacy(self):
+        legacy = getattr(self._api.window, 'legacy', None)
+        if legacy is None:
+            import subtitle_core as legacy
+        return legacy
+
+    def _refresh(self) -> None:
+        library = getattr(getattr(self._api.window, 'term_library_page', None), 'library', None)
+        notify = getattr(library, '_notify_library_changed', None)
+        if callable(notify):
+            try:
+                notify()
+            except RuntimeError:
+                pass
+
+    def libraries(self) -> list[dict]:
+        from ..local_mcp import mcp_glossary
+        return [dict(id=row['id'], name=row['name'], terms=row['terms'], aliases=row['aliases'], builtin=row['builtin'])
+                for row in mcp_glossary.list_libraries(self._legacy())]
+
+    def find(self, text: str = '', library: str = '', limit: int = 500) -> list[dict]:
+        """Rows ``{'from', 'to', 'category', 'library', 'confirmed', 'kind'}`` containing ``text``."""
+        from ..local_mcp import mcp_glossary
+        return list(mcp_glossary.search(self._legacy(), text, library, 0, min(int(limit), mcp_glossary.MAX_PAGE))['rows'])
+
+    def create(self, name: str, content_type: str = 'game') -> str:
+        """A new (or the existing) library with this name; returns its id."""
+        from ..local_mcp import mcp_glossary
+        legacy = self._legacy()
+        try:
+            return mcp_glossary.resolve_library(legacy, name)[0]
+        except mcp_glossary.GlossaryError:
+            pass
+        if not legacy.ensure_learned_content(str(name), str(content_type or 'game')):
+            raise RuntimeError(f'术语库《{name}》没建成（写不进文件）')
+        self._refresh()
+        self._api.log(f'建了术语库《{name}》')
+        return mcp_glossary.resolve_library(legacy, name)[0]
+
+    def add(self, library: str, terms) -> str:
+        """Add terms: strings (a canonical term) or dicts ``{'to', 'from', 'category'}`` (from ≠ to: an alias,
+        replaced literally in recognized text). Repeats are skipped; at most 200 at a time. Returns the receipt."""
+        # bunny_tools first: importing bunny_harness_tools on its own (a script that runs before 兔白's chat
+        # was ever opened) would import bunny_tools, which builds its tool table from bunny_harness_tools.
+        from . import bunny_tools  # noqa: F401
+        from .bunny_harness_tools import apply_term_changes
+        changes = []
+        for item in terms if isinstance(terms, (list, tuple)) else [terms]:
+            if isinstance(item, str) and item.strip():
+                changes.append({'action': 'add', 'to': item.strip()})
+            elif isinstance(item, dict) and (item.get('to') or item.get('term')):
+                row = {'action': 'add', 'to': str(item.get('to') or item.get('term')).strip()}
+                if item.get('from'):
+                    row['from'] = str(item['from']).strip()
+                if item.get('category'):
+                    row['category'] = str(item['category']).strip()
+                changes.append(row)
+        if not changes:
+            return '没有要加的词'
+        receipt, _undo = apply_term_changes(self._api.window, library, changes[:200],
+                                            origin=f'扩展脚本 {self._api.script_id}')
+        self._api.log(receipt)
+        return receipt
+
+
+class _Bridge(QObject):
+    """Hands a background result back to the GUI thread (``ScriptAPI.in_background``)."""
+    finished = Signal(str, object, object)
+
+    def __init__(self, runtime_):
+        super().__init__(runtime_.app)
+        self._runtime = runtime_
+        self.finished.connect(self._done)
+
+    def _done(self, script_id, callback, outcome):
+        if callback is None:
+            return
+        owner, result, error = outcome
+        try:
+            if owner is not None:
+                from .extension_events import _active_ids
+                if self._runtime.loaded.get(script_id) is not owner or script_id not in _active_ids():
+                    return
+            callback(result, error)
+        except Exception as exc:  # noqa: BLE001 - a script's own callback never breaks the program
+            where = traceback.extract_tb(exc.__traceback__)[-1].lineno if exc.__traceback__ else '?'
+            self._runtime.log.append(f'[{script_id}] 后台结果处理出错：{type(exc).__name__}: {str(exc)[:160]}（第 {where} 行）')
+
+
+LOG_KEEP = 400
+
 
 class OverlayRuntime:
     def __init__(self, app, *, safe: bool = False):
@@ -186,6 +345,33 @@ class OverlayRuntime:
         self.loaded: dict[str, object] = {}
         self.script_timers: dict[str, list] = {}
         self.styles = StyleKeeper(app)
+        self._bridge = None
+        from . import extension_events
+        extension_events.reset()
+
+    def bridge(self) -> _Bridge:
+        if self._bridge is None:
+            self._bridge = _Bridge(self)
+        return self._bridge
+
+    def script_log(self, entry_id: str = '', limit: int = 40) -> list[str]:
+        """The newest lines of the script log, of one script or all."""
+        del self.log[:-LOG_KEEP]
+        rows = [line for line in self.log if not entry_id or line.startswith(f'[{entry_id}]')]
+        return rows[-limit:]
+
+    def unload(self, entry_id: str) -> None:
+        """Forget a loaded script (its code changed or it was removed): timers stop, events stop, the next
+        load runs the new code."""
+        from shiboken6 import isValid
+        from . import extension_events
+        for timer in self.script_timers.pop(entry_id, []):
+            if isValid(timer):
+                timer.stop()
+                timer.deleteLater()
+        extension_events.drop(entry_id)
+        self.loaded.pop(entry_id, None)
+        sys.modules.pop(f'twobyteasr_user_script_{entry_id}', None)
 
     # -------------------------------------------------------------- start
     def start(self) -> None:
@@ -313,6 +499,8 @@ class OverlayRuntime:
             for timer in self.script_timers.pop(entry['id'], []):
                 timer.stop()
                 timer.deleteLater()
+            from . import extension_events
+            extension_events.drop(entry['id'])
             sys.modules.pop(name, None)
             where = traceback.extract_tb(exc.__traceback__)[-1].lineno if exc.__traceback__ else '?'
             return f'{type(exc).__name__}: {str(exc)[:160]}（第 {where} 行）'

@@ -1124,7 +1124,7 @@ class SetSpeakerCommand(SpeakerStateCommand):
         speaker = next((item for item in speakers if item.id == str(speaker_id)), None)
         if speaker is None:
             raise KeyError(f"speaker not found: {speaker_id}")
-        allowed = {"name", "color", "style_id", "hidden"}
+        allowed = {"name", "color", "style_id", "hidden", "name_color", "name_font", "name_bold"}
         for key, value in changes.items():
             if key not in allowed:
                 raise AttributeError(key)
@@ -1627,6 +1627,40 @@ class SetCuesFieldsCommand(QUndoCommand):
 
     def redo(self) -> None:
         self._apply()
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
+class SetCuesAppearanceCommand(QUndoCommand):
+    """Give many cues each their own ``appearance_override`` as one undo step and one
+    refresh (2026-11-20: AI 生动标记 writes text marks on hundreds of captions)."""
+
+    def __init__(self, project: SubtitleProject, overrides: Mapping[str, Mapping[str, object]],
+                 text: str = "Batch caption appearance", changed: ChangedCallback | None = None) -> None:
+        super().__init__(text)
+        from .studio_edit_sequence import source_cue_id_of
+        self.project = project
+        self.after = {str(key): copy.deepcopy(dict(value)) for key, value in overrides.items()}
+        if not self.after:
+            raise ValueError("at least one cue is required")
+        self.before = {key: copy.deepcopy(cue_by_id(project, key).appearance_override) for key in self.after}
+        timeline = project.render_settings.get('_cue_domain') == 'timeline'
+        self.commit_ids = tuple(key if timeline else source_cue_id_of(key) for key in self.after)
+        self.changed = changed
+
+    def _apply(self, values: Mapping[str, Mapping[str, object]]) -> None:
+        def mutate() -> None:
+            for key, value in values.items():
+                cue = cue_by_id(self.project, key)
+                cue.appearance_override = copy.deepcopy(value)
+                cue.appearance_generation = int(cue.appearance_generation) + 1
+
+        _commit_mutation(self.project, action_id=self.text(), dirty=_field_domains(("appearance_override",)),
+                         cue_ids=self.commit_ids, mutate=mutate, changed=self.changed)
+
+    def redo(self) -> None:
+        self._apply(self.after)
 
     def undo(self) -> None:
         self._apply(self.before)

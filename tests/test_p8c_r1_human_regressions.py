@@ -248,33 +248,23 @@ def test_timeline_header_icons_remain_visible_through_hover_partial_repaints():
     timeline.show()
     app.processEvents()
     palette = timeline._timeline_palette()
-    icon_color = QColor(palette.header_icon)
+    # 2026-11-23 (header draft B): icons use the darker header icon colour
+    # inside a rounded button tray; positions come from the shared layout
+    # (the old hard-coded x values predated the three-button column).
+    from twobyteasr.studio.studio_track_header import ACTIONS, button_rect, header_icon_color
+    icon_color = header_icon_color(palette)
 
     video = timeline._video_track_rect("V1")
     audio = timeline._audio_track_rects()["A1"]
     speaker = timeline._track_layout()[0]["S01"]
-    controls = [
-        (x, video, 14) for x in (132, 156, 180, 204)
-    ] + [
-        (x, audio, 18) for x in (108, 136, 164)
-    ] + [
-        (x, speaker, 19) for x in (150, 178, 206)
-    ]
-    for left, track_rect, y_offset in controls:
-        QTest.mouseMove(
-            timeline,
-            QPoint(left + 10, round(track_rect.top() + track_rect.height() / 2)),
-        )
+    controls = [(button_rect(kind, action, row), row) for kind, row in
+                (("video", video), ("audio", audio), ("subtitle", speaker)) for action in ACTIONS[kind]]
+    for box, track_rect in controls:
+        QTest.mouseMove(timeline, QPoint(round(box.center().x()), round(box.center().y())))
         app.processEvents()
         image = timeline.grab().toImage()
-        logical_sample = timeline.rect().intersected(
-            type(image.rect())(
-                left + 3,
-                round(track_rect.top()) + y_offset - 8,
-                19,
-                24,
-            )
-        )
+        logical_sample = timeline.rect().intersected(box.toRect())
+        left = box.left()
         sample = image.rect().intersected(_logical_image_rect(image, logical_sample))
         assert _near_color_pixels(image, sample, icon_color) >= 2, (left, track_rect)
 

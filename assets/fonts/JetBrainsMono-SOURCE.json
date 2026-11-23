@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/JetBrains/JetBrainsMono",
+  "tag": "v2.304",
+  "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+  "font_path": "fonts/ttf/JetBrainsMono-Regular.ttf",
+  "release_asset": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+  "release_asset_sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf",
+  "git_blob": "dff66cc50702c75abd025dcf49f62a4dcc2d72de",
+  "sha256": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+  "license": "OFL-1.1",
+  "license_file": "JetBrainsMono-OFL.txt",
+  "license_sha256": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad",
+  "retrieved": "2026-11-22",
+  "usage": "AI design motion template hud-lock decoration text (channel, REC, time code); not a caption font"
+}

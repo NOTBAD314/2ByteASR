@@ -117,7 +117,7 @@ class EncodingObserver:
 
 
 def _gpu_sampler(encoder):
-    if not any(encoder.endswith(s) for s in ('_nvenc', '_qsv', '_amf')):
+    if not any(encoder.endswith(s) for s in ('_nvenc', '_qsv', '_amf', '_mf')):
         return lambda: {'status': 'not_applicable', 'reason': 'software encoder'}
     if not encoder.endswith('_nvenc'):
         return lambda: {'status': 'unavailable', 'reason': 'no vendor sampler for '+encoder}

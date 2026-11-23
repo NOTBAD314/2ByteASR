@@ -154,7 +154,18 @@ def compile_word_ass(plan, text, base_color, *, offset_ms=0, marks=None, style=N
     plan = remap_word_animation(plan, text)
     if not plan.get('spans'):
         return marked_ass_text(text, marks, style) if marks and style else escape_ass_text(text)
-    result = [escape_ass_text(text[:plan.get('static_prefix_length', 0)])]
+    prefix = text[:plan.get('static_prefix_length', 0)]
+    if prefix and marks and style:
+        # A speaker name keeps its own colour/face; the body returns to the style.
+        prefix_marks = [m for m in marks if m['start'] < len(prefix)]
+        result = [marked_ass_text(prefix, prefix_marks, style) if prefix_marks else escape_ass_text(prefix)]
+        if any(m.get('font') for m in prefix_marks):
+            result.append(r'{\fn}')
+    else:
+        result = [escape_ass_text(prefix)]
+    from .text_marks import heading_level
+    sized = bool(marks and style and any(heading_level(m) for m in marks))
+    struck = bool(marks and style and any(m.get('strike') for m in marks))
     for span in plan['spans']:
         start, end = span['start_ms']-offset_ms, span['end_ms']-offset_ms
         segments = [(max(a,span['char_start']),min(b,span['char_end']),attrs)
@@ -174,6 +185,9 @@ def compile_word_ass(plan, text, base_color, *, offset_ms=0, marks=None, style=N
                 if start > 0: tags += rf'\t({start},{start+1},\1c{color})'
                 if plan['mode'] == 'word_current':
                     tags = r'\1c'+normal if end <= 0 else tags+rf'\t({max(0,end)},{max(0,end)+1},\1c{normal})'
-            result.append(marked_ass_text(text[a:b],[],local,extra_tags=tags) if local is not None
+            # Heading size and strike-through ride along as a whole-piece mark.
+            kept = {k: attrs[k] for k in ('heading', 'strike') if attrs.get(k)}
+            piece_marks = [dict(start=0, end=b-a, **kept)] if kept and b > a else []
+            result.append(marked_ass_text(text[a:b],piece_marks,local,extra_tags=tags,sized=sized,struck=struck) if local is not None
                           else '{'+tags+'}'+escape_ass_text(text[a:b]))
     return ''.join(result)

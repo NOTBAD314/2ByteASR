@@ -57,6 +57,7 @@
 | FireRed代码4e7d9aaf4482a47cec1724807026b9b151926eb5 | B，vendor源码 | Apache2.0，5处实质修改；当前源码五文件已加修改标记，原版权保留。旧包补丁与当前含声明补丁分别保留，见[SOURCES](licenses/SOURCES.md)；旧Setup尚未更新，不能写未修改；[固定源码](https://github.com/FireRedTeam/FireRedASR2S/tree/4e7d9aaf4482a47cec1724807026b9b151926eb5) |
 | 16项工坊模型/词表 | C | Apache/MIT/CC-BY4/OpenMDW1.1/FunASR自定义条款分列；模型卡不是基础资源全核实证明。完整ID/revision/原文见MODELS |
 | Cubic11 1.451、SourceHan2.005、ZCOOL2.001/1.000、SmileySans2.0.1 | A/B，字体原件及副本 | OFL全文和具体版权保留；WOFF2本地转换及保留字体名条件另列；font逐项含来源 |
+| JetBrains Mono 2.304 Regular（2026-11-22 起，下一版安装包随附） | A/B，`assets/fonts/JetBrainsMono-Regular.ttf` 及 `renderer/public/fonts/` 同字节副本；只用于 AI 设计动态模板的装饰小字 | OFL-1.1，Copyright 2020 The JetBrains Mono Project Authors；未修改。原文 `assets/fonts/JetBrainsMono-OFL.txt`，来源、提交与 SHA-256 见 `JetBrainsMono-SOURCE.json`；[上游固定标签](https://github.com/JetBrains/JetBrainsMono/tree/v2.304) |
 | QtAwesome1.4.0与12个TTF | B | 代码MIT不覆盖字体：FA5.15.4/6.7.2字体OFL/图标CC-BY/代码MIT；Codicon0.0.36 CC-BY4；MDI5.9.55/6.9.96字体Apache2；Phosphor1.3.0 MIT；Remixicon2.5.0 Apache2。Elusive2.0精确原文仍缺。`materials/fonts/`及逐项官方版本来源 |
 | GIMP bridge本地快照 | A/B，插件源码 | 插件GPL3+及全文保留；完整GIMP为D/E，未在Setup。保留GPL3-or-later，不能统一改为only |
 | ag-psd31.0.2、pako/base64-js bundle | A/B，PSD处理 | 原许可保留，后两者精确版本/构建锁仍未查明；vendored逐项记录 |

@@ -26,6 +26,24 @@ def effective_range(project):
             timeline_duration_ms(project) if end is None else end)
 
 
+NO_PICTURE = '入点已经在影片画面结束之后，这一段没有画面。请把入点移回影片里面，或清除入出点导出整个视频。'
+TOO_SHORT = '导出范围不到一帧画面，请把入点和出点拉开一点。'
+# The renderer never encodes less than 50 ms (studio_render: ``-t max(0.05, …)``); a shorter range is
+# a slip of the playhead, not an export anyone wants.
+MIN_RANGE_MS = 50
+
+
+def picture_end_ms(project):
+    """Where the video and audio end on the project clock; subtitles may run on past it (2026-11-22).
+
+    ``timeline_duration_ms`` also counts timeline-domain cues, so an in point at the video's end
+    used to pass as a valid range with no picture at all (user report: export stuck while
+    "compressing", 兔白 could not tell why). 0 when the project has no media extent to compare.
+    """
+    from ..timeline.studio_media_pool import media_graph_duration_ms
+    return max(int(sequence_of(project).timeline_duration_ms), media_graph_duration_ms(project), 0)
+
+
 def validated_range(project):
     start, end = effective_range(project)
     total = timeline_duration_ms(project)
@@ -33,7 +51,21 @@ def validated_range(project):
         raise ValueError('导出范围超出当前工程，请修改入点或出点。')
     if start >= end:
         raise ValueError('入点必须早于出点，不能导出零时长或反向范围。')
+    media_end = picture_end_ms(project)
+    if media_end and start >= media_end:
+        raise ValueError(NO_PICTURE)
+    if end - start < MIN_RANGE_MS:
+        raise ValueError(TOO_SHORT)
     return start, end
+
+
+def range_problem(project):
+    """The reason the current range cannot be exported, or '' (export dialog, range bar, 兔白)."""
+    try:
+        validated_range(project)
+    except ValueError as exc:
+        return str(exc)
+    return ''
 
 
 def set_range(project, start, end, undo_stack=None):

@@ -17,7 +17,11 @@ notes, scripts) always wait for 「帮我做」, even with 能撤销的直接做
 2026-11-16 (user, harness plan P3): folders the user adds (``folders``, none by default) — only inside
 them she lists, reads, writes new files (always after 「帮我做」, never over an existing file) and imports
 term lists (``bunny_files``).
-Never, at any level: uploading, deleting, starting a recognition or an export. Stored with the
+2026-11-20 (user): she may change existing files in those folders too (``edit_file``: the old file is kept
+aside, undoable, always after 「帮我做」) and save the workbench subtitles there (``export_subtitles``);
+``files_anywhere`` (off by default) lets her read and write files anywhere on this computer by full path,
+never in Windows, the program folders or this app's own data.
+Never, at any level: uploading, deleting, starting a recognition or a video export. Stored with the
 chat's other choices (``onboarding`` state). No Qt.
 """
 from __future__ import annotations
@@ -28,17 +32,17 @@ LEVEL_LABELS = {'guide': '只指路（只看、只讲，不动手）',
                 'ask': '小操作直接做，修改要我按「帮我做」',
                 'auto': '能撤销的修改也直接做'}
 CHIP_LABELS = {'guide': '只指路', 'ask': '修改先问我', 'auto': '能撤销的直接做'}     # short, for the settings chips
-SWITCHES = ('read_subtitles', 'read_diagnostics', 'remember', 'allow_paid', 'keep_chat', 'see_screen')
+SWITCHES = ('read_subtitles', 'read_diagnostics', 'remember', 'allow_paid', 'keep_chat', 'see_screen', 'files_anywhere')
 DEFAULTS = {'level': 'ask', 'read_subtitles': True, 'read_diagnostics': True, 'remember': True, 'allow_paid': False,
-            'keep_chat': True, 'see_screen': False}
+            'keep_chat': True, 'see_screen': False, 'files_anywhere': False}
 FOLDERS_KEY = 'folders'      # 2026-11-16: folders she may list, read and write new files in (default none)
 MAX_FOLDERS = 12
-FILE_TOOLS = {'list_folder', 'read_file', 'write_file', 'import_terms_file'}
+FILE_TOOLS = {'list_folder', 'search_files', 'read_file', 'write_file', 'edit_file', 'export_subtitles', 'import_terms_file'}
 SUBTITLE_READS = {'read_cues', 'find_cues', 'learned_edits', 'edit_cue', 'merge_cues', 'refine_cues',
                   'ui_snapshot', 'ui_set', 'recent_actions', 'replay_action'}
 DIAGNOSTIC_READS = {'diagnostics', 'last_task', 'history', 'recent_results', 'open_result',
                     'recent_projects', 'open_project', 'ui_snapshot', 'recent_actions', 'replay_action',
-                    'analyze_recognition'}
+                    'analyze_recognition', 'review_issues', 'exports'}
 MEMORY_TOOLS = {'remember', 'forget', 'save_recipe', 'use_recipe'}
 MEMORY_READS = {'recent_actions', 'replay_action'}
 SCREEN_TOOLS = {'look_screen'}
@@ -102,7 +106,11 @@ def describe(values: dict | None = None) -> str:
         notes.append('不能记东西')
     notes.append('能截图看 2ByteASR 的画面' if values.get('see_screen') else '不能截图看画面')
     folders = values.get('folders') or []
-    notes.append(f'能看 {len(folders)} 个授权文件夹（只在里面读文件、写新文件）' if folders else '没有授权文件夹')
+    if values.get('files_anywhere'):
+        notes.append('已开启读写整台电脑文件（给完整路径，写入按当前操作权限）'
+                     + (f'，另有 {len(folders)} 个授权文件夹' if folders else ''))
+    else:
+        notes.append(f'能看 {len(folders)} 个授权文件夹（在里面读文件、写新文件、改文件）' if folders else '没有授权文件夹')
     paid_direct = values['allow_paid'] and values['level'] == 'auto'
     notes.append('会计费的 AI 处理' + ('也可以直接跑' if paid_direct else '要小兔纸按「帮我做」'))
     return LEVEL_LABELS[values['level']] + '；' + '、'.join(notes)
@@ -118,7 +126,7 @@ def refusal(tool, values: dict) -> str:
         return '小兔纸在「兔白权限」里关掉了“让兔白记住我的习惯”'
     if tool.name in SCREEN_TOOLS and not values.get('see_screen'):
         return '小兔纸还没在「兔白权限」里打开“让兔白截图看 2ByteASR 的画面”'
-    if tool.name in FILE_TOOLS and not values.get('folders'):
+    if tool.name in FILE_TOOLS and not values.get('folders') and not values.get('files_anywhere'):
         return '小兔纸还没在「兔白权限」里加“兔白可以看的文件夹”'
     if values['level'] == 'guide' and (tool.acts or tool.edit or tool.paid or tool.name in MEMORY_TOOLS):
         return '小兔纸把兔白设成了「只指路」，兔白只讲不动手'
@@ -128,7 +136,9 @@ def refusal(tool, values: dict) -> str:
 def needs_confirmation(tool, values: dict) -> bool:
     if tool.paid:                                   # spends the user's own AI credit
         return not (values['level'] == 'auto' and values['allow_paid'])
-    if getattr(tool, 'persistent', False):          # stays after a restart (user_overlay): always asks
+    if tool.name in {'write_file', 'edit_file', 'export_subtitles', 'import_terms_file'}:
+        return values['level'] != 'auto'
+    if getattr(tool, 'persistent', False):          # persisted app extensions have their own confirmation
         return True
     return bool(tool.edit) and values['level'] != 'auto'
 

@@ -118,6 +118,21 @@ def _quick_ratio(left, right):
     return 2.0 * shared / (len(left) + len(right))
 
 
+@lru_cache(maxsize=262144)
+def _counts(text):
+    counts = {}
+    for char in text:
+        counts[char] = counts.get(char, 0) + 1
+    return counts
+
+
+def _shared(left, right):
+    """Size of the multiset intersection of two count maps."""
+    if len(left) > len(right):
+        left, right = right, left
+    return sum(min(count, right.get(char, 0)) for char, count in left.items())
+
+
 def retrieve_candidates(snapshot, segments, context_before='', context_after='', *, scene=None):
     """Complete enabled recall with per-position evidence; fuzzy rows never edit."""
     catalog, variant_sounds = _catalog_index(snapshot)
@@ -157,8 +172,8 @@ def retrieve_candidates(snapshot, segments, context_before='', context_after='',
         sound = sounds[value] = phonetic_text(value)
         for char in set(value):
             by_char[(len(value), char)].add(value)
-        by_sound[(len(value), sound[:2])].add(value)
-        by_sound[(len(value), sound[-2:])].add(value)
+        by_sound[(len(value), sound[:3])].add(value)
+        by_sound[(len(value), sound[-3:])].add(value)
     retrieved = []
     for row in catalog.values():
         best = {}
@@ -184,21 +199,39 @@ def retrieve_candidates(snapshot, segments, context_before='', context_after='',
                 continue
             sound = variant_sounds[term]
             pool = set()
+            # 2026-11-22 (user, 1 h stream: suggestions took minutes): one
+            # shared character put almost every window in the pool, 2.4 M
+            # bound checks for 1045 captions. A window reached only through
+            # characters needs a spelling bound of .5 (below that the phonetic
+            # route needs .90, and those windows share a sound prefix/suffix).
+            repeats = len(term) - len(set(term))
             for n in (len(term)-1, len(term), len(term)+1):
+                shared = defaultdict(int)
                 for char in set(term):
-                    pool.update(by_char.get((n, char), ()))
-                pool.update(by_sound.get((n, sound[:2]), ()))
-                pool.update(by_sound.get((n, sound[-2:]), ()))
+                    for value in by_char.get((n, char), ()):
+                        shared[value] += 1
+                needed = .5*(len(term)+n)/2 - repeats
+                pool.update(value for value, count in shared.items() if count >= needed)
+                pool.update(by_sound.get((n, sound[:3]), ()))
+                pool.update(by_sound.get((n, sound[-3:]), ()))
             threshold = .94 if len(term) == 2 else .86
+            term_chars, term_sound = _counts(term), _counts(sound)
             for heard in pool:
                 exact = heard == term
                 if not exact:
                     # difflib's ratio never exceeds its multiset quick ratio,
                     # so a pair whose bound misses the gate cannot match
                     # (2026-10-10: 880k ratio calls per 193-caption review).
+                    # Letter counts are built once per window (2026-11-22).
                     penalty = abs(len(term)-len(heard))*.10
-                    spelling_bound = _quick_ratio(term, heard)
-                    phonetic_bound = _quick_ratio(sound, sounds[heard])
+                    heard_sound = sounds[heard]
+                    longest = 2.*min(len(sound), len(heard_sound))/(len(sound)+len(heard_sound) or 1)
+                    spelling_bound = 2.*_shared(term_chars, _counts(heard))/(len(term)+len(heard))
+                    if (max(spelling_bound, longest) - penalty < threshold
+                            or (spelling_bound < .5 and longest < .90)):
+                        continue
+                    phonetic_bound = (2.*_shared(term_sound, _counts(heard_sound))
+                                      / (len(sound)+len(heard_sound) or 1))
                     if (max(spelling_bound, phonetic_bound) - penalty < threshold
                             or (spelling_bound < .5 and phonetic_bound < .90)):
                         continue

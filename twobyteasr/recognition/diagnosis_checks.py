@@ -160,7 +160,7 @@ def _sparse_result(facts: RunFacts):
 
 @check("model_missing")
 def _model_missing(facts: RunFacts):
-    error = facts.error_matches(r"未完整安装|请先在模型工坊下载|model not found|找不到模型|模型文件(?:不存在|缺失|不完整)|"
+    error = facts.error_matches(r"\[alignment:(?:missing|partial)\]|未完整安装|请先在模型工坊下载|model not found|找不到模型|模型文件(?:不存在|缺失|不完整)|"
                                 r"未安装|environment_missing|weights? (?:not found|missing)")
     rows = [row for row in facts.events_named("MODEL_FAILED")
             if str(row.get("failure_reason") or "").startswith("environment_missing")]
@@ -169,6 +169,34 @@ def _model_missing(facts: RunFacts):
     if error or rows:
         evidence = ([_error_line(error)] if error else []) + [_event_line(row, "model_id", "failure_reason", "missing_paths") for row in rows[:2]]
         return found("model_missing", "certain", evidence)
+
+
+@check('alignment_path_mismatch')
+def _alignment_path_mismatch(facts):
+    error = facts.error_matches(r'\[alignment:path_mismatch\]')
+    if error:
+        return found('alignment_path_mismatch', 'certain', [_error_line(error)])
+
+
+@check('alignment_inference_pending')
+def _alignment_inference_pending(facts):
+    error = facts.error_matches(r'\[alignment:inference_pending\]')
+    if error:
+        return found('alignment_inference_pending', 'certain', [_error_line(error)])
+
+
+@check('alignment_load_failed')
+def _alignment_load_failed(facts):
+    error = facts.error_matches(r'\[alignment:load_failed\]')
+    if error:
+        return found('alignment_load_failed', 'certain', [_error_line(error)])
+
+
+@check('legacy_alignment_component')
+def _legacy_alignment_component(facts):
+    error = facts.error_matches(r'缺少新流水线组件[:：][^\r\n]*(?:Qwen3 ForcedAligner|Ultra Local Head)')
+    if error:
+        return found('legacy_alignment_component', 'likely', [_error_line(error)])
 
 
 def _python_startup(facts,role,pattern):
@@ -191,7 +219,8 @@ def _python_startup_firered_llm(facts):return _python_startup(facts,'firered_llm
 
 @check("runtime_broken")
 def _runtime_broken(facts: RunFacts):
-    error = facts.error_matches(r"No module named|DLL load failed|ImportError|runtime missing|缺少新流水线组件|"
+    error = facts.error_matches(r"\[alignment:runtime_missing\]|No module named|DLL load failed|ImportError|runtime missing|"
+                                r"缺少新流水线组件[:：][^\r\n]*(?:worker\.py|Python 环境|桥接脚本|子进程 Adapter)|"
                                 r"environment_not_ready|environment is not ready|运行环境(?:未就绪|缺少|损坏|不可用|不完整)|找不到 ?python|"
                                 r"模型运行库未准备完成|环境探测|trampoline failed|os error 32")
     rows = [row for row in facts.events_named("MODEL_FAILED")

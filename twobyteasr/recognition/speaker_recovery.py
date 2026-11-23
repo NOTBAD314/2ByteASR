@@ -436,7 +436,8 @@ def apply_candidate_role(project, snapshot, label, role, *, decision_source='man
         identity = identities.get(new_destination)
         if isinstance(identity, dict) and identity.get("id") == new_destination:
             speaker = StudioSpeaker(**{key: identity[key] for key in
-                                       ("id", "name", "style_id", "color", "hidden", "is_host") if key in identity})
+                                       ("id", "name", "style_id", "color", "hidden", "is_host",
+                                        "name_color", "name_font", "name_bold") if key in identity})
         elif new_destination == background:
             speaker = StudioSpeaker(background, name="游戏背景声")
         else:

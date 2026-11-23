@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from .studio_track_header import ACTIONS, CONTROL_LEFT, action_at, button_rect, paint_button
+from .studio_track_header import (
+    ACTIONS, CONTENT_LEFT, CONTROL_LEFT, action_at, button_rect, paint_button, paint_track_tag, paint_track_title,
+)
 from .timeline_feedback import TimelineFeedbackMixin
-from .media_clip_shape import media_clip_shape
 from ..diagnostics.playback_probe import ENABLED as PLAYBACK_PROBE_ENABLED, measured, mark as playback_mark
 from ..timeline.interval_end_index import IntervalEndIndex
 
@@ -290,6 +291,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
     subtitle_visibility_changed = Signal(str, bool)
     snap_changed = Signal(bool)
     group_move_committed = Signal(object, int)
+    speaker_track_reorder_requested = Signal(str, str)   # source speaker, target speaker (2026-11-20)
     group_copy_committed = Signal(object, int)
     selection_count_changed = Signal(int)
     transition_selected = Signal(str)
@@ -461,6 +463,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         self._feedback_refinement_timer.timeout.connect(self._media_refinement_ready)
         self._segment_drag: dict[str, object] | None = None
         self._track_reorder_drag: dict[str, object] | None = None
+        # 2026-11-20: a subtitle track's header dragged up or down to another place.
+        self._speaker_reorder_drag: dict[str, object] | None = None
         self.thumbnail_requests_enabled = True
         from .video_filmstrip import FilmstripCache
         self.filmstrip_visible = True
@@ -610,6 +614,63 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             painter.setBrush(color)
             grip = QRectF(x0 + 1.5, y - 1.5, strip - 3.0, 3.0)
             painter.drawRoundedRect(grip, 1.5, 1.5)
+
+    def _paint_header_cards(self, painter: QPainter, palette: TimelinePalette) -> None:
+        """Rounded header cards under every row (2026-11-23, header draft B).
+
+        Each subtitle track gets its own card (the user: separate subtitle
+        tracks are not a group); an expanded secondary group shares one; a
+        video lane shares a card with the audio lane linked to it and its
+        further stream lanes. Painted right after the header background, so
+        every partial repaint path gets them too.
+        """
+        from .studio_track_header import paint_header_card
+        from .studio_video_track import video_track_accent
+
+        if self.project is None:
+            return
+        _speakers, translation_rect, _waveform, row_rects = self._row_layout()
+        viewport = self._track_viewport()
+        # Only an expanded group has a group_header row; its members follow it.
+        members = set(self._group_members)
+        subtitle_cards = []
+        for kind, key, rect in row_rects:
+            if kind == "speaker":
+                if key in members and subtitle_cards and subtitle_cards[-1][4]:
+                    subtitle_cards[-1][3].append(rect.top())
+                    subtitle_cards[-1][1] = rect.bottom()
+                    continue
+                subtitle_cards.append([rect.top(), rect.bottom(), _speaker_color(self.project, key, palette), [], False])
+            else:
+                subtitle_cards.append([rect.top(), rect.bottom(), QColor(palette.header_letter), [], kind == "group_header"])
+        if translation_rect:
+            subtitle_cards.append([translation_rect.top(), translation_rect.bottom(),
+                                   QColor(palette.translation_dot), [], False])
+        painter.save()
+        painter.setClipRect(QRectF(0, viewport.top(), self.TRACK_HEADER_WIDTH, max(0.0, viewport.height())))
+        for top, bottom, color, joins, _open in subtitle_cards:
+            if bottom >= viewport.top() and top <= viewport.bottom():
+                paint_header_card(painter, palette, top, bottom, color, joins)
+        painter.restore()
+        rows = ([(rect, "video", key) for key, rect in self._video_track_rects().items()]
+                + [(rect, "audio", key) for key, rect in self._audio_track_rects().items()])
+        rows.sort(key=lambda item: item[0].top())
+        video_of = {group.audio_track_id: group.video_track_id
+                    for group in self.project.av_track_groups if group.audio_track_id}
+        audio_tracks = {track.id: track for track in self.project.audio_tracks}
+        cards = []
+        for rect, kind, key in rows:
+            if kind == "audio" and cards and abs(cards[-1][1] - rect.top()) < 1.5:
+                previous_kind, previous_key = cards[-1][4], cards[-1][5]
+                follower = getattr(audio_tracks.get(key), "stream_ordinal", -1) >= 0
+                if (previous_kind == "video" and video_of.get(key) == previous_key) or (follower and previous_kind == "audio"):
+                    cards[-1][3].append(rect.top())
+                    cards[-1][1], cards[-1][4], cards[-1][5] = rect.bottom(), "audio", key
+                    continue
+            accent_id = key if kind == "video" else "V" + key.lstrip("A")
+            cards.append([rect.top(), rect.bottom(), video_track_accent(palette, accent_id), [], kind, key])
+        for top, bottom, color, joins, _kind, _key in cards:
+            paint_header_card(painter, palette, top, bottom, color, joins)
 
     def _timeline_palette(self) -> TimelinePalette:
         if self._timeline_palette_cache is None:
@@ -1575,7 +1636,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         return bool(getattr(self, '_scrub_drag', False) or getattr(self, '_pan_drag', None)
             or getattr(self, '_marquee_origin', None) is not None
             or any(getattr(self, attr, None) for attr in ('_drag', '_clip_drag', '_segment_drag',
-                '_track_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag', '_range_drag', '_group_drag'))
+                '_track_reorder_drag', '_speaker_reorder_drag', '_track_resize_drag', '_razor_drag', '_merge_drag',
+                '_range_drag', '_group_drag'))
             or self.horizontal_scrollbar.isSliderDown()
             or editor is not None and editor.isVisible())
 
@@ -1745,6 +1807,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             self.waveform_clip_keys.clear()
             getattr(self, "_waveform_envelope_cache", {}).clear()
             getattr(self, "_waveform_tile_cache", {}).clear()
+            getattr(self, "_waveform_tile_shown", {}).clear()
             # 时间轴是跨工程常驻控件：上一工程的播放头绝不许漏进下一个
             # 工程（2026-09-20 新工程被残留位置污染的防线）。已存工程的
             # 保存位置由 open_project hydration 在其后 set_playhead 恢复。
@@ -2528,6 +2591,47 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return ""
         return ""
 
+    def _speaker_rows(self) -> list[str]:
+        """Speakers that have a row of their own, top to bottom (not the collapsed group's)."""
+        return [key for kind, key, _rect in self._row_layout()[3] if kind == "speaker"]
+
+    def _paint_speaker_reorder(self, painter, palette) -> None:
+        """While a subtitle track's header is dragged: its own row dimmed, the row it will take
+        highlighted with an accent edge on the side it comes in from."""
+        drag = self._speaker_reorder_drag
+        rects = self._track_layout()[0]
+        source = rects.get(str(drag["speaker_id"]))
+        target = rects.get(str(drag.get("target_speaker_id") or ""))
+        right = self._content_right()
+        painter.save()
+        if source is not None:
+            veil = QColor(palette.header_hover)
+            veil.setAlpha(110)
+            painter.fillRect(QRectF(0, source.top(), right, source.height()), veil)
+        if target is not None:
+            painter.fillRect(QRectF(0, target.top(), right, target.height()), QColor(palette.header_hover))
+            accent = QColor(palette.clip_selected_border)
+            edge = target.bottom() - 2 if source is not None and source.top() < target.top() else target.top()
+            painter.fillRect(QRectF(0, edge, right, 3), accent)
+        painter.restore()
+
+    def _group_speaker_shift(self, drag, point) -> dict[str, str]:
+        """{cue id: new speaker} while selected lines are dragged up or down (2026-11-20): every
+        line moves by the rows the pointer moved, keeping their layout. Only for a selection of
+        original-layer lines, not for a copy."""
+        selection = drag.get('selection')
+        origin = drag.get('origin_speaker') or ''
+        if (not origin or drag.get('copy') or selection is None or selection.video_ids or selection.audio_ids
+                or not selection.cue_ids or getattr(selection, 'subtitle_layer', 'original') == 'translation'):
+            return {}
+        target = self._speaker_at(point)
+        if not target:
+            return dict(drag.get('speakers') or {})       # between rows: keep the last place
+        from ..timeline.subtitle_track_drag import shifted_speakers
+        speakers = {key: cue.speaker_id for key in selection.cue_ids
+                    if (cue := self._timeline_cue_by_id.get(key)) is not None and cue.speaker_id not in self.locked_speakers}
+        return shifted_speakers(speakers, self._speaker_rows(), origin, target, self.locked_speakers)
+
     def _group_speaker_at(self, point, rect: QRectF) -> str:
         """Speaker under the pointer on the shared secondary row: the owner of
         the line there. While a line is dragged, the dragged line's own
@@ -2621,11 +2725,12 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         offline_sources = {asset.canonical_source for asset in self.project.media_pool if asset.offline} if self.project else set()
         thumbnails = self._thumbnails if self.filmstrip_visible else None
         if thumbnails is not None:
-            from .video_filmstrip import FilmstripView,filmstrip_tiles,filmstrip_lod_ms
+            from .video_filmstrip import FilmstripView,filmstrip_lod_ms
+            from .media_clip_folder import clip_shape,thumbnail_cells,thumbnail_height
             view_left=self.TRACK_HEADER_WIDTH+1;view_right=self._content_right()-1
             view_width=max(1,view_right-view_left)
             views=[]
-            def collect(path,tin,tout,sin,sout,track_id,owner):
+            def collect(path,tin,tout,sin,sout,track_id,owner,join_left=False,join_right=False):
                 if not path or tout<=tin:return
                 # FLV 的优化副本路由在 FilmstripCache 解码端内部完成：
                 # key/身份统一基于 canonical 路径（paint 查询的就是它），
@@ -2634,26 +2739,37 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 rect=video_rects.get(track_id,QRectF())
                 if rect.bottom()<0 or rect.top()>=self.height():return
                 left,right=self._time_to_x(tin),self._time_to_x(tout)
-                height=rect.height()-(18 if track_id==primary_id else 16)
-                visible=tuple(t for x,e,t in filmstrip_tiles(left,right,view_left,view_right,sin,sout,height))
-                nearby=tuple(t for x,e,t in filmstrip_tiles(left,right,view_left-view_width*.15,view_right+view_width*.15,sin,sout,height) if t not in visible)
+                # 2026-11-23: request exactly the clip card's pinned
+                # first/last/even cells (the painter asks for the same times).
+                shape=clip_shape(left,right,rect.top()+4,rect.height()-8,self.TRACK_HEADER_WIDTH,self._content_right(),
+                                 join_left=join_left,join_right=join_right)
+                lod=filmstrip_lod_ms((right-left)*1000/max(1,sout-sin),thumbnail_height(shape))
+                visible=tuple(t for _cell,t in thumbnail_cells(shape,sin,sout,view_left,view_right,lod))
+                nearby=tuple(t for _cell,t in thumbnail_cells(shape,sin,sout,view_left-view_width*.15,view_right+view_width*.15,lod) if t not in visible)
                 if visible or nearby:
                     focus=sin+max(0,min(tout-tin,self.playhead_ms-tin))*(sout-sin)/(tout-tin)
-                    lod=filmstrip_lod_ms((right-left)*1000/max(1,sout-sin),height)
                     token=f'{id(self.project):x}:{self.project.project_id}:{track_id}:{owner}'
                     views.append(FilmstripView(path,visible,nearby,int(focus),token,int(sin),int(sout),lod))
+            def seg_split(a,b):
+                return (a.source_path or sequence.source_path)==(b.source_path or sequence.source_path) and a.source_out_ms==b.source_in_ms
+            seg_by_out={s.timeline_out_ms:s for s in sequence.segments};seg_by_in={s.timeline_in_ms:s for s in sequence.segments}
             for segment in sequence.segments:
                 if (segment.source_path or sequence.source_path) in offline_sources:
                     continue
                 collect(segment.source_path or sequence.source_path,segment.timeline_in_ms,segment.timeline_out_ms,
-                        segment.source_in_ms,segment.source_out_ms,primary_id,segment.id)
+                        segment.source_in_ms,segment.source_out_ms,primary_id,segment.id,
+                        (p:=seg_by_out.get(segment.timeline_in_ms)) not in (None,segment) and seg_split(p,segment),
+                        (n:=seg_by_in.get(segment.timeline_out_ms)) not in (None,segment) and seg_split(segment,n))
             media={asset.asset_id:asset for asset in self.project.media_pool} if self.project else {}
             for item in tracks:
                 if item is primary:continue
+                clip_by_out={c.timeline_out_ms:c for c in item.clips};clip_by_in={c.timeline_in_ms:c for c in item.clips}
                 for clip in item.clips:
                     asset=media.get(clip.asset_id)
                     if asset and not asset.offline:
-                        collect(asset.canonical_source,clip.timeline_in_ms,clip.timeline_out_ms,clip.source_in_ms,clip.source_out_ms,item.id,clip.id)
+                        collect(asset.canonical_source,clip.timeline_in_ms,clip.timeline_out_ms,clip.source_in_ms,clip.source_out_ms,item.id,clip.id,
+                                (p:=clip_by_out.get(clip.timeline_in_ms)) not in (None,clip) and p.asset_id==clip.asset_id and p.source_out_ms==clip.source_in_ms,
+                                (n:=clip_by_in.get(clip.timeline_out_ms)) not in (None,clip) and n.asset_id==clip.asset_id and clip.source_out_ms==n.source_in_ms)
             thumbnails.set_view(views)
         # 2026-11-09 (user screenshot): a project without video tracks has no
         # lane rect; painting the primary header into QRectF() put a clipped
@@ -2916,6 +3032,17 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if tiles is None:
             tiles = self._waveform_tile_cache = OrderedDict()
         to_lane = QTransform.fromScale(1.0, rect.height() * 0.36)
+        # 2026-11-23 (user: the waveform keeps flickering while it loads):
+        # each progressive publication is a new cache object, so every tile
+        # key missed at once and missed tiles were left blank until the
+        # worker rebuilt them. The last picture of a tile, keyed without the
+        # cache object, now stays on screen until its replacement is ready.
+        shown = getattr(self, "_waveform_tile_shown", None)
+        if shown is None:
+            shown = self._waveform_tile_shown = OrderedDict()
+        metadata = getattr(cache, "metadata", None)
+        identity = ((str(getattr(metadata, "source_path", "")), int(getattr(metadata, "audio_stream", 0) or 0))
+                    if metadata is not None else id(cache))
         pieces = []
         first = int(float(source_in) // tile_ms)
         last = int(max(float(source_in), float(source_out) - 1e-6) // tile_ms)
@@ -2925,6 +3052,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             if end <= start:
                 continue
             key = (cache, index, round(start, 3), round(end, 3), ms_per_px)
+            shown_key = (identity, index, round(start, 3), round(end, 3), ms_per_px)
             cached = tiles.get(key)
             partials = getattr(self, '_waveform_partial_tiles', {})
             partial = partials.get(key)
@@ -2948,6 +3076,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     jobs = getattr(self, '_waveform_tile_jobs', None)
                     if jobs is not None:
                         jobs[key] = (cache,start,end,max(1,round((end-start)/ms_per_px)),(end-start)/ms_per_px)
+                    previous = shown.get(shown_key)
+                    if previous is None:
+                        continue
+                    shown.move_to_end(shown_key)
+                    pieces.append((to_lane.map(previous), float(left) + (start - float(source_in)) / ms_per_px))
                     continue
                 built = self._build_waveform_envelope(cache, start, end, max(1, round((end - start) / ms_per_px)),
                                                       (end - start) / ms_per_px, rect.height(), amplitude=1.0)
@@ -2958,6 +3091,10 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                     tiles[key] = (path, stats)
                     while len(tiles) > 96:
                         tiles.popitem(last=False)
+            shown[shown_key] = path
+            shown.move_to_end(shown_key)
+            while len(shown) > 192:
+                shown.popitem(last=False)
             pieces.append((to_lane.map(path), float(left) + (start - float(source_in)) / ms_per_px))
         return pieces
 
@@ -3084,51 +3221,21 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         return "\n".join(lines)
 
     def _paint_audio_lane_label(self, painter, palette, audio_id, track, rect) -> None:
+        # 2026-11-23 (header draft B): [A2] 音轨  +0.0 dB on the shared card;
+        # the stream caption (language/name) replaces 音轨 when there is one.
+        # The volume moved here from the label that sat on the waveform.
+        from ..timeline.studio_track_gain import track_gain_db
+
         caption = self._audio_lane_caption(track)
-        follower = getattr(track, 'stream_ordinal', -1) >= 0
         toggle = self._stream_toggle_rect(audio_id, rect)
-        left = 22 if follower else 12
         right = (toggle.left() - 4) if not toggle.isNull() else CONTROL_LEFT - 6
-        if follower:
-            # Bracket joining a source's further streams to its A lane.
-            painter.save()
-            painter.setPen(QPen(QColor(palette.waveform_header_text), 1.0))
-            painter.setOpacity(0.35)
-            painter.drawLine(QPointF(10.5, rect.top()), QPointF(10.5, rect.center().y()))
-            painter.drawLine(QPointF(10.5, rect.center().y()), QPointF(16.5, rect.center().y()))
-            painter.restore()
-        header_font = painter.font()
-        weighted_font(header_font, 700)
-        header_font.setPointSize(9)
-        painter.setFont(header_font)
-        painter.setPen(QColor(palette.waveform_header_text))
-        if caption is None:
-            painter.drawText(
-                QRectF(left, rect.top(), max(20, right - left), rect.height()),
-                Qt.AlignmentFlag.AlignVCenter,
-                tr("{track}  波形", track=audio_id),
-            )
-        else:
-            two_lines = rect.height() >= 34
-            top = QRectF(left, rect.top() + (2 if two_lines else 0), max(20, right - left),
-                         rect.height() / 2 - 1 if two_lines else rect.height())
-            painter.drawText(top, Qt.AlignmentFlag.AlignVCenter if not two_lines else
-                             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, audio_id)
-            small = QFont(header_font)
-            weighted_font(small, 400)
-            small.setPointSize(8)
-            painter.setFont(small)
-            metrics = QFontMetrics(small)
-            if two_lines:
-                line = QRectF(left, rect.center().y() + 1, max(20, right - left), rect.height() / 2 - 3)
-                align = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-            else:
-                offset = QFontMetrics(header_font).horizontalAdvance(audio_id) + 6
-                line = QRectF(left + offset, rect.top(), max(10, right - left - offset), rect.height())
-                align = Qt.AlignmentFlag.AlignVCenter
-            painter.setOpacity(0.78)
-            painter.drawText(line, align, metrics.elidedText(str(caption), Qt.TextElideMode.ElideRight, int(line.width())))
-            painter.setOpacity(1.0)
+        x = paint_track_tag(painter, palette, str(audio_id), CONTENT_LEFT, rect.center().y()) + 7
+        try:
+            gain = f"{track_gain_db(self.project, audio_id):+.1f} dB" if self.project else ""
+        except (KeyError, ValueError, AttributeError):
+            gain = ""
+        paint_track_title(painter, palette, x, right, rect,
+                          str(caption) if caption else tr("音轨"), detail=gain)
         if not toggle.isNull():
             video_id = next((g.video_track_id for g in self.project.av_track_groups
                              if g.audio_track_id == audio_id and g.video_track_id), '')
@@ -3214,24 +3321,65 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 self._content_right() - self.TRACK_HEADER_WIDTH,
                 rect.height(),
             ))
+            # 2026-11-23 (timeline redesign): draft E audio cards, a source
+            # tint strong enough to pair with the video clip above and the
+            # waveform in the source colour, lighter past the decoded edge.
+            # A razor cut inside one source gets a draft B bridge (drawn
+            # first); a cut between sources sits flush with a draft D seam
+            # and a two-colour knot on the video/audio boundary.
+            from .media_clip_folder import (
+                audio_bridge_colors, clip_shape, media_colors, paint_audio_card,
+                paint_cut_bridge, paint_cut_knot, paint_cut_seam,
+            )
+            by_out = {int(item.timeline_out_ms): item for item in track.clips}
+            by_in = {int(item.timeline_in_ms): item for item in track.clips}
+
+            def split(before, after):
+                return (before.asset_id == after.asset_id
+                        and before.stream_index == after.stream_index
+                        and int(before.source_out_ms) == int(after.source_in_ms))
+
+            def clip_colors(item):
+                item_asset = assets.get(item.asset_id)
+                return media_colors(palette, item_asset.canonical_source if item_asset else item.asset_id,
+                                    offline=item_asset is None or bool(item_asset.offline))
+
+            for clip in track.clips:
+                previous = by_out.get(int(clip.timeline_in_ms))
+                x = self._time_to_x(clip.timeline_in_ms)
+                if previous in (None, clip) or x < self.TRACK_HEADER_WIDTH - 20 or x > self._content_right() + 20:
+                    continue
+                if not split(previous, clip):
+                    continue
+                before, after = audio_bridge_colors(palette, clip_colors(previous), clip_colors(clip))
+                paint_cut_bridge(painter, x, rect.top() + 4, rect.height() - 8, before, after,
+                                 continuous=True)
             for clip in track.clips:
                 overlap_in = max(visible_start, int(clip.timeline_in_ms))
                 overlap_out = min(visible_end, int(clip.timeline_out_ms))
                 if overlap_out <= overlap_in:
                     continue
-                block, silhouette = media_clip_shape(
+                asset = assets.get(clip.asset_id)
+                colors = clip_colors(clip)
+                previous = by_out.get(int(clip.timeline_in_ms))
+                following = by_in.get(int(clip.timeline_out_ms))
+                previous = None if previous is clip else previous
+                following = None if following is clip else following
+                split_left = previous is not None and split(previous, clip)
+                split_right = following is not None and split(clip, following)
+                shape = clip_shape(
                     self._time_to_x(clip.timeline_in_ms), self._time_to_x(clip.timeline_out_ms),
-                    rect.top() + 4, rect.height() - 8, self.TRACK_HEADER_WIDTH, self._content_right())
+                    rect.top() + 4, rect.height() - 8, self.TRACK_HEADER_WIDTH, self._content_right(),
+                    join_left=split_left, join_right=split_right,
+                    flush_left=previous is not None and not split_left,
+                    flush_right=following is not None and not split_right)
+                silhouette = shape.path()
+                paint_audio_card(painter, shape, colors)
                 painter.save()
                 painter.setClipPath(silhouette, Qt.ClipOperation.IntersectClip)
-                painter.fillPath(silhouette, mix(palette.waveform_background, palette.waveform_edge, .09))
-                asset = assets.get(clip.asset_id)
                 # Each lane draws its own stream, never another lane's copy.
                 cache = self.waveform_cache_for_source(asset.canonical_source, clip.stream_index) if asset else None
                 if asset is None or cache is None:
-                    painter.setPen(QPen(QColor(palette.waveform_edge), 1))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawPath(silhouette)
                     painter.restore()
                     continue
                 from ..timeline.clip_time_mapper import project_to_source
@@ -3249,33 +3397,64 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 pieces = self._waveform_envelope_tiles(
                     cache, source_in, source_out, left, right, rect,
                     int(clip.source_in_ms), int(clip.source_out_ms))
+                center = rect.center().y()
+                guide = QColor(colors.ink)
+                guide.setAlphaF(0.35)
+                painter.setPen(QPen(guide, 1.0))
+                painter.drawLine(round(left), round(center), round(right), round(center))
                 if not pieces:
                     painter.restore()
                     continue
-                center = rect.center().y()
+                metadata = getattr(cache, "metadata", None)
+                decoded_x = right
+                if metadata is not None and bool(getattr(metadata, "incomplete", False)):
+                    coverage = float(getattr(metadata, "coverage_end_ms", 0) or 0)
+                    span = max(1e-6, float(source_out) - float(source_in))
+                    decoded_x = max(left, min(right, left + (coverage - float(source_in)) * (right - left) / span))
+                detail = QColor(colors.ink)
+                detail.setAlphaF(0.58)
+                overview = QColor(colors.ink)
+                overview.setAlphaF(0.22)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(rgba_color(palette.waveform))
                 # The min/max envelope already samples physical-width bins.
                 # Coverage antialiasing of its dense zig-zag polygon dominates
                 # every zoom paint; keep pixel coverage exact for this raster.
                 antialias = painter.testRenderHint(QPainter.RenderHint.Antialiasing)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-                for path, origin_x in pieces:
-                    painter.translate(origin_x, center)
-                    painter.drawPath(path)
-                    painter.translate(-origin_x, -center)
+                for brush, span_left, span_right in ((detail, left, decoded_x), (overview, decoded_x, right)):
+                    if span_right - span_left < 0.5:
+                        continue
+                    painter.save()
+                    painter.setClipRect(QRectF(span_left, rect.top(), span_right - span_left, rect.height()),
+                                        Qt.ClipOperation.IntersectClip)
+                    painter.setBrush(brush)
+                    for path, origin_x in pieces:
+                        painter.translate(origin_x, center)
+                        painter.drawPath(path)
+                        painter.translate(-origin_x, -center)
+                    painter.restore()
                 counted=self._count_paint_item('waveform_items', bounds=rect)
                 stats=getattr(self, '_paint_item_counts', None)
                 if stats is not None and counted:
                     stats.setdefault('waveforms', []).append(dict(self._last_waveform_envelope_stats))
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, antialias)
-                painter.setPen(QPen(QColor(palette.waveform_edge), 1.0))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawLine(round(left), round(center), round(right), round(center))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawPath(silhouette)
                 painter.restore()
+            source_cuts = []
+            for clip in track.clips:
+                previous = by_out.get(int(clip.timeline_in_ms))
+                x = self._time_to_x(clip.timeline_in_ms)
+                if previous in (None, clip) or split(previous, clip):
+                    continue
+                if self.TRACK_HEADER_WIDTH <= x <= self._content_right():
+                    paint_cut_seam(painter, palette, x, rect.top() + 4, rect.height() - 8)
+                    source_cuts.append((x, previous, clip))
             painter.restore()
+            above = self._video_track_rects().get(video_id) if video_id else None
+            if above is not None and abs(above.bottom() - rect.top()) < 1.5:
+                for x, previous, clip in source_cuts:
+                    if x >= self.TRACK_HEADER_WIDTH + 6:
+                        paint_cut_knot(painter, palette, x, rect.top(),
+                                       clip_colors(previous).ink, clip_colors(clip).ink)
             painter.setPen(QPen(mix(palette.grid_minor, palette.background, 0.4), 1))
             painter.drawLine(0, round(rect.bottom()), self._content_right(), round(rect.bottom()))
         painter.restore()
@@ -3626,30 +3805,14 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         painter.save()
         painter.setPen(Qt.PenStyle.NoPen)
         middle = rect.center().y()
-        for position, key in enumerate(members[:3]):
+        shown = members[:3]
+        for position, key in enumerate(shown):
             painter.setBrush(_speaker_color(self.project, key, palette))
-            painter.drawEllipse(QRectF(10 + position * 6, middle - 5, 10, 10))
-        painter.setPen(QColor(palette.header_name))
-        font = painter.font()
+            painter.drawEllipse(QRectF(CONTENT_LEFT + position * 6, middle - 5, 10, 10))
+        title_left = CONTENT_LEFT + 6 * max(0, len(shown) - 1) + 16
         title = tr("次要角色 · {count}", count=len(members))
-        weighted_font(font, 700)
-        # The count must stay readable in the narrow header column.
-        for size in ((10, 9) if kind == "group_header" else (12, 11, 10, 9)):
-            font.setPointSize(size)
-            if QFontMetrics(font).horizontalAdvance(title) <= CONTROL_LEFT - 40:
-                break
-        painter.setFont(font)
-        painter.drawText(QRectF(34, rect.top(), CONTROL_LEFT - 40, rect.height()), Qt.AlignmentFlag.AlignVCenter,
-                         painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 40))
-        if kind == "group" and rect.height() >= 52:
-            weighted_font(font, 400)
-            font.setPointSize(9)
-            painter.setFont(font)
-            painter.setPen(QColor(palette.header_letter))
-            names = "、".join(_speaker_name(self.project, key) for key in members)
-            painter.drawText(QRectF(34, middle + 8, CONTROL_LEFT - 40, rect.bottom() - middle - 8),
-                             Qt.AlignmentFlag.AlignTop,
-                             painter.fontMetrics().elidedText(names, Qt.ElideRight, CONTROL_LEFT - 40))
+        names = "、".join(_speaker_name(self.project, key) for key in members) if kind == "group" else ""
+        paint_track_title(painter, palette, title_left, CONTROL_LEFT - 6, rect, title, second_line=names)
         painter.restore()
         self._paint_subtitle_header_buttons(painter, palette, kind, GROUP_KEY, rect)
 
@@ -3721,6 +3884,7 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             QRectF(0, 0, self.TRACK_HEADER_WIDTH, self._canvas_bottom()),
             QColor(palette.header),
         )
+        self._paint_header_cards(painter, palette)
         painter.fillRect(
             QRectF(self.TRACK_HEADER_WIDTH, 0, self._content_right() - self.TRACK_HEADER_WIDTH, self.RULER_HEIGHT),
             QColor(palette.ruler),
@@ -4013,34 +4177,18 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             # and carry the speaker name in the label.
             grouped = speaker_id in collapsed_members
             if not grouped:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(color)
-                painter.drawEllipse(QRectF(14, rect.center().y() - 5, 10, 10))
-                painter.setPen(QColor(palette.header_letter))
-                letter_font = painter.font()
-                letter_font.setPointSize(12 if rect.height() < 84 else 13)
-                painter.setFont(letter_font)
-                painter.drawText(QRectF(34, rect.top(), 24, rect.height()), Qt.AlignmentFlag.AlignVCenter, letters[index % len(letters)])
-                painter.setPen(QColor(palette.header_name))
-                name_font = painter.font()
-                name_font.setPointSize(14 if rect.height() < 84 else 16)
-                weighted_font(name_font, 700)
-                painter.setFont(name_font)
+                # 2026-11-23 (header draft B): the card's rail carries the
+                # speaker colour; [A] tag + name at the shared header size.
+                x = paint_track_tag(painter, palette, letters[index % len(letters)], CONTENT_LEFT, rect.center().y()) + 7
                 imported = self.project.generation_metadata.get("subtitle_imports", {}).get("tracks", {}).get(speaker_id)
                 if imported and " · " in name and rect.height() >= 34:
                     title, language = name.split(" · ", 1)
-                    name_font.setPointSize(11)
-                    painter.setFont(name_font)
-                    painter.drawText(QRectF(55, rect.center().y() - 17, CONTROL_LEFT - 61, 18), Qt.AlignVCenter,
-                        painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 61))
-                    name_font.setPointSize(9)
-                    weighted_font(name_font, 400)
-                    painter.setFont(name_font)
-                    painter.drawText(QRectF(55, rect.center().y() + 1, CONTROL_LEFT - 61, 17), Qt.AlignVCenter,
-                        painter.fontMetrics().elidedText(language, Qt.ElideRight, CONTROL_LEFT - 61))
+                    paint_track_title(painter, palette, x, CONTROL_LEFT - 6, rect, title, second_line=language)
                 else:
-                    painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
-                                     painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
+                    paint_track_title(painter, palette, x, CONTROL_LEFT - 6, rect, name)
+                # Later cue drawing inherits the painter font, as before.
+                name_font = painter.font()
+                name_font.setPointSize(14 if rect.height() < 84 else 16)
                 weighted_font(name_font, 400)
                 painter.setFont(name_font)
                 self._paint_subtitle_header_buttons(painter, palette, "speaker", speaker_id, rect)
@@ -4199,18 +4347,13 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         translations = self.project.generation_metadata.get("translations", {}) if self.project else {}
         if translation_rect and translation_rect.intersects(track_viewport):
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(palette.translation_dot))
-            painter.drawEllipse(QRectF(14, translation_rect.center().y() - 5, 10, 10))
-            painter.setPen(QColor(palette.header_name))
+            paint_track_title(painter, palette, CONTENT_LEFT, CONTROL_LEFT - 6, translation_rect, str(tr("翻译")))
             translation_font = painter.font()
-            weighted_font(translation_font, 700)
-            painter.setFont(translation_font)
-            painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, str(tr("翻译")))
             from ..caption_style.subtitle_visibility import translation_key
             key=translation_key(self.project)
             hidden=not self.project.studio_state.get('subtitle_track_visibility',{}).get(key,True)
             paint_button(painter,palette,'subtitle','visibility',translation_rect,
-                         'fa5s.eye-slash' if hidden else 'fa5s.eye',active=hidden)
+                         'fa5s.eye-slash' if hidden else 'fa5s.eye',active=hidden,pill_slots=1)
             weighted_font(translation_font, 400)
             painter.setFont(translation_font)
             if isinstance(translations, dict):
@@ -4289,6 +4432,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             self._paint_linked_audio_tracks(painter, palette)
             self._paint_media_boundaries(painter, palette)
         self._paint_selection_feedback(painter,palette)
+        if self._speaker_reorder_drag and self._speaker_reorder_drag.get("moved"):
+            self._paint_speaker_reorder(painter, palette)
         self._paint_transitions(painter,palette)
         if self._marquee_rect is not None:
             color=mix(QColor(palette.clip_selected_border),QColor("white"),.42)
@@ -4623,7 +4768,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         times += [c.start_ms for c in self._cues_by_start if c.id in selection.cue_ids]
         self._group_drag=dict(minimum=min(times,default=0),origin_ms=self._x_to_time(event.position().x()),
             origin=QPointF(event.position()),delta=0,moved=False,selection=selection,
-            copy=bool(event.modifiers() & Qt.AltModifier))
+            copy=bool(event.modifiers() & Qt.AltModifier),
+            origin_speaker=self._speaker_at(event.position().toPoint()), speakers={})
         if self._group_drag['copy'] and selection.cue_ids and not selection.video_ids and not selection.audio_ids:
             from ..timeline.caption_copy_command import capture_captions
             selection.caption_payload = capture_captions(self.project, selection.cue_ids,
@@ -4683,6 +4829,38 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         if rect.width()<3:rect.setWidth(3)
         return rect.adjusted(.5,.5,-.5,-.5)
 
+    def _media_selection_path(self, kind, key, rect):
+        """Selected video/audio clips are outlined along their rounded card.
+
+        2026-11-23 (user screenshot): the box drawn for every selected item
+        hid the clip shape entirely; subtitle cues keep their rectangles.
+        """
+        from .media_clip_folder import clip_outline
+        join_left = join_right = False
+        tracks = self.project.video_tracks if kind == 'video' else self.project.audio_tracks
+        for track in tracks:
+            clip = next((item for item in track.clips if item.id == key), None)
+            if clip is None:
+                continue
+            others = [item for item in track.clips if item is not clip]
+            before = next((item for item in others if item.timeline_out_ms == clip.timeline_in_ms), None)
+            after = next((item for item in others if item.timeline_in_ms == clip.timeline_out_ms), None)
+
+            def split(first, second):
+                return (first.asset_id == second.asset_id
+                        and getattr(first, 'stream_index', 0) == getattr(second, 'stream_index', 0)
+                        and first.source_out_ms == second.source_in_ms)
+
+            join_left, join_right = before is not None and split(before, clip), after is not None and split(clip, after)
+            flush_left, flush_right = before is not None and not join_left, after is not None and not join_right
+            break
+        else:
+            flush_left = flush_right = False
+        return clip_outline(rect.left(), rect.right(), rect.top(), rect.height(),
+                            self.TRACK_HEADER_WIDTH, self._content_right(),
+                            join_left=join_left, join_right=join_right,
+                            flush_left=flush_left, flush_right=flush_right)
+
     def _paint_selection_feedback(self,painter,palette):
         selection=self.clip_selection()
         if not (selection.video_ids or selection.audio_ids or selection.cue_ids):
@@ -4702,16 +4880,44 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                      max(4, self._time_to_x(c.end_ms)-self._time_to_x(c.start_ms)), track.height()-12))
                      for key in selection.cue_ids
                      if (c := self._timeline_cue_by_id.get(key)) is not None] if track is not None else []
+        media_pen = QPen(QColor(palette.clip_selected_border), 2.0)
         if drag and drag.get('copy'):
             for _kind, _key, rect in items:
                 rect = rect.translated(offset, 0)
-                painter.drawRect(self._selection_highlight_rect(rect))
+                if _kind in ('video', 'audio'):
+                    painter.save()
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    painter.setPen(media_pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawPath(self._media_selection_path(_kind, _key, rect))
+                    painter.restore()
+                else:
+                    painter.drawRect(self._selection_highlight_rect(rect))
                 painter.drawText(rect.adjusted(5, 1, -2, -1), Qt.AlignLeft | Qt.AlignTop, tr('副本'))
         else:
-            rectangles = [self._selection_highlight_rect(rect.translated(offset, 0) if drag else rect)
-                          for _kind, _key, rect in items]
+            # Lines dragged to other tracks are drawn on the rows they will land on (2026-11-20).
+            speakers = (drag.get('speakers') or {}) if drag else {}
+            rows = self._track_layout()[0] if speakers else {}
+
+            def lift(kind, key):
+                if kind != 'subtitle' or key not in speakers:
+                    return 0.0
+                cue = self._timeline_cue_by_id.get(key)
+                source, target = rows.get(cue.speaker_id) if cue else None, rows.get(speakers[key])
+                return target.top() - source.top() if source is not None and target is not None else 0.0
+
+            rectangles = [self._selection_highlight_rect(rect.translated(offset, lift(kind, key)) if drag else rect)
+                          for kind, key, rect in items if kind not in ('video', 'audio')]
             if rectangles:
                 painter.drawRects(rectangles)
+            media = [(kind, key, rect.translated(offset, 0) if drag else rect)
+                     for kind, key, rect in items if kind in ('video', 'audio')]
+            if media:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(media_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                for kind, key, rect in media:
+                    painter.drawPath(self._media_selection_path(kind, key, rect))
         painter.restore()
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -5047,6 +5253,17 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             for speaker_id, rect in speaker_rects.items():
                 if rect.contains(point):
                     self.selected_track_header = ('subtitle', speaker_id)
+                    rows = self._speaker_rows()
+                    if (event.button() == Qt.MouseButton.LeftButton and not action_at('subtitle', point.x(), point.y(), rect)
+                            and speaker_id in rows and len(rows) > 1):
+                        # 2026-11-20: hold the header and drag up or down = the track goes there.
+                        # A click without moving only selects the header, as before.
+                        self._speaker_reorder_drag = dict(speaker_id=speaker_id, origin_y=event.position().y(),
+                                                          target_speaker_id='', moved=False)
+                        self.interaction_changed.emit(True)
+                        self.update()
+                        event.accept()
+                        return
                     if action_at('subtitle', point.x(), point.y(), rect) == 'visibility':
                         visible = speaker_id in self.hidden_speakers
                         (self.hidden_speakers.remove if visible else self.hidden_speakers.add)(speaker_id)
@@ -5477,7 +5694,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         from .timeline_track_gain import move, hit
         if move(self, event):
             event.accept(); return
-        if event.buttons() == Qt.NoButton and hit(self, event.position()):
+        gain_key = hit(self, event.position()) if event.buttons() == Qt.NoButton else ''
+        if gain_key != getattr(self, '_track_gain_hover', ''):
+            self._track_gain_hover = gain_key
+            self.update()
+        if gain_key:
             self.setCursor(Qt.SizeVerCursor)
             event.accept(); return
         click = getattr(self, '_click_navigation', None)
@@ -5501,7 +5722,9 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 threshold = 8.0 * self.visible_duration_ms / max(1, self._content_right()-self.TRACK_HEADER_WIDTH)
                 drag['delta'], self._snap_target = snap_group_delta(self.project, drag['selection'], drag['delta'],
                     playhead=self.playhead_ms, threshold=threshold, held=held)
-            drag['moved']=moved
+            if moved or drag['moved']:
+                drag['speakers'] = self._group_speaker_shift(drag, event.position().toPoint())
+            drag['moved']=moved or drag['moved']
             self.setCursor(Qt.ClosedHandCursor)
             self.update()
             event.accept()
@@ -5568,6 +5791,17 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                 neighbor = self._merge_neighbor(str(drag["anchor_id"]), direction)
                 drag["neighbor_id"] = neighbor.id if neighbor is not None else ""
             self._refresh_merge_preview()
+            event.accept()
+            return
+        if self._speaker_reorder_drag:
+            drag = self._speaker_reorder_drag
+            if abs(event.position().y() - float(drag["origin_y"])) >= QApplication.startDragDistance():
+                drag["moved"] = True
+            if drag["moved"]:
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                target = self._speaker_at(event.position().toPoint())
+                drag["target_speaker_id"] = target if target in self._speaker_rows() and target != drag["speaker_id"] else ''
+            self.update()
             event.accept()
             return
         if self._track_reorder_drag:
@@ -5781,7 +6015,11 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
                               property='toolTip', names=names)
                 else:
                     speaker_id = self._speaker_at(point)
-                    if speaker_id:self.setToolTip(_speaker_name(self.project, speaker_id))
+                    if speaker_id and len(self._speaker_rows()) > 1:
+                        bind_text(self, '{value0} · 按住上下拖动调整轨道顺序', property='toolTip',
+                                  value0=_speaker_name(self.project, speaker_id))
+                    elif speaker_id:
+                        self.setToolTip(_speaker_name(self.project, speaker_id))
             return
         # A non-restarted next-frame callback consumes only the newest input.
         self._pending_timing_pointer = (QPointF(event.position()), perf_counter())
@@ -5819,7 +6057,8 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
         edge = end_ms if mode == "right" else start_ms
         delta = self._snap_time(edge + delta, cue_id) - edge
         self._timing_preview = preview_intervals(self._drag_originals, cue_id, mode, delta,
-                                                target_speaker=self._drag_speaker_preview)
+                                                target_speaker=self._drag_speaker_preview,
+                                                speaker_rows=self._speaker_rows(), locked_speakers=self.locked_speakers)
         anchor = self._timing_preview[cue_id]
         if self._snap_target and (anchor.end_ms if mode == "right" else anchor.start_ms) != self._snap_target["time"]:
             self._snap_target = None
@@ -6030,7 +6269,19 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             self.interaction_changed.emit(False)
             self.set_tool_mode(self.tool_mode)
             self.setCursor(self._forward_cursor if self.tool_mode=='track_forward' else Qt.ArrowCursor)
-            if drag['moved'] and drag['delta']:
+            speakers = drag.get('speakers') or {}
+            if drag['moved'] and speakers and self.project:
+                # Lines moved to other tracks (and maybe in time): one undoable interval edit.
+                delta = int(drag['delta'])
+                values = {}
+                for key in drag['selection'].cue_ids:
+                    cue = self._timeline_cue_by_id.get(key)
+                    if cue is None or cue.speaker_id in self.locked_speakers:
+                        continue
+                    values[key] = CueInterval(cue.start_ms + delta, cue.end_ms + delta, speakers.get(key, cue.speaker_id))
+                if values:
+                    self.timing_edit_committed.emit(values)
+            elif drag['moved'] and drag['delta']:
                 signal = self.group_copy_committed if drag.get('copy') else self.group_move_committed
                 signal.emit(drag['selection'],drag['delta'])
             self.update()
@@ -6096,6 +6347,16 @@ class WaveformTimeline(TimelineFeedbackMixin, QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton and self._merge_swallow_release:
             self._merge_swallow_release = False
+            event.accept()
+            return
+        if self._speaker_reorder_drag:
+            drag = self._speaker_reorder_drag
+            self._speaker_reorder_drag = None
+            self.interaction_changed.emit(False)
+            self.unsetCursor()
+            if drag.get("moved") and drag.get("target_speaker_id"):
+                self.speaker_track_reorder_requested.emit(str(drag["speaker_id"]), str(drag["target_speaker_id"]))
+            self.update()
             event.accept()
             return
         if self._track_reorder_drag:

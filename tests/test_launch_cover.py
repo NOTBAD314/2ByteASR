@@ -1,6 +1,8 @@
 """2026-11-19 (user picked options A and B for the start): the kept picture survives updates and
-fades out over the real window; without one the theme colour and the bunny are shown; when the
-launcher draws Home's skeleton the app shows nothing of its own and tells it when to fade."""
+fades out over the real window; when the launcher draws Home's skeleton the app shows nothing of
+its own and tells it when to fade. 2026-11-23 (draft B2 「音波時間軸」): every start draws the
+wordmark over a waveform timeline on the theme's background - never Home's skeleton, the kept
+picture or the bunny head."""
 from __future__ import annotations
 
 import json
@@ -39,18 +41,22 @@ def test_a_picture_from_another_build_is_still_shown(lp, app, tmp_path):
     assert 'program' not in lp._PICTURE_KEY            # a close elsewhere after an update keeps it too
 
 
-def test_without_a_picture_the_bunny_is_drawn_instead_of_the_name(lp, app):
+def test_the_launch_screen_is_the_wordmark_over_a_timeline(lp, app, monkeypatch):
     from PySide6.QtGui import QImage
-    shell = lp._make_shell(app, _meta(lp, app, picture=False), 'plain')
+    monkeypatch.setenv('TWOBYTEASR_LAUNCH_MOTION', '0')                  # the still picture is the screen at rest
+    meta = _meta(lp, app, picture=False, client=[100, 80, 1000, 640])
+    shell = lp._make_shell(app, meta, 'plain')
     assert shell is not None and shell.windowOpacity() < 1.0          # layered from the start: it can fade
-    shell.resize(800, 500)
+    assert not hasattr(shell, 'cover') and not hasattr(lp, '_bunny_pixmap')
     image = QImage(shell.size(), QImage.Format.Format_ARGB32)
     shell.render(image)
-    middle = image.pixelColor(400, 220)
-    corner = image.pixelColor(10, 10)
-    assert corner.name() == '#19151c'
-    if lp._bunny_pixmap() is not None:
-        assert middle.name() != '#19151c'                               # something (the bunny) in the middle
+    assert image.pixelColor(10, 10).name() == '#19151c'                 # no header bar: the background
+    screen = shell.screen
+    cx, cy, cw, ch = screen.card
+    assert image.pixelColor(int(cx + cw - 30), int(cy + 20)).name() == '#2f2935'   # the timeline card
+    left, top, width, height = screen.wordmark_rect
+    row = [image.pixelColor(int(left + i), int(top + height * 0.6)).name() for i in range(0, int(width), 3)]
+    assert any(colour != '#19151c' for colour in row)                   # the wordmark is drawn
     shell.deleteLater()
 
 
@@ -60,7 +66,11 @@ def test_a_very_first_start_opens_where_the_window_will(lp, app):
     x, y, width, height = meta['geometry']
     avail = app.primaryScreen().availableGeometry()
     assert avail.contains(x + width // 2, y + height // 2) and width >= 320 and height >= 200
-    assert meta['background'].startswith('#')
+    assert meta['background'].startswith('#') and meta['theme']           # the skeleton's colours
+    shell = lp._make_shell(app, meta, 'first')
+    assert shell is not None and shell.background == meta['background']
+    assert (shell.width(), shell.height()) == (width, height)
+    shell.deleteLater()
 
 
 def test_the_launchers_skeleton_replaces_our_picture_and_is_told_when_to_fade(lp, app, tmp_path, monkeypatch):
@@ -168,19 +178,16 @@ def test_the_kept_skeleton_is_drawn_by_the_app_when_it_still_fits(lp, app, tmp_p
     assert lp.read_cover(meta) is None
 
 
-def test_the_skeleton_paints_panels_without_the_legacy_header_icon(lp, app, tmp_path, monkeypatch):
+def test_with_a_kept_skeleton_the_same_launch_screen_is_drawn(lp, app, tmp_path, monkeypatch):
     from PySide6.QtGui import QImage
+    monkeypatch.setenv('TWOBYTEASR_LAUNCH_MOTION', '0')
     (tmp_path / 'cover.txt').write_text(_COVER, 'utf8')
-    monkeypatch.setattr(lp, '_bunny_pixmap', lambda: pytest.fail('skeleton requested icon'))
     shell = lp._make_shell(app, _meta(lp, app, picture=False), 'skeleton')
     assert shell is not None and shell.kind == 'skeleton'
-    shell.resize(1320, 880)
     image = QImage(shell.size(), QImage.Format.Format_ARGB32)
     shell.render(image)
-    assert image.pixelColor(40, 40).name() == '#3a2f44'             # older icon position
-    assert image.pixelColor(120, 300).name() == '#3a2f44'           # inside the panel
-    assert image.pixelColor(1000, 700).name() == '#19151c'          # the background
-    assert image.pixelColor(400, 400).name() == '#252028'           # a block
+    assert image.pixelColor(120, 300).name() == '#19151c'           # no skeleton panel any more
+    assert image.pixelColor(40, 40).name() == '#19151c'
     shell.deleteLater()
 
 

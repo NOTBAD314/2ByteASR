@@ -800,9 +800,11 @@ def compile_composition_data(
         if cue.style_id not in recipes:
             recipes[cue.style_id] = visual
         from ..caption_style.speaker_labels import template_speaker
+        from ..caption_style.visual_snapshot import web_theme_text
         row = {
             "id": cue.id,
-            "text": snapshot.text,
+            # A web theme's cue carries its own marks after the text; every other cue is unchanged.
+            "text": web_theme_text(snapshot),
             "speaker": template_speaker(project, cue),
             "translation": getattr(snapshot, "translation", ""),
             "startMs": max(0, cue.start_ms - start_ms),

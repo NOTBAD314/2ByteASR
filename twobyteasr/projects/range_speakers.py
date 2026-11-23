@@ -1,9 +1,14 @@
 """Conservative retirement of unreferenced, unchanged range-task identities."""
 import copy
 import re
-from dataclasses import asdict
+
+from .studio_project import SPEAKER_NAME_STYLE_FIELDS, speaker_record
 
 KEY = 'range_auto_speakers'
+
+
+def _without_unset_name_style(record):
+    return {k: v for k, v in dict(record).items() if v or k not in SPEAKER_NAME_STYLE_FIELDS}
 STATE_KEYS = ('speaker_track_order', 'speaker_roles', 'locked_speakers',
               'caption_ripple_disabled_speakers', 'collapsed_speakers')
 METADATA_KEYS = (KEY, 'speaker_names')
@@ -29,7 +34,7 @@ def register_range_speakers(project, speakers):
     if speakers:
         records = project.generation_metadata.setdefault(KEY, {})
         for speaker in speakers:
-            records.setdefault(speaker.id, asdict(speaker))
+            records.setdefault(speaker.id, speaker_record(speaker))
 
 
 def orphan_range_speakers(project):
@@ -55,7 +60,7 @@ def orphan_range_speakers(project):
         if speaker.id in referenced or speaker.id in protected or speaker.hidden or speaker.is_host:
             continue
         original = records.get(speaker.id)
-        unchanged = original == asdict(speaker) if original is not None else (
+        unchanged = _without_unset_name_style(original) == speaker_record(speaker) if original is not None else (
             speaker.id in legacy and speaker.id.startswith('range-')
             and re.fullmatch(r'局部识别 · S\d+（待确认）', speaker.name or '')
             and speaker.style_id == 'default' and not speaker.color)

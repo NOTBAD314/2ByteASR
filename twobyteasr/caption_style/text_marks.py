@@ -2,12 +2,35 @@
 
 Ranges use Python Unicode offsets on grapheme boundaries, never Markdown or
 UTF-16 offsets. ==highlight== is a 2ByteASR extension. No acoustic times live here.
+
+2026-11-20 (user): ~~strike~~ (also --strike--) and line headings ``# `` to
+``###### `` join the grammar. A heading is a mark ``heading: 1..6`` over its
+line's text; renderers scale the line by ``heading_scale`` and draw it bold.
 """
 from copy import deepcopy
 from difflib import SequenceMatcher
 from functools import lru_cache
 
-MARK_FIELDS = frozenset(('bold', 'italic', 'highlight', 'color'))
+# ``font`` (a family name) is display-only: speaker-name prefixes use it, and
+# no Markdown token or editor command writes it.
+MARK_FIELDS = frozenset(('bold', 'italic', 'highlight', 'strike', 'heading', 'color', 'font'))
+
+# Markdown heading level -> type size against the caption's own size. Levels 5
+# and 6 are smaller than body text, as in Markdown; every heading is bold.
+HEADING_SCALES = {1: 1.6, 2: 1.4, 3: 1.25, 4: 1.12, 5: 0.9, 6: 0.78}
+_ESCAPABLE = '*=\\`~-#'
+
+
+def heading_level(attrs):
+    try:
+        level = int(attrs.get('heading') or 0)
+    except (TypeError, ValueError):
+        return 0
+    return level if level in HEADING_SCALES else 0
+
+
+def heading_scale(attrs):
+    return HEADING_SCALES.get(heading_level(attrs), 1.0)
 
 
 def translation_text_override(cue, previous_text, next_text):
@@ -142,9 +165,14 @@ def edit_marks(before, after, marks, start, end, replacement_end):
 
 
 def parse_markdown(source):
-    """A bounded inline grammar. Unmatched delimiters stay editable/literal."""
+    """A bounded inline grammar. Unmatched delimiters stay editable/literal.
+
+    A line starting with 1-6 ``#`` and a space is a heading; the inline marks
+    inside it still apply. ``--x--`` is the same strike as ``~~x~~``.
+    """
     source = str(source)
     chars, marks, source_positions = [], [], []
+    names = {'***': 'bold', '**': 'bold', '*': 'italic', '==': 'highlight', '~~': 'strike', '--': 'strike'}
 
     def closing(token, start, end):
         pos = start
@@ -157,13 +185,34 @@ def parse_markdown(source):
             pos += 1
         return -1
 
+    def heading_at(pos, end):
+        if pos and source[pos-1] != '\n':
+            return 0, pos
+        level = 0
+        while pos+level < end and source[pos+level] == '#' and level < 7:
+            level += 1
+        if 1 <= level <= 6 and pos+level < end and source[pos+level] in ' \u3000':
+            return level, pos+level+1
+        return 0, pos
+
     def scan(start, end, depth=0):
         pos = start
         while pos < end:
-            if source[pos] == '\\' and pos+1 < end and source[pos+1] in '*=\\`':
+            if depth == 0:
+                level, body = heading_at(pos, end)
+                if level:
+                    stop = source.find('\n', body, end)
+                    stop = end if stop < 0 else stop
+                    a = len(chars)
+                    scan(body, stop, 1)
+                    if len(chars) > a:
+                        marks.append({'start': a, 'end': len(chars), 'heading': level})
+                    pos = stop
+                    continue
+            if source[pos] == '\\' and pos+1 < end and source[pos+1] in _ESCAPABLE:
                 chars.append(source[pos+1]); source_positions.append(pos+1); pos += 2
                 continue
-            token = next((v for v in ('***', '**', '==', '*', '`') if source.startswith(v, pos)), '')
+            token = next((v for v in ('***', '**', '==', '~~', '--', '*', '`') if source.startswith(v, pos)), '')
             stop = closing(token, pos+len(token), end) if token and depth < 32 else -1
             if stop > pos+len(token):
                 a = len(chars)
@@ -171,8 +220,7 @@ def parse_markdown(source):
                     chars.extend(source[pos+1:stop]); source_positions.extend(range(pos+1, stop))
                 else:
                     scan(pos+len(token), stop, depth+1)
-                    marks.append({'start': a, 'end': len(chars),
-                                  {'***':'bold', '**':'bold', '*':'italic', '==':'highlight'}[token]: True})
+                    marks.append({'start': a, 'end': len(chars), names[token]: True})
                 if token == '***': marks[-1]['italic'] = True
                 pos = stop+len(token)
             else:
@@ -195,15 +243,44 @@ def runs(text, marks):
     return result
 
 
+def _escape_markdown(value, line_start):
+    out = []
+    for index, char in enumerate(value):
+        doubled = char in '~-' and ((index+1 < len(value) and value[index+1] == char)
+                                    or (index and value[index-1] == char))
+        leading = char == '#' and (value[index-1] == '\n' if index else line_start)
+        out.append('\\'+char if char in '*=\\`' or doubled or leading else char)
+    return ''.join(out)
+
+
+def _inline_markdown(text, a, b, attrs):
+    value = _escape_markdown(text[a:b], a == 0 or text[a-1] == '\n')
+    for key, token in (('italic','*'), ('bold','**'), ('highlight','=='), ('strike', '~~')):
+        if attrs.get(key):
+            value = token+value+token
+    return value
+
+
 def markdown_text(text, marks):
-    parts = []
-    for a, b, attrs in runs(text, marks):
-        value = ''.join('\\'+c if c in '*=\\`' else c for c in text[a:b])
-        for key, token in (('italic','*'), ('bold','**'), ('highlight','==')):
-            if attrs.get(key):
-                value = token+value+token
-        parts.append(value)
-    return ''.join(parts)
+    marks = normalize_marks(text, marks)
+    headings = [m for m in marks if heading_level(m)]
+    if not headings:
+        return ''.join(_inline_markdown(text, a, b, attrs) for a, b, attrs in runs(text, marks))
+    # Headings are whole lines, so inline tokens close at each line end and a
+    # covered line starts with its ``#`` prefix.
+    inline = [m for m in marks if not heading_level(m) or set(m) - {'start', 'end', 'heading'}]
+    inline = [{k: v for k, v in m.items() if k != 'heading'} for m in inline]
+    shown, offset = [], 0
+    for line in text.split('\n'):
+        end = offset+len(line)
+        pieces = [(max(a, offset), min(b, end), attrs) for a, b, attrs in runs(text, inline)
+                  if a < end and b > offset]
+        value = ''.join(_inline_markdown(text, a, b, attrs) for a, b, attrs in pieces)
+        level = next((heading_level(m) for m in headings
+                      if line and m['start'] <= offset and end <= m['end']), 0)
+        shown.append('#'*level+' '+value if level else value)
+        offset = end+1
+    return '\n'.join(shown)
 
 
 def layer_marks(cue, layer='original'):

@@ -72,6 +72,8 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     # A final shared gate also covers the established Chinese/ASR pipeline.
     lookup = {entry.key: entry for entry in entries}
     accepted = []
+    from .proposal_safety import weak_proposal_reason
+    excluded = []
     for result in results:
         for hit in result.hits:
             entry = lookup.get(hit.target_key)
@@ -95,8 +97,13 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
                         from dataclasses import replace
                         hit = replace(hit, content_evidence_verified=True,
                             evidence='；'.join(filter(None,(hit.evidence,*support,'未核验原音'))))
-            if constrain_text(entry.text, candidate, edit_policy, lexical=lexical, evidence=evidence) == candidate:
+            reason = (weak_proposal_reason(entry.text, hit.span, hit.replacement, evidence=evidence,
+                      confirmed_alias=lexical) if entry.target.language.split('-')[0] in {'zh', ''} else '')
+            if reason:
+                excluded.append(dict(cue_id=entry.key, span=list(hit.span), reason=reason))
+            elif constrain_text(entry.text, candidate, edit_policy, lexical=lexical, evidence=evidence) == candidate:
                 accepted.append(hit)
+    receipt['excluded_weak_proposals'] = excluded
     receipt['proposed_changes'] = len(accepted)
     receipt['proposed_cues'] = len({hit.target.cue_id if hit.target else hit.cue_id for hit in accepted})
     receipt['automatic_changes'] = sum(hit.default_selected for hit in accepted)

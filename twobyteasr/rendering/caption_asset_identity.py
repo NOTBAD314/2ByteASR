@@ -67,7 +67,8 @@ _FONTS={
  'Cubic 11':'Cubic11.ttf','Source Han Sans SC':'SourceHanSansSC-Medium.woff2',
  'Source Han Sans SC Heavy':'SourceHanSansSC-Heavy.otf','思源黑体 Heavy':'SourceHanSansSC-Heavy.otf',
  'Source Han Sans SC Medium':'SourceHanSansSC-Medium.otf','Smiley Sans':'SmileySans-Oblique.woff2',
- 'ZCOOL KuaiLe':'ZCOOLKuaiLe-Regular.ttf','ZCOOL QingKe HuangYou':'ZCOOLQingKeHuangYou-Regular.ttf'}
+ 'ZCOOL KuaiLe':'ZCOOLKuaiLe-Regular.ttf','ZCOOL QingKe HuangYou':'ZCOOLQingKeHuangYou-Regular.ttf',
+ 'JetBrains Mono':'JetBrainsMono-Regular.ttf'}
 
 @lru_cache(maxsize=128)
 def _file_digest(path, size, modified):
@@ -95,7 +96,9 @@ def _families(value):
 def font_dependencies(props, cues):
     families=_families([c.get('visual') or props.get('recipes',{}).get(c.get('styleId')) for c in cues])
     root=Path(__file__).resolve().parents[2]/'renderer/public/fonts'
-    bundled={name:file_digest(root/_FONTS[name]) for name in sorted(families) if name in _FONTS}
+    # A missing decoration face falls back to system mono, so it keys as 'missing'.
+    bundled={name:file_digest(root/_FONTS[name]) if name!='JetBrains Mono' or (root/_FONTS[name]).is_file() else 'missing'
+             for name in sorted(families) if name in _FONTS}
     embedded=[]
     for face in props.get('fontFaces',[]):
         if face.get('family') in families:

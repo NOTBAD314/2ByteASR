@@ -834,7 +834,7 @@ def apply_correction_edits(
     def reject(rule_id, **evidence):
         if decisions is not None:
             decisions.append({**edit, 'rule_id': rule_id, 'accepted': False,
-                'input_text': text, 'evidence': evidence})
+                'input_text': text, 'model_evidence': edit.get('evidence'), 'evidence': evidence})
     # 每家族取第一份非空文本，供相似度型计数（hinted / 数字 / 数量）使用。
     independent_alternates = [texts[0] for texts in grouped.values()]
     while pending and processed < 12:
@@ -950,6 +950,15 @@ def apply_correction_edits(
                 continue
         from .pronouns import pronoun_swap_in_context
         if pronoun_swap_in_context(text, start, end, target):
+            rationale = str(edit.get("evidence") or "")
+            retained_pronoun = re.escape(source[0])
+            keep_original = re.search(
+                rf'(?:主稿|原文|原稿|原句)(?:的|中)?\s*[“「"\']?{retained_pronoun}'
+                r'[”」"\']?\s*(?:已(?:经|經)?)?(?:正确|正確|无[需须]|無[需須]|不[必用]改)',
+                rationale)
+            if keep_original:
+                reject('pronoun_proposal_contradicts_retain_reason', disposition='rejected_contradiction')
+                continue
             # 2026-10-15: 他/她/它 are one syllable; no ASR can support or refute
             # the gender, so the single-character and two-source rules below
             # would block every such fix. The model's context reading decides.

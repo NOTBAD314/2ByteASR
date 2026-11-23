@@ -1,9 +1,12 @@
 """Editorial grouping; never claims that grouped voices are one person."""
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from time import perf_counter
+from uuid import uuid4
 
 UNIFIED = 'SUBTITLES'
 BACKGROUND = 'GAME_BACKGROUND'
+CATEGORIES = 'speaker_categories'
 
 
 def normalized_speaker_mode(mode):
@@ -31,7 +34,8 @@ def organize(project, selected, action, target=None):
     state = result.generation_metadata.setdefault('speaker_organization',{})
     origins = state.setdefault('cue_origins',{})
     identities = state.setdefault('original_speakers',{})
-    for speaker in result.speakers:identities.setdefault(speaker.id,asdict(speaker))
+    from .studio_project import speaker_record
+    for speaker in result.speakers:identities.setdefault(speaker.id,speaker_record(speaker))
     for cue in result.cues:origins.setdefault(cue.id,cue.speaker_id)
     state.setdefault('decisions',{})
     if action == 'merge' and target not in {s.id for s in result.speakers}:
@@ -127,3 +131,118 @@ def organization_command(project, selected, action, target=None, changed=None, t
         def redo(self):self.apply(desired)
         def undo(self):self.apply(before)
     return Command()
+
+
+def speaker_edit_command(project, selected, *, target=None, category=None, rename='', label='', refreshed=None):
+    """Prepare one reversible edit of speaker ownership or board membership."""
+    from PySide6.QtGui import QUndoCommand
+    from .studio_project import speaker_record
+    from .studio_runtime_state import DirtyDomain, state_for
+    from ..diagnostics.event_log import emit
+
+    started = perf_counter()
+    state = state_for(project)
+    operation_id = uuid4().hex
+    speakers = {speaker.id: speaker for speaker in project.speakers}
+    selected = (set(selected) & speakers.keys()) - {target, BACKGROUND, UNIFIED}
+    previous_categories = project.studio_state.get(CATEGORIES)
+    categories = dict(previous_categories or {})
+    before_speakers = project.speakers
+    after_speakers = before_speakers
+    changes = {}
+    before_org = project.generation_metadata.get('speaker_organization')
+    after_org = before_org
+    before_order = project.studio_state.get('speaker_track_order')
+    after_order = before_order
+    if target:
+        if not selected or target not in speakers or target in {BACKGROUND, UNIFIED}:
+            return None
+        after_speakers = [replace(speaker, name=rename) if speaker.id == target and rename else speaker
+                          for speaker in before_speakers if speaker.id not in selected]
+        changes = {cue.id: cue.speaker_id for cue in project.cues if cue.speaker_id in selected}
+        before = before_org or {}
+        origins = dict(before.get('cue_origins', {}))
+        for cue_id, speaker_id in changes.items():
+            origins.setdefault(cue_id, speaker_id)
+        identities = dict(before.get('original_speakers', {}))
+        for speaker_id in selected:
+            identities.setdefault(speaker_id, speaker_record(speakers[speaker_id]))
+            categories.pop(speaker_id, None)
+        decisions = {**before.get('decisions', {}), **dict.fromkeys(selected, 'merge')}
+        aliases = {key: target if value in selected else value
+                   for key, value in before.get('current_speaker_ids', {}).items()}
+        aliases.update(dict.fromkeys(selected, target))
+        after_org = dict(before, cue_origins=origins, original_speakers=identities,
+                         decisions=decisions, current_speaker_ids=aliases)
+        after_order = [key for key in before_order if key not in selected] if before_order is not None else None
+    else:
+        selected = {key for key in selected if (previous_categories or {}).get(key) != category}
+        if not selected:
+            return None
+        for key in selected:
+            if category:
+                categories[key] = category
+            else:
+                categories.pop(key, None)
+    affected = tuple(changes) if target else tuple(cue.id for cue in project.cues if cue.speaker_id in selected)
+    prepare_ms = (perf_counter() - started) * 1000
+
+    def write(container, key, value):
+        if value is None:
+            container.pop(key, None)
+        else:
+            container[key] = value
+
+    class Command(QUndoCommand):
+        error = ''
+
+        def apply(self, forward):
+            revision = state.revision
+            commit_start = perf_counter()
+            stage = dict(project_id=project.project_id, operation_id=operation_id, revision=revision,
+                         source_ids=sorted(selected), target_type='speaker' if target else 'category',
+                         target_id=target or category or 'main', affected_cues=len(affected),
+                         prepare_ms=round(prepare_ms, 2), direction='redo' if forward else 'undo')
+            old_speakers = project.speakers
+            # Stage only affected cue objects. This also preserves the previous
+            # revision used by background recognition and autosave.
+            old_cues = project.cues
+            new_cues = [replace(cue, speaker_id=target if forward else changes[cue.id])
+                        if cue.id in changes else cue for cue in old_cues] if changes else old_cues
+            dirty = DirtyDomain.PROJECT_METADATA | DirtyDomain.AUTOSAVE
+            if target:
+                dirty |= (DirtyDomain.CUE_MODEL | DirtyDomain.CUE_STYLE | DirtyDomain.QC
+                          | DirtyDomain.TIMELINE_INDEX | DirtyDomain.TIMELINE_PIXELS
+                          | DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW)
+            try:
+                with state.transaction(project, action_id='speaker_edit', dirty=dirty,
+                        affected_cue_ids=affected, snapshot_cues=False,
+                        studio_state_keys=(CATEGORIES, 'speaker_track_order'),
+                        generation_metadata_keys=('speaker_organization',)):
+                    project.speakers = after_speakers if forward else before_speakers
+                    project.cues = new_cues
+                    write(project.studio_state, CATEGORIES, categories if forward else previous_categories)
+                    write(project.studio_state, 'speaker_track_order', after_order if forward else before_order)
+                    write(project.generation_metadata, 'speaker_organization', after_org if forward else before_org)
+            except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+                project.speakers, project.cues = old_speakers, old_cues
+                state.reindex_cues(project)
+                self.error = str(exc)
+                self.setObsolete(True)
+                emit('studio.speaker_edit', result='failed', rolled_back=True, **stage)
+                return
+            committed = perf_counter()
+            if refreshed is not None:
+                refreshed()
+            emit('studio.speaker_edit', result='success', **stage,
+                 commit_ms=round((committed-commit_start)*1000, 2),
+                 refresh_ms=round((perf_counter()-committed)*1000, 2),
+                 commits=state.revision-revision, refreshes=int(refreshed is not None), autosave_requests=1)
+
+        def redo(self):
+            self.apply(True)
+
+        def undo(self):
+            self.apply(False)
+
+    return Command(label)

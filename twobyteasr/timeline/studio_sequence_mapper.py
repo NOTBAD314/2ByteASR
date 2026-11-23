@@ -23,6 +23,27 @@ class MappedTime:
     source_path: str
 
 
+def open_preview_position(saved_ms, duration_ms, resolve_target):
+    """Return a valid preview lookup distinct from an inclusive saved cursor."""
+    logical = max(0, min(int(saved_ms), int(duration_ms)))
+    preview = logical
+    tail = None
+    if logical == duration_ms and duration_ms > 0:
+        # Resolve ownership just inside the half-open interval. This is a
+        # lookup coordinate, not a frame prediction or assumed frame period.
+        candidate = resolve_target(logical - 1)
+        if candidate and int(candidate.get('timeline_out_ms', 0)) == logical:
+            preview = logical - 1
+            source_in = candidate.get('source_in_ms')
+            source_out = candidate.get('source_out_ms')
+            if source_in is not None and source_out is not None and source_in < source_out:
+                candidate = dict(candidate, source_ms=min(int(source_out)-1, int(candidate['source_ms'])))
+                tail = dict(source_range=(int(source_in), int(source_out)),
+                            fallback_ms=int(candidate['timeline_in_ms']), clip_id=str(candidate['clip_id']))
+            return logical, preview, candidate, tail
+    return logical, preview, resolve_target(preview), tail
+
+
 def timeline_to_source(sequence: EditSequence, timeline_ms: int) -> MappedTime | None:
     time = max(0, int(timeline_ms))
     segment = segment_at(sequence, time if time < sequence.timeline_duration_ms else max(0, sequence.timeline_duration_ms - 1))

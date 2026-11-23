@@ -252,6 +252,14 @@ def numeric_unsafe_cut_offsets(text, window=NUMERIC_CUT_WINDOW):
     if len(positions) < 2 or len(positions) != len(content_exact(text)):
         return set()
     unsafe = set()
+    # Losing the ordinal prefix or the counter can leave the numeric value
+    # unchanged, so the value comparison below cannot detect these cuts.
+    ordinal = re.compile(rf'第\s*(?:\d+(?:\.\d+)?|[{CN}]+)')
+    counter = re.compile(rf'(?:\d+(?:\.\d+)?|[{CN}]+)\s*(?:[{COUNTERS}]|厘米|公里|分钟|公斤)')
+    for pattern in (ordinal, counter):
+        for match in pattern.finditer(text):
+            unsafe.update(offset for offset, raw in enumerate(positions)
+                          if match.start() < raw < match.end())
     for offset in range(1, len(positions)):
         cut = positions[offset]
         low = positions[max(0, offset - window)]

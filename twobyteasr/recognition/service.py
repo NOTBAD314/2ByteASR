@@ -681,6 +681,8 @@ def _run_media_queue(
             log_path = legacy.begin_run_event_log()
             print(f"[运行日志] {log_path}")
             startup_self_test = _startup_self_test or legacy.run_startup_self_test()
+            legacy.record_run_event('queue_startup_timing', phase='startup_self_test_finished',
+                                    elapsed_seconds=time.perf_counter()-queue_started)
             legacy.record_run_event(
                 "queue_configured",
                 media_count=len(normalized_paths),
@@ -744,6 +746,8 @@ def _run_media_queue(
                         ensure_environment_ready(runtime_settings)
                 if not delivery_only:
                     pipeline.check_runtime(legacy)
+                    legacy.record_run_event('queue_startup_timing', phase='runtime_preflight_finished',
+                                            elapsed_seconds=time.perf_counter()-queue_started)
                 if runtime_context.recognition_snapshot:
                     from .recognition_input import lane_snapshots, prepare_recognition_input
                     from ..media.media_service import GLOBAL_MEDIA_SERVICE
@@ -849,8 +853,21 @@ def _run_media_queue(
                 return QueueResult(tuple(replace(r, job_id=runtime_context.job_id) for r in results), time.perf_counter() - queue_started, log_path, runtime_context.job_id)
             except Exception as exc:
                 error = _exception_message(exc, "运行环境检查失败")
-                for path in normalized_paths:
-                    results.append(MediaResult(path, "failed", error=error))
+                for index, path in enumerate(normalized_paths, 1):
+                    report_json = report_text = ''
+                    begin_report = getattr(legacy, 'begin_media_report', None)
+                    if callable(begin_report):
+                        try:
+                            runtime_context.media_index = index
+                            begin_report(path, {})
+                            report_json, report_text = legacy.finish_media_report(
+                                'failed', error=error, failure_stage='queue_preflight',
+                                media_probe_status='not_completed')
+                        except (OSError, ValueError, RuntimeError) as report_error:
+                            legacy.record_run_event('preflight_report_write_failed',
+                                                    error=str(report_error))
+                    results.append(MediaResult(path, "failed", error=error,
+                                               report_json_path=report_json, report_text_path=report_text))
                 legacy.record_run_event("queue_failed", error=error)
                 return QueueResult(tuple(replace(r, job_id=runtime_context.job_id) for r in results), time.perf_counter() - queue_started, log_path, runtime_context.job_id)
 

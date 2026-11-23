@@ -241,10 +241,11 @@ class TermLibraryPage(QWidget):
         self.workspace_navigation.recognition_requested.connect(self.recognition_requested)
         self.workspace_navigation.workshop_requested.connect(self.workshop_requested)
         self.workspace_navigation.history_requested.connect(self.history_requested)
-        side.addStretch(1)
-        sync_status = QLabel("●  官方词库已同步")
-        sync_status.setObjectName("termSyncStatus")
-        side.addWidget(sync_status)
+        # 2026-11-23 (user): the same sidebar as the workshop and the history - the current bundle
+        # and the model health (``bundle_summary``) - so the left column never changes between them.
+        from twobyteasr.local_models.bundle_summary import BundleSummaryPanel
+        self.bundle_panel = BundleSummaryPanel()
+        side.addWidget(self.bundle_panel, 1)
         outer.addWidget(sidebar)
 
         self._content_layout = outer
@@ -263,6 +264,7 @@ class TermLibraryPage(QWidget):
 
     def refresh_theme_palette(self) -> None:
         self.setStyleSheet(build_term_library_page_qss())
+        self.bundle_panel.refresh_theme_palette()
 
     def _pending(self):
         """The library widget under construction (2026-11-18); ``library`` stays

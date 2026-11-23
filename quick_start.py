@@ -22,7 +22,7 @@ import json
 import sys
 import traceback
 
-if len(sys.argv) >= 2 and sys.argv[1] in {'--mcp-stdio', '--playback-diagnostic'}:
+if len(sys.argv) >= 2 and sys.argv[1] in {'--mcp-stdio', '--playback-diagnostic', '--launch-motion', '--studio-audio-worker'}:
     # No ordinary startup log before these isolated/windowless entry points.
     # The diagnostic coordinator installs its temporary profile first; audited
     # GUI children then use normal startup logging inside their own profiles.
@@ -187,7 +187,52 @@ def _write_setup_marker() -> None:
         pass
 
 
+def _studio_audio_worker():
+    # The windowed Windows bootloader leaves sys.stderr unset even when the
+    # parent supplied an inherited stderr handle.
+    if sys.platform == 'win32' and sys.stderr is None:
+        import msvcrt
+        from ctypes import wintypes
+        get_handle = ctypes.WinDLL('kernel32').GetStdHandle
+        get_handle.argtypes = [wintypes.DWORD]
+        get_handle.restype = wintypes.HANDLE
+        handle = get_handle(-12 & 0xffffffff)
+        if handle and handle != ctypes.c_void_p(-1).value:
+            sys.stderr = os.fdopen(msvcrt.open_osfhandle(handle, os.O_WRONLY),
+                                   'w', encoding='utf-8', buffering=1)
+    try:
+        from twobyteasr.playback.audio_process import main as audio_main
+        return audio_main(sys.argv[2:])
+    except Exception:
+        if sys.stderr is not None:
+            traceback.print_exc(file=sys.stderr)
+        return 1
+
+
+def _tolerant_console() -> None:
+    """A console that cannot show a character must not stop the program (2026-11-22).
+
+    Started from a Traditional Chinese console (cp950: a batch file, a script
+    that redirects output), the startup line 「[流水线版本]」 could not be
+    encoded; the UnicodeEncodeError ended in 「运行环境不完整」. Output keeps the
+    console's encoding and shows such characters as '?'. Not used for the MCP
+    stdio server, whose stdout is a protocol stream."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors='replace')
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == '--launch-motion':
+        # 2026-11-20: the launch screen's animation, drawn by a helper process of its own so the
+        # main process's loading (which holds Python's lock for long stretches) cannot stall it.
+        from twobyteasr.app.launch_motion import child_main
+        return child_main(sys.argv[2])
     if len(sys.argv) == 2 and sys.argv[1] == '--recognition-queue-worker':
         import multiprocessing
         multiprocessing.freeze_support()
@@ -198,6 +243,7 @@ def main() -> int:
         # GUI, no logs or data writes; it forwards to the running window.
         from twobyteasr.local_mcp.mcp_stdio import main as mcp_stdio_main
         return mcp_stdio_main(sys.argv[2:])
+    _tolerant_console()
     if len(sys.argv) == 3 and sys.argv[1] == '--data-roots-inspect':
         from twobyteasr.diagnostics.data_roots_inspect import main as inspect_data_roots
         return inspect_data_roots(sys.argv[2])
@@ -260,14 +306,17 @@ def main() -> int:
         from twobyteasr.local_models.model_download_diagnostic import main as download_check_main
         return download_check_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
-        from twobyteasr.playback.audio_process import main as audio_main
-        return audio_main(sys.argv[2:])
+        return _studio_audio_worker()
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-qc-worker':
         from twobyteasr.subtitle_rules.qc_process import main as qc_main
         return qc_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--glossary-summary-worker':
         from twobyteasr.glossary.summary_process import main as glossary_summary_main
         return glossary_summary_main()
+    if len(sys.argv) == 2 and sys.argv[1] == '--storage-maintenance-worker':
+        # 2026-11-23: the six-hourly cache maintenance, outside the window's Python lock.
+        from twobyteasr.storage.maintenance_process import main as storage_maintenance_main
+        return storage_maintenance_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--subtitle-export-worker':
         from twobyteasr.exports.subtitle_export_process import main as subtitle_export_main
         return subtitle_export_main()

@@ -33,10 +33,11 @@ class FiletransModel:
     diarization: bool         # parameters.diarization_enabled supported
     vocabulary: bool          # native hotwords (vocabulary / vocabulary_id)
     context: bool             # input.context domain hints
-    language_parameter: bool  # parameters.language (one code, omit for mixed)
+    language_parameter: bool  # a source-language request field exists (omit for mixed/auto)
     timestamp_source: str
     max_hours: float = 12.0
     diarization_max_hours: float = 2.0
+    language_field: str = 'language'   # 'language' (one code) or 'language_hints' (list, up to 4)
 
 
 FILETRANS_MODELS = {
@@ -46,13 +47,38 @@ FILETRANS_MODELS = {
         timestamp_source='qwen3_filetrans_native'),
     FILETRANS: FiletransModel(
         FILETRANS, 'Qwen-Audio-3.1-ASR-Flash 录音文件识别', 'file_urls', 'always',
-        diarization=True, vocabulary=True, context=True, language_parameter=False,
-        timestamp_source='qwen31_native'),
+        diarization=True, vocabulary=True, context=True, language_parameter=True,
+        timestamp_source='qwen31_native', language_field='language_hints'),
 }
 
 # Task language (首页“字幕语言”) -> parameters.language. ``auto`` sends nothing.
 FILETRANS_LANGUAGE_CODES = {'zh': 'zh', 'ja': 'ja', 'en': 'en', 'ko': 'ko', 'es': 'es', 'de': 'de', 'fr': 'fr',
                             'pt': 'pt', 'it': 'it', 'ru': 'ru'}
+
+
+# 2026-11-22 (user): a Chinese 4 h stream on Qwen Audio 3.1 came back with
+# 21 Japanese/Korean lines (ああ, うんうんおいおい, 어 어요) because the model was
+# sent no language. Its HTTP reference (qwen-audio-asr-filetrans-http-api,
+# read 2026-11-22) now documents parameters.language_hints: "设置待识别语言代码。
+# 如果无法提前确定语种，可不设置，模型会自动识别语种。" Up to 4 codes. The
+# chosen language goes first; English is added for game terms and names
+# (and so English hotwords stay active). Codes listed on that page:
+LANGUAGE_HINT_CODES = frozenset({'zh', 'en', 'ja', 'ko', 'vi', 'th', 'id', 'ms', 'tl', 'hi', 'ar', 'fr', 'de', 'es',
+                                 'pt', 'ru', 'it', 'nl', 'sv', 'da', 'fi', 'no', 'el', 'pl', 'cs', 'hu', 'ro', 'bg',
+                                 'hr', 'sk'})
+
+
+def filetrans_language_parameters(model, code) -> dict:
+    """The request's language field for one task language code, or {}."""
+    spec = filetrans_spec(model)
+    code = str(code or '')
+    if not spec.language_parameter or not code:
+        return {}
+    if spec.language_field == 'language_hints':
+        if code not in LANGUAGE_HINT_CODES:
+            return {}
+        return {'language_hints': [code] + (['en'] if code != 'en' else [])}
+    return {'language': code}
 
 
 def is_filetrans_model(model) -> bool:

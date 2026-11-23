@@ -70,7 +70,7 @@ class TimelineOverview(QWidget):
         plain.setAlpha(70)
         warn = QColor(colors["pending"][1])
         issue = QColor(colors["issue"][1])
-        risks = cached_review_risks(project)
+        risks = cached_review_risks(project, refresh=False)
         width = pixmap.width()
         flagged = []
         for cue in cues:

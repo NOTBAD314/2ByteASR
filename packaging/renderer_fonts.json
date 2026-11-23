@@ -28,6 +28,10 @@
     {
       "file": "ZCOOLQingKeHuangYou-Regular.ttf",
       "sha256": "54f0c0df4308cd74cd0f2fd3494ae054dbc4a1fd6fa7d71f4807eb4cdd8b4136"
+    },
+    {
+      "file": "JetBrainsMono-Regular.ttf",
+      "sha256": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f"
     }
   ]
 }

@@ -52,10 +52,12 @@ from ..design.typography import MONO_FONT_STACK
 from ..studio.studio_find_replace import PreviewBinding
 from ..design.theme_manager import theme_key
 from ..design.themed_icons import paint_cached_icon
-from ..design.ui_theme import blend_hex, theme_definition
+from ..design.ui_theme import blend_hex as _blend_hex, theme_definition
 from ..design.ui_widgets import SwitchControl
 from ..app.lazy_pages import existing_page
 from .proofread_policy import issue_enabled, pending_issue, repetition_cleanup, whole_repetition
+
+blend_hex = lru_cache(maxsize=1024)(_blend_hex)
 
 # 2026-10-10: no imports inside paint/scroll paths. PySide's import hook
 # re-reads the importing module's source for every executed import
@@ -132,13 +134,18 @@ def contrast(foreground, background):
 
 def legible(foreground, background, theme, ratio=4.5):
     """``foreground`` moved toward the theme's text color until it reads."""
+    return _legible_color(foreground, background, theme.text, ratio)
+
+
+@lru_cache(maxsize=1024)
+def _legible_color(foreground, background, text_color, ratio):
     if contrast(foreground, background) >= ratio:
         return foreground
     for amount in (0.25, 0.45, 0.65, 0.85, 1.0):
-        candidate = blend_hex(foreground, theme.text, amount)
+        candidate = blend_hex(foreground, text_color, amount)
         if contrast(candidate, background) >= ratio:
             return candidate
-    return theme.text
+    return text_color
 
 
 def mark_colors(theme):
@@ -681,7 +688,8 @@ def issue_groups(row, terms=None, stutter=True):
     key = (row["base"], terms.version, bool(stutter),
            tuple((i["kind"], i["span"], i["original"], i["replacement"], i["checked"], i["stale"], i["reviewed"],
                   i.get("default"), i.get("cleanup"), i.get("lexical"), i.get('_allow_punctuation'),
-                  i.get('content_evidence_verified')) for i in row["issues"]))
+                  i.get('content_evidence_verified'), i.get('proposal_id'),
+                  tuple(i.get('application_parts') or ())) for i in row["issues"]))
     cached = row.get("_groups")
     if cached is not None and cached[0] == key:
         return cached[1]
@@ -697,6 +705,13 @@ def issue_groups(row, terms=None, stutter=True):
         return index
 
     def join(x, y):
+        # Persisted action membership belongs to the user's edit. A later
+        # match on adjacent characters must not turn it into a partial group.
+        left, right = row["issues"][x], row["issues"][y]
+        for applied, peer in ((left, right), (right, left)):
+            if (applied.get("checked") and applied.get("application_parts")
+                    and peer.get("proposal_id") not in applied["application_parts"]):
+                return
         x, y = find(x), find(y)
         if x != y:
             owner[max(x, y)] = min(x, y)
@@ -1059,6 +1074,9 @@ class CaptionReviewList(QWidget):
         self.below_metrics = QFontMetricsF(self.below)
         self._layout_advances = (_font_advance_cache(self.body_metrics), _font_advance_cache(self.below_metrics))
         self.small_metrics = QFontMetricsF(self.small)
+        self._speaker_font = QFont(self.small)
+        self._speaker_font.setWeight(QFont.Weight.DemiBold)
+        self._speaker_metrics = QFontMetricsF(self._speaker_font)
         self.label_metrics = QFontMetricsF(self.label_font)
         self.mono_metrics = QFontMetricsF(self.mono)
         self.PAD = z(8)
@@ -1328,11 +1346,13 @@ class CaptionReviewList(QWidget):
         return marks
 
     def _row_key(self, row, width=None):
+        needle = self.find.get("needle")
+        has_hit = needle and needle.casefold() in row["base"].casefold()
         return (row["cue_id"], row["base"], row.get("origin"), self._zoom,
                 int(self._row_width(row) if width is None else width), self.stutter,
                 bool(row.get("review_retained") and not row.get("review_dismissed")),
-                self.terms.version, self.find.get("needle"), self.find.get("replace"),
-                tuple(sorted(start for cue, start in self.find.get("excluded") or () if cue == row["cue_id"])),
+                self.terms.version, needle if has_hit else None, self.find.get("replace") if has_hit else None,
+                tuple(sorted(start for cue, start in self.find.get("excluded") or () if cue == row["cue_id"])) if has_hit else (),
                 tuple(sorted(str(index) for cue, index in self.expanded if cue == row["cue_id"])),
                 row.get('group_first', True), row.get('group_last', True), row.get('translation_missing', False),
                 self.paired, row["cue_id"] in getattr(self, "held_ids", ()),
@@ -1442,6 +1462,11 @@ class CaptionReviewList(QWidget):
         return len(open_groups) != 1
 
     def _row_height(self, row):
+        key = (self._metrics_key, self._row_key(row))
+        geometry = self._height_geometry(row)
+        cached = self._height_cache.get(row['cue_id'])
+        if cached is not None and cached[0] == key and cached[2] == geometry:
+            return cached[1]
         layout = self._row_layout(row)
         text = max(sum(layout["heights"]), self.LINE)
         text += sum(self.ISSUE if kind != "detail" else self.DETAIL for kind, _value in layout["entries"])
@@ -1451,10 +1476,13 @@ class CaptionReviewList(QWidget):
             text += self.ISSUE
         meta = self.LINE + self.META_LINE * (self._meta_lines(row) - 1)
         height = (self.PAD if row.get('group_first', True) else 0) + max(text, meta) + (self.PAD if row.get('group_last', True) else 0)
-        self._height_cache[row['cue_id']] = ((self._metrics_key, self._row_key(row)), height)
+        self._height_cache[row['cue_id']] = key, height, geometry
         while len(self._height_cache) > 32768:
             self._height_cache.pop(next(iter(self._height_cache)))
         return height
+
+    def _height_geometry(self, row):
+        return bool(self._remember_action(row)), self._has_status(row), self._meta_lines(row)
 
     def _remember_action(self, row):
         # Word segmentation can initialize a large dictionary. Layout/paint
@@ -2098,6 +2126,7 @@ class CaptionReviewList(QWidget):
         selection = self.selection()
         selected = (selection[1], selection[2]) if selection is not None and selection[0] == row["cue_id"] else None
         char_lines = []
+        advance = self._layout_advances[0]
         for line, line_height in zip(layout["lines"], layout["heights"]):
             boxes = []
             for unit in line:
@@ -2106,8 +2135,8 @@ class CaptionReviewList(QWidget):
                 # (never the proposal under it): selection and hit tests.
                 left = x0 + unit["x"] + (0.0 if unit["mark"] is None else (unit["w"] - unit["top_w"]) / 2)
                 for offset in range(len(unit["top"])):
-                    a = left + self.body_metrics.horizontalAdvance(unit["top"][:offset])
-                    b = left + self.body_metrics.horizontalAdvance(unit["top"][:offset + 1])
+                    a = left if offset == 0 else b
+                    b = left + advance(unit["top"][:offset + 1])
                     boxes.append((a, b, unit["start"] + offset))
             if selected is not None:
                 chosen = [(a, b, index) for a, b, index in boxes if selected[0] <= index < selected[1]]
@@ -2255,8 +2284,7 @@ class CaptionReviewList(QWidget):
         """A soft pill with the speaker's colour dot, vertically centred on ``anchor``."""
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         tint = QColor(color).name() if QColor(color).isValid() else theme.text_secondary
-        font = QFont(self.small); font.setWeight(QFont.Weight.DemiBold)
-        metrics = QFontMetricsF(font)
+        metrics = self._speaker_metrics
         dot = z(7)
         shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, self.speaker_w - dot - z(20))
         height = min(z(22), self.LINE - z(6))
@@ -2267,7 +2295,7 @@ class CaptionReviewList(QWidget):
         painter.drawRoundedRect(pill, height / 2 - 1, height / 2 - 1)
         painter.setBrush(QColor(tint))
         painter.drawEllipse(QRectF(pill.left() + z(8), anchor.y() - dot / 2, dot, dot))
-        painter.setFont(font)
+        painter.setFont(self._speaker_font)
         painter.setPen(QColor(legible(blend_hex(tint, theme.text, 0.30), fill, theme)))
         painter.drawText(pill.adjusted(dot + z(12), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), shown)
 
@@ -2880,6 +2908,12 @@ class _ReviewThread(QThread):
     ready = Signal(object)
     failed = Signal(str)
     progress = Signal(int, int)
+    partial = Signal(object, object)  # result, cue ids of one local chunk
+
+    # 2026-11-22 (user, 1 h stream: suggestions appeared 3 → 34 → 55 over two
+    # minutes): a whole-transcript local match now reports per chunk, from
+    # the top, so the first rows fill in while the rest is matched.
+    LOCAL_CHUNK = 160
 
     def __init__(self, project, cue_ids, snapshot, settings, use_ai, parent, stand_in=None):
         super().__init__(parent)
@@ -2888,6 +2922,7 @@ class _ReviewThread(QThread):
         self.inputs = (project, cue_ids, snapshot, settings)
         self.use_ai = use_ai
         self.stand_in = stand_in
+        self.chunked = False
 
     def run(self):
         try:
@@ -2897,6 +2932,18 @@ class _ReviewThread(QThread):
                 self.ready.emit(result)
                 return
             from .studio_glossary_service import preview_glossary_correction
+            project, cue_ids, snapshot, settings = self.inputs
+            if not self.use_ai and len(cue_ids) > self.LOCAL_CHUNK:
+                self.chunked = True
+                for start in range(0, len(cue_ids), self.LOCAL_CHUNK):
+                    chunk = list(cue_ids[start:start+self.LOCAL_CHUNK])
+                    result = preview_glossary_correction(project, chunk, snapshot, settings,
+                                                         cancel_token=self.token, use_ai=False)
+                    self.token.raise_if_cancelled()
+                    self.partial.emit(result, chunk)
+                    self.progress.emit(min(len(cue_ids), start+len(chunk)), len(cue_ids))
+                self.ready.emit(None)
+                return
             result = preview_glossary_correction(*self.inputs, cancel_token=self.token, use_ai=self.use_ai,
                                                  progress=lambda done, total: self.progress.emit(done, total))
             self.token.raise_if_cancelled()
@@ -3811,6 +3858,8 @@ class GlossaryProofreadPage(QWidget):
         self._save_again = False
         self._save_error = ""
         self._terms = TermIndex()
+        self._search_aliases = {}
+        self._search_selected_term = ""
         self._excluded = set()  # search hits the user excluded: {(cue_id, start)}
         self._batch_selected = set()
         self._sticky = ("", set())  # (needle, captions just replaced): kept listed
@@ -3826,7 +3875,7 @@ class GlossaryProofreadPage(QWidget):
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(140)
-        self._filter_timer.timeout.connect(self._apply_filter)
+        self._filter_timer.timeout.connect(self._apply_search_view)
         self._count_timer = QTimer(self)
         self._count_timer.setSingleShot(True)
         self._count_timer.setInterval(120)
@@ -3839,6 +3888,8 @@ class GlossaryProofreadPage(QWidget):
         self._filter_counts = {}
         self._proposal_totals = {}
         self._filter_context = None
+        self._scope_members = set()
+        self._scope_held_only = set()
         self._rematch_timer = QTimer(self)
         self._rematch_timer.setSingleShot(True)
         self._rematch_timer.setInterval(500)
@@ -4235,6 +4286,7 @@ class GlossaryProofreadPage(QWidget):
         self.term_filter = QLineEdit()
         self.term_filter.setObjectName("proofreadSearch")
         self.term_filter.setPlaceholderText(tr("筛选规范词或别名"))
+        self.term_filter.setClearButtonEnabled(True)
         self.term_filter.textChanged.connect(self._fill_terms)
         layout.addWidget(self.term_filter)
         self.term_list = QListWidget()
@@ -5017,11 +5069,18 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._hidden_speakers = self._load_hidden_speakers(live)
         inherited, origin = inherited_library_ids(live) if live is not None else ((), "")
         self._inherit_origin = origin
+        self._search_selected_term = ""
+        self._search_aliases = {}
+        self._snapshot = None
+        self._snapshot_digest = None
+        self._terms = self.list.terms = TermIndex()
+        self.term_filter.clear()
+        self._fill_terms()
         self._fill_libraries(live, keep=inherited)
         self._show_scope_banner(inherited, origin)
         self.term_input.clear()
         self.add_status.hide()
-        self._build_rows(live, start_checks=False)
+        self._build_rows(live, start_checks=False, populate=False)
         self.filter_buttons["all"].setChecked(True)
         self.search.blockSignals(True)
         self.search.clear()
@@ -5036,7 +5095,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._checks_pending = True
         QTimer.singleShot(150, lambda: self._start_checks(generation))
         if self._selected_ids():
-            self._set_status(tr("已载入 {count} 条字幕 · 正在按词库匹配（本地）…", count=len(self._rows)))
+            self._set_status(tr("已显示保存的校对结果 · 正在后台检查 {count} 条字幕（本地）…", count=len(self._rows)))
         else:
             self._set_status(tr("未选择术语库，仍可进行 AI 校对；选择术语库可额外检查专名和固定译法。"))
 
@@ -5059,14 +5118,28 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         if live is None:
             return
 
-        def then():
-            if generation == self._generation and self._selected_ids():
-                self._run(False)
-
         # One after the other: Python threads do not run in parallel anyway,
         # and two busy threads left the window about a third of the
         # interpreter lock (every Qt event passes Python filters).
-        self._start_stutter(live, then=then)
+        # 2026-11-22 (user): the glossary match goes first; it is what the
+        # page is opened for, and it now reports chunk by chunk. Repeats,
+        # spelling consistency and evidence follow.
+        if self._selected_ids():
+            self._run(False)
+            match_generation = self._generation
+
+            def then():
+                current, _studio = self._live_project()
+                if match_generation == self._generation and current is live:
+                    self._start_stutter(current)
+
+            if self._worker is None:  # nothing to match: the local checks run now
+                self._after_local_match = None
+                self._start_stutter(live)
+            else:
+                self._after_local_match = then
+        else:
+            self._start_stutter(live)
 
     def _bind_stack(self, stack):
         previous = self._stack
@@ -5181,7 +5254,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             values |= {convert_text(value, script) for value in values}
         return tuple(values)
 
-    def _build_rows(self, project, *, start_checks=True):
+    def _build_rows(self, project, *, start_checks=True, populate=True):
         from ..studio.studio_cue_table import _speaker_color, _speaker_name
         rows = []
         entries = []
@@ -5246,6 +5319,8 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                     issue = _issue('ai_review', hit.span, hit.original, hit.replacement, checked=False,
                                    reason=hit.reason, hit=hit, evidence=hit.evidence)
                     issue['recognition_import'] = True
+                    if hit.proposal_id:
+                        issue['proposal_id'] = hit.proposal_id
                     row['issues'].append(issue)
             for pending in imported.receipt['pending_rows']:
                 row = self._by_id.get(pending['cue_id'])
@@ -5269,12 +5344,15 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._filter_context = None
         self._held = (None, set())
         self._row_indexes = {row['cue_id']: index for index, row in enumerate(rows)}
-        self._filter_members = set()
-        self._raw_visible = set()
+        self._scope_members = set()
+        self._scope_held_only = set()
         self._filter_included = {}
         # 原文＋译文: each translation beside its caption (2026-11-13).
         self.list.set_paired(self.text_targets.mode_value() == "both" and any(_is_translation_row(r) for r in rows))
-        self.list.set_rows(self._rows)
+        if populate:
+            self.list.set_rows(self._rows)
+        else:
+            self.list.rows = self._rows
         if hasattr(self, "columns_header"):
             self.columns_header.sync()
         if self._player.cue_id:
@@ -5478,12 +5556,13 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
     def _groups(self, row):
         return issue_groups(row, self._terms, self.stutter_toggle.isChecked())
 
-    def _row_state(self, row):
+    def _row_state(self, row, groups=None):
         """(has proposals, needs a look, changed here) of one caption.
 
         A group is one proposal (one decision); a suspected name without a
         candidate is something to look at, not a proposal."""
-        groups = self._groups(row)
+        if groups is None:
+            groups = self._groups(row)
         current = any(group['state'] != 'adopted' and not group['reviewed'] for group in groups)
         if current and not row.get('review_dismissed'):
             row['review_retained'] = True
@@ -5498,12 +5577,20 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         return text if text.strip() else ""
 
     def _search_changed(self, *_args):
-        self._filter_timer.start()
+        if self._needle() != self._search_selected_term:
+            self._search_selected_term = ""
         self._excluded = set()
         self._sticky = ("", set())
         self._delete_confirm = None
         self.list.find = dict(self.list.find, current=None)
-        self._count_timer.start()
+        self._held = (None, set())
+        self._scope_members.difference_update(self._scope_held_only)
+        self._scope_held_only.clear()
+        if self._needle():
+            self._filter_timer.start()
+        else:
+            self._filter_timer.stop()
+            self._apply_search_view()
 
     def _speaker_hidden(self, row):
         return row.get("speaker_id", "") in self._hidden_speakers
@@ -5538,8 +5625,8 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
 
     def _apply_filter(self, *_args, cue_ids=None):
         self._filter_timer.stop()
-        order = tuple(row['cue_id'] for row in self._rows)
-        if order != getattr(self,'_row_order',order):
+        order = tuple(row['cue_id'] for row in self._rows) if cue_ids is None else None
+        if order is not None and order != getattr(self, '_row_order', order):
             from .proofread_groups import regroup_rows
             self._rows,self._group_indices = regroup_rows(self._rows)
             self.list.rows=self._rows
@@ -5550,27 +5637,24 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         button = self.filter_group.checkedButton()
         key = str(button.property("filterKey")) if button is not None else "all"
         raw = self._needle()
-        needle = raw.casefold()
         speaker = self.speaker_filter.currentData() or ""
         project, _studio = self._live_project()
         project_hidden = project.hidden_speaker_ids() if project is not None else frozenset()
-        sticky_needle, sticky = getattr(self, "_sticky", ("", set()))
         held_context, held = getattr(self, "_held", (None, set()))
         if held_context != (key, raw, speaker):
             held = set()
             self._held = ((key, raw, speaker), held)
-        context = (key, raw, sticky_needle, frozenset(sticky), self.stutter_toggle.isChecked(), frozenset(self._hidden_speakers), speaker, project_hidden)
+        context = (key, self.stutter_toggle.isChecked(), frozenset(self._hidden_speakers), speaker, project_hidden)
         incremental = cue_ids is not None and context == self._filter_context and bool(self._filter_counts)
         counts = dict(self._filter_counts) if incremental else dict(all=0, suggested=0, pending=0, changed=0)
         totals = dict(self._proposal_totals) if incremental else dict(captions=len(self._rows), proposals=0,
             adopted=0, asked=0, suspects=0, changed=0, ignored=0, remaining=0)
-        visible = set(getattr(self, '_raw_visible', self.list.visible)) if incremental else set()
-        members = set(getattr(self, '_filter_members', ())) if incremental else set()
-        kept = set(getattr(self, '_kept_by_hold', ())) & held if incremental else set()
+        members = self._scope_members if incremental else set()
+        held_only = self._scope_held_only if incremental else set()
         if not incremental:
             self._filter_included = {}
+            self._search_documents = {}
         indices = [self._row_indexes[c] for c in cue_ids if c in self._row_indexes] if incremental else range(len(self._rows))
-        gaps = {}
         records = {}
         from .proofread_retention import review_state, row_record, put_records
         saved_rows = review_state(project)['rows']
@@ -5583,22 +5667,22 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             row['issues'][:] = [issue for issue in row['issues'] if issue_allowed(issue, row['base'], edit_policy)
                                or not edit_policy['cleanup'] and repetition_cleanup(issue, row['base'])]
             identity = row["cue_id"]
-            if speaker and (row.get("speaker_id") or "__none__") != speaker:
-                continue
             if incremental:
                 _old_suggested, _old_pending, _old_changed = self._row_states.get(identity, (False,False,False))
                 for label, value in zip(('all', 'suggested', 'pending', 'changed'), (1, _old_suggested, _old_pending, _old_changed)):
                     counts[label] -= value * self._filter_included.get(identity, False)
                 for label, value in self._row_summaries.get(identity, {}).items():
                     totals[label] -= value
-                visible.discard(index)
                 members.discard(index)
-            self._row_states[identity] = self._row_state(row)
+                held_only.discard(index)
+            groups = self._groups(row)
+            self._row_states[identity] = self._row_state(row, groups)
+            self._search_documents[identity] = (row["base"] + " " + row["origin"] + " " + " ".join(
+                f"{issue['original']} {issue['replacement']}" for issue in row["issues"] if not issue["stale"])).casefold()
             if row.get('review_retained') or row.get('review_dismissed') or identity in saved_rows:
                 record = row_record(row)
                 if record != saved_rows.get(identity):
                     records[identity] = record
-            groups = self._groups(row)
             summary = dict(proposals=len(groups), adopted=sum(g['state'] == 'adopted' for g in groups),
                 remaining=sum(g['state']!='adopted' and not g['reviewed'] for g in groups),
                 asked=sum(g['pending'] and g['state'] != 'adopted' and not g['reviewed'] for g in groups),
@@ -5608,6 +5692,9 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             for label, value in summary.items():
                 totals[label] += value
             suggested, pending, changed = self._row_states[identity]
+            if speaker and (row.get("speaker_id") or "__none__") != speaker:
+                self._filter_included[identity] = False
+                continue
             hidden = self._speaker_hidden(row) or row.get("speaker_id") in project_hidden
             self._filter_included[identity] = not hidden
             if not hidden:
@@ -5615,30 +5702,13 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 counts["suggested"] += suggested
                 counts["pending"] += pending
                 counts["changed"] += changed
-            kept.discard(identity)
             outside = key == "suggested" and not suggested or key == "pending" and not pending or key == "changed" and not changed
             if outside and identity not in held:
                 continue
-            unmatched = bool(needle) and needle not in (row["base"] + " " + row["origin"] + " " + " ".join(
-                    f"{i['original']} {i['replacement']}" for i in row["issues"])).casefold() and not (
-                    raw == sticky_needle and row["cue_id"] in sticky)
-            if unmatched and identity not in held:
-                # Captions just replaced stay listed (changed) until the
-                # search changes: the result does not vanish under the user.
-                continue
-            if outside or unmatched:
-                kept.add(identity)  # listed only because it was just edited here
+            if outside:
+                held_only.add(index)
             members.add(index)
-            if not hidden:
-                visible.add(index)
-        # A hit or filter on either field displays the complete stable group.
-        # Raw membership remains field-scoped for incremental updates.
-        self._raw_visible = set(visible)
-        self._kept_by_hold = kept
-        self.list.held_ids = frozenset(kept)
-        grouped_members = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in members}
-        grouped_visible = {self._rows[i].get('group_id', self._rows[i]['cue_id']) for i in visible}
-        shown = sorted(i for group in grouped_visible for i in self._group_indices.get(group, ()))
+        self._scope_members, self._scope_held_only = members, held_only
         counted = {'all': set(), 'suggested': set(), 'pending': set(), 'changed': set()}
         for row in self._rows:
             identity = row['cue_id']
@@ -5651,17 +5721,6 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         totals['captions'] = len(self._group_indices)
         totals['changed'] = len({r.get('group_id',r['cue_id']) for r in self._rows if r['base'] != r['origin']})
         totals['ignored'] = len({r.get('group_id',r['cue_id']) for r in self._rows if self._row_summaries.get(r['cue_id'],{}).get('ignored')})
-        import bisect
-        for index in sorted(members-visible):
-            row = self._rows[index]
-            if not row.get('group_first', True):
-                continue
-            gap = gaps.setdefault(bisect.bisect_left(shown,index), dict(count=0,names=[],speakers=[],search=bool(needle)))
-            gap['count'] += 1
-            if row.get('speaker_id','') not in gap['speakers']:
-                gap['speakers'].append(row.get('speaker_id',''))
-                gap['names'].append(row['speaker'][0] or tr('未标说话人'))
-        self._filter_members = members
         if records and project is not None:
             from ..projects.studio_runtime_state import state_for, DirtyDomain
             state = state_for(project)
@@ -5677,12 +5736,63 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             button.setText(tr("{label} {count} 条", label=tr(label), count=shown_counts[filter_key]))
             button.set_parts(tr(FILTER_SHORT.get(filter_key, label)), shown_counts[filter_key])
         hits = {}
-        for row in self._rows:
-            for issue in row["issues"]:
-                if issue["kind"] in {"term", "near", "consistency", "merge"} and not issue["stale"] and issue["replacement"]:
-                    hits[issue["replacement"]] = hits.get(issue["replacement"], 0) + 1
+        if not incremental:
+            self._row_term_hits = {}
+        else:
+            hits.update(getattr(self, '_term_hits', {}))
+        for index in indices:
+            row = self._rows[index]
+            identity = row['cue_id']
+            for value in self._row_term_hits.get(identity, ()):
+                hits[value] -= 1
+                if not hits[value]:
+                    del hits[value]
+            names = tuple(issue['replacement'] for issue in row['issues']
+                if issue['kind'] in {'term', 'near', 'consistency', 'merge'}
+                and not issue['stale'] and issue['replacement'])
+            self._row_term_hits[identity] = names
+            for value in names:
+                hits[value] = hits.get(value, 0) + 1
         self._term_hits = hits
         self.term_list.viewport().update()
+        self._apply_search_view(changed_ids=cue_ids if incremental else None)
+        self._selection_changed()
+
+    def _apply_search_view(self, *, changed_ids=None):
+        """Project the current literal query over existing review rows."""
+        from bisect import bisect_left
+
+        if self._filter_context is None:
+            return
+        key = self._filter_context[0]
+        raw, visible, hidden, gaps = self._needle(), set(), [], {}
+        needle = raw.casefold()
+        aliases = self._search_aliases.get(needle, ())
+        sticky_needle, sticky = self._sticky
+        held = self._held[1]
+        kept = {self._rows[i]['cue_id'] for i in self._scope_held_only}
+        for index in self._scope_members:
+            row = self._rows[index]
+            identity = row['cue_id']
+            document = self._search_documents[identity]
+            if needle and needle not in document and not any(alias in document for alias in aliases) and not (
+                    raw == sticky_needle and identity in sticky):
+                if identity not in held:
+                    continue
+                kept.add(identity)
+            if self._filter_included.get(identity, False):
+                visible.add(row.get('group_id', identity))
+            elif row.get('group_first', True):
+                hidden.append(index)
+        self.list.held_ids = frozenset(kept)
+        shown = sorted(i for group in visible for i in self._group_indices.get(group, ()))
+        for index in sorted(hidden):
+            row = self._rows[index]
+            gap = gaps.setdefault(bisect_left(shown, index), dict(count=0, names=[], speakers=[], search=bool(needle)))
+            gap['count'] += 1
+            if row.get('speaker_id', '') not in gap['speakers']:
+                gap['speakers'].append(row.get('speaker_id', ''))
+                gap['names'].append(row['speaker'][0] or tr('未标说话人'))
         empty = {"all": tr("这个工程没有字幕"),
                  "suggested": tr("目前没有修改建议；可点击AI校对"),
                  "pending": tr("没有需要你确认的地方"), "changed": tr("本页还没有修改")}
@@ -5693,12 +5803,12 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         anchor = self.list._top_anchor() if self.list.visible else None
         self.list.find = dict(needle=raw, replace=self._replace_preview(), current=self.list.find.get("current"),
                               excluded=frozenset(getattr(self, "_excluded", ())))
-        self.list.set_visible(shown, gaps, changed_ids=cue_ids if incremental else None)
+        self.list.set_visible(shown, gaps, changed_ids=changed_ids)
         self.list._restore_anchor(anchor)
-        self._batch_selected.intersection_update(self._batch_eligible_ids())
+        if self._batch_selected:
+            self._batch_selected.intersection_update(self._batch_eligible_ids())
         self._sync_hits()
         self._sync_hidden_note()
-        self._selection_changed()
         self._refresh_replace_count()
 
     def checked_hits(self):
@@ -5709,16 +5819,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
     def proposal_counts(self):
         """Units shown above the list: proposals are groups (one decision
         each), suspected names are counted apart, captions by caption."""
-        groups = [group for row in self._rows for group in self._groups(row)]
-        from .proofread_groups import subtitle_count
-        return dict(captions=subtitle_count(self._rows), proposals=len(groups),
-                    adopted=sum(group["state"] == "adopted" for group in groups),
-                    remaining=sum(g['state']!='adopted' and not g['reviewed'] for g in groups),
-                    asked=sum(group["pending"] and group["state"] != "adopted" and not group["reviewed"] for group in groups),
-                    suspects=sum(issue["kind"] == "suspect" and not issue["stale"] for row in self._rows
-                                 for issue in row["issues"]),
-                    changed=subtitle_count([r for r in self._rows if r['base'] != r['origin']]),
-                    ignored=subtitle_count([r for r in self._rows if r.get('review_dismissed') or any(i.get('ignored') for i in r['issues'])]))
+        return dict(self._proposal_totals)
 
     def _selection_changed(self, *_args):
         counts = self._proposal_totals or self.proposal_counts()
@@ -5916,6 +6017,9 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             indices = (adopted or {}).get(cue_id, ())
             source = self._by_id[cue_id]
             edits = [source['issues'][i] for i in indices]
+            if edits and rewrite_text(source['base'], edits, adopted=True) != text:
+                self._set_status(tr('建议内容已变更 · 请重新核对'))
+                return 0
             for index in indices:
                 old = source['issues'][index]
                 a,b = old['span']
@@ -5931,6 +6035,17 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 issue['application_parts'] = [source['issues'][i]['proposal_id'] for i in peers if i in indices]
                 issue.pop('anchor',None)
             records[cue_id] = row_record(future)
+        if adopted:
+            from .proofread_rules import text_version
+            from .source_review_policy import VERSION
+            receipt['approval'] = {'actor': 'user', 'policy': VERSION, 'operation': operation,
+                'patches': [dict(cue_id=cue_id, target=targets[cue_id].target.to_dict(),
+                                 base_text_revision=text_version(current[cue_id]),
+                                 proposal_id=self._by_id[cue_id]['issues'][index]['proposal_id'],
+                                 span=list(self._by_id[cue_id]['issues'][index]['span']),
+                                 before=self._by_id[cue_id]['issues'][index]['original'],
+                                 after=self._by_id[cue_id]['issues'][index]['replacement'])
+                    for cue_id in values for index in adopted.get(cue_id, ())]}
         from ..studio.text_edit_submission import submit_text_changes
         self._writing = True
         try:
@@ -7309,6 +7424,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
     def _read_snapshot(self):
         import subtitle_core as legacy
         from .terminology import snapshot_glossaries
+        self._search_aliases = {}
         try:
             legacy.load_learned_term_payload(strict=True)
             self._snapshot = snapshot_glossaries(legacy, self._selected_ids() if self.source_terms_enabled.isChecked() else ())
@@ -7324,6 +7440,15 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         # character lists) keep one name together in the proposals.
         script = self._glossary_script()
         self._terms = self.list.terms = TermIndex.from_snapshot(self._snapshot, legacy, script=script)
+        from ..subtitle_rules.chinese_script import convert_text
+        for library in self._snapshot.libraries:
+            for term in library.terms:
+                if not term.confirmed or not term.aliases:
+                    continue
+                name = convert_text(term.canonical, script) if script else term.canonical
+                aliases = self._search_aliases.setdefault(name.casefold(), set())
+                aliases.update((convert_text(alias, script) if script else alias).casefold()
+                               for alias in term.aliases if alias)
         live, _studio = self._live_project()
         texts = [cue.text for cue in getattr(live, "cues", ())]
         self._conflict_rows = spelling_conflicts(self._snapshot, texts, script=script)
@@ -7403,6 +7528,53 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._sync_target()
         self._store_term_settings(source_ids=self._selected_ids())
 
+    def _snapshot_names(self):
+        snapshot = self._snapshot
+        if snapshot is None:
+            return set()
+        return {name for library in snapshot.libraries
+                for name in (*(t.canonical for t in library.terms), *library.reference_terms) if name}
+
+    def _refresh_after_term_edit(self):
+        """One term was added, edited or deleted: keep the page's proposals.
+
+        2026-11-22 (user, 1 h stream): deleting one term cleared every
+        suggestion (55 → 0) and the whole-transcript rematch took minutes
+        to bring 30 back. Only proposals that write a name no longer in the
+        library go away; the rest stay while the match reruns in the
+        background, and a running AI review keeps going (its result is
+        checked against the edited library when it arrives).
+        """
+        before = self._snapshot_names()
+        self.term_conflicts_button.hide()
+        self._term_conflicts = []
+        ai_running = self._worker is not None and self._worker.isRunning() and self._worker_ai
+        if not ai_running:
+            self._cancel_worker()
+            self._generation += 1
+        self._read_snapshot()
+        now = self._snapshot_names()
+        self._term_edit_gone = (set(getattr(self, '_term_edit_gone', set())) | (before - now)) - now
+        if self._search_selected_term:
+            from ..subtitle_rules.chinese_script import convert_text
+            script = self._glossary_script()
+            remaining = {convert_text(name, script) if script else name for name in now}
+            if self._search_selected_term not in remaining:
+                self.search.clear()
+        if ai_running:
+            self._term_edited_runs = set(getattr(self, '_term_edited_runs', set())) | {self._generation}
+        for row in self._rows:
+            row["issues"] = [i for i in row["issues"] if i["checked"] or i.get("application_parts")
+                             or not self._writes_gone_name(i)]
+        self._apply_filter()
+        self._schedule_local_checks()
+        self._run(False)
+
+    def _writes_gone_name(self, issue):
+        gone = getattr(self, '_term_edit_gone', ())
+        replacement = str(issue.get('replacement') or '')
+        return bool(replacement) and any(name in replacement for name in gone)
+
     def _reset_library_proposals(self, *, layers=None):
         # Replacing library scope invalidates its in-flight answers and every
         # unapplied library-dependent proposal, including consistency guesses.
@@ -7468,19 +7640,39 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self.scope_banner.hide()
 
     def _fill_terms(self, *_args):
+        snapshot = self._snapshot
+        # Filter the existing item model while typing. The snapshot and its
+        # canonical/alias records change only when the library scope changes.
+        if snapshot is not getattr(self, '_term_list_snapshot', None):
+            self._term_list_snapshot = snapshot
+            self._rebuild_term_items(snapshot)
+        needle = self.term_filter.text().strip().casefold()
+        shown = 0
+        for item, spellings in getattr(self, '_term_search_items', ()):
+            visible = not needle or any(needle in spelling for spelling in spellings)
+            hidden = not visible
+            if item.isHidden() != hidden:
+                item.setHidden(hidden)
+            shown += visible
+        current = self.term_list.currentItem()
+        if current is not None and current.isHidden():
+            self.term_list.setCurrentRow(-1)
+        if snapshot is None:
+            self.term_count.setText("")
+        else:
+            bind_text(self.term_count, '{shown} / {total} 个', shown=shown, total=self.term_list.count())
+
+    def _rebuild_term_items(self, snapshot):
         from .term_editing import library_terms
+
         current = self.term_list.currentItem()
         previous = current.data(Qt.ItemDataRole.UserRole + 1) if current is not None else None
+        self._term_search_items = []
         self.term_list.clear()
-        if self._snapshot is None:
-            self.term_count.setText("")
+        if snapshot is None:
             return
-        needle = self.term_filter.text().strip().casefold()
-        terms = library_terms(self._snapshot)
-        for record in terms:
+        for record in library_terms(snapshot):
             canonical, aliases = record.canonical, record.aliases
-            if needle and needle not in canonical.casefold() and not any(needle in a.casefold() for a in aliases):
-                continue
             fresh = canonical in self._session_added_labels
             item = QListWidgetItem(canonical)
             item.setData(Qt.ItemDataRole.UserRole, canonical)
@@ -7492,13 +7684,13 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 item.setForeground(QColor(_theme().accent_text))
                 font = item.font(); font.setBold(True); item.setFont(font)
             self.term_list.addItem(item)
+            self._term_search_items.append((item, tuple(value.casefold() for value in (canonical, *aliases))))
             if previous is not None and (record.library_id, canonical) == (previous.library_id, previous.canonical):
                 self.term_list.setCurrentItem(item)
-        bind_text(self.term_count, '{shown} / {total} 个', shown=self.term_list.count(), total=len(terms))
 
     def _current_term(self):
         item = self.term_list.currentItem()
-        if item is None:
+        if item is None or item.isHidden():
             self._set_status(tr("请先在左侧选择一个词条"))
             return None
         return item.data(Qt.ItemDataRole.UserRole + 1)
@@ -7540,7 +7732,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
         self._after_term_change()
 
     def _after_term_change(self):
-        self._reset_library_proposals()
+        self._refresh_after_term_edit()
         self._notify_library_changed()
         self._set_status(tr("词库已保存，待处理建议已刷新；字幕正文保持原值。可撤销词库修改。"))
 
@@ -7551,6 +7743,7 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             from ..subtitle_rules.chinese_script import convert_text
             value = convert_text(value, script)  # finds the name in 繁體 captions
         self.search.setText(value)
+        self._search_selected_term = value
 
     # adding terms -----------------------------------------------------
     def _parsed_terms(self):
@@ -7862,13 +8055,44 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             if generation == self._generation and use_ai and total:
                 self._set_status(tr("AI 校对中：第 {done}/{total} 批…（可取消；已有建议和修改会保留）",
                                     done=done, total=total))
+            elif generation == self._generation and total and done < total:
+                self._set_status(tr("正在按词库匹配（本地）…"))
 
-        def ready(result):
+        def partial(result, chunk):
             if generation != self._generation:
                 return
             current, _studio_now = self._live_project()
             if current is None or (id(current), str(current.project_id)) != project_identity:
+                return
+            if (self._selected_ids() != self._library_ids or self._snapshot is None
+                    or self._snapshot.digest != self._snapshot_digest):
+                return
+            chunk_scope = set(chunk) if scope is None else set(chunk) & scope
+            self._show_result(result, current, use_ai, texts_at_run, chunk_scope, versions_at_run,
+                              revisions_at_run, context_versions_at_run)
+
+        def ready(result):
+            if generation != self._generation:
+                return
+            if result is None:  # a chunked local match: every chunk was shown as it arrived
+                self._set_status(tr("已按词库匹配 {checked} 条字幕（本地，未使用 AI）", checked=len(wanted))
+                                 + ("\n" + self._ai_status if self._ai_status else ""))
+                return
+            current, _studio_now = self._live_project()
+            if current is None or (id(current), str(current.project_id)) != project_identity:
                 self._set_status(tr("工程已切换，丢弃了旧的校对结果"))
+                return
+            edited = generation in getattr(self, '_term_edited_runs', ())
+            if edited:
+                # The library changed by a term edit while this AI review ran;
+                # its proposals stand, except those writing a removed name.
+                import dataclasses
+                if dataclasses.is_dataclass(result):
+                    result = dataclasses.replace(result, hits=tuple(hit for hit in result.hits
+                        if not self._writes_gone_name(dict(replacement=hit.replacement))))
+            if self._selected_ids() != self._library_ids or self._snapshot is None or (
+                    self._snapshot.digest != self._snapshot_digest and not edited):
+                self._set_status(tr('词库已变更，保留已有建议，旧结果未写入'))
                 return
             if policy_of(current) != term_policy_at_run and any(entry.target.layer == 'translation' for entry in entries):
                 self._set_status(tr('术语库已修改，旧校对结果未应用；请重新检查'))
@@ -7892,11 +8116,15 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
             self._worker = None
             self._worker_ai = False
             self._set_busy(False)
+            after, self._after_local_match = getattr(self, '_after_local_match', None), None
+            if after is not None:
+                after()
             if self._queued is not None:
                 (queued_ai, queued_ids), self._queued = self._queued, None
                 self._run(queued_ai, queued_ids)
 
         worker.progress.connect(progress)
+        worker.partial.connect(partial)
         worker.ready.connect(ready)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
@@ -7979,6 +8207,11 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 hit = normalize_occurrence(hit, current[hit.cue_id], target_resolver)
             if hit is None:
                 continue
+            from .proposal_safety import weak_proposal_reason
+            language = targets[hit.cue_id].target.language.split('-')[0]
+            if language in {'zh', ''} and weak_proposal_reason(current[hit.cue_id], hit.span, hit.replacement,
+                    evidence=hit.content_evidence_verified, confirmed_alias=hit.source == 'local_confirmed'):
+                continue
             kind = kinds.get(hit.source, "near")
             reason = hit.reason or ""
             issue = _issue(kind, hit.span, hit.original, hit.replacement, checked=False, reason=reason, hit=hit,
@@ -8033,9 +8266,10 @@ QPushButton#proofreadMini {{ font-weight: 400; }}
                 continue  # 刚刚 / 哦 又是 / spans cutting through 话题 are not names
             options = [option for option in pending.get("canonical_options") or []
                        if option and option != surface and full_word_pair(surface, option)]
-            from .proposal_safety import review_change_reason
+            from .proposal_safety import review_change_reason, weak_proposal_reason
             options = [option for option in options if not review_change_reason(
-                text, (int(start), int(end)), option, snapshot=self._snapshot)]
+                text, (int(start), int(end)), option, snapshot=self._snapshot) and not weak_proposal_reason(
+                text, (int(start), int(end)), option)]
             if pending.get("canonical_options") and not options:
                 continue
             if options:

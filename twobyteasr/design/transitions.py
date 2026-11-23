@@ -25,12 +25,13 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from . import motion_tokens as tokens
 from .device_pixels import draw_picture
+from .painted_motion import PaintedMotion
 
 GHOST_SAFETY_MS = 1500
 _SUBSTEP = 1 / 480
@@ -53,7 +54,7 @@ def enabled() -> bool:
 def _frame_ms(widget) -> int:
     screen = widget.screen() if widget is not None else None
     rate = screen.refreshRate() if screen is not None else 60.0
-    return max(4, int(1000 / max(30.0, min(240.0, rate or 60.0))))
+    return max(4, round(1000 / max(30.0, min(240.0, rate or 60.0))))
 
 
 _heap_quiet = None
@@ -85,6 +86,21 @@ def _keep_heap_quiet() -> None:
 _OWNED: set[int] = set()            # stacks whose switch the main window animates itself
 
 
+
+def visible_global_rect(widget: QWidget) -> QRect:
+    """The part of a source control visible through its ancestors and scroll viewport."""
+    if not widget.isVisible():
+        return QRect()
+    points = QRect(widget.mapToGlobal(QPoint()), widget.size())
+    parent = widget.parentWidget()
+    while parent is not None:
+        points = points.intersected(QRect(parent.mapToGlobal(QPoint()), parent.size()))
+        if parent.isWindow() or points.isEmpty():
+            break
+        parent = parent.parentWidget()
+    return points
+
+
 def _desktop_pixels(widget: QWidget) -> QPixmap | None:
     """``widget``'s rectangle as composited on the desktop, video windows included.
 
@@ -114,11 +130,21 @@ def _screen_pixels(widget: QWidget) -> QPixmap | None:
     fresh render (fast, and exactly the picture the user saw), or a render when that fails.
 
     With a visible video (native child window) inside, only the desktop holds the whole picture:
-    see ``_desktop_pixels``."""
+    see ``_desktop_pixels``.
+
+    In a translucent window it is always a render. 2026-11-20 (user: switching pages in the
+    settings flashes a black frame first): the settings window is translucent (rounded, its own
+    shadow), a layered window on Windows, and copying its pixels gives black. Every page switch
+    laid a black picture over the new page and faded it out (measured: the copy's mean brightness
+    0, the screen over the pages dropped from ~50 to 0-25 for one or two frames)."""
     if has_visible_native_child(widget):
         return _desktop_pixels(widget)
     ratio = widget.devicePixelRatioF() or 1.0
     native = widget if widget.testAttribute(Qt.WidgetAttribute.WA_NativeWindow) else widget.nativeParentWidget()
+    if native is not None and native.window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+        at = widget.mapTo(native, QPoint(0, 0)) if native is not widget else QPoint(0, 0)
+        pixmap = native.grab(QRect(at, widget.size()))
+        return None if pixmap.isNull() else pixmap
     pixmap = None
     if native is not None:
         try:
@@ -164,10 +190,15 @@ def capture_region(widget: QWidget, *, minimum=(2, 2)) -> QPixmap | None:
     if window is None or window.isMinimized() or widget.property('transitionMotion') is False:
         return None
     direct = Qt.FindChildOption.FindDirectChildrenOnly
-    for old in (list(_FLOATING.get(_key(widget), ())) + widget.findChildren(PageCrossfade, options=direct)
-                + widget.findChildren(PageHold, options=direct)):
+    picture = None
+    for hold in widget.findChildren(PageHold, options=direct):
+        if hold.isVisible() and not hold._done:
+            # Reverse or redirect from the pixels that were actually moving.
+            picture = widget.grab()
+            hold.finish()
+    for old in (list(_FLOATING.get(_key(widget), ())) + widget.findChildren(PageCrossfade, options=direct)):
         old.finish()
-    return _screen_pixels(widget)
+    return picture if picture is not None and not picture.isNull() else _screen_pixels(widget)
 
 
 _FLOATING: dict[int, list] = {}      # target key -> floating overlays over it
@@ -379,6 +410,10 @@ class PageCrossfade(QWidget):
         self.progress = 0.0
         self._elapsed = 0.0
         self._curve = tokens.easing_curve(tokens.PAGE_CROSSFADE)
+        self.enter_clock = None
+        self.enter = False                 # ``enter_workbench``: a step inside instead of a fade
+        self.incoming = None
+        self.incoming_background = None
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._step)
@@ -417,6 +452,7 @@ class PageCrossfade(QWidget):
         self._last = None                  # the clock starts at the first frame the GUI gets to
         _ACTIVE_FADES.add(self)
         if not hold:
+            self._started_at = time.perf_counter()
             self._timer.start(_frame_ms(self))
 
     def release(self):
@@ -429,21 +465,28 @@ class PageCrossfade(QWidget):
     def _step(self):
         _keep_heap_quiet()
         now = time.perf_counter()
-        if self._last is None:
-            self._last = now
+        if self.enter_clock is not None:
+            if self.enter_clock.finished:
+                self.finish()
+            elif (p := self.enter_clock.step()) is not None:
+                self.progress = self._curve.valueForProgress(p)
+                self.update()
             return
-        step = _frame_step(self, now)
-        if step is None:
-            # 2026-11-18 evening (user: 5 fps, twitching, sluggish): a busy GUI thread gets the
-            # final picture at once, never a slow or stretched motion.
-            self.finish()
-            return
-        self._elapsed += step
-        p = min(1.0, self._elapsed * 1000 / tokens.PAGE_CROSSFADE.ms)
+        else:
+            if self._last is None:
+                self._last = now
+                return
+            step = _frame_step(self, now)
+            if step is None:
+                self.finish()
+                return
+            self._elapsed += step
+        p = min(1.0, self._elapsed * 1000 / (tokens.STUDIO_ENTER.ms if self.enter else tokens.PAGE_CROSSFADE.ms))
         self.progress = self._curve.valueForProgress(p)
-        self.update()
         if p >= 1.0:
             self.finish()
+        else:
+            self.update()
 
     def finish(self):
         from shiboken6 import isValid
@@ -474,11 +517,51 @@ class PageCrossfade(QWidget):
             self.finish()                  # the picture no longer matches: stop pretending
         return False
 
+    def enter_workbench(self, incoming: QPixmap | None = None, background=None, origin=None) -> None:
+        if incoming is None or incoming.isNull():
+            return
+        self.enter = True
+        self.incoming = incoming
+        self.incoming_background = background
+        self.enter_origin = QRect(origin) if origin is not None else QRect()
+        self._curve = tokens.easing_curve(tokens.STUDIO_ENTER)
+        self.enter_clock = PaintedMotion(tokens.STUDIO_ENTER.ms, _frame_ms(self))
+
+    def _entry_rect(self) -> QRectF:
+        full = QRectF(self.rect())
+        if self.enter_origin.isEmpty():
+            # The Workbench entrance is the left-hand area of Home, regardless of
+            # which command (button or shortcut) was used to open it.
+            source = QRectF(full.width() * .06, full.height() * .31,
+                            full.width() * .38, full.height() * .37)
+        else:
+            source = QRectF(self.mapFromGlobal(self.enter_origin.topLeft()), self.enter_origin.size())
+        scale = min(source.width() / full.width(), source.height() / full.height())
+        width, height = full.width() * scale, full.height() * scale
+        centre = source.center()
+        return QRectF(centre.x() - width / 2, centre.y() - height / 2, width, height)
+
+    def _paint_enter(self, painter, k: float) -> None:
+        from PySide6.QtGui import QColor
+        full = QRectF(self.rect())
+        painter.fillRect(self.rect(), QColor(self.incoming_background or self.palette().window().color()))
+        if k < 1:
+            painter.setOpacity(1.0 - k)
+            draw_picture(painter, QPointF(), self.pixmap)
+        if k > 0:
+            painter.setOpacity(min(1.0, k * 2.5))
+            painter.drawPixmap(_lerp_rect(self._entry_rect(), full, k), self.incoming, QRectF(self.incoming.rect()))
+
     def paintEvent(self, _event):  # noqa: N802 - Qt override
         k = self.progress
-        if k >= 1.0:
+        if k >= 1.0 and not self.enter:
             return
         painter = QPainter(self)
+        if self.enter and self.color is None:
+            self._paint_enter(painter, k)
+            painter.end()
+            self.enter_clock.painted()
+            return
         painter.setOpacity(1.0 - k)
         if self.color is not None:
             painter.fillRect(self.rect(), self.color)
@@ -516,11 +599,13 @@ class PageHold(QWidget):
       This widget is opaque, so Qt paints nothing under it during the fade: two copies a frame.
     """
 
+    finished = Signal()
+
     STRUCTURAL = frozenset({QEvent.Type.ChildAdded, QEvent.Type.LayoutRequest, QEvent.Type.ShowToParent,
                             QEvent.Type.HideToParent, QEvent.Type.Resize})
 
     def __init__(self, stack: QWidget, pixmap: QPixmap, *, settled=None, wait: bool = True, on_settled=None,
-                 motion=None):
+                 motion=None, immediate=False):
         super().__init__(stack)
         self.setObjectName('pageHold')
         self.motion = motion                   # callable -> PageMotion, asked once the new page is drawn
@@ -537,6 +622,8 @@ class PageHold(QWidget):
         self.settled = settled
         self.on_settled = on_settled
         self.wait = bool(wait)
+        self.immediate = immediate
+        self.paint_clock = None
         self.progress = 0.0
         self._capturing = False
         self._elapsed = 0.0
@@ -549,12 +636,17 @@ class PageHold(QWidget):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         stack.installEventFilter(self)
-        if self.wait:
+        if self.wait and not immediate:
             self.setCursor(Qt.CursorShape.BusyCursor)
-        QApplication.instance().installEventFilter(self)     # also a shown page's own late work
+        if not immediate:
+            QApplication.instance().installEventFilter(self)     # legacy hold path
 
     def start(self):
-        _keep_heap_quiet()                 # before the overdue collector tick, too
+        _keep_heap_quiet()
+        if self.immediate:
+            self._begin_fade()
+            if self._done:
+                return
         self.raise_()
         self.show()
         _ACTIVE_FADES.add(self)
@@ -601,6 +693,14 @@ class PageHold(QWidget):
         if self.phase == 'hold':
             if self._ready(now):
                 self._begin_fade()
+            return
+        if self.paint_clock is not None:
+            if self.paint_clock.finished:
+                self.finish()
+            elif (p := self.paint_clock.step()) is not None:
+                self.progress = p
+                self._elapsed = self.paint_clock.elapsed_ms / 1000
+                self.update()
             return
         if self._last is None:                 # the clock starts at the first frame the GUI gets to
             self._last = now
@@ -661,7 +761,13 @@ class PageHold(QWidget):
             self.finish()
             return
         self.new = picture
+        ready = getattr(self.choreo, 'picture_ready', None)
+        if callable(ready):
+            ready(picture)
         self.phase = 'fade'
+        if self.immediate and self.choreo is not None:
+            self.paint_clock = PaintedMotion(self.choreo.total_ms, _frame_ms(self))
+        self._began = time.perf_counter()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)   # the page is what is seen now
         self._last = None
         self.update()
@@ -684,6 +790,7 @@ class PageHold(QWidget):
         if isValid(self.target):
             self.target.removeEventFilter(self)
         self.hide()
+        self.finished.emit()
         self.deleteLater()
 
     # ------------------------------------------------------------ input and picture
@@ -702,6 +809,8 @@ class PageHold(QWidget):
         if self.choreo is not None and self.new is not None:
             self.choreo.paint(painter, self, self._elapsed * 1000)
             painter.end()
+            if self.paint_clock is not None:
+                self.paint_clock.painted()
             return
         # The stack can grow when leaving Home and hiding its bottom bar.
         # Fill the area outside either snapshot before blending the shifted page.
@@ -721,7 +830,7 @@ class PageHold(QWidget):
 
 
 def start_page_hold(stack: QWidget, pixmap: QPixmap | None, *, settled=None, wait: bool = True,
-                    on_settled=None, motion=None) -> PageHold | None:
+                    on_settled=None, motion=None, immediate=False) -> PageHold | None:
     """Keep ``pixmap`` (``capture_page`` before the switch) over ``stack`` until its new page is
     finished, then fade to it (see ``PageHold``). Without a picture nothing is held."""
     if stack is not None:
@@ -730,7 +839,8 @@ def start_page_hold(stack: QWidget, pixmap: QPixmap | None, *, settled=None, wai
         if callable(on_settled):
             on_settled()
         return None
-    hold = PageHold(stack, pixmap, settled=settled, wait=wait, on_settled=on_settled, motion=motion)
+    hold = PageHold(stack, pixmap, settled=settled, wait=wait, on_settled=on_settled, motion=motion,
+                    immediate=immediate)
     hold.start()
     return hold
 
@@ -754,131 +864,255 @@ def _spring_rest_ms(spring, distance: float) -> float:
 
 
 class PageMotion:
-    """A page switch that slides along the navigation order, its parts arriving one after
-    another (2026-11-19; the user's pick: option 1's slide with option 3's cascade, sideways).
+    """A page switch drawn from two finished pictures.
 
-    Drawn from two pictures (the old page, the finished new page), so it costs a few picture
-    copies a frame whatever the pages hold, and nothing in the pages is moved or relaid out.
+    ``axis`` 'y' (the sidebar pages, 2026-11-21): two complete page surfaces share a single
+    position clock and push each other along the sidebar order.
 
-    ``direction``: +1 the new page comes from the right (further down the navigation), -1 from the
-    left. ``keep``: a part both pages share (the sidebar), drawn from the new picture at once and
-    never moved. ``glide``: the sidebar highlight's old and new rectangle. ``parts``: rectangles of
-    the new page, in the order they arrive; whatever lies outside them arrives first, with the
-    page's background.
-    """
+    ``axis`` 'x' (Home, recognition, results, into and out of the sidebar pages): the iOS push the
+    user picked on 2026-11-22 (option A of three, after layered cards, cards squeezed into the edge
+    and a fluid bend had all been tried that day). Going forward the new page slides over the old
+    one from the edge, a soft shadow on its leading edge; the page underneath moves a third of the
+    way the other way and darkens a little. Going back the page on top slides away to the edge and
+    the one underneath comes back from its third and brightens. Nothing fades.
 
-    def __init__(self, direction: int = 1, *, keep: QRect | None = None, glide=None, parts=(),
-                 background=None, selected_button=None):
-        self.direction = 1 if direction >= 0 else -1
-        self.keep = QRect(keep) if keep is not None and not keep.isEmpty() else None
-        self.glide = glide
-        self.parts = [QRect(rect) for rect in parts]
+    ``parts`` and ``old_parts`` (the pages' cards) are accepted and unused, so callers need not know
+    which style is drawn."""
+
+    def __init__(self, direction: int = 1, *, background=None, axis: str = 'x', boundary=0, parts=None,
+                 old_parts=None):
+        self.sign = 1 if direction >= 0 else -1
+        self.axis = axis
+        self.boundary = boundary
         self.background = background
-        self.selected_button = selected_button
-        self.total_ms = 1.0
+        self.parts = parts
+        self.old_parts = old_parts
+        self.ground = None
+        self.total_ms = tokens.WORKSPACE_SLIDE.ms
+        self.curve = tokens.easing_curve(tokens.WORKSPACE_SLIDE)
 
     def capture(self, target: QWidget) -> QPixmap:
-        button = self.selected_button
-        if self.glide is None or button is None:
-            return target.grab()
-        # Keep the live selection and paint its background only in the moving highlight.
-        stylesheet = button.styleSheet()
-        button.setStyleSheet(stylesheet + '\nQPushButton#workspaceNav { background: transparent; }')
-        try:
-            return target.grab()
-        finally:
-            button.setStyleSheet(stylesheet)
+        return target.grab()
 
     def prepare(self, hold) -> None:
-        from PySide6.QtGui import QColor, QRegion
-        rect = hold.rect()
-        if self.keep is not None and self.keep.left() <= rect.left() + 4:
-            self.area = QRect(self.keep.right() + 1, rect.top(), rect.right() - self.keep.right(), rect.height())
-        else:
-            if self.keep is not None:
-                self.glide = None
-            self.keep = None
-            self.area = QRect(rect)
-        self.parts = [part.intersected(self.area) for part in self.parts]
-        self.parts = [part for part in self.parts if part.width() > 2 and part.height() > 2][:tokens.PAGE_SLIDE_PARTS_MAX]
-        rest = QRegion(self.area)
-        for part in self.parts:
-            rest = rest.subtracted(QRegion(part))
-        self.rest = rest
-        if self.background is None:
-            self.background = QColor('#19151c')
-        self.distance = tokens.PAGE_SLIDE_PX
-        self.fade = tokens.easing_curve(tokens.PAGE_SLIDE_FADE)
-        self.leave = tokens.easing_curve(tokens.PAGE_SLIDE_OLD)
-        self.glide_fade = tokens.easing_curve(tokens.NAV_GLIDE_FADE)
-        rest_ms = _spring_rest_ms(tokens.PAGE_SLIDE_IN, self.distance)
-        last = self._delay(len(self.parts) - 1) if self.parts else tokens.PAGE_SLIDE_DELAY_MS
-        self.total_ms = max(last + max(rest_ms, tokens.PAGE_SLIDE_FADE.ms), tokens.PAGE_SLIDE_OLD.ms,
-                            _spring_rest_ms(tokens.NAV_GLIDE, 40) + tokens.NAV_GLIDE_FADE.ms if self.glide else 0)
+        self.area = hold.rect().adjusted(self.boundary, 0, 0, 0)
+        if self.boundary and isinstance(hold, PageHold):
+            from PySide6.QtGui import QRegion
+            hold.setMask(QRegion(self.area))
+        if self.axis == 'y':
+            self.distance = hold.height()
+            return
+        self.distance = float(self.area.width())
+        self.push_curve = tokens.easing_curve(tokens.PAGE_PUSH)
+        self.total_ms = tokens.PAGE_PUSH.ms
 
-    def _delay(self, index: int) -> float:
-        return tokens.PAGE_SLIDE_DELAY_MS + min(index + 1, tokens.PAGE_SLIDE_STAGGER_STEPS) * tokens.PAGE_SLIDE_STAGGER_MS
+    def progress(self, ms: float) -> float:
+        """The push's eased progress at ``ms`` (0 at the start, 1 in place)."""
+        return self.push_curve.valueForProgress(min(1.0, max(0.0, ms / tokens.PAGE_PUSH.ms)))
 
-    def _arrival(self, delay: float, ms: float):
-        """(x offset, opacity) of something that starts arriving after ``delay`` ms."""
-        local = ms - delay
-        if local <= 0:
-            return self.direction * self.distance, 0.0
-        offset = self.direction * self.distance * (1.0 - spring_progress(tokens.PAGE_SLIDE_IN, local))
-        return offset, self.fade.valueForProgress(min(1.0, local / tokens.PAGE_SLIDE_FADE.ms))
+    def layout_at(self, ms: float) -> dict:
+        """Where the two pages are at ``ms`` (logical x of their left edges) and how dark the one
+        underneath is: {'top': (picture role, x), 'under': (role, x), 'dim': 0..1}."""
+        k = self.progress(ms)
+        left, width = float(self.area.left()), self.distance
+        arrived = k if self.sign > 0 else 1.0 - k          # how far the page on top is in
+        return {'top': ('new' if self.sign > 0 else 'old', left + width * (1.0 - arrived)),
+                'under': ('old' if self.sign > 0 else 'new', left - width * tokens.PAGE_PUSH_PARALLAX * arrived),
+                'dim': tokens.PAGE_PUSH_DIM * arrived,
+                'shadow': min(1.0, (1.0 - arrived) * 6)}
 
-    def paint(self, painter, hold, ms: float) -> None:
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QRegion
-        new, old = hold.new, hold.old
-        ratio_new = new.devicePixelRatio() or 1.0
-        ratio_old = old.devicePixelRatio() or 1.0
-        painter.fillRect(hold.rect(), self.background)
-        if self.keep is not None:
-            draw_picture(painter, QPointF(self.keep.topLeft()), new, _source(self.keep, ratio_new))
+    def picture_ready(self, picture: QPixmap) -> None:
+        """Called by ``PageHold`` right after the new page's picture is taken: the colour shown
+        where neither picture reaches (a taller old picture, rounding) is the new page's own."""
+        if self.axis == 'y':
+            return
+        try:
+            self.ground = self._page_ground(picture)
+        except Exception:  # noqa: BLE001 - the theme's colour then
+            self.ground = None
+
+    def _page_ground(self, picture: QPixmap):
+        from collections import Counter
+        from PySide6.QtGui import QColor
+        image = picture.toImage()
+        ratio = picture.devicePixelRatio() or 1.0
+        seen = Counter()
+        area = self.area
+        inset = 3
+        points = []                        # along the page's border: usually its own background
+        for i in range(1, 16):
+            x = area.x() + area.width() * i // 16
+            points += [(x, area.y() + inset), (x, area.bottom() - inset)]
+        for i in range(1, 12):
+            y = area.y() + area.height() * i // 12
+            points += [(area.x() + inset, y), (area.right() - inset, y)]
+        for px, py in points:
+            x, y = round(px * ratio), round(py * ratio)
+            if 0 <= x < image.width() and 0 <= y < image.height():
+                seen[image.pixel(x, y)] += 1
+        if not seen:
+            return self.background
+        return QColor.fromRgb(seen.most_common(1)[0][0])
+
+    def _shadow(self, painter, edge: float, strength: float) -> None:
+        """A soft shadow left of ``edge``, the leading edge of the page on top."""
+        from PySide6.QtGui import QColor, QLinearGradient
+        if strength <= 0.0:
+            return
+        width = tokens.PAGE_PUSH_SHADOW_PX
+        gradient = QLinearGradient(edge - width, 0, edge, 0)
+        gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
+        gradient.setColorAt(1.0, QColor(0, 0, 0, round(255 * tokens.PAGE_PUSH_SHADOW_ALPHA * strength)))
+        painter.fillRect(QRectF(edge - width, self.area.top(), width, self.area.height()), gradient)
+
+    def _paint_push(self, painter, hold, ms: float) -> None:
+        from PySide6.QtGui import QColor
+        area = QRectF(self.area)
+        if self.ground is None:
+            self.picture_ready(hold.new)
+        pictures = {'old': hold.old, 'new': hold.new}
+        place = self.layout_at(ms)
         painter.save()
         painter.setClipRect(self.area)
-        # The old content steps the other way and fades.
-        k = min(1.0, ms / tokens.PAGE_SLIDE_OLD.ms)
-        if k < 1.0:
-            eased = self.leave.valueForProgress(k)
-            painter.setOpacity(1.0 - eased)
-            shift = -self.direction * self.distance * tokens.PAGE_SLIDE_OLD_SHARE * eased
-            draw_picture(painter, QPointF(self.area.x() + shift, self.area.y()), old, _source(self.area, ratio_old))
-        # Everything that is not one of the parts arrives first, then the parts one after another.
-        offset, opacity = self._arrival(tokens.PAGE_SLIDE_DELAY_MS, ms)
-        if opacity > 0.0:
-            painter.save()
-            painter.setClipRegion(self.rest.translated(round(offset), 0).intersected(QRegion(self.area)))
-            painter.setOpacity(opacity)
-            draw_picture(painter, QPointF(self.area.x() + offset, self.area.y()), new, _source(self.area, ratio_new))
-            painter.restore()
-        for index, part in enumerate(self.parts):
-            offset, opacity = self._arrival(self._delay(index), ms)
-            if opacity <= 0.0:
-                continue
-            painter.setOpacity(opacity)
-            draw_picture(painter, QPointF(part.x() + offset, part.y()), new, _source(part, ratio_new))
+        painter.fillRect(area, self.ground or self.background or hold.palette().window().color())
+        role, x = place['under']
+        picture = pictures[role]
+        draw_picture(painter, QPointF(x, area.top()), picture, _source(self.area, picture.devicePixelRatio() or 1.0))
+        if place['dim'] > 0.0:
+            painter.fillRect(area, QColor(0, 0, 0, round(255 * place['dim'])))
+        role, x = place['top']
+        if x < area.right() + 1:
+            self._shadow(painter, x, place['shadow'])
+            picture = pictures[role]
+            draw_picture(painter, QPointF(x, area.top()), picture, _source(self.area, picture.devicePixelRatio() or 1.0))
         painter.restore()
-        if self.glide:
-            start, end = self.glide
-            travel = spring_progress(tokens.NAV_GLIDE, ms)
-            rest_ms = _spring_rest_ms(tokens.NAV_GLIDE, abs(end.center().y() - start.center().y()) or 1)
-            fade = 1.0 - self.glide_fade.valueForProgress(min(1.0, max(0.0, (ms - rest_ms) / tokens.NAV_GLIDE_FADE.ms)))
-            if fade > 0.0:
-                y = start.y() + (end.y() - start.y()) * travel
-                pill = QRectF(end.x(), y, end.width(), end.height())
-                accent = QColor(getattr(self, 'accent', None) or '#d9538f')
-                painter.setOpacity(fade)
-                painter.setPen(Qt.PenStyle.NoPen)
-                tint = QColor(accent)
-                tint.setAlpha(56)
-                painter.setBrush(tint)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                painter.drawRoundedRect(pill, 10, 10)
-                painter.setBrush(accent)
-                painter.drawRoundedRect(QRectF(pill.x(), pill.y() + pill.height() * .25, 3, pill.height() * .5), 1.5, 1.5)
-                painter.setOpacity(1.0)
+
+    def _offset(self, amount: float) -> QPointF:
+        distance = self.sign * self.distance * amount
+        return QPointF(0, distance) if self.axis == 'y' else QPointF(distance, 0)
+
+    def paint(self, painter, hold, ms: float) -> None:
+        if self.axis != 'y':
+            self._paint_push(painter, hold, ms)
+            return
+        k = self.curve.valueForProgress(min(1.0, ms / self.total_ms))
+        painter.save()
+        painter.setClipRect(self.area)
+        painter.fillRect(self.area, self.background or hold.palette().window())
+        origin = QPointF(self.area.topLeft())
+        for picture, offset, opacity in ((hold.old, -k, 1.0),
+                                         (hold.new, 1.0 - k, 1.0 if self.axis == 'y' else k)):
+            painter.setOpacity(opacity)
+            draw_picture(painter, origin + self._offset(offset), picture,
+                         _source(self.area, picture.devicePixelRatio()) if self.boundary else None)
+        painter.restore()
+
+
+class PageZoom:
+    """Going into the recognition page and back (2026-11-22, user: starting recognition should not
+    slide, it should grow and go in; going back shrinks).
+
+    ``entering``: the new page grows out of ``origin`` (the start button, in the stack's
+    coordinates) into the whole stack with rounded corners that straighten as it arrives, solid
+    from its first frame (no fade-in to see); the old page zooms past toward the viewer around the same point and
+    fades. Otherwise the old page shrinks back into ``origin`` and fades in its last part while the
+    new page settles from ``PAGE_ZOOM_BEHIND`` to its size. Drawn from the two pictures; the scaled
+    copies use smooth sampling, a page at rest is drawn 1:1."""
+
+    def __init__(self, entering: bool, origin: QRect | None = None, *, background=None):
+        self.entering = bool(entering)
+        self.origin = QRect(origin) if origin is not None and not origin.isEmpty() else None
+        self.background = background
+        self.sign = 1 if entering else -1
+        self.layers = []
+        token = tokens.PAGE_ZOOM_IN if self.entering else tokens.PAGE_ZOOM_OUT
+        self.token = token
+        self.total_ms = token.ms
+        self.curve = tokens.easing_curve(token)
+        self.behind_fade = tokens.easing_curve(tokens.PAGE_ZOOM_BEHIND_FADE)
+
+    def capture(self, target: QWidget) -> QPixmap:
+        return target.grab()
+
+    def prepare(self, hold) -> None:
+        self.area = QRectF(hold.rect())
+        if self.origin is None:
+            centre = self.area.center()
+            self.origin = QRect(round(centre.x() - 80), round(self.area.bottom() - 80), 160, 44)
+        self.point = QPointF(self.origin.center())
+
+    def small_rect(self) -> QRectF:
+        """The page at its smallest: the stack's shape, as large as the button at least, on it."""
+        area, origin = self.area, QRectF(self.origin)
+        scale = max(tokens.PAGE_ZOOM_START_SCALE, origin.width() / area.width(), origin.height() / area.height())
+        width, height = area.width() * scale, area.height() * scale
+        return QRectF(self.point.x() - width / 2, self.point.y() - height / 2, width, height)
+
+    def page_rect(self, k: float) -> QRectF:
+        """The front page's rectangle at eased progress ``k`` (0 small, 1 the whole stack)."""
+        return _lerp_rect(self.small_rect(), self.area, k)
+
+    def _behind(self, painter, picture, scale: float, opacity: float) -> None:
+        if opacity <= 0.0:
+            return
+        painter.setOpacity(opacity)
+        size = _logical_size(picture)
+        if abs(scale - 1.0) < 1e-3:
+            draw_picture(painter, self.area.topLeft(), picture)
+            return
+        p = self.point
+        target = QRectF(p.x() - (p.x() - self.area.left()) * scale, p.y() - (p.y() - self.area.top()) * scale,
+                        size.width() * scale, size.height() * scale)
+        painter.drawPixmap(target, picture, QRectF(picture.rect()))
+
+    def _front(self, painter, picture, rect: QRectF, k: float, opacity: float) -> None:
+        if opacity <= 0.0 or rect.width() < 1 or rect.height() < 1:
+            return
+        from PySide6.QtGui import QBrush, QPainterPath, QTransform
+        painter.setOpacity(opacity)
+        if k >= 0.999:
+            draw_picture(painter, rect.topLeft(), picture)
+            return
+        # The picture keeps the stack's shape; a taller picture (Home with its start bar) is cut.
+        scale = rect.width() / self.area.width()
+        radius = tokens.PAGE_ZOOM_RADIUS * (1.0 - k) + 2.0 * k
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        brush = QBrush(picture)
+        # Qt maps a high-DPI texture by its own device pixel ratio: the transform is in logical px
+        # (dividing by the ratio again drew it shrunken and tiled at 125/150/175 %).
+        brush.setTransform(QTransform(scale, 0, 0, scale, rect.left(), rect.top()))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(brush)
+        painter.drawPath(path)
+
+    def paint(self, painter, hold, ms: float) -> None:
+        p = min(1.0, max(0.0, ms / self.total_ms))
+        k = self.curve.valueForProgress(p)
+        painter.save()
+        painter.setClipRect(self.area.toRect())
+        painter.fillRect(self.area, self.background or hold.palette().window())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self.entering:
+            behind = 1.0 + (tokens.PAGE_ZOOM_BEHIND - 1.0) * k
+            gone = self.behind_fade.valueForProgress(min(1.0, ms / tokens.PAGE_ZOOM_BEHIND_FADE.ms))
+            self._behind(painter, hold.old, behind, 1.0 - gone)
+            self._front(painter, hold.new, self.page_rect(k), k, 1.0)
+        else:
+            behind = tokens.PAGE_ZOOM_BEHIND - (tokens.PAGE_ZOOM_BEHIND - 1.0) * k
+            shown = self.behind_fade.valueForProgress(min(1.0, ms / tokens.PAGE_ZOOM_BEHIND_FADE.ms))
+            self._behind(painter, hold.new, behind, shown)
+            # The page shrinks into the button, fading only in its last part.
+            vanish = 1.0 - min(1.0, max(0.0, (k - 0.55) / 0.45))
+            self._front(painter, hold.old, self.page_rect(1.0 - k), 1.0 - k, vanish)
+        painter.restore()
+
+
+def _logical_size(picture: QPixmap):
+    from PySide6.QtCore import QSizeF
+    ratio = picture.devicePixelRatio() or 1.0
+    return QSizeF(picture.width() / ratio, picture.height() / ratio)
 
 
 def _source(rect: QRect, ratio: float):
@@ -929,6 +1163,55 @@ def page_parts(page: QWidget, stack: QWidget, keep: QRect | None = None, limit: 
 
     visit(page, area, 0)
     parts = [rect for rect in found if rect.width() * rect.height() >= total * 0.006 and not (keep and keep.contains(rect))]
+    parts.sort(key=lambda rect: (rect.top(), rect.left()))
+    if len(parts) > limit:
+        parts = _rows(parts)
+    while len(parts) > limit:
+        parts = [parts[i].united(parts[i + 1]) if i + 1 < len(parts) else parts[i] for i in range(0, len(parts), 2)]
+    return parts
+
+
+def page_layers(page: QWidget, stack: QWidget, limit: int = 8) -> list:
+    """The new page's whole cards and columns, in reading order, as rectangles in ``stack``
+    (2026-11-22, for the sideways switch). Unlike ``page_parts`` a card is never split into its
+    contents: split cards arrived as empty frames first and their insides after, like a broken
+    mosaic. Single containers are looked through (a scroll area to its contents, a page to its one
+    panel) until a widget holds several side-by-side or stacked pieces; those are the layers."""
+    from PySide6.QtWidgets import QAbstractScrollArea, QScrollArea
+    bounds = QRect(0, 0, stack.width(), stack.height())
+    total = max(1, bounds.width() * bounds.height())
+    direct = Qt.FindChildOption.FindDirectChildrenOnly
+
+    def place(widget, clip):
+        return QRect(widget.mapTo(stack, QPoint(0, 0)), widget.size()).intersected(clip)
+
+    def pieces(widget, clip):
+        if isinstance(widget, QScrollArea) and widget.widget() is not None:
+            clip = clip.intersected(place(widget.viewport(), clip))
+            return [(widget.widget(), clip)]
+        if isinstance(widget, QAbstractScrollArea):
+            return []
+        found = []
+        for child in widget.findChildren(QWidget, options=direct):
+            if child.isVisible() and not child.isWindow() and not isinstance(child, (PageHold, PageCrossfade)):
+                rect = place(child, clip)
+                if rect.width() * rect.height() >= total * 0.01:
+                    found.append((child, clip))
+        return found
+
+    widget, clip = page, bounds
+    for _depth in range(6):
+        children = pieces(widget, clip)
+        if len(children) != 1:
+            break
+        child, child_clip = children[0]
+        if place(child, child_clip).width() * place(child, child_clip).height() < total * 0.5:
+            break
+        widget, clip = child, child_clip
+    parts = [place(child, child_clip) for child, child_clip in pieces(widget, clip)]
+    parts = [rect for rect in parts if not rect.isEmpty()]
+    if len(parts) < 2:
+        return []
     parts.sort(key=lambda rect: (rect.top(), rect.left()))
     if len(parts) > limit:
         parts = _rows(parts)
@@ -1039,6 +1322,7 @@ class _ShowHideFade(QObject):
         super().__init__(widget)
         self.widget = widget
         self._hide_covered = False
+        self.entry = None
         widget.installEventFilter(self)
 
     def before_hide(self) -> None:
@@ -1071,23 +1355,39 @@ class _ShowHideFade(QObject):
         if host is None or not host.isVisible():
             return False
         rect = QRect(widget.mapToGlobal(widget.rect().topLeft()), widget.size())
+        if kind == QEvent.Type.Hide and self.entering():
+            self.entry.finish()
         if kind == QEvent.Type.Show:
-            screen = widget.screen()
-            if screen is None:
+            pixmap = widget.__dict__.pop('_entry_picture', None)
+            if pixmap is None:
+                pixmap = _desktop_pixels(widget)
+            if pixmap is None or pixmap.isNull():
                 return False
-            at = rect.topLeft() - screen.geometry().topLeft()
-            ratio = widget.devicePixelRatioF() or 1.0
-            pixmap = screen.grabWindow(0, at.x(), at.y(), rect.width(), rect.height())
-            if pixmap.isNull():
-                return False
-            pixmap.setDevicePixelRatio(ratio)
         else:
             pixmap = widget.grab()
             if pixmap.isNull():
                 return False
         overlay = PageCrossfade(host, pixmap, step_back=kind == QEvent.Type.Hide, floating=True, global_rect=rect)
+        if kind == QEvent.Type.Show and widget.property('enterMotion'):
+            # The workbench's loading card: a step inside (``PageCrossfade.enter_workbench``).
+            incoming = None
+            try:
+                layout = widget.layout()
+                if layout is not None:
+                    layout.activate()
+                incoming = widget.grab()
+            except Exception:  # noqa: BLE001 - the page being left still steps away
+                incoming = None
+            overlay.enter_workbench(incoming, getattr(widget, '_surface_background', None),
+                                    getattr(widget, 'motion_origin', None))
+            if overlay.enter:
+                self.entry = overlay
         overlay.start()
         return True
+
+    def entering(self):
+        from shiboken6 import isValid
+        return self.entry is not None and isValid(self.entry) and self.entry.isVisible()
 
 
 def fade_on_show_and_hide(widget: QWidget) -> None:
@@ -1252,15 +1552,21 @@ class PanelSlide(QWidget):
     translation of a panel-sized picture, which keeps 60 fps without a GPU.
     """
 
-    def __init__(self, host: QWidget, pixmap: QPixmap, rect: QRect, side: str, entering: bool, then=None):
+    def __init__(self, host: QWidget, pixmap: QPixmap, rect: QRect, side: str, entering: bool,
+                 then=None, *, backdrop=None, initial=None):
         flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
                  | Qt.WindowType.WindowDoesNotAcceptFocus | Qt.WindowType.WindowTransparentForInput)
-        super().__init__(host.window(), flags)
+        self.cover = stage_cover(host)
+        if self.cover is None:
+            super().__init__(host.window(), flags)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            self.setGeometry(rect)
+        else:
+            super().__init__(self.cover)
+            self.setGeometry(QRect(self.cover.mapFromGlobal(rect.topLeft()), rect.size()))
         self.setObjectName('panelSlide')
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setGeometry(rect)
         self.pixmap = pixmap
         self.side = side
         self.entering = entering
@@ -1268,8 +1574,12 @@ class PanelSlide(QWidget):
         self.token = tokens.PANEL_SLIDE_IN if entering else tokens.PANEL_SLIDE_OUT
         self._curve = tokens.easing_curve(self.token)
         self.progress = 0.0
-        self._elapsed = 0.0
-        self._last = None
+        self.amount = float(not entering) if initial is None else initial
+        self.initial = self.amount
+        self.backdrop = backdrop
+        self.previous_surface = None
+        self.clock = PaintedMotion(self.token.ms, _frame_ms(self))
+        self._done = False
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._step)
@@ -1277,34 +1587,31 @@ class PanelSlide(QWidget):
         host.window().installEventFilter(self)
 
     def start(self):
-        _keep_heap_quiet()                 # before the overdue collector tick, too
+        _keep_heap_quiet()
+        if self.cover is not None:
+            self.cover.stack_over_owner()
         self.show()
         self.raise_()
-        self._timer.start(_frame_ms(self))
+        _ACTIVE_FADES.add(self)
+        self._timer.start(self.clock.refresh_ms)
 
     def _step(self):
         _keep_heap_quiet()
-        now = time.perf_counter()
-        if self._last is None:
-            self._last = now
-            return
-        gap = (now - self._last) * 1000
-        self._last = now
-        if gap > tokens.MAX_FRAME_GAP_MS:
+        if self.clock.finished:
             self.finish()
-            return
-        self._elapsed += gap
-        p = min(1.0, self._elapsed / self.token.ms)
-        self.progress = self._curve.valueForProgress(p)
-        self.update()
-        if p >= 1.0:
-            self.finish()
+        elif (p := self.clock.step()) is not None:
+            self.progress = self._curve.valueForProgress(p)
+            self.amount = self.initial + (float(self.entering) - self.initial) * self.progress
+            self.update()
 
     def finish(self):
         from shiboken6 import isValid
-        if not isValid(self):
+        if self._done or not isValid(self):
             return
+        self._done = True
         self._timer.stop()
+        self.release_previous()
+        _ACTIVE_FADES.discard(self)
         then, self.then = self.then, None
         if isValid(self.host) and self.host.window() is not None:
             self.host.window().removeEventFilter(self)
@@ -1313,6 +1620,11 @@ class PanelSlide(QWidget):
         self.hide()
         self.deleteLater()
 
+    def release_previous(self):
+        previous, self.previous_surface = self.previous_surface, None
+        if previous is not None:
+            previous.finish()
+
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
         if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Hide,
                             QEvent.Type.WindowStateChange):
@@ -1320,13 +1632,291 @@ class PanelSlide(QWidget):
         return False
 
     def paintEvent(self, _event):  # noqa: N802 - Qt override
-        k = self.progress
-        away = (1.0 - k) if self.entering else k             # 0 = in place, 1 = fully outside
-        width = self.width()
-        dx = round(away * width) * (1 if self.side == 'right' else -1)
+        away = 1.0 - self.amount
+        dx = round(away * self.width()) * (1 if self.side == 'right' else -1)
         painter = QPainter(self)
+        if self.backdrop is not None and self.entering and self.amount < 1:
+            if isinstance(self.backdrop, QPixmap):
+                draw_picture(painter, QPoint(), self.backdrop)
+            else:
+                painter.fillRect(self.rect(), self.backdrop)
         draw_picture(painter, QPoint(dx, 0), self.pixmap)
         painter.end()
+        self.clock.painted()
+        if self.previous_surface is not None:
+            QTimer.singleShot(0, self, self.release_previous)
+
+
+class PanelMorph(QWidget):
+    """A side panel sliding in or out while the video column beside it follows (2026-11-23).
+
+    User (2026-11-23): opening or closing Studio's subtitle list or tool panel, the video jumped
+    to its new place at once while only the panel slid, with flashes, and the gap the panel slid
+    over showed leftover video. Now one picture covers the panel and the column beside it (in the
+    window's kept cover, above the native video): the column's picture - the video on its dark
+    stage - scales from its old rectangle to its new one keeping its proportions, its edge always
+    on the panel's edge, while the panel's picture slides on the same curve. It is up before the
+    layout changes (``show_old``) and the real layout is applied under it; when it ends, what is
+    under it is already the new layout."""
+
+    def __init__(self, host: QWidget, cover, old: QPixmap, area: QRect, side: str, entering: bool):
+        super().__init__(cover)
+        self.setObjectName('panelMorph')
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.cover = cover
+        self.host = host
+        self.old = old                         # the host's on-screen pixels before the change
+        self.area = QRect(area)                # host coordinates this picture covers
+        self.side = side
+        self.entering = entering
+        self.token = tokens.PANEL_SLIDE_IN if entering else tokens.PANEL_SLIDE_OUT
+        self._curve = tokens.easing_curve(self.token)
+        self.amount = 0.0                      # 0 the old layout, 1 the new one
+        self.clock = None
+        self.panel_picture = None
+        self.panel_rect = QRect()              # host coordinates, where the panel is when shown
+        self.column_old = QRect()
+        self.column_new = QRect()
+        self.surface_old = QRect()             # the player surface (native video) in the column
+        self.surface_new = QRect()
+        self.content = None                    # the video picture inside the old surface
+        self.stage = None                      # the column's background (the video stage)
+        self._done = False
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._step)
+        self.setGeometry(QRect(cover.mapFromGlobal(host.mapToGlobal(area.topLeft())), area.size()))
+        host.window().installEventFilter(self)
+
+    def show_old(self) -> None:
+        """Up now, in the kept cover, showing the old layout (drawn before this returns)."""
+        self.cover.follow()
+        self.cover.stack_over_owner()
+        self.show()
+        self.raise_()
+        self.repaint()
+        _ACTIVE_FADES.add(self)
+
+    def begin(self, panel_picture: QPixmap, panel_rect: QRect, column_old: QRect, column_new: QRect,
+              surface_old: QRect | None = None, surface_new: QRect | None = None) -> None:
+        from PySide6.QtGui import QColor
+        self.panel_picture = panel_picture
+        self.panel_rect = QRect(panel_rect)
+        self.column_old = QRect(column_old)
+        self.column_new = QRect(column_new)
+        native = surface_old is not None and QRect(surface_old) != QRect(column_old)
+        self.surface_old = QRect(surface_old or column_old)
+        self.surface_new = QRect(surface_new or column_new)
+        image = self.old.toImage()
+        ratio = self.old.devicePixelRatio() or 1.0
+        # The stage colour from the column beside the video window, never from the picture.
+        corner = column_old.topLeft() + QPoint(3, 3)
+        x, y = round(corner.x() * ratio), round(corner.y() * ratio)
+        inside = native and self.surface_old.contains(corner)
+        self.stage = (QColor(image.pixel(x, y)) if not inside and 0 <= x < image.width() and 0 <= y < image.height()
+                      else QColor('#000000'))
+        # Studio fits its video window to the letterboxed picture, so a video window is the
+        # picture; only a column without one is searched for it.
+        self.content = (QRectF(self.surface_old) if native
+                        else _content_rect(image, self.surface_old, ratio, self.stage))
+        self.clock = PaintedMotion(self.token.ms, _frame_ms(self))
+        _keep_heap_quiet()
+        self._timer.start(self.clock.refresh_ms)
+        self.update()
+
+    def _step(self):
+        _keep_heap_quiet()
+        if self.clock is None:
+            return
+        if self.clock.finished:
+            self.finish()
+        elif (p := self.clock.step()) is not None:
+            self.amount = self._curve.valueForProgress(p)
+            self.update()
+
+    def finish(self):
+        from shiboken6 import isValid
+        if self._done or not isValid(self):
+            return
+        self._done = True
+        self._timer.stop()
+        _ACTIVE_FADES.discard(self)
+        if isValid(self.host) and self.host.window() is not None:
+            self.host.window().removeEventFilter(self)
+        self.hide()
+        self.deleteLater()
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Hide, QEvent.Type.WindowStateChange):
+            self.finish()
+        return False
+
+    def _panel_x(self, shown: float) -> float:
+        """The panel's left edge (host coordinates) when ``shown`` (0 away .. 1 in place)."""
+        rect = self.panel_rect
+        away = (1.0 - shown) * rect.width()
+        return rect.x() + (away if self.side == 'right' else -away)
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        origin = QPointF(-self.area.x(), -self.area.y())
+        ratio = self.old.devicePixelRatio() or 1.0
+        draw_picture(painter, QPointF(0, 0), self.old, _source(self.area, ratio))
+        if self.panel_picture is None or self.clock is None:
+            painter.end()
+            return
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        shown = self.amount if self.entering else 1.0 - self.amount
+        # The player surface between the far side and the panel's edge, as it moves.
+        panel_x = self._panel_x(shown)
+        surface = QRectF(_lerp_rect(QRectF(self.surface_old), QRectF(self.surface_new), self.amount))
+        if self.side == 'right':
+            surface.setRight(min(surface.right(), panel_x))
+        else:
+            surface.setLeft(max(surface.left(), panel_x + self.panel_rect.width()))
+        span = QRectF(self.column_old).united(QRectF(self.column_new)).united(QRectF(self.panel_rect))
+        painter.fillRect(span.translated(origin), self.stage)
+        # The old video picture fitted into the surface keeping its proportions, as the player
+        # letterboxes it: the similarity that takes the old fitted rectangle to the current one
+        # carries the detected picture, so the first frame is exactly the old screen.
+        content = self.content
+        if content is not None and surface.width() > 1 and surface.height() > 1:
+            aspect = content.width() / max(1.0, content.height())
+            fit_old = _fit(aspect, QRectF(self.surface_old))
+            fit_now = _fit(aspect, surface)
+            s = fit_now.width() / max(1.0, fit_old.width())
+            centre = fit_now.center() + (content.center() - fit_old.center()) * s
+            w, h = content.width() * s, content.height() * s
+            fitted = QRectF(centre.x() - w / 2, centre.y() - h / 2, w, h)
+            painter.save()
+            painter.setClipRect(surface.translated(origin))
+            painter.drawPixmap(fitted.translated(origin), self.old, QRectF(_source(content, ratio)))
+            painter.restore()
+        # The panel on the same curve.
+        draw_picture(painter, QPointF(panel_x, self.panel_rect.y()) + origin, self.panel_picture)
+        painter.end()
+        self.clock.painted()
+
+
+def _fit(aspect: float, box):
+    """The largest rectangle of ``aspect`` centred in ``box`` (a QRectF)."""
+    from PySide6.QtCore import QRectF
+    w = min(box.width(), box.height() * aspect)
+    h = w / max(aspect, 1e-6)
+    return QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)
+
+
+def _content_rect(image, surface: QRect, ratio: float, stage):
+    """What of ``surface`` (logical, in ``image``) is not the stage colour: the video picture the
+    player letterboxed there, as a QRectF. None when it is all stage (no video, or a black frame)."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage
+    try:
+        import numpy as np
+    except ImportError:
+        return QRectF(surface)
+    img = image.convertToFormat(QImage.Format.Format_RGB32)
+    x0, y0 = max(0, round(surface.x() * ratio)), max(0, round(surface.y() * ratio))
+    x1 = min(img.width(), round((surface.x() + surface.width()) * ratio))
+    y1 = min(img.height(), round((surface.y() + surface.height()) * ratio))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    rows = np.frombuffer(img.constBits(), np.uint8, count=img.sizeInBytes()).reshape(img.height(), img.bytesPerLine())
+    pixels = rows[y0:y1, x0 * 4:x1 * 4].reshape(y1 - y0, x1 - x0, 4)[:, :, :3].astype(np.int16)
+    target = np.array([stage.blue(), stage.green(), stage.red()], np.int16)
+    other = np.abs(pixels - target).max(axis=2) > 18
+    ys, xs = np.flatnonzero(other.any(axis=1)), np.flatnonzero(other.any(axis=0))
+    if not ys.size:
+        return None
+    return QRectF((x0 + xs[0]) / ratio, (y0 + ys[0]) / ratio,
+                  (xs[-1] - xs[0] + 1) / ratio, (ys[-1] - ys[0] + 1) / ratio)
+
+
+def _native_surface(column, host) -> QRect:
+    """The largest visible native child of ``column`` (the video window) in ``host`` coordinates,
+    or the column itself."""
+    best = None
+    for child in column.findChildren(QWidget):
+        if child.testAttribute(Qt.WidgetAttribute.WA_NativeWindow) and child.isVisible():
+            if best is None or child.width() * child.height() > best.width() * best.height():
+                best = child
+    widget = best or column
+    return QRect(widget.mapTo(host, QPoint()), widget.size())
+
+
+def _column_beside(panel, side):
+    """The splitter neighbour on the panel's inner side (Studio's video column), or None."""
+    from PySide6.QtWidgets import QSplitter
+    host = panel.parentWidget()
+    if not isinstance(host, QSplitter):
+        return None
+    index = host.indexOf(panel)
+    step = -1 if side == 'right' else 1
+    probe = index + step
+    while 0 <= probe < host.count():
+        widget = host.widget(probe)
+        if widget.isVisible():
+            return widget
+        probe += step
+    return None
+
+
+def _panel_desktop_snapshot(host) -> QPixmap | None:
+    snapshot = _desktop_pixels(host)
+    if snapshot is None or snapshot.isNull():
+        return None
+    image = snapshot.toImage()
+    # A locked or isolated Windows desktop can return an all-black bitmap for
+    # a visible window. Check across the entire splitter, including the chrome.
+    for row in (1, 3, 5, 7):
+        for column in (1, 3, 5, 7):
+            pixel = image.pixel(column * image.width() // 8, row * image.height() // 8)
+            if pixel & 0x00FFFFFF:
+                return snapshot
+    return None
+
+
+def _morph_panel(panel, side, visible, apply, old: QPixmap) -> bool:
+    """``transfer_panel_visibility`` with the column beside the panel following (``PanelMorph``).
+    False when it cannot (no kept cover, no column beside it): the caller slides as before."""
+    host = panel.parentWidget()
+    cover = stage_cover(host)
+    column = _column_beside(panel, side)
+    if cover is None or column is None:
+        return False
+    loading = getattr(panel.window(), '_studio_loading_session', None)
+    view = getattr(loading, 'view', None)
+    if view is not None and view.isVisible():
+        return False                       # under the loading card: nothing of it is on the screen
+    column_old = QRect(column.mapTo(host, QPoint()), column.size())
+    surface_old = _native_surface(column, host)
+    if visible:
+        panel_rect = None
+    else:
+        panel_rect = QRect(panel.mapTo(host, QPoint()), panel.size())
+        picture = panel.grab()
+    area = QRect(host.rect())
+    morph = PanelMorph(host, cover, old, area, side, visible)
+    morph.show_old()
+    apply()
+    if hasattr(host, 'refresh'):
+        host.refresh()
+    if host.layout() is not None:
+        host.layout().activate()
+    if visible:
+        if panel.layout() is not None:
+            panel.layout().activate()
+        panel_rect = QRect(panel.mapTo(host, QPoint()), panel.size())
+        picture = panel.grab()
+    column_new = QRect(column.mapTo(host, QPoint()), column.size())
+    surface_new = _native_surface(column, host)
+    if picture.isNull() or panel_rect.width() < 80:
+        morph.finish()
+        return True
+    panel._visible_panel_slide = morph
+    morph.begin(picture, panel_rect, column_old, column_new, surface_old, surface_new)
+    return True
 
 
 def _slidable(panel) -> bool:
@@ -1334,6 +1924,73 @@ def _slidable(panel) -> bool:
     return bool(enabled() and window is not None and window.isVisible() and not window.isMinimized()
                 and window.isActiveWindow() and panel.property('transitionMotion') is not False
                 and not has_visible_native_child(panel))
+
+
+def stop_panel_motion(panel):
+    from shiboken6 import isValid
+    slide = getattr(panel, '_visible_panel_slide', None)
+    if slide is not None and isValid(slide):
+        slide.finish()
+
+
+def transfer_panel_visibility(panel, side, visible, apply):
+    """Commit the real splitter layout once, then reveal its already painted panel."""
+    from shiboken6 import isValid
+    host = panel.parentWidget()
+    prior = getattr(panel, '_visible_panel_slide', None)
+    running = prior is not None and isValid(prior) and prior.isVisible()
+    if not running and visible == panel.isVisible():
+        return
+    if host is None or not _slidable(panel) or (stage_cover(host) is None and QApplication.platformName() == 'windows'):
+        stop_panel_motion(panel)
+        apply()
+        return
+    if running and prior.entering == visible:
+        return
+    if running and isinstance(prior, PanelMorph):
+        prior.finish()
+        running = False
+    old_slot = _panel_desktop_snapshot(host) if not running else None
+    if old_slot is not None and _morph_panel(panel, side, visible, apply, old_slot):
+        return
+
+    hold = None
+    initial = prior.amount if running else None
+    if visible and old_slot is not None:
+        hold = cover_page(host, old_slot)
+    if visible:
+        apply()
+        if hasattr(host, 'refresh'):
+            host.refresh()
+        if panel.layout() is not None:
+            panel.layout().activate()
+    picture = panel.grab()
+    rect = QRect(panel.mapToGlobal(QPoint()), panel.size())
+    backdrop = prior.backdrop if running else None
+    if visible and backdrop is None:
+        if old_slot is not None:
+            r = old_slot.devicePixelRatio()
+            crop = QRect(panel.mapTo(host, QPoint()), panel.size())
+            backdrop = old_slot.copy(_source(crop, r).toAlignedRect())
+        else:
+            from .theme_manager import theme_definition, theme_key
+            from PySide6.QtGui import QColor
+            backdrop = QColor(theme_definition(theme_key()).app_background)
+    if picture.isNull() or rect.width() < 80:
+        if not visible:
+            apply()
+        if hold is not None:
+            hold.finish()
+        stop_panel_motion(panel)
+        return
+    slide = PanelSlide(host, picture, rect, side, entering=visible, backdrop=backdrop, initial=initial)
+    panel._visible_panel_slide = slide
+    slide.previous_surface = hold
+    slide.start()
+    if not visible:
+        apply()
+    if running:
+        prior.finish()
 
 
 class panel_slide_out:
@@ -1509,6 +2166,7 @@ class _Ghost(QWidget):
             super().__init__(None, flags)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            _no_system_animation(self)
         self.cover = cover
         self.setObjectName('dialogGhost')
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1539,8 +2197,8 @@ class _Ghost(QWidget):
             self.cover.stack_over_owner()
         self.show()
         self.raise_()
-        if self.cover is not None:
-            self.repaint()                 # on the screen now, not at the next event-loop turn
+        if self.cover is not None and self.opacity > 0:
+            self.repaint()                 # a closing picture covers the live dialog before it hides
 
     def paintEvent(self, _event):  # noqa: N802 - Qt override
         if self.rect_now.isEmpty() or self.opacity <= 0.0:
@@ -1607,10 +2265,12 @@ def _shrunk_into(origin: QRect, full: QRect) -> QRectF:
     a quarter of its size, so the ghost window spanned button and dialog and scaled a big picture
     a long way. Now it starts at 72 % about a point 40 % of the way from the dialog to the button.
     """
-    scale = 0.72
+    # 2026-11-23 (user: windows open too slowly and not smoothly): from DIALOG_START_SCALE, leaning
+    # DIALOG_START_LEAN of the way toward the button - a short, quick grow instead of a long one.
+    scale = tokens.DIALOG_START_SCALE
     width, height = full.width() * scale, full.height() * scale
     dialog_centre, button = QPointF(full.center()), QPointF(origin.center())
-    centre = dialog_centre + (button - dialog_centre) * 0.4
+    centre = dialog_centre + (button - dialog_centre) * tokens.DIALOG_START_LEAN
     return QRectF(centre.x() - width / 2, centre.y() - height / 2, width, height)
 
 
@@ -1626,7 +2286,25 @@ class _Flight:
         self.opening = opening
         self.k = 0.0
         self.vel = 0.0
+        self.backdrop = None
         self.clock = 0.0               # seconds of motion played (busy frames do not skip ahead)
+
+    def bind_backdrop(self, backdrop, *, opacity=0.0):
+        self.backdrop = backdrop
+        self.start_alpha = backdrop.alpha
+        self.start_opacity = opacity
+        self.started = time.perf_counter()
+        self.curve = tokens.easing_curve(tokens.SETTINGS_TRANSITION)
+
+    def advance_settings(self, now: float) -> bool:
+        p = min(1.0, (now - self.started) * 1000 / tokens.SETTINGS_TRANSITION.ms)
+        k = self.curve.valueForProgress(p)
+        self.ghost.rect_now = _lerp_rect(self.start, self.end, k)
+        self.ghost.opacity = self.start_opacity + (float(self.opening) - self.start_opacity) * k
+        self.ghost.update()
+        alpha = self.backdrop.ALPHA if self.opening else 0
+        self.backdrop.set_progress(self.start_alpha + (alpha - self.start_alpha) * k)
+        return p < 1.0
 
     def advance(self, dt: float) -> bool:
         """Step; False when finished."""
@@ -1645,18 +2323,14 @@ class _Flight:
                 if area != self.ghost.area:
                     self.ghost.place(area)
         if self.opening:
-            stiffness, coefficient = tokens.DIALOG_IN.constants()
-            left = dt
-            while left > 0:
-                h = min(left, _SUBSTEP)
-                self.vel += (-stiffness * (self.k - 1.0) - coefficient * self.vel) * h
-                self.k += self.vel * h
-                left -= h
-            # Within half a pixel on a dialog-sized move: hand over to the real dialog now rather
-            # than spending another ~0.3 s on the spring's last invisible creep.
-            done = (abs(self.k - 1.0) < 0.006 and abs(self.vel) < 0.08
-                    and self.clock * 1000 >= self.ghost.cascade_ms())
-            self.ghost.opacity = min(1.0, self.clock * 1000 / tokens.DIALOG_FADE_IN.ms)
+            # 2026-11-23 (user: too slow, not smooth - like Home's motions): a fixed curve
+            # (DIALOG_OPEN) instead of a spring whose last stretch crept on invisibly.
+            from .motion_tokens import easing_curve
+            p = min(1.0, self.clock * 1000 / tokens.DIALOG_OPEN.ms)
+            self.k = easing_curve(tokens.DIALOG_OPEN).valueForProgress(p)
+            done = p >= 1.0
+            fade = easing_curve(tokens.DIALOG_FADE_IN)
+            self.ghost.opacity = fade.valueForProgress(min(1.0, self.clock * 1000 / tokens.DIALOG_FADE_IN.ms))
         else:
             p = min(1.0, self.clock * 1000 / tokens.DIALOG_OUT.ms)
             from .motion_tokens import easing_curve
@@ -1677,7 +2351,9 @@ class DialogMotion(QObject):
         super().__init__(app)
         self.setObjectName('dialogMotion')
         self._flights: dict[int, _Flight] = {}
+        self._surfaces = {}
         self._origins: dict[int, QRect] = {}
+        self._opening_requests = {}
         self.last_clicked = None           # (global QRect, perf_counter) of the last clicked card/widget
         self._click_stamp = None
         self._timer = QTimer(self)
@@ -1756,42 +2432,87 @@ class DialogMotion(QObject):
 
     def opening(self, dialog) -> bool:
         key = _key(dialog)
-        self._drop(key, restore=True)
+        if getattr(dialog, 'SURFACE_MOTION', False):
+            if not self.eligible(dialog) or dialog.graphicsEffect() is not None:
+                return False
+            from .dialog_surface_motion import DialogSurfaceMotion
+            origin = self._origins[key] = self._origin()
+            surface = DialogSurfaceMotion(dialog, origin, _frame_ms(dialog),
+                                          lambda: self._surfaces.pop(key, None))
+            self._surfaces[key] = surface
+            dialog.setGraphicsEffect(surface)
+            QTimer.singleShot(0, surface, surface.prepare)
+            return True
+        previous = self._flights.get(key)
+        unified = bool(getattr(dialog, 'UNIFIED_TRANSITION', False))
+        if not unified or previous is None or previous.opening or not self.eligible(dialog):
+            self._drop(key, restore=True)
         if not self.eligible(dialog):
             return False
-        _keep_heap_quiet()                         # now: the flight itself starts a turn later
+        _keep_heap_quiet()
         origin = self._origin()
         self._origins[key] = origin
-        dialog.setWindowOpacity(0.0)               # open and usable, but the ghost is what you see
-        QTimer.singleShot(GHOST_SAFETY_MS, lambda d=dialog: _restore(d))
-        QTimer.singleShot(0, lambda d=dialog, o=origin: self._launch_open(d, o))
+        dialog.setWindowOpacity(0.0)
+        _no_system_animation(dialog)
+        request = self._opening_requests[key] = object()
+        # 2026-11-23: many windows size themselves one turn after showing (the translation window
+        # fits its height then); the picture is taken one turn later, at the size it will have.
+        QTimer.singleShot(0, dialog, lambda: QTimer.singleShot(0, dialog, lambda: self._launch_open(dialog, origin, request)))
+        if not unified:
+            def restore_if_stalled():
+                pending = self._opening_requests.get(key)
+                if pending is request:
+                    self._opening_requests.pop(key)
+                if (pending is None or pending is request) and not self.flying(dialog):
+                    _restore(dialog)
+
+            QTimer.singleShot(GHOST_SAFETY_MS, dialog, restore_if_stalled)
         return True
 
-    def _launch_open(self, dialog, origin):
+    def _launch_open(self, dialog, origin, request):
         from shiboken6 import isValid
+        if not isValid(dialog):
+            return
+        key = _key(dialog)
+        if self._opening_requests.get(key) is not request:
+            return
+        self._opening_requests.pop(key)
         if not isValid(dialog) or not dialog.isVisible():
             return
+        backdrop = getattr(dialog, '_modal_backdrop', None)
+        unified = backdrop is not None and backdrop.flight_owned
+        previous = self._flights.get(key)
         full = QRect(dialog.frameGeometry())
         pixmap = dialog.grab()
         if pixmap.isNull():
+            self._drop(key, restore=False)
             _restore(dialog)
+            if unified:
+                backdrop.set_progress(backdrop.ALPHA)
             return
-        if origin is not None:
+        opacity = 0.0
+        if unified and previous is not None and not previous.opening:
+            start = QRectF(previous.ghost.rect_now)
+            backdrop.set_progress(previous.backdrop.alpha)
+            opacity = previous.ghost.opacity
+            self._drop(key, restore=False)
+        elif origin is not None:
             start = _shrunk_into(origin, full)
-        else:                                      # opened by a key or by code: a gentle swell from 96 %
-            width, height = full.width() * 0.96, full.height() * 0.96
+        else:                                      # opened by a key or by code: a gentle swell
+            width, height = full.width() * tokens.DIALOG_START_SCALE, full.height() * tokens.DIALOG_START_SCALE
             start = QRectF(full.center().x() - width / 2, full.center().y() - height / 2 + 8, width, height)
         area = QRectF(full).united(start).toAlignedRect().adjusted(-4, -4, 4, 4)
+        # 2026-11-23 (user: the translation, 交给兔白, export and other windows had gaps between
+        # their parts and were see-through until they had fully appeared): no section cascade any
+        # more - the window comes in as one piece.
         ghost = _Ghost(pixmap, area, _dialog_cover(dialog, area))
-        if full.width() >= 420 and full.height() >= 300 and dialog.property('contentCascade') is not False:
-            try:
-                ghost.parts = page_parts(dialog, dialog, None, tokens.DIALOG_PARTS_MAX)
-            except Exception:  # noqa: BLE001 - it then simply grows, as before
-                ghost.parts = []
         flight = _Flight(self, dialog, ghost, start, QRectF(full), opening=True)
         ghost.rect_now = start
+        if unified:
+            ghost.opacity = opacity
+            flight.bind_backdrop(backdrop, opacity=ghost.opacity)
         ghost.appear()
-        self._flights[_key(dialog)] = flight
+        self._flights[key] = flight
         self._run(dialog)
 
     def closing_now(self, dialog) -> bool:
@@ -1809,6 +2530,16 @@ class DialogMotion(QObject):
         if dialog.__dict__.pop('_closing_ghost_up', False):
             return False                    # already done just before it hid (closing_now)
         key = _key(dialog)
+        if getattr(dialog, 'SURFACE_MOTION', False):
+            self._origins.pop(key, None)
+            surface = self._surfaces.get(key)
+            if surface is not None:
+                surface.finish(cancelled=True)
+            return False
+        self._opening_requests.pop(key, None)
+        backdrop = getattr(dialog, '_modal_backdrop', None)
+        if backdrop is not None and backdrop.flight_owned:
+            return self._close_settings(dialog, backdrop, key)
         self._drop(key, restore=True)
         origin = self._origins.pop(key, None)
         owner = dialog.parentWidget().window() if dialog.parentWidget() is not None else None
@@ -1833,11 +2564,43 @@ class DialogMotion(QObject):
         self._run(ghost)
         return True
 
+    def _close_settings(self, dialog, backdrop, key):
+        previous = self._flights.pop(key, None)
+        origin = self._origins.pop(key, None)
+        full = dialog.frameGeometry()
+        end = _shrunk_into(origin, full) if origin is not None else QRectF(full).adjusted(16, 12, -16, -12)
+        if previous is not None and previous.opening:
+            ghost = previous.ghost
+            start = QRectF(ghost.rect_now)
+            ghost.place(QRectF(ghost.area).united(end).toAlignedRect())
+        elif dialog.windowOpacity() > 0:
+            start = QRectF(full)
+            area = start.united(end).toAlignedRect()
+            ghost = _Ghost(dialog.grab(), area, _dialog_cover(dialog, area))
+            ghost.rect_now = start
+            ghost.opacity = 1.0
+            ghost.appear()
+        else:
+            if previous is not None:
+                _close_ghost(previous.ghost)
+                if previous.backdrop is not backdrop:
+                    previous.backdrop.retire()
+            backdrop.retire()
+            _restore(dialog)
+            return True
+        _restore(dialog)
+        flight = self._flights[key] = _Flight(self, None, ghost, start, end, opening=False)
+        flight.owner = dialog.parentWidget().window()
+        flight.bind_backdrop(backdrop, opacity=ghost.opacity)
+        self._run(ghost)
+        return True
+
     # ------------------------------------------------------------------ frames
     def _run(self, widget):
         _keep_heap_quiet()                 # before the overdue collector tick, too
         if not self._timer.isActive():
-            self._last = None              # the clock starts at the first frame the GUI gets to
+            self._last = time.perf_counter()
+            self._late = 0
             self._timer.start(_frame_ms(widget))
 
     def _step(self):
@@ -1846,10 +2609,19 @@ class DialogMotion(QObject):
         now = time.perf_counter()
         if self._last is None:
             self._last = now
+            self._late = 0
             return
         gap = now - self._last
         self._last = now
-        late = gap * 1000 > tokens.MAX_FRAME_GAP_MS
+        # 2026-11-20 (user: the settings open at a low frame rate): one late frame used to end the
+        # motion on its last picture, so a start's busy moments cut nearly every opening into a
+        # jump. Like the page motions (_frame_step), a late frame moves it one normal frame and
+        # only MAX_LATE_FRAMES of them end it.
+        late = False
+        if gap * 1000 > tokens.MAX_FRAME_GAP_MS:
+            self._late = getattr(self, '_late', 0) + 1
+            late = self._late >= tokens.MAX_LATE_FRAMES
+            gap = self._timer.interval() / 1000
         dt = min(0.05, max(0.0, gap))
         for key, flight in list(self._flights.items()):
             if flight.opening and (not isValid(flight.dialog) or not flight.dialog.isVisible()):
@@ -1858,6 +2630,11 @@ class DialogMotion(QObject):
             owner = getattr(flight, 'owner', None)
             if owner is not None and (not isValid(owner) or not owner.isVisible()):
                 self._drop(key, restore=True)       # its window is gone: no picture left behind
+                continue
+            if flight.backdrop is not None:
+                resized = flight.opening and QRectF(flight.dialog.frameGeometry()) != flight.end
+                if resized or not flight.advance_settings(now):
+                    self._drop(key, restore=True)
                 continue
             if late:                       # busy GUI: show the end at once instead of a stutter
                 self._drop(key, restore=True)
@@ -1874,12 +2651,48 @@ class DialogMotion(QObject):
         flight = self._flights.pop(key, None)
         if flight is None:
             return
+        if flight.backdrop is not None:
+            if flight.opening:
+                flight.backdrop.set_progress(flight.backdrop.ALPHA)
+            else:
+                flight.backdrop.retire()
         if restore and flight.dialog is not None:
             _restore(flight.dialog)
         _close_ghost(flight.ghost)
 
+    def animate_done(self, dialog, result) -> bool:
+        if not getattr(dialog, 'SURFACE_MOTION', False) or not dialog.isVisible() or not enabled():
+            return False
+        key = _key(dialog)
+        surface = self._surfaces.get(key)
+        if surface is None:
+            if dialog.graphicsEffect() is not None or not self.eligible(dialog):
+                return False
+            from .dialog_surface_motion import DialogSurfaceMotion
+            surface = DialogSurfaceMotion(dialog, self._origins.get(key), _frame_ms(dialog),
+                                          lambda: self._surfaces.pop(key, None))
+            surface.amount = 1.0
+            surface.picture = dialog.grab()
+            surface.backdrop = getattr(dialog, '_modal_backdrop', None)
+            self._surfaces[key] = surface
+            dialog.setGraphicsEffect(surface)
+        surface.close(result)
+        return True
+
     def flying(self, dialog=None) -> bool:
-        return bool(self._flights) if dialog is None else _key(dialog) in self._flights
+        if dialog is None:
+            return bool(self._flights or self._surfaces)
+        key = _key(dialog)
+        return key in self._flights or key in self._surfaces
+
+
+def motion_playing() -> bool:
+    """A dialog flight or a page fade is on the screen now. Safe to ask from a worker thread."""
+    if _ACTIVE_FADES:
+        return True
+    app = QApplication.instance()
+    motion = getattr(app, '_dialog_motion', None) if app is not None else None
+    return bool(motion is not None and motion.flying())
 
 
 def end_all(suspend_s: float = 0.0) -> None:
@@ -1899,6 +2712,8 @@ def end_all(suspend_s: float = 0.0) -> None:
     if motion is not None:
         for key in list(motion._flights):
             motion._drop(key, restore=True)
+        for surface in list(motion._surfaces.values()):
+            surface.finish()
         motion._timer.stop()
     for fade in list(_ACTIVE_FADES):
         try:
@@ -1924,6 +2739,12 @@ def _dialog_cover(dialog, area: QRect):
     return cover if inside.contains(area) else None
 
 
+def animate_done(dialog, result) -> bool:
+    app = QApplication.instance()
+    motion = getattr(app, '_dialog_motion', None) if app is not None else None
+    return bool(motion is not None and motion.animate_done(dialog, result))
+
+
 def closing_now(dialog) -> bool:
     """Call right before a dialog hides itself (see ``DialogMotion.closing_now``)."""
     app = QApplication.instance()
@@ -1941,6 +2762,18 @@ def handles(dialog) -> bool:
     app = QApplication.instance()
     motion = getattr(app, '_dialog_motion', None) if app is not None else None
     return motion is not None and motion.eligible(dialog)
+
+
+def _no_system_animation(widget) -> None:
+    """Windows' own open/close animation off for ``widget``'s window (the app animates it).
+    2026-11-23 (user: small empty windows flash up before a window appears and go once it is
+    there): Windows 11 zooms every new window in; only ``SpringDialog`` had switched that off."""
+    try:
+        from ..app import floating_anchor
+        widget.winId()
+        floating_anchor.no_system_animation(widget)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _restore(dialog):

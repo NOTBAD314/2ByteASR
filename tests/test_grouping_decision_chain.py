@@ -131,22 +131,27 @@ def test_unchanged_invalid_retry_remains_unresolved():
 def test_task_retry_budget_is_independent_of_thread_completion_order():
     # 2026-11-18: every batch has its own fair share; early batches can no
     # longer spend the whole allowance before the second half of a video.
+    # 2026-11-22: one request per correction round for every batch.
     budget=QualityRetryBudget(requests=16)
     budget.register_batches(range(1,9))
-    assert budget.share()==2
+    assert budget.share()==QualityRetryBudget.MIN_SHARE==4
     with ThreadPoolExecutor(max_workers=8) as pool:
-        grants=list(pool.map(lambda b:[budget.take(2048,batch_index=f'{b}.quality-{n}') for n in range(3)],
+        grants=list(pool.map(lambda b:[budget.take(2048,batch_index=f'{b}.quality-{n}') for n in range(5)],
                              reversed(range(1,9))))
     for taken in grants:
-        assert taken[0] is not None and taken[1] is not None and taken[2] is None
+        assert all(grant is not None for grant in taken[:4]) and taken[4] is None
     assert budget.refusal_reason(1)=='batch_share_used'
-    assert budget.summary()['requests_used']==16
+    assert budget.summary()['requests_used']==32
 
 
 def test_long_task_budget_scales_but_stays_capped():
     budget=QualityRetryBudget()
     budget.register_batches(range(1,41))
-    assert budget.requests==QualityRetryBudget.MAX_REQUESTS and budget.share()==1
+    # 2026-11-22: 40 batches used to get one request each (64 cap).
+    assert budget.requests==160<=QualityRetryBudget.MAX_REQUESTS and budget.share()==4
+    many=QualityRetryBudget()
+    many.register_batches(range(1,201))
+    assert many.requests==QualityRetryBudget.MAX_REQUESTS
     assert QualityRetryBudget(requests=0).take(2048,batch_index=1) is None
 
 

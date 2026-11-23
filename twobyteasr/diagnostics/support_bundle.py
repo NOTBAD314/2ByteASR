@@ -221,13 +221,17 @@ def _scan_session(directory,files,meta,identity,checkpoint):
     for name,data in files.items():
         if not name.endswith(".jsonl"):continue
         size+=len(data)
-        for index,line in enumerate(data.splitlines(keepends=True)):
+        lines = data.splitlines(keepends=True)
+        for index,line in enumerate(lines):
             if index % 512 == 0:checkpoint()
             try:
                 row=_Pending.parse(line,legacy_session)
                 records.append(_Pending(row,line,legacy_session,directory.name,name,index+1,started,identity))
             except (ValueError,TypeError,UnicodeError):
-                unreadable.append(dict(session=directory.name,file=name,line=index+1,reason="invalid_or_partial_line"))
+                detail = ("unterminated_final_line" if index == len(lines) - 1
+                          and not line.endswith(b"\n") else "invalid_record")
+                unreadable.append(dict(session=directory.name,file=name,line=index+1,
+                                       reason="invalid_or_partial_line",detail=detail))
     return records,unreadable,size
 
 

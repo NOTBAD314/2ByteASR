@@ -1820,8 +1820,77 @@ class MpvCanvas(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._repaint_vacated(QRect(self.pos(), event.oldSize()))
         if getattr(self, '_presentation_block_reasons', None):
             self._request_native_region_sync(recheck=True)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._repaint_vacated(QRect(event.oldPos(), self.size()))
+
+    def _repaint_vacated(self, old: QRect) -> None:
+        """Repaint where this native video window was (2026-11-23).
+
+        User: after opening or closing a side panel, leftover video stayed in the gap. Studio
+        fits this window to the letterboxed picture, so a panel toggle moves and resizes it. mpv
+        draws from another process; the pixels it left where the window used to be are not in
+        Qt's dirty region (nothing Qt drew there changed), so Qt never painted over them and a
+        small stale frame stayed on screen (a Qt update() alone did not clear it on the real
+        desktop). Sometimes the stale frame sat inside the window's new rectangle, in the video
+        window itself, at its old size in the corner. Windows is asked to redraw: the window's
+        own pixels at once, and the video window too once mpv has followed the new size."""
+        parent = self.parentWidget()
+        if parent is None or not old.isValid() or old == self.geometry():
+            return
+        area = old.adjusted(-1, -1, 1, 1)
+        parent.update(area)
+        if sys.platform != 'win32' or QApplication.platformName() != 'windows':
+            return
+        window = self.window()
+        ratio = window.devicePixelRatioF() or 1.0
+        canvas = self
+
+        def redraw(children: bool):
+            from shiboken6 import isValid
+            if not isValid(window) or not window.isVisible() or not isValid(canvas):
+                return
+            import ctypes
+            from ctypes import wintypes
+            box = area.united(canvas.geometry()) if children else area
+            corner = parent.mapTo(window, box.topLeft())
+            rect = wintypes.RECT(int(corner.x() * ratio), int(corner.y() * ratio),
+                                 int((corner.x() + box.width()) * ratio) + 1, int((corner.y() + box.height()) * ratio) + 1)
+            # RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW, with RDW_NOCHILDREN while mpv may still
+            # be resizing (redrawing its window then tore the picture where the old and new
+            # rectangles overlap) and RDW_ALLCHILDREN once it has caught up.
+            flags = 0x0105 | (0x0080 if children else 0x0040)
+            ctypes.windll.user32.RedrawWindow(wintypes.HWND(int(window.winId())), ctypes.byref(rect), None, flags)
+        # mpv follows the new size from its own process, sometimes well after this frame (under
+        # a panel motion's cover later still), so this repeats until it has surely caught up.
+        for delay, children in ((0, False), (150, False), (400, True), (900, True)):
+            QTimer.singleShot(delay, window, lambda children=children: redraw(children))
+        # A paused picture is not drawn again at the new size by itself (it stayed a crop of the
+        # old frame): ask once, after the moves of one layout change have settled.
+        timer = self.__dict__.get('_redraw_timer')
+        if timer is None:
+            timer = self._redraw_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(120)
+            timer.timeout.connect(self._redraw_paused_picture)
+        timer.start()
+
+    def _redraw_paused_picture(self, again: bool = True) -> None:
+        controller = self.controller
+        if controller is None or not self._paused or not getattr(controller, 'running', False):
+            return
+        redraw = getattr(controller, 'redraw', None)
+        if callable(redraw):
+            try:
+                redraw()
+            except Exception:
+                return                         # a busy or exiting player: the next frame draws it
+        if again:                              # mpv may not have taken the new size yet: once more
+            QTimer.singleShot(450, self, lambda: self._redraw_paused_picture(False))
 
     @property
     def presentation_blocked(self) -> bool:
@@ -3019,10 +3088,14 @@ class MpvCanvas(QFrame):
                 self._last_audio_pts_ms = (
                     float(audio_pts) * 1000.0 if audio_pts is not None else None
                 )
-                from ..playback.frame_readiness import video_frame_witness
+                from ..playback.frame_readiness import video_frame_witness, frame_in_clip
                 current_frame = (video_frame_witness(self) if isinstance(self.controller, MpvController)
                                  else {'ready': bool(frame_info)})
-                if page is not None and current_frame['ready']:
+                open_tail = getattr(page, '_opening_preview_tail', None)
+                authorized_picture = not open_tail or open_tail['project'] is not page.project or (
+                    getattr(page, '_active_video_preview_clip_id', None) == open_tail['clip_id']
+                    and frame_in_clip(current_frame, open_tail['source_range']))
+                if page is not None and current_frame['ready'] and authorized_picture:
                     page._studio_mark_startup_milestone('MPV_FILE_LOADED',
                         media_path=self._media_path, instance_id=getattr(self.controller, 'instance_id', None))
                     page._studio_mark_startup_milestone(
@@ -3660,8 +3733,12 @@ class MpvCanvas(QFrame):
         owner = self._play_intent_owner()
         pending = getattr(self, '_pending_play_intent', None)
         if pending is None or pending.owner != owner:
+            from ..playback.audio_recovery import COLD_OUTPUT_TIMEOUT_S
+            engine = getattr(self._studio_page(), 'audio_engine', None)
+            cold_pending = getattr(engine, 'cold_output_pending', lambda: False)
+            timeout = COLD_OUTPUT_TIMEOUT_S + 2.0 if cold_pending() else 10.0
             now = time.monotonic()
-            self._pending_play_intent = PendingPlay(owner, now, now + 10.)
+            self._pending_play_intent = PendingPlay(owner, now, now + timeout)
             self._buffered_play_started = now
         self._buffered_play_pending = True
         self._buffered_play_timer.start()

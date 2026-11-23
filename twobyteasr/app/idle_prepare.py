@@ -44,7 +44,7 @@ class IdlePreparation(QObject):
 
     def _idle(self) -> bool:
         if (QApplication.mouseButtons() != Qt.MouseButton.NoButton or QApplication.activePopupWidget()
-                or QApplication.activeModalWidget()):
+                or QApplication.activeModalWidget() or _dialog_or_motion()):
             return False
         # 2026-11-19: not while the pointer is moving. A step takes up to 0.3 s on the GUI thread,
         # and a moving pointer is about to click something: preparation waits until it rests.
@@ -78,6 +78,28 @@ class IdlePreparation(QObject):
         finally:
             self.timings.append((time.perf_counter() - began) * 1000)
         self._timer.start(STEP_GAP_MS)
+
+
+def _dialog_or_motion() -> bool:
+    """A dialog is open (SpringDialog runs its own loop without being modal) or a motion plays.
+
+    2026-11-20 (user: the settings open at a low frame rate, slowly): opened soon after a start,
+    the settings grew at 24 fps with 70-110 ms gaps. The main thread was building model workshop
+    cards here between the frames (one card a step, ~30 ms each): activeModalWidget() is None
+    for these dialogs, so preparation went on under the motion and while the window was open."""
+    app = QApplication.instance()
+    if app is None:
+        return False
+    if getattr(app, '_spring_visible_dialogs', None):
+        return True
+    motion = getattr(app, '_dialog_motion', None)
+    try:
+        if motion is not None and motion.flying():
+            return True
+        from ..design import transitions
+        return bool(transitions._ACTIVE_FADES)
+    except Exception:  # noqa: BLE001 - never stop preparation over a probe
+        return False
 
 
 def window_steps(window):

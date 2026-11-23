@@ -382,7 +382,7 @@ def collect_issues(payload,ledger):
                             if schema:
                                 add(index,f'{prefix}.motionSpec.tracks[{track_index}].{name}.{prop}','from_to',
                                     schema=copy.deepcopy(schema),value=None,exists=False,context={'track':track})
-    for error in jsonschema.Draft202012Validator(AUTHORED_OUTPUT_SCHEMA).iter_errors(payload):
+    for error in jsonschema.Draft202012Validator(AUTHORED_OUTPUT_SCHEMA).iter_errors(schema_view(payload)):
         parts=list(error.absolute_path);path=path_text(parts)
         index=parts[1] if len(parts)>1 and parts[0]=='candidates' and isinstance(parts[1],int) else -1
         if index<0:raise ValueError('Candidate set structure does not permit local repair')
@@ -533,13 +533,36 @@ def apply_patch_transaction(payload,response,issues):
     return output,changes
 
 
+_TEMPLATE_STAND_IN={'selector':'.wt-template','phase':'build','from':{'opacity':0},'to':{'opacity':1}}
+
+
+def schema_view(value):
+    """The authored source schema describes MotionSpec tracks. A motion template
+    (caption_templates.py) has none: the runtime builds its movement. Show the
+    schema a stand-in track for those specs; validate_motion_spec still checks
+    the real template block, and the payload itself is never changed."""
+    rows=value.get('candidates') if isinstance(value,dict) else None
+    if not isinstance(rows,list) and isinstance(value,dict) and isinstance(value.get('generated_source'),dict):
+        spec=value['generated_source'].get('motionSpec')
+        if not (isinstance(spec,dict) and 'template' in spec):return value
+        view=copy.copy(value);view['generated_source']=dict(value['generated_source'],motionSpec=dict(spec,tracks=[_TEMPLATE_STAND_IN]))
+        view['generated_source']['motionSpec'].pop('template');return view
+    if not isinstance(rows,list):return value
+    view=copy.copy(value);view['candidates']=[schema_view(row) for row in rows];return view
+
+
 def repair_authored(payload,*,ledger,provider,model,parent_request_id,validate,patch_request,regenerate_request,cancel_check=None,candidate_indices=None):
     from ..providers.ai_providers import AIProviderError
     def check():
         if cancel_check and cancel_check():raise AIProviderError('Technical repair cancelled or parent identity changed',category='cancelled')
     def verify(value):
+        # A receipt records whether the draft passes yet; it must not end the repair.
+        # jsonschema.ValidationError is not a ValueError: letting it escape here used to
+        # abort before the patch request, so one local fix plus one other error failed outright.
+        import jsonschema
         try:validate(value);return {'passed':True}
-        except (ValueError,KeyError,TypeError) as exc:return {'passed':False,'error':str(exc)[:400]}
+        except (ValueError,KeyError,TypeError,jsonschema.ValidationError) as exc:
+            return {'passed':False,'error':str(getattr(exc,'message',exc))[:400]}
     def scan(value):
         return [issue for issue in collect_issues(value,ledger)
                 if candidate_indices is None or issue['candidate_index'] in candidate_indices]
@@ -566,6 +589,32 @@ def repair_authored(payload,*,ledger,provider,model,parent_request_id,validate,p
             check()
             receipts.append(dict(parent_request_id=parent_request_id,repair_request_id=uuid.uuid4().hex,
                 operation='local_constant_motion_origin',model_calls=0,actual_cost_usd=0,
+                changed_paths=changes,before_hash=digest(before),after_hash=digest(working),
+                validation=verify(working),status='applied'))
+            ledger.save()
+    # Two numeric slips have one exact meaning and need no model call. The host
+    # already caps both phase windows by cue length, so a longer declared window
+    # is the same motion at its ceiling; and the font size contract defines
+    # 1u = 12 reference pixels, so calc(N * var(--wt-u)) is exactly N*12.
+    for index,row in enumerate(working['candidates']):
+        if candidate_indices is not None and index not in candidate_indices:continue
+        source=row.get('generated_source',{})
+        if not isinstance(source,dict):continue
+        before=copy.deepcopy(working)
+        motion=source.get('motionSpec')
+        if isinstance(motion,dict):
+            for key,high in (('buildMs',800),('resolveMs',500)):
+                number=motion.get(key)
+                if type(number) in (int,float) and math.isfinite(number) and number>high:motion[key]=high
+        appearance=source.get('appearance')
+        if isinstance(appearance,dict) and isinstance(appearance.get('fontSize'),str):
+            units=re.fullmatch(r'\s*calc\(\s*(\d+(?:\.\d+)?)\s*\*\s*var\(--wt-u\)\s*\)\s*',appearance['fontSize'])
+            if units and 16<=float(units.group(1))*12<=200:appearance['fontSize']=round(float(units.group(1))*12,2)
+        changes=changed_paths(before,working)
+        if changes:
+            check()
+            receipts.append(dict(parent_request_id=parent_request_id,repair_request_id=uuid.uuid4().hex,
+                operation='local_exact_numeric',model_calls=0,actual_cost_usd=0,
                 changed_paths=changes,before_hash=digest(before),after_hash=digest(working),
                 validation=verify(working),status='applied'))
             ledger.save()

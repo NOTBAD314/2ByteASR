@@ -87,11 +87,48 @@ PAGE_ENTER = PAGE_IN
 # a page switch slides the new content in along the navigation order (a page further down comes
 # from the right), its parts arriving one after another; the old content steps the other way and
 # fades; a sidebar shared by both pages stays and its highlight glides to the new item.
-PAGE_SLIDE_PX = 56                      # how far the new content travels (logical px)
-PAGE_SLIDE_OLD_SHARE = 0.6              # the old content leaves this part of the distance
-PAGE_SLIDE_OLD = Tween(200, (0.4, 0.0, 0.6, 1.0))
-PAGE_SLIDE_IN = Spring(0.46, 1.0)       # each part's travel: the list spring (LIST), no overshoot
-PAGE_SLIDE_FADE = Tween(240, FADE_EASE)  # each part's fade-in
+PAGE_SLIDE_PX = 56                      # how far the new content travels (logical px), at least
+# 2026-11-20 (user: Home to the workshop is too small and flat to read as a smooth glide; between
+# the workshop, the term library and the history the content should move down going down the
+# sidebar and up going up): the travel is a share of the page, the parts further down the cascade
+# travel further (a little depth), and the sidebar pages slide vertically.
+PAGE_SLIDE_SHARE = 0.17                 # sideways: this share of the content's width ...
+PAGE_SLIDE_MAX_PX = 240                 # ... at most
+PAGE_SLIDE_VERTICAL_SHARE = 0.13        # up and down (sidebar pages): this share of its height ...
+PAGE_SLIDE_VERTICAL_MAX_PX = 150        # ... at most
+PAGE_SLIDE_PARALLAX = 0.45              # the last arriving part travels this much further
+PAGE_SLIDE_OLD_SHARE = 0.4              # the old content leaves this part of the distance
+PAGE_SLIDE_OLD = Tween(240, (0.4, 0.0, 0.6, 1.0))
+PAGE_SLIDE_IN = Spring(0.56, 1.0)       # each part's travel: a long glide, no overshoot
+PAGE_SLIDE_FADE = Tween(260, FADE_EASE)  # each part's fade-in
+# 2026-11-22: sideways switches, after a day of rounds with the user (layered cards that faded in; old
+# cards squeezed into the edge; a fluid bend at the edges; then three drafts): they picked the iOS
+# push. Going forward the new page slides over the old one from the edge with a soft shadow on its
+# leading edge while the page underneath moves PAGE_PUSH_PARALLAX of the width the other way and
+# darkens by PAGE_PUSH_DIM; going back it all runs in reverse. Nothing fades in or out.
+PAGE_PUSH = Tween(400, (0.3, 0.3, 0.1, 1.0))   # an even start and a long soft arrival (APPLE_EASE did
+                                               # 85 % of a full width in its first 120 ms)
+PAGE_PUSH_PARALLAX = 0.3
+PAGE_PUSH_DIM = 0.12
+PAGE_PUSH_SHADOW_PX = 28
+PAGE_PUSH_SHADOW_ALPHA = 0.18
+# Starting recognition (user: not a slide, it should grow and go in, then show the recognition
+# screen; going back shrinks): the recognition page grows out of the start button with rounded
+# corners while Home zooms past toward the viewer and fades, like opening an app on iOS. Going
+# back is the reverse: the recognition page shrinks into the start button, Home settles back.
+PAGE_ZOOM_IN = Tween(400, APPLE_EASE)        # the plan's longest single motion (100-400 ms)
+PAGE_ZOOM_OUT = Tween(360, APPLE_EASE)
+PAGE_ZOOM_BEHIND = 1.08                      # Home's scale while the recognition page is up
+PAGE_ZOOM_BEHIND_FADE = Tween(260, FADE_EASE)
+PAGE_ZOOM_START_SCALE = 0.12                 # never grows from smaller than this
+PAGE_ZOOM_RADIUS = 22                        # corner radius of the page while it is small
+# Opening the subtitle workbench: what is on the screen moves left and grows as it fades, the
+# workbench (its loading card) comes in from the right growing into place - a step inside.
+SURFACE_EASE = (0.24, 0.28, 0.26, 1.0)
+WORKSPACE_SLIDE = Tween(320, SURFACE_EASE)
+# 2026-11-23 (user: the settings window opens and closes too slowly): 300 -> 220 ms both ways.
+SETTINGS_TRANSITION = Tween(220, SURFACE_EASE)
+STUDIO_ENTER = Tween(375, SURFACE_EASE)
 PAGE_SLIDE_DELAY_MS = 60                # the new content starts while the old is leaving
 PAGE_SLIDE_STAGGER_MS = 24              # one part after another, at most PAGE_SLIDE_STAGGER_STEPS apart
 PAGE_SLIDE_STAGGER_STEPS = 6            # (34 ms x 8 left the middle of a page empty for 0.3 s)
@@ -110,13 +147,20 @@ LAUNCH_HANDOFF = Tween(260, FADE_EASE)
 MAX_FRAME_GAP_MS = 45
 MAX_LATE_FRAMES = 3
 # Panels slide out to their side and in from it (user: tool panel to the right, subtitle list left).
-PANEL_SLIDE_IN = Tween(200, APPLE_EASE)
-PANEL_SLIDE_OUT = Tween(160, EXIT_EASE)
+PANEL_SLIDE_IN = Tween(285, SURFACE_EASE)
+PANEL_SLIDE_OUT = Tween(270, SURFACE_EASE)
+STUDIO_DIALOG = Tween(280, SURFACE_EASE)
+DIALOG_SURFACE_SCALE = 0.72
 
 # Dialogs and popovers grow out of the control that opened them and shrink back into it.
 DIALOG_IN = Spring(0.30, 1.0)                # 2026-11-18 evening: 0.42 -> 0.30 (quicker, still no bounce)
-DIALOG_OUT = Tween(170, EXIT_EASE)
-DIALOG_FADE_IN = Tween(140, FADE_EASE)
+DIALOG_OUT = Tween(160, EXIT_EASE)
+# 2026-11-23 (user: windows open too slowly and not smoothly, and their parts arrive with gaps):
+# one fixed curve, as Home's motions, from a little smaller and solid within ~110 ms; no cascade.
+DIALOG_OPEN = Tween(260, APPLE_EASE)
+DIALOG_FADE_IN = Tween(110, FADE_EASE)
+DIALOG_START_SCALE = 0.9
+DIALOG_START_LEAN = 0.25
 SCRIM_IN = Tween(220, FADE_EASE)
 SCRIM_OUT = Tween(200, EXIT_EASE)
 DIALOG_MIN_SCALE = 0.25                 # never starts smaller than this, however small the button

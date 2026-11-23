@@ -65,6 +65,11 @@ class VisualCueSnapshot:
     resolved_caption: object = None
     word_animation: object = None
     text_marks: object = None
+    # The same marks for a cue drawn by an AI web theme, already resolved to the
+    # classes its runtime groups (caption_design.web_theme_marks). Kept apart from
+    # text_marks, which the ordinary glyph renderers read; absent from every hash
+    # when empty, so an unmarked caption keeps the identity it had.
+    theme_marks: object = None
     speaker_label: str = ""
     collision_bounds: tuple[float, float, float, float] | None = None
     position_locked: bool = False
@@ -84,6 +89,8 @@ class VisualCueSnapshot:
         # compared independently by AdvancedPreviewIdentity so undo can return
         # to a byte-identical visual snapshot without accepting an older job.
         payload.pop("appearance_generation", None)
+        if not payload.get("theme_marks"):
+            payload.pop("theme_marks", None)
         encoded = json.dumps(
             payload, ensure_ascii=False, sort_keys=True,
             separators=(",", ":"),
@@ -111,6 +118,7 @@ class VisualCueSnapshot:
             "glow": self.glow,
             "decorations": background.get("marks", []),
             "effects": effects,
+            **({"theme_marks": self.theme_marks} if self.theme_marks else {}),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -130,6 +138,7 @@ class VisualCueSnapshot:
             "text": self.text,
             "caption_layout": getattr(self.resolved_caption, 'layout_json', '{}'),
             "text_marks": self.text_marks,
+            **({"theme_marks": self.theme_marks} if self.theme_marks else {}),
             "font": {
                 "family": self.font_family,
                 "size": self.font_size,
@@ -315,6 +324,25 @@ def _display_translation(project, cue):
     if not cue.appearance_override.get('_translation_display') and settings_from_state(project.studio_state).mode == 'bilingual':
         return _cue_translation(project, cue.id)
     return ''
+
+
+def _theme_marks(cue, caption):
+    """The caption's own marks for an AI web theme, on the displayed text.
+
+    Glossary auto-highlights stay out: an AI theme owns its visual rules, and
+    those are a display setting of the term library, not something the user or
+    AI 生动标记 put on this line.
+    """
+    from .text_marks import remap_caption_marks, layer_marks
+    from ..caption_design.web_theme_marks import theme_marks
+    own = [mark for mark in layer_marks(cue) or () if isinstance(mark, Mapping) and mark.get('source') != 'glossary']
+    return theme_marks(caption.text, remap_caption_marks(cue.text, caption, own)) or None
+
+
+def web_theme_text(snapshot) -> str:
+    """What the theme runtime receives as the cue text: the text plus its marks."""
+    from ..caption_design.web_theme_marks import marked_text
+    return marked_text(snapshot.text, getattr(snapshot, 'theme_marks', None))
 
 
 def build_visual_cue_snapshot(
@@ -508,6 +536,7 @@ def build_visual_cue_snapshot(
         resolved_caption=caption,
         word_animation=word_animation,
         text_marks=(remap_caption_marks(cue.text, caption, layer_marks(cue)) if not recipe.web_theme else []),
+        theme_marks=_theme_marks(cue, caption) if recipe.web_theme else None,
         collision_bounds=tuple(theme_bounds) if theme_bounds is not None else None,
         position_locked=bool(cue.transform.get('position_locked', False)),
         continuity_track=str(cue.transform.get('track_id',cue.speaker_id)),

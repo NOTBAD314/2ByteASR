@@ -464,6 +464,9 @@ class StudioReadiness(QObject):
                 value = take(path)
                 reused = value is not None
                 if value is None:value = load_project(path)
+                if expected_result_ref:
+                    from ..recognition.recognition_result import verify_result_reference
+                    verify_result_reference(expected_result_ref, project=value, project_path=path)
                 value._open_from_retained_cache = reused
                 error = ''
                 from ..media.media_availability import apply_availability, stat_sources_in_reader
@@ -702,12 +705,22 @@ class StudioReadiness(QObject):
             else:
                 self._audio_failed_since = None
             surface_ready = player_surface_ready(page)
+            tail = getattr(page, '_opening_preview_tail', None)
+            if tail and tail['project'] is page.project:
+                surface_ready = self._validate_tail_restore(tail, surface_ready)
             if surface_ready:
                 self.mark('准备播放器')
             elif '准备播放器' not in self.completed:
                 StudioReadiness._record_player_wait(self)
-            if '准备播放器' in self.completed and page._playback_buffers_ready():
-                self.mark('准备音频')
+            if '准备播放器' in self.completed:
+                if page._playback_buffers_ready():
+                    self.mark('准备音频')
+                elif not self.profile.get('audio_unavailable') and '准备音频' not in self.loading.completed:
+                    # A paused editor only needs its video and caption surfaces.
+                    # Playback still uses the current-generation audio gate.
+                    self.profile['audio_preparing_in_background'] = True
+                    self.profile['audio_ready'] = False
+                    self.loading.skip('准备音频', '音频继续准备，可先编辑字幕')
             opening_cues = first_frame_caption_cues(page) if surface_ready else None
             no_caption_target = opening_cues is not None and not opening_cues
             if no_caption_target and '准备字幕' not in self.completed:
@@ -752,7 +765,8 @@ class StudioReadiness(QObject):
             if not no_caption_target and (page._preview_path is not None or not page.project.cues):
                 if web_ready:
                     self.mark('准备字幕')
-            skipped_audio = {'准备音频'} if self.profile.get('audio_unavailable') else set()
+            skipped_audio = {'准备音频'} if (self.profile.get('audio_unavailable')
+                or self.profile.get('audio_preparing_in_background')) else set()
             resources_ready = all(stage in self.completed or stage in skipped_audio for stage in self.TASKS if stage != '首屏绘制')
             if resources_ready and not self.painted and not StudioReadiness._prepare_timeline_surface(self):
                 return
@@ -782,6 +796,31 @@ class StudioReadiness(QObject):
         except Exception as exc:
             if self._owns_request(tick_epoch, allow_ready=True):
                 self.fail(self._failed_stage(), str(exc))
+
+    def _validate_tail_restore(self, tail, surface_ready):
+        """For the open operation, require a picture in the resolved clip."""
+        page = self.page
+        if getattr(page.video, '_clock_only', False):
+            return surface_ready
+        from ..playback.frame_readiness import video_frame_witness, frame_in_clip
+        witness = video_frame_witness(page.video)
+        source_in, source_out = tail['source_range']
+        bound = getattr(page, '_active_video_preview_clip_id', None) == tail['clip_id']
+        if bound and surface_ready and frame_in_clip(witness, tail['source_range']):
+            return True
+        elif (surface_ready and bound and witness.get('status') == 'unsupported'
+              and getattr(page.video.controller, 'backend', '') == 'qt-video-sink'):
+            position = page.video.playback_position_snapshot().observed_media_ms
+            if source_in <= position < source_out:
+                return True
+        if not tail['fallback_used'] and (surface_ready or time.perf_counter() - tail['requested_at'] >= 5.0):
+            tail['fallback_used'] = True
+            self.last_progress = time.perf_counter()
+            page._studio_trace('MEDIA_RESTORE_FALLBACK', playhead_ms=tail['logical_ms'],
+                               preview_ms=tail['fallback_ms'], clip_id=tail['clip_id'],
+                               reason='decoded_picture_outside_clip' if surface_ready else 'tail_picture_unavailable')
+            page._seek(tail['fallback_ms'] / 1000.0)
+        return False
 
     def _retire_empty_caption_target(self):
         """Retire old tokens/producers once; no current cue must become READY."""

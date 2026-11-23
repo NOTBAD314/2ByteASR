@@ -19,6 +19,8 @@ def test_official_files_or_unverified_receipt_cannot_migrate_defaults(monkeypatc
 def test_actual_ready_migration_changes_only_future_qwen_selection(monkeypatch,tmp_path):
     settings=copy.deepcopy(DEFAULT_SETTINGS);settings['models']['firered_asr_backend']='qwen_aligner';settings['switches']['use_ja_ctc_aligner']=True
     frozen=copy.deepcopy(settings)
+    from twobyteasr.recognition import alignment_backend
+    monkeypatch.setattr(alignment_backend,'_official_weights_replaced_by_ultra',lambda:False)  # official folder present
     monkeypatch.setattr(qwen_upgrade,'current_readiness',lambda root:{'alignment_receipt':{'model':'Ultra','model_revision':'fixed'}})
     assert qwen_upgrade.activate_if_ready(settings,data_root=tmp_path,persist=False)
     assert selected_backend(frozen)=='qwen_aligner'

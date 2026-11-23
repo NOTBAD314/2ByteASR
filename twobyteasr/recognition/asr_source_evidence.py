@@ -14,9 +14,10 @@ from .model_execution import canonical_model_id, primary_model_id, review_model_
 
 
 MODEL_LABELS = {'moss': 'MOSS', 'firered': 'FireRed', 'qwen3-asr': 'Qwen',
+    'firered_llm': 'FireRedASR2-LLM',
     'whisper-turbo': 'Whisper', 'sensevoice': 'SenseVoice', 'funasr-nano': 'FunASR Nano'}
 _NON_ASR = {'current', '当前', '当前字幕', 'alternate', 'alternate_text',
-    'firered_llm', 'firered-llm', 'firered 校对', 'final', 'final_text',
+    'firered 校对', 'final', 'final_text',
     'polished', 'llm', 'web', 'terminology'}
 
 
@@ -446,6 +447,7 @@ def cue_source_hypotheses(project, cue, *, index=None):
         candidates = list(evidence.items())
     result, seen = [], set()
     competing = _has_competing_speaker(project, cue)
+    aliases = (project.generation_metadata.get('speaker_organization') or {}).get('current_speaker_ids') or {}
     overlapping_sources = {str(row.get('speaker_id') or '') for _, row in candidates
                            if isinstance(row, Mapping) and not row.get('cue_alignment')}
     for ref, row in candidates:
@@ -458,6 +460,9 @@ def cue_source_hypotheses(project, cue, *, index=None):
             if (getattr(project, 'render_settings', {}) or {}).get('_cue_domain') == 'timeline'
             else project_row_observations(ref, row, cue, role_models=role_models))
         for observation in observations:
+            owner = observation.get('speaker_id')
+            if owner in aliases:
+                observation.update(source_speaker_id=owner, speaker_id=aliases[owner])
             _partial_agreement_is_context(observation, cue)
             _bind_observation_owner(observation, cue, competing)
             if ref in suppressed and observation.get('source') == 'firered':
@@ -475,6 +480,9 @@ def cue_source_hypotheses(project, cue, *, index=None):
             projected = project_candidate(candidate, cue)
             if projected is None:
                 continue
+            owner = projected.get('speaker_id')
+            if owner in aliases:
+                projected.update(source_speaker_id=owner, speaker_id=aliases[owner])
             _bind_observation_owner(projected, cue, competing)
             key = ('candidate', projected['candidate_id'], projected['text'])
             if key not in seen:

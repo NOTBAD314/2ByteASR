@@ -23,6 +23,7 @@ import weakref
 from PySide6.QtCore import QEvent, QRect, QSize, Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QAbstractTextDocumentLayout, QColor, QPalette, QTextDocument
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
@@ -931,6 +932,7 @@ from .cooperative_find import CooperativeFind
 
 
 class FindReplaceDialog(CooperativeFind, _TextPreviewDialog):
+    SURFACE_MOTION = True
     """批量替换: find and replace with a checked preview, applied as one undo step."""
 
     _title = "批量替换"
@@ -1402,7 +1404,9 @@ class FindReplaceDialog(CooperativeFind, _TextPreviewDialog):
             except (RuntimeError, TypeError):
                 pass
             self._stack_connected = False
-        super().done(result)
+        from ..design.transitions import animate_done
+        if not animate_done(self, result):
+            super().done(result)
         # Parent-owned dialogs can outlive exec(). Keep closed windows from
         # retaining another whole project's text snapshot and result graph.
         self._text_snapshot=None
@@ -1523,11 +1527,14 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         self.terms_ai_button.clicked.connect(self._do_terms_ai_preview)
         self.project_entities_button = QPushButton(tr('复核本工程已确认实体'))
         self.project_entities_button.clicked.connect(self._do_project_entities_preview)
+        self.term_candidates_button = QPushButton(tr('辨识术语候选'))
+        self.term_candidates_button.clicked.connect(self._choose_recognition_entities)
         self.associate_button = QPushButton('确认所选名称关联…')
         self.associate_button.setObjectName('glossaryAssociateButton')
         self.associate_button.setEnabled(False)
         self.associate_button.clicked.connect(self._open_term_association)
-        for button in (self.terms_ai_button, self.project_entities_button, self.associate_button):
+        for button in (self.terms_ai_button, self.project_entities_button, self.term_candidates_button,
+                       self.associate_button):
             actions.addWidget(button)
         actions.addStretch(1)
         layout.addLayout(actions)
@@ -1550,8 +1557,16 @@ class GlossaryReviewDialog(_TextPreviewDialog):
         return f"{cue.text} → {changed}\n命中：{hit.original} → {hit.replacement} · {reason} · {state}" + ('\n'+extra if extra else '')
 
     def _apply_extras(self, hits) -> dict:
+        receipt = self._glossary_review_receipt
+        if receipt and receipt.get("kind") == "recognition_entity_review":
+            selected = {(hit.cue_id, *hit.span, hit.original) for hit in hits}
+            receipt = dict(receipt, source_occurrences=[
+                row for row in receipt["source_occurrences"]
+                if (row["cue_id"], *row["cue_span"], row["surface"]) in selected
+            ])
+            receipt["aliases"] = sorted({hit.original for hit in hits})
         return {"title": self._title, "glossary_ids": self._preview_library_ids,
-                "review_receipt": self._glossary_review_receipt}
+                "review_receipt": receipt}
 
     def _refresh_status(self, *_args) -> None:
         super()._refresh_status()
@@ -1569,6 +1584,93 @@ class GlossaryReviewDialog(_TextPreviewDialog):
             self.preview.clear()
             self.status_label.setText("词库或范围已改变，请重新预览。")
             self._refresh_status()
+
+    def _choose_recognition_entities(self):
+        from dataclasses import asdict
+        from ..glossary.recognition_term_candidates import project_candidates, preview_occurrences
+
+        project = self._page.session.project
+        if project is None:
+            return
+        groups = project_candidates(project, locked_ids=_locked_ids(self._page))
+        if not groups:
+            self.status_label.setText(tr("目前没有可定位的辨识术语候选"))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("辨识术语候选"))
+        dialog.resize(700, 490)
+        layout = QVBoxLayout(dialog)
+        group_list = QListWidget()
+        group_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for row in groups:
+            counts = "、".join(f"{name} ({len(items)})" for name, items in row["variants"].items())
+            text = f"{row['canonical']} · {counts}"
+            if row["quarantined"]:
+                text += f" · {tr('定位待核对')} {row['quarantined']}"
+            group_list.addItem(text)
+        layout.addWidget(group_list, 2)
+        variants = QListWidget()
+        layout.addWidget(variants, 1)
+        canonical = QLineEdit()
+        canonical.setPlaceholderText(tr("输入所选变体的规范写法"))
+        layout.addWidget(canonical)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(dialog.reject)
+        actions.addWidget(cancel)
+        preview = QPushButton(tr("预览所选变体"))
+        preview.clicked.connect(dialog.accept)
+        actions.addWidget(preview)
+        layout.addLayout(actions)
+
+        def selected_groups():
+            return [groups[index.row()] for index in group_list.selectedIndexes()]
+
+        def update_groups():
+            selected = selected_groups()
+            canonical.setText(selected[0]["canonical"] if len(selected) == 1 else "")
+            variants.clear()
+            counts = {}
+            for row in selected:
+                for spelling, occurrences in row["variants"].items():
+                    counts[spelling] = counts.get(spelling, 0) + len(occurrences)
+            for spelling, count in sorted(counts.items()):
+                item = QListWidgetItem(f"{spelling} · {count}")
+                item.setData(Qt.UserRole, spelling)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                variants.addItem(item)
+
+        group_list.itemSelectionChanged.connect(update_groups)
+        group_list.setCurrentRow(0)
+        if not dialog.exec() or self._page.session.project is not project:
+            return
+        selected = selected_groups()
+        target = canonical.text().strip()
+        enabled = {variants.item(i).data(Qt.UserRole) for i in range(variants.count())
+                   if variants.item(i).checkState() == Qt.Checked}
+        if not target or not enabled:
+            self.status_label.setText(tr("请选择变体并填写规范写法"))
+            return
+        hits = {}
+        occurrences = {}
+        for row in selected:
+            for hit in preview_occurrences(project, row, target, enabled, locked_ids=_locked_ids(self._page)):
+                hits[(hit.cue_id, hit.span)] = hit
+            for spelling in enabled:
+                for item in row["variants"].get(spelling, ()):
+                    occurrences[(item.cue_id, item.cue_span)] = asdict(item)
+        self._preview_library_ids = None
+        self._preview_snapshot_digest = None
+        self._glossary_review_receipt = {
+            "kind": "recognition_entity_review", "source": "user_confirmed", "schema": 1,
+            "project_id": project.project_id, "media_fingerprint": project.media.fingerprint,
+            "media_path": project.media.path, "entity_ids": [row["entity_id"] for row in selected],
+            "canonical": target, "scope": "original",
+            "source_occurrences": [occurrences[key] for key in hits],
+        }
+        self._fill_preview(list(hits.values()), PreviewBinding.capture(project))
 
     def _do_project_entities_preview(self):
         from ..glossary.project_entity_confirmations import confirmed_entity_occurrences

@@ -524,6 +524,16 @@ def model_evidence(
             shortening = unsupported_projected_shortening(cue,join_pieces(parts),selected)
             result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=join_pieces(parts),
                 source=model, confidence=min(confidence) if confidence else None, context_only=contextual or partial or shortening))
+    from ..recognition.independent_review import primary_readings, supplemental_readings
+    from ..recognition.asr_source_evidence import _has_competing_speaker
+    if not result or all(item.context_only for item in result):
+        exact = [(run, window) for run, window, mapped in primary_readings(project, cue) if mapped]
+        if len(exact) == 1 and not _has_competing_speaker(project, cue):
+            run, window = exact[0]
+            model = run['model_id']
+            result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=window['text'], source=model))
+    for model, text in supplemental_readings(project, cue):
+        result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=text, source=model))
     return tuple(result)
 
 

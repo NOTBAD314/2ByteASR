@@ -12,6 +12,9 @@ FONT_FILES={'Cubic 11':('Cubic11.ttf','truetype'),
             'Smiley Sans':('SmileySans-Oblique.woff2','woff2'),
             'ZCOOL KuaiLe':('ZCOOLKuaiLe-Regular.ttf','truetype'),
             'ZCOOL QingKe HuangYou':('ZCOOLQingKeHuangYou-Regular.ttf','truetype')}
+# Latin-only faces for template decoration (PLAY/REC/time code); never offered
+# as a caption font. A missing file is skipped so CSS falls back to system mono.
+DECORATION_FONT_FILES={'JetBrains Mono':('JetBrainsMono-Regular.ttf','truetype')}
 
 
 def font_use_receipt(family,diagnostics):
@@ -37,6 +40,13 @@ def css_font_stack(family):
 def offline_font_css(family):
     sources=[]
     for name in [name.strip().strip('\"\'') for name in str(family).split(',')]:
+        if name in DECORATION_FONT_FILES:
+            filename,format_name=DECORATION_FONT_FILES[name]
+            path=detect_install_root()/'assets/fonts'/filename
+            try:stat=path.stat()
+            except OSError:continue
+            sources.append((name,str(path),format_name,stat.st_mtime_ns,stat.st_size))
+            continue
         if name not in FONT_FILES:continue
         filename,format_name=FONT_FILES[name]
         path=detect_install_root()/'assets/fonts'/filename

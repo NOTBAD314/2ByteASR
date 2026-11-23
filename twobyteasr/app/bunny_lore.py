@@ -191,6 +191,32 @@ def feature_index(window=None) -> list[tuple[str, str, str]]:
             for entry in entries(window if window is not None else object()) if entry.key]
 
 
+_HANS: dict[str, str] | None = None
+
+
+def to_hans(text: str) -> str:
+    """繁體 question words as the 简体 the entries are written in (2026-11-22).
+
+    The knowledge base is written in 简体, so 「導出不了」「壓制」 shared no keyword with 「导出」
+    「压制」 and a 繁體 question found nothing. Character level, the reverse of i18n's
+    ``zh-Hant-chars.json``; 简体 and other text pass through unchanged.
+    """
+    global _HANS
+    if _HANS is None:
+        try:
+            import json
+            from ..i18n import LOCALE_DIR
+            with (LOCALE_DIR / 'zh-Hant-chars.json').open(encoding='utf-8') as stream:
+                pairs = json.load(stream)
+            _HANS = {}
+            for hans, hant in pairs.items():
+                if len(hant) == 1 and hant != hans:
+                    _HANS.setdefault(hant, hans)
+        except (OSError, ValueError, ImportError):
+            _HANS = {}
+    return ''.join(_HANS.get(ch, ch) for ch in str(text or ''))
+
+
 def _bigrams(text: str) -> set:
     text = ''.join(str(text).casefold().split())
     return {text[index:index + 2] for index in range(len(text) - 1)}
@@ -211,8 +237,9 @@ def rank(question: str, items, page: str = '', seen: str = '') -> list:
     # count lightly; what is on screen (a dialog's title, ``seen``) counts half; an entry made for the
     # page the user is on comes before an equal one that is not.
     from .bunny_troubleshoot import expand
+    question = to_hans(question)
     text = expand(question).casefold()
-    seen = str(seen or '').casefold()
+    seen = to_hans(seen).casefold()
     pieces = _bigrams(str(question).casefold())
     scored = []
     for index, item in enumerate(items):

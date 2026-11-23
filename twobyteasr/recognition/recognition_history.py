@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -14,19 +15,22 @@ from pathlib import Path
 from typing import Any
 
 import qtawesome as qta
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListView,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -54,6 +58,8 @@ from ..i18n import bind_text, tr
 from .recognition_outcome import (
     OUTCOME_VERSION, RecognitionOutcome, normalize_recognition_outcome, review_severity,
 )
+from .report_stream import INLINE_BYTES, ReportPages, save_redacted_report, search_report
+from ..system.resident_worker import ResidentWorker
 from ..design.typography import emphasis_qss, emphasized, weighted_font
 
 
@@ -215,7 +221,7 @@ class _RecordFacts:
 
 @dataclass(frozen=True)
 class RecognitionRecord(_RecordFacts):
-    """One fully parsed report (detail view, opening a result, audits)."""
+    """Report details and, for a large journal, locations of its evidence."""
 
     path: Path
     payload: dict[str, Any]
@@ -235,6 +241,8 @@ class RecognitionRecord(_RecordFacts):
     severity_counts: tuple[tuple[str, int], ...]
     review_notes: tuple[str, ...]
     outcome: RecognitionOutcome
+    report_pages: ReportPages | None = None
+    prepared_diagnosis: tuple | None = None
 
     @property
     def cue_count(self) -> int:
@@ -246,14 +254,72 @@ _RecognitionRecordCache = dict[
 ]
 
 
-def parse_recognition_report(path: Path) -> RecognitionRecord:
-    if Path(path).name == 'task.json':
-        from .task_journal import report_payload
-        payload = report_payload(path)
-    else:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+def _outcome_event(value):
+    if not isinstance(value, dict):
+        return False
+    name = str(value.get("event") or "")
+    return name in {"polishing_summary", "cloud_correction_applied", "terminology_polish_final", "studio_project_saved",
+                    "studio_project_save_failed", "project_save_failed"} or name.startswith("domain_term_")
+
+
+def _compact_outcome_event(value):
+    if value.get("event") != "terminology_polish_final":
+        return value
+    details = _dict(value.get("details"))
+    keys = ("accepted_edits", "rejected_edits", "unreviewed_suspects", "new_suspects",
+            "recall_gaps", "candidate_usage", "suspect_results", "final_text", "input_text", "disposition")
+    return {"event": value["event"], "cue_id": value.get("cue_id"),
+            "details": {key: details[key] for key in keys if key in details}}
+
+
+def parse_recognition_report(path: Path, *, cancel=None, summary=False) -> RecognitionRecord:
+    from .task_journal import history_report
+
+    payload, pages = history_report(path, cancel=cancel, summary=summary, select_event=_outcome_event,
+                                    map_event=_compact_outcome_event)
     if not isinstance(payload, dict):
         raise ValueError("报告顶层不是 JSON 对象")
+    return _recognition_record(path, payload, pages)
+
+
+_report_reader = ResidentWorker("recognition-history-reader")
+atexit.register(_report_reader.close)
+
+
+def _history_detail_request(parts, *, cancel=None):
+    path, settings, language, prepare_diagnosis = parts
+    try:
+        full = parse_recognition_report(path, cancel=cancel)
+        if prepare_diagnosis and full.report_pages is not None and (
+            full.status in _RETRYABLE or full.status in _FAILED_LIKE or full.problems
+        ):
+            from .history_diagnosis_panel import prepare_history_diagnosis
+
+            prepared = prepare_history_diagnosis(full.payload, settings=settings, language=language,
+                item_error=str(_dict(full.payload.get("result")).get("error") or ""))
+            full = replace(full, prepared_diagnosis=prepared)
+        return full, None
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, RecursionError) as exc:
+        return None, f"{path.name}: {exc}"
+
+
+def _load_history_detail_async(parts, cancel):
+    if os.environ.get("TWOBYTEASR_RESIDENT_WORKER") == "0":
+        return _history_detail_request(parts, cancel=cancel)
+    try:
+        response = _report_reader.call(
+            "twobyteasr.recognition.recognition_history:_history_detail_request", parts,
+            cancel_check=cancel.is_set)
+    except (OSError, RuntimeError):
+        response = None
+    if response is not None:
+        return response
+    if cancel.is_set():
+        return None, ""
+    return None, tr("报告读取进程已退出，请重新打开")
+
+
+def _recognition_record(path, payload, pages=None):
     media = _dict(payload.get("media"))
     settings = _dict(payload.get("settings"))
     models = _dict(settings.get("models"))
@@ -284,10 +350,10 @@ def parse_recognition_report(path: Path) -> RecognitionRecord:
         labels = {'queued':'等待启动', 'running':'运行中', 'interrupted':'意外中断 · 可继续',
                   'failed':'失败 · 可重试', 'cancelled':'已取消', 'partial':'部分完成', 'completed':'完成',
                   'no_speech':'未检测到人声','needs_recovery':'暂无可用字幕 · 待恢复','empty_result':'没有可用字幕'}
+        task_error = _dict(payload.get("task")).get("last_error")
         outcome = replace(outcome, core_status=raw, status_label=labels.get(raw, outcome.status_label),
             result_usable=bool(result.get('outputs', {}).get('project') and result.get('cue_count')),
-            problems=tuple(dict.fromkeys((*outcome.problems, *([payload['task']['last_error']]
-                if payload['task'].get('last_error') else [])))))
+            problems=tuple(dict.fromkeys((*outcome.problems, *([task_error] if task_error else [])))))
     status = outcome.core_status
     status_label = outcome.status_label
     severity_counts = dict(outcome.severity_counts)
@@ -324,6 +390,7 @@ def parse_recognition_report(path: Path) -> RecognitionRecord:
         severity_counts=tuple((key, severity_counts[key]) for key in _SEVERITIES),
         review_notes=review_notes,
         outcome=outcome,
+        report_pages=pages,
     )
 
 
@@ -432,7 +499,8 @@ def discover_legacy_report_roots() -> list[Path]:
 def _report_started_at(path: Path) -> str:
     """Cheap identity probe: read only the head of the JSON document."""
     try:
-        head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        with path.open("rb") as source:
+            head = source.read(4096).decode("utf-8", errors="replace")
     except OSError:
         return ""
     match = re.search(r'"started_at"\s*:\s*"([^"]+)"', head)
@@ -484,10 +552,8 @@ def repair_recognition_history(
                 result["duplicates"] += 1
                 continue
             try:
-                if path.stat().st_size > 12 * 1024 * 1024:
-                    raise ValueError("报告超过 12 MB")
-                json.loads(path.read_text(encoding="utf-8", errors="strict"))
-            except (OSError, ValueError) as exc:
+                parse_recognition_report(path, summary=True)
+            except (OSError, ValueError, RecursionError) as exc:
                 result["failed"] += 1
                 result["failed_files"].append(f"{path.name}: {exc}")
                 continue
@@ -516,15 +582,17 @@ def repair_recognition_history(
 # persisted in the cache folder (never inside the reports folder), so a later
 # start only stats the report files. The index is rebuildable: losing it
 # costs one background re-read of the reports.
-HISTORY_INDEX_SCHEMA = 1
+HISTORY_INDEX_SCHEMA = 2
 HISTORY_INDEX_NAME = "recognition-history-index.json"
 REPORT_GLOB = "*_字幕任务报告.json"
-_MAX_REPORT_BYTES = 12 * 1024 * 1024
 # Changed reports this small are read at once (a just-finished task shows up
 # without a second pass); larger or more of them go to a background thread.
 _INLINE_PARSE_BYTES = 192 * 1024
 _INLINE_PARSE_BUDGET_S = 0.04
 _INLINE_DETAIL_BYTES = 256 * 1024
+# A summary index up to this size is read when the page is built (a few ms), so its first
+# picture already shows the records (2026-11-22).
+_SEED_INDEX_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -591,7 +659,7 @@ def summarize_record(record: RecognitionRecord) -> RecognitionSummary:
 
 def summarize_report(path: Path) -> RecognitionSummary:
     """Parse one report and keep only what the list shows (payload dropped)."""
-    return summarize_record(parse_recognition_report(path))
+    return summarize_record(parse_recognition_report(path, summary=True))
 
 
 def default_history_index_path() -> Path:
@@ -611,7 +679,7 @@ def list_report_files(roots) -> tuple[list[tuple[Path, int, int]], list[str]]:
                 continue
             if root.name == 'recognition-tasks':
                 from .task_journal import history_paths
-                paths = list(history_paths(root))
+                paths = list(history_paths(root, reconcile_records=False))
             else:
                 paths = list(root.glob(REPORT_GLOB))
         except OSError as exc:
@@ -619,7 +687,8 @@ def list_report_files(roots) -> tuple[list[tuple[Path, int, int]], list[str]]:
             continue
         for path in paths:
             try:
-                stat = path.stat()
+                stat = (path if path.is_file() or path.name != "task.json"
+                        else path.with_name("task.previous.json")).stat()
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
                 continue
@@ -630,10 +699,9 @@ def list_report_files(roots) -> tuple[list[tuple[Path, int, int]], list[str]]:
 def parse_listed_report(path: Path, mtime_ns: int, size: int):
     """(path, mtime_ns, size, summary, error, cacheable) for one listed file."""
     try:
-        if size > _MAX_REPORT_BYTES:
-            raise ValueError("报告超过 12 MB")
-        return path, mtime_ns, size, summarize_report(path), None, True
-    except (UnicodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        summary = summarize_report(path)
+        return path, mtime_ns, size, summary, None, True
+    except (UnicodeError, ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
         # Content errors stay cached until the file changes.
         return path, mtime_ns, size, None, f"{path.name}: {exc}", True
     except OSError as exc:
@@ -962,7 +1030,9 @@ def build_history_page_qss(theme=None) -> str:
     for literal, token in _HISTORY_TOKEN_OVERRIDES.items():
         qss = qss.replace(literal, getattr(active, token, literal))
     from twobyteasr.design.semantic_qss import build_semantic_qss
-    return retheme_qss(qss, active) + build_semantic_qss(active) + history_redesign_qss(active)
+    from .history_json_page import json_page_qss
+    return (retheme_qss(qss, active) + build_semantic_qss(active) + history_redesign_qss(active)
+            + json_page_qss(active))
 
 
 def _duration_label(seconds: float) -> str:
@@ -1727,11 +1797,19 @@ class RecognitionHistoryDetail(QWidget):
     partial_requested = Signal(object)
     action_requested = Signal(str)
     close_requested = Signal()
+    _raw_saved = Signal(str)
+    _page_loaded = Signal(int, str, object, str)
+    _search_loaded = Signal(object, str)
 
     def __init__(self, record: RecognitionRecord, parent=None, *, settings: dict | None = None,
-                 closable: bool = False, attempt: int = 0):
+                 closable: bool = False, attempt: int = 0, raw_only: bool = False):
         super().__init__(parent)
         self.record = record
+        self._cancel_report_io = threading.Event()
+        self._raw_saved.connect(self._finish_raw_save)
+        self._page_loaded.connect(self._show_report_page)
+        self._search_loaded.connect(self._show_report_search)
+        self._report_page = 0
         self.setObjectName("historyDetail")
         from ..app.ui_zoom import set_sheet as _set_sheet
         # Its own sheet: inside the details dialog the application sheet would
@@ -1744,6 +1822,12 @@ class RecognitionHistoryDetail(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(14)
+
+        if raw_only:
+            self.diagnosis_panel = None
+            self._build_raw(layout)
+            self._toggle_inline_raw()
+            return
 
         # ── header: what, how it ended, the developer view one click away
         header = QHBoxLayout()
@@ -1827,7 +1911,7 @@ class RecognitionHistoryDetail(QWidget):
             from .history_diagnosis_panel import HistoryDiagnosisPanel
             self.diagnosis_panel = HistoryDiagnosisPanel(
                 record.payload, item_error=str(result.get("error") or ""), task_name=record.media_name,
-                settings=settings)
+                settings=settings, prepared=record.prepared_diagnosis)
             self.diagnosis_panel.action_requested.connect(self.action_requested)
             main.addWidget(self.diagnosis_panel)
 
@@ -1982,6 +2066,11 @@ class RecognitionHistoryDetail(QWidget):
             outcome_box.addWidget(_history_config_row('校对待重试', remaining))
         if record.outcome.accepted_edits or not troubled:
             outcome_box.addWidget(_history_config_row("实际接受修改", tr("{count} 处文字修改", count=record.outcome.accepted_edits)))
+        for key, count in record.outcome.polish_dispositions:
+            labels = {"unchanged": "校对无需改动", "applied": "校对修改已采用",
+                      "kept_with_rejections": "校对保留原文", "pending": "校对候选待确认",
+                      "unprocessed": "校对尚未完成"}
+            outcome_box.addWidget(_history_config_row(labels.get(key, key), tr("{count} 条处理记录", count=count)))
         if record.outcome.review_issue_count:
             outcome_box.addWidget(_history_config_row("待检查问题", tr("{count} 项检查问题", count=record.outcome.review_issue_count)))
         if task:
@@ -2093,6 +2182,15 @@ class RecognitionHistoryDetail(QWidget):
         columns.addWidget(side_frame, 100)
         layout.addLayout(columns)
 
+        self._build_raw(layout)
+        if record.payload.get("report_read_error"):
+            notice = QLabel(str(record.payload["report_read_error"]))
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
+        self.summary_ready = True
+        self.raw_button.clicked.connect(self._toggle_raw)
+
+    def _build_raw(self, layout):
         raw_actions = QHBoxLayout()
         self.copy_button = QPushButton("复制 JSON")
         self.copy_button.setObjectName("historySecondary")
@@ -2111,14 +2209,9 @@ class RecognitionHistoryDetail(QWidget):
         self.raw_note.setWordWrap(True)
         self.raw_note.hide()
         layout.addWidget(self.raw_note)
-
-        # The redacted JSON text, its editor and the highlighter are built on
-        # the first 「原始 JSON」 (a 3 MB report is ~110k lines to format, load
-        # and highlight); opening the details only shows the summary.
         self._raw_text: str | None = None
+        self.raw_handler = None
         self._details_layout = layout
-        self.summary_ready = True
-        self.raw_button.clicked.connect(self._toggle_raw)
         self.copy_button.clicked.connect(self._copy_raw)
         self.save_button.clicked.connect(self._save_raw)
 
@@ -2191,7 +2284,20 @@ class RecognitionHistoryDetail(QWidget):
         for category, count in Counter(str(item.get("category") or "待复核项") for item in review_items).most_common():
             review_box.addWidget(_history_config_row(category, tr("{count} 项问题", count=count)))
         segment_items = [item for item in review_items if any(item.get(key) not in (None, "") for key in ("cue_id", "segment_id", "timestamp", "text"))]
-        if segment_items:
+        if segment_items and record.report_pages is not None:
+            self.review_detail_button = QPushButton(tr("查看待检查分页"))
+            self.review_detail_button.setObjectName("historySecondary")
+            review_box.addWidget(self.review_detail_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+            def show_reviews():
+                if not self._ensure_raw_view().isVisible():
+                    self._toggle_inline_raw()
+                index = self.report_array.findData("review_items")
+                if index >= 0:
+                    self.report_array.setCurrentIndex(index)
+
+            self.review_detail_button.clicked.connect(show_reviews)
+        elif segment_items:
             self.review_detail_button = QPushButton("展开分段详情")
             self.review_detail_button.setObjectName("historySecondary")
             review_box.addWidget(self.review_detail_button, 0, Qt.AlignmentFlag.AlignLeft)
@@ -2224,14 +2330,138 @@ class RecognitionHistoryDetail(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def shutdown(self) -> None:
+        self._cancel_report_io.set()
         if self.diagnosis_panel is not None:
             self.diagnosis_panel.shutdown()
 
     @property
     def raw_text(self) -> str:
         if self._raw_text is None:
-            self._raw_text = json.dumps(redact_report_payload(self.record.payload), ensure_ascii=False, indent=2)
+            payload = self.record.payload
+            if self.record.report_pages is not None:
+                payload = {key: payload[key] for key in ("journal_version", "job_id", "status", "media", "settings")
+                           if key in payload}
+                payload["event_count"] = len(self.record.report_pages.arrays.get("events", ()))
+            self._raw_text = json.dumps(redact_report_payload(payload), ensure_ascii=False, indent=2)
         return self._raw_text
+
+    def _ensure_report_browser(self):
+        pages = self.record.report_pages
+        if pages is None or not any(pages.arrays.values()):
+            return
+        host = QFrame()
+        layout = QVBoxLayout(host)
+        controls = QHBoxLayout()
+        self.report_array = QComboBox()
+        for field, label in (("events", "事件"), ("review_items", "待检查")):
+            if pages.arrays.get(field):
+                self.report_array.addItem(tr(label), field)
+        self.report_previous = QPushButton(tr("上一页"))
+        self.report_next = QPushButton(tr("下一页"))
+        self.report_counter = QLabel()
+        self.report_previous.clicked.connect(lambda: self._load_report_page(self._report_page - 1))
+        self.report_next.clicked.connect(lambda: self._load_report_page(self._report_page + 1))
+        self.report_array.currentIndexChanged.connect(lambda: self._load_report_page(0))
+        for widget in (self.report_array, self.report_previous, self.report_next, self.report_counter):
+            controls.addWidget(widget)
+        controls.addStretch()
+        layout.addLayout(controls)
+        search = QHBoxLayout()
+        self.report_query = QLineEdit()
+        self.report_query.setPlaceholderText(tr("搜索脱敏后的整个报告"))
+        self.report_query.setMaxLength(256)
+        self.report_search = QPushButton(tr("搜索"))
+        self.report_search.clicked.connect(self._search_report)
+        self.report_query.returnPressed.connect(self._search_report)
+        self.report_reset = QPushButton(tr("返回分页"))
+        self.report_reset.hide()
+        self.report_reset.clicked.connect(lambda: self._load_report_page(self._report_page))
+        for widget in (self.report_query, self.report_search, self.report_reset):
+            search.addWidget(widget)
+        layout.addLayout(search)
+        view = QListView(host)
+        view.setMinimumHeight(210)
+        self.report_model = QStringListModel(view)
+        view.setModel(self.report_model)
+        view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(view)
+        self._details_layout.addWidget(host)
+        self.report_browser = host
+        self._load_report_page(0)
+
+    def _load_report_page(self, page):
+        self.report_reset.hide()
+        self.report_search.setEnabled(False)
+        self.report_array.setEnabled(False)
+        self.report_previous.setEnabled(False)
+        self.report_next.setEnabled(False)
+        pages = self.record.report_pages
+        field = self.report_array.currentData()
+        signal, cancel = self._page_loaded, self._cancel_report_io
+
+        def work():
+            error = ""
+            rows = []
+            try:
+                for item in pages.read(field, page * 30, 30, cancel=cancel):
+                    item = _dict(item)
+                    keys = ("time", "event", "stage", "reason", "category", "cue_id", "text", "message")
+                    fields = [str(item[key])[:180] for key in keys if isinstance(item.get(key), (str, int))]
+                    rows.append(redact_report_payload(" · ".join(fields)))
+            except (OSError, ValueError, RecursionError) as exc:
+                error = str(exc)
+            if not cancel.is_set():
+                try:
+                    signal.emit(page, field, rows, error)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True, name="history-evidence-page").start()
+
+    def _show_report_page(self, page, field, rows, error):
+        if self._cancel_report_io.is_set() or field != self.report_array.currentData():
+            return
+        self._report_page = page
+        self.report_model.setStringList(rows)
+        self.report_search.setEnabled(True)
+        total = len(self.record.report_pages.arrays[field])
+        self.report_counter.setText(error or f"{page * 30 + 1}–{page * 30 + len(rows)} / {total}")
+        self.report_array.setEnabled(True)
+        self.report_previous.setEnabled(not error and page > 0)
+        self.report_next.setEnabled(not error and (page + 1) * 30 < total)
+
+    def _search_report(self):
+        query = self.report_query.text().strip()
+        if not query or not self.report_search.isEnabled():
+            return
+        for control in (self.report_array, self.report_previous, self.report_next,
+                        self.report_search, self.report_reset):
+            control.setEnabled(False)
+        self.report_counter.setText(tr("正在搜索…"))
+        pages, signal, cancel = self.record.report_pages, self._search_loaded, self._cancel_report_io
+
+        def work():
+            matches, error = [], ""
+            try:
+                matches = search_report(pages, query, redact_report_payload, _sensitive_key, cancel=cancel)
+            except (OSError, ValueError, RecursionError) as exc:
+                error = str(exc)
+            if not cancel.is_set():
+                try:
+                    signal.emit(matches, error)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True, name="history-report-search").start()
+
+    def _show_report_search(self, matches, error):
+        if self._cancel_report_io.is_set():
+            return
+        self.report_model.setStringList(matches)
+        self.report_counter.setText(error or tr("显示 {count} 个搜索结果，最多 50 个", count=len(matches)))
+        self.report_search.setEnabled(True)
+        self.report_reset.setEnabled(True)
+        self.report_reset.show()
 
     def _ensure_raw_view(self) -> QPlainTextEdit:
         view = vars(self).get("raw_view")
@@ -2242,7 +2472,7 @@ class RecognitionHistoryDetail(QWidget):
         view.setReadOnly(True)
         view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         view.setFont(QFont("Cascadia Mono", 10))
-        view.setPlainText(self.raw_text)
+        view.setPlainText(self.raw_text[:INLINE_BYTES])
         view.setMinimumHeight(300)
         view.hide()
         if view.document().blockCount() <= _RAW_HIGHLIGHT_MAX_LINES:
@@ -2253,20 +2483,34 @@ class RecognitionHistoryDetail(QWidget):
             from ..app.ui_zoom import apply_to
             apply_to(view)
         self.raw_view = view
+        self._ensure_report_browser()
         return view
 
     def _toggle_raw(self):
+        if callable(self.raw_handler):
+            self.raw_handler(self.record)
+            return
+        self._toggle_inline_raw()
+
+    def _toggle_inline_raw(self):
         view = self._ensure_raw_view()
-        visible = not view.isVisible()
+        visible = view.isHidden()
         view.setVisible(visible)
-        self.copy_button.setVisible(visible)
+        pages = self.record.report_pages
+        self.copy_button.setVisible(visible and pages is None)
         self.save_button.setVisible(visible)
-        size = len(self.raw_text.encode("utf-8"))
-        if size >= LARGE_RAW_JSON_BYTES:
+        size = pages.identity[0] if pages is not None else len(self.raw_text.encode("utf-8"))
+        if pages is not None:
+            bind_text(self.raw_note, 'JSON 有 {size} MB。这里显示预览与分页，另存可取得完整脱敏报告。',
+                      size=f"{size / 1024 / 1024:.1f}")
+        elif size >= LARGE_RAW_JSON_BYTES:
             bind_text(self.raw_note, 'JSON 有 {size} MB，粘贴到聊天或 AI 窗口可能让它卡住很久；要分享时请点“另存为…”保存成文件再附上。',
                       size=f"{size / 1024 / 1024:.1f}")
-        self.raw_note.setVisible(visible and size >= LARGE_RAW_JSON_BYTES)
-        (bind_text(self.raw_button, '收起 JSON') if visible else bind_text(self.raw_button, '原始 JSON'))
+        self.raw_note.setVisible(visible and (pages is not None or size >= LARGE_RAW_JSON_BYTES))
+        if hasattr(self, "report_browser"):
+            self.report_browser.setVisible(visible)
+        if hasattr(self, 'raw_button'):
+            bind_text(self.raw_button, '收起 JSON' if visible else '原始 JSON')
         if visible:
             QTimer.singleShot(0, lambda: self._reveal(view))
 
@@ -2290,13 +2534,46 @@ class RecognitionHistoryDetail(QWidget):
         path, _filter = QFileDialog.getSaveFileName(self, tr("另存为…"), str(Path(folder) / f"{stem}.json"), "JSON (*.json)")
         if not path:
             return
+        pages = self.record.report_pages
+        if pages is not None:
+            self.save_button.setEnabled(False)
+            bind_text(self.raw_note, "正在保存…")
+            self.raw_note.show()
+            signal, cancel = self._raw_saved, self._cancel_report_io
+
+            def work():
+                error = ""
+                try:
+                    save_redacted_report(pages.path, path, redact_report_payload, _sensitive_key,
+                                         cancel=cancel, identity=pages.identity)
+                except (OSError, ValueError, RecursionError) as exc:
+                    error = str(exc)
+                if not cancel.is_set():
+                    try:
+                        signal.emit(error)
+                    except RuntimeError:
+                        pass
+
+            threading.Thread(target=work, daemon=True, name="history-report-save").start()
+            return
         try:
-            Path(path).write_text(self.raw_text, encoding="utf-8")
-        except OSError as exc:
-            bind_text(self.raw_note, '保存失败：{error}', error=str(exc))
+            if Path(path).resolve() == Path(self.record.path).resolve():
+                raise ValueError("请选择不同于原报告的文件")
+            from ..storage.atomic_files import write_text_atomic
+            write_text_atomic(Path(path), self.raw_text)
+        except (OSError, ValueError) as exc:
+            self._finish_raw_save(str(exc))
+        else:
+            self._finish_raw_save("")
+
+    def _finish_raw_save(self, error):
+        self.save_button.setEnabled(True)
+        if error:
+            bind_text(self.raw_note, '保存失败：{error}', error=error)
         else:
             bind_text(self.raw_note, '已保存')
-        self.raw_note.show()
+        if self.save_button.isVisible():
+            self.raw_note.show()
 
 
 class RecognitionHistoryPage(QWidget):
@@ -2363,7 +2640,11 @@ class RecognitionHistoryPage(QWidget):
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_history_page_qss())
         self._build()
+        if async_scan:
+            self._seed_from_index()
         self.refresh()
+        if async_scan:
+            self._render()          # the seeded records, or 「正在读取」 while the first scan runs
         self._live_timer = QTimer(self)
         self._live_timer.setInterval(2000)
         self._live_timer.timeout.connect(lambda: self.refresh() if self.isVisible() and not self.background_busy() else None)
@@ -2371,10 +2652,94 @@ class RecognitionHistoryPage(QWidget):
 
     def restore_active_navigation(self):
         self.nav.set_active("history")
+        self.show_list()
 
     def refresh_theme_palette(self) -> None:
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_history_page_qss())
+        panel = self.__dict__.get('bundle_panel')
+        if panel is not None:
+            panel.refresh_theme_palette()
+        if self.json_page is not None:
+            self.json_page.refresh_theme()
+
+    # ------------------------------------------------------------- raw JSON page
+    def show_list(self) -> None:
+        self._cancel_json_load()
+        if self.json_page is not None:
+            self.json_page.clear_paged_view()
+        if self.main_stack.currentWidget() is self.list_view:
+            return
+        from ..design.transitions import content_change
+        with content_change(self.main_stack):
+            self.main_stack.setCurrentWidget(self.list_view)
+
+    def _ensure_json_page(self):
+        if self.json_page is None:
+            from .history_json_page import HistoryJsonPage
+            page = HistoryJsonPage()
+            page.back_requested.connect(self.show_list)
+            self.main_stack.addWidget(page)
+            if self.property("_uiZoomApplied") is not None:
+                from ..app.ui_zoom import apply_to
+                apply_to(page)
+            self.json_page = page
+        return self.json_page
+
+    def _cancel_json_load(self):
+        pending = getattr(self, '_json_request', None)
+        if pending is not None:
+            request, cancel = pending
+            cancel.set()
+            self._detail_requests.pop(request, None)
+            self._json_request = None
+
+    def show_raw_json(self, record) -> None:
+        """Open a dedicated view using the same bounded reader as the details dialog."""
+        self._cancel_json_load()
+        page = self._ensure_json_page()
+        page.show_loading(record)
+        if self.main_stack.currentWidget() is not page:
+            from ..design.transitions import content_change
+            with content_change(self.main_stack):
+                self.main_stack.setCurrentWidget(page)
+
+        def install(full, error):
+            self._json_request = None
+            if full is None:
+                page.show_loading(record, tr("无法读取这份报告：{error}", error=error or ""))
+            else:
+                page.show_record(full)
+
+        if isinstance(record, RecognitionRecord):
+            install(record, None)
+        else:
+            path = Path(record.path)
+            parts = (path, None, current_language(), False)
+            try:
+                small = path.stat().st_size <= INLINE_BYTES and path.name != 'task.json'
+            except OSError:
+                small = True
+            if small:
+                install(*_history_detail_request(parts))
+            else:
+                self._detail_request_counter += 1
+                request = self._detail_request_counter
+                cancel = threading.Event()
+                self._json_request = (request, cancel)
+                self._detail_requests[request] = install
+                signal = self._detail_loaded
+
+                def work():
+                    full, error = _load_history_detail_async(parts, cancel)
+                    if not cancel.is_set():
+                        try:
+                            signal.emit(request, full, error)
+                        except RuntimeError:
+                            pass
+
+                threading.Thread(target=work, daemon=True, name='history-json-reader').start()
+        page.setFocus()
 
     def background_busy(self) -> bool:
         """True while reports are being read or the index written."""
@@ -2408,11 +2773,13 @@ class RecognitionHistoryPage(QWidget):
         self.nav = nav
         self.sidebar = sidebar
         side = sidebar.body
-        side.addStretch(1)
+        # 2026-11-23 (user): the same sidebar as the workshop and the term library (the current
+        # bundle and the model health, ``bundle_summary``); the records' summary sits by the title.
+        from ..local_models.bundle_summary import BundleSummaryPanel
+        self.bundle_panel = BundleSummaryPanel()
+        side.addWidget(self.bundle_panel, 1)
         self.summary = QLabel()
         self.summary.setObjectName("historyMuted")
-        self.summary.setWordWrap(True)
-        side.addWidget(self.summary)
         outer.addWidget(sidebar)
 
         # 2026-11-11 (records design C): no outer box around the list; the
@@ -2444,6 +2811,7 @@ class RecognitionHistoryPage(QWidget):
             switch.addWidget(button)
             self.view_buttons[key] = button
         header.addWidget(self.view_switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(self.summary, 0, Qt.AlignmentFlag.AlignVCenter)
         header.addStretch(1)
         self.search = QLineEdit()
         self.search.setObjectName("historySearch")
@@ -2520,10 +2888,22 @@ class RecognitionHistoryPage(QWidget):
         scroll.verticalScrollBar().valueChanged.connect(self._maybe_show_more)
         scroll.verticalScrollBar().rangeChanged.connect(lambda _low, _high: self._maybe_show_more())
         body.addWidget(scroll, 1)
-        outer.addWidget(content, 1)
+        # 2026-11-22: the list (with its overview) and a report's raw JSON page share the area
+        # right of the sidebar; the JSON page is built on its first use.
+        self.main_stack = QStackedWidget()
+        self.main_stack.setObjectName("historyMainStack")
+        self.list_view = QWidget()
+        self.list_view.setObjectName("historyListView")
+        list_row = QHBoxLayout(self.list_view)
+        list_row.setContentsMargins(0, 0, 0, 0)
+        list_row.setSpacing(outer.spacing())
+        list_row.addWidget(content, 1)
         self.overview = HistoryOverview()
         self.overview.analyse_requested.connect(self._analyse_latest_failure)
-        outer.addWidget(self.overview)
+        list_row.addWidget(self.overview)
+        self.main_stack.addWidget(self.list_view)
+        self.json_page = None
+        outer.addWidget(self.main_stack, 1)
 
     # ------------------------------------------------------------- loading
     def refresh(self):
@@ -2601,6 +2981,24 @@ class RecognitionHistoryPage(QWidget):
 
         threading.Thread(target=work, daemon=True, name="history-report-reader").start()
 
+    def _first_scan_running(self) -> bool:
+        return self._async_scan and not self._index._loaded and any(job[0] == "entry" for job in self._jobs)
+
+    def _seed_from_index(self) -> None:
+        """2026-11-22 (user: the history page "all changed and got uglier"): a first visit drew
+        the page before its reports were read - an empty 「还没有识别记录」 page, zero counts and a
+        narrower overview - and the records popped in about a second later, after the page switch
+        had already shown that empty page. A small summary index is read here, at once, and the
+        list is drawn from it; the entry check in the background still confirms every file."""
+        path = self._index.path
+        try:
+            if path is None or not path.is_file() or path.stat().st_size > _SEED_INDEX_BYTES:
+                return
+        except OSError:
+            return
+        self._index.load()
+        self._listing = [(Path(key), row[0], row[1]) for key, row in self._index.entries.items()]
+
     def _check_on_entry(self) -> None:
         """Entering the page: stat the report folders off the GUI thread and
         read only new or changed reports (a finished, failed or cancelled task
@@ -2609,7 +3007,11 @@ class RecognitionHistoryPage(QWidget):
             return
         generation = self._generation
         job = self._new_job("entry")
-        known = {key: (row[0], row[1]) for key, row in self._index.entries.items()}
+        def completed_entries(entries):
+            return {key: (row[0], row[1]) for key, row in entries.items()
+                    if row[2] is None or row[2].status not in {"running", "queued"}}
+
+        known = completed_entries(self._index.entries)
         inflight = set(self._inflight)
         roots = self._roots()
         signal = self._parsed
@@ -2624,7 +3026,7 @@ class RecognitionHistoryPage(QWidget):
                     index = RecognitionHistoryIndex(index_path)
                     index.load()  # this worker owns its connection-free JSON index
                     initial_entries = index.entries
-                    known.update({key: (row[0], row[1]) for key, row in index.entries.items()})
+                    known.update(completed_entries(index.entries))
                 listing, errors = list_report_files(roots)
                 # Newest filesystem summaries first; the visible list keeps
                 # its existing completed-time sort as each batch arrives.
@@ -2779,7 +3181,7 @@ class RecognitionHistoryPage(QWidget):
         card = HistoryCard(record)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         card.requested.connect(self._show_detail)
-        card.raw_requested.connect(lambda selected: self._show_detail(selected, show_raw=True))
+        card.raw_requested.connect(self.show_raw_json)
         self._card_rows[card] = card
         self._cards_by_path[record.path] = card
         if self.property("_uiZoomApplied") is not None:
@@ -2888,6 +3290,12 @@ class RecognitionHistoryPage(QWidget):
             bind_text(self.empty_title, translate('没有符合搜索条件的记录', current_language()))
             bind_text(self.empty_note, translate('换个关键词，或清空搜索查看全部任务记录。', current_language()))
             self.empty_start.hide()
+        elif not display and self._first_scan_running():
+            # 2026-11-22: the first scan has not answered yet. 「还没有识别记录」 here was wrong
+            # (and was what the page switch drew before the records popped in).
+            bind_text(self.empty_title, translate('正在读取识别记录…', current_language()))
+            self.empty_note.setText("")
+            self.empty_start.hide()
         else:
             bind_text(self.empty_title, translate('还没有识别记录', current_language()))
             bind_text(self.empty_note, translate('完成第一条字幕任务后，任务状态、模型组合和审核结果会出现在这里。', current_language()))
@@ -2936,9 +3344,38 @@ class RecognitionHistoryPage(QWidget):
             return None
 
     def _emit_full(self, record, signal) -> None:
-        full = self._full_record(record)
-        if full is not None:
-            signal.emit(full)
+        if isinstance(record, RecognitionRecord) or not self._async_scan:
+            full = self._full_record(record)
+            if full is not None:
+                signal.emit(full)
+            return
+        if getattr(self, "_record_action_inflight", False):
+            return
+        self._record_action_inflight = True
+        self._detail_request_counter += 1
+        request = self._detail_request_counter
+        path, reply = Path(record.path), self._detail_loaded
+
+        def install(full, error):
+            self._record_action_inflight = False
+            if not self.isVisible():
+                return
+            if full is not None:
+                signal.emit(full)
+            elif error:
+                self._notice = tr("无法读取这份报告：{error}", error=error)
+                self._render()
+
+        self._detail_requests[request] = install
+
+        def work():
+            full, error = _load_history_detail_async((path, None, "", False), threading.Event())
+            try:
+                reply.emit(request, full, error)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="history-result-reader").start()
 
     def _analyse_latest_failure(self) -> None:
         latest = next((record for record in self.records if record.status in _FAILED_LIKE), None)
@@ -3021,9 +3458,13 @@ class RecognitionHistoryPage(QWidget):
 
     # ------------------------------------------------------------- details
     def _show_detail(self, record, *, show_raw: bool = False, analyse: bool = False):
-        from twobyteasr.app.ui import SpringDialog
+        from ..design.main_ui_dialogs import SpringDialog
 
-        dialog = SpringDialog(self)
+        class ReportDialog(SpringDialog):
+            ENTRY_ANIMATED = False
+            EXIT_ANIMATED = False
+
+        dialog = ReportDialog(self, backdrop=False)
         language = current_language()
         bind_text(dialog, f"{translate('识别记录', language)}｜{record.media_name}", property='windowTitle')
         dialog.resize(1180, 860)
@@ -3041,6 +3482,7 @@ class RecognitionHistoryPage(QWidget):
         scroll.setWidget(placeholder)
         layout.addWidget(scroll, 1)
         installed = []
+        settings = self._settings_copy()
 
         def install(full, error):
             from shiboken6 import isValid
@@ -3050,10 +3492,12 @@ class RecognitionHistoryPage(QWidget):
                 if isValid(placeholder):
                     placeholder.setText(tr("无法读取这份报告：{error}", error=error or ""))
                 return
-            detail = RecognitionHistoryDetail(full, settings=self._settings_copy(), closable=True,
+            detail = RecognitionHistoryDetail(full, settings=settings, closable=True,
                                               attempt=self._attempt_number(record))
             installed.append(detail)
             detail.close_requested.connect(dialog.accept)
+            detail.raw_handler = lambda selected: (dialog.accept(), QTimer.singleShot(
+                0, lambda: self.show_raw_json(selected)))
             detail.action_requested.connect(lambda action, selected=full: (dialog.accept(), QTimer.singleShot(
                 0, lambda: self._run_detail_action(action, selected))))
             detail.resume_requested.connect(lambda selected: (dialog.accept(), self.resume_requested.emit(selected)))
@@ -3064,8 +3508,11 @@ class RecognitionHistoryPage(QWidget):
                 0, lambda: self.diagnose_requested.emit(selected))))
             # 2026-11-18: 「加载中」 gives way to the report with a fade, not a cut.
             from ..design.transitions import content_change
-            with content_change(scroll):
+            if full.report_pages is not None:
                 scroll.setWidget(detail)
+            else:
+                with content_change(scroll):
+                    scroll.setWidget(detail)
             if dialog.property("_uiZoomApplied") is not None:
                 from ..app.ui_zoom import apply_to
                 apply_to(detail)
@@ -3075,6 +3522,7 @@ class RecognitionHistoryPage(QWidget):
                 QTimer.singleShot(0, detail.diagnosis_panel.start)
 
         request = None
+        cancel = threading.Event()
         if isinstance(record, RecognitionRecord):
             install(record, None)
         else:
@@ -3087,33 +3535,31 @@ class RecognitionHistoryPage(QWidget):
             else:
                 early_error = None
 
-            def load():
-                try:
-                    if size > _MAX_REPORT_BYTES:
-                        raise ValueError("报告超过 12 MB")
-                    return parse_recognition_report(path), None
-                except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
-                    return None, f"{path.name}: {exc}"
+            parts = (path, settings, language, True)
 
             if early_error is not None:
                 install(None, early_error)
-            elif size <= _INLINE_DETAIL_BYTES:
-                install(*load())
+            elif size <= min(_INLINE_DETAIL_BYTES, INLINE_BYTES) and path.name != "task.json":
+                install(*_history_detail_request(parts, cancel=cancel))
             else:
                 self._detail_request_counter += 1
                 request = self._detail_request_counter
                 self._detail_requests[request] = install
                 signal = self._detail_loaded
 
-                def work(request=request, signal=signal, load=load):
-                    full, error = load()
+                def work(request=request, signal=signal, parts=parts):
+                    full, error = _load_history_detail_async(parts, cancel)
+                    if cancel.is_set():
+                        return
                     try:
                         signal.emit(request, full, error)
                     except RuntimeError:
                         pass  # the page itself is gone
 
-                threading.Thread(target=work, daemon=True, name="history-detail-reader").start()
+                worker = threading.Thread(target=work, daemon=True, name="history-detail-reader")
+                QTimer.singleShot(0, dialog, worker.start)
         dialog.exec()
+        cancel.set()
         for detail in installed:
             from shiboken6 import isValid
             if isValid(detail):

@@ -23,9 +23,32 @@ def schedule(window):
                 window._refresh_available_asr_choices()
                 page=window.built_page('workshop')
                 if page is not None:page.update_runtime_settings(window.legacy.RUNTIME_SETTINGS)
+                retire_official_aligner_later(window)
         window._qwen_upgrade_result=dict(ok=bool(snapshot.get('ready')),error=snapshot.get('reason'))
     delivery.done.connect(finish)
     def received(registry):
         try:delivery.done.emit(registry)
         except RuntimeError:pass
     request_registry(ui.APP_ROOT,received)
+
+
+def retire_official_aligner_later(window):
+    """Delete the old official aligner off the GUI thread once Ultra is verified (2026-11-22)."""
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO',''):return  # audits own their model folders
+    if getattr(window,'_official_aligner_retirement',None) is not None:return
+    import copy
+    import threading
+    settings=copy.deepcopy({'models':window.legacy.RUNTIME_SETTINGS.get('models') or {}})
+    def busy():
+        try:
+            worker=getattr(window,'worker',None)
+            return bool(getattr(window,'_run_in_progress',False) or (worker is not None and worker.isRunning()))
+        except RuntimeError:
+            return True  # window already gone: never delete under a closing app
+    def work():
+        from ..local_models.official_aligner_retirement import retire_official_aligner
+        try:result=retire_official_aligner(settings,busy_check=busy)
+        except Exception as exc:result=dict(status='error',error=f'{type(exc).__name__}: {exc}')
+        window._official_aligner_retirement=result
+    window._official_aligner_retirement={}
+    threading.Thread(target=work,name='official-aligner-retirement',daemon=True).start()

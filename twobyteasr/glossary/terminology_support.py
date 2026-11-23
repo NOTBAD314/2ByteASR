@@ -186,6 +186,15 @@ def recall_gaps(segments, candidates, snapshot=None):
     from ..subtitle_rules.correction_risk import SPACED_LANGUAGES
     natural_spaced_language = active_task_language() in SPACED_LANGUAGES
     exact_index = {}
+    covered = {}
+    for candidate in candidates:
+        if candidate.get('status') != 'confirmed' or candidate.get('ambiguous'):
+            continue
+        for match in candidate.get('matches', ()):
+            start, end = match.get('start'), match.get('end')
+            if (match.get('asr_source') == 'text' and match.get('method') == 'exact'
+                    and not match.get('matched_alias') and type(start) is int and type(end) is int):
+                covered.setdefault(match.get('cue_id'), []).append((start, end, candidate['canonical']))
     for library in getattr(snapshot, 'libraries', ()):
         for term in library.terms:
             for spelling in (term.canonical, *term.aliases):
@@ -205,20 +214,32 @@ def recall_gaps(segments, candidates, snapshot=None):
     proper = {}
     if snapshot is not None and snapshot.libraries and not natural_spaced_language:
         from jieba.posseg import cut
-        proper = {segment.segment_id: {token.word for token in cut(str(segment.text), HMM=False)
-            if token.flag in {'nr', 'nrfg', 'nrt'} and 2 <= len(token.word) <= 12
-            and word_frequency(token.word) < ORDINARY_WORD_FREQ}
-            for segment in segments}
+        for segment in segments:
+            offset = 0
+            spans = {}
+            for token in cut(str(segment.text), HMM=False):
+                end = offset + len(token.word)
+                if (token.flag in {'nr', 'nrfg', 'nrt'} and 2 <= len(token.word) <= 12
+                        and word_frequency(token.word) < ORDINARY_WORD_FREQ):
+                    spans.setdefault(token.word, set()).add((offset, end))
+                offset = end
+            proper[segment.segment_id] = spans
     for segment in segments:
-        surfaces = {m.group() for m in TOKEN.finditer(str(segment.text))
-                    if len(m.group()) >= 3 and m.group().casefold() not in COMMON_GAME_WORDS}
+        text = str(segment.text)
+        surfaces = {}
+        for match in TOKEN.finditer(text):
+            word = match.group()
+            if len(word) >= 3 and word.casefold() not in COMMON_GAME_WORDS:
+                surfaces.setdefault(word, set()).add(match.span())
         # A doubled nickname (\u7403\u7403) is a name signal; ordinary doubled words
         # (\u521a\u521a) and stammers (\u518d\u518d, \u8fd9\u8fd9) are not (2026-10-10, user report).
-        surfaces.update(m.group() for m in re.finditer(r'([\u4e00-\u9fff])\1+', str(segment.text))
-                        if not reduplication_names_nothing(str(segment.text), *m.span()))
+        for match in re.finditer(r'([\u4e00-\u9fff])\1+', text):
+            if not reduplication_names_nothing(text, *match.span()):
+                surfaces.setdefault(match.group(), set()).add(match.span())
         # jieba tags \u8c22\u8c22/\u5b9d\u5b9d as person names; doubled common words stay ordinary.
-        surfaces.update(word for word in proper.get(segment.segment_id, ())
-                        if not (len(set(word)) == 1 and ordinary_reduplication(word, 0, len(word))))
+        for word, spans in proper.get(segment.segment_id, {}).items():
+            if not (len(set(word)) == 1 and ordinary_reduplication(word, 0, len(word))):
+                surfaces.setdefault(word, set()).update(spans)
         for surface in sorted(surfaces):
             if any(r['canonical'].casefold() == surface.casefold()
                     or surface in r.get('aliases', ())
@@ -226,12 +247,22 @@ def recall_gaps(segments, candidates, snapshot=None):
                            for m in r.get('matches', ())) for r in candidates):
                 continue
             exact = exact_index.get(surface.casefold(), [])
+            # Numeric identifiers can still be catalog terms. Plain quantities
+            # without catalog evidence belong to numeric validation.
+            if surface.isdecimal() and not exact:
+                continue
             # A glossary is not a dictionary of a whole spoken language.
             # Missing ordinary Latin words are retrieval diagnostics, never
             # thousands of suspects demanding one model receipt per word.
             if natural_spaced_language and not exact:
                 continue
-            output.append({'cue_id': segment.segment_id, 'surface': surface,
+            spans = sorted((start, end) for start, end in surfaces[surface] if not any(
+                left <= start and end <= right and (left < start or end < right)
+                and text[left:right].casefold() == canonical.casefold()
+                for left, right, canonical in covered.get(segment.segment_id, ())))
+            if not spans:
+                continue
+            output.append({'cue_id': segment.segment_id, 'surface': surface, 'spans': [list(span) for span in spans],
                 'state': 'no_recalled_candidate', 'reason': 'missing_alias_or_enabled_term; no canonical inferred',
                 'in_snapshot': bool(exact), 'exact_snapshot_entries': exact,
                 'candidate_recalled': False, 'canonical_inferred': False})
@@ -264,8 +295,11 @@ def suspicious_spans(segments, candidates, gaps):
                 next(iter(candidate.get('entity_types', ())), 'unknown'))
     for gap in gaps:
         text = str(by_id[gap['cue_id']].text)
-        for occurrence in re.finditer(re.escape(gap['surface']), text, re.I):
-            add(gap['cue_id'], *occurrence.span(), occurrence.group(), 'no_recalled_candidate')
+        spans = gap.get('spans')
+        if spans is None:  # older persisted evidence
+            spans = [m.span() for m in re.finditer(re.escape(gap['surface']), text, re.I)]
+        for start, end in spans:
+            add(gap['cue_id'], start, end, text[start:end], 'no_recalled_candidate')
     for segment in segments:
         for occurrence in re.finditer(r'交出(?:了)?(?P<object>[\u4e00-\u9fff]{2,4})', str(segment.text)):
             add(segment.segment_id, occurrence.start('object'), occurrence.end('object'),
@@ -282,3 +316,34 @@ def suspicious_spans(segments, candidates, gaps):
             if roster:
                 row['reasons'].append('enabled_entity_context_requires_evidence')
     return list(positions.values())
+
+
+def unresolved_recall_gaps(receipt, cue_id, final_text):
+    """Carry only still-present, unreviewed occurrences into the final text."""
+    from difflib import SequenceMatcher
+
+    gaps = receipt.get('recall_gaps', ())
+    if not gaps:
+        return []
+    original = str(receipt.get('input_text') or receipt.get('original_text') or final_text)
+    blocks = SequenceMatcher(None, original, final_text, autojunk=False).get_matching_blocks()
+    kept = {row['suspect_id'] for row in receipt.get('suspect_results', ())
+            if row.get('disposition') == 'keep'
+            and row.get('validation_state') == 'validated_against_input_and_local_edits'}
+    remaining = []
+    for gap in gaps:
+        surface = gap['surface']
+        spans = gap.get('spans')
+        if spans is None:
+            spans = [m.span() for m in re.finditer(re.escape(surface), original, re.I)]
+        final_spans = []
+        for start, end in spans:
+            if f's{cue_id}:{start}:{end}' in kept:
+                continue
+            for old, new, size in blocks:
+                if old <= start < end <= old + size:
+                    final_spans.append([new + start - old, new + end - old])
+                    break
+        if final_spans:
+            remaining.append(dict(gap, spans=final_spans))
+    return remaining

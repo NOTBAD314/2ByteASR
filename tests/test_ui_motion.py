@@ -175,7 +175,8 @@ def test_model_workshop_has_obvious_header_return_action():
     assert 'AnimatedButton("返回字幕识别")' in source
     # 2026-11-11: same accent-tinted style as the other header places to go.
     assert 'self.return_recognition_button.setObjectName("softAction")' in source
-    assert "self.return_recognition_button.setVisible(" in source
+    # 2026-11-23: it shares one slot with 识别记录 / 模型工坊, so no header button moves.
+    assert "self.header_nav_stack.setCurrentWidget(self.return_recognition_button if workspace" in source
     assert "self.term_library_page" in source
 
 

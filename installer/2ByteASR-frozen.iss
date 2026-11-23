@@ -173,6 +173,25 @@ begin
   Result := (not NotAudit) and (AuditShortcutDir('') <> '');
 end;
 
+#ifdef LongestPayloadPath
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Root, MessageText: String;
+  MaxRootLength: Integer;
+begin
+  Result := '';
+  Root := AddBackslash(WizardDirValue);
+  { MoveFile still uses a Win32 path during extraction. Reserve room for
+    Inno's temporary destination filename as well as the longest member. }
+  MaxRootLength := 259 - {#LongestPayloadPath} - 16;
+  if Length(Root) > MaxRootLength then begin
+    MessageText := Format('安装目录太长。请返回选择较短的路径，例如 C:\2ByteASR（含末尾分隔符最多 %d 字符）。安装尚未写入文件。', [MaxRootLength]);
+    Log('2ByteASR path preflight rejected the destination. ' + MessageText);
+    Result := MessageText;
+  end;
+end;
+#endif
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   StateDir, Previous, Helper: String;

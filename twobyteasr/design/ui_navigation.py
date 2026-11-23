@@ -29,6 +29,13 @@ SIDEBAR_WIDTH = 232
 SIDEBAR_MARGIN = 12
 SIDEBAR_SPACING = 6
 NAV_ITEM_HEIGHT = 42
+WORKSPACE_ORDER = {'workshop': 0, 'terms': 1, 'history': 2}
+
+
+def workspace_motion(previous: str | None, destination: str | None) -> tuple[int, str]:
+    if previous in WORKSPACE_ORDER and destination in WORKSPACE_ORDER:
+        return (1 if WORKSPACE_ORDER[destination] > WORKSPACE_ORDER[previous] else -1), 'y'
+    return (1 if destination in WORKSPACE_ORDER else -1), 'x'
 
 
 def _active_theme():
@@ -121,6 +128,7 @@ class WorkspaceNavigation(QWidget):
             button.setProperty("flexibleWidth", True)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             set_size(button, fixed_h=NAV_ITEM_HEIGHT)
+            button.pressed.connect(button.repaint)
             button.clicked.connect(lambda _checked=False, value=key: self._activate(value))
             self.group.addButton(button)
             self.buttons[key] = button

@@ -28,7 +28,22 @@ def _dictionary_identity():
 from functools import lru_cache
 _dictionary_identity = lru_cache(maxsize=1)(_dictionary_identity)
 
-QUALITY_VERSION = "grouping-quality-v6-ai-owned-boundaries"
+QUALITY_VERSION = "grouping-quality-v11-validated-boundary-domain"
+
+_LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[-'’.][A-Za-z0-9]+)*")
+_FIXED_PHRASE = re.compile(r"二[选選]一")
+
+
+def immutable_lexical_edges(index):
+    """Map raw word interiors onto the same offsets the model returns."""
+    from bisect import bisect_right, bisect_left
+
+    unsafe = set()
+    for pattern in (_LATIN_WORD, _FIXED_PHRASE):
+        for match in pattern.finditer(index.text):
+            unsafe.update(range(bisect_right(index.raw_edges, match.start()),
+                                bisect_left(index.raw_edges, match.end())))
+    return unsafe
 MODAL_WORDS = frozenset({'可以', '能', '能够', '会', '要', '应该', '应当', '得'})
 MEASURE_CHARS = frozenset('个条位张块枚轮只次本部件项份台名届种套款把支首段句集期页步回')
 AGENT_SUFFIXES = frozenset({'人', '者', '员', '们', '家'})
@@ -50,7 +65,8 @@ class SourceIndex:
         positions = [i for i, char in enumerate(text) if content_exact(char)]
         content = content_exact(text)
         if len(positions) != len(content) or len(content) != display_length(text):
-            raise ValueError("来源字符索引与长度口径不一致。")
+            from .grouping_contract import GroupingContractError
+            raise GroupingContractError("来源字符索引与长度口径不一致。", category="index_unit_mismatch")
         # Non-counting characters belong to the preceding content character.
         # A leading prefix belongs to the first piece.
         edges = (0, *positions[1:], len(text)) if positions else (0,)
@@ -100,6 +116,8 @@ class BoundaryQuality:
         self.total = len(self.index.content)
         defaults = limits()
         self.max_chars = int(max_chars if max_chars is not None else defaults[0])
+        from .segmentation_profiles import profile_for
+        self.english_max_chars = profile_for("en").hard_max
         self.max_seconds = max_seconds if max_seconds is not None else defaults[1]
         self.min_seconds = min_seconds if min_seconds is not None else defaults[2]
         from subtitle_core import MIN_SUBTITLE_SECONDS
@@ -177,7 +195,6 @@ class BoundaryQuality:
                 r"[\u3400-\u9fff]得(?=[\u3400-\u9fff])",
                 r"等于是",
                 r"(?:足够|充分|非常|更加)(?:信任|相信|了解|理解|支持|尊重)",
-                r"[A-Za-z][A-Za-z0-9]*(?:[-'’.][A-Za-z0-9]+)*",
                 r"\d+(?:[.,]\d+)*(?:毫米|厘米|公里|千米|毫秒|分钟|小时|公斤|千克|千瓦|兆瓦|MB|GB|MHz|GHz|km|kg|ms|%|℃)",
             )
             strong_edges = set()
@@ -360,9 +377,37 @@ class BoundaryQuality:
         raw_allowed = legal_raw_boundaries(text, 'zh') | {len(text)}
         self.forbidden.update(edge for edge in range(1, self.total)
                               if self.index.raw_edges[edge] not in raw_allowed)
+        unsafe = set()
+        start = 0
+        for end in sorted(self.required | {self.total}):
+            unsafe.update(start + edge for edge in immutable_lexical_edges(
+                SourceIndex.build(self.index.slice(start, end))))
+            start = end
+        self.hard_lexical_interiors = unsafe
+        self.forbidden.update(unsafe)
+        latin_word_edges = {
+            edge for edge in range(1, self.total) if edge not in unsafe
+            and self.index.content[edge - 1:edge + 1].isascii()
+            and self.index.content[edge - 1:edge + 1].isalpha()
+        }
+        self.known_word_interiors.difference_update(latin_word_edges)
+        self.inferred_word_interiors.difference_update(latin_word_edges)
+        self.forbidden.difference_update(latin_word_edges - self.explicit_word_interiors - set(self.syntax_reasons))
+        self.candidate_edges.update(latin_word_edges)
         self.candidate_edges.update(self.restarts | self.semantic_required | set(self.pauses))
         self.candidate_edges.update(self.clause_edges)
         self.allowed = sorted(set(range(1, self.total+1)) - self.forbidden)
+
+    def length_cost(self, start, end):
+        content = self.index.content[start:end]
+        if not re.search(r"[A-Za-z]", content):
+            return end - start
+        raw = self.index.slice(start, end).strip()
+        words = [match.group() for match in _LATIN_WORD.finditer(raw)]
+        latin = sum(map(len, words))
+        cjk = len(content) - sum(len(content_exact(word)) for word in words)
+        spaces = sum(char.isspace() for char in raw)
+        return cjk + (latin + spaces) * self.max_chars / self.english_max_chars
 
     def duration(self, start, end):
         if not self.units:
@@ -376,7 +421,7 @@ class BoundaryQuality:
 
     def can_join(self, start, cut, end):
         """Only optional cuts in one readable continuous expression can go."""
-        if cut in self.required | self.semantic_required | self.independent_edges or end-start > self.max_chars:
+        if cut in self.required | self.semantic_required | self.independent_edges or self.length_cost(start, end) > self.max_chars:
             return False
         if self.units and self.duration(start, end) > self.max_seconds+.05:
             return False
@@ -480,7 +525,7 @@ class BoundaryQuality:
                 issues.append(issue)
             elif end in self.awkward and end not in self.required:
                 issues.append(dict(kind="semantic_cohesion", start=end, end=end))
-            if end-start > self.max_chars:
+            if self.length_cost(start, end) > self.max_chars:
                 issues.append(dict(kind="length", start=start, end=end, length=end-start))
             duration = self.duration(start, end)
             if self.units and duration > self.max_seconds+.05:
@@ -547,7 +592,7 @@ class BoundaryQuality:
     def _solve(self, left, right, original, *, fixed=(), relax_time=False, relax_length=False):
         from bisect import bisect_right
         internal = sorted(x for x in original if left < x < right)
-        if (right-left <= self.max_chars and self.duration(left, right) <= self.max_seconds+.05
+        if (self.length_cost(left, right) <= self.max_chars and self.duration(left, right) <= self.max_seconds+.05
                 and not any(left < x < right for x in self.required | self.semantic_required | self.independent_edges | set(fixed))
                 and all(self.can_join(left, cut, right) for cut in internal)):
             return [right]
@@ -560,7 +605,7 @@ class BoundaryQuality:
         for end_index, end in enumerate(points[1:], 1):
             for start in reversed(points[:end_index]):
                 length = end-start
-                if length > self.max_chars and not relax_length:
+                if self.length_cost(start, end) > self.max_chars and not relax_length:
                     break
                 if start not in scores:
                     continue
@@ -636,7 +681,7 @@ class BoundaryQuality:
         confirmed = []
         edges = [0, *boundaries]
         for number, (start,end) in enumerate(zip(edges,edges[1:])):
-            if end-start > self.max_chars or self.duration(start,end) > self.max_seconds+.05:
+            if self.length_cost(start, end) > self.max_chars or self.duration(start,end) > self.max_seconds+.05:
                 continue
             if any(start < edge < end for edge in self.required | self.semantic_required):
                 continue
@@ -756,20 +801,25 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
             content_exact(item.text) in STANDALONE_RESPONSES
             or re.fullmatch(r'[对嗯哎诶哦啊呀唉好是行]+', content_exact(item.text) or ' ')
             for item in (left, right))
+        latin_join_without_separator = bool(re.search(r"[A-Za-z]$", left.text)
+                                             and re.match(r"[A-Za-z]", right.text))
         if (left.speaker != right.speaker or right.start-left.end > 2.
                 or right.start < left.end-.001
                 or left.caption_arbitration.get('protected_end')
-                or right.caption_arbitration.get('protected_start') or independent_response):
+                or right.caption_arbitration.get('protected_start') or independent_response
+                or latin_join_without_separator):
             required.add(cursor)
     units, cursor = [], 0
     pauses = firered_pause_character_gaps(segments, tokens)
     native_long_pauses = set()
+    from ..recognition.word_timing_provenance import suspicious_numeric_word
     for segment in segments:
         private = copy.copy(segment)
         private.caption_arbitration = copy.deepcopy(segment.caption_arbitration)
         private.words = [w for w in segment.words if
             math.isfinite(w.start) and math.isfinite(w.end)
-            and segment.start <= w.start < w.end <= segment.end+.001]
+            and segment.start <= w.start < w.end <= segment.end+.001
+            and not suspicious_numeric_word(w.text, w.start, w.end)]
         units.extend(segment_content_timeline(private,tokens))
         evidence = segment.caption_arbitration.get('word_timing', {})
         if (evidence.get('basis') in {'aligner_words', 'provider_words'}
@@ -871,8 +921,10 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
     from .number_fidelity import numeric_unsafe_cut_offsets
     global_unsafe = set(lexical_forbidden_boundary_offsets(quality.index.text))
     global_unsafe.update(numeric_unsafe_cut_offsets(quality.index.text))
-    for match in re.finditer(r"[A-Za-z][A-Za-z0-9]+",quality.index.content):
-        global_unsafe.update(range(match.start()+1,match.end()))
+    for start, end in quality.source_ranges:
+        index = SourceIndex.build(quality.index.slice(start, end))
+        global_unsafe.update(start + edge for edge in immutable_lexical_edges(index))
+    quality.forbidden.update(quality.hard_lexical_interiors)
     handoffs, cursor = set(), 0
     for left,right in zip(segments,segments[1:]):
         cursor += display_length(left.text)
@@ -886,24 +938,33 @@ def quality_for_segments(segments, tokens=(), *, protected=()):
 def boundary_timing_basis(segments, tokens, seconds, edge, char):
     """A timestamp coincidence alone is insufficient evidence of a word edge."""
     from .segmentation_alignment import alignment_key
+    from ..recognition.word_timing_provenance import suspicious_numeric_word
     for segment in segments:
         evidence = segment.caption_arbitration.get("word_timing", {})
         if evidence.get("basis") == "uniform_display_estimate":
             continue
         native = segment.caption_arbitration.get("provider_source", {}).get("valid_word_times")
         measured = evidence.get("measured_words")
-        if native:
-            observations = [(float(w[edge]), w.get("text", "")) for w in native]
-        elif measured:
-            observations = [(float(w[edge+"_ms"])/1000,w.get("text", "")) for w in measured]
+        if measured and (not native or evidence.get("basis") == "aligner_words"):
+            observations = [(float(w["start_ms"])/1000, float(w["end_ms"])/1000, w.get("text", ""))
+                            for w in measured]
+            basis = {"provider_words": "provider_word", "aligner_words": "forced_aligner_word"}.get(
+                evidence.get("basis"), "source_word")
+        elif native:
+            observations = [(float(w["start"]), float(w["end"]), w.get("text", "")) for w in native]
+            basis = "provider_word"
         else:
-            observations = [(getattr(w,edge), w.text) for w in segment.words]
-        for stamp, text in observations:
+            observations = [(w.start, w.end, w.text) for w in segment.words]
+            basis = {"provider_words": "provider_word", "aligner_words": "forced_aligner_word"}.get(
+                evidence.get("basis"), "source_word")
+        for lower, upper, text in observations:
+            if suspicious_numeric_word(text, lower, upper):
+                continue
+            stamp = lower if edge == "start" else upper
             content = content_exact(text)
             if (content and math.isfinite(stamp) and segment.start <= stamp <= segment.end and abs(stamp-seconds)<.001
                     and alignment_key(content[0 if edge=="start" else -1])==alignment_key(char)):
-                return ("provider_word" if native or evidence.get("basis")=="provider_words"
-                        else "forced_aligner_word" if evidence.get("basis")=="aligner_words" else "source_word")
+                return basis
     for token in tokens:
         text = content_exact(token.get("text", ""))
         stamp = float(token.get(edge,-99))
@@ -915,24 +976,39 @@ def boundary_timing_basis(segments, tokens, seconds, edge, char):
     return "estimate"
 
 
-def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=None, repair=True):
+def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=None, repair=True,
+                      review_filter=None, quality=None):
     from ..recognition.transcript_data import SubtitleCue
-    quality = quality_for_segments(segments, tokens, protected=protected)
+    from .grouping_contract import validate_boundary_offsets, validate_grouping_result
+    if quality is None:
+        quality = quality_for_segments(segments, tokens, protected=protected)
     if repair:
         final, issues = quality.repair(boundaries, record=record)
     else:
         from .ai_boundary_policy import inspect
         final, issues = list(boundaries), inspect(quality,boundaries)
-    cues, start, cursor, owner_index = [], 0, 0, 0
-    owner_ends = []
+    validate_boundary_offsets(final, quality.total)
+    cues, start, cursor = [], 0, 0
+    sources = []
     for segment in segments:
-        cursor += display_length(segment.text)
-        owner_ends.append(cursor)
-    for end, text in zip(final, quality.index.pieces(final)):
-        while owner_index < len(segments)-1 and start >= owner_ends[owner_index]:
-            owner_index += 1
-        owners = [s for i,s in enumerate(segments)
-                  if owner_ends[i] > start and owner_ends[i]-display_length(s.text) < end]
+        index = SourceIndex.build(segment.text)
+        end = cursor + len(index.content)
+        sources.append((cursor, end, segment, index))
+        cursor = end
+    for end in final:
+        owners, pieces = [], []
+        for left, right, segment, index in sources:
+            if left == right:
+                if start < left <= end or start == left == 0:
+                    owners.append(segment)
+                    pieces.append(index.text)
+                continue
+            lo, hi = max(left, start), min(right, end)
+            if lo < hi:
+                owners.append(segment)
+                # Any unnumbered prefix or suffix belongs to its own source.
+                pieces.append(index.slice(lo - left, hi - left))
+        text = "".join(pieces)
         unit_start = quality.units[start].start
         unit_end = quality.units[end-1].end
         # Preserve the measured/estimated acoustic envelope. A display minimum
@@ -941,14 +1017,13 @@ def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=N
         cue_start = max(low, min(unit_start, high-.001))
         cue_end = max(cue_start+.001, min(high, unit_end))
         cues.append(SubtitleCue(0, cue_start, cue_end, text,
-            speaker=segments[owner_index].speaker,
+            speaker=owners[0].speaker,
             timing_locked=all(s.timing_locked for s in owners)))
         cues[-1].start_timing_basis = boundary_timing_basis(owners,tokens,cue_start,"start",quality.index.content[start])
         cues[-1].end_timing_basis = boundary_timing_basis(owners,tokens,cue_end,"end",quality.index.content[end-1])
         cues[-1].timing_basis = (f"quality={QUALITY_VERSION};domain=acoustic_before_display;"
             f"start={cues[-1].start_timing_basis};end={cues[-1].end_timing_basis}")
         start = end
-    from .grouping_contract import validate_grouping_result
     validate_grouping_result(segments, cues)
     if record:
         from collections import Counter
@@ -967,9 +1042,12 @@ def cues_from_quality(segments, boundaries, tokens=(), *, protected=(), record=N
             add_review_item(segments[0].start,"重叠来源断句待审",
                 "保留未确认身份来源的完整文字和真实重叠时间，需要核对说话人。",quality.index.text,
                 priority=3,severity="warning",source_segment_ids=source_ids)
-    if issues:
+    # review_filter (2026-11-22): the AI path reviews only what still blocks
+    # its final answer; the issues themselves are returned unchanged.
+    reviewed = issues if review_filter is None else review_filter(issues)
+    if reviewed:
         from subtitle_core import add_review_item
-        for issue in issues:
+        for issue in reviewed:
             position = min(issue["start"], max(0, quality.total-1))
             add_review_item(quality.units[position].start, "断句约束待复核",
                 "语义、长度或显示时间约束无法同时满足，保留完整原文和来源时间。",

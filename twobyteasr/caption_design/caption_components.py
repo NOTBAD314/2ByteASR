@@ -45,6 +45,12 @@ def normalize(value):
 
 
 def compose(value):
+    if isinstance(value,dict) and value.get('version')==12:
+        from .caption_templates import compose as templates
+        return templates(value)
+    if isinstance(value,dict) and value.get('version')==11:
+        from .caption_kits import compose as kits
+        return kits(value)
     if isinstance(value,dict) and value.get('version')==10:
         from .pixel_motion import readable_noita_motion
         return readable_noita_motion(value)
@@ -131,6 +137,9 @@ def capability_text(style=None):
     if style == 'balatro':
         from .caption_living_motion import capability_text as card_capability
         return card_capability()
-    return '''文字组件 caption-components-2：PARAMETERS.components组合，HTML/CSS/STAGE_CSS留空；宿主一次展开同份源码用于预览/采用/导出。也可完全自创安全HTML/CSS+MotionSpec，二者不可混用；组件不是源码能力上限。
+    from .caption_kits import capability_text as kit_capability
+    from .caption_templates import capability_text as template_capability
+    return template_capability()+'\n'+kit_capability()+'''
+另有旧文字组件 caption-components-2（同一块底板的几何/材质/边线/字面/动作五轴），只在用户明确要“印刷底板”这类克制条幅时使用：PARAMETERS.components组合，HTML/CSS/STAGE_CSS留空；宿主一次展开同份源码用于预览/采用/导出。也可完全自创安全HTML/CSS+MotionSpec，二者不可混用；组件不是源码能力上限。
 components: {version:2,geometry:inset内嵌|chamfer斜角|capsule弧角,surface:print印刷纹理|duotone分区|glass局部半透,border:registration复合套边|rails上下色轨|prism折射色边,lettering:intaglio压印|offset定向厚度|spectral渐变反射,motion:stamp套色扣合压印|relay色轨交接带动文字|refract轮廓建立反光收齐,fontSize:40..100,fontFamily:打包字体名,ink/paper/accent/edge:#RRGGBB,emphasis:[真实重点字组],buildMs:180..650,resolveMs:120..400}。值只写冒号后的英文ID，不含中文说明。各轴独立组合，版面随实际文本伸缩换行，无关键词仍有完整字面。version:1仅旧基线兼容，不是生成失败的默认退路。
 源码能力：静态多层描边/轻压印/双色套印/局部字面渐变、SVG strokeDashoffset边框描线、局部clipPath、受控数值CSS变量--caption-reveal(0..1)/--caption-sheen(0..100)。关键帧使用不重叠的顺序from/to轨道；不支持任意JS回调/任意CSS变量/GSAP插件，不能静默替代。'''

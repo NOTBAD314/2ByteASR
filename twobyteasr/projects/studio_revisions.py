@@ -200,18 +200,28 @@ class SpeakerDTO:
     color: str
     hidden: bool = False
     is_host: bool = False
+    name_color: str = ""
+    name_font: str = ""
+    name_bold: bool = False
 
     @classmethod
     def capture(cls, speaker: StudioSpeaker) -> "SpeakerDTO":
         return cls(str(speaker.id), str(speaker.name), str(speaker.style_id), str(speaker.color),
-                   bool(speaker.hidden), bool(speaker.is_host))
+                   bool(speaker.hidden), bool(speaker.is_host),
+                   str(getattr(speaker, "name_color", "") or ""), str(getattr(speaker, "name_font", "") or ""),
+                   bool(getattr(speaker, "name_bold", False)))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id, "name": self.name,
             "style_id": self.style_id, "color": self.color,
             "hidden": self.hidden, "is_host": self.is_host,
         }
+        # Unstyled names keep the earlier record (and its cache keys).
+        for key in ("name_color", "name_font", "name_bold"):
+            if getattr(self, key):
+                result[key] = getattr(self, key)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -865,7 +875,11 @@ class StudioRevisionStore:
                 except (TypeError, ValueError):return freeze_json(value)
                 if key not in presentation:presentation[key] = freeze_json(value)
                 return presentation[key]
-            if dirty & DirtyDomain.CUE_MODEL or not delta.affected_cue_ids:
+            # Speaker reassignment keeps every caption ID and order. Any
+            # accompanying display timing change adds its ID to the delta.
+            stable_speaker_edit = (delta.action_id == 'speaker_edit' and len(current) == len(self._cues)
+                                   and all(item.id in current for item in self._cues))
+            if (dirty & DirtyDomain.CUE_MODEL and not stable_speaker_edit) or not delta.affected_cue_ids:
                 # A split or delete keeps every unchanged cue's DTO object.
                 self._cues = _reuse_equal((RenderCueDTO.capture(cue) for cue in project.cues), self._cues)
             else:

@@ -21,7 +21,7 @@ def preview_fingerprint(theme,text,ledger,html=None):
     from .web_theme import theme_archive_html
     root=detect_install_root()
     dependencies={}
-    for relative in ('renderer/service.mjs','renderer/src/webThemeClock.js','renderer/src/webThemeMotion.js',
+    for relative in ('renderer/service.mjs','renderer/src/webThemeClock.js','renderer/src/webThemeMotion.js','renderer/src/webThemeTemplates.js',
                      'renderer/package-lock.json','twobyteasr/caption_design/theme_draft.py','twobyteasr/caption_design/composed_text_probe.py',
                      'twobyteasr/caption_design/theme_texture_resource.py','twobyteasr/caption_design/web_theme.py',
                      'twobyteasr/caption_design/authored_motion_review.py','twobyteasr/caption_design/authored_keyframe_review.py',

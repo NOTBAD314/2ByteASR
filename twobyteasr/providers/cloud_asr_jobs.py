@@ -252,8 +252,9 @@ def filetrans(audio, endpoint, cache_root, storage, *, check=lambda:None, progre
     if spec.word_timestamps == 'enable_words':
         # Word timestamps are opt-in for Qwen3-ASR Filetrans (default false).
         parameters['enable_words'] = True
-    if spec.language_parameter and endpoint.get('filetrans_language'):
-        parameters['language'] = str(endpoint['filetrans_language'])
+    if endpoint.get('filetrans_language'):
+        from .qwen31_asr import filetrans_language_parameters
+        parameters.update(filetrans_language_parameters(model, endpoint['filetrans_language']))
     if spec.vocabulary:
         for key in ('vocabulary', 'vocabulary_id'):
             if endpoint.get(key): parameters[key] = endpoint[key]
@@ -317,15 +318,28 @@ def filetrans(audio, endpoint, cache_root, storage, *, check=lambda:None, progre
             check();state['status']='SUBMITTING';save(state_path,state)
             inputs={'file_urls':[url]} if spec.input_field=='file_urls' else {'file_url':url}
             if context: inputs['context'] = context
-            save(root/'submission-parameters.json',dict(model=model, input_field=spec.input_field,
-                 parameters=parameters, context=context, hint_counts=endpoint.get('hint_counts', {}),
-                 vocabulary_dropped=endpoint.get('filetrans_vocabulary_dropped') or [],
-                 storage_kind=getattr(storage,'kind','oss')))
+            def submission_record():
+                save(root/'submission-parameters.json',dict(model=model, input_field=spec.input_field,
+                     parameters=parameters, context=context, hint_counts=endpoint.get('hint_counts', {}),
+                     vocabulary_dropped=endpoint.get('filetrans_vocabulary_dropped') or [],
+                     storage_kind=getattr(storage,'kind','oss'),
+                     language_hints_rejected=state.get('language_hints_rejected')))
+            submission_record()
             from .dashscope_service import OSS_RESOLVE_HEADER, needs_oss_resolve
             if needs_oss_resolve(url): headers={**headers,**OSS_RESOLVE_HEADER}
-            response=client.post(endpoint['url'],headers={**headers,'X-DashScope-Async':'enable'},
-                json=dict(model=model,input=inputs,parameters=parameters),
-                timeout=(10,60),allow_redirects=False)
+            def submit():
+                return client.post(endpoint['url'],headers={**headers,'X-DashScope-Async':'enable'},
+                    json=dict(model=model,input=inputs,parameters=parameters),
+                    timeout=(10,60),allow_redirects=False)
+            response=submit()
+            if (response.status_code==400 and parameters.get('language_hints')
+                    and 'language' in str(getattr(response,'text','') or '').lower()):
+                # 2026-11-22: language_hints is documented for this model; an
+                # endpoint that still refuses it (400, not accepted, not billed)
+                # gets the same request without it, as before this field existed.
+                state['language_hints_rejected']=parameters.pop('language_hints');save(state_path,state)
+                submission_record();progress('language_hints_rejected',0,1)
+                response=submit()
             if response.status_code!=200:
                 # Explicit auth/limit/validation refusal is safe to retry on a
                 # later user run. 5xx may have accepted a job: retain uncertainty.

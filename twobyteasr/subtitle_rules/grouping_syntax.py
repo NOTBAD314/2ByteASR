@@ -11,6 +11,8 @@ DIRECTIONAL_COMPLEMENTS = frozenset({
     "进来", "回来", "回去", "过来", "过去",
 })
 RESULTATIVE_COMPLEMENTS = frozenset({"住", "掉", "完", "到", "走", "死", "清", "满"})
+DEGREE_WORDS = frozenset({'最', '太', '更', '很', '非常', '十分', '特别', '更加',
+                          '有点', '有点儿', '有些', '挺', '比较', '相当'})
 
 
 def repeated_units(content):
@@ -72,7 +74,8 @@ def syntax_boundary_evidence(index, max_chars):
         # POS tags vary with neighbouring ASR text: 最/a and 太/n are real
         # examples. The closed grammatical class plus its predicate is
         # stronger evidence than requiring the modifier itself to be /d.
-        if token.word in {'最', '太', '更', '很', '非常', '十分', '特别', '更加'} and following.flag.startswith(('a', 'v')):
+        # 2026-11-22: 有点｜低 and 比较｜难 passed every check.
+        if token.word in DEGREE_WORDS and following.flag.startswith(('a', 'v')):
             protect(start, following_end, 'degree_predicate')
         if token.word in {"再", "去", "来", "继续", "开始", "尝试", "想", "要", "能", "会"} and following.flag.startswith("v"):
             protect(start, following_end, "serial_predicate")
@@ -107,7 +110,8 @@ def syntax_boundary_evidence(index, max_chars):
     possessive = r"(?:我|你|他|她|我们|你们|他们)的(?:[这那]?[一两几\d]+[个种位份件条把只轮])?"
     # Event/animate classifier heads need their noun (一轮毒罐、一只呆鸟).
     # Do not promote every 一个 + modifier chain into an indivisible phrase.
-    numeric_classifier = r'[一两三四五六七八九十几\d]+[只轮]'
+    # 2026-11-22: 两发｜暴风雪 (shots of a skill) passed every check.
+    numeric_classifier = r'[一两三四五六七八九十几\d]+[只轮发]'
     quantifiers = f"(?:{demonstrative}|{possessive}|{numeric_classifier})"
     for match in re.finditer(quantifiers, content):
         tail = list(posseg.cut(content[match.end():match.end()+max_chars]))

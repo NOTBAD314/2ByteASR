@@ -2,12 +2,13 @@
 from collections import OrderedDict
 import json
 import threading
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QPainterPath, QTextLayout, QTextCharFormat
-from ..caption_style.text_marks import runs, utf16_offset, python_offset
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QPainterPath, QTextLayout, QTextCharFormat, QTextFormat
+from ..caption_style.text_marks import runs, utf16_offset, python_offset, heading_level, heading_scale
 
 
 _SHAPES = OrderedDict()
+STRIKE_COLOR = '#FF4D6D'   # ~~struck~~ bar in the live / burned-in caption (2026-11-20)
 _SHAPE_LOCK = threading.RLock()
 
 
@@ -25,6 +26,32 @@ def shape_marked_text(text, font, marks, anchor_x, line_height=None):
     return QPainterPath(result[0]), [(QPainterPath(p), i, c) for p,i,c in result[1]]
 
 
+def _char_format(font, attrs):
+    fmt = QTextCharFormat()
+    level = heading_level(attrs)
+    if 'bold' in attrs or 'italic' in attrs or attrs.get('font') or level: fmt.setFontStyleName('')
+    if attrs.get('font'): fmt.setFontFamilies([str(attrs['font'])])
+    if 'bold' in attrs: fmt.setFontWeight(max(int(font.weight()),700) if attrs['bold'] else 400)
+    elif level: fmt.setFontWeight(max(int(font.weight()),700))
+    if 'italic' in attrs: fmt.setFontItalic(bool(attrs['italic']))
+    if level and font.pixelSize() > 0:
+        fmt.setProperty(QTextFormat.Property.FontPixelSize, max(1, round(font.pixelSize()*heading_scale(attrs))))
+    return fmt
+
+
+def _strike_rect(size, point, advance):
+    """Glyph paths carry no decoration: strike-through is a bar across the advance.
+
+    As thick and as high as 问问兔白's bubble line (tour_mascot.MarkedLabel): a thin
+    bar vanishes into heavy CJK strokes (了 + a thin bar reads as 子). ``size`` is the
+    layout's own pixel size: a fallback run's raw font can report 0."""
+    size = max(1.0, float(size))
+    thickness = max(1.5, size/8.0)
+    path = QPainterPath()
+    path.addRect(QRectF(point.x(), point.y()-size*0.36-thickness/2, max(0.0, advance), thickness))
+    return path
+
+
 def _shape_marked_text(text, font, marks, anchor_x, line_height=None):
     shaped = []
     widths = []
@@ -36,12 +63,8 @@ def _shape_marked_text(text, font, marks, anchor_x, line_height=None):
                     for a,b,attrs in runs(text, marks) if a < start+len(line_text) and b > start]
         formats = []
         for a,b,attrs in segments:
-            fmt = QTextCharFormat()
-            if 'bold' in attrs or 'italic' in attrs: fmt.setFontStyleName('')
-            if 'bold' in attrs: fmt.setFontWeight(max(int(font.weight()),700) if attrs['bold'] else 400)
-            if 'italic' in attrs: fmt.setFontItalic(bool(attrs['italic']))
             item = QTextLayout.FormatRange()
-            item.start, item.length, item.format = utf16_offset(line_text,a), utf16_offset(line_text,b)-utf16_offset(line_text,a), fmt
+            item.start, item.length, item.format = utf16_offset(line_text,a), utf16_offset(line_text,b)-utf16_offset(line_text,a), _char_format(font, attrs)
             formats.append(item)
         layout.setFormats(formats)
         layout.beginLayout(); line = layout.createLine()
@@ -50,13 +73,27 @@ def _shape_marked_text(text, font, marks, anchor_x, line_height=None):
         flags = QTextLayout.GlyphRunRetrievalFlag.RetrieveAll
         glyphs = []
         for run in layout.glyphRuns(0, -1, flags):
-            for index, point, string_index in zip(run.glyphIndexes(), run.positions(), run.stringIndexes()):
+            raw_font = run.rawFont()
+            indexes = run.glyphIndexes()
+            advances = raw_font.advancesForGlyphIndexes(indexes) if any(v.get('strike') for _a,_b,v in segments) else ()
+            for number, (index, point, string_index) in enumerate(zip(indexes, run.positions(), run.stringIndexes())):
                 cp = python_offset(line_text, int(string_index))
                 attrs = next((v for a,b,v in segments if a <= cp < b), {})
-                path = run.rawFont().pathForGlyph(index)
+                path = raw_font.pathForGlyph(index)
                 path.setFillRule(Qt.WindingFill)
                 path.translate(point)
+                bar = None
+                if attrs.get('strike') and number < len(advances):
+                    # united, not addPath: a rect against the glyph's winding could punch a hole.
+                    size = font.pixelSize()*heading_scale(attrs) if font.pixelSize() > 0 else raw_font.pixelSize()
+                    bar = _strike_rect(size, point, advances[number].x())
+                    path = path.united(bar)
+                    path.setFillRule(Qt.WindingFill)
                 glyphs.append((path, start+cp, attrs.get('color') or ('#FFD166' if attrs.get('highlight') else '')))
+                if bar is not None:
+                    # The bar is painted again on top in its own colour: in the text's
+                    # colour it merges into the strokes (了 + bar reads as 子).
+                    glyphs.append((bar, start+cp, STRIKE_COLOR))
         shaped.append((width, glyphs))
         y += line_height if line_height is not None else line.height()
         start += len(line_text)+1
@@ -92,12 +129,8 @@ def wrap_marked_text(text, style, marks, max_width, *, details=False):
         for a,b,attrs in runs(text, marks):
             lo,hi = max(0,a-offset),min(len(paragraph),b-offset)
             if lo >= hi: continue
-            fmt = QTextCharFormat()
-            if 'bold' in attrs or 'italic' in attrs: fmt.setFontStyleName('')
-            if 'bold' in attrs: fmt.setFontWeight(max(int(font.weight()),700) if attrs['bold'] else 400)
-            if 'italic' in attrs: fmt.setFontItalic(bool(attrs['italic']))
             item=QTextLayout.FormatRange()
-            item.start,item.length,item.format=utf16_offset(paragraph,lo),utf16_offset(paragraph,hi)-utf16_offset(paragraph,lo),fmt
+            item.start,item.length,item.format=utf16_offset(paragraph,lo),utf16_offset(paragraph,hi)-utf16_offset(paragraph,lo),_char_format(font,attrs)
             formats.append(item)
         layout.setFormats(formats);layout.beginLayout()
         if not paragraph:
@@ -124,15 +157,35 @@ def wrap_marked_text(text, style, marks, max_width, *, details=False):
     return result
 
 
-def marked_ass_text(text, marks, style, extra_tags=""):
+def _ass_font_name(family):
+    return ''.join(c for c in str(family) if c not in '\\{}\r\n').strip()
+
+
+def _ass_size(value):
+    return f"{float(value):.2f}".rstrip('0').rstrip('.')
+
+
+def marked_ass_text(text, marks, style, extra_tags="", *, sized=None, struck=None):
+    """``sized`` / ``struck`` force the \\fs / \\s reset on every run: a word-timed
+    caption is compiled piece by piece, and a heading or strike must not leak."""
     from .ass_compiler import escape_ass_text
     from ..caption_style.effect_dsl import _ass_color
     output = []
-    for a,b,attrs in runs(text, marks):
-        bold = max(int(style.font_weight or 400),700) if attrs.get('bold', style.bold) else 400
+    pieces = runs(text, marks)
+    fonted = any(attrs.get('font') for _a, _b, attrs in pieces)
+    sized = any(heading_level(attrs) for _a, _b, attrs in pieces) if sized is None else sized
+    struck = any(attrs.get('strike') for _a, _b, attrs in pieces) if struck is None else struck
+    for a,b,attrs in pieces:
+        level = heading_level(attrs)
+        bold =max(int(style.font_weight or 400),700) if attrs.get('bold', style.bold or bool(level)) else 400
         italic = int(attrs.get('italic', style.italic))
         color = attrs.get('color') or ('#FFD166' if attrs.get('highlight') else style.primary_color)
         # ASS style colours include alpha; the inline 1c tag takes only BGR.
         value = _ass_color(color)
-        output.append('{\\b'+str(bold)+'\\i'+str(italic)+'\\1c'+value+extra_tags+'}'+escape_ass_text(text[a:b]))
+        # After a run with its own face, an empty \fn returns to the style's face,
+        # so a styled speaker name never leaks into the body.
+        face = ('\\fn'+_ass_font_name(attrs.get('font') or '')) if fonted else ''
+        size = ('\\fs'+_ass_size(float(style.font_size)*heading_scale(attrs))) if sized else ''
+        strike = ('\\s'+str(int(bool(attrs.get('strike'))))) if struck else ''
+        output.append('{'+face+'\\b'+str(bold)+'\\i'+str(italic)+size+strike+'\\1c'+value+extra_tags+'}'+escape_ass_text(text[a:b]))
     return ''.join(output)

@@ -501,7 +501,7 @@ MODELS = (
         languages=("中文", "方言"),
         recommended=True,  # 时间轴推荐
         asr_capabilities=("ASR_TEXT", "TIMESTAMP"),
-        adapter_bindings=(("primary", "firered"), ("timeline", "local")),
+        adapter_bindings=(("primary", "firered"), ("timeline", "local"), ("review", "firered")),
     ),
     # remaining models get languages too (see below)
     WorkshopModel(
@@ -6125,7 +6125,9 @@ class ModelWorkshopPage(QWidget):
         self.setObjectName("modelWorkshopRoot")
         from ..app.ui_zoom import set_sheet
         set_sheet(self, build_workshop_qss())
-        if not defer_ui:
+        if defer_ui:
+            self._build_shell()
+        else:
             self._build()
             self._ui_built = True
         self._download_activity_timer = QTimer(self)
@@ -6237,10 +6239,46 @@ class ModelWorkshopPage(QWidget):
             name="model-workshop-temp-cleanup",
         ).start()
 
-    def _build(self):
+    def _build_shell(self):
+        from ..design.ui_navigation import WorkspaceSidebar
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(6)
+        outer.setSpacing(12)
+        self._loading_sidebar = WorkspaceSidebar("workshop", object_name="workshopSidebar")
+        nav = self._loading_sidebar.navigation
+        nav.recognition_requested.connect(self.return_requested)
+        nav.terms_requested.connect(self.terms_requested)
+        nav.history_requested.connect(self.history_requested)
+        # The same cards as the built sidebar (a copy until it is built): nothing on the left moves.
+        from .bundle_summary import BundleSummaryPanel
+        self._loading_sidebar.body.addWidget(BundleSummaryPanel(), 1)
+        outer.addWidget(self._loading_sidebar)
+        self._loading_content = QFrame()
+        self._loading_content.setObjectName("workshopContent")
+        layout = QVBoxLayout(self._loading_content)
+        layout.setContentsMargins(16, 12, 16, 12)
+        title = bind_text(QLabel(), '模型工坊')
+        title.setObjectName("workshopPageTitle")
+        style_workspace_page_title(title)
+        layout.addWidget(title)
+        status = bind_text(QLabel(), '正在准备模型列表…')
+        status.setObjectName("workshopMuted")
+        layout.addWidget(status)
+        layout.addStretch(1)
+        outer.addWidget(self._loading_content, 1)
+
+    def _build(self):
+        outer = self.layout()
+        if outer is None:
+            outer = QHBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(12)
+        else:
+            for placeholder in (self._loading_sidebar, self._loading_content):
+                outer.removeWidget(placeholder)
+                placeholder.hide()
+                placeholder.deleteLater()
+            self._loading_sidebar = self._loading_content = None
         outer.addWidget(self._build_sidebar())
         # P0: use QSplitter for content + detail so model clicks NEVER change the right panel width.
         # Width stability is owned by the splitter layout, not by content sizeHint or detail children.
@@ -6269,12 +6307,10 @@ class ModelWorkshopPage(QWidget):
         split = getattr(self, '_responsive_split', None)
         if split is None:
             return
-        compact = self.width() < 1050
         # The table needs a readable name column beside its fixed language,
         # score and action columns. Open details on demand on laptop widths.
         compact_detail = self.width() < 1520
         self._detail_is_compact = compact_detail
-        self.sidebar.setVisible(not compact)
         split.setOrientation(Qt.Orientation.Horizontal)
         from ..app.ui_zoom import set_size
         set_size(self._responsive_detail,min_w=0 if compact_detail else 300,max_w=16777215 if compact_detail else 400)
@@ -6332,95 +6368,25 @@ class ModelWorkshopPage(QWidget):
         self.nav_group = self.workspace_navigation.group
         self.workshop_nav_button = self.workspace_navigation.buttons["workshop"]
 
-        layout.addSpacing(12)
-        label = QLabel("当前组合")
-        label.setObjectName("workshopMuted")
-        label.setWordWrap(True)
-        layout.addWidget(label)
-        combo = QFrame()
-        combo.setObjectName("workshopComboCard")
-        combo_layout = QVBoxLayout(combo)
-        combo_layout.setContentsMargins(12, 10, 12, 12)
-        combo_layout.setSpacing(6)
-        title_row = QHBoxLayout()
-        self.combo_title = QLabel("质量优先")
-        self.combo_title.setObjectName("workshopComboHeading")
-        self.combo_title.setWordWrap(True)
-        title_row.addWidget(self.combo_title, 1)
-        badge = QLabel("推荐")
-        badge.setObjectName("workshopRecommendationBadge")
-        title_row.addWidget(badge)
-        combo_layout.addLayout(title_row)
-        rule = QFrame()
-        rule.setObjectName("workshopRule")
-        rule.setFixedHeight(1)
-        combo_layout.addWidget(rule)
-        self.combo_model_labels: dict[str, QLabel] = {}
-        self.combo_status_labels: dict[str, QLabel] = {}
-        for key, role, model_name in (
-            ("primary", "主力转写", "MOSS"),
-            ("timeline", "字幕时间轴", "FireRed"),
-            ("review", "文字复核", "Qwen3-ASR"),
-        ):
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            text_box = QVBoxLayout()
-            text_box.setSpacing(2)
-            role_label = QLabel(role)
-            role_label.setObjectName("workshopComboRole")
-            text_box.addWidget(role_label)
-            model_label = QLabel(model_name)
-            model_label.setObjectName("workshopComboModel")
-            # 左栏窄列：API 组合的"服务商 · 模型"允许两行折行，避免像
-            # "…mai-transcribe"这样丢尾（三十三轮 agy 复审）。
-            model_label.setWordWrap(True)
-            text_box.addWidget(model_label)
-            row.addLayout(text_box, 1)
-            status_label = QLabel()
-            status_label.setObjectName("workshopComboStatus")
-            status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            row.addWidget(status_label, 0, Qt.AlignmentFlag.AlignBottom)
-            combo_layout.addLayout(row)
-            self.combo_model_labels[key] = model_label
-            self.combo_status_labels[key] = status_label
-            if key != "review":
-                combo_layout.addSpacing(2)
-        layout.addWidget(combo)
-        layout.addStretch(1)
-        self.download_estimate = QLabel()
-        self.download_estimate.setObjectName("workshopTiny")
-        self.download_estimate.setWordWrap(True)
-        layout.addWidget(self.download_estimate)
-        health = QFrame()
-        health.setObjectName("workshopHealthCard")
-        health_layout = QVBoxLayout(health)
-        health_layout.setContentsMargins(12, 10, 12, 12)
-        health_layout.setSpacing(6)
-        health_title = QLabel("模型组合健康")
-        health_title.setObjectName("workshopSection")
-        health_title.setWordWrap(True)
-        health_layout.addWidget(health_title)
-        self.health_summary = QLabel("已安装 0 · 未安装 0")
-        self.health_summary.setObjectName("workshopTiny")
-        self.health_summary.setWordWrap(True)
-        health_layout.addWidget(self.health_summary)
-        self.health_bar = QProgressBar()
-        self.health_bar.setObjectName("workshopHealthBar")
-        self.health_bar.setTextVisible(False)
-        self.health_bar.setFixedHeight(6)
-        self.health_bar.setRange(0, 1)
-        self.health_bar.setValue(0)
-        health_layout.addWidget(self.health_bar)
-        self.storage_button = QPushButton("存储管理")
-        self.storage_button.setObjectName("workshopSecondary")
-        self.storage_button.clicked.connect(self._show_storage_manager)
-        health_layout.addWidget(self.storage_button)
-        layout.addWidget(health)
+        # 2026-11-23 (user): the term library and the history show the same cards (copies of this
+        # one, ``bundle_summary``), so the left column stays the same on all three pages.
+        from .bundle_summary import BundleSummaryPanel
+        panel = BundleSummaryPanel(source=True)
+        self.bundle_panel = panel
+        self.combo_title = panel.combo_title
+        self.combo_model_labels = panel.combo_model_labels
+        self.combo_status_labels = panel.combo_status_labels
+        self.download_estimate = panel.download_estimate
+        self.health_summary = panel.health_summary
+        self.health_bar = panel.health_bar
+        self.storage_button = panel.storage_button
+        panel.storage_requested.connect(self._show_storage_manager)
+        layout.addWidget(panel, 1)
         return sidebar
 
     def restore_active_navigation(self):
-        if self._ui_built:
-            self.workspace_navigation.set_active("workshop")
+        nav = self.workspace_navigation if self._ui_built else self._loading_sidebar.navigation
+        nav.set_active("workshop")
 
     def focus_primary_backend(self, backend: str):
         self.ensure_ui()
@@ -7103,8 +7069,15 @@ class ModelWorkshopPage(QWidget):
             self._refresh(registry)
         finally:
             self._state_memo = None
+        self._publish_bundle()
         self._last_refresh_signature = self._refresh_signature()
         self.models_refreshed.emit()
+
+    def _publish_bundle(self):
+        """The term library's and the history's sidebar copies show what this sidebar shows."""
+        panel = self.__dict__.get('bundle_panel')
+        if panel is not None:
+            panel.publish()
 
     def _refresh(self, registry=None):
         language = current_language()
@@ -7204,6 +7177,7 @@ class ModelWorkshopPage(QWidget):
             self.health_bar.setRange(0, max(1, int(total_count)))
             self.health_bar.setValue(max(0, int(installed_count)))
         (bind_text(self.health_summary, f'Installed {installed_count} · Not installed {missing}') if current_language() == 'en' else bind_text(self.health_summary, '已安装 {value0} · 未安装 {value1}', value0=installed_count, value1=missing))
+        self._publish_bundle()
 
     def _current_model_keys(self) -> set[str]:
         models = self.runtime_settings.get("models", {})
@@ -7423,6 +7397,7 @@ class ModelWorkshopPage(QWidget):
             from ..system.platform_macos import macos_copy
             return macos_copy('尚未适配 macOS', 'Not yet adapted to macOS', 'macOS 未対応'), False
         if state == 'partial': return '补齐缺失文件', True
+        if state == 'path_mismatch': return '查看路径并准备模型', True
         if state == 'unreadable': return '请检查目录权限', False
         if state=='checking':return '检查独立环境…',False
         if state=='check_failed':return '检查失败，请重新打开重试',False
@@ -7469,6 +7444,7 @@ class ModelWorkshopPage(QWidget):
         status = {
             'selected':'当前使用', 'installed':'已就绪', 'missing':'未安装',
             'partial':'文件不完整', 'runtime_missing':'缺运行环境',
+            'path_mismatch':'配置或路径不一致',
             'inference_pending':'待验证', 'load_failed':'验证失败',
             'unreadable':'文件无法读取', 'checking':'检查中',
             'downloading':'任务进行中', 'experiment_unready':'实验精修待验证',
@@ -7556,6 +7532,8 @@ class ModelWorkshopPage(QWidget):
         if qwen_backend == "local":
             qwen_ready = "qwen_asr" in self._installed
             combo_values["review"] = ("Qwen3-ASR", "已安装" if qwen_ready else "未安装", qwen_ready)
+        elif qwen_backend == "firered":
+            combo_values["review"] = ("FireRedASR2-AED", "已安装" if firered_ready else "未安装", firered_ready)
         elif qwen_backend == "whisper_turbo":
             qwen_ready = "whisper_turbo" in self._installed
             combo_values["review"] = (
@@ -7619,6 +7597,7 @@ class ModelWorkshopPage(QWidget):
         elif firered_backend == "paraformer":
             add_missing("paraformer", "Paraformer 约 1.0 GB")
         review_downloads = {
+            "firered": ("firered_aed", "FireRed 约 4.4 GB"),
             "local": ("qwen_asr", "Qwen 约 4.7 GB"),
             "whisper_turbo": ("whisper_turbo", "Whisper Turbo 约 1.6 GB"),
             "sensevoice": ("sensevoice", "SenseVoice 约 0.9 GB"),
@@ -7633,6 +7612,7 @@ class ModelWorkshopPage(QWidget):
             )
         else:
             bind_text(self.download_estimate, '预计新增下载：{value0}', value0=ui_literal('、'.join(missing_sizes)) if missing_sizes else tr('无需下载'))
+        self._publish_bundle()
 
     def _set_role(self, role: str):
         # 2026-11-18 (user: every switch inside the workshop should move): switching 主力转写 /
@@ -7865,6 +7845,7 @@ class ModelWorkshopPage(QWidget):
             "checking": "正在检查独立环境",
             "check_failed": "模型检查失败，重新打开模型列表可重试。",
             "runtime_missing": "权重已安装 · 环境未就绪",
+            "path_mismatch": "模型配置或路径不一致",
             "inference_pending": "文件完整 · 待验证可用性",
             "load_failed": "文件与运行库已准备 · 加载或设备验证未通过",
             "platform_unavailable": "尚未适配 macOS",
@@ -8108,6 +8089,19 @@ class ModelWorkshopPage(QWidget):
             self._begin_selection_check(model,state,effective_role);return
         if state in {'inference_pending','load_failed'} and model.key in {'qwen_aligner','mfa_aligner'}:
             self.download_combination([model.download_key],model.name,operation='verify',auto_start=True);return
+        if state == 'path_mismatch' and model.key == 'qwen_aligner':
+            from .alignment_readiness import effective_snapshot
+            snapshot = effective_snapshot(self._registry, model.key, self.runtime_settings)
+            reason = snapshot.get('reason') or tr('请检查所选时间轴模型的位置。')
+            box = QMessageBox(self)
+            box.setWindowTitle(tr('模型配置或路径不一致'))
+            box.setText(reason)
+            prepare = box.addButton(tr('下载并准备'), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is prepare:
+                self._download(model)
+            return
         if state in {"missing","partial","runtime_missing","inference_pending","load_failed"} and model.download_key:
             self._download(model)
             return

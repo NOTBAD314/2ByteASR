@@ -314,7 +314,8 @@ def snap_cue_starts_to_vad_onsets(
     speech_regions,
     timeline_fps=TIMELINE_FPS,
 ):
-    """句首在明确静音区时向后贴到下一次起音；绝不把字幕向前移动。"""
+    """句首在明确静音区时向后贴到下一次起音（静音区的字幕绝不提前）；
+    开启一段人声却晚了 100–450ms 的句首，提前到 FireRedVAD 起音。"""
     if not cues or not speech_regions:
         return cues
     regions = sorted(
@@ -377,6 +378,71 @@ def snap_cue_starts_to_vad_onsets(
             total=len(cues),
             maximum_shift_ms=round(max(shifts) * 1000),
         )
+    return pull_late_starts_to_vad_onsets(cues, speech_regions, timeline_fps)
+
+
+# 2026-11-22 (user, 4 h stream, Qwen Audio 3.1 primary): subtitle starts sat a
+# median 230 ms after the FireRedVAD onset, whose regions open 80 ms (8 padding
+# frames) before the detected voice, so lines appeared ~150 ms after the voice;
+# 540 of the 628 "边界待看" items were these. The upload is plain PCM WAV, so
+# this is the online model's sentence start, not a container delay; its ends
+# run later still (median 340 ms past the region end).
+LATE_START_MIN_SECONDS = 0.10
+LATE_START_MAX_SECONDS = 0.45
+
+
+def pull_late_starts_to_vad_onsets(cues, speech_regions, timeline_fps=TIMELINE_FPS):
+    """A line that opens a FireRedVAD speech region 100–450 ms late starts at the region.
+
+    Only when no other line starts between the onset and it. The same
+    speaker's previous line, still showing from an earlier region, then ends
+    at the onset (if it keeps 0.35 s). Lines inside continuous speech keep
+    their word times; energy-VAD regions (180 ms padding) are not used.
+    """
+    from bisect import bisect_left, bisect_right
+    regions = sorted((float(r["start"]), float(r["end"])) for r in speech_regions or ()
+                     if float(r["end"]) > float(r["start"]) and not r.get("processing_only")
+                     and r.get("confidence_bounds_verified") is not False
+                     and r.get("detector", "firered_vad") == "firered_vad")
+    if not cues or not regions:
+        return cues
+    region_starts = [a for a, _ in regions]
+    ordered = sorted(cues, key=lambda c: (float(c.start), float(c.end)))
+    cue_starts = [float(c.start) for c in ordered]
+    limit = _max_cue_seconds()
+    pulls = []
+    for cue in ordered:
+        if getattr(cue, "timing_locked", False):
+            continue
+        start = float(cue.start)
+        index = bisect_right(region_starts, start) - 1
+        if index < 0:
+            continue
+        onset, region_end = regions[index]
+        if not LATE_START_MIN_SECONDS <= start - onset <= LATE_START_MAX_SECONDS or start > region_end:
+            continue
+        target = max(round(onset * timeline_fps) / timeline_fps, float(cue.end) - limit)
+        if start - target < LATE_START_MIN_SECONDS:
+            continue
+        low, high = bisect_left(cue_starts, onset - .02), bisect_right(cue_starts, start)
+        if high - low > 1:
+            continue   # An earlier or simultaneous line already claims the onset.
+        showing = [other for other in ordered[:low]
+                   if other.speaker == cue.speaker and float(other.end) > target]
+        if any(getattr(other, "timing_locked", False) or target - float(other.start) < MIN_SUBTITLE_SECONDS
+               for other in showing):
+            continue
+        for other in showing:
+            other.end = target
+        cue.start = target
+        pulls.append(start - target)
+    if pulls:
+        pulls.sort()
+        print(f"   [句首起音校准] {len(pulls)}/{len(cues)} 条开启人声却晚出现的字幕提前到起音；"
+              f"中位 {pulls[len(pulls)//2] * 1000:.0f}ms，最大 {pulls[-1] * 1000:.0f}ms。")
+        record_run_event("vad_onset_pull", changed=len(pulls), total=len(cues),
+                         median_shift_ms=round(pulls[len(pulls)//2] * 1000),
+                         maximum_shift_ms=round(pulls[-1] * 1000))
     return cues
 
 
@@ -413,7 +479,8 @@ def extend_cue_tails_by_speaker(
     for rows in speaker_rows.values():
         rows.sort(key=lambda cue: (cue.start, cue.end, cue.cue_id))
         for index, current in enumerate(rows):
-            if getattr(current, 'timing_locked', False):
+            receipt = getattr(current, "display_timing_receipt", {})
+            if getattr(current, 'timing_locked', False) or receipt.get("measured_pause_after_ms"):
                 continue
             start_frame = int(round(current.start * timeline_fps))
             end_frame = int(round(bases[id(current)] * timeline_fps))
@@ -488,7 +555,8 @@ def bridge_short_display_gaps(
     changed = 0
     largest_gap_frames = 0
     from .display_continuity import VERSION, MICRO_GAP_MS
-    blocked = {index for index,cue in enumerate(rows) if getattr(cue,'timing_locked',False)}
+    blocked = {index for index,cue in enumerate(rows) if getattr(cue,'timing_locked',False)
+               or getattr(cue, "display_timing_receipt", {}).get("measured_pause_after_ms")}
     continuous = set()
     previous = {}
     for index,cue in enumerate(rows):
@@ -503,8 +571,11 @@ def bridge_short_display_gaps(
     maximum = current_profile().max_seconds * timeline_fps
     for index, end_frame in short_gap_bridges(frames, bridge_frames, blocked=blocked, continuous=continuous,
             micro_threshold=MICRO_GAP_MS*timeline_fps/1000, max_duration=maximum).items():
-        if end_frame <= audio_end_frame:
-            cue = rows[index]
+        cue = rows[index]
+        receipt = getattr(cue, "display_timing_receipt", {})
+        cap = ((receipt["pre_display_ms"][1] + 500) * timeline_fps / 1000
+               if receipt else audio_end_frame)
+        if end_frame <= min(audio_end_frame, cap):
             before = [round(cue.start*1000),round(cue.end*1000)]
             largest_gap_frames = max(largest_gap_frames, end_frame - frames[index][3])
             cue.end = end_frame / timeline_fps
@@ -670,18 +741,13 @@ def refresh_final_cue_reviews(cues, segments=(), *, legacy=None, audio_seconds=N
     coverage={speaker:(''.join(content_exact(s.text) for s in segments if s.speaker==speaker)
                        ==''.join(content_exact(c.text) for c in cues if c.speaker==speaker))
               for speaker in sorted(speakers)}
-    # The final display audit is the same one used by the saved-cue event.
-    # Coarse source ranges must not overwrite bounded display-hold decisions.
-    from .display_timing import protect_runtime_display_tails,runtime_display_signature
-    audit = getattr(get_runtime_context(), '_display_overlap_audit', None)
-    if audit is None or getattr(get_runtime_context(),'_display_overlap_signature',None)!=runtime_display_signature(cues,segments):
-        import copy
-        audit = protect_runtime_display_tails(copy.deepcopy(cues),segments)
-        get_runtime_context()._display_overlap_signature=runtime_display_signature(cues,segments)
-    overlap_counts = dict(Counter(row['classification'] for row in audit))
+    # The tail-protection ledger describes changes to an earlier snapshot.
+    # Count the actual held intervals in the exact cue version being saved.
+    from .display_timing import final_display_overlaps
+    overlaps = final_display_overlaps(cues)
     legacy.record_run_event('final_subtitle_validation',basis='final_saved_cues',cues=len(cues),
         short_cues=short,finite_positive_times=True,content_coverage_by_speaker=coverage,
-        overlap_classification_counts=overlap_counts,
+        overlap_classification_counts=overlaps['counts'], overlap_pairs=overlaps['pairs'],
         semantic_reviews=sum(i.get('category')=='断句约束待复核' for i in items))
     legacy.record_run_event('pipeline_work_progress',work_id='grouped:final-validation',
         label='断句：最终字幕验证',phase='grouping_final_validation',state='completed',

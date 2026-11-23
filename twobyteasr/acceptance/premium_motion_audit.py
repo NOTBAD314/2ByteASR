@@ -58,7 +58,7 @@ def start(window, output: Path):
 
     def run():
         try:
-            from ..design.transitions import PageCrossfade, PageHold
+            from ..design.transitions import PageCrossfade, PageHold, stage_cover
 
             def overlay(parent):
                 return next((item for item in parent.findChildren(
@@ -108,16 +108,23 @@ def start(window, output: Path):
 
             dialog_motion = app._dialog_motion
             opening_frames = []
+            shade_samples = []
 
             def sample_settings(dialog):
-                key = next((key for key, flight in dialog_motion._flights.items()
-                            if flight.dialog is dialog), None)
-                if key is None:
+                from ..design.transitions import _key
+                surface = dialog_motion._surfaces.get(_key(dialog))
+                if surface is None or surface.clock is None:
                     return
-                flight = dialog_motion._flights[key]
-                opening_frames.append(float(flight.ghost.rect_now.width()))
-                if len(opening_frames) == 2:
-                    shot(flight.ghost, 'settings-dialog-in-flight')
+                from ..design import motion_tokens
+                scale = motion_tokens.DIALOG_SURFACE_SCALE + (1 - motion_tokens.DIALOG_SURFACE_SCALE) * surface.amount
+                opening_frames.append(dialog.width() * scale)
+                backdrop = surface.backdrop
+                if backdrop is not None and backdrop.shade is not None and 0 < backdrop.alpha < backdrop.ALPHA:
+                    shade = backdrop.shade
+                    shade_samples.append(backdrop.alpha)
+                    check('one shade covers the entire owner and shares the panel progress',
+                          shade.geometry() == stage_cover(window).rect()
+                          and abs(backdrop.alpha - backdrop.ALPHA * surface.amount) < .01)
 
             def close_settings():
                 dialog = window.__dict__.get('_application_settings_dialog')
@@ -137,12 +144,12 @@ def start(window, output: Path):
             auto_close.stop()
             check('settings opens from hidden cache and renders', opened_settings == [(True, True)])
             check('dialog animation approaches the settings window without growing past it',
-                  all(a <= b for a, b in zip(opening_frames, opening_frames[1:]))
+                  len(opening_frames) >= 2 and all(a <= b for a, b in zip(opening_frames, opening_frames[1:]))
                   and all(width <= cached.width() + 1 for width in opening_frames))
             result['metrics']['settings_opening_sample_widths'] = opening_frames
-            check('dialog closes with a ghost while its real window is hidden',
-                  not cached.isVisible() and dialog_motion.flying(cached))
-            check('dialog exit ghost clears itself', wait_until(lambda: not dialog_motion.flying(cached)))
+            result['metrics']['settings_shade_sample_alpha'] = shade_samples
+            check('dialog closes using its own native surface without changing window opacity',
+                  not cached.isVisible() and cached.windowOpacity() == 1 and not dialog_motion.flying(cached))
             check('settings closes by Escape', not cached.isVisible())
             check('released button removes scale effect', wait_until(lambda: settings.graphicsEffect() is None))
             # An interrupted press must also unwind even when the mouse release goes elsewhere.
@@ -181,30 +188,37 @@ def start(window, output: Path):
 
             from shiboken6 import isValid
 
+            settings_position = settings.mapTo(window, QPoint())
+            check('history precedes Workshop in the home header',
+                  window.recognition_history_button.mapTo(window, QPoint()).x()
+                  < window.model_workshop_button.mapTo(window, QPoint()).x())
+            shot(window.app_header, 'home-header')
             page_holds = []
 
             def open_workshop():
                 window.model_workshop_button.click()
                 holds = [item for item in window.pages.findChildren(
                     PageHold, options=Qt.FindChildOption.FindDirectChildrenOnly) if item.isVisible()]
-                check('home to Workshop keeps exactly one old snapshot while the page settles',
-                      len(holds) == 1 and holds[0].phase == 'hold' and not holds[0].old.isNull()
+                check('home to Workshop starts with one whole-page overlay',
+                      len(holds) == 1 and holds[0].phase == 'fade' and not holds[0].old.isNull()
                       and holds[0].testAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-                      and not holds[0].testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+                      and holds[0].testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
                 page_holds.extend(holds)
 
-            first_paint('workshop', open_workshop, lambda: workshop)
+            first_paint('workshop', open_workshop, lambda: page_holds[0] if page_holds else None)
             check('workshop opened on its normal route', window.pages.currentWidget() is workshop)
             cover = page_holds[0]
             check('home to Workshop fades between two snapshots and passes input through',
                   wait_until(lambda: isValid(cover) and cover.phase == 'fade' and cover.new is not None
                              and not cover.new.isNull()
                              and cover.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)))
-            check('home to Workshop slides in from the right in several parts',
-                  cover.choreo is not None and cover.choreo.direction == 1 and len(cover.choreo.parts) > 1)
+            check('home to Workshop slides in from the right as a page',
+                  cover.choreo is not None and cover.choreo.sign == 1 and cover.choreo.axis == 'x')
             shot(window.pages, 'home-to-workshop-fade')
             check('home to Workshop removes the cover after the fade',
                   wait_until(lambda: not isValid(cover) or not cover.isVisible()))
+            check('Workshop return button preserves the settings position',
+                  window.return_recognition_button.isVisible() and settings.mapTo(window, QPoint()) == settings_position)
             browse = workshop._drag_scroll.scroll
             choices = [button for button in workshop.tab_group.buttons()
                        if button.isVisible() and button.property('role') != workshop.browser_role]
@@ -222,10 +236,10 @@ def start(window, output: Path):
             shot(workshop, 'model-workshop')
 
             from ..design.ui_navigation import WorkspaceSidebar
+            from ..local_models.bundle_summary import BundleSummaryPanel
 
             def navigate_with_sidebar(page, key, destination, direction, name):
                 sidebar = page.findChild(WorkspaceSidebar)
-                old_position = sidebar.mapTo(window.pages, QPoint())
                 sidebar.navigation.buttons[key].click()
                 holders = [item for item in window.pages.findChildren(
                     PageHold, options=Qt.FindChildOption.FindDirectChildrenOnly) if item.isVisible()]
@@ -235,20 +249,38 @@ def start(window, output: Path):
                 check(f'{name} starts a slide', wait_until(
                     lambda: isValid(hold) and hold.phase == 'fade' and hold.choreo is not None))
                 motion = hold.choreo
-                check(f'{name} keeps the sidebar and moves the highlight',
-                      motion.direction == direction and motion.keep is not None and motion.glide is not None
-                      and motion.keep.topLeft() == old_position
-                      and motion.glide[0].y() != motion.glide[1].y())
-                check(f'{name} keeps the selected button checked', motion.selected_button.isChecked())
+                check(f'{name} moves the whole page in the requested vertical direction',
+                      motion.axis == 'y' and motion.sign == direction and motion._offset(.5).y() * direction > 0)
+                check(f'{name} leaves the navigation outside the animation',
+                      hold.choreo.boundary > 0 and not hold.mask().contains(sidebar.rect().center()))
+                check(f'{name} keeps the selected button checked',
+                      destination.findChild(WorkspaceSidebar).navigation.buttons[key].isChecked())
                 shot(window.pages, name + '-slide')
                 check(f'{name} removes the overlay', wait_until(lambda: not isValid(hold) or not hold.isVisible()))
+                panel = destination.findChild(BundleSummaryPanel)
+                check(f'{name} keeps the current model and health card visible',
+                      panel is not None and panel.isVisible()
+                      and panel.combo_title.text() == workshop.combo_title.text()
+                      and panel.health_summary.text() == workshop.health_summary.text()
+                      and panel.health_bar.value() == workshop.health_bar.value())
 
             terms = window.term_library_page
+            history = window.history_page
             navigate_with_sidebar(workshop, 'terms', terms, 1, 'workshop-to-terms')
             check('term library becomes usable', wait_until(
                 lambda: terms.library and terms.library.game_list.isVisible(), 12))
             shot(terms, 'term-library-ready')
+            navigate_with_sidebar(terms, 'history', history, 1, 'terms-to-history')
+            navigate_with_sidebar(history, 'workshop', workshop, -1, 'history-to-workshop')
+            navigate_with_sidebar(workshop, 'history', history, 1, 'workshop-to-history')
+            navigate_with_sidebar(history, 'terms', terms, -1, 'history-to-terms')
             navigate_with_sidebar(terms, 'workshop', workshop, -1, 'terms-to-workshop')
+            for page, key in ((workshop, 'terms'), (terms, 'history'), (history, 'terms')):
+                page.findChild(WorkspaceSidebar).navigation.buttons[key].click()
+                QTest.qWait(28)
+            check('last rapid navigation wins without a stale overlay', wait_until(
+                lambda: window.pages.currentWidget() is terms and not any(
+                    item.isVisible() for item in window.pages.findChildren(PageHold))))
             window._return_to_settings()
             check('home visible after workshop', wait_until(lambda: window.settings_scroll.isVisible()))
 

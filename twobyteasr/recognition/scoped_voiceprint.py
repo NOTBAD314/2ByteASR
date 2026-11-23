@@ -408,7 +408,8 @@ def _merge(project, report, groups, *, reviewed_by):
             state['roles'][label] = 'merge:' + target
     for speaker in result.speakers:
         if speaker.id in sources:
-            originals[speaker.id] = asdict(speaker)
+            from ..projects.studio_project import speaker_record
+            originals[speaker.id] = speaker_record(speaker)
             display[speaker.id] = speaker.name or speaker.id
     for cue in result.cues:
         if cue.speaker_id in sources:

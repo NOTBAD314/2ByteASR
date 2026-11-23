@@ -14,6 +14,7 @@ import pytest
 
 import moss_firered_pipeline as pipeline
 from twobyteasr import model_integrity
+from twobyteasr.local_models import alignment_readiness
 from twobyteasr.recognition import alignment_backend, asr
 from twobyteasr.system import hardware
 
@@ -26,6 +27,13 @@ def run_preflight(tmp_path, monkeypatch, models):
     head = tmp_path / "Qwen3-ForcedAligner-Ultra-LocalHead"
     for folder in (*folders.values(), head):
         folder.mkdir(exist_ok=True)
+    lock = model_integrity.load_dependency_lock()["models"]
+    for key in ("qwen_aligner", "qwen_ultra_aligner", "qwen_ultra_head"):
+        folder = head if key == "qwen_ultra_head" else folders[key]
+        for name in lock[key]["required_files"]:
+            target = folder / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture", encoding="utf8")
     primary = tmp_path / "primary"
     primary.mkdir()
     calls = []
@@ -36,6 +44,11 @@ def run_preflight(tmp_path, monkeypatch, models):
     monkeypatch.setattr(model_integrity, "verify_model_files",
                         lambda key, directory, **_: calls.append((key, Path(directory))) or Path(directory))
     monkeypatch.setattr(asr, "check_selected_worker_dependencies", lambda legacy: None)
+    monkeypatch.setattr(asr, "_main_worker_python", lambda: "isolated-python.exe")
+    monkeypatch.setattr(alignment_readiness, "runtime_identity", lambda python: {
+        "packages": dict.fromkeys(("qwen-asr", "torch", "transformers", "numpy", "safetensors", "nagisa"), "0.0.6")
+    })
+    monkeypatch.setattr(alignment_readiness, "_read_receipt", lambda key: {})
     monkeypatch.setattr(hardware, "require_local_torch_runtime", lambda settings: None)
     monkeypatch.setattr(hardware, "selected_cuda_components", lambda settings: ())
     monkeypatch.setattr(pipeline, "_script_paths", lambda legacy: {})
@@ -49,8 +62,13 @@ def run_preflight(tmp_path, monkeypatch, models):
         QWEN_ASR_BACKEND="api",
         resolve_qwen_aligner_local_source=asr.resolve_qwen_aligner_local_source,
         selected_qwen_aligner_backend=asr.selected_qwen_aligner_backend,
+        record_run_event=lambda *args, **kwargs: None,
     )
-    pipeline.check_runtime(legacy)
+    if alignment_backend.selected_backend(settings) == "qwen_aligner":
+        pipeline.check_runtime(legacy)
+    else:
+        with pytest.raises(RuntimeError, match=r"\[alignment:inference_pending\]"):
+            pipeline.check_runtime(legacy)
     return [(key, directory.name) for key, directory in calls if key != "qwen_asr"]
 
 

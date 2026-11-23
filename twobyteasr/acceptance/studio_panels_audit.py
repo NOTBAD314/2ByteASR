@@ -50,6 +50,36 @@ def start(window, output: Path):
         except Exception as exc:  # noqa: BLE001
             result['errors'].append(f'grab {name}: {exc!r}')
 
+    def panel_motion(page):
+        from shiboken6 import isValid
+        from ..design.transitions import PanelMorph, PanelSlide, _panel_desktop_snapshot
+        from .blank_project_audit import _capture
+
+        wait(lambda: page.video.controller is not None and page.video._startup_state == 'READY', 'native video')
+        window.activateWindow()
+        wait(window.isActiveWindow, 'Studio activation')
+        for key, panel in (('cue_list', page.source_tabs), ('context', page.context_panel)):
+            initial = panel.isVisible()
+            for visible in (not initial, initial):
+                name = f'{key}-{"open" if visible else "close"}'
+                desktop_available = _panel_desktop_snapshot(panel.parentWidget()) is not None
+                page._set_major_panel_visible(key, visible, animate=True)
+                motion = getattr(panel, '_visible_panel_slide', None)
+                expected = PanelMorph if desktop_available else PanelSlide
+                active = isinstance(motion, expected) and isValid(motion) and motion.isVisible()
+                check(f'{name}: panel uses the available snapshot path', active, expected.__name__)
+                if active:
+                    if desktop_available:
+                        check(f'{name}: both video bounds are valid and change',
+                              motion.surface_old.isValid() and motion.surface_new.isValid()
+                              and motion.surface_old != motion.surface_new)
+                    elif visible:
+                        check(f'{name}: no blank desktop cover on entry', motion.previous_surface is None)
+                    wait(lambda: not isValid(motion) or not motion.isVisible(), 'panel handoff')
+                check(f'{name}: real panel ends in the requested state', panel.isVisible() == visible)
+                settle(1000)
+                _capture(window, output / f'{name}-settled.png')
+
     def caption_and_stage_checks(theme):
         """2026-10-24 (user): 应用到 leads the 样式 tab, caption 位置与变换
         is on the 视频 tab, motion previews take their stage from the theme."""
@@ -235,6 +265,7 @@ def start(window, output: Path):
             settle(1500)
             if not page.video._paused:   # opening a project starts playback
                 page._toggle_playback()
+            panel_motion(page)
             cues = page.project.cues
             if cues:
                 page.select_cue(cues[0].id)

@@ -176,7 +176,8 @@ class GuidedSetupDialog(SpringDialog):
         self.review_combo = FramelessPopupCombo()
         for label, value in (
             ("Qwen3-ASR 本地复核（更准确）", "local"),
-            ("FireRedASR2-LLM 本地复核", "firered_llm"),
+            ("FireRedASR2-AED 独立文字识别", "firered"),
+            ("FireRedASR2-LLM 独立文字识别", "firered_llm"),
             ("在线 ASR API 复核", "api"),
             ("Whisper 本地复核", "whisper_turbo"),
             ("SenseVoice 本地复核", "sensevoice"),

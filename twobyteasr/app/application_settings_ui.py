@@ -39,6 +39,8 @@ _CONTROL_SECTION = {name: label for label, names in _SECTION_CONTROLS.items() fo
 
 
 class ApplicationSettingsDialog(SpringDialog):
+    UNIFIED_TRANSITION = True
+    SURFACE_MOTION = True
     # 高频即开入口：不做入场滑动/渐入动画，点击后立即可操作
     # （2026-09-19 用户反馈：弹窗动画带来约 1 秒等待感，且它是唯一带
     # 弹出动画的顶栏入口）。悬停/选中等常规控件反馈不受影响。
@@ -356,7 +358,7 @@ class ApplicationSettingsDialog(SpringDialog):
             from .bunny_chat import REASONING_CHIPS, REASONING_KEY, REASONING_LEVELS
             from .onboarding import load_state
             values = bunny_permissions.load()
-            bunny = page('兔白权限', '决定「问问兔白」能帮你做多少、能看哪些东西。上传、删除、开始识别或导出，兔白都不会替你按；会计费的 AI 补救默认也先问你。')
+            bunny = page('兔白权限', '决定「问问兔白」能帮你做多少、能看哪些东西。上传、删除、开始识别或导出视频，兔白都不会替你按；会计费的 AI 补救默认也先问你。')
             doing = section(bunny)
             self.bunny_level = field_width(StudioComboBox(), 'preferred')
             for value in bunny_permissions.LEVELS:
@@ -377,7 +379,7 @@ class ApplicationSettingsDialog(SpringDialog):
             row(reading, '会计费的 AI 处理也直接做', self.bunny_allow_paid,
                 '例如重跑失败的 AI 断句、补做没跑完的 AI 校对；用你自己的 Key 计费。只在「能撤销的直接做」时生效，关着就每次先问你')
             self._build_bunny_screen(reading, row, toggle, values)
-            self._build_bunny_folders(bunny, section, values)
+            self._build_bunny_folders(bunny, section, values, row, toggle)
             # 2026-11-16 (user): now and then she teaches a little trick on her own.
             from .bunny_tips import idle_allowed
             self.bunny_idle_tips = toggle(idle_allowed())
@@ -550,8 +552,15 @@ class ApplicationSettingsDialog(SpringDialog):
     def _select_section(self, index):
         if index < 0:
             return
+        # 2026-11-20 (user: a black frame on every page switch): the old page is copied while it
+        # is still shown, then fades over the new one. Taken later (at its Hide, the app-wide
+        # page fade) a translucent window has only an empty sheet to give, or black.
+        from ..design.transitions import capture_page, start_page_crossfade
+        picture = (capture_page(self.pages)
+                   if self.isVisible() and self.pages.currentIndex() not in (-1, index) else None)
         self._build_section(index)
         self.pages.setCurrentIndex(index)
+        start_page_crossfade(self.pages, picture)
         self._show_tip(index)
         timer = self.__dict__.get('_mcp_timer')
         if timer is not None:
@@ -1240,8 +1249,9 @@ class ApplicationSettingsDialog(SpringDialog):
                 self.bunny_see_screen.setChecked(False)
         self.bunny_see_screen.toggled.connect(changed)
 
-    def _build_bunny_folders(self, lay, section, values):
-        """2026-11-16 (harness plan P3): folders 兔白 may list, read and write new files in; saved at once."""
+    def _build_bunny_folders(self, lay, section, values, row=None, toggle=None):
+        """2026-11-16 (harness plan P3): folders 兔白 may list, read and write new files in; saved at once.
+        2026-11-20 (user): she changes existing files there too, and 「让兔白读写整台电脑的文件」 (off by default)."""
         from PySide6.QtWidgets import QFileDialog, QListWidget, QListWidgetItem
         from . import bunny_permissions
         rows = section(lay)
@@ -1250,8 +1260,8 @@ class ApplicationSettingsDialog(SpringDialog):
         title.setObjectName('settingsRowTitle')
         rows.addWidget(title)
         note = QLabel()
-        bind_text(note, '只在这些文件夹里列文件、读文字类文件（术语表、字幕、文档），读到的内容会发给你设置的文字 AI；'
-                        '写文件只写新文件、从不覆盖，每次都要你按「帮我做」；不删除文件。默认一个都没有')
+        bind_text(note, '只在这些文件夹里列文件、读文件（术语表、字幕、文档、Word、Excel），读到的内容会发给你设置的文字 AI；'
+                        '写新文件、改已有的文件，每次都要你按「帮我做」，改之前的样子会另存一份、可以撤销；不删除文件。默认一个都没有')
         note.setObjectName('settingsDescription')
         note.setWordWrap(True)
         rows.addWidget(note)
@@ -1298,6 +1308,18 @@ class ApplicationSettingsDialog(SpringDialog):
         remove.clicked.connect(remove_selected)
         self.bunny_folder_add, self.bunny_folder_remove = add, remove
         refresh(values.get('folders') or [])
+        if row is None or toggle is None:
+            return
+        self.bunny_files_anywhere = toggle(values.get('files_anywhere', False))
+        self.bunny_files_anywhere.setObjectName('bunnyFilesAnywhereSetting')
+        bind_text(self.bunny_files_anywhere, '让兔白读写整台电脑的文件', property='accessibleName')
+        row(rows, '让兔白读写整台电脑的文件', self.bunny_files_anywhere,
+            '不只上面的文件夹：你给完整路径，她就能读、写新文件和改文件（写和改每次都要你按「帮我做」）。'
+            '读到的内容会发给你设置的文字 AI。通过此开关访问时，Windows 和程序文件夹禁止写入，2ByteASR 自己的资料禁止读写')
+
+        def anywhere_changed(on):
+            bunny_permissions.save({'files_anywhere': bool(on)})
+        self.bunny_files_anywhere.toggled.connect(anywhere_changed)
 
     def _build_bunny_memory(self, lay, section, row, toggle, values):
         """兔白's memory of the user and the user's knowledge base for her (2026-11-15). Entries are
@@ -1408,7 +1430,9 @@ class ApplicationSettingsDialog(SpringDialog):
                                 'allow_paid': self.bunny_allow_paid.isChecked(),
                                 'remember': self.bunny_remember.isChecked(),
                                 'keep_chat': self.bunny_keep_chat.isChecked(),
-                                'see_screen': self.bunny_see_screen.isChecked()})
+                                'see_screen': self.bunny_see_screen.isChecked(),
+                                **({'files_anywhere': self.bunny_files_anywhere.isChecked()}
+                                   if self.__dict__.get('bunny_files_anywhere') is not None else {})})
         from .bunny_tips import set_idle_allowed
         set_idle_allowed(self.bunny_idle_tips.isChecked())
         from .bunny_chat import set_click_lines

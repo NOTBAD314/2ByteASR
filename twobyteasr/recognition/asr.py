@@ -2632,7 +2632,7 @@ def _transcribe_qwen_filetrans(
     return rows
 
 
-def _run_firered_llm_worker(chunks):
+def _run_firered_llm_worker(chunks, *, keep_empty=False):
     """Transcribe bounded ASR chunks in the isolated FireRed LLM environment."""
     import subtitle_core
 
@@ -2687,6 +2687,10 @@ def _run_firered_llm_worker(chunks):
             errors="replace",
             env=environment,
         )
+        from .cache import record_run_event
+        record_run_event('asr_worker_started', model_id='firered_llm', backend='firered_llm',
+                         role='asr_worker', pid=process.pid, input_windows=len(jobs),
+                         result_type='independent_transcription')
         output_lines = []
 
         def read_output():
@@ -2709,6 +2713,8 @@ def _run_firered_llm_worker(chunks):
         except BaseException:
             stop_process_tree(process)
             raise
+        record_run_event('asr_worker_exited', model_id='firered_llm', backend='firered_llm',
+                         role='asr_worker', pid=process.pid, returncode=process.returncode)
         if process.returncode != 0:
             raise RuntimeError(
                 "FireRedASR2-LLM 子进程失败：" + "\n".join(output_lines[-20:])
@@ -2720,23 +2726,25 @@ def _run_firered_llm_worker(chunks):
             }
         references = []
         for index, chunk in enumerate(chunks, 1):
-            text = clean_subtitle_text(values.get(index, ""))
-            if content_only(text):
-                references.append(
-                    {"start": chunk["start"], "end": chunk["end"], "text": text}
-                )
+            if index not in values:
+                raise RuntimeError(f"FireRedASR2-LLM 缺少音频窗口 {index} 的处理结果。")
+            raw_text = values[index]
+            text = clean_subtitle_text(raw_text)
+            if keep_empty or content_only(text):
+                references.append({"start": chunk["start"], "end": chunk["end"], "text": text,
+                                   "raw_text": raw_text, "source_window_id": index})
         if not references:
             raise RuntimeError("FireRedASR2-LLM 没有生成可用文字。")
         return references
 
 
-def transcribe_firered_llm_reference(audio_path, speech_regions, shared_audio=None):
+def transcribe_firered_llm_reference(audio_path, speech_regions, shared_audio=None, *, keep_empty=False):
     audio = shared_audio if shared_audio is not None else decode_audio_to_array(audio_path)
     chunks = build_qwen_asr_chunks(audio, speech_regions, AUDIO_SAMPLE_RATE)
     if not chunks:
         return []
     print(f"   加载 FireRedASR2-LLM，转写 {len(chunks)} 个人声短块...")
-    references = _run_firered_llm_worker(chunks)
+    references = _run_firered_llm_worker(chunks, keep_empty=True) if keep_empty else _run_firered_llm_worker(chunks)
     print(f"   [完成] FireRedASR2-LLM：{len(references)}/{len(chunks)} 个短块。")
     return references
 
@@ -3571,7 +3579,12 @@ def transcribe_firered_reference(audio_source, audio_seconds, *, beam_size=3, fo
                 result = model.transcribe(
                     [f"chunk_{chunk_index:04d}"], [chunk_path]
                 )[0]
-                for token, start, end in result.get("timestamp") or []:
+                from .asr_schema import firered_text
+                usable = firered_text(result.get("text")) and result.get("decode_stop") not in {"degenerate", "length_limit"}
+                for token, start, end in (result.get("timestamp") or []) if usable else ():
+                    token = firered_text(token)
+                    if not token:
+                        continue
                     global_start = offset + float(start)
                     global_end = offset + float(end)
                     midpoint = (global_start + global_end) / 2.0

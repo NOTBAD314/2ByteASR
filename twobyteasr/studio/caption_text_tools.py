@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt, QSignalBlocker, QMimeData
 from PySide6.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat, QKeySequence
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QComboBox, QToolButton, QColorDialog
 from ..caption_style.text_marks import (parse_markdown, markdown_text, layer_marks,
-    with_marks, remap_marks, edit_marks, normalize_marks, python_offset, utf16_offset, runs)
+    with_marks, remap_marks, edit_marks, normalize_marks, python_offset, utf16_offset, runs,
+    heading_level, heading_scale)
 from ..diagnostics.input_latency import InputLatencyTextEdit
 from ..i18n import bind_text, tr
 
@@ -90,9 +91,15 @@ class MarkHighlighter(QSyntaxHighlighter):
             if a >= len(text.encode('utf-16-le'))//2 or b <= 0:
                 continue
             fmt = QTextCharFormat()
-            if 'bold' in mark or 'italic' in mark: fmt.setFontStyleName('')
+            level = heading_level(mark)
+            if 'bold' in mark or 'italic' in mark or level: fmt.setFontStyleName('')
             if 'bold' in mark: fmt.setFontWeight(700 if mark['bold'] else 400)
+            elif level: fmt.setFontWeight(700)
             if 'italic' in mark: fmt.setFontItalic(bool(mark['italic']))
+            if mark.get('strike'): fmt.setFontStrikeOut(True)
+            if level:
+                base = self.editor.font().pointSizeF()
+                if base > 0: fmt.setFontPointSize(base*heading_scale(mark))
             if mark.get('color'): fmt.setForeground(QColor(mark['color']))
             elif mark.get('highlight'): fmt.setForeground(QColor('#FFD166'))
             self.setFormat(max(0, a), min(b, len(text.encode('utf-16-le'))//2)-max(0, a), fmt)
@@ -115,9 +122,10 @@ class CaptionTextTools(QWidget):
         # narrow row that drew B / I over the box. It only needs its own text (2026-10-25).
         self.mode.setProperty('fieldWidth', 'captionTextMode')
         self.mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self.mode.setToolTip('Markdown：**粗体**、*斜体*、==重点==（兔白扩展）；\\ 可转义，`文字` 原样输入。')
+        self.mode.setToolTip('Markdown：**粗体**、*斜体*、~~删除线~~（或 --删除线--）、==重点==（兔白扩展）；'
+                             '行首 # 到 ###### 加空格是一到六级标题；\\ 可转义，`文字` 原样输入。')
         layout.addWidget(self.mode)
-        for label, field in [('B', 'bold'), ('I', 'italic'), ('重点', 'highlight'), ('颜色', 'color'), ('清除', 'clear')]:
+        for label, field in [('B', 'bold'), ('I', 'italic'), ('S', 'strike'), ('重点', 'highlight'), ('颜色', 'color'), ('清除', 'clear')]:
             button = QToolButton(self); button.setText(label); button.setFocusPolicy(Qt.NoFocus)
             button.clicked.connect(lambda checked=False, key=field: self.format_selection(key))
             layout.addWidget(button)
@@ -274,7 +282,7 @@ class CaptionTextTools(QWidget):
             marks = [part for m in marks for part in
                 ([dict(m, end=min(a, m['end']))] if m['start'] < a else []) +
                 ([dict(m, start=max(b, m['start']))] if m['end'] > b else [])]
-            marks.append(dict(start=a, end=b, bold=False, italic=False, highlight=False))
+            marks.append(dict(start=a, end=b, bold=False, italic=False, highlight=False, strike=False))
         else:
             value = True
             if field == 'color':

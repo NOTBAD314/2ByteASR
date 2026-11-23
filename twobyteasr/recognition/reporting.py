@@ -254,13 +254,15 @@ def record_media_event(event, **payload):
             })
         elif event in {"stage_completed", "stage_failed", "stage_cancelled"}:
             for stage in reversed(_active_report["stages"]):
-                if stage.get("label") == payload.get("label") and stage.get("status") == "running":
+                if stage.get("index") == payload.get("index") and stage.get("status") == "running":
                     stage["status"] = {
                         "stage_completed": "completed",
                         "stage_failed": "failed",
                         "stage_cancelled": "cancelled",
                     }[event]
                     stage["elapsed_seconds"] = payload.get("elapsed_seconds")
+                    if event == "stage_completed" and payload.get("pending_ranges"):
+                        stage.update(status="partial", pending_ranges=payload["pending_ranges"])
                     if event in {"stage_failed", "stage_cancelled"}:
                         stage["error"] = payload.get("error", "")
                     break
@@ -337,8 +339,8 @@ def _write_report(report):
         f"开始：{report['started_at']}",
         f"结束：{report.get('finished_at', '')}",
         f"耗时：{elapsed_seconds:.2f} 秒",
-        f"素材时长：{audio_seconds:.2f} 秒",
-        f"处理倍率：{realtime_ratio:.2f}x 实时",
+        f"素材时长：{audio_seconds:.2f} 秒" if audio_seconds > 0 else "素材时长：未知",
+        f"处理倍率：{realtime_ratio:.2f}x 实时" if audio_seconds > 0 else "处理倍率：未知",
         "",
         "模型：",
         f"- Qwen3-ASR：{report['settings']['models']['qwen_asr_model']}",
@@ -458,6 +460,9 @@ def finish_media_report(status, **result):
         from ..providers.api_usage import summarize
         _active_report["api_usage"] = summarize(usage_events)
     report = _active_report
+    for stage in report["stages"]:
+        if stage.get("status") == "running":
+            stage["status"] = "cancelled" if status == "cancelled" else "interrupted"
     report["stages"].sort(key=lambda stage: (int(stage.get("index") or 0), stage.get("label", "")))
     _active_report = None
     try:

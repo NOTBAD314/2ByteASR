@@ -161,11 +161,13 @@ def test_a_dialog_grows_out_of_the_pressed_button_and_shrinks_back(app):
     _pump(app, 0.05)
     ghosts = [w for w in QApplication.topLevelWidgets() if isinstance(w, transitions._Ghost) and w.isVisible()]
     assert len(ghosts) == 1
+    from twobyteasr.design import motion_tokens as tokens
     first = next(iter(app._dialog_motion._flights.values())).start
-    assert first.width() < dialog.width() * 0.8                # starts smaller, toward the button
+    # 2026-11-23: a short grow from DIALOG_START_SCALE, leaning DIALOG_START_LEAN toward the button.
+    assert abs(first.width() - dialog.frameGeometry().width() * tokens.DIALOG_START_SCALE) < 2
     origin = button.mapToGlobal(button.rect().center())
     final = dialog.frameGeometry().center()
-    expect_x = final.x() + (origin.x() - final.x()) * 0.4
+    expect_x = final.x() + (origin.x() - final.x()) * tokens.DIALOG_START_LEAN
     assert abs(first.center().x() - expect_x) < 4
     _pump(app, 1.0)
     assert dialog.windowOpacity() == 1.0
@@ -216,7 +218,7 @@ def test_motion_frames_keep_automatic_garbage_collection_waiting(app, monkeypatc
 def test_a_dialog_can_never_stay_invisible(app, monkeypatch):
     from twobyteasr.design import transitions
     monkeypatch.setattr(transitions, 'GHOST_SAFETY_MS', 200)
-    monkeypatch.setattr(transitions.DialogMotion, '_launch_open', lambda self, d, o: None)   # the ghost never flies
+    monkeypatch.setattr(transitions.DialogMotion, '_launch_open', lambda self, dialog, origin, request: None)
     host, _button, dialog = _dialog_with_button()
     dialog.show()
     assert dialog.windowOpacity() == 0.0
@@ -233,6 +235,19 @@ def test_switched_off_the_dialog_is_left_alone(app, monkeypatch):
     assert dialog.windowOpacity() == 1.0
     dialog.hide()
     host.deleteLater()
+
+
+def test_panel_motion_rejects_an_all_black_desktop_capture(app, monkeypatch):
+    from PySide6.QtGui import QColor, QPixmap
+    from twobyteasr.design import transitions
+
+    snapshot = QPixmap(80, 80)
+    snapshot.fill(QColor('black'))
+    monkeypatch.setattr(transitions, '_desktop_pixels', lambda host: snapshot)
+    assert transitions._panel_desktop_snapshot(None) is None
+
+    snapshot.fill(QColor('#231c26'))
+    assert transitions._panel_desktop_snapshot(None) is snapshot
 
 
 def test_spring_dialogs_hand_their_old_fade_to_the_app_wide_motion(app):
@@ -424,7 +439,8 @@ def test_a_dialog_grows_out_of_the_clicked_card(app):
     flight = next(iter(app._dialog_motion._flights.values()))
     centre = card.mapToGlobal(card.rect().center())
     final = dialog.frameGeometry().center()
-    assert abs(flight.start.center().x() - (final.x() + (centre.x() - final.x()) * 0.4)) < 4
+    from twobyteasr.design import motion_tokens as tokens
+    assert abs(flight.start.center().x() - (final.x() + (centre.x() - final.x()) * tokens.DIALOG_START_LEAN)) < 4
     _pump(app, 1.0)
     dialog.hide()
     _pump(app, 0.5)
@@ -505,3 +521,22 @@ def test_pictures_go_on_as_plain_copies_at_fractional_screen_scales(app):
     expected, _ = render(lambda p: (p.scale(0.97, 0.97), p.drawPixmap(QPoint(0, 0), picture)))
     drawn, _ = render(lambda p: (p.scale(0.97, 0.97), draw_picture(p, QPoint(0, 0), picture)))
     assert drawn == expected
+
+def test_panel_morph_fits_the_video_picture_and_finds_it_on_its_stage():
+    """2026-11-23: the video column follows a sliding panel by fitting the picture, not the column."""
+    from PySide6.QtCore import QRect, QRectF
+    from PySide6.QtGui import QColor, QImage
+    from twobyteasr.design.transitions import _content_rect, _fit
+    wide = _fit(16 / 9, QRectF(0, 0, 400, 400))
+    assert (round(wide.width()), round(wide.height()), round(wide.y())) == (400, 225, 88)
+    tall = _fit(16 / 9, QRectF(0, 0, 160, 300))
+    assert (round(tall.width()), round(tall.height())) == (160, 90)
+    image = QImage(200, 120, QImage.Format.Format_RGB32)
+    image.fill(QColor('#101010'))
+    for x in range(40, 160):
+        for y in range(30, 90):
+            image.setPixelColor(x, y, QColor('#88aacc'))
+    found = _content_rect(image, QRect(0, 0, 100, 60), 2.0, QColor('#101010'))
+    assert (found.x(), found.y(), found.width(), found.height()) == (20, 15, 60, 30)
+    image.fill(QColor('#101010'))
+    assert _content_rect(image, QRect(0, 0, 100, 60), 2.0, QColor('#101010')) is None

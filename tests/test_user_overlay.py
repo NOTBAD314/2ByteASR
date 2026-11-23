@@ -124,6 +124,7 @@ def test_script_timers_stop_when_script_or_global_permission_is_disabled(app):
     code = ('API_VERSION = 1\ndef setup(api):\n'
             '    api.every(50, lambda: api.window.setProperty("ticks", (api.window.property("ticks") or 0) + 1))\n')
     entry, _ = user_overlay.add('script', '', '计数', code=code)
+    user_overlay.set_enabled(entry['id'], True)
     user_overlay.set_scripts_allowed(True)
     runtime = user_overlay_runtime.install(app, safe=False)
     runtime.after_window(window, show_notices=False)

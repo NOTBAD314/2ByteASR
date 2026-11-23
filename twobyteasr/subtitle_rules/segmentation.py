@@ -564,9 +564,22 @@ def structural_cohesion_spans(source_text):
         re.compile(r"十秒内不上[舰剑线]"),
         re.compile(r"10\s*9\s*8"),
     )
+    # 2026-11-22 (user, 1 h stream): 87249，8724987249 read as one number
+    # once the comma was dropped, so the 15-character line had no legal cut.
+    # Chinese sentence marks always separate; 1,000 and 3.14 (ASCII) do not.
+    separators = set()
+    count = 0
+    for char in str(source_text):
+        if content_exact(char):
+            count += 1
+        elif char in '，。、；：！？' and count:
+            separators.add(count)
     for pattern in patterns:
         for match in pattern.finditer(source):
-            spans.append((match.start(), match.end(), match.group(0)))
+            edges = [match.start(), *sorted(x for x in separators if match.start() < x < match.end()), match.end()]
+            for low, high in zip(edges, edges[1:]):
+                if high - low > 1 or len(edges) == 2:
+                    spans.append((low, high, source[low:high]))
     return spans
 
 

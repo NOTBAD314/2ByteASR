@@ -268,7 +268,9 @@ def _translation_appearance(cue, shown):
         shown.transform['font_size'] = layer['style']['font_size']
     for key in ('position_x', 'position_y', 'scale_x', 'scale_y'):
         if key in layer.get('style', {}): shown.transform[key] = layer['style'][key]
-    return shown
+    # A translated line that carries the speaker name keeps the name's look.
+    from .speaker_names import apply_name_marks
+    return apply_name_marks(shown)
 
 
 @functools.lru_cache(maxsize=128)

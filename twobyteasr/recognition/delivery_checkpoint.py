@@ -10,7 +10,8 @@ from .task_journal import public_config, digest
 
 _FIELDS = ('task_language', 'requested_language', 'language_evidence', 'language_mode', 'language_decision',
            'review_items', 'speech_coverage', 'speaker_recovery', 'transcript_acceptance', 'terminology_status', 'polishing_summary',
-           'asr_manifest_key', 'asr_provisional_cues', 'recognition_snapshot', 'media_identity', 'studio_project_path')
+           'asr_manifest_key', 'asr_provisional_cues', 'recognition_snapshot', 'media_identity', 'studio_project_path',
+           'grouping_pending')
 
 
 def dependency(context):
@@ -20,10 +21,15 @@ def dependency(context):
     from ..subtitle_rules.number_fidelity import RULE_VERSION as NUMBER_RULE_VERSION
     from .transcript_fidelity import RULE_VERSION as FIDELITY_RULE_VERSION
     settings = public_config(context.asr_settings_snapshot)
+    switches = settings.get('switches', {})
+    if switches.get('grouping_ai_editor') is False:
+        switches.pop('grouping_ai_editor')
+    if switches.get('background_lyrics') is True:
+        switches.pop('background_lyrics')
     # Throughput and rerun switches do not change the already computed text.
     for key in ('performance', 'cache', 'updates', 'ui', 'storage'):
         settings.pop(key, None)
-    return {'version': 2, 'input': context.media_identity.get('fingerprint'),
+    dependency = {'version': 2, 'input': context.media_identity.get('fingerprint'),
             'rules':{'group_cache':GROUP_CACHE_VERSION,'group_prompt':GROUP_PROMPT_VERSION,
                      'polish_prompt':POLISH_PROMPT_VERSION,'language':LANGUAGE_RULE_VERSION,
                      'numbers':NUMBER_RULE_VERSION,'fidelity':FIDELITY_RULE_VERSION,
@@ -32,6 +38,11 @@ def dependency(context):
             'output': context.subtitle_output, 'translation': context.translation_script,
             'script': context.chinese_script, 'glossary': (context.glossary_snapshot.to_dict()
                 if context.glossary_snapshot is not None else {})}
+    models = settings.get('models') or {}
+    if models.get('firered_asr_backend') == 'local' or models.get('primary_asr_backend') == 'firered':
+        from .firered_checkpoints import VERSION
+        dependency['rules']['firered_evidence'] = VERSION
+    return dependency
 
 
 def save(context, legacy, arguments, *, translation=None):
@@ -113,7 +124,8 @@ def all_ready(context, paths):
         for index,path in enumerate(paths,1):
             context.media_index=index
             context.media_identity=media_identity_for_task(path,context)
-            if load(context) is None:
+            from .grouping_checkpoint import load as load_grouping
+            if load(context) is None and load_grouping(context) is None:
                 return False
         return True
     finally:

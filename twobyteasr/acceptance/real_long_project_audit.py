@@ -246,7 +246,7 @@ def start(window, output):
                 session=window._studio_loading_session
                 self.loads.append(dict(name=name,total_ms=(time.perf_counter()-began)*1000,
                     session=session.snapshot(),profile=copy.deepcopy(p._readiness.profile)))
-                self.check(name+'-real-cues',len(p.project.cues)==6962)
+                self.check(name+'-real-cues', len(p.project.cues) == int(os.environ.get('REAL_LONG_CUE_COUNT', '6962')))
                 if not os.environ.get('REAL_LONG_BASELINE'):
                     events=session.snapshot()['events']
                     terminal=[e for e in events if e['event']=='completion_animation_finished']
@@ -257,6 +257,54 @@ def start(window, output):
                 if name=='cold-open':
                     p.undo_stack.setClean();p.show_project_hub(skip_dirty_guard=True);yield .4
             self.original_text=[(c.id,c.text,c.original_text,c.start_ms,c.end_ms,c.speaker_id) for c in p.project.cues]
+            if os.environ.get('REAL_LONG_S5') == '1':
+                for point in (1200, 1800040, 3597360, 1200, 1800040, 3597360):
+                    yield from self.seek(point, 's5-precise-seek')
+                burst = (35000, 1440000, 523000, 2896000, 968000)
+                burst_start = time.perf_counter()
+                for point in burst:
+                    p._seek(point/1000)
+                def last_frame():
+                    frame = p.video.controller.observed_frame()
+                    return frame.get('status') == 'ready' and abs(frame.get('position', -1)*1000-burst[-1]) <= 17
+                yield self.wait(last_frame, 'rapid seek final decoded frame', 15)
+                self.result['rapid_seek'] = dict(targets=burst, frame=p.video.controller.observed_frame(),
+                    frame_ms=(time.perf_counter()-burst_start)*1000)
+                yield self.wait(lambda: p.audio_engine.ready_for_playback(), 'rapid seek current audio', 20)
+                self.result['rapid_seek']['audio_ready_ms'] = (time.perf_counter()-burst_start)*1000
+                yield .2
+                self.check('rapid-seek-late-results', last_frame())
+                self.set_phase('s5-glossary')
+                opened = time.perf_counter()
+                window._show_glossary_proofread(p.project_path, p.project, studio=p)
+                glossary = window.glossary_proofread_page
+                self.result['s5_glossary'] = review = dict(open_ms=(time.perf_counter()-opened)*1000,
+                    first=glossary.proposal_counts())
+                yield .05
+                review['first_event_ms'] = (time.perf_counter()-opened)*1000
+                _capture(window, output/'s5-glossary-first.png')
+                yield self.wait(lambda: not glossary.checks_running(), 'S5 local glossary checks', 100)
+                review.update(local_complete_ms=(time.perf_counter()-opened)*1000, after_local=glossary.proposal_counts())
+                scroll = []
+                for i in range(1, 16):
+                    started = time.perf_counter()
+                    bar = glossary.list.bar
+                    bar.setValue(i*bar.maximum()//16)
+                    glossary.list.repaint()
+                    scroll.append((time.perf_counter()-started)*1000)
+                    yield .017
+                review['scroll_paint_ms'] = scroll
+                adopt = next(((row['cue_id'], group['parts'][0])
+                              for row in glossary._rows for group in glossary._groups(row)
+                              if group['state'] != 'adopted' and not group['reviewed'] and not group['options']
+                              and row['issues'][group['parts'][0]].get('replacement')), None)
+                if adopt is not None:
+                    glossary.list.current = adopt[0]
+                    started = time.perf_counter()
+                    glossary._toggle_issue(*adopt)
+                    review['adopt_ms'] = (time.perf_counter()-started)*1000
+                    review['after_adopt'] = glossary.proposal_counts()
+                return
             if os.environ.get('REAL_LONG_LOADING_ONLY')=='1':
                 self.set_phase('done')
                 return
