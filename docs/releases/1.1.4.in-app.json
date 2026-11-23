@@ -1,0 +1,4 @@
+{
+  "zh": "· 校对建议手动采纳：对照改字前后的字幕，确认后再写入正文。\n· 识别记录：在首页查找历史识别，查看原始 JSON 或另存脱敏副本。\n· 时间轴素材更好辨认：视频和音频按来源着色，剪切点和素材交界用不同标记。\n· 工程末尾预览恢复：重新打开停在结尾的工程时，从最后一个有效片段恢复画面。",
+  "en": "Review proofreading changes before applying them. Search past recognition reports and save redacted copies. Spot media sources and edit points on the timeline. Recover the preview when reopening a project saved at its end."
+}

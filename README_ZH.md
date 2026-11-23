@@ -8,7 +8,7 @@
 
 Windows 和 Mac 都能用，有 NVIDIA 显卡可以全程离线。
 
-[下载 1.1.0](#下载) · [功能](#功能) · [常见问题](#常见问题) · [使用指南](docs/product-guide.zh-CN.md)
+[下载 1.1.4](#下载) · [功能](#功能) · [常见问题](#常见问题) · [使用指南](docs/product-guide.zh-CN.md)
 
 [English](README.md) · **中文** · [日本語](README_JA.md) · [한국어](README_KO.md)
 
@@ -104,14 +104,14 @@ YouTube、B 站的视频连同字幕一起下载。
 
 ## 下载
 
-当前版本为 **Windows 1.1.3**（2026-11-20）和 **Apple Silicon Mac 1.1.2**。
+当前版本为 **Windows 1.1.4**（2026-11-23）和 **Apple Silicon Mac 1.1.2**。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 10 1809及以上，64位 | [2ByteASR-Setup-1.1.3.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.3/2ByteASR-Setup-1.1.3.exe)，约1166MB |
+| Windows 10 1809及以上，64位 | [2ByteASR-Setup-1.1.4.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.4/2ByteASR-Setup-1.1.4.exe)，约1168MB |
 | Apple Silicon Mac（M1及以上），macOS14及以上 | [2ByteASR-1.1.2-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.2/2ByteASR-1.1.2-macos-arm64-Setup.dmg)，约592MB；**实验版**，不支持Intel Mac |
 
-先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新；Mac将应用拖入Applications覆盖。[本版变化、实测范围和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.3) · [GitCode大陆镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.3) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
+先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新；Mac将应用拖入Applications覆盖。[本版变化、实测范围和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.4) · [GitCode大陆镜像](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.4) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
 
 Linux可使用[Docker 0.8.1版](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)，见[构建与运行](README.docker.md)。
 

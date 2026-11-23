@@ -8,7 +8,7 @@
 
 Runs on Windows and Mac. With an NVIDIA GPU, everything can stay offline.
 
-[Download 1.1.0](#download) · [Features](#features) · [FAQ](#faq) · [User guide](docs/product-guide.en.md)
+[Download 1.1.4](#download) · [Features](#features) · [FAQ](#faq) · [User guide](docs/product-guide.en.md)
 
 **English** · [中文](README_ZH.md) · [日本語](README_JA.md) · [한국어](README_KO.md)
 
@@ -102,14 +102,14 @@ The bunny in the corner of the studio answers questions about the app. Ask “Ho
 
 ## Download
 
-Current releases are **Windows 1.1.3** (2026-11-20) and **Apple silicon Mac 1.1.2**.
+Current releases are **Windows 1.1.4** (2026-11-23) and **Apple silicon Mac 1.1.2**.
 
 | Your computer | Download |
 | --- | --- |
-| Windows 10 1809 or later, 64-bit | [2ByteASR-Setup-1.1.3.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.3/2ByteASR-Setup-1.1.3.exe), about 1166 MB |
+| Windows 10 1809 or later, 64-bit | [2ByteASR-Setup-1.1.4.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.4/2ByteASR-Setup-1.1.4.exe), about 1168 MB |
 | Apple silicon Mac (M1 or later), macOS 14 or later | [2ByteASR-1.1.2-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v1.1.2/2ByteASR-1.1.2-macos-arm64-Setup.dmg), about 592 MB; **experimental**, no Intel build |
 
-Save your work and quit before installing over the current version. Windows 0.6.5 or later also supports in-app updates. On Mac, replace the app in Applications. [Release notes](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.3) · [GitCode mirror](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.3) · [Windows guide](docs/product-guide.en.md#installing-on-windows) · [Mac guide](docs/product-guide.en.md#installing-on-mac-experimental). Windows is not Authenticode-signed; Mac is not Apple-notarized. Source, licence, component and signature files are for source delivery, verification and in-app updates.
+Save your work and quit before installing over the current version. Windows 0.6.5 or later also supports in-app updates. On Mac, replace the app in Applications. [Release notes](https://github.com/NOTBAD314/2ByteASR/releases/tag/v1.1.4) · [GitCode mirror](https://gitcode.com/Notbad314/2ByteASR/releases/tag/v1.1.4) · [Windows guide](docs/product-guide.en.md#installing-on-windows) · [Mac guide](docs/product-guide.en.md#installing-on-mac-experimental). Windows is not Authenticode-signed; Mac is not Apple-notarized. Source, licence, component and signature files are for source delivery, verification and in-app updates.
 
 Linux: the [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) remains available; see [Build and run](README.docker.md).
 
